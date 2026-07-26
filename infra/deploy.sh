@@ -7,16 +7,13 @@ set -e
 
 echo "🚀 Starting Carlink System Deployment on server 34.41.243.25..."
 
-# 1. Install Docker & Docker Compose if not present
+# 1. Install Docker & Docker Compose (Debian / Ubuntu)
 if ! command -v docker &> /dev/null; then
-    echo "📦 Installing Docker..."
+    echo "📦 Installing Docker package..."
     sudo apt-get update
-    sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common git
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-    sudo apt-get update
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    sudo usermod -aG docker $USER
+    sudo apt-get install -y docker.io docker-compose-v2 git curl || sudo apt-get install -y docker-ce docker-compose-plugin
+    sudo systemctl enable --now docker
+    sudo usermod -aG docker $USER || true
 fi
 
 # 2. Clone or Pull GitHub Repository
@@ -46,9 +43,14 @@ EOT
 
 # 4. Build and Launch Containers using Docker Compose
 echo "🐳 Building and starting Docker containers..."
-docker compose -f infra/docker-compose.prod.yml up -d --build
+if command -v docker-compose &> /dev/null; then
+    docker-compose -f infra/docker-compose.prod.yml up -d --build
+else
+    docker compose -f infra/docker-compose.prod.yml up -d --build
+fi
 
 echo "✅ Carlink System is live!"
 echo "🌐 Dashboard Web UI:  http://34.41.243.25:3000"
+echo "🌐 Dashboard HTTP:    http://34.41.243.25"
 echo "⚙️ Backend API:       http://34.41.243.25:8000"
 echo "🤖 Telegram Bot:      @carlink_reporter_bot"
