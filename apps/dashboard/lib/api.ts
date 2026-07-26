@@ -18,12 +18,22 @@ export const CATEGORY_OPTIONS = [
   "Other",
 ] as const;
 
+// Kept in sync with the accident_type description in
+// apps/bot-service/app/reports/schema.py -- the AI is prompted with that
+// exact vocabulary, so a mismatch here means its answer silently fails to
+// match any <option> and the dropdown just looks empty.
 export const ACCIDENT_TYPE_OPTIONS = [
-  "Frontal Collision",
-  "Rear-End Collision",
-  "Side Impact (T-Bone)",
-  "Single Vehicle Object Impact",
-  "Parked Hit & Run",
+  "Collision with another vehicle",
+  "Rear-end collision",
+  "Side impact",
+  "Front impact",
+  "Parked vehicle hit",
+  "Single vehicle accident",
+  "Hit-and-run",
+  "Scrape / minor contact",
+  "Flood / weather damage",
+  "Theft / vandalism damage",
+  "Other",
 ] as const;
 
 export type DamageSummaryItem = {
@@ -206,15 +216,41 @@ export async function getReport(id: string): Promise<ReportDetail | null> {
   return body as ReportDetail;
 }
 
-export async function createReport(payload: ReportData): Promise<{ id: string }> {
+export async function createReport(payload: ReportData, tempPhotoPaths: string[] = []): Promise<{ id: string }> {
   const res = await fetch(`${API_BASE_URL}/reports`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to create report (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** AI-drafted subset of ReportData returned by analyzing uploaded photos --
+ * matches what the Telegram bot flow already fills in from photos+text. */
+export type PhotoAnalysisDraft = Pick<
+  ReportData,
+  "accident_type" | "severity_level" | "damaged_parts" | "category" | "description"
+>;
+
+export async function analyzeReportPhotos(
+  description: string,
+  photos: File[]
+): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] }> {
+  const formData = new FormData();
+  formData.set("description", description);
+  for (const photo of photos) formData.append("photos", photo);
+
+  const res = await fetch(`${API_BASE_URL}/reports/analyze-photos`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`AI analysis failed (${res.status}): ${text}`);
   }
   return res.json();
 }

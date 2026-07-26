@@ -1,7 +1,29 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { createReport, CATEGORY_OPTIONS, type ReportData } from "@/lib/api";
+import {
+  createReport,
+  analyzeReportPhotos,
+  CATEGORY_OPTIONS,
+  type ReportData,
+  type PhotoAnalysisDraft,
+} from "@/lib/api";
+
+/** Runs on the server so the browser never talks to the API's port
+ * directly (avoids CORS) -- called imperatively from the client component,
+ * not via <form action>, since the result drives React state (auto-filling
+ * fields) rather than a redirect. */
+export async function analyzePhotosAction(
+  formData: FormData
+): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | { error: string }> {
+  try {
+    const description = (formData.get("description") as string) || "";
+    const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
+    return await analyzeReportPhotos(description, photos);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+  }
+}
 
 export async function createReportAction(formData: FormData) {
   const category = CATEGORY_OPTIONS.filter((c) => formData.get(`category_${c}`) === "on");
@@ -73,6 +95,16 @@ export async function createReportAction(formData: FormData) {
     authority_reference: (formData.get("authority_reference") as string)?.trim() || null,
   };
 
-  const result = await createReport(payload);
+  let tempPhotoPaths: string[] = [];
+  const tempPhotoPathsRaw = formData.get("temp_photo_paths") as string | null;
+  if (tempPhotoPathsRaw) {
+    try {
+      tempPhotoPaths = JSON.parse(tempPhotoPathsRaw);
+    } catch {
+      tempPhotoPaths = [];
+    }
+  }
+
+  const result = await createReport(payload, tempPhotoPaths);
   redirect(`/reports/${result.id}`);
 }

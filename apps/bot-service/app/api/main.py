@@ -1,17 +1,20 @@
 import shutil
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from app.ai.extraction import draft_report
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, to_public_url
+from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url
 
 
 @asynccontextmanager
@@ -112,24 +115,70 @@ def download_report_pdf(report_id: str):
 
 
 
+@app.post("/reports/analyze-photos")
+async def analyze_report_photos(
+    description: str = Form(""),
+    photos: list[UploadFile] = File(default=[]),
+) -> dict:
+    """Dashboard equivalent of the Telegram bot's photo+text drafting step:
+    saves the uploaded photos to a temp dir, runs the same Gemini drafting
+    call used by the bot, and returns the draft for the reporter to review
+    and edit -- nothing is saved to the database yet. The returned
+    temp_photo_paths get passed back in on POST /reports if the reporter
+    goes on to save the report, so the photos are only ever attached to a
+    report the reporter actually confirmed.
+    """
+    saved_paths: list[str] = []
+    td = tmp_dir()
+    for photo in photos:
+        ext = Path(photo.filename or "").suffix or ".jpg"
+        dest = td / f"{uuid.uuid4().hex}{ext}"
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(photo.file, f)
+        saved_paths.append(str(dest))
+
+    try:
+        draft = draft_report(description, saved_paths)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
+
+    return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
+
+
+class CreateReportRequest(BaseModel):
+    draft: SecurityIncidentDraft
+    temp_photo_paths: list[str] = []
+
+
 @app.post("/reports")
-def create_report(draft: SecurityIncidentDraft) -> dict:
-    """Manual entry from the dashboard -- no photos (see apps/dashboard's new-report
-    form), but otherwise generates a report and PDF the same way the bot does.
+def create_report(body: CreateReportRequest) -> dict:
+    """Manual entry from the dashboard -- optionally with photos that were
+    already analyzed via POST /reports/analyze-photos and are sitting in the
+    temp dir, which get moved into the report's permanent storage here once
+    the reporter actually confirms and saves.
     """
     db = SessionLocal()
     try:
         report = Report(
             channel="manual",
             reporter_chat_id="dashboard",
-            data=draft.model_dump(),
+            data=body.draft.model_dump(),
             status="confirmed",
         )
         db.add(report)
         db.flush()
 
+        photo_paths = [
+            save_photo(report.id, temp_path, i)
+            for i, temp_path in enumerate(body.temp_photo_paths)
+            if Path(temp_path).exists()
+        ]
+        report.photo_paths = photo_paths
+        for temp_path in body.temp_photo_paths:
+            Path(temp_path).unlink(missing_ok=True)
+
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, [], pdf_path, report_id=report.id)
+        render_pdf(report.data, photo_paths, pdf_path, report_id=report.id)
         report.pdf_path = pdf_path
 
         db.commit()

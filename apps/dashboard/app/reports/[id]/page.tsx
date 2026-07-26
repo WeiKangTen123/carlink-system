@@ -35,7 +35,7 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
             {d.location || (d.accident_type ? "Car Incident Report" : "Security Incident Report")}
           </h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            Filed on {new Date(report.created_at).toLocaleString()} &middot; Prepared by {d.reporter_name || "Site Staff"}
+            Filed on {new Date(report.created_at).toLocaleString()} &middot; Prepared by {d.reporter_name || "—"}
           </p>
         </div>
 
@@ -57,53 +57,63 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
           <div>
             <div className="detail-field-label">Vehicle Plate</div>
             <div className="detail-field-value" style={{ marginTop: 4 }}>
-              <span className="plate-badge">{v?.plate_number || d.vehicle_details || "WX 8888 A"}</span>
+              {v?.plate_number || d.vehicle_details ? (
+                <span className="plate-badge">{v?.plate_number || d.vehicle_details}</span>
+              ) : (
+                "—"
+              )}
             </div>
           </div>
           <div>
             <div className="detail-field-label">Make &amp; Model</div>
             <div className="detail-field-value">
-              {v?.make || v?.model ? `${v?.make || ""} ${v?.model || ""}` : (d.vehicle_details || "Toyota Camry 2.5V")}
+              {v?.make || v?.model ? `${v?.make || ""} ${v?.model || ""}`.trim() : "—"}
             </div>
           </div>
           <div>
             <div className="detail-field-label">Accident Type</div>
             <div className="detail-field-value">
-              <strong>{d.accident_type || "Rear-End Collision"}</strong>
+              <strong>{d.accident_type || "—"}</strong>
             </div>
           </div>
           <div>
             <div className="detail-field-label">Overall Severity</div>
             <div className="detail-field-value">
-              <span
-                style={{
-                  display: "inline-block",
-                  padding: "2px 10px",
-                  borderRadius: 12,
-                  fontSize: 12,
-                  fontWeight: "bold",
-                  background: d.severity_level === "Severe" ? "#fee2e2" : d.severity_level === "Moderate" ? "#fef3c7" : "#dcfce7",
-                  color: d.severity_level === "Severe" ? "#991b1b" : d.severity_level === "Moderate" ? "#92400e" : "#166534",
-                }}
-              >
-                {d.severity_level || "Moderate"}
-              </span>
+              {d.severity_level ? (
+                <span
+                  style={{
+                    display: "inline-block",
+                    padding: "2px 10px",
+                    borderRadius: 12,
+                    fontSize: 12,
+                    fontWeight: "bold",
+                    background: d.severity_level === "Severe" ? "#fee2e2" : d.severity_level === "Moderate" ? "#fef3c7" : "#dcfce7",
+                    color: d.severity_level === "Severe" ? "#991b1b" : d.severity_level === "Moderate" ? "#92400e" : "#166534",
+                  }}
+                >
+                  {d.severity_level}
+                </span>
+              ) : (
+                "—"
+              )}
             </div>
           </div>
           <div>
             <div className="detail-field-label">Reporter Name &amp; Role</div>
             <div className="detail-field-value">
-              {d.reporter_name || "Alex Wong"} ({d.reporter_role || "Site Supervisor"})
+              {d.reporter_name || "—"}{d.reporter_role ? ` (${d.reporter_role})` : ""}
             </div>
           </div>
           <div>
             <div className="detail-field-label">Incident Date / Time</div>
-            <div className="detail-field-value">{d.incident_datetime || "2026-07-26 14:15"}</div>
+            <div className="detail-field-value">{d.incident_datetime || "—"}</div>
           </div>
           <div>
             <div className="detail-field-label">Weather & Road</div>
             <div className="detail-field-value">
-              {d.weather_condition || "Clear"} / {d.road_condition || "Dry"}
+              {d.weather_condition || d.road_condition
+                ? `${d.weather_condition || "—"} / ${d.road_condition || "—"}`
+                : "—"}
             </div>
           </div>
           <div>
@@ -129,73 +139,85 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table className="reports-table" style={{ width: "100%", textAlign: "left" }}>
-            <thead>
-              <tr>
-                <th>Damaged Part</th>
-                <th>Damage Type</th>
-                <th>Severity</th>
-                <th>Photo Ref</th>
-                <th>AI Confidence</th>
-                <th>Verified</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(() => {
-                const damageItems = (d.damage_summary && d.damage_summary.length > 0)
-                  ? d.damage_summary
-                  : (d.damaged_parts && d.damaged_parts.length > 0)
-                  ? d.damaged_parts.map((p, idx) => ({
-                      part: p,
-                      damage_type: "Impact / Dent & Scratch",
-                      severity: d.severity_level || "Moderate",
-                      photo_reference: `P0${idx + 1}`,
-                      ai_confidence: "90%",
-                      human_verified: true,
-                      repair_required: true,
-                    }))
-                  : [
-                      {
-                        part: d.description?.toLowerCase().includes("fender") ? "Fender / Wheel Arch" : "Front Bumper & Panel",
-                        damage_type: d.description?.toLowerCase().includes("scratch") ? "Minor Scratch & Paint Chipping" : "Impact Dent & Scrape",
-                        severity: d.severity_level || "Minor",
-                        photo_reference: "P01",
-                        ai_confidence: "91.2%",
-                        human_verified: true,
-                        repair_required: true,
-                      }
-                    ];
+          {(() => {
+            // Only ever built from real data -- damage_summary items when they
+            // exist, otherwise the plain damaged_parts list with everything
+            // else honestly left unknown. Never invented from keyword-sniffing
+            // the description (that's how "Alex Wong"-style fabrication crept
+            // in before: a plausible-looking guess standing in for real data).
+            const damageItems = (d.damage_summary && d.damage_summary.length > 0)
+              ? d.damage_summary
+              : (d.damaged_parts && d.damaged_parts.length > 0)
+              ? d.damaged_parts.map((p) => ({
+                  part: p,
+                  damage_type: null as string | null,
+                  severity: d.severity_level || null,
+                  photo_reference: null as string | null,
+                  ai_confidence: null as string | null,
+                  human_verified: false,
+                }))
+              : [];
 
-                return damageItems.map((item, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <strong>{item.part}</strong>
-                    </td>
-                    <td>{item.damage_type}</td>
-                    <td>
-                      <span
-                        style={{
-                          padding: "2px 8px",
-                          borderRadius: 10,
-                          fontSize: 11,
-                          fontWeight: 600,
-                          background: item.severity === "Severe" ? "var(--badge-red-bg)" : "var(--badge-amber-bg)",
-                          color: item.severity === "Severe" ? "var(--badge-red-text)" : "var(--badge-amber-text)",
-                        }}
-                      >
-                        {item.severity}
-                      </span>
-                    </td>
-                    <td>{item.photo_reference || `P0${idx + 1}`}</td>
-                    <td>{item.ai_confidence || "92%"}</td>
-                    <td>
-                      <span style={{ color: "#16a34a", fontWeight: "bold" }}>✓ Verified</span>
-                    </td>
+            if (damageItems.length === 0) {
+              return (
+                <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>
+                  No structured damage recorded.
+                </p>
+              );
+            }
+
+            return (
+              <table className="reports-table" style={{ width: "100%", textAlign: "left" }}>
+                <thead>
+                  <tr>
+                    <th>Damaged Part</th>
+                    <th>Damage Type</th>
+                    <th>Severity</th>
+                    <th>Photo Ref</th>
+                    <th>AI Confidence</th>
+                    <th>Verified</th>
                   </tr>
-                ));
-              })()}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {damageItems.map((item, idx) => (
+                    <tr key={idx}>
+                      <td>
+                        <strong>{item.part}</strong>
+                      </td>
+                      <td>{item.damage_type || "—"}</td>
+                      <td>
+                        {item.severity ? (
+                          <span
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: 10,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: item.severity === "Severe" ? "var(--badge-red-bg)" : "var(--badge-amber-bg)",
+                              color: item.severity === "Severe" ? "var(--badge-red-text)" : "var(--badge-amber-text)",
+                            }}
+                          >
+                            {item.severity}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>{item.photo_reference || "—"}</td>
+                      <td>{item.ai_confidence || "—"}</td>
+                      <td>
+                        {item.human_verified ? (
+                          <span style={{ color: "#16a34a", fontWeight: "bold" }}>✓ Verified</span>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)" }}>Pending</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
       </div>
 
@@ -227,76 +249,87 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
           </div>
         </div>
 
-        <div className="card">
-          <h2 style={{ fontSize: 16, marginBottom: 10 }}>Insurance & Claim Details</h2>
-          <div className="detail-grid" style={{ gridTemplateColumns: "1fr" }}>
-            <div>
-              <div className="detail-field-label">Insurer Name</div>
-              <div className="detail-field-value">{ins?.insurer_name || "Pending Allocation"}</div>
-            </div>
-            <div>
-              <div className="detail-field-label">Claim Type / Status</div>
-              <div className="detail-field-value">
-                {ins?.claim_type || "Comprehensive"} &middot;{" "}
-                <span className="status-pill">{ins?.claim_status || "Under Assessment"}</span>
+        {(ins?.insurer_name || ins?.claim_number || ins?.claim_type || ins?.estimated_repair_cost) && (
+          <div className="card">
+            <h2 style={{ fontSize: 16, marginBottom: 10 }}>Insurance & Claim Details</h2>
+            <div className="detail-grid" style={{ gridTemplateColumns: "1fr" }}>
+              <div>
+                <div className="detail-field-label">Insurer Name</div>
+                <div className="detail-field-value">{ins?.insurer_name || "—"}</div>
+              </div>
+              <div>
+                <div className="detail-field-label">Claim Type / Status</div>
+                <div className="detail-field-value">
+                  {ins?.claim_type || "—"}
+                  {ins?.claim_status && (
+                    <>
+                      {" "}&middot; <span className="status-pill">{ins.claim_status}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="detail-field-label">Estimated Repair Cost</div>
+                <div className="detail-field-value">{ins?.estimated_repair_cost || "—"}</div>
               </div>
             </div>
-            <div>
-              <div className="detail-field-label">Estimated Repair Cost</div>
-              <div className="detail-field-value">{ins?.estimated_repair_cost || "Pending Workshop Quote"}</div>
-            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* AI Vision Analysis Box */}
-      <div className="card" style={{ marginBottom: 16, background: "#f0f9ff", borderColor: "#bae6fd" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#0369a1", marginBottom: 8 }}>
-          <span style={{ fontSize: 18 }}>🤖</span>
-          <h2 style={{ fontSize: 15, margin: 0, color: "#0369a1" }}>AI Computer Vision Analysis</h2>
-        </div>
-        <p style={{ fontSize: 13, color: "#0c4a6e", margin: "0 0 8px" }}>
-          AI Confidence Score: <strong>{ai?.confidence_score || "94.2%"}</strong> &middot; Suggested Category:{" "}
-          <strong>{ai?.suggested_category || d.accident_type || "Vehicle Impact"}</strong>
-        </p>
-        {ai?.summary && <p style={{ fontSize: 13, color: "#0369a1", margin: 0 }}><em>"{ai.summary}"</em></p>}
-      </div>
-
-      {/* Timeline & Recommendations */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-        <div className="card">
-          <h2 style={{ fontSize: 16, marginBottom: 10 }}>Timeline of Events</h2>
-          <ul style={{ paddingLeft: 20, margin: 0, fontSize: 13, lineHeight: 1.8 }}>
-            {d.timeline && d.timeline.length > 0 ? (
-              d.timeline.map((ev, i) => (
-                <li key={i}>
-                  <strong>{ev.time}:</strong> {ev.event}
-                </li>
-              ))
-            ) : (
-              <>
-                <li><strong>Incident Time:</strong> Collision occurred on site</li>
-                <li><strong>Photos Taken:</strong> Captured by site supervisor</li>
-                <li><strong>Telegram Bot:</strong> AI extracted report draft</li>
-                <li><strong>Confirmed:</strong> Incident record locked</li>
-              </>
+      {/* AI Vision Analysis Box -- only shown when there's real AI output to show */}
+      {(ai?.confidence_score || ai?.summary || ai?.suggested_category || (d.damaged_parts && d.damaged_parts.length > 0)) && (
+        <div className="card" style={{ marginBottom: 16, background: "#f0f9ff", borderColor: "#bae6fd" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#0369a1", marginBottom: 8 }}>
+            <span style={{ fontSize: 18 }}>🤖</span>
+            <h2 style={{ fontSize: 15, margin: 0, color: "#0369a1" }}>AI Computer Vision Analysis</h2>
+          </div>
+          <p style={{ fontSize: 13, color: "#0c4a6e", margin: "0 0 8px" }}>
+            {ai?.confidence_score && (
+              <>AI Confidence Score: <strong>{ai.confidence_score}</strong> &middot; </>
             )}
-          </ul>
-        </div>
-
-        <div className="card">
-          <h2 style={{ fontSize: 16, marginBottom: 10 }}>Recommendations & Next Steps</h2>
-          <p style={{ fontSize: 13, lineHeight: 1.6, margin: 0 }}>
-            <strong>Repair Recommendation:</strong>{" "}
-            {rec?.repair_recommendation || "Send vehicle to authorized workshop for panel repair & repainting."}
+            Suggested Category: <strong>{ai?.suggested_category || d.accident_type || "—"}</strong>
           </p>
-          {rec?.inspection_recommendation && (
-            <p style={{ fontSize: 13, lineHeight: 1.6, margin: "6px 0 0" }}>
-              <strong>Inspection:</strong> {rec.inspection_recommendation}
-            </p>
+          {ai?.summary && <p style={{ fontSize: 13, color: "#0369a1", margin: 0 }}><em>"{ai.summary}"</em></p>}
+        </div>
+      )}
+
+      {/* Timeline & Recommendations -- both only show real, reporter-confirmed
+          data. A fabricated timeline previously claimed events ("Telegram
+          Bot: AI extracted report draft") that hadn't happened -- including
+          on reports filed manually, with no Telegram bot involved at all. */}
+      {(d.timeline?.length || rec?.repair_recommendation || rec?.inspection_recommendation) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+          {d.timeline && d.timeline.length > 0 && (
+            <div className="card">
+              <h2 style={{ fontSize: 16, marginBottom: 10 }}>Timeline of Events</h2>
+              <ul style={{ paddingLeft: 20, margin: 0, fontSize: 13, lineHeight: 1.8 }}>
+                {d.timeline.map((ev, i) => (
+                  <li key={i}>
+                    <strong>{ev.time}:</strong> {ev.event}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {(rec?.repair_recommendation || rec?.inspection_recommendation) && (
+            <div className="card">
+              <h2 style={{ fontSize: 16, marginBottom: 10 }}>Recommendations & Next Steps</h2>
+              {rec?.repair_recommendation && (
+                <p style={{ fontSize: 13, lineHeight: 1.6, margin: 0 }}>
+                  <strong>Repair Recommendation:</strong> {rec.repair_recommendation}
+                </p>
+              )}
+              {rec?.inspection_recommendation && (
+                <p style={{ fontSize: 13, lineHeight: 1.6, margin: "6px 0 0" }}>
+                  <strong>Inspection:</strong> {rec.inspection_recommendation}
+                </p>
+              )}
+            </div>
           )}
         </div>
-      </div>
+      )}
 
       {/* Photos Section */}
       {report.photo_urls.length > 0 && (
@@ -313,9 +346,15 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
           <li>
             <strong>{new Date(report.created_at).toLocaleString()}</strong> &middot; Incident report created via <code>{report.channel}</code> channel.
           </li>
-          <li>
-            <strong>{new Date(report.created_at).toLocaleString()}</strong> &middot; Multimodal AI Vision engine drafted structured incident data.
-          </li>
+          {/* Telegram/WhatsApp always run photos+text through the AI drafter.
+              A manual entry only did if the reporter used "Analyze with AI" --
+              the only way a manual report ever gets photos attached -- so
+              this no longer claims AI involvement that didn't happen. */}
+          {(report.channel !== "manual" || report.photo_urls.length > 0) && (
+            <li>
+              <strong>{new Date(report.created_at).toLocaleString()}</strong> &middot; Multimodal AI Vision engine drafted structured incident data.
+            </li>
+          )}
           {sign?.status === "Signed Off" && (
             <li>
               <strong>{new Date().toLocaleString()}</strong> &middot; Report reviewed &amp; signed off by <strong>{sign.reviewed_by || "Surveyor"}</strong>. Official PDF generated and locked.

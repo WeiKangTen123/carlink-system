@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createReportAction } from "./actions";
+import { createReportAction, analyzePhotosAction } from "./actions";
 import { CATEGORY_OPTIONS, ACCIDENT_TYPE_OPTIONS } from "@/lib/api";
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
@@ -12,6 +12,67 @@ let nextRowId = 0;
 export default function NewReportPage() {
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [witnesses, setWitnesses] = useState<WitnessRow[]>([]);
+
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
+  const [tempPhotoPaths, setTempPhotoPaths] = useState<string[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [aiApplied, setAiApplied] = useState(false);
+
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<Set<string>>(new Set(["Vehicle Collision or Damage"]));
+  const [accidentType, setAccidentType] = useState("");
+  const [severityLevel, setSeverityLevel] = useState("Minor");
+  const [damagedParts, setDamagedParts] = useState("");
+
+  function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    photoPreviews.forEach((url) => URL.revokeObjectURL(url));
+    const files = Array.from(e.target.files || []);
+    setPhotos(files);
+    setPhotoPreviews(files.map((f) => URL.createObjectURL(f)));
+    setTempPhotoPaths([]);
+    setAiApplied(false);
+    setAnalyzeError(null);
+  }
+
+  function toggleCategory(c: string) {
+    setCategory((prev) => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+  }
+
+  async function handleAnalyze() {
+    if (photos.length === 0) {
+      setAnalyzeError("Select at least one photo first.");
+      return;
+    }
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    const fd = new FormData();
+    fd.set("description", description);
+    for (const p of photos) fd.append("photos", p);
+
+    const result = await analyzePhotosAction(fd);
+    setAnalyzing(false);
+
+    if ("error" in result) {
+      setAnalyzeError(result.error);
+      return;
+    }
+
+    const { draft, temp_photo_paths } = result;
+    setTempPhotoPaths(temp_photo_paths);
+    if (draft.accident_type) setAccidentType(draft.accident_type);
+    if (draft.severity_level) setSeverityLevel(draft.severity_level);
+    if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
+    if (draft.category && draft.category.length) setCategory(new Set(draft.category));
+    if (draft.description) setDescription(draft.description);
+    setAiApplied(true);
+  }
 
   return (
     <form action={createReportAction} className="new-report-form">
@@ -34,6 +95,66 @@ export default function NewReportPage() {
             <input name="reporter_role" type="text" placeholder="e.g. Site Supervisor" />
           </label>
         </div>
+      </section>
+
+      {/* Photo Evidence & AI Analysis */}
+      <section className="card">
+        <h2>Photo Evidence &amp; Description</h2>
+        <p className="form-hint">
+          Upload photos of the incident and describe what happened. AI can analyze the photos and
+          description to suggest the accident type, severity, damaged parts, and category below --
+          review and adjust its suggestions before saving.
+        </p>
+
+        <label style={{ marginTop: 16 }}>
+          Photos
+          <input type="file" accept="image/*" multiple onChange={handlePhotoChange} />
+        </label>
+
+        {photoPreviews.length > 0 && (
+          <div className="photo-preview-grid">
+            {photoPreviews.map((src, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={src} alt={`Selected photo ${i + 1}`} />
+            ))}
+          </div>
+        )}
+
+        <label style={{ marginTop: 16 }}>
+          Detailed Description *
+          <textarea
+            name="description"
+            required
+            rows={4}
+            placeholder="Describe what happened..."
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </label>
+
+        <button
+          type="button"
+          className="add-row-button"
+          style={{ marginTop: 12 }}
+          onClick={handleAnalyze}
+          disabled={analyzing}
+        >
+          {analyzing ? "Analyzing photos..." : "🔍 Analyze with AI"}
+        </button>
+
+        {analyzeError && (
+          <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8 }}>
+            {analyzeError}
+          </p>
+        )}
+        {aiApplied && !analyzeError && (
+          <p className="form-hint" style={{ color: "var(--badge-green-text)", marginTop: 8 }}>
+            AI suggestions applied to Accident Type, Severity, Damaged Parts, and Category below --
+            review before saving.
+          </p>
+        )}
+
+        <input type="hidden" name="temp_photo_paths" value={JSON.stringify(tempPhotoPaths)} />
       </section>
 
       {/* Vehicle Info */}
@@ -66,8 +187,13 @@ export default function NewReportPage() {
           </label>
           <label>
             Accident Type
-            <select name="accident_type">
+            <select name="accident_type" value={accidentType} onChange={(e) => setAccidentType(e.target.value)}>
               <option value="">Select Mechanism...</option>
+              {/* If AI (or a future model) returns a value outside this list, show it
+                  anyway instead of silently reverting to the blank option. */}
+              {accidentType && !ACCIDENT_TYPE_OPTIONS.includes(accidentType as (typeof ACCIDENT_TYPE_OPTIONS)[number]) && (
+                <option value={accidentType}>{accidentType}</option>
+              )}
               {ACCIDENT_TYPE_OPTIONS.map((type) => (
                 <option key={type} value={type}>
                   {type}
@@ -77,7 +203,7 @@ export default function NewReportPage() {
           </label>
           <label>
             Overall Damage Severity
-            <select name="severity_level">
+            <select name="severity_level" value={severityLevel} onChange={(e) => setSeverityLevel(e.target.value)}>
               <option value="Minor">Minor (Cosmetic / Scrape)</option>
               <option value="Moderate">Moderate (Panel Dent / Repaint)</option>
               <option value="Severe">Severe (Structural / Non-drivable)</option>
@@ -87,22 +213,29 @@ export default function NewReportPage() {
 
         <label style={{ marginTop: 12 }}>
           Damaged Parts (Comma Separated)
-          <input name="damaged_parts" type="text" placeholder="e.g. Front Bumper, Right Door, Hood, Side Mirror" />
+          <input
+            name="damaged_parts"
+            type="text"
+            placeholder="e.g. Front Bumper, Right Door, Hood, Side Mirror"
+            value={damagedParts}
+            onChange={(e) => setDamagedParts(e.target.value)}
+          />
         </label>
 
         <fieldset className="category-fieldset" style={{ marginTop: 12 }}>
           <legend>Category</legend>
           {CATEGORY_OPTIONS.map((c) => (
             <label key={c} className="checkbox-label">
-              <input type="checkbox" name={`category_${c}`} defaultChecked={c === "Vehicle Collision or Damage"} /> {c}
+              <input
+                type="checkbox"
+                name={`category_${c}`}
+                checked={category.has(c)}
+                onChange={() => toggleCategory(c)}
+              />{" "}
+              {c}
             </label>
           ))}
         </fieldset>
-
-        <label style={{ marginTop: 12 }}>
-          Detailed Description *
-          <textarea name="description" required rows={4} placeholder="Describe what happened..." />
-        </label>
       </section>
 
       {/* People Involved */}
