@@ -436,3 +436,190 @@ input[type="text"], select, textarea {
 input[type="text"]:focus, select:focus, textarea:focus {
   border-color: var(--accent-cyan);
 }
+
+/* ==========================================================================
+   NEW REPORT FORM
+   ========================================================================== */
+
+.new-report-form {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.new-report-form h1 {
+  font-size: 26px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  color: var(--text-primary);
+}
+.new-report-form > .form-hint {
+  margin: 0 0 4px;
+}
+
+.form-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.new-report-form .card h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  color: var(--text-primary);
+}
+.new-report-form .card > .form-hint {
+  margin: 0 0 14px;
+}
+
+/* Every field is its own vertical block: label text above its input. */
+.new-report-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.new-report-form label input,
+.new-report-form label select,
+.new-report-form label textarea {
+  font-size: 14px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  width: 100%;
+}
+.new-report-form textarea {
+  resize: vertical;
+  min-height: 76px;
+}
+
+/* Standalone fields directly in a card (not inside .field-grid) stack with
+   consistent spacing instead of touching the element above. */
+.new-report-form .card > label,
+.new-report-form .card > .field-grid,
+.new-report-form .card > .category-fieldset {
+  margin-top: 16px;
+}
+.new-report-form .card > label:first-child,
+.new-report-form .card > .field-grid:first-child {
+  margin-top: 0;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 20px;
+}
+
+/* CATEGORY CHECKLIST */
+.category-fieldset {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+}
+.category-fieldset legend {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0 6px;
+}
+
+.new-report-form .checkbox-label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* REPEATABLE ROWS (People Involved / Witnesses) */
+.repeatable-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.repeatable-row input {
+  flex: 1 1 140px;
+  min-width: 140px;
+}
+.row-remove {
+  background: var(--badge-red-bg);
+  color: var(--badge-red-text);
+  border: 1px solid var(--badge-red-border);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.row-remove:hover {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.add-row-button {
+  align-self: flex-start;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-hover);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+.add-row-button:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.submit-button {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-cyan) 100%);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 12px 28px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.submit-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px var(--glow-ring);
+}
