@@ -15,8 +15,9 @@ dist/
 # Environment & Secret files
 .env
 .env.*
-*.txt
 docs/*.txt
+!requirements.txt
+!apps/bot-service/requirements.txt
 
 # Databases & local storage
 *.db
