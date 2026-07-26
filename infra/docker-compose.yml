@@ -1,0 +1,37 @@
+# Phase 1 infrastructure (see docs/proposal.md section J). Not required to
+# run the Phase 0 bot -- that uses SQLite and local disk. Bring this up once
+# the system moves to Postgres + Redis-backed conversation state + S3-style
+# object storage.
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: carlink
+      POSTGRES_PASSWORD: carlink
+      POSTGRES_DB: carlink
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: carlink
+      MINIO_ROOT_PASSWORD: carlink123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  minio_data:
