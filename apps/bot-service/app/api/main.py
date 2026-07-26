@@ -65,7 +65,7 @@ def get_report(report_id: str) -> dict:
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
             pdf_path = report_pdf_path(r.id)
-            render_pdf(r.data or {}, r.photo_paths or [], pdf_path)
+            render_pdf(r.data or {}, r.photo_paths or [], pdf_path, report_id=r.id)
             r.pdf_path = pdf_path
             db.commit()
 
@@ -97,7 +97,7 @@ def download_report_pdf(report_id: str):
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
             pdf_path = report_pdf_path(r.id)
-            render_pdf(r.data or {}, r.photo_paths or [], pdf_path)
+            render_pdf(r.data or {}, r.photo_paths or [], pdf_path, report_id=r.id)
             r.pdf_path = pdf_path
             db.commit()
 
@@ -129,7 +129,7 @@ def create_report(draft: SecurityIncidentDraft) -> dict:
         db.flush()
 
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, [], pdf_path)
+        render_pdf(report.data, [], pdf_path, report_id=report.id)
         report.pdf_path = pdf_path
 
         db.commit()
@@ -151,9 +151,9 @@ def update_report(report_id: str, draft: SecurityIncidentDraft) -> dict:
         
         # Re-render PDF with updated content
         pdf_path = r.pdf_path or report_pdf_path(r.id)
-        render_pdf(r.data, r.photo_paths or [], pdf_path)
+        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
         r.pdf_path = pdf_path
-        
+
         db.commit()
         return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
     finally:
@@ -177,9 +177,9 @@ def sign_off_report(report_id: str, reviewer_name: str = "Surveyor / Loss Adjust
         r.data = data
         
         pdf_path = r.pdf_path or report_pdf_path(r.id)
-        render_pdf(r.data, r.photo_paths or [], pdf_path)
+        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
         r.pdf_path = pdf_path
-        
+
         db.commit()
         return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
     finally:

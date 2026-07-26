@@ -1,9 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 # CARLINK SYSTEM — AUTOMATED SERVER DEPLOYMENT SCRIPT FOR GCP VM (34.41.243.25)
+#
+# Secrets are never hardcoded here or written into git -- pass them in when
+# invoking this script, e.g.:
+#
+#   TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy ./deploy.sh
+#
 # ==============================================================================
 
 set -e
+
+if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ TELEGRAM_BOT_TOKEN and GEMINI_API_KEY must be set in the environment before running this script."
+    echo "   Example: TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy ./deploy.sh"
+    exit 1
+fi
 
 echo "🚀 Starting Carlink System Deployment on server 34.41.243.25..."
 
@@ -13,7 +25,7 @@ if ! command -v docker &> /dev/null; then
     sudo apt-get update
     sudo apt-get install -y docker.io docker-compose-v2 git curl || sudo apt-get install -y docker-ce docker-compose-plugin
     sudo systemctl enable --now docker
-    sudo usermod -aG docker $USER || true
+    sudo usermod -aG docker "$USER" || true
 fi
 
 # 2. Clone or Pull GitHub Repository
@@ -23,7 +35,7 @@ REPO_URL="https://github.com/WeiKangTen123/carlink-system.git"
 if [ ! -d "$APP_DIR" ]; then
     echo "📥 Cloning GitHub Repository $REPO_URL to $APP_DIR..."
     sudo git clone "$REPO_URL" "$APP_DIR"
-    sudo chown -R $USER:$USER "$APP_DIR"
+    sudo chown -R "$USER:$USER" "$APP_DIR"
 else
     echo "🔄 Pulling latest updates from GitHub..."
     cd "$APP_DIR"
@@ -32,17 +44,13 @@ fi
 
 cd "$APP_DIR"
 
-# 3. Create .env file for Bot Service
-echo "🔑 Writing environment variables..."
-cat <<EOT > apps/bot-service/.env
-TELEGRAM_BOT_TOKEN=8603705325:AAGJlknQwIXiBFEd8Sn0Jqomv8K4tEWnSi0
-GEMINI_MODEL_CHAIN=gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-flash
-PORT=8000
-STORAGE_DIR=/app/storage
-EOT
-
-# 4. Build and Launch Containers using Docker Compose
+# 3. Build and Launch Containers using Docker Compose.
+# TELEGRAM_BOT_TOKEN / GEMINI_API_KEY are passed straight through from this
+# shell's environment via docker-compose's ${VAR} substitution -- nothing
+# secret gets written to disk in the repo.
 echo "🐳 Building and starting Docker containers..."
+export TELEGRAM_BOT_TOKEN
+export GEMINI_API_KEY
 if command -v docker-compose &> /dev/null; then
     docker-compose -f infra/docker-compose.prod.yml up -d --build
 else

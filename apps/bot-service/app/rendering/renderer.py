@@ -24,10 +24,11 @@ def _to_data_uri(path: str) -> str:
     return f"data:{media_type};base64,{data}"
 
 
-def render_pdf(report: dict, photo_paths: list[str], output_path: str) -> None:
+def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id=None) -> None:
     template = _env.get_template("security_incident.html")
     html = template.render(
         report=report,
+        report_id=report_id or report.get("report_id") or "—",
         photo_data_uris=[_to_data_uri(p) for p in photo_paths],
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )

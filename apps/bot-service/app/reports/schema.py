@@ -35,11 +35,11 @@ class Witness(BaseModel):
 class DamageSummaryItem(BaseModel):
     part: str = Field(description="Front Bumper, Rear Bumper, Left Door, Right Door, Bonnet/Hood, Boot/Trunk, Headlight, Taillight, Windshield, Side Mirror, Fender, Wheel/Rim, Tire, Roof, Chassis, Undercarriage")
     damage_type: str = Field(description="Scratch, Dent, Crack, Broken, Bent, Loose, Missing, Water damage, Structural damage")
-    severity: str = Field(default="Moderate", description="Minor, Moderate, or Severe")
-    photo_reference: Optional[str] = Field(default="P01", description="e.g. P01, P02")
-    ai_confidence: Optional[str] = Field(default="90%", description="e.g. 90%")
-    human_verified: bool = True
-    repair_required: bool = True
+    severity: Optional[str] = Field(default=None, description="Minor, Moderate, or Severe -- only set if actually assessable from the photo/description")
+    photo_reference: Optional[str] = Field(default=None, description="e.g. P01, P02 -- set by the renderer from actual photo order, not the AI")
+    ai_confidence: Optional[str] = Field(default=None, description="e.g. 90% -- only set if the model actually computed a confidence, never a placeholder")
+    human_verified: bool = False
+    repair_required: bool = False
 
 
 class VehicleInfo(BaseModel):
@@ -69,7 +69,7 @@ class InsuranceDetails(BaseModel):
     policy_number: Optional[str] = None
     claim_number: Optional[str] = None
     claim_type: Optional[str] = Field(default=None, description="Own damage, Third party, Third party fire and theft, Comprehensive, Special case")
-    claim_status: Optional[str] = Field(default="Pending", description="Draft, Under Review, Confirmed, Claim Submitted")
+    claim_status: Optional[str] = Field(default=None, description="Draft, Under Review, Confirmed, Claim Submitted -- only set if a claim actually exists")
     adjuster_assigned: Optional[str] = None
     workshop_assigned: Optional[str] = None
     estimated_repair_cost: Optional[str] = None
@@ -91,10 +91,10 @@ class RecommendationsInfo(BaseModel):
 
 
 class SignOffInfo(BaseModel):
-    prepared_by: Optional[str] = "Carlink Reporter / AI Assistant"
-    reviewed_by: Optional[str] = "Pending Reviewer Sign-off"
+    prepared_by: Optional[str] = None
+    reviewed_by: Optional[str] = None
     approved_by: Optional[str] = None
-    status: str = "Confirmed"
+    status: str = "Draft"
     signature_date: Optional[str] = None
 
 
@@ -102,14 +102,14 @@ class AIAnalysisInfo(BaseModel):
     summary: Optional[str] = None
     detected_parts: list[str] = Field(default_factory=list)
     detected_severity: Optional[str] = None
-    confidence_score: Optional[str] = "90%"
+    confidence_score: Optional[str] = Field(default=None, description="Only set if the model actually computed a confidence, never a placeholder")
     suggested_category: Optional[str] = None
     suggested_repair_notes: Optional[str] = None
 
 
 class SecurityIncidentDraft(BaseModel):
     report_id: Optional[str] = Field(None, description="Custom Report ID e.g. CIR-2026-001")
-    company_name: Optional[str] = Field(default="Carlink Motors / Workshop Services")
+    company_name: Optional[str] = Field(default=None)
     reporter_name: Optional[str] = None
     reporter_role: Optional[str] = None
     reporter_contact: Optional[str] = None

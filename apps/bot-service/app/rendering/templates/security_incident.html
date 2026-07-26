@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>{{ 'Car Incident Report' if report.accident_type or report.vehicle_details or report.vehicle_info else 'Security Incident Report' }}</title>
+<title>{{ 'Vehicle Incident Report' if report.accident_type else 'Security Incident Report' }}</title>
 <style>
   @page {
     size: A4;
@@ -18,7 +18,7 @@
     background: #fff;
   }
   h1, h2, h3, h4 { margin: 0; padding: 0; font-weight: 700; }
-  
+
   .header-banner {
     display: flex;
     justify-content: space-between;
@@ -189,8 +189,6 @@
     color: #475569;
     background: #fff;
     border-top: 1px solid #e2e8f0;
-    display: flex;
-    justify-content: space-between;
   }
 
   .signoff-grid {
@@ -228,12 +226,12 @@
   <!-- HEADER BANNER -->
   <div class="header-banner">
     <div>
-      <div class="brand-title">Car Incident Report</div>
-      <div class="brand-subtitle">{{ report.company_name or 'CARLINK AUTOMOTIVE & INCIDENT SYSTEM' }} &middot; Official Inspection & Claims Record</div>
+      <div class="brand-title">{{ 'Vehicle Incident Report' if report.accident_type else 'Security Incident Report' }}</div>
+      <div class="brand-subtitle">{{ report.company_name or 'Carlink Consultancy' }} &middot; Official Inspection &amp; Claims Record</div>
     </div>
     <div class="report-badge">
-      <div class="id">{{ report.report_id or 'CIR-2026-001' }}</div>
-      <div class="status">{{ report.sign_off.status if report.sign_off and report.sign_off.status else 'Confirmed' }}</div>
+      <div class="id">{{ report_id }}</div>
+      <div class="status">{{ (report.sign_off.status if report.sign_off else None) or 'Draft' }}</div>
     </div>
   </div>
 
@@ -249,59 +247,65 @@
     </div>
     <div class="meta-item">
       <div class="meta-label">Location</div>
-      <div class="meta-val">{{ report.location or 'Site Location' }}</div>
+      <div class="meta-val">{{ report.location or '—' }}</div>
     </div>
     <div class="meta-item">
       <div class="meta-label">Prepared By</div>
-      <div class="meta-val">{{ report.reporter_name or 'Site Supervisor' }}</div>
+      <div class="meta-val">{{ report.reporter_name or '—' }}</div>
     </div>
   </div>
 
   <!-- SECTION 1 & 2: REPORTER & VEHICLE INFORMATION -->
-  <div class="grid-2 section">
+  {% set v = report.vehicle_info or {} %}
+  {% set has_vehicle_info = v.plate_number or v.make or v.model or v.vin or v.driver_name or report.vehicle_details %}
+  <div class="{{ 'grid-2' if has_vehicle_info else '' }} section">
     <div>
       <div class="section-title">Reporter Information</div>
       <div class="field-card">
-        <div class="field-row"><div class="f-label">Full Name</div><div class="f-val">{{ report.reporter_name or 'Alex Wong' }}</div></div>
-        <div class="field-row"><div class="f-label">Role / Position</div><div class="f-val">{{ report.reporter_role or 'Site Supervisor' }}</div></div>
-        <div class="field-row"><div class="f-label">Contact Number</div><div class="f-val">{{ report.reporter_contact or '+6012-3456789' }}</div></div>
-        <div class="field-row"><div class="f-label">Department</div><div class="f-val">{{ report.reporter_department or 'Operations & Inspection' }}</div></div>
+        <div class="field-row"><div class="f-label">Full Name</div><div class="f-val">{{ report.reporter_name or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">Role / Position</div><div class="f-val">{{ report.reporter_role or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">Contact Number</div><div class="f-val">{{ report.reporter_contact or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">Department</div><div class="f-val">{{ report.reporter_department or '—' }}</div></div>
       </div>
     </div>
+    {% if has_vehicle_info %}
     <div>
       <div class="section-title">Vehicle Information</div>
       <div class="field-card">
-        {% set v = report.vehicle_info or {} %}
-        <div class="field-row"><div class="f-label">Plate Number</div><div class="f-val"><strong>{{ v.plate_number or report.vehicle_details or 'WX 8888 A' }}</strong></div></div>
-        <div class="field-row"><div class="f-label">Make & Model</div><div class="f-val">{{ (v.make or '') ~ ' ' ~ (v.model or '') if (v.make or v.model) else (report.vehicle_details or 'Toyota Camry 2.5V') }}</div></div>
-        <div class="field-row"><div class="f-label">VIN / Chassis No.</div><div class="f-val">{{ v.vin or 'JT123NC88492019' }}</div></div>
-        <div class="field-row"><div class="f-label">Driver / Owner</div><div class="f-val">{{ v.driver_name or report.reporter_name or 'Tan Kah Meng' }}</div></div>
+        <div class="field-row"><div class="f-label">Plate Number</div><div class="f-val"><strong>{{ v.plate_number or report.vehicle_details or '—' }}</strong></div></div>
+        <div class="field-row"><div class="f-label">Make &amp; Model</div><div class="f-val">{{ ((v.make or '') ~ ' ' ~ (v.model or '')).strip() or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">VIN / Chassis No.</div><div class="f-val">{{ v.vin or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">Driver / Owner</div><div class="f-val">{{ v.driver_name or '—' }}</div></div>
       </div>
     </div>
+    {% endif %}
   </div>
 
   <!-- SECTION 3: INCIDENT DETAILS & ENVIRONMENTAL CONDITIONS -->
   <div class="section">
-    <div class="section-title">Incident Details & Classification</div>
+    <div class="section-title">Incident Details &amp; Classification</div>
     <div class="field-card">
       <div class="grid-3" style="margin-bottom: 8px;">
-        <div><span class="f-label">Category:</span> <span class="pill pill-blue">{{ report.category | join(', ') if report.category else 'Vehicle Collision or Damage' }}</span></div>
-        <div><span class="f-label">Accident Type:</span> <strong>{{ report.accident_type or 'Collision Damage' }}</strong></div>
-        <div><span class="f-label">Severity Level:</span> <span class="pill {{ 'pill-red' if report.severity_level == 'Severe' else ('pill-amber' if report.severity_level == 'Moderate' else 'pill-green') }}">{{ report.severity_level or 'Moderate' }}</span></div>
+        <div><span class="f-label">Category:</span> {% if report.category %}<span class="pill pill-blue">{{ report.category | join(', ') }}</span>{% else %}—{% endif %}</div>
+        <div><span class="f-label">Accident Type:</span> <strong>{{ report.accident_type or '—' }}</strong></div>
+        <div><span class="f-label">Severity Level:</span> {% if report.severity_level %}<span class="pill {{ 'pill-red' if report.severity_level == 'Severe' else ('pill-amber' if report.severity_level == 'Moderate' else 'pill-green') }}">{{ report.severity_level }}</span>{% else %}—{% endif %}</div>
       </div>
+      {% if report.weather_condition or report.road_condition or report.traffic_condition %}
       <div class="grid-3" style="border-top: 1px solid #f1f5f9; padding-top: 6px;">
-        <div><span class="f-label">Weather:</span> {{ report.weather_condition or 'Clear' }}</div>
-        <div><span class="f-label">Road Condition:</span> {{ report.road_condition or 'Dry Surface' }}</div>
-        <div><span class="f-label">Traffic:</span> {{ report.traffic_condition or 'Moderate' }}</div>
+        <div><span class="f-label">Weather:</span> {{ report.weather_condition or '—' }}</div>
+        <div><span class="f-label">Road Condition:</span> {{ report.road_condition or '—' }}</div>
+        <div><span class="f-label">Traffic:</span> {{ report.traffic_condition or '—' }}</div>
       </div>
+      {% endif %}
     </div>
   </div>
 
   <!-- SECTION 4: STRUCTURED DAMAGE SUMMARY TABLE -->
+  {% if report.damage_summary or report.damaged_parts %}
   <div class="section">
     <div class="section-title">
       <span>Vehicle Damage Summary Table</span>
-      <span style="font-size: 9px; font-weight: normal; color: #475569;">Structured Inspection Record</span>
+      <span style="font-size: 9px; font-weight: normal; color: #475569;">AI-Assisted, Human-Reviewed</span>
     </div>
     <table class="data-table">
       <thead>
@@ -319,36 +323,33 @@
           {% for item in report.damage_summary %}
           <tr>
             <td><strong>{{ item.part }}</strong></td>
-            <td>{{ item.damage_type }}</td>
-            <td><span class="pill {{ 'pill-red' if item.severity == 'Severe' else ('pill-amber' if item.severity == 'Moderate' else 'pill-green') }}">{{ item.severity }}</span></td>
-            <td>{{ item.photo_reference or ('P0' ~ loop.index) }}</td>
-            <td>{{ item.ai_confidence or '92%' }}</td>
-            <td><span class="pill pill-green">Yes</span></td>
-          </tr>
-          {% endfor %}
-        {% elif report.damaged_parts %}
-          {% for part in report.damaged_parts %}
-          <tr>
-            <td><strong>{{ part }}</strong></td>
-            <td>Impact / Dent & Scratch</td>
-            <td><span class="pill pill-amber">{{ report.severity_level or 'Moderate' }}</span></td>
-            <td>P0{{ loop.index }}</td>
-            <td>90%</td>
-            <td><span class="pill pill-green">Yes</span></td>
+            <td>{{ item.damage_type or '—' }}</td>
+            <td><span class="pill {{ 'pill-red' if item.severity == 'Severe' else ('pill-amber' if item.severity == 'Moderate' else 'pill-green') }}">{{ item.severity or '—' }}</span></td>
+            <td>{{ item.photo_reference or '—' }}</td>
+            <td>{{ item.ai_confidence or '—' }}</td>
+            <td><span class="pill {{ 'pill-green' if item.human_verified else 'pill-slate' }}">{{ 'Yes' if item.human_verified else 'Pending' }}</span></td>
           </tr>
           {% endfor %}
         {% else %}
+          {% for part in report.damaged_parts %}
           <tr>
-            <td colSpan="6" style="text-align: center; color: #94a3b8; padding: 12px;">No structural damage recorded.</td>
+            <td><strong>{{ part }}</strong></td>
+            <td>—</td>
+            <td>{% if report.severity_level %}<span class="pill pill-amber">{{ report.severity_level }}</span>{% else %}—{% endif %}</td>
+            <td>—</td>
+            <td>—</td>
+            <td><span class="pill pill-slate">Pending</span></td>
           </tr>
+          {% endfor %}
         {% endif %}
       </tbody>
     </table>
   </div>
+  {% endif %}
 
   <!-- SECTION 5: INCIDENT NARRATIVE DESCRIPTION -->
   <div class="section">
-    <div class="section-title">Incident Description & Narrative</div>
+    <div class="section-title">Incident Description &amp; Narrative</div>
     <div class="field-card" style="background: #fafafa;">
       <p style="margin: 0; font-size: 11px; white-space: pre-wrap;">{{ report.description }}</p>
     </div>
@@ -357,7 +358,7 @@
   <!-- SECTION 6 & 7: PEOPLE INVOLVED, WITNESSES & ACTIONS TAKEN -->
   <div class="grid-2 section">
     <div>
-      <div class="section-title">People & Witness Statements</div>
+      <div class="section-title">People &amp; Witness Statements</div>
       <div class="field-card">
         {% if report.people_involved %}
           {% for p in report.people_involved %}
@@ -370,90 +371,96 @@
           {% for w in report.witnesses %}
           <div style="margin-bottom: 4px;">
             <strong>Witness: {{ w.name }}</strong> {% if w.contact %}({{ w.contact }}){% endif %}
-            {% if w.statement %}<br><em>"{{ w.statement }}"</em>{% endif %}
+            {% if w.statement %}<br><em>&ldquo;{{ w.statement }}&rdquo;</em>{% endif %}
           </div>
           {% endfor %}
-        {% else %}
-          <div style="color: #64748b;">No third-party witnesses recorded on site.</div>
+        {% endif %}
+        {% if not report.people_involved and not report.witnesses %}
+          <div style="color: #94a3b8;">No people or witnesses recorded.</div>
         {% endif %}
       </div>
     </div>
     <div>
       <div class="section-title">Immediate Actions Taken</div>
       <div class="field-card">
-        <p style="margin: 0;">{{ report.immediate_actions or 'Area secured, driver checked for injuries, photos taken from multiple angles, vehicle moved to safe location.' }}</p>
+        <p style="margin: 0;">{{ report.immediate_actions or 'Not recorded.' }}</p>
       </div>
     </div>
   </div>
 
-  <!-- SECTION 8 & 9: POLICE & INSURANCE REPORT -->
-  <div class="grid-2 section">
-    <div>
-      <div class="section-title">Police / Authority Report</div>
-      <div class="field-card">
-        {% set p = report.police_report or {} %}
-        <div class="field-row"><div class="f-label">Reported to Police</div><div class="f-val"><span class="pill {{ 'pill-green' if (p.reported_to_police or report.reported_to_authorities) else 'pill-slate' }}">{{ 'Yes' if (p.reported_to_police or report.reported_to_authorities) else 'No' }}</span></div></div>
-        <div class="field-row"><div class="f-label">Police Station</div><div class="f-val">{{ p.police_station or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Report / Ref No.</div><div class="f-val">{{ p.report_number or report.authority_reference or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Officer Name</div><div class="f-val">{{ p.officer_name or '—' }}</div></div>
-      </div>
-    </div>
-    <div>
-      <div class="section-title">Insurance & Claim Details</div>
-      <div class="field-card">
-        {% set ins = report.insurance_details or {} %}
-        <div class="field-row"><div class="f-label">Insurer Name</div><div class="f-val">{{ ins.insurer_name or 'Pending Allocation' }}</div></div>
-        <div class="field-row"><div class="f-label">Policy / Claim No.</div><div class="f-val">{{ ins.claim_number or 'CLM-2026-991' }}</div></div>
-        <div class="field-row"><div class="f-label">Claim Type</div><div class="f-val">{{ ins.claim_type or 'Comprehensive Motor Claim' }}</div></div>
-        <div class="field-row"><div class="f-label">Claim Status</div><div class="f-val"><span class="pill pill-blue">{{ ins.claim_status or 'Under Assessment' }}</span></div></div>
-      </div>
+  <!-- SECTION 8: POLICE / AUTHORITY REPORT -->
+  {% set p = report.police_report or {} %}
+  <div class="section">
+    <div class="section-title">Police / Authority Report</div>
+    <div class="field-card">
+      <div class="field-row"><div class="f-label">Reported to Authorities</div><div class="f-val"><span class="pill {{ 'pill-green' if (p.reported_to_police or report.reported_to_authorities) else 'pill-slate' }}">{{ 'Yes' if (p.reported_to_police or report.reported_to_authorities) else 'No' }}</span></div></div>
+      {% if p.police_station or p.report_number or report.authority_reference or p.officer_name %}
+      <div class="field-row"><div class="f-label">Police Station</div><div class="f-val">{{ p.police_station or '—' }}</div></div>
+      <div class="field-row"><div class="f-label">Report / Ref No.</div><div class="f-val">{{ p.report_number or report.authority_reference or '—' }}</div></div>
+      <div class="field-row"><div class="f-label">Officer Name</div><div class="f-val">{{ p.officer_name or '—' }}</div></div>
+      {% endif %}
     </div>
   </div>
+
+  <!-- SECTION 9: INSURANCE & CLAIM DETAILS (vehicle incidents only) -->
+  {% set ins = report.insurance_details or {} %}
+  {% if report.accident_type and (ins.insurer_name or ins.claim_number or ins.claim_type) %}
+  <div class="section">
+    <div class="section-title">Insurance &amp; Claim Details</div>
+    <div class="field-card">
+      <div class="field-row"><div class="f-label">Insurer Name</div><div class="f-val">{{ ins.insurer_name or '—' }}</div></div>
+      <div class="field-row"><div class="f-label">Policy / Claim No.</div><div class="f-val">{{ ins.claim_number or '—' }}</div></div>
+      <div class="field-row"><div class="f-label">Claim Type</div><div class="f-val">{{ ins.claim_type or '—' }}</div></div>
+      <div class="field-row"><div class="f-label">Claim Status</div><div class="f-val"><span class="pill pill-blue">{{ ins.claim_status or '—' }}</span></div></div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- SECTION 10: AI COMPUTER VISION & ANALYSIS (ASSISTIVE SECTION) -->
+  {% if report.damaged_parts or report.severity_level or (report.ai_analysis and report.ai_analysis.confidence_score) %}
   <div class="ai-box section">
     <div class="ai-box-header">
-      <span>🤖 AI Vision Analysis & Smart Suggestions</span>
-      <span style="font-size: 9px; font-weight: normal; margin-left: auto; color: #0284c7;">(Assisted Draft - Subject to Human Verification)</span>
+      <span>AI Vision Analysis &amp; Suggestions</span>
+      <span style="font-size: 9px; font-weight: normal; margin-left: auto; color: #0284c7;">Assisted draft &mdash; reviewed and confirmed by a human before this PDF was generated</span>
     </div>
     <div class="grid-3" style="font-size: 10.5px;">
-      <div><strong>Detected Parts:</strong> {{ report.damaged_parts | join(', ') if report.damaged_parts else 'Front bumper, door panel' }}</div>
-      <div><strong>Estimated Severity:</strong> {{ report.severity_level or 'Moderate' }}</div>
-      <div><strong>Confidence Score:</strong> {{ (report.ai_analysis and report.ai_analysis.confidence_score) or '94.2%' }}</div>
+      <div><strong>Detected Parts:</strong> {{ report.damaged_parts | join(', ') if report.damaged_parts else '—' }}</div>
+      <div><strong>Estimated Severity:</strong> {{ report.severity_level or '—' }}</div>
+      <div><strong>Confidence Score:</strong> {{ (report.ai_analysis and report.ai_analysis.confidence_score) or '—' }}</div>
     </div>
   </div>
+  {% endif %}
 
   <!-- SECTION 11 & 12: TIMELINE & RECOMMENDATIONS -->
+  {% if report.timeline or report.recommendations %}
   <div class="grid-2 section">
+    {% if report.timeline %}
     <div>
       <div class="section-title">Timeline of Events</div>
       <div class="field-card">
         <div class="timeline">
-          {% if report.timeline %}
-            {% for ev in report.timeline %}
-            <div class="timeline-item">
-              <span class="timeline-time">{{ ev.time }}</span> <span>{{ ev.event }}</span>
-            </div>
-            {% endfor %}
-          {% else %}
-            <div class="timeline-item"><span class="timeline-time">02:10 PM</span> Collision occurred at site</div>
-            <div class="timeline-item"><span class="timeline-time">02:15 PM</span> Scene secured & photos taken</div>
-            <div class="timeline-item"><span class="timeline-time">02:30 PM</span> Telegram AI Report drafted</div>
-            <div class="timeline-item"><span class="timeline-time">02:45 PM</span> Human Review & Confirmation</div>
-          {% endif %}
+          {% for ev in report.timeline %}
+          <div class="timeline-item">
+            <span class="timeline-time">{{ ev.time }}</span> <span>{{ ev.event }}</span>
+          </div>
+          {% endfor %}
         </div>
       </div>
     </div>
+    {% endif %}
+    {% set r = report.recommendations or {} %}
+    {% if r.repair_recommendation or r.inspection_recommendation or r.disassembly_required %}
     <div>
-      <div class="section-title">Recommendations & Next Steps</div>
+      <div class="section-title">Recommendations &amp; Next Steps</div>
       <div class="field-card">
-        {% set r = report.recommendations or {} %}
-        <div class="field-row"><div class="f-label">Repair Action</div><div class="f-val">{{ r.repair_recommendation or 'Send vehicle to panel workshop for dent pulling and repainting.' }}</div></div>
-        <div class="field-row"><div class="f-label">Inspection Needed</div><div class="f-val">{{ r.inspection_recommendation or 'Internal alignment and sensor check recommended.' }}</div></div>
+        <div class="field-row"><div class="f-label">Repair Action</div><div class="f-val">{{ r.repair_recommendation or '—' }}</div></div>
+        <div class="field-row"><div class="f-label">Inspection Needed</div><div class="f-val">{{ r.inspection_recommendation or '—' }}</div></div>
         <div class="field-row"><div class="f-label">Disassembly Req.</div><div class="f-val">{{ 'Yes' if r.disassembly_required else 'No' }}</div></div>
       </div>
     </div>
+    {% endif %}
   </div>
+  {% endif %}
 
   <!-- SECTION 13: PHOTO EVIDENCE GALLERY -->
   {% if photo_data_uris %}
@@ -463,10 +470,7 @@
       {% for uri in photo_data_uris %}
       <div class="photo-card">
         <img src="{{ uri }}" alt="Photo Evidence {{ loop.index }}">
-        <div class="photo-caption">
-          <span><strong>Photo P0{{ loop.index }}</strong> — Incident Scene Photo</span>
-          <span>Verified Timestamp</span>
-        </div>
+        <div class="photo-caption"><strong>Photo P0{{ loop.index }}</strong></div>
       </div>
       {% endfor %}
     </div>
@@ -475,12 +479,12 @@
 
   <!-- SECTION 14: SIGN-OFF SECTION -->
   <div class="section" style="page-break-inside: avoid; margin-top: 20px;">
-    <div class="section-title">Formal Sign-Off & Authorization</div>
+    <div class="section-title">Formal Sign-Off &amp; Authorization</div>
     <div class="signoff-grid">
       <div class="sign-box">
         <div class="sign-title">Prepared By (Reporter)</div>
         <div class="sign-line"></div>
-        <div class="sign-name">{{ report.reporter_name or 'Field Staff / Reporter' }}</div>
+        <div class="sign-name">{{ report.reporter_name or '—' }}</div>
       </div>
       <div class="sign-box">
         <div class="sign-title">Reviewed By (Surveyor)</div>
@@ -490,13 +494,13 @@
       <div class="sign-box">
         <div class="sign-title">Approved By (Manager)</div>
         <div class="sign-line"></div>
-        <div class="sign-name">{{ (report.sign_off and report.sign_off.approved_by) or 'Manager Approval' }}</div>
+        <div class="sign-name">{{ (report.sign_off and report.sign_off.approved_by) or 'Pending Approval' }}</div>
       </div>
     </div>
   </div>
 
   <div class="footer">
-    Carlink System Report ID: {{ report.report_id or 'CIR-2026-001' }} &middot; Confidential & Legal Record &middot; Page 1 of 1
+    Carlink System Report ID: {{ report_id }} &middot; Confidential Record
   </div>
 
 </body>

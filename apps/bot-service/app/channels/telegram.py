@@ -131,7 +131,7 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
         report.photo_paths = stored_photos
 
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, stored_photos, pdf_path)
+        render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
         report.pdf_path = pdf_path
 
         db.commit()

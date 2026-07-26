@@ -1,20 +1,38 @@
 version: '3.8'
 
+# Both telegram-bot and api are the SAME image (apps/bot-service) with a
+# different startup command -- they share one Docker volume for photos/PDFs
+# and the SQLite database, since they're really one application split into
+# two processes (an outbound Telegram poller, and an inbound HTTP server).
+# Previously only the bot process was ever started, so nothing listened on
+# port 8000 -- that's why the dashboard/API were unreachable.
+
+x-bot-service: &bot-service
+  build:
+    context: ../apps/bot-service
+    dockerfile: Dockerfile
+  restart: always
+  environment:
+    - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
+    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+    - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3.5-flash-lite,gemini-3.1-flash-lite,antigravity}
+    - STORAGE_DIR=/app/storage
+    - DATABASE_URL=sqlite:////app/storage/carlink.db
+  volumes:
+    - bot_data:/app/storage
+
 services:
-  bot-service:
-    build:
-      context: ../apps/bot-service
-      dockerfile: Dockerfile
-    container_name: carlink_bot_service
-    restart: always
+  telegram-bot:
+    <<: *bot-service
+    container_name: carlink_telegram_bot
+    command: ["python", "-m", "app.main"]
+
+  api:
+    <<: *bot-service
+    container_name: carlink_api
+    command: ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
-    environment:
-      - PORT=8000
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8603705325:AAGJlknQwIXiBFEd8Sn0Jqomv8K4tEWnSi0}
-    volumes:
-      - bot_data:/app/storage
 
   dashboard:
     build:
@@ -26,6 +44,8 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_BASE_URL=http://34.41.243.25:8000
+    depends_on:
+      - api
 
   nginx:
     image: nginx:alpine
@@ -36,7 +56,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - bot-service
+      - api
       - dashboard
 
 volumes:
