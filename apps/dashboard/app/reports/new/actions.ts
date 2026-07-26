@@ -32,21 +32,22 @@ export async function createReportAction(formData: FormData) {
 
   const plateNumber = (formData.get("plate_number") as string)?.trim() || null;
   const makeModel = (formData.get("make_model") as string)?.trim() || null;
-  const vehicle_details = [plateNumber, makeModel].filter(Boolean).join(" - ");
+  const vehicle_details = [plateNumber, makeModel].filter(Boolean).join(" - ") || null;
 
   const damagedPartsStr = (formData.get("damaged_parts") as string)?.trim() || "";
   const damaged_parts = damagedPartsStr
     ? damagedPartsStr.split(",").map((p) => p.trim()).filter(Boolean)
     : [];
 
-  const damage_summary = damaged_parts.map((part, i) => ({
+  const severityInput = (formData.get("severity_level") as string)?.trim() || null;
+
+  // Only the part name and severity are actually asked on this form -- damage
+  // type, photo reference, and repair necessity are left null rather than
+  // guessed, since nobody has confirmed them here.
+  const damage_summary = damaged_parts.map((part) => ({
     part,
-    damage_type: "Impact / Dent",
-    severity: (formData.get("severity_level") as string) || "Moderate",
-    photo_reference: `P0${i + 1}`,
-    ai_confidence: "Manual Entry",
+    severity: severityInput,
     human_verified: true,
-    repair_required: true,
   }));
 
   const payload: ReportData = {
@@ -54,9 +55,9 @@ export async function createReportAction(formData: FormData) {
     reporter_role: (formData.get("reporter_role") as string)?.trim() || null,
     incident_datetime: (formData.get("incident_datetime") as string)?.trim() || null,
     location: (formData.get("location") as string)?.trim() || null,
-    category: category.length ? category : ["Vehicle Collision or Damage"],
-    accident_type: (formData.get("accident_type") as string)?.trim() || "Collision Impact",
-    severity_level: (formData.get("severity_level") as string)?.trim() || "Moderate",
+    category: category.length ? category : [],
+    accident_type: (formData.get("accident_type") as string)?.trim() || null,
+    severity_level: severityInput,
     vehicle_details,
     vehicle_info: {
       plate_number: plateNumber,

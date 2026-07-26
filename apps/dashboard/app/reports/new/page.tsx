@@ -15,9 +15,10 @@ export default function NewReportPage() {
 
   return (
     <form action={createReportAction} className="new-report-form">
-      <h1>File a Car Incident Report</h1>
+      <h1>File an Incident Report</h1>
       <p className="form-hint">
-        Use this form to manually file or record a vehicle accident / damage report into the Carlink system.
+        Use this form to manually file or record an incident -- vehicle accident, security, or
+        otherwise -- into the Carlink system.
       </p>
 
       {/* Reporter Info */}
@@ -26,11 +27,11 @@ export default function NewReportPage() {
         <div className="field-grid">
           <label>
             Reporter Name
-            <input name="reporter_name" type="text" placeholder="e.g. Alex Wong" />
+            <input name="reporter_name" type="text" placeholder="Full name" />
           </label>
           <label>
             Reporter Role / Position
-            <input name="reporter_role" type="text" placeholder="e.g. Site Supervisor / Surveyor" />
+            <input name="reporter_role" type="text" placeholder="e.g. Site Supervisor" />
           </label>
         </div>
       </section>
@@ -38,14 +39,15 @@ export default function NewReportPage() {
       {/* Vehicle Info */}
       <section className="card">
         <h2>Vehicle Information</h2>
+        <p className="form-hint">Only fill this in if the incident involves a vehicle.</p>
         <div className="field-grid">
           <label>
-            Vehicle Plate Number *
-            <input name="plate_number" type="text" placeholder="e.g. WX 8888 A" required />
+            Vehicle Plate Number
+            <input name="plate_number" type="text" placeholder="Plate number" />
           </label>
           <label>
             Vehicle Make &amp; Model
-            <input name="make_model" type="text" placeholder="e.g. Toyota Camry 2023" />
+            <input name="make_model" type="text" placeholder="Make and model" />
           </label>
         </div>
       </section>

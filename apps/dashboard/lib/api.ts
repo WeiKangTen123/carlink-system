@@ -28,8 +28,8 @@ export const ACCIDENT_TYPE_OPTIONS = [
 
 export type DamageSummaryItem = {
   part: string;
-  damage_type: string;
-  severity: string;
+  damage_type?: string | null;
+  severity?: string | null;
   photo_reference?: string | null;
   ai_confidence?: string | null;
   human_verified?: boolean;
