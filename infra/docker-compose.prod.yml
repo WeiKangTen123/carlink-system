@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  bot-service:
+    build:
+      context: ../apps/bot-service
+      dockerfile: Dockerfile
+    container_name: carlink_bot_service
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8603705325:AAGJlknQwIXiBFEd8Sn0Jqomv8K4tEWnSi0}
+    volumes:
+      - bot_data:/app/storage
+
+  dashboard:
+    build:
+      context: ../apps/dashboard
+      dockerfile: Dockerfile
+    container_name: carlink_dashboard
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://34.41.243.25:8000
+
+volumes:
+  bot_data:
