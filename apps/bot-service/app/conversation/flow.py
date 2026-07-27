@@ -6,7 +6,10 @@ docs/proposal.md section D: Telegram and WhatsApp both normalize down to
 from here on -- drafting, summarizing, and (in the channel adapters)
 rendering and confirming.
 """
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 
 from app.ai.extraction import draft_report
 from app.reports.schema import SecurityIncidentDraft
@@ -18,9 +21,62 @@ class DraftResult:
     summary_text: str
 
 
-def build_draft(description: str, photo_paths: list[str]) -> DraftResult:
+def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
     draft = draft_report(description, photo_paths)
+    if session is not None:
+        # User-stated ground truth (from the template) always wins over
+        # anything the AI guessed for these three fields -- category,
+        # damaged parts, and severity stay AI-derived, never overridden here.
+        if session.location:
+            draft.location = session.location
+        if session.incident_datetime:
+            draft.incident_datetime = session.incident_datetime
+        draft.reported_to_authorities = session.reported_to_authorities
     return DraftResult(draft=draft, summary_text=summarize(draft))
+
+
+TEMPLATE_PROMPT = (
+    "📋 Please fill in these details and send them back (edit only what you need "
+    "to -- Category, Damaged Parts, and Severity are worked out automatically "
+    "from your photos, no need to fill those in):\n\n"
+    "Location: \n"
+    "Date/Time: {now}\n"
+    "Description: \n"
+    "Reported to Authorities (Yes/No): No"
+)
+
+
+def build_template_prompt() -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return TEMPLATE_PROMPT.format(now=now)
+
+
+_TEMPLATE_REPLY_RE = re.compile(
+    r"location\s*:\s*(?P<location>.*?)\s*"
+    r"date\s*/?\s*time\s*:\s*(?P<datetime>.*?)\s*"
+    r"description\s*:\s*(?P<description>.*?)\s*"
+    r"reported\s*to\s*authorities[^:]*:\s*(?P<reported>.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_template_reply(text: str) -> Optional[dict]:
+    """Pulls the 4 reporter-filled fields out of a reply to build_template_prompt().
+    Returns None (rather than a best-effort partial parse) if the reply doesn't
+    match the template shape at all, so the caller can fall back to treating
+    the whole message as a free-text description -- same as before this
+    template step existed -- instead of silently dropping content.
+    """
+    match = _TEMPLATE_REPLY_RE.search(text)
+    if not match:
+        return None
+    reported_raw = match.group("reported").strip().splitlines()[0].strip().lower()
+    return {
+        "location": match.group("location").strip() or None,
+        "incident_datetime": match.group("datetime").strip() or None,
+        "description": match.group("description").strip(),
+        "reported_to_authorities": reported_raw in {"yes", "y", "true"},
+    }
 
 
 def summarize(draft: SecurityIncidentDraft) -> str:

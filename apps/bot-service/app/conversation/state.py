@@ -25,6 +25,14 @@ class Session:
     description: str = ""
     pending_edits: list[str] = field(default_factory=list)
     draft: Optional[SecurityIncidentDraft] = None
+    # Fields the reporter fills in via the template (flow.build_template_prompt /
+    # parse_template_reply) -- kept separate from the AI-derived fields
+    # (category, damaged_parts, severity_level, ...) so user-stated ground
+    # truth always wins over anything the AI infers.
+    template_sent: bool = False
+    location: Optional[str] = None
+    incident_datetime: Optional[str] = None
+    reported_to_authorities: bool = False
 
 
 _sessions: dict[str, Session] = {}

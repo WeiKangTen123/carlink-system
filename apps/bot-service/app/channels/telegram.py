@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
-from app.conversation.flow import build_draft, combined_description
+from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report
@@ -23,9 +23,9 @@ WELCOME_GUIDE = (
     "📋 *3 Simple Steps to File a Report:*\n\n"
     "1️⃣ *Send Photos* 📸\n"
     "   • Upload 1 or more photos of the scene or damage.\n\n"
-    "2️⃣ *Describe What Happened* 📝\n"
-    "   • Type a short description of the incident.\n"
-    "   • _Example: 'Storeroom gate in Bay 3 was forced open around 2:20 PM. Lock broken, supervisor notified.'_\n\n"
+    "2️⃣ *Fill In the Template* 📝\n"
+    "   • I'll send you a short template (Location, Date/Time, Description, Reported to Authorities).\n"
+    "   • Copy it, fill in the blanks, and send it back. Category, Damaged Parts, and Severity are worked out automatically from your photos.\n\n"
     "3️⃣ *Review & Confirm* 📄\n"
     "   • Carlink AI will draft a formatted summary for you.\n"
     "   • Reply *'confirm'* to generate your PDF report, or reply with edits to modify it.\n\n"
@@ -68,9 +68,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     session.photo_paths.append(str(dest))
 
     await update.message.reply_text(
-        f"Got it -- {len(session.photo_paths)} photo(s) received. "
-        "Send more, or now describe what happened in a sentence or two."
+        f"Got it -- {len(session.photo_paths)} photo(s) received. Send more if you have any."
     )
+    if not session.template_sent:
+        session.template_sent = True
+        await update.message.reply_text(build_template_prompt())
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -93,14 +95,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    session.description = text
-    await draft_and_reply(update, session, text)
+    parsed = parse_template_reply(text)
+    if parsed:
+        session.location = parsed["location"]
+        session.incident_datetime = parsed["incident_datetime"]
+        session.reported_to_authorities = parsed["reported_to_authorities"]
+        description = parsed["description"]
+    else:
+        description = text
+
+    session.description = description
+    await draft_and_reply(update, session, description)
 
 
 async def draft_and_reply(update: Update, session, description: str) -> None:
     await update.message.reply_text("Drafting your report...")
     try:
-        result = build_draft(description, session.photo_paths)
+        result = build_draft(description, session.photo_paths, session)
     except Exception:
         logger.exception("AI drafting failed")
         await update.message.reply_text(

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Request, Response
 import httpx
 
 from app.config import settings
-from app.conversation.flow import build_draft, combined_description
+from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal
 from app.reports.models import Report
@@ -38,9 +38,13 @@ _DRAFT_ERROR_MESSAGE = (
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 
 
-def _twiml(message: str) -> Response:
-    escaped = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    xml = f"<?xml version='1.0' encoding='UTF-8'?><Response><Message>{escaped}</Message></Response>"
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _twiml(*messages: str) -> Response:
+    body = "".join(f"<Message>{_escape(m)}</Message>" for m in messages)
+    xml = f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
     return Response(content=xml, media_type="application/xml")
 
 
@@ -94,10 +98,11 @@ async def whatsapp_webhook(request: Request) -> Response:
                 continue
             dest = await _download_media(chat_id, media_url, len(session.photo_paths))
             session.photo_paths.append(dest)
-        return _twiml(
-            f"Got it -- {len(session.photo_paths)} photo(s) received. "
-            "Send more, or describe what happened in a sentence or two."
-        )
+        got_it = f"Got it -- {len(session.photo_paths)} photo(s) received. Send more if you have any."
+        if not session.template_sent:
+            session.template_sent = True
+            return _twiml(got_it, build_template_prompt())
+        return _twiml(got_it)
 
     if not body:
         return _twiml("Send a photo or a short description to start a report.")
@@ -115,7 +120,7 @@ async def whatsapp_webhook(request: Request) -> Response:
         session.pending_edits.append(body)
         description = combined_description(session)
         try:
-            result = build_draft(description, session.photo_paths)
+            result = build_draft(description, session.photo_paths, session)
         except Exception:
             logger.exception("AI drafting failed")
             return _twiml(_DRAFT_ERROR_MESSAGE)
@@ -125,9 +130,18 @@ async def whatsapp_webhook(request: Request) -> Response:
     if not session.photo_paths:
         return _twiml("Please send at least one photo first, then describe what happened.")
 
-    session.description = body
+    parsed = parse_template_reply(body)
+    if parsed:
+        session.location = parsed["location"]
+        session.incident_datetime = parsed["incident_datetime"]
+        session.reported_to_authorities = parsed["reported_to_authorities"]
+        description = parsed["description"]
+    else:
+        description = body
+
+    session.description = description
     try:
-        result = build_draft(body, session.photo_paths)
+        result = build_draft(description, session.photo_paths, session)
     except Exception:
         logger.exception("AI drafting failed")
         return _twiml(_DRAFT_ERROR_MESSAGE)
