@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { createReportAction, analyzePhotosAction } from "./actions";
-import { CATEGORY_OPTIONS, ACCIDENT_TYPE_OPTIONS } from "@/lib/api";
+import { CATEGORY_OPTIONS, ACCIDENT_TYPE_OPTIONS, type PhotoAnalysisDraft } from "@/lib/api";
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
 type WitnessRow = { id: number; name: string; contact: string; statement: string };
@@ -16,9 +16,16 @@ export default function NewReportPage() {
   const [photos, setPhotos] = useState<File[]>([]);
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const [tempPhotoPaths, setTempPhotoPaths] = useState<string[]>([]);
-  const [analyzing, setAnalyzing] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [aiApplied, setAiApplied] = useState(false);
+  // The AI draft from the upload, held back until the reporter explicitly
+  // asks to apply it -- uploading (so photos are never silently dropped)
+  // and applying the AI's field suggestions are deliberately separate
+  // actions now. Previously photos only got attached to the saved report if
+  // the reporter happened to click "Analyze with AI" -- anyone who just
+  // wanted to fill the form manually lost their photos with no warning.
+  const [pendingDraft, setPendingDraft] = useState<PhotoAnalysisDraft | null>(null);
 
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<Set<string>>(new Set(["Vehicle Collision or Damage"]));
@@ -26,14 +33,33 @@ export default function NewReportPage() {
   const [severityLevel, setSeverityLevel] = useState("Minor");
   const [damagedParts, setDamagedParts] = useState("");
 
-  function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     photoPreviews.forEach((url) => URL.revokeObjectURL(url));
     const files = Array.from(e.target.files || []);
     setPhotos(files);
     setPhotoPreviews(files.map((f) => URL.createObjectURL(f)));
     setTempPhotoPaths([]);
+    setPendingDraft(null);
     setAiApplied(false);
     setAnalyzeError(null);
+
+    if (files.length === 0) return;
+
+    setUploading(true);
+    const fd = new FormData();
+    fd.set("description", description);
+    for (const p of files) fd.append("photos", p);
+    const result = await analyzePhotosAction(fd);
+    setUploading(false);
+
+    if ("error" in result) {
+      setAnalyzeError(result.error);
+      return;
+    }
+    // Photos are attached the moment they're uploaded, regardless of
+    // whether the reporter ever applies the AI's suggestions below.
+    setTempPhotoPaths(result.temp_photo_paths);
+    setPendingDraft(result.draft);
   }
 
   function toggleCategory(c: string) {
@@ -45,32 +71,13 @@ export default function NewReportPage() {
     });
   }
 
-  async function handleAnalyze() {
-    if (photos.length === 0) {
-      setAnalyzeError("Select at least one photo first.");
-      return;
-    }
-    setAnalyzing(true);
-    setAnalyzeError(null);
-    const fd = new FormData();
-    fd.set("description", description);
-    for (const p of photos) fd.append("photos", p);
-
-    const result = await analyzePhotosAction(fd);
-    setAnalyzing(false);
-
-    if ("error" in result) {
-      setAnalyzeError(result.error);
-      return;
-    }
-
-    const { draft, temp_photo_paths } = result;
-    setTempPhotoPaths(temp_photo_paths);
-    if (draft.accident_type) setAccidentType(draft.accident_type);
-    if (draft.severity_level) setSeverityLevel(draft.severity_level);
-    if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
-    if (draft.category && draft.category.length) setCategory(new Set(draft.category));
-    if (draft.description) setDescription(draft.description);
+  function applyAiSuggestions() {
+    if (!pendingDraft) return;
+    if (pendingDraft.accident_type) setAccidentType(pendingDraft.accident_type);
+    if (pendingDraft.severity_level) setSeverityLevel(pendingDraft.severity_level);
+    if (pendingDraft.damaged_parts && pendingDraft.damaged_parts.length) setDamagedParts(pendingDraft.damaged_parts.join(", "));
+    if (pendingDraft.category && pendingDraft.category.length) setCategory(new Set(pendingDraft.category));
+    if (pendingDraft.description) setDescription(pendingDraft.description);
     setAiApplied(true);
   }
 
@@ -119,6 +126,9 @@ export default function NewReportPage() {
             ))}
           </div>
         )}
+        {uploading && (
+          <p className="form-hint" style={{ marginTop: 8 }}>Uploading and analyzing photos...</p>
+        )}
 
         <label style={{ marginTop: 16 }}>
           Detailed Description *
@@ -136,10 +146,10 @@ export default function NewReportPage() {
           type="button"
           className="add-row-button"
           style={{ marginTop: 12 }}
-          onClick={handleAnalyze}
-          disabled={analyzing}
+          onClick={applyAiSuggestions}
+          disabled={uploading || !pendingDraft}
         >
-          {analyzing ? "Analyzing photos..." : "🔍 Analyze with AI"}
+          🔍 Apply AI Suggestions
         </button>
 
         {analyzeError && (
