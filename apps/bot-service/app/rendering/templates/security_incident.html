@@ -470,7 +470,7 @@
       {% for uri in photo_data_uris %}
       <div class="photo-card">
         <img src="{{ uri }}" alt="Photo Evidence {{ loop.index }}">
-        <div class="photo-caption"><strong>Photo P0{{ loop.index }}</strong></div>
+        <div class="photo-caption"><strong>Photo P{{ '%02d' % loop.index }}</strong></div>
       </div>
       {% endfor %}
     </div>

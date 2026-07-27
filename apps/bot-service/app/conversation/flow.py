@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.ai.extraction import draft_report
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import SecurityIncidentDraft, VehicleInfo
 
 
 @dataclass
@@ -25,13 +25,23 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
     draft = draft_report(description, photo_paths)
     if session is not None:
         # User-stated ground truth (from the template) always wins over
-        # anything the AI guessed for these three fields -- category,
-        # damaged parts, and severity stay AI-derived, never overridden here.
+        # anything the AI guessed for these fields -- category, damaged
+        # parts, and severity stay AI-derived, never overridden here.
         if session.location:
             draft.location = session.location
         if session.incident_datetime:
             draft.incident_datetime = session.incident_datetime
         draft.reported_to_authorities = session.reported_to_authorities
+        if session.reporter_name:
+            draft.reporter_name = session.reporter_name
+        if session.reporter_role:
+            draft.reporter_role = session.reporter_role
+        if session.reporter_contact:
+            draft.reporter_contact = session.reporter_contact
+        if session.vehicle_plate:
+            if draft.vehicle_info is None:
+                draft.vehicle_info = VehicleInfo()
+            draft.vehicle_info.plate_number = session.vehicle_plate
     return DraftResult(draft=draft, summary_text=summarize(draft))
 
 
@@ -39,6 +49,10 @@ TEMPLATE_PROMPT = (
     "📋 Please fill in these details and send them back (edit only what you need "
     "to -- Category, Damaged Parts, and Severity are worked out automatically "
     "from your photos, no need to fill those in):\n\n"
+    "Name: \n"
+    "Role/Position: \n"
+    "Contact Number: \n"
+    "Vehicle Plate: \n"
     "Location: \n"
     "Date/Time: {now}\n"
     "Description: \n"
@@ -52,6 +66,10 @@ def build_template_prompt() -> str:
 
 
 _TEMPLATE_REPLY_RE = re.compile(
+    r"name\s*:\s*(?P<name>.*?)\s*"
+    r"role\s*/?\s*position\s*:\s*(?P<role>.*?)\s*"
+    r"contact\s*number\s*:\s*(?P<contact>.*?)\s*"
+    r"vehicle\s*plate\s*:\s*(?P<plate>.*?)\s*"
     r"location\s*:\s*(?P<location>.*?)\s*"
     r"date\s*/?\s*time\s*:\s*(?P<datetime>.*?)\s*"
     r"description\s*:\s*(?P<description>.*?)\s*"
@@ -61,7 +79,7 @@ _TEMPLATE_REPLY_RE = re.compile(
 
 
 def parse_template_reply(text: str) -> Optional[dict]:
-    """Pulls the 4 reporter-filled fields out of a reply to build_template_prompt().
+    """Pulls the 8 reporter-filled fields out of a reply to build_template_prompt().
     Returns None (rather than a best-effort partial parse) if the reply doesn't
     match the template shape at all, so the caller can fall back to treating
     the whole message as a free-text description -- same as before this
@@ -72,6 +90,10 @@ def parse_template_reply(text: str) -> Optional[dict]:
         return None
     reported_raw = match.group("reported").strip().splitlines()[0].strip().lower()
     return {
+        "reporter_name": match.group("name").strip() or None,
+        "reporter_role": match.group("role").strip() or None,
+        "reporter_contact": match.group("contact").strip() or None,
+        "vehicle_plate": match.group("plate").strip() or None,
         "location": match.group("location").strip() or None,
         "incident_datetime": match.group("datetime").strip() or None,
         "description": match.group("description").strip(),
@@ -83,10 +105,21 @@ def summarize(draft: SecurityIncidentDraft) -> str:
     lines = [
         "Here's the draft -- reply 'confirm' to generate the PDF, or tell me what to change.",
         "",
+    ]
+    if draft.reporter_name or draft.reporter_role or draft.reporter_contact:
+        reporter_line = draft.reporter_name or "Not specified"
+        if draft.reporter_role:
+            reporter_line += f" ({draft.reporter_role})"
+        if draft.reporter_contact:
+            reporter_line += f" -- {draft.reporter_contact}"
+        lines.append(f"Reporter: 👤 {reporter_line}")
+    if draft.vehicle_info and draft.vehicle_info.plate_number:
+        lines.append(f"Vehicle Plate: 🚘 {draft.vehicle_info.plate_number}")
+    lines.extend([
         f"Location: {draft.location or 'Not specified'}",
         f"Date/time: {draft.incident_datetime or 'Not specified'}",
         f"Category: {', '.join(draft.category) or 'Not specified'}",
-    ]
+    ])
     if draft.accident_type:
         lines.append(f"Accident Type: 🚗 {draft.accident_type}")
     if draft.damaged_parts:

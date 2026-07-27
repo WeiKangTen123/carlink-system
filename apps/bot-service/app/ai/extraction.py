@@ -37,7 +37,7 @@ SYSTEM_PROMPT = (
     "2. For vehicle incidents:\n"
     "   - Set 'accident_type' if the described events make the type clear (e.g. Collision with another vehicle, Rear-end collision, Side impact, Front impact, Parked vehicle hit, Single vehicle accident, Hit-and-run, Scrape / minor contact).\n"
     "   - Populate 'vehicle_info' only with make, model, plate_number, or driver details that are actually mentioned or legible in a photo. Never guess a plate number, VIN, or model you cannot actually read.\n"
-    "   - For each damaged part actually visible in a photo or described in text, add an entry to 'damage_summary' with part, damage_type, and severity. Only set 'ai_confidence' if you can give a genuine, meaningful confidence estimate for that specific detection -- otherwise leave it null. Never invent a photo_reference; leave it null.\n"
+    "   - For each damaged part actually visible in a photo or described in text, add an entry to 'damage_summary' with part, damage_type, and severity. Set 'ai_confidence' to 'High', 'Medium', or 'Low' based on how clearly you can actually see and identify that specific damage in the photo -- always give this honest qualitative self-assessment, never a fabricated-looking precise percentage, and never skip it just because you're not fully certain (uncertainty is exactly what 'Low' is for). Photos are labeled P01, P02, P03... in the order they're given to you below -- set 'photo_reference' to the one that actually shows this part when you can genuinely tell, otherwise leave it null.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
     "3. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
@@ -56,10 +56,14 @@ def _model_chain() -> list[str]:
 
 def _build_input(description: str, photo_paths: list[str]) -> list[dict]:
     parts: list[dict] = [{"type": "text", "text": f"Reporter's description:\n{description}"}]
-    for path in photo_paths:
+    for i, path in enumerate(photo_paths, start=1):
         media_type, _ = mimetypes.guess_type(path)
         media_type = media_type or "image/jpeg"
         data_b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
+        # Labeled so the model can honestly attribute a damage_summary item to
+        # the specific photo it actually saw it in (photo_reference), matching
+        # the P0x numbering the renderer uses in the gallery/PDF.
+        parts.append({"type": "text", "text": f"Photo P{i:02d}:"})
         parts.append({"type": "image", "data": data_b64, "mime_type": media_type})
     return parts
 

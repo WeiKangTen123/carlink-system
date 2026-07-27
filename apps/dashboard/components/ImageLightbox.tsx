@@ -30,6 +30,7 @@ export function ImageLightbox({ photoUrls }: { photoUrls: string[] }) {
         {photoUrls.map((url, idx) => (
           <div
             key={url}
+            id={`photo-P${String(idx + 1).padStart(2, "0")}`}
             onClick={() => setSelectedIndex(idx)}
             style={{
               position: "relative",
@@ -37,6 +38,7 @@ export function ImageLightbox({ photoUrls }: { photoUrls: string[] }) {
               borderRadius: 8,
               overflow: "hidden",
               border: "1px solid var(--border-color)",
+              scrollMarginTop: 90,
             }}
           >
             <img
@@ -64,7 +66,7 @@ export function ImageLightbox({ photoUrls }: { photoUrls: string[] }) {
                 backdropFilter: "blur(4px)",
               }}
             >
-              🔍 Photo P0{idx + 1}
+              🔍 Photo P{String(idx + 1).padStart(2, "0")}
             </span>
           </div>
         ))}
@@ -102,7 +104,7 @@ export function ImageLightbox({ photoUrls }: { photoUrls: string[] }) {
             }}
           >
             <div style={{ fontSize: 16, fontWeight: 600 }}>
-              Photo Evidence P0{selectedIndex + 1} ({selectedIndex + 1} of {photoUrls.length})
+              Photo Evidence P{String(selectedIndex + 1).padStart(2, "0")} ({selectedIndex + 1} of {photoUrls.length})
             </div>
             <button
               type="button"

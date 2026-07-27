@@ -33,6 +33,10 @@ class Session:
     location: Optional[str] = None
     incident_datetime: Optional[str] = None
     reported_to_authorities: bool = False
+    reporter_name: Optional[str] = None
+    reporter_role: Optional[str] = None
+    reporter_contact: Optional[str] = None
+    vehicle_plate: Optional[str] = None
 
 
 _sessions: dict[str, Session] = {}

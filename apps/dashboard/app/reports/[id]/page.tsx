@@ -203,7 +203,15 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
                           "—"
                         )}
                       </td>
-                      <td>{item.photo_reference || "—"}</td>
+                      <td>
+                        {item.photo_reference && report.photo_urls.length > 0 ? (
+                          <a href={`#photo-${item.photo_reference}`} style={{ fontWeight: 600 }}>
+                            {item.photo_reference}
+                          </a>
+                        ) : (
+                          item.photo_reference || "—"
+                        )}
+                      </td>
                       <td>{item.ai_confidence || "—"}</td>
                       <td>
                         {item.human_verified ? (

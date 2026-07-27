@@ -136,6 +136,10 @@ async def whatsapp_webhook(request: Request) -> Response:
         session.location = parsed["location"]
         session.incident_datetime = parsed["incident_datetime"]
         session.reported_to_authorities = parsed["reported_to_authorities"]
+        session.reporter_name = parsed["reporter_name"]
+        session.reporter_role = parsed["reporter_role"]
+        session.reporter_contact = parsed["reporter_contact"]
+        session.vehicle_plate = parsed["vehicle_plate"]
         description = parsed["description"]
     else:
         description = body

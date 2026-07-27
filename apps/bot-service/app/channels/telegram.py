@@ -25,7 +25,7 @@ WELCOME_GUIDE = (
     "1️⃣ *Send Photos* 📸\n"
     "   • Upload 1 or more photos of the scene or damage.\n\n"
     "2️⃣ *Fill In the Template* 📝\n"
-    "   • I'll send you a short template (Location, Date/Time, Description, Reported to Authorities).\n"
+    "   • I'll send you a short template (Name, Role/Position, Contact Number, Vehicle Plate, Location, Date/Time, Description, Reported to Authorities).\n"
     "   • Copy it, fill in the blanks, and send it back. Category, Damaged Parts, and Severity are worked out automatically from your photos.\n\n"
     "3️⃣ *Review & Confirm* 📄\n"
     "   • Carlink AI will draft a formatted summary for you.\n"
@@ -101,6 +101,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         session.location = parsed["location"]
         session.incident_datetime = parsed["incident_datetime"]
         session.reported_to_authorities = parsed["reported_to_authorities"]
+        session.reporter_name = parsed["reporter_name"]
+        session.reporter_role = parsed["reporter_role"]
+        session.reporter_contact = parsed["reporter_contact"]
+        session.vehicle_plate = parsed["vehicle_plate"]
         description = parsed["description"]
     else:
         description = text

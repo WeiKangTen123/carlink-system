@@ -36,8 +36,14 @@ class DamageSummaryItem(BaseModel):
     part: str = Field(description="Front Bumper, Rear Bumper, Left Door, Right Door, Bonnet/Hood, Boot/Trunk, Headlight, Taillight, Windshield, Side Mirror, Fender, Wheel/Rim, Tire, Roof, Chassis, Undercarriage")
     damage_type: Optional[str] = Field(default=None, description="Scratch, Dent, Crack, Broken, Bent, Loose, Missing, Water damage, Structural damage -- only set if actually known")
     severity: Optional[str] = Field(default=None, description="Minor, Moderate, or Severe -- only set if actually assessable from the photo/description")
-    photo_reference: Optional[str] = Field(default=None, description="e.g. P01, P02 -- set by the renderer from actual photo order, not the AI")
-    ai_confidence: Optional[str] = Field(default=None, description="e.g. 90% -- only set if the model actually computed a confidence, never a placeholder")
+    photo_reference: Optional[str] = Field(
+        default=None,
+        description="Which uploaded photo actually shows this damage, e.g. 'P01' for the first photo, 'P02' for the second. Photos are given to you in that order -- only set this when you can genuinely tell which photo shows the part; leave null if unclear or if it's not visible in any single photo.",
+    )
+    ai_confidence: Optional[str] = Field(
+        default=None,
+        description="The model's own 'High', 'Medium', or 'Low' assessment of how clearly it can identify this specific damage from the photo. A qualitative self-assessment, not a fabricated-looking precise percentage.",
+    )
     human_verified: bool = False
     repair_required: bool = False
 
