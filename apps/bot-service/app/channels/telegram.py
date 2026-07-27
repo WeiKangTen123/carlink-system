@@ -2,6 +2,7 @@
 which is what makes it the fastest channel to stand up (see docs/proposal.md
 section B). Get a token from @BotFather, put it in .env, and this runs.
 """
+import asyncio
 import logging
 
 from telegram import Update
@@ -142,7 +143,7 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
         report.photo_paths = stored_photos
 
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
+        await asyncio.to_thread(render_pdf, report.data, stored_photos, pdf_path, report_id=report.id)
         report.pdf_path = pdf_path
 
         db.commit()

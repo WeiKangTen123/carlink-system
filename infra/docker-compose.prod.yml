@@ -20,6 +20,7 @@ x-bot-service: &bot-service
     - DATABASE_URL=sqlite:////app/storage/carlink.db
   volumes:
     - bot_data:/app/storage
+    - ../apps/bot-service/app:/app/app
 
 services:
   telegram-bot:

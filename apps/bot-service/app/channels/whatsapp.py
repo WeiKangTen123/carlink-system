@@ -12,6 +12,7 @@ Telegram, but doesn't attach the PDF back yet -- that needs either a public
 storage bucket (Phase 1, see docs/proposal.md section E) or a tunnel for
 local testing.
 """
+import asyncio
 import logging
 
 from fastapi import APIRouter, Request, Response
@@ -109,7 +110,7 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     if session.stage == Stage.AWAITING_CONFIRMATION:
         if body.lower() in CONFIRM_WORDS:
-            pdf_path = _finalize(chat_id, session)
+            pdf_path = await asyncio.to_thread(_finalize, chat_id, session)
             reset_session(chat_id)
             return _twiml(
                 f"Report saved and rendered to {pdf_path}. "
