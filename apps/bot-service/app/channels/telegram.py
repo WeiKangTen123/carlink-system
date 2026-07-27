@@ -156,9 +156,28 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
     reset_session(chat_id)
 
 
+async def _post_init(app: Application) -> None:
+    try:
+        await app.bot.set_my_name("Carlink Car Incident Reporter")
+        await app.bot.set_my_description(
+            "🚗 Carlink AI Car Incident Reporting Bot 🚨\n\n"
+            "Upload incident photos and describe what happened to generate "
+            "an official, structured incident report PDF instantly."
+        )
+        await app.bot.set_my_short_description("AI-powered vehicle & car incident report generator")
+        await app.bot.set_my_commands([
+            ("start", "Start incident report flow"),
+            ("new", "Start a new report"),
+            ("help", "Show instructions & guide"),
+            ("cancel", "Cancel current report drafting"),
+        ])
+    except Exception as e:
+        logger.warning(f"Failed to set bot profile info: {e}")
+
+
 def build_app() -> Application:
     init_db()
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    application = Application.builder().token(settings.telegram_bot_token).post_init(_post_init).build()
     application.add_handler(CommandHandler(["start", "new"], start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
