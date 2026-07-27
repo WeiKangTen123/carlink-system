@@ -128,6 +128,17 @@ class SecurityIncidentDraft(BaseModel):
     weather_condition: Optional[str] = Field(None, description="Clear, Rainy, Night/Dark, Foggy, Wet Surface")
     road_condition: Optional[str] = Field(None, description="Dry, Wet, Slippery, Gravel, Uneven")
     traffic_condition: Optional[str] = Field(None, description="Light, Moderate, Heavy, Stationed")
+    # description comes before the categorical/list fields below on purpose:
+    # structured output fills fields in this declaration order, and letting
+    # the model write its narrative understanding out in prose FIRST makes it
+    # far more likely that category/accident_type/damaged_parts/severity_level
+    # actually reflect what it just described -- rather than committing to
+    # those fields from scratch before it's "thought through" the incident,
+    # then writing a detailed description afterward that the earlier fields
+    # never got updated to match.
+    description: str = Field(
+        description="Professional narrative description of the incident, drafted from the reporter's free text and photos"
+    )
     category: list[str] = Field(
         default_factory=list,
         description=(
@@ -157,9 +168,6 @@ class SecurityIncidentDraft(BaseModel):
     )
     vehicle_info: Optional[VehicleInfo] = Field(default_factory=VehicleInfo)
     damage_summary: list[DamageSummaryItem] = Field(default_factory=list)
-    description: str = Field(
-        description="Professional narrative description of the incident, drafted from the reporter's free text and photos"
-    )
     people_involved: list[PersonInvolved] = Field(default_factory=list)
     witnesses: list[Witness] = Field(default_factory=list)
     immediate_actions: Optional[str] = None
