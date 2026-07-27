@@ -1,6 +1,9 @@
 #!/bin/bash
 # ==============================================================================
-# CARLINK SYSTEM — AUTOMATED SERVER DEPLOYMENT SCRIPT FOR GCP VM (34.41.243.25)
+# CARLINK SYSTEM — AUTOMATED SERVER DEPLOYMENT SCRIPT (47.84.130.79)
+#
+# Migrated off the old GCP e2-micro VM (34.41.243.25) -- that box is now
+# just a cold standby with its containers stopped, not actively serving.
 #
 # Secrets are never hardcoded here or written into git -- pass them in when
 # invoking this script, e.g.:
@@ -17,7 +20,7 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$GEMINI_API_KEY" ]; then
     exit 1
 fi
 
-echo "🚀 Starting Carlink System Deployment on server 34.41.243.25..."
+echo "🚀 Starting Carlink System Deployment on server 47.84.130.79..."
 
 # 1. Install Docker & Docker Compose (Debian / Ubuntu)
 if ! command -v docker &> /dev/null; then
@@ -29,7 +32,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 2. Clone or Pull GitHub Repository
-APP_DIR="/opt/carlink-system"
+APP_DIR="/root/carlink_temp"
 REPO_URL="https://github.com/WeiKangTen123/carlink-system.git"
 
 if [ ! -d "$APP_DIR" ]; then
@@ -58,15 +61,15 @@ else
 fi
 
 # Clean up build cache and now-superseded image layers left behind by this
-# build. This VM's disk is small (~10GB) -- left unpruned, layers from every
-# past deploy pile up until there's no room left for the next build, which is
-# the single most common way a deploy on this box fails.
+# build. Still worth doing on this bigger box (83GB) even though it's not the
+# survival issue it was on the old 10GB VM -- unpruned layers just accumulate
+# forever otherwise.
 echo "🧹 Cleaning up Docker build cache and old image layers..."
 docker builder prune -af
 docker image prune -f
 
 echo "✅ Carlink System is live!"
-echo "🌐 Dashboard Web UI:  http://34.41.243.25:3000"
-echo "🌐 Dashboard HTTP:    http://34.41.243.25"
-echo "⚙️ Backend API:       http://34.41.243.25:8000"
+echo "🌐 Dashboard Web UI:  http://47.84.130.79:3000"
+echo "🌐 Dashboard HTTP:    http://47.84.130.79"
+echo "⚙️ Backend API:       http://47.84.130.79:8000"
 echo "🤖 Telegram Bot:      @carlink_reporter_bot"
