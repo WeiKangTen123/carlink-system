@@ -276,15 +276,28 @@ export async function analyzeReportPhotos(
   return res.json();
 }
 
-export async function updateReport(id: string, payload: ReportData): Promise<{ id: string; status: string; pdf_url: string }> {
+export async function updateReport(
+  id: string,
+  payload: ReportData,
+  tempPhotoPaths: string[] = []
+): Promise<{ id: string; status: string; pdf_url: string }> {
   const res = await fetch(`${API_BASE_URL}/reports/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to update report (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+export async function reopenReport(id: string): Promise<{ id: string; status: string }> {
+  const res = await fetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to reopen report (${res.status}): ${text}`);
   }
   return res.json();
 }

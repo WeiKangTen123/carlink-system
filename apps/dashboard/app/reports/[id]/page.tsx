@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getReport, fileUrl, pdfDownloadUrl } from "@/lib/api";
 import { ChannelBadge } from "@/components/ChannelBadge";
@@ -40,6 +41,9 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <Link href={`/reports/${report.id}/edit`} className="button-primary">
+            ✏️ Edit
+          </Link>
           <SignOffButton id={report.id} currentStatus={sign?.status || report.status} />
           <PdfPreviewModal
             reportId={report.id}

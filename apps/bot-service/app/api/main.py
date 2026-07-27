@@ -188,23 +188,69 @@ def create_report(body: CreateReportRequest) -> dict:
 
 
 @app.put("/reports/{report_id}")
-def update_report(report_id: str, draft: SecurityIncidentDraft) -> dict:
+def update_report(report_id: str, body: CreateReportRequest) -> dict:
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
-        
-        # Update draft data dictionary
-        r.data = draft.model_dump()
-        
-        # Re-render PDF with updated content
+        if r.status == "Signed Off":
+            raise HTTPException(
+                status_code=409,
+                detail="Report is signed off and locked. Reopen it before editing.",
+            )
+
+        r.data = body.draft.model_dump()
+
+        # New photos from this edit get appended after whatever's already
+        # attached -- indexed starting from the current count, never from 0,
+        # so a report that already has photo_00.jpg/photo_01.jpg doesn't get
+        # a freshly-added photo overwriting one of them.
+        existing_photos = r.photo_paths or []
+        new_photos = [
+            save_photo(r.id, temp_path, len(existing_photos) + i)
+            for i, temp_path in enumerate(body.temp_photo_paths)
+            if Path(temp_path).exists()
+        ]
+        if new_photos:
+            r.photo_paths = existing_photos + new_photos
+        for temp_path in body.temp_photo_paths:
+            Path(temp_path).unlink(missing_ok=True)
+
         pdf_path = r.pdf_path or report_pdf_path(r.id)
         render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
         r.pdf_path = pdf_path
 
         db.commit()
         return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
+    finally:
+        db.close()
+
+
+@app.post("/reports/{report_id}/reopen")
+def reopen_report(report_id: str) -> dict:
+    """Explicitly unlocks a Signed Off report for editing -- a deliberate
+    action rather than update_report silently allowing edits underneath an
+    already-signed-off record."""
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        r.status = "confirmed"
+        data = dict(r.data or {})
+        sign_off = data.get("sign_off") or {}
+        sign_off["status"] = "Draft"
+        data["sign_off"] = sign_off
+        r.data = data
+
+        pdf_path = r.pdf_path or report_pdf_path(r.id)
+        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+        r.pdf_path = pdf_path
+
+        db.commit()
+        return {"id": r.id, "status": r.status}
     finally:
         db.close()
 
