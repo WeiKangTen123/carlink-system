@@ -1,10 +1,31 @@
 /** Thin client over the bot-service FastAPI backend (apps/bot-service/app/api/main.py). */
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const isBrowser = typeof window !== "undefined";
+
+// Server-side (Server Components / Server Actions) reach the API directly
+// -- in Docker/prod that's the private docker-network hostname (api:8000,
+// via API_INTERNAL_URL, see infra/docker-compose.prod.yml), avoiding a
+// pointless round trip out to the public internet and back. Falls back to
+// localhost:8000 for local dev (`npm run dev`, no Docker/nginx involved).
+const SERVER_BASE_URL =
+  process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
+// Client-side (the actual browser) must never be pointed at the API's raw
+// port -- that requires the port to be open to the public internet and
+// breaks silently on any network that doesn't allow it through (this is
+// exactly why report creation already runs through a Server Action instead
+// of a direct browser fetch -- see analyzePhotosAction's comment). In prod
+// these default to same-origin relative paths that infra/nginx.conf proxies
+// to the API; local dev has no nginx, so NEXT_PUBLIC_API_BASE_URL /
+// NEXT_PUBLIC_FILES_BASE_URL there fall back to hitting the API port
+// directly, same as before.
+const CLIENT_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const CLIENT_FILES_BASE_URL = process.env.NEXT_PUBLIC_FILES_BASE_URL ?? "http://localhost:8000";
+
+export const API_BASE_URL = isBrowser ? CLIENT_API_BASE_URL : SERVER_BASE_URL;
 
 export function pdfDownloadUrl(reportId: string): string {
-  return `${API_BASE_URL}/reports/${reportId}/download`;
+  return `${CLIENT_API_BASE_URL}/reports/${reportId}/download`;
 }
 
 export const CATEGORY_OPTIONS = [
@@ -293,7 +314,10 @@ export async function deleteReport(id: string): Promise<void> {
   }
 }
 
+// Always browser-facing (an <img>/<a> src ends up in the DOM regardless of
+// whether this ran during SSR or in the client) -- so this always uses the
+// client-safe base, never SERVER_BASE_URL.
 export function fileUrl(path: string): string {
-  return path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+  return path.startsWith("http") ? path : `${CLIENT_FILES_BASE_URL}${path}`;
 }
 

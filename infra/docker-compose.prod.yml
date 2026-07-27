@@ -38,12 +38,20 @@ services:
     build:
       context: ../apps/dashboard
       dockerfile: Dockerfile
+      args:
+        # Same-origin relative paths -- the browser reaches these through
+        # nginx's /api/ and /files/ proxies (see nginx.conf) instead of the
+        # API container's port directly. See lib/api.ts for why.
+        - NEXT_PUBLIC_API_BASE_URL=/api
+        - NEXT_PUBLIC_FILES_BASE_URL=
     container_name: carlink_dashboard
     restart: always
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://34.41.243.25:8000
+      # Server-side rendering reaches the API over the private Docker
+      # network instead of round-tripping out to the public IP and back.
+      - API_INTERNAL_URL=http://api:8000
     depends_on:
       - api
 
