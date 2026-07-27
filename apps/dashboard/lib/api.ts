@@ -289,6 +289,38 @@ export async function analyzeReportPhotos(
   return res.json();
 }
 
+/** Same analysis as analyzeReportPhotos, but against photos a report already
+ * has saved rather than freshly-picked files -- must run server-side (this
+ * is only ever called from a server action) since it re-fetches each photo
+ * from the API's /files/ route directly, which has no CORS headers and
+ * fails if a browser calls it. */
+export async function analyzeExistingReportPhotos(
+  photoPaths: string[],
+  description: string
+): Promise<{ draft: PhotoAnalysisDraft }> {
+  const formData = new FormData();
+  formData.set("description", description);
+  for (let i = 0; i < photoPaths.length; i++) {
+    const path = photoPaths[i];
+    const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch existing photo ${path} (${res.status})`);
+    const blob = await res.blob();
+    formData.append("photos", blob, `existing_${i}.jpg`);
+  }
+
+  const res = await fetch(`${API_BASE_URL}/reports/analyze-photos`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`AI analysis failed (${res.status}): ${text}`);
+  }
+  const result = await res.json();
+  return { draft: result.draft };
+}
+
 export async function updateReport(
   id: string,
   payload: ReportData,

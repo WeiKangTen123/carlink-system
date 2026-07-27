@@ -29,6 +29,7 @@ export default async function EditReportPage({ params }: { params: Promise<{ id:
       mode="edit"
       initialData={report.data}
       existingPhotoUrls={report.photo_urls}
+      reportId={id}
       action={boundUpdate}
       submitLabel="Save Changes & Regenerate PDF"
     />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { analyzePhotosAction } from "./actions";
+import { analyzePhotosAction, reanalyzeExistingPhotosAction } from "./actions";
 import {
   CATEGORY_OPTIONS,
   ACCIDENT_TYPE_OPTIONS,
@@ -27,11 +27,15 @@ type ReportFormProps = {
    * are added alongside these, never replacing them (see the backend's
    * PUT /reports/{id}, which appends rather than overwrites). */
   existingPhotoUrls?: string[];
+  /** Needed so "Re-analyze with AI" can look the report's saved photos back
+   * up server-side when the reporter hasn't picked any new files. Omitted
+   * for create, where there's no report yet to look up. */
+  reportId?: string;
   action: (formData: FormData) => void | Promise<void>;
   submitLabel: string;
 };
 
-export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, submitLabel }: ReportFormProps) {
+export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId, action, submitLabel }: ReportFormProps) {
   const [people, setPeople] = useState<PersonRow[]>(
     () => initialData?.people_involved?.map((p) => ({ id: nextRowId++, name: p.name, role: p.role, department: p.department || "", contact: p.contact || "" })) ?? []
   );
@@ -53,6 +57,17 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
   const [accidentType, setAccidentType] = useState(initialData?.accident_type ?? "");
   const [severityLevel, setSeverityLevel] = useState(initialData?.severity_level || "Minor");
   const [damagedParts, setDamagedParts] = useState(initialData?.damaged_parts?.join(", ") ?? "");
+
+  function applyDraft(draft: PhotoAnalysisDraft, currentDescription: string) {
+    if (draft.accident_type) setAccidentType(draft.accident_type);
+    if (draft.severity_level) setSeverityLevel(draft.severity_level);
+    if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
+    if (draft.category && draft.category.length) setCategory(new Set(draft.category));
+    // Never overwrites a description the reporter already wrote -- only
+    // fills it in when they uploaded photos before typing anything.
+    if (draft.description && !currentDescription.trim()) setDescription(draft.description);
+    setAiApplied(true);
+  }
 
   // Runs the AI analysis against whatever photos + description text are
   // current *at the time it's called* and immediately fills the structured
@@ -80,16 +95,29 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
     // Photos are attached the moment analysis succeeds, regardless of
     // whether any structured field ends up changing below.
     setTempPhotoPaths(result.temp_photo_paths);
+    applyDraft(result.draft, currentDescription);
+  }
 
-    const draft = result.draft;
-    if (draft.accident_type) setAccidentType(draft.accident_type);
-    if (draft.severity_level) setSeverityLevel(draft.severity_level);
-    if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
-    if (draft.category && draft.category.length) setCategory(new Set(draft.category));
-    // Never overwrites a description the reporter already wrote -- only
-    // fills it in when they uploaded photos before typing anything.
-    if (draft.description && !currentDescription.trim()) setDescription(draft.description);
-    setAiApplied(true);
+  // Lets "Re-analyze with AI" work in edit mode even when the reporter hasn't
+  // picked any new files in this session. Runs entirely server-side (see
+  // reanalyzeExistingPhotosAction) since re-fetching the API's /files/ route
+  // straight from the browser hits a CORS error there. Deliberately doesn't
+  // touch tempPhotoPaths/setTempPhotoPaths -- these photos already have
+  // permanent photo_XX.jpg paths attached to the report, so there's nothing
+  // new to attach on save.
+  async function reanalyzeExistingPhotos() {
+    if (!reportId) return;
+    setUploading(true);
+    setAnalyzeError(null);
+    setAiApplied(false);
+    const result = await reanalyzeExistingPhotosAction(reportId, description);
+    setUploading(false);
+
+    if ("error" in result) {
+      setAnalyzeError(result.error);
+      return;
+    }
+    applyDraft(result.draft, description);
   }
 
   async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -200,9 +228,13 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
           type="button"
           className="add-row-button"
           style={{ marginTop: 12 }}
-          onClick={() => runAnalysis(photos, description)}
-          disabled={uploading || photos.length === 0}
-          title="Re-run AI analysis using the description as currently written -- use this after editing the description following a photo upload"
+          onClick={() => (photos.length > 0 ? runAnalysis(photos, description) : reanalyzeExistingPhotos())}
+          disabled={uploading || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
+          title={
+            photos.length > 0
+              ? "Re-run AI analysis using the description as currently written -- use this after editing the description following a photo upload"
+              : "Re-run AI analysis against this report's already-saved photos"
+          }
         >
           {uploading ? "Analyzing..." : "🔄 Re-analyze with AI"}
         </button>

@@ -8,6 +8,8 @@ import {
   reopenReport,
   signOffReport,
   analyzeReportPhotos,
+  analyzeExistingReportPhotos,
+  getReport,
   type PhotoAnalysisDraft,
 } from "@/lib/api";
 import { buildReportPayload } from "./form-payload";
@@ -32,6 +34,25 @@ export async function analyzePhotosAction(
     const description = (formData.get("description") as string) || "";
     const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
     return await analyzeReportPhotos(description, photos);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+  }
+}
+
+/** Lets "Re-analyze with AI" work in edit mode without the reporter having
+ * to re-pick files -- looks up the report's already-saved photo paths fresh
+ * (rather than trusting whatever the client passed in) and re-fetches them
+ * server-side, sidestepping the CORS error a direct browser fetch of the
+ * API's /files/ route hits. */
+export async function reanalyzeExistingPhotosAction(
+  reportId: string,
+  description: string
+): Promise<{ draft: PhotoAnalysisDraft } | { error: string }> {
+  try {
+    const report = await getReport(reportId);
+    if (!report) return { error: "Report not found" };
+    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze" };
+    return await analyzeExistingReportPhotos(report.photo_urls, description);
   } catch (err) {
     return { error: err instanceof Error ? err.message : "AI analysis failed" };
   }
