@@ -57,6 +57,14 @@ else
     docker compose -f infra/docker-compose.prod.yml up -d --build
 fi
 
+# Clean up build cache and now-superseded image layers left behind by this
+# build. This VM's disk is small (~10GB) -- left unpruned, layers from every
+# past deploy pile up until there's no room left for the next build, which is
+# the single most common way a deploy on this box fails.
+echo "🧹 Cleaning up Docker build cache and old image layers..."
+docker builder prune -af
+docker image prune -f
+
 echo "✅ Carlink System is live!"
 echo "🌐 Dashboard Web UI:  http://34.41.243.25:3000"
 echo "🌐 Dashboard HTTP:    http://34.41.243.25"

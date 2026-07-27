@@ -7,11 +7,22 @@ version: '3.8'
 # Previously only the bot process was ever started, so nothing listened on
 # port 8000 -- that's why the dashboard/API were unreachable.
 
+# Caps each container's logs at 10MB x 3 files. Without this, the json-file
+# log driver has no size limit -- with restart:always and telegram-bot/api
+# logging every poll and request, that grows unbounded over weeks of uptime
+# and can quietly fill this VM's small (~10GB) disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-bot-service: &bot-service
   build:
     context: ../apps/bot-service
     dockerfile: Dockerfile
   restart: always
+  logging: *default-logging
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
     - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
@@ -47,6 +58,7 @@ services:
         - NEXT_PUBLIC_FILES_BASE_URL=
     container_name: carlink_dashboard
     restart: always
+    logging: *default-logging
     ports:
       - "3000:3000"
     environment:
@@ -60,6 +72,7 @@ services:
     image: nginx:alpine
     container_name: carlink_nginx
     restart: always
+    logging: *default-logging
     ports:
       - "80:80"
     volumes:
