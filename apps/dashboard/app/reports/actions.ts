@@ -6,6 +6,7 @@ import {
   deleteReport,
   updateReport,
   reopenReport,
+  signOffReport,
   analyzeReportPhotos,
   type PhotoAnalysisDraft,
 } from "@/lib/api";
@@ -48,6 +49,29 @@ export async function updateReportAction(id: string, formData: FormData) {
   revalidatePath(`/reports/${id}/edit`);
   revalidatePath("/reports");
   redirect(`/reports/${id}`);
+}
+
+/** Wraps signOffReport so the browser never fetches localhost:8000
+ * directly -- SignOffButton is a client component and the API has no CORS
+ * headers, so calling signOffReport() straight from it fails with a CORS
+ * error in any real browser (confirmed via a live test: the confirm()
+ * dialog fired, then the fetch was blocked and the button's own catch
+ * showed "Sign-off failed: Failed to fetch"). Every other mutation in this
+ * file already goes through a server action for the same reason; this one
+ * had been missed. */
+export async function signOffReportAction(
+  id: string,
+  reviewerName: string
+): Promise<{ id: string; status: string; pdf_url: string } | { error: string }> {
+  try {
+    const result = await signOffReport(id, reviewerName);
+    revalidatePath(`/reports/${id}`);
+    revalidatePath(`/reports/${id}/edit`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Sign-off failed" };
+  }
 }
 
 export async function reopenReportAction(id: string) {

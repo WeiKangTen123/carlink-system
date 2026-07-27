@@ -2,7 +2,17 @@
 
 import { useState } from "react";
 import { analyzePhotosAction } from "./actions";
-import { CATEGORY_OPTIONS, ACCIDENT_TYPE_OPTIONS, fileUrl, type PhotoAnalysisDraft, type ReportData } from "@/lib/api";
+import {
+  CATEGORY_OPTIONS,
+  ACCIDENT_TYPE_OPTIONS,
+  WEATHER_OPTIONS,
+  ROAD_OPTIONS,
+  TRAFFIC_OPTIONS,
+  CLAIM_TYPE_OPTIONS,
+  fileUrl,
+  type PhotoAnalysisDraft,
+  type ReportData,
+} from "@/lib/api";
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
 type WitnessRow = { id: number; name: string; contact: string; statement: string };
@@ -123,6 +133,14 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
             Reporter Role / Position
             <input name="reporter_role" type="text" placeholder="e.g. Site Supervisor" defaultValue={initialData?.reporter_role ?? ""} />
           </label>
+          <label>
+            Reporter Contact Number
+            <input name="reporter_contact" type="text" placeholder="e.g. +65 9123 4567" defaultValue={initialData?.reporter_contact ?? ""} />
+          </label>
+          <label>
+            Reporter Department / Company
+            <input name="reporter_department" type="text" placeholder="e.g. Fleet Operations" defaultValue={initialData?.reporter_department ?? ""} />
+          </label>
         </div>
       </section>
 
@@ -214,8 +232,20 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
             <input name="plate_number" type="text" placeholder="Plate number" defaultValue={initialData?.vehicle_info?.plate_number ?? ""} />
           </label>
           <label>
-            Vehicle Make &amp; Model
-            <input name="make_model" type="text" placeholder="Make and model" defaultValue={initialData?.vehicle_info?.make ?? ""} />
+            Vehicle Make
+            <input name="make" type="text" placeholder="e.g. Toyota" defaultValue={initialData?.vehicle_info?.make ?? ""} />
+          </label>
+          <label>
+            Vehicle Model
+            <input name="model" type="text" placeholder="e.g. Camry" defaultValue={initialData?.vehicle_info?.model ?? ""} />
+          </label>
+          <label>
+            VIN / Chassis Number
+            <input name="vin" type="text" placeholder="Vehicle identification number" defaultValue={initialData?.vehicle_info?.vin ?? ""} />
+          </label>
+          <label>
+            Driver Name
+            <input name="driver_name" type="text" placeholder="Who was driving" defaultValue={initialData?.vehicle_info?.driver_name ?? ""} />
           </label>
         </div>
       </section>
@@ -254,6 +284,33 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
               <option value="Minor">Minor (Cosmetic / Scrape)</option>
               <option value="Moderate">Moderate (Panel Dent / Repaint)</option>
               <option value="Severe">Severe (Structural / Non-drivable)</option>
+            </select>
+          </label>
+          <label>
+            Weather Condition
+            <select name="weather_condition" defaultValue={initialData?.weather_condition ?? ""}>
+              <option value="">Select...</option>
+              {WEATHER_OPTIONS.map((w) => (
+                <option key={w} value={w}>{w}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Road Condition
+            <select name="road_condition" defaultValue={initialData?.road_condition ?? ""}>
+              <option value="">Select...</option>
+              {ROAD_OPTIONS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Traffic Condition
+            <select name="traffic_condition" defaultValue={initialData?.traffic_condition ?? ""}>
+              <option value="">Select...</option>
+              {TRAFFIC_OPTIONS.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
             </select>
           </label>
         </div>
@@ -350,9 +407,63 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], action, 
         <label className="checkbox-label" style={{ marginTop: 10 }}>
           <input type="checkbox" name="reported_to_authorities" defaultChecked={initialData?.reported_to_authorities ?? false} /> Reported to Police / Authorities
         </label>
+        <div className="field-grid" style={{ marginTop: 12 }}>
+          <label>
+            Police Station
+            <input name="police_station" type="text" placeholder="e.g. Sengkang Neighbourhood Police Centre" defaultValue={initialData?.police_report?.police_station ?? ""} />
+          </label>
+          <label>
+            Reporting Officer Name
+            <input name="officer_name" type="text" placeholder="Officer name" defaultValue={initialData?.police_report?.officer_name ?? ""} />
+          </label>
+          <label>
+            Police Report / Reference Number
+            <input
+              name="report_number"
+              type="text"
+              placeholder="e.g. POL-2026-9941"
+              defaultValue={initialData?.police_report?.report_number ?? initialData?.authority_reference ?? ""}
+            />
+          </label>
+        </div>
+      </section>
+
+      {/* Insurance */}
+      <section className="card">
+        <h2>Insurance &amp; Claim Details</h2>
+        <p className="form-hint">Only fill this in once a claim has actually been raised.</p>
+        <div className="field-grid">
+          <label>
+            Insurer Name
+            <input name="insurer_name" type="text" placeholder="e.g. NTUC Income" defaultValue={initialData?.insurance_details?.insurer_name ?? ""} />
+          </label>
+          <label>
+            Claim Number
+            <input name="claim_number" type="text" placeholder="Claim number" defaultValue={initialData?.insurance_details?.claim_number ?? ""} />
+          </label>
+          <label>
+            Claim Type
+            <select name="claim_type" defaultValue={initialData?.insurance_details?.claim_type ?? ""}>
+              <option value="">Select...</option>
+              {CLAIM_TYPE_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      {/* Recommendations */}
+      <section className="card">
+        <h2>Assessment &amp; Recommendations</h2>
+        <p className="form-hint">The surveyor's own recommendation, not an AI-generated one.</p>
         <label>
-          Police Station / Report Reference Number
-          <input name="authority_reference" type="text" placeholder="e.g. POL-2026-9941" defaultValue={initialData?.authority_reference ?? ""} />
+          Repair Recommendation
+          <textarea name="repair_recommendation" rows={2} placeholder="e.g. Replace front bumper, respray affected panel" defaultValue={initialData?.recommendations?.repair_recommendation ?? ""} />
+        </label>
+        <label style={{ marginTop: 10 }}>
+          Inspection Recommendation
+          <textarea name="inspection_recommendation" rows={2} placeholder="e.g. Full underbody inspection recommended before drivable" defaultValue={initialData?.recommendations?.inspection_recommendation ?? ""} />
         </label>
       </section>
 

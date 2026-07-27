@@ -57,6 +57,19 @@ export const ACCIDENT_TYPE_OPTIONS = [
   "Other",
 ] as const;
 
+// Kept in sync with schema.py's field descriptions the same way as
+// ACCIDENT_TYPE_OPTIONS above.
+export const WEATHER_OPTIONS = ["Clear", "Rainy", "Night/Dark", "Foggy", "Wet Surface"] as const;
+export const ROAD_OPTIONS = ["Dry", "Wet", "Slippery", "Gravel", "Uneven"] as const;
+export const TRAFFIC_OPTIONS = ["Light", "Moderate", "Heavy", "Stationed"] as const;
+export const CLAIM_TYPE_OPTIONS = [
+  "Own damage",
+  "Third party",
+  "Third party fire and theft",
+  "Comprehensive",
+  "Special case",
+] as const;
+
 export type DamageSummaryItem = {
   part: string;
   damage_type?: string | null;
