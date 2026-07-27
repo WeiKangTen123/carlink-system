@@ -7,8 +7,15 @@ import { SignOffButton } from "@/components/SignOffButton";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 
-export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReportDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ preview?: string }>;
+}) {
   const { id } = await params;
+  const { preview } = await searchParams;
   const report = await getReport(id);
   if (!report) notFound();
 
@@ -49,6 +56,7 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
             reportId={report.id}
             pdfUrl={report.pdf_url}
             reportCode={d.report_id || `CIR-2026-${report.id.slice(0, 4).toUpperCase()}`}
+            autoOpen={preview === "1"}
           />
           <DeleteButton id={report.id} />
         </div>

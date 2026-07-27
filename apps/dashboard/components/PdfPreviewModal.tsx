@@ -1,18 +1,40 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { pdfDownloadUrl, API_BASE_URL } from "@/lib/api";
 
 export function PdfPreviewModal({
   reportId,
   pdfUrl,
   reportCode,
+  autoOpen = false,
 }: {
   reportId: string;
   pdfUrl?: string | null;
   reportCode: string;
+  /** Opens the modal immediately on mount -- used right after filing or
+   * saving a report so the regenerated PDF shows up without an extra click
+   * to find this button. */
+  autoOpen?: boolean;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(autoOpen);
+  // Captured once on mount rather than read from the live prop -- stripping
+  // ?preview=1 below causes a re-render with autoOpen back to false, which
+  // would otherwise flip the header text back to the generic copy right
+  // after the modal opens.
+  const [wasAutoOpened] = useState(autoOpen);
+  const router = useRouter();
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (autoOpen) {
+      // Strip the ?preview=1 marker once it's done its job, so refreshing
+      // or navigating back to this URL doesn't keep popping the modal open.
+      router.replace(pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -85,7 +107,7 @@ export function PdfPreviewModal({
                   color: "#e2e8f0",
                 }}
               >
-                Review pages before downloading
+                {wasAutoOpened ? "Here's your generated PDF" : "Review pages before downloading"}
               </span>
             </div>
 

@@ -48,7 +48,9 @@ export async function updateReportAction(id: string, formData: FormData) {
   revalidatePath(`/reports/${id}`);
   revalidatePath(`/reports/${id}/edit`);
   revalidatePath("/reports");
-  redirect(`/reports/${id}`);
+  // ?preview=1 auto-opens the PDF preview/download modal on arrival, so
+  // saving edits and getting the file are one motion instead of two.
+  redirect(`/reports/${id}?preview=1`);
 }
 
 /** Wraps signOffReport so the browser never fetches localhost:8000
