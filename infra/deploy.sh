@@ -67,11 +67,20 @@ else
     docker compose -f infra/docker-compose.prod.yml up -d --build
 fi
 
-# Clean up build cache and now-superseded image layers left behind by this
-# build -- unpruned layers otherwise accumulate forever and can fill a small
-# VM's disk over weeks of redeploys (this bit us on the old 10GB e2-micro).
-echo "🧹 Cleaning up Docker build cache and old image layers..."
-docker builder prune -af
+# Only prune the *build cache* when disk is actually getting tight -- it bit
+# us hard on the old 10GB e2-micro, but wiping it unconditionally on every
+# deploy (as this used to do) means every single build starts ice-cold: full
+# npm install, full apt-get, full Playwright Chromium download, every time,
+# even for a one-line source change. On a box with real headroom that's pure
+# waste. Dangling old image layers are cheap to clean up regardless, so
+# those still get pruned every time.
+DISK_USE_PCT=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+if [ "$DISK_USE_PCT" -ge 70 ]; then
+    echo "🧹 Disk at ${DISK_USE_PCT}% -- pruning build cache too..."
+    docker builder prune -af
+else
+    echo "🧹 Disk at ${DISK_USE_PCT}% -- keeping build cache warm for faster next deploy."
+fi
 docker image prune -f
 
 echo "✅ Carlink System is live!"
