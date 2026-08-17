@@ -43,8 +43,10 @@ services:
     <<: *bot-service
     container_name: carlink_api
     command: ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    ports:
-      - "8000:8000"
+    # Not published to the host -- the browser only ever reaches this via
+    # nginx's /api/ and /files/ proxies (see lib/api.ts), and other
+    # containers reach it over the Docker network by service name
+    # regardless of host port publishing.
 
   dashboard:
     build:
@@ -59,8 +61,9 @@ services:
     container_name: carlink_dashboard
     restart: always
     logging: *default-logging
-    ports:
-      - "3000:3000"
+    # Not published to the host either -- same reasoning as api's port,
+    # plus this avoids clashing with anything else already using 3000 on a
+    # shared host.
     environment:
       # Server-side rendering reaches the API over the private Docker
       # network instead of round-tripping out to the public IP and back.
@@ -74,7 +77,10 @@ services:
     restart: always
     logging: *default-logging
     ports:
-      - "80:80"
+      # Host-side port is configurable (NGINX_PORT) so this can run
+      # alongside another app/nginx already on 80 on a shared host --
+      # defaults to 80 for a box where Carlink owns the standard port.
+      - "${NGINX_PORT:-80}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

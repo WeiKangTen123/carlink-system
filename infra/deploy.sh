@@ -1,14 +1,21 @@
 #!/bin/bash
 # ==============================================================================
-# CARLINK SYSTEM — AUTOMATED SERVER DEPLOYMENT SCRIPT (47.84.130.79)
+# CARLINK SYSTEM — AUTOMATED SERVER DEPLOYMENT SCRIPT
 #
-# Migrated off the old GCP e2-micro VM (34.41.243.25) -- that box is now
-# just a cold standby with its containers stopped, not actively serving.
+# Deployment history:
+#  - 34.41.243.25 (GCP e2-micro) -- original box, now cold standby, containers stopped.
+#  - 47.84.130.79 -- migrated here next; unreachable via SSH as of 2026-07-30
+#    (port 22 accepts the TCP connection but the SSH handshake itself times
+#    out/resets -- sshd likely not actually responding), status unknown.
+#  - 104.154.133.164 (GCP xero-automation) -- this run's target. Shares the
+#    box with an unrelated, already-running xero-invoice-app (nginx on
+#    80/443, node app on 3000), so Carlink's nginx uses NGINX_PORT=8080
+#    instead -- see docker-compose.prod.yml.
 #
 # Secrets are never hardcoded here or written into git -- pass them in when
 # invoking this script, e.g.:
 #
-#   TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy ./deploy.sh
+#   TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy NGINX_PORT=8080 ./deploy.sh
 #
 # ==============================================================================
 
@@ -20,7 +27,7 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$GEMINI_API_KEY" ]; then
     exit 1
 fi
 
-echo "🚀 Starting Carlink System Deployment on server 47.84.130.79..."
+echo "🚀 Starting Carlink System Deployment..."
 
 # 1. Install Docker & Docker Compose (Debian / Ubuntu)
 if ! command -v docker &> /dev/null; then
@@ -32,7 +39,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 2. Clone or Pull GitHub Repository
-APP_DIR="/root/carlink_temp"
+APP_DIR="/opt/carlink-system"
 REPO_URL="https://github.com/WeiKangTen123/carlink-system.git"
 
 if [ ! -d "$APP_DIR" ]; then
@@ -61,15 +68,16 @@ else
 fi
 
 # Clean up build cache and now-superseded image layers left behind by this
-# build. Still worth doing on this bigger box (83GB) even though it's not the
-# survival issue it was on the old 10GB VM -- unpruned layers just accumulate
-# forever otherwise.
+# build -- unpruned layers otherwise accumulate forever and can fill a small
+# VM's disk over weeks of redeploys (this bit us on the old 10GB e2-micro).
 echo "🧹 Cleaning up Docker build cache and old image layers..."
 docker builder prune -af
 docker image prune -f
 
 echo "✅ Carlink System is live!"
-echo "🌐 Dashboard Web UI:  http://47.84.130.79:3000"
-echo "🌐 Dashboard HTTP:    http://47.84.130.79"
-echo "⚙️ Backend API:       http://47.84.130.79:8000"
-echo "🤖 Telegram Bot:      @carlink_reporter_bot"
+echo "🌐 Dashboard: http://<server-ip>:${NGINX_PORT:-80}/"
+echo "🤖 Telegram Bot: @carlink_reporter_bot"
+echo ""
+echo "Note: the API and dashboard containers are no longer published on their"
+echo "own host ports (8000/3000) -- everything goes through nginx now. See"
+echo "docker-compose.prod.yml for why."
