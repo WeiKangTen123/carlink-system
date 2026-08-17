@@ -1,4 +1,4 @@
-import { CATEGORY_OPTIONS, type ReportData } from "@/lib/api";
+import { CATEGORY_OPTIONS, type ReportData, type DamageSummaryItem } from "@/lib/api";
 
 /** Builds a ReportData payload from the shared New/Edit report form's
  * FormData -- pulled out so both create and edit go through exactly the
@@ -56,14 +56,29 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
 
   const severityInput = (formData.get("severity_level") as string)?.trim() || null;
 
-  // Only the part name and severity are actually asked on this form -- damage
-  // type, photo reference, and repair necessity are left null rather than
-  // guessed, since nobody has confirmed them here.
-  const damage_summary = damaged_parts.map((part) => ({
-    part,
-    severity: severityInput,
-    human_verified: true,
-  }));
+  // ReportForm sends the reconciled per-part data (AI-derived damage_type/
+  // photo_reference/ai_confidence where a part still matches what the AI
+  // identified, a plain entry for anything hand-typed) via this hidden
+  // field -- see buildFinalDamageSummary there. Falls back to a plain
+  // rebuild only if that field is missing entirely, which shouldn't happen
+  // from ReportForm itself but keeps this function safe to call from
+  // anywhere else that only has damaged_parts + severity.
+  const damageSummaryRaw = formData.get("damage_summary") as string | null;
+  let damage_summary: DamageSummaryItem[] | null = null;
+  if (damageSummaryRaw) {
+    try {
+      damage_summary = JSON.parse(damageSummaryRaw);
+    } catch {
+      damage_summary = null;
+    }
+  }
+  if (!damage_summary) {
+    damage_summary = damaged_parts.map((part) => ({
+      part,
+      severity: severityInput,
+      human_verified: true,
+    }));
+  }
 
   const payload: ReportData = {
     reporter_name: (formData.get("reporter_name") as string)?.trim() || null,

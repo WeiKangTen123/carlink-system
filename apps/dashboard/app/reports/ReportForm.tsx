@@ -12,6 +12,7 @@ import {
   fileUrl,
   type PhotoAnalysisDraft,
   type ReportData,
+  type DamageSummaryItem,
 } from "@/lib/api";
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
@@ -57,16 +58,39 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
   const [accidentType, setAccidentType] = useState(initialData?.accident_type ?? "");
   const [severityLevel, setSeverityLevel] = useState(initialData?.severity_level || "Minor");
   const [damagedParts, setDamagedParts] = useState(initialData?.damaged_parts?.join(", ") ?? "");
+  // The AI's per-part damage_type/photo_reference/ai_confidence -- kept
+  // separately from the plain damagedParts text above because that field
+  // stays freely editable, and this richer data only makes sense for
+  // exactly the parts the AI actually identified from a real photo (see
+  // buildFinalDamageSummary, which reconciles the two on submit rather than
+  // just discarding this the way the form used to).
+  const [damageSummary, setDamageSummary] = useState<DamageSummaryItem[]>(initialData?.damage_summary ?? []);
 
   function applyDraft(draft: PhotoAnalysisDraft, currentDescription: string) {
     if (draft.accident_type) setAccidentType(draft.accident_type);
     if (draft.severity_level) setSeverityLevel(draft.severity_level);
     if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
+    if (draft.damage_summary && draft.damage_summary.length) setDamageSummary(draft.damage_summary);
     if (draft.category && draft.category.length) setCategory(new Set(draft.category));
     // Never overwrites a description the reporter already wrote -- only
     // fills it in when they uploaded photos before typing anything.
     if (draft.description && !currentDescription.trim()) setDescription(draft.description);
     setAiApplied(true);
+  }
+
+  // Reconciles the freely-typed "Damaged Parts" text against the richer
+  // AI-provided damageSummary at submit time: a part the reporter hasn't
+  // touched since AI set it keeps its real photo_reference/ai_confidence/
+  // damage_type; a part they typed by hand (or edited after AI ran) gets a
+  // plain entry instead of carrying over another part's AI data by mistake.
+  function buildFinalDamageSummary(): DamageSummaryItem[] {
+    const currentParts = damagedParts.split(",").map((p) => p.trim()).filter(Boolean);
+    const byPart = new Map(damageSummary.map((item) => [item.part.toLowerCase(), item]));
+    return currentParts.map((part) => {
+      const aiItem = byPart.get(part.toLowerCase());
+      if (aiItem) return aiItem;
+      return { part, severity: severityLevel, human_verified: true };
+    });
   }
 
   // Runs the AI analysis against whatever photos + description text are
@@ -252,6 +276,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
         )}
 
         <input type="hidden" name="temp_photo_paths" value={JSON.stringify(tempPhotoPaths)} />
+        <input type="hidden" name="damage_summary" value={JSON.stringify(buildFinalDamageSummary())} />
       </section>
 
       {/* Vehicle Info */}
