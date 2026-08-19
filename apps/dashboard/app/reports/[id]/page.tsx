@@ -247,7 +247,7 @@ export default async function ReportDetailPage({
               {d.location || "Tuas Bay Drive, Singapore"}
             </span>
           </div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, letter-spacing: "-0.02em", margin: 0 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
             {v?.make || "Honda"} {v?.model || "Vezel 1.5"} &mdash; {d.accident_type || "Vehicle Incident Assessment"}
           </h1>
         </div>
