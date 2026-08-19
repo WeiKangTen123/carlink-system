@@ -1,413 +1,136 @@
 "use client";
 
 import React, { useState } from "react";
-import Link from "next/link";
-import { type ReportSummary, fileUrl } from "@/lib/api";
+import { type ReportDetail, type DamageSummaryItem, fileUrl } from "@/lib/api";
+import { deleteReportAction } from "@/app/reports/actions";
+import { signOffReportAction } from "@/app/reports/actions";
+import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 
-// Case data repository
-export type CaseData = {
-  id: string;
-  plate: string;
-  vehicle: string;
-  accidentType: string;
-  severity: string;
-  severityClass: "severe" | "moderate" | "minor";
-  location: string;
-  date: string;
-  channel: string;
-  aiConfidence: string;
-  aiSummary: string;
-  keyFactors: string[];
-  blueprintHotspots: {
-    id: number;
-    top: string;
-    left: string;
-    label: string;
-    title: string;
-    severe?: boolean;
-  }[];
-  photos: {
-    id: string;
-    src: string;
-    title: string;
-    category: string;
-    boxes: {
-      top: string;
-      left: string;
-      width: string;
-      height: string;
-      tag: string;
-      color?: string;
-    }[];
-  }[];
-  damageItems: {
-    part: string;
-    oem: string;
-    desc: string;
-    mechanism: string;
-    severity: string;
-    aiScore: string;
-    verified: boolean;
-  }[];
-  costs: {
-    label: string;
-    amount: string;
-    total?: boolean;
-  }[];
-  police: {
-    station: string;
-    ref: string;
-  };
-  insurance: {
-    company: string;
-    policy: string;
-    type: string;
-  };
+/** Approximate schematic zone per damaged-part name, for the blueprint
+ * hotspots -- placement only (front/rear/side of a generic top-down car
+ * outline), never a per-case measured coordinate, since nothing in the
+ * data model records where on the actual vehicle a photo was taken. This
+ * intentionally mirrors damage_summary.part's own vocabulary in
+ * apps/bot-service/app/reports/schema.py. */
+const PART_ZONES: Record<string, { top: string; left: string }> = {
+  "Front Bumper": { top: "88px", left: "66px" },
+  "Bonnet/Hood": { top: "32px", left: "95px" },
+  Headlight: { top: "50px", left: "68px" },
+  Windshield: { top: "38px", left: "200px" },
+  Roof: { top: "88px", left: "200px" },
+  "Left Door": { top: "95px", left: "150px" },
+  "Right Door": { top: "95px", left: "150px" },
+  "Side Mirror": { top: "95px", left: "150px" },
+  Fender: { top: "62px", left: "112px" },
+  "Wheel/Rim": { top: "18px", left: "122px" },
+  Tire: { top: "18px", left: "122px" },
+  Chassis: { top: "88px", left: "200px" },
+  Undercarriage: { top: "88px", left: "200px" },
+  Taillight: { top: "50px", left: "332px" },
+  "Boot/Trunk": { top: "32px", left: "320px" },
+  "Rear Bumper": { top: "88px", left: "336px" },
 };
+const DEFAULT_ZONE = { top: "88px", left: "200px" };
+const zoneFor = (part: string) => PART_ZONES[part] || DEFAULT_ZONE;
 
-export const DEFAULT_CASES: Record<string, CaseData> = {
-  "SLK-3063-Z": {
-    id: "CL-11900-SLK3063Z",
-    plate: "SLK 3063 Z",
-    vehicle: "Honda Vezel 1.5 Hybrid",
-    accidentType: "Rear-Left Corner Collision",
-    severity: "Moderate Damage",
-    severityClass: "moderate",
-    location: "Tuas Bay Drive, Singapore",
-    date: "2026-08-18 16:45",
-    channel: "Telegram",
-    aiConfidence: "97.1%",
-    aiSummary:
-      "Detected rear-left corner impact. Severe deformation and sheet metal crease on lower tailgate panel, structural buckling on rear-left quarter panel, and abrasive scuffing across rear bumper lower cover. Reverse parking sensor bracket displaced.",
-    keyFactors: [
-      "Impact Zone: Rear Left Corner",
-      "Airbags: Not Deployed",
-      "Chassis Subframe: Nominal",
-      "Tailgate Gap: Distorted (8mm)",
-    ],
-    blueprintHotspots: [
-      { id: 0, top: "135px", left: "330px", label: "01", title: "P1273082: Rear Bumper Cover Fracture", severe: false },
-      { id: 1, top: "115px", left: "320px", label: "02", title: "P1273082: Left Tailgate Panel Crease", severe: true },
-      { id: 2, top: "145px", left: "265px", label: "03", title: "P1273084: Rear Left Quarter Panel Buckle", severe: false },
-    ],
-    photos: [
-      {
-        id: "P1273082",
-        src: "/cases/slk3063z/P1273082.JPG",
-        title: "Rear-Left 3/4 Corner Angle",
-        category: "Rear Impact",
-        boxes: [
-          { top: "52%", left: "42%", width: "24%", height: "26%", tag: "⚡ Tailgate Crease // 98.2%", color: "#ef4444" },
-          { top: "58%", left: "26%", width: "24%", height: "22%", tag: "⚡ Bumper Scuff & Crush // 96.5%", color: "#f59e0b" },
-        ],
-      },
-      {
-        id: "P1273083",
-        src: "/cases/slk3063z/P1273083.JPG",
-        title: "Rear Full Perspective & Plate",
-        category: "Rear Impact",
-        boxes: [
-          { top: "48%", left: "46%", width: "20%", height: "28%", tag: "⚡ Tailgate Dent // 97.4%", color: "#ef4444" },
-        ],
-      },
-      {
-        id: "P1273087",
-        src: "/cases/slk3063z/P1273087.JPG",
-        title: "Macro: Tailgate & Bumper Seam",
-        category: "Macro Close-up",
-        boxes: [
-          { top: "28%", left: "30%", width: "42%", height: "45%", tag: "⚡ Sheetmetal Tear // 98.9%", color: "#ef4444" },
-        ],
-      },
-      {
-        id: "P1273090",
-        src: "/cases/slk3063z/P1273090.JPG",
-        title: "Rear Right Angle (Baseline)",
-        category: "Side / Quarter",
-        boxes: [],
-      },
-      {
-        id: "P1273084",
-        src: "/cases/slk3063z/P1273084.JPG",
-        title: "Rear Left Wheel & Arch Seam",
-        category: "Side / Quarter",
-        boxes: [
-          { top: "42%", left: "22%", width: "32%", height: "36%", tag: "⚡ Arch Misalignment // 94.0%", color: "#f59e0b" },
-        ],
-      },
-      {
-        id: "P1273088",
-        src: "/cases/slk3063z/P1273088.JPG",
-        title: "Macro: Tailgate Gap Distortion",
-        category: "Macro Close-up",
-        boxes: [
-          { top: "34%", left: "36%", width: "32%", height: "35%", tag: "⚡ Gap Distortion > 8mm // 96.1%", color: "#ef4444" },
-        ],
-      },
-    ],
-    damageItems: [
-      {
-        part: "Rear Tailgate / Boot Lid Assembly",
-        oem: "OEM-HON-68100-T7A",
-        desc: "Ref: P1273082 • Deep dent & paint crack",
-        mechanism: "Plastic Deformation / Crease",
-        severity: "Severe",
-        aiScore: "98.2%",
-        verified: true,
-      },
-      {
-        part: "Rear Bumper Lower Cover & Fascia",
-        oem: "OEM-HON-71501-T7A",
-        desc: "Ref: P1273082 • Scuffing & lower lip fracture",
-        mechanism: "Impact Abrasion & Fracture",
-        severity: "Moderate",
-        aiScore: "96.5%",
-        verified: true,
-      },
-      {
-        part: "Rear Left Quarter Panel / Fender",
-        oem: "OEM-HON-63700-T7A",
-        desc: "Ref: P1273084 • Sheet metal buckled 35mm",
-        mechanism: "Buckling & Torsion",
-        severity: "Moderate",
-        aiScore: "94.0%",
-        verified: true,
-      },
-      {
-        part: "Ultrasonic Reverse Parking Sensor (LH)",
-        oem: "OEM-HON-39680-TEX",
-        desc: "Ref: P1273087 • Sensor bracket displaced",
-        mechanism: "Sensor Misalignment",
-        severity: "Minor",
-        aiScore: "92.5%",
-        verified: true,
-      },
-    ],
-    costs: [
-      { label: "OEM Replacement Parts (Tailgate + Bumper Cover)", amount: "SGD 1,850.00" },
-      { label: "Panel Beating & Realignment Labor (6.0 hrs @ $85/hr)", amount: "SGD 510.00" },
-      { label: "Spray Painting (Pearl Metallic • 3 Panels)", amount: "SGD 750.00" },
-      { label: "Parking Sensor Calibration & Diagnostics", amount: "SGD 180.00" },
-      { label: "Total Estimated Insurance Indemnity", amount: "SGD 3,290.00", total: true },
-    ],
-    police: { station: "Singapore Traffic Police HQ", ref: "TP/2026/11900-Z" },
-    insurance: {
-      company: "NTUC Income Insurance Co-operative",
-      policy: "INC-99021-VZ",
-      type: "Own Damage (OD) • Comprehensive",
-    },
-  },
+/** damage_summary.photo_reference is "P01", "P02"... in upload order (see
+ * schema.py) -- this is the same indexing scheme applied to photo_urls. */
+const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
 
-  "VAY-4821": {
-    id: "CIR-2026-E973",
-    plate: "VAY 4821",
-    vehicle: "2023 Honda Civic 1.5 Turbo RS",
-    accidentType: "Frontal-Offset Collision",
-    severity: "Moderate Damage",
-    severityClass: "moderate",
-    location: "Federal Highway KM 14.2, PJ",
-    date: "2026-08-19 14:15",
-    channel: "Telegram",
-    aiConfidence: "96.4%",
-    aiSummary:
-      "Identified direct frontal-offset collision against roadside barrier. Severe mechanical deformation detected on front bumper bar, right fender panel buckled, and right LED headlamp casing destroyed. Structural engine subframe appears intact.",
-    keyFactors: ["Impact Angle: 25° Right Offset", "Airbags: Not Deployed", "Subframe: Nominal", "Fluid Leakage: Low Risk"],
-    blueprintHotspots: [
-      { id: 0, top: "76px", left: "62px", label: "01", title: "P01: Front Bumper Crush", severe: true },
-      { id: 1, top: "36px", left: "110px", label: "02", title: "P02: Right Front Fender Torsion", severe: false },
-      { id: 2, top: "48px", left: "75px", label: "03", title: "P03: Headlamp Lens Shattered", severe: false },
-    ],
-    photos: [
-      {
-        id: "P01",
-        src: "/cases/sample/car_accident_1.jpg",
-        title: "Frontal Impact Perspective",
-        category: "Front Damage",
-        boxes: [
-          { top: "35%", left: "22%", width: "48%", height: "50%", tag: "⚡ Bumper Deform // 97.2%", color: "#ef4444" },
-          { top: "20%", left: "65%", width: "28%", height: "35%", tag: "⚡ Fender Scratch // 94.1%", color: "#f59e0b" },
-        ],
-      },
-      {
-        id: "P02",
-        src: "/cases/sample/car_accident_2.jpg",
-        title: "Right Quarter Panel",
-        category: "Side Impact",
-        boxes: [
-          { top: "40%", left: "30%", width: "40%", height: "40%", tag: "⚡ Panel Torsion // 95.0%", color: "#f59e0b" },
-        ],
-      },
-      {
-        id: "P03",
-        src: "/cases/sample/malaysia_sample_2.jpg",
-        title: "License Plate & Underbody",
-        category: "Front Damage",
-        boxes: [],
-      },
-      {
-        id: "P04",
-        src: "/cases/sample/online_sample_1.jpg",
-        title: "Wide Angle Overview",
-        category: "Wide Angle",
-        boxes: [],
-      },
-    ],
-    damageItems: [
-      {
-        part: "Front Bumper Assembly",
-        oem: "OEM-HON-71101-T20",
-        desc: "Ref: P01 • Lower lip tear",
-        mechanism: "Severe Crush / Tear",
-        severity: "Severe",
-        aiScore: "97.2%",
-        verified: true,
-      },
-      {
-        part: "Right Front Fender Panel",
-        oem: "OEM-HON-60211-T20",
-        desc: "Ref: P02 • Panel buckled 40mm",
-        mechanism: "Buckling & Torsion",
-        severity: "Moderate",
-        aiScore: "94.1%",
-        verified: true,
-      },
-      {
-        part: "Right LED Headlamp Unit",
-        oem: "OEM-HON-33100-T20",
-        desc: "Ref: P01 • Lens shattered",
-        mechanism: "Lens Shattered",
-        severity: "Moderate",
-        aiScore: "98.5%",
-        verified: true,
-      },
-    ],
-    costs: [
-      { label: "OEM Replacement Parts (Bumper + Headlamp)", amount: "RM 2,450.00" },
-      { label: "Panel Beating & Alignment Labor (5.5 hrs)", amount: "RM 850.00" },
-      { label: "Spray Painting (2-Stage Pearl Coat • 2 Panels)", amount: "RM 900.00" },
-      { label: "ADAS Radar Calibration & Diagnostics", amount: "RM 200.00" },
-      { label: "Total Estimated Insurance Indemnity", amount: "RM 4,400.00", total: true },
-    ],
-    police: { station: "Balai Polis Trafik Petaling Jaya", ref: "PJ/TRAF/2026/08912" },
-    insurance: { company: "Allianz General Insurance Bhd", policy: "ALZ-99214-08", type: "Own Damage (OD)" },
-  },
-
-  "WX-8888-A": {
-    id: "CIR-2026-F7A3",
-    plate: "WX 8888 A",
-    vehicle: "2021 Toyota Hilux 2.8 D-4D",
-    accidentType: "Rear-End Barrier Collision",
-    severity: "Minor Damage",
-    severityClass: "minor",
-    location: "Workshop Bay 2, Subang",
-    date: "2026-08-15 11:20",
-    channel: "WhatsApp",
-    aiConfidence: "95.8%",
-    aiSummary:
-      "Detected minor reverse impact against parking curb. Rear steel step bumper scratched, left mudflap dislodged, minimal cosmetic paint scuffing.",
-    keyFactors: ["Impact Zone: Rear Bumper Step", "Chassis: Intact", "Bed Alignment: Nominal"],
-    blueprintHotspots: [
-      { id: 0, top: "135px", left: "320px", label: "01", title: "P01: Steel Bumper Step Scratch", severe: false },
-    ],
-    photos: [
-      {
-        id: "P01",
-        src: "/cases/sample/malaysia_sample_2.jpg",
-        title: "Rear Bumper Step",
-        category: "Rear Impact",
-        boxes: [
-          { top: "45%", left: "35%", width: "30%", height: "30%", tag: "⚡ Step Scuff // 95.8%", color: "#10b981" },
-        ],
-      },
-    ],
-    damageItems: [
-      {
-        part: "Rear Step Bumper Assembly",
-        oem: "OEM-TOY-52151-0K0",
-        desc: "Ref: P01 • Minor cosmetic scratch",
-        mechanism: "Surface Abrasion",
-        severity: "Minor",
-        aiScore: "95.8%",
-        verified: true,
-      },
-    ],
-    costs: [
-      { label: "Rear Step Buffing & Touch-Up Paint", amount: "RM 350.00" },
-      { label: "Mudflap Clip Replacement", amount: "RM 60.00" },
-      { label: "Total Estimated Insurance Indemnity", amount: "RM 410.00", total: true },
-    ],
-    police: { station: "Balai Polis Subang Jaya", ref: "SJ/2026/0411" },
-    insurance: { company: "Etiqa General Insurance Bhd", policy: "ETQ-55219-HL", type: "Own Damage (OD)" },
-  },
-};
-
-interface StudioAppProps {
-  initialReports?: ReportSummary[];
-  initialCaseKey?: string;
+function severityClass(severity?: string | null): string {
+  const s = (severity || "").toLowerCase();
+  if (s.includes("severe")) return "severe";
+  if (s.includes("moderate")) return "moderate";
+  if (s.includes("minor")) return "minor";
+  return "minor";
 }
 
-export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }: StudioAppProps) {
-  const [currentCaseKey, setCurrentCaseKey] = useState<string>(initialCaseKey);
-  const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
-  const [activeCategory, setActiveCategory] = useState<string>("All Photos");
-  const [showOverlay, setShowOverlay] = useState<boolean>(true);
-  const [isPdfModalOpen, setIsPdfModalOpen] = useState<boolean>(false);
-  const [isSignOffModalOpen, setIsSignOffModalOpen] = useState<boolean>(false);
-  const [isSignedOff, setIsSignedOff] = useState<boolean>(false);
-  const [verifiedItems, setVerifiedItems] = useState<Record<number, boolean>>({});
+export function StudioApp({ report }: { report: ReportDetail }) {
+  const d = report.data;
+  const v = d.vehicle_info;
+  const pol = d.police_report;
+  const ins = d.insurance_details;
 
-  const caseData = DEFAULT_CASES[currentCaseKey] || DEFAULT_CASES["SLK-3063-Z"];
-  const currentPhoto = caseData.photos[activePhotoIndex] || caseData.photos[0];
-  const photoCategories = ["All Photos", ...Array.from(new Set(caseData.photos.map((p) => p.category)))];
+  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
+  const [showBadges, setShowBadges] = useState(true);
+  const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
+  const [isSignOffModalOpen, setIsSignOffModalOpen] = useState(false);
+  const [isSigningOff, setIsSigningOff] = useState(false);
+  const [signOffError, setSignOffError] = useState<string | null>(null);
 
-  const toggleItemVerify = (idx: number) => {
-    setVerifiedItems((prev) => ({
-      ...prev,
-      [idx]: prev[idx] !== undefined ? !prev[idx] : false,
-    }));
+  const isSignedOff = report.status === "Signed Off" || d.sign_off?.status === "Signed Off";
+
+  // Same fallback the original detail page used: real damage_summary items
+  // when they exist, otherwise the plain damaged_parts list with everything
+  // else honestly left unknown -- never invented from the description text.
+  const damageEntries: DamageSummaryItem[] =
+    d.damage_summary && d.damage_summary.length > 0
+      ? d.damage_summary
+      : (d.damaged_parts || []).map((p) => ({ part: p, severity: d.severity_level || null, human_verified: false }));
+
+  const photos = report.photo_urls || [];
+  const currentPhotoUrl = photos[activePhotoIndex];
+  const currentPhotoLabel = photoLabel(activePhotoIndex);
+  const currentPhotoDamage = damageEntries.filter((item) => item.photo_reference === currentPhotoLabel);
+
+  const plate = v?.plate_number || d.vehicle_details || null;
+  const vehicleName = [v?.make, v?.model].filter(Boolean).join(" ") || d.vehicle_details || "Vehicle";
+  const reportCode = d.report_id || `CIR-2026-${report.id.slice(0, 4).toUpperCase()}`;
+
+  const conditionChips = [
+    d.weather_condition,
+    d.road_condition,
+    d.traffic_condition,
+  ].filter(Boolean) as string[];
+
+  const handleHotspotClick = (idx: number, item: DamageSummaryItem) => {
+    setHighlightedDamageIndex(idx);
+    if (item.photo_reference) {
+      const photoIdx = parseInt(item.photo_reference.replace(/\D/g, ""), 10) - 1;
+      if (photoIdx >= 0 && photoIdx < photos.length) setActivePhotoIndex(photoIdx);
+    }
+    document.getElementById(`damage-row-${idx}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  const handleSignOff = async () => {
+    setIsSigningOff(true);
+    setSignOffError(null);
+    const result = await signOffReportAction(report.id, "Surveyor Sign-Off");
+    if ("error" in result) {
+      setSignOffError(result.error);
+      setIsSigningOff(false);
+      return;
+    }
+    // Same Next.js Router Cache staleness the original SignOffButton worked
+    // around -- a full reload is what actually shows the new status here.
+    window.location.reload();
   };
 
   return (
     <div>
-      {/* 5-Stage Claim Lifecycle Progress Stepper */}
-      <div className="claim-stepper-glass">
+      {/* 3-Stage Claim Lifecycle Stepper -- matches what the system actually
+          tracks (Report.status / sign_off.status), not an invented 5-stage
+          pipeline with stages nothing here updates. */}
+      <div className="claim-stepper-glass" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
         <div className="step-node completed">
           <div className="step-circle">✓</div>
           <div>
-            <div className="step-title">1. Bot Ingestion</div>
-            <div className="step-desc">{caseData.channel} Intake</div>
+            <div className="step-title">1. Filed</div>
+            <div className="step-desc" style={{ textTransform: "capitalize" }}>{report.channel} intake</div>
           </div>
         </div>
-
-        <div className="step-node completed">
-          <div className="step-circle">✓</div>
-          <div>
-            <div className="step-title">2. AI Vision Scan</div>
-            <div className="step-desc">Gemini-2.5 &bull; {caseData.aiConfidence}</div>
-          </div>
-        </div>
-
         <div className={`step-node ${isSignedOff ? "completed" : "active"}`}>
+          <div className="step-circle">{isSignedOff ? "✓" : "2"}</div>
+          <div>
+            <div className="step-title">2. Under Review</div>
+            <div className="step-desc">{isSignedOff ? "Reviewed" : "Awaiting surveyor sign-off"}</div>
+          </div>
+        </div>
+        <div className={`step-node ${isSignedOff ? "completed" : ""}`}>
           <div className="step-circle">{isSignedOff ? "✓" : "3"}</div>
           <div>
-            <div className="step-title">3. Surveyor Audit</div>
-            <div className="step-desc">{isSignedOff ? "Audited & Verified" : "Under Review (You)"}</div>
-          </div>
-        </div>
-
-        <div className={`step-node ${isSignedOff ? "completed" : ""}`}>
-          <div className="step-circle">{isSignedOff ? "✓" : "4"}</div>
-          <div>
-            <div className="step-title">4. Manager Sign-Off</div>
-            <div className="step-desc">{isSignedOff ? "Signed & Locked" : "Pending Sign-Off"}</div>
-          </div>
-        </div>
-
-        <div className="step-node">
-          <div className="step-circle">5</div>
-          <div>
-            <div className="step-title">5. Claim Settled</div>
-            <div className="step-desc">{caseData.insurance.company.split(" ")[0]}</div>
+            <div className="step-title">3. Signed Off</div>
+            <div className="step-desc">{isSignedOff ? "Locked" : "Pending"}</div>
           </div>
         </div>
       </div>
@@ -416,42 +139,44 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
       <div className="card-header" style={{ marginBottom: 20 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-            <span className="badge-plate-glow">{caseData.plate}</span>
-            <span className={`chip-severity ${caseData.severityClass}`}>
-              {isSignedOff ? "✓ SIGNED OFF & LOCKED" : `⚡ ${caseData.severity}`}
+            {plate && <span className="badge-plate-glow">{plate}</span>}
+            <span className={`chip-severity ${severityClass(d.severity_level)}`}>
+              {isSignedOff ? "✓ SIGNED OFF & LOCKED" : d.severity_level ? `⚡ ${d.severity_level}` : "Severity unassessed"}
             </span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              CASE_ID: <code>{caseData.id}</code> &bull; Incident at {caseData.location}
+              CASE_ID: <code>{report.id}</code>
+              {d.location && <> &bull; Incident at {d.location}</>}
             </span>
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
-            {caseData.vehicle} &mdash; {caseData.accidentType}
+            {vehicleName}
+            {d.accident_type && <> &mdash; {d.accident_type}</>}
           </h1>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button
-            type="button"
-            className="btn-secondary-modern"
-            onClick={() => setShowOverlay(!showOverlay)}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <a href={`/reports/${report.id}/edit`} className="btn-secondary-modern">
+            <span>✏️</span> {isSignedOff ? "Reopen & Edit" : "Edit Report"}
+          </a>
+          <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={reportCode} />
+          {!isSignedOff && (
+            <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
+              <span>✍️</span> Finalize &amp; Sign Off
+            </button>
+          )}
+          <form
+            action={deleteReportAction}
+            onSubmit={(e) => {
+              if (!confirm("Delete this report? This deletes its photos and PDF too, and can't be undone.")) {
+                e.preventDefault();
+              }
+            }}
           >
-            <span>{showOverlay ? "👁️" : "🙈"}</span>
-            <span>{showOverlay ? "Hide AI Vision Box" : "Show AI Vision Box"}</span>
-          </button>
-          <button
-            type="button"
-            className="btn-secondary-modern"
-            onClick={() => setIsPdfModalOpen(true)}
-          >
-            <span>📄</span> Live PDF Preview
-          </button>
-          <button
-            type="button"
-            className="btn-primary-modern"
-            onClick={() => setIsSignOffModalOpen(true)}
-          >
-            <span>✍️</span> {isSignedOff ? "Locked Sign-Off" : "Finalize & Sign Off"}
-          </button>
+            <input type="hidden" name="id" value={report.id} />
+            <button type="submit" className="btn-secondary-modern" style={{ color: "var(--danger, #ef4444)" }}>
+              🗑️ Delete
+            </button>
+          </form>
         </div>
       </div>
 
@@ -464,14 +189,14 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
             <div className="card-header">
               <div>
                 <div className="card-title">
-                  <span>📐</span> Interactive Vehicle Body Blueprint
+                  <span>📐</span> Vehicle Body Blueprint
                 </div>
                 <div className="card-subtitle">
-                  Click pulsing damage hotspots to jump directly to evidence photo angles
+                  Approximate zone per damaged part &mdash; click to jump to its evidence photo
                 </div>
               </div>
-              <span className={`chip-severity ${caseData.severityClass}`}>
-                {caseData.blueprintHotspots.length} Damaged Zones
+              <span className={`chip-severity ${severityClass(d.severity_level)}`}>
+                {damageEntries.length} Damaged {damageEntries.length === 1 ? "Zone" : "Zones"}
               </span>
             </div>
 
@@ -486,142 +211,102 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
                     strokeWidth="2.2"
                     strokeLinejoin="round"
                   />
-                  <path
-                    d="M 175 35 L 255 35 L 275 50 L 155 50 Z"
-                    fill="rgba(56, 189, 248, 0.08)"
-                    stroke="var(--border-color)"
-                    strokeWidth="1.5"
-                  />
-                  <path
-                    d="M 175 145 L 255 145 L 275 130 L 155 130 Z"
-                    fill="rgba(56, 189, 248, 0.08)"
-                    stroke="var(--border-color)"
-                    strokeWidth="1.5"
-                  />
+                  <path d="M 175 35 L 255 35 L 275 50 L 155 50 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-color)" strokeWidth="1.5" />
+                  <path d="M 175 145 L 255 145 L 275 130 L 155 130 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-color)" strokeWidth="1.5" />
                   <rect x="180" y="55" width="80" height="70" rx="6" fill="none" stroke="var(--border-color)" strokeWidth="1.5" />
                   <rect x="105" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
                   <rect x="270" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
                   <rect x="105" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
                   <rect x="270" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                  <text x="35" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
-                    FRONT
-                  </text>
-                  <text x="365" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
-                    REAR
-                  </text>
+                  <text x="35" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">FRONT</text>
+                  <text x="365" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">REAR</text>
                 </svg>
 
-                {caseData.blueprintHotspots.map((spot, idx) => (
-                  <button
-                    key={spot.id || idx}
-                    type="button"
-                    className={`hotspot-beacon ${spot.severe ? "severe-spot" : ""}`}
-                    style={{ top: spot.top, left: spot.left }}
-                    title={spot.title}
-                    onClick={() => setActivePhotoIndex(idx % caseData.photos.length)}
-                  >
-                    {spot.label}
-                  </button>
-                ))}
+                {damageEntries.length === 0 && (
+                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "var(--text-muted)" }}>
+                    No damaged parts recorded yet
+                  </div>
+                )}
+
+                {damageEntries.map((item, idx) => {
+                  const zone = zoneFor(item.part);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      className={`hotspot-beacon ${severityClass(item.severity) === "severe" ? "severe-spot" : ""}`}
+                      style={{ top: zone.top, left: zone.left }}
+                      title={`${item.part}${item.damage_type ? " — " + item.damage_type : ""}`}
+                      onClick={() => handleHotspotClick(idx, item)}
+                    >
+                      {String(idx + 1).padStart(2, "0")}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
 
-          {/* AI Vision Photo Inspector */}
-          <div className="card-glass">
-            <div className="card-header">
-              <div>
-                <div className="card-title">
-                  <span>📸</span> AI Vision Photo Inspector
+          {/* Photo Evidence Inspector */}
+          {photos.length > 0 && (
+            <div className="card-glass">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">
+                    <span>📸</span> Photo Evidence Inspector
+                  </div>
+                  <div className="card-subtitle">
+                    Photo {activePhotoIndex + 1} of {photos.length} &bull; Photo ID:{" "}
+                    <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{currentPhotoLabel}</strong>
+                  </div>
                 </div>
-                <div className="card-subtitle">
-                  Photo {activePhotoIndex + 1} of {caseData.photos.length} &bull; Photo ID:{" "}
-                  <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>
-                    {currentPhoto.id}
-                  </strong>
-                </div>
+                <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "5px 10px" }} onClick={() => setShowBadges(!showBadges)}>
+                  {showBadges ? "🙈 Hide Detected Parts" : "👁️ Show Detected Parts"}
+                </button>
               </div>
-              <span className="chip-severity minor">{currentPhoto.category}</span>
-            </div>
 
-            {/* Main Evidence Photo Display */}
-            <div className="photo-inspector-box">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={currentPhoto.src} alt={currentPhoto.id} className="inspector-main-img" />
+              <div className="photo-inspector-box">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={fileUrl(currentPhotoUrl)} alt={currentPhotoLabel} className="inspector-main-img" />
+              </div>
 
-              {showOverlay && currentPhoto.boxes && currentPhoto.boxes.length > 0 && (
-                <div className="ai-bounding-overlay">
-                  {currentPhoto.boxes.map((box, bIdx) => (
-                    <div
-                      key={bIdx}
-                      className="ai-box-marker-glow"
-                      style={{
-                        top: box.top,
-                        left: box.left,
-                        width: box.width,
-                        height: box.height,
-                        borderColor: box.color || "var(--accent-cyan)",
-                      }}
-                    >
-                      <div
-                        className="ai-box-tag-glow"
-                        style={{
-                          background: box.color
-                            ? `linear-gradient(135deg, ${box.color} 0%, #1e293b 100%)`
-                            : "var(--accent-gradient)",
-                        }}
-                      >
-                        {box.tag}
-                      </div>
-                    </div>
-                  ))}
+              {showBadges && (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                  {currentPhotoDamage.length > 0 ? (
+                    currentPhotoDamage.map((item, i) => (
+                      <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11 }}>
+                        ⚡ {item.part}
+                        {item.ai_confidence ? ` // ${item.ai_confidence} confidence` : ""}
+                      </span>
+                    ))
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      No damaged parts linked to this specific photo
+                    </span>
+                  )}
                 </div>
               )}
-            </div>
 
-            {/* Category Chips */}
-            <div className="photo-category-strip">
-              {photoCategories.map((cat) => {
-                const count =
-                  cat === "All Photos"
-                    ? caseData.photos.length
-                    : caseData.photos.filter((p) => p.category === cat).length;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    className={`photo-cat-btn ${activeCategory === cat ? "active" : ""}`}
-                    onClick={() => setActiveCategory(cat)}
-                  >
-                    {cat} ({count})
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Thumbnail Selector Strip */}
-            <div className="photo-thumb-strip">
-              {caseData.photos.map((p, idx) => {
-                const isMatch = activeCategory === "All Photos" || p.category === activeCategory;
-                if (!isMatch) return null;
-                return (
+              {/* Thumbnail Selector Strip */}
+              <div className="photo-thumb-strip">
+                {photos.map((src, idx) => (
                   <div
-                    key={p.id || idx}
+                    key={idx}
                     className={`photo-thumb ${activePhotoIndex === idx ? "active" : ""}`}
                     onClick={() => setActivePhotoIndex(idx)}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={p.src} alt={p.id} />
+                    <img src={fileUrl(src)} alt={photoLabel(idx)} />
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Right Column: AI Insights & Tables */}
+        {/* Right Column: AI Summary & Tables */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          {/* Gemini Analysis Card */}
+          {/* AI-Drafted Summary */}
           <div
             style={{
               background: "var(--surface-elevated)",
@@ -632,331 +317,165 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
               boxShadow: "var(--shadow-sm)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13 }}>
-                <span>🤖</span> Gemini Multimodal Vision Analysis
+                <span>🤖</span> AI-Drafted Incident Summary
               </div>
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "11px",
-                  fontWeight: 800,
-                  background: "var(--accent-gradient)",
-                  color: "#ffffff",
-                  padding: "3px 10px",
-                  borderRadius: "12px",
-                }}
-              >
-                {caseData.aiConfidence} AI Confidence
-              </span>
+              {d.ai_analysis?.confidence_score && (
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "11px",
+                    fontWeight: 800,
+                    background: "var(--accent-gradient)",
+                    color: "#ffffff",
+                    padding: "3px 10px",
+                    borderRadius: "12px",
+                  }}
+                >
+                  {d.ai_analysis.confidence_score}
+                </span>
+              )}
             </div>
 
-            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 10, lineHeight: 1.6 }}>
-              {caseData.aiSummary}
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: conditionChips.length ? 10 : 0, lineHeight: 1.6 }}>
+              {d.description}
             </p>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {caseData.keyFactors.map((f, i) => (
-                <span key={i} className="chip-severity minor" style={{ fontSize: 10 }}>
-                  {f}
+            {conditionChips.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {conditionChips.map((f, i) => (
+                  <span key={i} className="chip-severity minor" style={{ fontSize: 10 }}>
+                    {f}
+                  </span>
+                ))}
+                <span className="chip-severity minor" style={{ fontSize: 10 }}>
+                  Reported to Authorities: {d.reported_to_authorities ? "Yes" : "No"}
                 </span>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
 
-          {/* Damage Verification Checklist Table */}
+          {/* Damage Verification Table */}
           <div className="card-glass">
             <div className="card-header">
               <div>
                 <div className="card-title">
-                  <span>📋</span> Damage Verification &amp; Parts Checklist
+                  <span>📋</span> Damage &amp; Parts Checklist
                 </div>
-                <div className="card-subtitle">Surveyor confirmation required for claim approval</div>
+                <div className="card-subtitle">Photo-linked parts checklist</div>
               </div>
               <span className="chip-severity minor" style={{ fontSize: 10 }}>
-                {caseData.damageItems.length} Components
+                {damageEntries.length} Components
               </span>
             </div>
 
-            <table className="damage-table-modern">
-              <thead>
-                <tr>
-                  <th>Damaged Component</th>
-                  <th>Damage Mechanism</th>
-                  <th>Severity</th>
-                  <th>AI Score</th>
-                  <th>Surveyor Sign</th>
-                </tr>
-              </thead>
-              <tbody>
-                {caseData.damageItems.map((item, idx) => {
-                  const isVerified = verifiedItems[idx] !== undefined ? verifiedItems[idx] : item.verified;
-                  return (
-                    <tr key={idx}>
+            {damageEntries.length === 0 ? (
+              <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>No structured damage recorded.</p>
+            ) : (
+              <table className="damage-table-modern">
+                <thead>
+                  <tr>
+                    <th>Damaged Component</th>
+                    <th>Damage Type</th>
+                    <th>Severity</th>
+                    <th>OEM Part #</th>
+                    <th>AI Confidence</th>
+                    <th>Verified</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {damageEntries.map((item, idx) => (
+                    <tr
+                      key={idx}
+                      id={`damage-row-${idx}`}
+                      style={{ background: highlightedDamageIndex === idx ? "var(--bg-hover, rgba(56,189,248,0.08))" : undefined }}
+                    >
                       <td>
                         <strong>{item.part}</strong>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                          {item.desc}
-                        </div>
+                        {item.photo_reference && (
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Ref: {item.photo_reference}</div>
+                        )}
                       </td>
-                      <td>{item.mechanism}</td>
+                      <td>{item.damage_type || "—"}</td>
                       <td>
-                        <span className={`chip-severity ${item.severity.toLowerCase()}`}>
-                          {item.severity}
-                        </span>
+                        <span className={`chip-severity ${severityClass(item.severity)}`}>{item.severity || "—"}</span>
                       </td>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{item.oem_part_number || "—"}</td>
+                      <td>{item.ai_confidence || "—"}</td>
                       <td>
-                        <strong style={{ fontFamily: "var(--font-mono)" }}>{item.aiScore}</strong>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className={`verify-toggle-modern ${isVerified ? "verified" : ""}`}
-                          onClick={() => toggleItemVerify(idx)}
-                        >
-                          {isVerified ? "✓ Verified" : "Pending"}
-                        </button>
+                        {item.human_verified ? (
+                          <span className="verify-toggle-modern verified">✓ Verified</span>
+                        ) : (
+                          <span className="verify-toggle-modern">Pending</span>
+                        )}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
-          {/* Smart Repair Cost Matrix */}
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>💰</span> Smart Repair &amp; Claims Cost Estimator
-              </div>
-              <span className="chip-severity minor" style={{ fontSize: 10 }}>
-                Thatcham Standard
-              </span>
-            </div>
-
-            <div className="cost-matrix-glow">
-              {caseData.costs.map((c, i) => (
-                <div key={i} className={`cost-row ${c.total ? "total" : ""}`}>
-                  <span>{c.label}</span>
-                  <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{c.amount}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Police & Insurance Policy Details */}
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>🏛️</span> Authority &amp; Insurance Policy Details
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, fontSize: 13 }}>
-              <div>
-                <div className="detail-field-label">Police Station</div>
-                <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.police.station}</div>
-              </div>
-              <div>
-                <div className="detail-field-label">Report Reference Number</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)", marginTop: 2 }}>
-                  {caseData.police.ref}
+          {/* Repair Cost Estimate */}
+          {ins?.estimated_repair_cost && (
+            <div className="card-glass">
+              <div className="card-header">
+                <div className="card-title">
+                  <span>💰</span> Estimated Repair Cost
                 </div>
               </div>
-              <div>
-                <div className="detail-field-label">Insurance Provider</div>
-                <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.insurance.company}</div>
-              </div>
-              <div>
-                <div className="detail-field-label">Policy &amp; Claim Type</div>
-                <div style={{ fontWeight: 600, marginTop: 2 }}>
-                  {caseData.insurance.policy} &bull; {caseData.insurance.type}
+              <div className="cost-matrix-glow">
+                <div className="cost-row total">
+                  <span>Total Estimated Repair Cost</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{ins.estimated_repair_cost}</span>
                 </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Police & Insurance Details */}
+          {(pol?.police_station || pol?.report_number || ins?.insurer_name || ins?.policy_number || ins?.claim_type) && (
+            <div className="card-glass">
+              <div className="card-header">
+                <div className="card-title">
+                  <span>🏛️</span> Authority &amp; Insurance Policy Details
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, fontSize: 13 }}>
+                {pol?.police_station && (
+                  <div>
+                    <div className="detail-field-label">Police Station</div>
+                    <div style={{ fontWeight: 600, marginTop: 2 }}>{pol.police_station}</div>
+                  </div>
+                )}
+                {pol?.report_number && (
+                  <div>
+                    <div className="detail-field-label">Report Reference Number</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)", marginTop: 2 }}>{pol.report_number}</div>
+                  </div>
+                )}
+                {ins?.insurer_name && (
+                  <div>
+                    <div className="detail-field-label">Insurance Provider</div>
+                    <div style={{ fontWeight: 600, marginTop: 2 }}>{ins.insurer_name}</div>
+                  </div>
+                )}
+                {(ins?.policy_number || ins?.claim_type) && (
+                  <div>
+                    <div className="detail-field-label">Policy &amp; Claim Type</div>
+                    <div style={{ fontWeight: 600, marginTop: 2 }}>
+                      {ins?.policy_number} {ins?.policy_number && ins?.claim_type && <>&bull;</>} {ins?.claim_type}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* =========================================================================
-          MODAL 1: LIVE 20-SECTION OFFICIAL INSURANCE REPORT PREVIEW
-          ========================================================================= */}
-      {isPdfModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100vw",
-            height: "100vh",
-            background: "rgba(0, 0, 0, 0.8)",
-            backdropFilter: "blur(10px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 999,
-          }}
-          onClick={() => setIsPdfModalOpen(false)}
-        >
-          <div
-            style={{
-              background: "var(--surface-card)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "16px",
-              width: "90%",
-              maxWidth: "900px",
-              maxHeight: "90vh",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "16px 24px",
-                borderBottom: "1px solid var(--border-color)",
-              }}
-            >
-              <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>
-                📄 Official Insurance Assessment Certificate ({caseData.id})
-              </h3>
-              <button
-                type="button"
-                className="btn-secondary-modern"
-                style={{ padding: "4px 10px" }}
-                onClick={() => setIsPdfModalOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div style={{ padding: "24px", overflowY: "auto", background: "#334155" }}>
-              <div
-                style={{
-                  background: "#ffffff",
-                  color: "#0f172a",
-                  padding: "36px 42px",
-                  borderRadius: "4px",
-                  fontFamily: "Arial, sans-serif",
-                  fontSize: "12px",
-                  lineHeight: 1.5,
-                }}
-              >
-                <div
-                  style={{
-                    borderBottom: "2px solid #2563eb",
-                    paddingBottom: "12px",
-                    marginBottom: "16px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "flex-end",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b" }}>
-                      CARLINK MOTOR CLAIMS CONSULTANCY
-                    </div>
-                    <div style={{ fontSize: 20, fontWeight: 800, color: "#1e3a8a" }}>
-                      Vehicle Damage Assessment Report
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#1e3a8a" }}>
-                      {caseData.id}
-                    </div>
-                    <div style={{ fontSize: 10, color: "#64748b" }}>Date: {caseData.date}</div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(4, 1fr)",
-                    gap: "12px",
-                    background: "#f8fafc",
-                    padding: "12px",
-                    borderRadius: "6px",
-                    marginBottom: "16px",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#64748b" }}>VEHICLE PLATE</div>
-                    <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800 }}>{caseData.plate}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#64748b" }}>MAKE &amp; MODEL</div>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{caseData.vehicle}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#64748b" }}>ACCIDENT TYPE</div>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{caseData.accidentType}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#64748b" }}>SEVERITY</div>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: "#b45309" }}>{caseData.severity}</div>
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: "16px" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "#1e3a8a", marginBottom: 6 }}>
-                    Verified Damage Schedule ({caseData.damageItems.length} Components)
-                  </div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
-                    <thead>
-                      <tr style={{ background: "#e2e8f0", textAlign: "left" }}>
-                        <th style={{ padding: "6px 8px" }}>Component</th>
-                        <th style={{ padding: "6px 8px" }}>Damage Mechanism</th>
-                        <th style={{ padding: "6px 8px" }}>Severity</th>
-                        <th style={{ padding: "6px 8px" }}>AI Confidence</th>
-                        <th style={{ padding: "6px 8px" }}>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {caseData.damageItems.map((it, idx) => (
-                        <tr key={idx} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                          <td style={{ padding: "6px 8px" }}>{it.part}</td>
-                          <td style={{ padding: "6px 8px" }}>{it.mechanism}</td>
-                          <td style={{ padding: "6px 8px" }}>{it.severity}</td>
-                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{it.aiScore}</td>
-                          <td style={{ padding: "6px 8px", color: "#166534", fontWeight: 700 }}>✓ Verified</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginTop: "24px",
-                    paddingTop: "16px",
-                    borderTop: "1px solid #e2e8f0",
-                    fontSize: "10px",
-                  }}
-                >
-                  <div>
-                    <strong>Surveyor:</strong> Alex Wong (Loss Adjuster #9921)
-                  </div>
-                  <div>
-                    <strong>Status:</strong>{" "}
-                    <span style={{ color: "#166534", fontWeight: 700 }}>LOCKED &amp; VERIFIED</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================
-          MODAL 2: DIGITAL SURVEYOR SIGN-OFF
-          ========================================================================= */}
+      {/* Sign-Off Confirmation Modal */}
       {isSignOffModalOpen && (
         <div
           style={{
@@ -972,7 +491,7 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
             justifyContent: "center",
             zIndex: 999,
           }}
-          onClick={() => setIsSignOffModalOpen(false)}
+          onClick={() => !isSigningOff && setIsSignOffModalOpen(false)}
         >
           <div
             style={{
@@ -987,42 +506,21 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
           >
             <h3 style={{ fontSize: 16, fontWeight: 800, marginBottom: 10 }}>Surveyor Digital Sign-Off</h3>
             <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-              By signing below, you certify that the damage items and photos for report{" "}
-              <strong>{caseData.id}</strong> ({caseData.plate}) have been verified and comply with loss adjuster
-              standards.
+              By signing off, you certify that the damage items and photos for report <strong>{report.id}</strong>
+              {plate && <> ({plate})</>} have been verified. This locks the report against further edits until
+              reopened.
             </p>
 
-            <div
-              style={{
-                border: "2px dashed var(--border-hover)",
-                borderRadius: "8px",
-                height: "110px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: "var(--surface-elevated)",
-                marginBottom: "16px",
-              }}
-            >
-              <span style={{ fontFamily: "cursive", fontSize: "32px", color: "var(--accent-cyan)" }}>
-                Alex Wong
-              </span>
-            </div>
+            {signOffError && (
+              <p style={{ fontSize: 12, color: "var(--danger, #ef4444)", marginBottom: 12 }}>{signOffError}</p>
+            )}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button type="button" className="btn-secondary-modern" onClick={() => setIsSignOffModalOpen(false)}>
+              <button type="button" className="btn-secondary-modern" onClick={() => setIsSignOffModalOpen(false)} disabled={isSigningOff}>
                 Cancel
               </button>
-              <button
-                type="button"
-                className="btn-primary-modern"
-                onClick={() => {
-                  setIsSignOffModalOpen(false);
-                  setIsSignedOff(true);
-                  alert(`✓ Report ${caseData.id} (${caseData.plate}) has been officially Signed Off! Locked PDF generated.`);
-                }}
-              >
-                <span>✍️</span> Confirm &amp; Lock PDF
+              <button type="button" className="btn-primary-modern" onClick={handleSignOff} disabled={isSigningOff}>
+                <span>✍️</span> {isSigningOff ? "Signing Off..." : "Confirm & Lock"}
               </button>
             </div>
           </div>

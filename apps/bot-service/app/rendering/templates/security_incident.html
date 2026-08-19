@@ -310,12 +310,13 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th style="width: 25%;">Damaged Part</th>
-          <th style="width: 25%;">Damage Type</th>
-          <th style="width: 15%;">Severity</th>
-          <th style="width: 12%;">Photo Ref</th>
-          <th style="width: 13%;">AI Conf.</th>
-          <th style="width: 10%;">Verified</th>
+          <th style="width: 19%;">Damaged Part</th>
+          <th style="width: 18%;">Damage Type</th>
+          <th style="width: 12%;">Severity</th>
+          <th style="width: 10%;">Photo Ref</th>
+          <th style="width: 11%;">AI Conf.</th>
+          <th style="width: 15%;">OEM Part #</th>
+          <th style="width: 15%;">Verified</th>
         </tr>
       </thead>
       <tbody>
@@ -327,6 +328,7 @@
             <td><span class="pill {{ 'pill-red' if item.severity == 'Severe' else ('pill-amber' if item.severity == 'Moderate' else 'pill-green') }}">{{ item.severity or '—' }}</span></td>
             <td>{{ item.photo_reference or '—' }}</td>
             <td>{{ item.ai_confidence or '—' }}</td>
+            <td>{{ item.oem_part_number or '—' }}</td>
             <td><span class="pill {{ 'pill-green' if item.human_verified else 'pill-slate' }}">{{ 'Yes' if item.human_verified else 'Pending' }}</span></td>
           </tr>
           {% endfor %}
@@ -336,6 +338,7 @@
             <td><strong>{{ part }}</strong></td>
             <td>—</td>
             <td>{% if report.severity_level %}<span class="pill pill-amber">{{ report.severity_level }}</span>{% else %}—{% endif %}</td>
+            <td>—</td>
             <td>—</td>
             <td>—</td>
             <td><span class="pill pill-slate">Pending</span></td>

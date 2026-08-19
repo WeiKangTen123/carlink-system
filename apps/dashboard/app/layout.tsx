@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CaseSelectorDropdown } from "@/components/CaseSelectorDropdown";
+import { listReports } from "@/lib/api";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,7 +11,14 @@ export const metadata: Metadata = {
     "Intelligent loss adjuster studio with AI vision extraction, interactive vehicle blueprint, and official PDF sign-off workflow.",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  let reports: Awaited<ReturnType<typeof listReports>> = [];
+  try {
+    reports = await listReports();
+  } catch {
+    reports = [];
+  }
+
   return (
     <html lang="en" data-theme="dark">
       <head>
@@ -54,12 +62,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {/* Right Action Area */}
             <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
               {/* Active Case Selector Dropdown */}
-              <CaseSelectorDropdown />
+              <CaseSelectorDropdown reports={reports} />
 
               {/* Dual Theme Switcher (Dark & White) */}
               <ThemeToggle />
 
-              {/* Surveyor Profile Pill */}
+              {/* Role Pill -- there's no login/auth system, so this names a
+                  role, not a specific person (see signOffReportAction's
+                  default reviewer name for the same convention). Showing an
+                  invented name here as if someone were logged in is exactly
+                  the kind of fabricated-identity bug this project has
+                  already had to fix elsewhere. */}
               <div
                 style={{
                   display: "flex",
@@ -87,9 +100,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     fontWeight: 800,
                   }}
                 >
-                  AW
+                  SA
                 </div>
-                <span>Alex Wong</span>
+                <span>Surveyor / Loss Adjuster</span>
               </div>
             </div>
           </header>

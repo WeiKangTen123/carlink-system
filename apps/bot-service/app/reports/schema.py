@@ -46,6 +46,10 @@ class DamageSummaryItem(BaseModel):
     )
     human_verified: bool = False
     repair_required: bool = False
+    oem_part_number: Optional[str] = Field(
+        default=None,
+        description="OEM replacement part number, e.g. '71501-T7A-A00' -- never invent this. Only set it if the reporter or surveyor actually supplied it; a human enters this during review, it is never looked up or guessed.",
+    )
 
 
 class VehicleInfo(BaseModel):

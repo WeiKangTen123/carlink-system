@@ -78,6 +78,7 @@ export type DamageSummaryItem = {
   ai_confidence?: string | null;
   human_verified?: boolean;
   repair_required?: boolean;
+  oem_part_number?: string | null;
 };
 
 export type VehicleInfo = {
