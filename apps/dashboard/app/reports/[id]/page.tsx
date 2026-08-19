@@ -1,5 +1,5 @@
 import { StudioApp } from "@/components/StudioApp";
-import { getReport, listReports } from "@/lib/api";
+import { getReport, listReports, type ReportSummary } from "@/lib/api";
 
 export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -13,7 +13,7 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
     caseKey = "SLK-3063-Z";
   }
 
-  let reports = [];
+  let reports: ReportSummary[] = [];
   try {
     reports = await listReports();
   } catch (err) {

@@ -1,8 +1,8 @@
 import { StudioApp } from "@/components/StudioApp";
-import { listReports } from "@/lib/api";
+import { listReports, type ReportSummary } from "@/lib/api";
 
 export default async function DashboardHomePage() {
-  let reports = [];
+  let reports: ReportSummary[] = [];
   try {
     reports = await listReports();
   } catch (err) {
