@@ -15,12 +15,13 @@ export default function SettingsPage() {
   };
 
   return (
-    <div style={{ paddingBottom: 40 }}>
-      <div className="page-header">
+    <div>
+      {/* Header */}
+      <div className="page-header" style={{ marginBottom: 24 }}>
         <div>
-          <h1 style={{ margin: 0 }}>System Settings &amp; Administration</h1>
-          <p style={{ margin: "4px 0 0", color: "var(--muted)", fontSize: 13 }}>
-            Manage user roles, AI Vision model chains, PDF branding, and audit rules
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>System Settings &amp; Configuration</h1>
+          <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
+            Manage surveyor user roles, AI Gemini fallback model chains, and official PDF certificate branding
           </p>
         </div>
       </div>
@@ -29,43 +30,54 @@ export default function SettingsPage() {
       <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
         <button
           type="button"
-          className={activeTab === "users" ? "button-primary" : ""}
+          className={`photo-cat-btn ${activeTab === "users" ? "active" : ""}`}
           onClick={() => setActiveTab("users")}
-          style={{ padding: "8px 16px", borderRadius: 4, cursor: "pointer" }}
         >
           👥 User Roles &amp; Permissions
         </button>
         <button
           type="button"
-          className={activeTab === "ai" ? "button-primary" : ""}
+          className={`photo-cat-btn ${activeTab === "ai" ? "active" : ""}`}
           onClick={() => setActiveTab("ai")}
-          style={{ padding: "8px 16px", borderRadius: 4, cursor: "pointer" }}
         >
-          🤖 AI Model &amp; Prompt Config
+          🤖 AI Model &amp; Prompt Chain
         </button>
         <button
           type="button"
-          className={activeTab === "pdf" ? "button-primary" : ""}
+          className={`photo-cat-btn ${activeTab === "pdf" ? "active" : ""}`}
           onClick={() => setActiveTab("pdf")}
-          style={{ padding: "8px 16px", borderRadius: 4, cursor: "pointer" }}
         >
-          📄 PDF Template Branding
+          📄 PDF Report Branding
         </button>
       </div>
 
       {savedMessage && (
-        <div style={{ background: "#dcfce7", color: "#166534", padding: "10px 14px", borderRadius: 4, marginBottom: 16 }}>
+        <div
+          style={{
+            background: "var(--badge-green-bg)",
+            color: "var(--badge-green-text)",
+            border: "1px solid var(--badge-green-border)",
+            padding: "10px 16px",
+            borderRadius: 8,
+            marginBottom: 20,
+            fontSize: 13,
+            fontWeight: 700,
+          }}
+        >
           ✓ {savedMessage}
         </div>
       )}
 
       {activeTab === "users" && (
-        <div className="card">
-          <h2>User Role Management</h2>
-          <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            Define access levels for Admins, Surveyors (Reviewers), and Viewers.
-          </p>
-          <table className="reports-table">
+        <div className="card-glass" style={{ padding: 0 }}>
+          <div style={{ padding: "20px 24px", borderBottom: "1px solid var(--border-color)" }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>User Role Management</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "4px 0 0" }}>
+              Define access levels for System Admins, Loss Adjuster Surveyors, and Insurance Viewers.
+            </p>
+          </div>
+
+          <table className="damage-table-modern">
             <thead>
               <tr>
                 <th>User / Email</th>
@@ -79,25 +91,39 @@ export default function SettingsPage() {
                 <td>
                   <strong>weikang@carlink.com</strong>
                 </td>
-                <td><span className="status-pill" style={{ background: "#2563eb", color: "#fff" }}>Admin</span></td>
+                <td>
+                  <span className="chip-severity" style={{ background: "var(--accent-cyan)", color: "#ffffff" }}>
+                    Admin
+                  </span>
+                </td>
                 <td>Full access, edit, sign-off, delete, settings management</td>
-                <td><span style={{ color: "#16a34a", fontWeight: "bold" }}>Active</span></td>
+                <td>
+                  <span style={{ color: "var(--badge-green-text)", fontWeight: "bold" }}>● Active</span>
+                </td>
               </tr>
               <tr>
                 <td>
-                  <strong>surveyor1@carlink.com</strong>
+                  <strong>alex.wong@carlink.com</strong>
                 </td>
-                <td><span className="status-pill">Surveyor / Loss Adjuster</span></td>
+                <td>
+                  <span className="chip-severity minor">Loss Adjuster / Surveyor</span>
+                </td>
                 <td>Review AI drafts, edit incident details, sign-off reports</td>
-                <td><span style={{ color: "#16a34a", fontWeight: "bold" }}>Active</span></td>
+                <td>
+                  <span style={{ color: "var(--badge-green-text)", fontWeight: "bold" }}>● Active</span>
+                </td>
               </tr>
               <tr>
                 <td>
                   <strong>viewer@insurance.com</strong>
                 </td>
-                <td><span className="status-pill" style={{ background: "#e2e8f0", color: "#475569" }}>Viewer</span></td>
+                <td>
+                  <span className="chip-severity minor">Claims Adjuster</span>
+                </td>
                 <td>Read-only access, search incidents, download PDF</td>
-                <td><span style={{ color: "#16a34a", fontWeight: "bold" }}>Active</span></td>
+                <td>
+                  <span style={{ color: "var(--badge-green-text)", fontWeight: "bold" }}>● Active</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -105,42 +131,69 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "ai" && (
-        <form onSubmit={handleSave} className="card">
-          <h2>AI Vision Model Chain Configuration</h2>
-          <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            Configure model fallbacks for continuous 24/7 vision extraction &amp; drafting.
-          </p>
-          <label style={{ display: "block", marginBottom: 12 }}>
-            <strong>Gemini Model Fallback Chain (Comma Separated)</strong>
+        <form onSubmit={handleSave} className="card-glass">
+          <div style={{ marginBottom: 16 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>AI Vision Model Chain Configuration</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "4px 0 0" }}>
+              Configure model fallbacks for continuous 24/7 multimodal vision extraction &amp; drafting.
+            </p>
+          </div>
+
+          <label style={{ display: "block", marginBottom: 16 }}>
+            <span className="detail-field-label">Gemini Model Fallback Chain (Comma Separated)</span>
             <input
               type="text"
               value={modelChain}
               onChange={(e) => setModelChain(e.target.value)}
-              style={{ width: "100%", padding: "8px", marginTop: 4, borderRadius: 4, border: "1px solid #ccc" }}
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                marginTop: 6,
+                borderRadius: 8,
+                border: "1px solid var(--border-color)",
+                background: "var(--surface-card)",
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+              }}
             />
           </label>
-          <button type="submit" className="button-primary" style={{ marginTop: 10 }}>
+
+          <button type="submit" className="btn-primary-modern">
             Save AI Configuration
           </button>
         </form>
       )}
 
       {activeTab === "pdf" && (
-        <form onSubmit={handleSave} className="card">
-          <h2>PDF Report Branding &amp; Legal Footer</h2>
-          <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            Customize official PDF report header title, logo, and legal disclaimers.
-          </p>
-          <label style={{ display: "block", marginBottom: 12 }}>
-            <strong>Company / Workshop Name</strong>
+        <form onSubmit={handleSave} className="card-glass">
+          <div style={{ marginBottom: 16 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>PDF Report Branding &amp; Legal Header</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "4px 0 0" }}>
+              Customize official PDF report header title, company name, and legal disclaimers.
+            </p>
+          </div>
+
+          <label style={{ display: "block", marginBottom: 16 }}>
+            <span className="detail-field-label">Company / Workshop Name</span>
             <input
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
-              style={{ width: "100%", padding: "8px", marginTop: 4, borderRadius: 4, border: "1px solid #ccc" }}
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                marginTop: 6,
+                borderRadius: 8,
+                border: "1px solid var(--border-color)",
+                background: "var(--surface-card)",
+                color: "var(--text-primary)",
+                fontSize: 13,
+              }}
             />
           </label>
-          <button type="submit" className="button-primary" style={{ marginTop: 10 }}>
+
+          <button type="submit" className="btn-primary-modern">
             Save PDF Branding
           </button>
         </form>

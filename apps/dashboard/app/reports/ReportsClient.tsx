@@ -14,7 +14,7 @@ const FALLBACK_CASES: ReportSummary[] = [
     channel: "telegram",
     created_at: new Date().toISOString(),
     location: "Tuas Bay Drive, Singapore",
-    category: ["Vehicle Collision", "Rear Impact"],
+    category: ["Vehicle Collision", "Rear-Left Corner"],
     thumbnail_url: "/cases/slk3063z/P1273082.JPG",
   },
   {
@@ -23,8 +23,8 @@ const FALLBACK_CASES: ReportSummary[] = [
     status: "Under Review",
     channel: "telegram",
     created_at: new Date(Date.now() - 3600000).toISOString(),
-    location: "Federal Highway KM 14.2",
-    category: ["Vehicle Collision", "Front Impact"],
+    location: "Federal Highway KM 14.2, PJ",
+    category: ["Vehicle Collision", "Frontal Offset"],
     thumbnail_url: "/cases/sample/car_accident_1.jpg",
   },
   {
@@ -61,21 +61,67 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
     return matchesSearch && matchesStatus;
   });
 
+  const totalCount = reportsList.length;
+  const pendingCount = reportsList.filter((r) => r.status !== "Signed Off").length;
+  const signedCount = reportsList.filter((r) => r.status === "Signed Off").length;
+
   return (
     <div>
+      {/* Page Header */}
       <div
         className="page-header"
         style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Vehicle Incident Repository</h1>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Cases Repository &amp; Command Center</h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            Inspect, filter, audit, and sign off vehicle claims cases
+            Inspect, filter, audit, and sign off vehicle claims cases across all channels
           </p>
         </div>
-        <Link href="/reports/new" className="button-primary">
-          + File New Incident
+        <Link href="/reports/new" className="btn-primary-modern">
+          <span>+</span> File New Incident
         </Link>
+      </div>
+
+      {/* KPI Cards */}
+      <div className="kpi-grid-modern" style={{ marginBottom: 24 }}>
+        <div className="kpi-card-glow">
+          <div className="kpi-label">Total Logged Cases</div>
+          <div className="kpi-val">{totalCount}</div>
+          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
+            ↑ Active Repository
+          </div>
+        </div>
+
+        <div className="kpi-card-glow">
+          <div className="kpi-label">Pending Surveyor Review</div>
+          <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>
+            {pendingCount < 10 ? `0${pendingCount}` : pendingCount}
+          </div>
+          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+            Action Required
+          </div>
+        </div>
+
+        <div className="kpi-card-glow">
+          <div className="kpi-label">Signed-Off Reports</div>
+          <div className="kpi-val" style={{ color: "var(--badge-green-text)" }}>
+            {signedCount < 10 ? `0${signedCount}` : signedCount}
+          </div>
+          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
+            ✓ Verified &amp; Locked
+          </div>
+        </div>
+
+        <div className="kpi-card-glow">
+          <div className="kpi-label">AI First-Pass Concordance</div>
+          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>
+            96.2%
+          </div>
+          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+            Vision Accuracy
+          </div>
+        </div>
       </div>
 
       {/* Search & Filter Controls Card */}
@@ -108,27 +154,27 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
               onClick={() => setStatusFilter("all")}
               className={`photo-cat-btn ${statusFilter === "all" ? "active" : ""}`}
             >
-              All ({reportsList.length})
+              All Cases ({reportsList.length})
             </button>
             <button
               type="button"
               onClick={() => setStatusFilter("pending")}
               className={`photo-cat-btn ${statusFilter === "pending" ? "active" : ""}`}
             >
-              Pending ({reportsList.filter((r) => r.status !== "Signed Off").length})
+              Pending ({pendingCount})
             </button>
             <button
               type="button"
               onClick={() => setStatusFilter("signed")}
               className={`photo-cat-btn ${statusFilter === "signed" ? "active" : ""}`}
             >
-              Signed Off ({reportsList.filter((r) => r.status === "Signed Off").length})
+              Signed Off ({signedCount})
             </button>
           </div>
         </div>
       </div>
 
-      {/* Reports Table */}
+      {/* Reports Master Table */}
       <div className="card-glass" style={{ padding: 0 }}>
         <div style={{ overflowX: "auto" }}>
           <table className="damage-table-modern">
@@ -183,7 +229,9 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
                   <td>
                     <div>
                       <strong style={{ color: "var(--accent-cyan)", fontFamily: "var(--font-mono)" }}>
-                        {r.id.toUpperCase().includes("SLK") ? "CL-11900-SLK3063Z" : `CIR-2026-${r.id.slice(0, 4).toUpperCase()}`}
+                        {r.id.toUpperCase().includes("SLK")
+                          ? "CL-11900-SLK3063Z"
+                          : `CIR-2026-${r.id.slice(0, 4).toUpperCase()}`}
                       </strong>
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>

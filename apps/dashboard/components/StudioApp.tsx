@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
-import { type ReportSummary, type ReportDetail, fileUrl } from "@/lib/api";
+import { type ReportSummary, fileUrl } from "@/lib/api";
 
 // Case data repository
 export type CaseData = {
@@ -65,7 +65,7 @@ export type CaseData = {
   };
 };
 
-const DEFAULT_CASES: Record<string, CaseData> = {
+export const DEFAULT_CASES: Record<string, CaseData> = {
   "SLK-3063-Z": {
     id: "CL-11900-SLK3063Z",
     plate: "SLK 3063 Z",
@@ -347,42 +347,18 @@ interface StudioAppProps {
 }
 
 export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }: StudioAppProps) {
-  const [activeTab, setActiveTab] = useState<"studio" | "overview" | "wizard" | "analytics">("studio");
   const [currentCaseKey, setCurrentCaseKey] = useState<string>(initialCaseKey);
   const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
   const [activeCategory, setActiveCategory] = useState<string>("All Photos");
   const [showOverlay, setShowOverlay] = useState<boolean>(true);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [isPdfModalOpen, setIsPdfModalOpen] = useState<boolean>(false);
   const [isSignOffModalOpen, setIsSignOffModalOpen] = useState<boolean>(false);
   const [isSignedOff, setIsSignedOff] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [verifiedItems, setVerifiedItems] = useState<Record<number, boolean>>({});
-
-  useEffect(() => {
-    const saved = (localStorage.getItem("carlink-theme") as "dark" | "light") || "dark";
-    setTheme(saved);
-    document.documentElement.setAttribute("data-theme", saved);
-  }, []);
-
-  const toggleThemeMode = (mode: "dark" | "light") => {
-    setTheme(mode);
-    document.documentElement.setAttribute("data-theme", mode);
-    localStorage.setItem("carlink-theme", mode);
-  };
 
   const caseData = DEFAULT_CASES[currentCaseKey] || DEFAULT_CASES["SLK-3063-Z"];
   const currentPhoto = caseData.photos[activePhotoIndex] || caseData.photos[0];
   const photoCategories = ["All Photos", ...Array.from(new Set(caseData.photos.map((p) => p.category)))];
-
-  const handleSelectCase = (key: string) => {
-    setCurrentCaseKey(key);
-    setActivePhotoIndex(0);
-    setActiveCategory("All Photos");
-    setIsSignedOff(false);
-    setVerifiedItems({});
-  };
 
   const toggleItemVerify = (idx: number) => {
     setVerifiedItems((prev) => ({
@@ -392,723 +368,353 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
   };
 
   return (
-    <div style={{ paddingBottom: 48 }}>
-      {/* Top Navbar Studio Bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          background: "var(--surface-card)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid var(--border-color)",
-          borderRadius: "14px",
-          padding: "10px 18px",
-          marginBottom: "20px",
-          boxShadow: "var(--shadow-md)",
-          flexWrap: "wrap",
-          gap: "12px",
-        }}
-      >
-        {/* Navigation Tabs */}
-        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "studio" ? "active" : ""}`}
-            onClick={() => setActiveTab("studio")}
-            style={{ cursor: "pointer", border: "none" }}
-          >
-            <span>🔍</span> Loss Adjuster Studio
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "overview" ? "active" : ""}`}
-            onClick={() => setActiveTab("overview")}
-            style={{ cursor: "pointer", border: "none" }}
-          >
-            <span>📊</span> Command Center
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "wizard" ? "active" : ""}`}
-            onClick={() => setActiveTab("wizard")}
-            style={{ cursor: "pointer", border: "none" }}
-          >
-            <span>✨</span> Incident Intake
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "analytics" ? "active" : ""}`}
-            onClick={() => setActiveTab("analytics")}
-            style={{ cursor: "pointer", border: "none" }}
-          >
-            <span>📈</span> AI Analytics
-          </button>
+    <div>
+      {/* 5-Stage Claim Lifecycle Progress Stepper */}
+      <div className="claim-stepper-glass">
+        <div className="step-node completed">
+          <div className="step-circle">✓</div>
+          <div>
+            <div className="step-title">1. Bot Ingestion</div>
+            <div className="step-desc">{caseData.channel} Intake</div>
+          </div>
         </div>
 
-        {/* Action Controls */}
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          {/* Active Case Selector Dropdown */}
-          <div className="case-selector-box" title="Switch Incident Case">
-            <span style={{ color: "var(--accent-cyan)", fontSize: "11px", fontWeight: 800 }}>CASE:</span>
-            <select
-              className="case-select-dropdown"
-              value={currentCaseKey}
-              onChange={(e) => handleSelectCase(e.target.value)}
-            >
-              <option value="SLK-3063-Z">SLK 3063 Z (Honda Vezel)</option>
-              <option value="VAY-4821">VAY 4821 (Honda Civic RS)</option>
-              <option value="WX-8888-A">WX 8888 A (Toyota Hilux)</option>
-            </select>
+        <div className="step-node completed">
+          <div className="step-circle">✓</div>
+          <div>
+            <div className="step-title">2. AI Vision Scan</div>
+            <div className="step-desc">Gemini-2.5 &bull; {caseData.aiConfidence}</div>
           </div>
+        </div>
 
-          {/* Clean Dark & White Theme Switch */}
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              background: "var(--surface-hover)",
-              border: "1px solid var(--border-color)",
-              padding: "3px",
-              borderRadius: "24px",
-              gap: "3px",
-            }}
+        <div className={`step-node ${isSignedOff ? "completed" : "active"}`}>
+          <div className="step-circle">{isSignedOff ? "✓" : "3"}</div>
+          <div>
+            <div className="step-title">3. Surveyor Audit</div>
+            <div className="step-desc">{isSignedOff ? "Audited & Verified" : "Under Review (You)"}</div>
+          </div>
+        </div>
+
+        <div className={`step-node ${isSignedOff ? "completed" : ""}`}>
+          <div className="step-circle">{isSignedOff ? "✓" : "4"}</div>
+          <div>
+            <div className="step-title">4. Manager Sign-Off</div>
+            <div className="step-desc">{isSignedOff ? "Signed & Locked" : "Pending Sign-Off"}</div>
+          </div>
+        </div>
+
+        <div className="step-node">
+          <div className="step-circle">5</div>
+          <div>
+            <div className="step-title">5. Claim Settled</div>
+            <div className="step-desc">{caseData.insurance.company.split(" ")[0]}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Studio Header Strip */}
+      <div className="card-header" style={{ marginBottom: 20 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+            <span className="badge-plate-glow">{caseData.plate}</span>
+            <span className={`chip-severity ${caseData.severityClass}`}>
+              {isSignedOff ? "✓ SIGNED OFF & LOCKED" : `⚡ ${caseData.severity}`}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              CASE_ID: <code>{caseData.id}</code> &bull; Incident at {caseData.location}
+            </span>
+          </div>
+          <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
+            {caseData.vehicle} &mdash; {caseData.accidentType}
+          </h1>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            onClick={() => setShowOverlay(!showOverlay)}
           >
-            <button
-              type="button"
-              onClick={() => toggleThemeMode("dark")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "5px",
-                fontSize: "11px",
-                fontWeight: 700,
-                padding: "4px 10px",
-                borderRadius: "18px",
-                border: "none",
-                background: theme === "dark" ? "linear-gradient(135deg, #38bdf8 0%, #6366f1 100%)" : "transparent",
-                color: theme === "dark" ? "#ffffff" : "var(--text-muted)",
-                cursor: "pointer",
-              }}
-            >
-              <span>🌙</span> Dark
-            </button>
-            <button
-              type="button"
-              onClick={() => toggleThemeMode("light")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "5px",
-                fontSize: "11px",
-                fontWeight: 700,
-                padding: "4px 10px",
-                borderRadius: "18px",
-                border: "none",
-                background: theme === "light" ? "#ffffff" : "transparent",
-                color: theme === "light" ? "#0f172a" : "var(--text-muted)",
-                cursor: "pointer",
-              }}
-            >
-              <span>☀️</span> White
-            </button>
-          </div>
-
-          {/* Live PDF & Sign Off */}
-          <button type="button" className="btn-secondary-modern" onClick={() => setIsPdfModalOpen(true)}>
-            <span>📄</span> Live PDF
+            <span>{showOverlay ? "👁️" : "🙈"}</span>
+            <span>{showOverlay ? "Hide AI Vision Box" : "Show AI Vision Box"}</span>
           </button>
-          <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
-            <span>✍️</span> Sign Off
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            onClick={() => setIsPdfModalOpen(true)}
+          >
+            <span>📄</span> Live PDF Preview
+          </button>
+          <button
+            type="button"
+            className="btn-primary-modern"
+            onClick={() => setIsSignOffModalOpen(true)}
+          >
+            <span>✍️</span> {isSignedOff ? "Locked Sign-Off" : "Finalize & Sign Off"}
           </button>
         </div>
       </div>
 
-      {/* =========================================================================
-          TAB 1: LOSS ADJUSTER LIVE STUDIO (MAIN EXPERIENCE)
-          ========================================================================= */}
-      {activeTab === "studio" && (
-        <div>
-          {/* 5-Stage Claim Lifecycle Progress Stepper */}
-          <div className="claim-stepper-glass">
-            <div className="step-node completed">
-              <div className="step-circle">✓</div>
+      {/* Split Studio Layout */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 24 }}>
+        {/* Left Column: Blueprint & Photo Inspector */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Vehicle Body Blueprint */}
+          <div className="card-glass">
+            <div className="card-header">
               <div>
-                <div className="step-title">1. Bot Ingestion</div>
-                <div className="step-desc">{caseData.channel} Intake</div>
-              </div>
-            </div>
-
-            <div className="step-node completed">
-              <div className="step-circle">✓</div>
-              <div>
-                <div className="step-title">2. AI Vision Scan</div>
-                <div className="step-desc">Gemini-2.5 &bull; {caseData.aiConfidence}</div>
-              </div>
-            </div>
-
-            <div className={`step-node ${isSignedOff ? "completed" : "active"}`}>
-              <div className="step-circle">{isSignedOff ? "✓" : "3"}</div>
-              <div>
-                <div className="step-title">3. Surveyor Audit</div>
-                <div className="step-desc">{isSignedOff ? "Audited & Verified" : "Under Review (You)"}</div>
-              </div>
-            </div>
-
-            <div className={`step-node ${isSignedOff ? "completed" : ""}`}>
-              <div className="step-circle">{isSignedOff ? "✓" : "4"}</div>
-              <div>
-                <div className="step-title">4. Manager Sign-Off</div>
-                <div className="step-desc">{isSignedOff ? "Signed & Locked" : "Pending Sign-Off"}</div>
-              </div>
-            </div>
-
-            <div className="step-node">
-              <div className="step-circle">5</div>
-              <div>
-                <div className="step-title">5. Claim Settled</div>
-                <div className="step-desc">{caseData.insurance.company.split(" ")[0]}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Studio Header Strip */}
-          <div className="card-header" style={{ marginBottom: 20 }}>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                <span className="badge-plate-glow">{caseData.plate}</span>
-                <span className={`chip-severity ${caseData.severityClass}`}>
-                  {isSignedOff ? "✓ SIGNED OFF & LOCKED" : `⚡ ${caseData.severity}`}
-                </span>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  CASE_ID: <code>{caseData.id}</code> &bull; Incident at {caseData.location}
-                </span>
-              </div>
-              <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
-                {caseData.vehicle} &mdash; {caseData.accidentType}
-              </h1>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <button
-                type="button"
-                className="btn-secondary-modern"
-                onClick={() => setShowOverlay(!showOverlay)}
-              >
-                <span>{showOverlay ? "👁️" : "🙈"}</span>
-                <span>{showOverlay ? "Hide AI Vision Box" : "Show AI Vision Box"}</span>
-              </button>
-              <button
-                type="button"
-                className="btn-primary-modern"
-                onClick={() => setIsSignOffModalOpen(true)}
-              >
-                <span>✓</span> Finalize &amp; Lock Sign-Off
-              </button>
-            </div>
-          </div>
-
-          {/* Split Studio Layout */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 24 }}>
-            {/* Left Column: Blueprint & Photo Inspector */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-              {/* Vehicle Body Blueprint */}
-              <div className="card-glass">
-                <div className="card-header">
-                  <div>
-                    <div className="card-title">
-                      <span>📐</span> Interactive Vehicle Body Blueprint
-                    </div>
-                    <div className="card-subtitle">
-                      Click pulsing damage hotspots to jump directly to evidence photo angles
-                    </div>
-                  </div>
-                  <span className={`chip-severity ${caseData.severityClass}`}>
-                    {caseData.blueprintHotspots.length} Damaged Zones
-                  </span>
+                <div className="card-title">
+                  <span>📐</span> Interactive Vehicle Body Blueprint
                 </div>
-
-                <div className="blueprint-stage-radar">
-                  <div className="radar-laser-beam" />
-                  <div className="svg-car-container">
-                    <svg viewBox="0 0 400 180" width="100%" height="auto" style={{ display: "block" }}>
-                      <path
-                        d="M 60 90 Q 60 40 100 35 L 140 35 L 180 20 L 260 20 L 300 35 L 340 40 Q 365 90 340 140 L 300 145 L 260 160 L 180 160 L 140 145 L 100 145 Q 60 140 60 90 Z"
-                        fill="none"
-                        stroke="var(--border-glow, #38bdf8)"
-                        strokeWidth="2.2"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M 175 35 L 255 35 L 275 50 L 155 50 Z"
-                        fill="rgba(56, 189, 248, 0.08)"
-                        stroke="var(--border-color)"
-                        strokeWidth="1.5"
-                      />
-                      <path
-                        d="M 175 145 L 255 145 L 275 130 L 155 130 Z"
-                        fill="rgba(56, 189, 248, 0.08)"
-                        stroke="var(--border-color)"
-                        strokeWidth="1.5"
-                      />
-                      <rect x="180" y="55" width="80" height="70" rx="6" fill="none" stroke="var(--border-color)" strokeWidth="1.5" />
-                      <rect x="105" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                      <rect x="270" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                      <rect x="105" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                      <rect x="270" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                      <text x="35" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
-                        FRONT
-                      </text>
-                      <text x="365" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
-                        REAR
-                      </text>
-                    </svg>
-
-                    {caseData.blueprintHotspots.map((spot, idx) => (
-                      <button
-                        key={spot.id || idx}
-                        type="button"
-                        className={`hotspot-beacon ${spot.severe ? "severe-spot" : ""}`}
-                        style={{ top: spot.top, left: spot.left }}
-                        title={spot.title}
-                        onClick={() => setActivePhotoIndex(idx % caseData.photos.length)}
-                      >
-                        {spot.label}
-                      </button>
-                    ))}
-                  </div>
+                <div className="card-subtitle">
+                  Click pulsing damage hotspots to jump directly to evidence photo angles
                 </div>
               </div>
-
-              {/* AI Vision Photo Inspector */}
-              <div className="card-glass">
-                <div className="card-header">
-                  <div>
-                    <div className="card-title">
-                      <span>📸</span> AI Vision Photo Inspector
-                    </div>
-                    <div className="card-subtitle">
-                      Photo {activePhotoIndex + 1} of {caseData.photos.length} &bull; Photo ID:{" "}
-                      <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>
-                        {currentPhoto.id}
-                      </strong>
-                    </div>
-                  </div>
-                  <span className="chip-severity minor">{currentPhoto.category}</span>
-                </div>
-
-                {/* Main Evidence Photo Display */}
-                <div className="photo-inspector-box">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={currentPhoto.src} alt={currentPhoto.id} className="inspector-main-img" />
-
-                  {showOverlay && currentPhoto.boxes && currentPhoto.boxes.length > 0 && (
-                    <div className="ai-bounding-overlay">
-                      {currentPhoto.boxes.map((box, bIdx) => (
-                        <div
-                          key={bIdx}
-                          className="ai-box-marker-glow"
-                          style={{
-                            top: box.top,
-                            left: box.left,
-                            width: box.width,
-                            height: box.height,
-                            borderColor: box.color || "var(--accent-cyan)",
-                          }}
-                        >
-                          <div
-                            className="ai-box-tag-glow"
-                            style={{
-                              background: box.color
-                                ? `linear-gradient(135deg, ${box.color} 0%, #1e293b 100%)`
-                                : "var(--accent-gradient)",
-                            }}
-                          >
-                            {box.tag}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Category Chips */}
-                <div className="photo-category-strip">
-                  {photoCategories.map((cat) => {
-                    const count =
-                      cat === "All Photos"
-                        ? caseData.photos.length
-                        : caseData.photos.filter((p) => p.category === cat).length;
-                    return (
-                      <button
-                        key={cat}
-                        type="button"
-                        className={`photo-cat-btn ${activeCategory === cat ? "active" : ""}`}
-                        onClick={() => setActiveCategory(cat)}
-                      >
-                        {cat} ({count})
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Thumbnail Selector Strip */}
-                <div className="photo-thumb-strip">
-                  {caseData.photos.map((p, idx) => {
-                    const isMatch = activeCategory === "All Photos" || p.category === activeCategory;
-                    if (!isMatch) return null;
-                    return (
-                      <div
-                        key={p.id || idx}
-                        className={`photo-thumb ${activePhotoIndex === idx ? "active" : ""}`}
-                        onClick={() => setActivePhotoIndex(idx)}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={p.src} alt={p.id} />
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <span className={`chip-severity ${caseData.severityClass}`}>
+                {caseData.blueprintHotspots.length} Damaged Zones
+              </span>
             </div>
 
-            {/* Right Column: AI Insights & Tables */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-              {/* Gemini Analysis Card */}
-              <div
-                style={{
-                  background: "var(--surface-elevated)",
-                  border: "1px solid var(--border-hover)",
-                  borderLeft: "4px solid var(--accent-cyan)",
-                  borderRadius: "12px",
-                  padding: "18px 20px",
-                  boxShadow: "var(--shadow-sm)",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13 }}>
-                    <span>🤖</span> Gemini Multimodal Vision Analysis
-                  </div>
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "11px",
-                      fontWeight: 800,
-                      background: "var(--accent-gradient)",
-                      color: "#ffffff",
-                      padding: "3px 10px",
-                      borderRadius: "12px",
-                    }}
+            <div className="blueprint-stage-radar">
+              <div className="radar-laser-beam" />
+              <div className="svg-car-container">
+                <svg viewBox="0 0 400 180" width="100%" height="auto" style={{ display: "block" }}>
+                  <path
+                    d="M 60 90 Q 60 40 100 35 L 140 35 L 180 20 L 260 20 L 300 35 L 340 40 Q 365 90 340 140 L 300 145 L 260 160 L 180 160 L 140 145 L 100 145 Q 60 140 60 90 Z"
+                    fill="none"
+                    stroke="var(--border-glow, #38bdf8)"
+                    strokeWidth="2.2"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M 175 35 L 255 35 L 275 50 L 155 50 Z"
+                    fill="rgba(56, 189, 248, 0.08)"
+                    stroke="var(--border-color)"
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="M 175 145 L 255 145 L 275 130 L 155 130 Z"
+                    fill="rgba(56, 189, 248, 0.08)"
+                    stroke="var(--border-color)"
+                    strokeWidth="1.5"
+                  />
+                  <rect x="180" y="55" width="80" height="70" rx="6" fill="none" stroke="var(--border-color)" strokeWidth="1.5" />
+                  <rect x="105" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
+                  <rect x="270" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
+                  <rect x="105" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
+                  <rect x="270" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
+                  <text x="35" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
+                    FRONT
+                  </text>
+                  <text x="365" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">
+                    REAR
+                  </text>
+                </svg>
+
+                {caseData.blueprintHotspots.map((spot, idx) => (
+                  <button
+                    key={spot.id || idx}
+                    type="button"
+                    className={`hotspot-beacon ${spot.severe ? "severe-spot" : ""}`}
+                    style={{ top: spot.top, left: spot.left }}
+                    title={spot.title}
+                    onClick={() => setActivePhotoIndex(idx % caseData.photos.length)}
                   >
-                    {caseData.aiConfidence} AI Confidence
-                  </span>
+                    {spot.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* AI Vision Photo Inspector */}
+          <div className="card-glass">
+            <div className="card-header">
+              <div>
+                <div className="card-title">
+                  <span>📸</span> AI Vision Photo Inspector
                 </div>
-
-                <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 10 }}>
-                  {caseData.aiSummary}
-                </p>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {caseData.keyFactors.map((f, i) => (
-                    <span key={i} className="chip-severity minor" style={{ fontSize: 10 }}>
-                      {f}
-                    </span>
-                  ))}
+                <div className="card-subtitle">
+                  Photo {activePhotoIndex + 1} of {caseData.photos.length} &bull; Photo ID:{" "}
+                  <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>
+                    {currentPhoto.id}
+                  </strong>
                 </div>
               </div>
+              <span className="chip-severity minor">{currentPhoto.category}</span>
+            </div>
 
-              {/* Damage Verification Checklist Table */}
-              <div className="card-glass">
-                <div className="card-header">
-                  <div>
-                    <div className="card-title">
-                      <span>📋</span> Damage Verification &amp; Parts Checklist
-                    </div>
-                    <div className="card-subtitle">Surveyor confirmation required for claim approval</div>
-                  </div>
-                  <span className="chip-severity minor" style={{ fontSize: 10 }}>
-                    {caseData.damageItems.length} Components
-                  </span>
-                </div>
+            {/* Main Evidence Photo Display */}
+            <div className="photo-inspector-box">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={currentPhoto.src} alt={currentPhoto.id} className="inspector-main-img" />
 
-                <table className="damage-table-modern">
-                  <thead>
-                    <tr>
-                      <th>Damaged Component</th>
-                      <th>Damage Mechanism</th>
-                      <th>Severity</th>
-                      <th>AI Score</th>
-                      <th>Surveyor Sign</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {caseData.damageItems.map((item, idx) => {
-                      const isVerified = verifiedItems[idx] !== undefined ? verifiedItems[idx] : item.verified;
-                      return (
-                        <tr key={idx}>
-                          <td>
-                            <strong>{item.part}</strong>
-                            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                              {item.desc}
-                            </div>
-                          </td>
-                          <td>{item.mechanism}</td>
-                          <td>
-                            <span className={`chip-severity ${item.severity.toLowerCase()}`}>
-                              {item.severity}
-                            </span>
-                          </td>
-                          <td>
-                            <strong style={{ fontFamily: "var(--font-mono)" }}>{item.aiScore}</strong>
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className={`verify-toggle-modern ${isVerified ? "verified" : ""}`}
-                              onClick={() => toggleItemVerify(idx)}
-                            >
-                              {isVerified ? "✓ Verified" : "Pending"}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Smart Repair Cost Matrix */}
-              <div className="card-glass">
-                <div className="card-header">
-                  <div className="card-title">
-                    <span>💰</span> Smart Repair &amp; Claims Cost Estimator
-                  </div>
-                  <span className="chip-severity minor" style={{ fontSize: 10 }}>
-                    Thatcham Standard
-                  </span>
-                </div>
-
-                <div className="cost-matrix-glow">
-                  {caseData.costs.map((c, i) => (
-                    <div key={i} className={`cost-row ${c.total ? "total" : ""}`}>
-                      <span>{c.label}</span>
-                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{c.amount}</span>
+              {showOverlay && currentPhoto.boxes && currentPhoto.boxes.length > 0 && (
+                <div className="ai-bounding-overlay">
+                  {currentPhoto.boxes.map((box, bIdx) => (
+                    <div
+                      key={bIdx}
+                      className="ai-box-marker-glow"
+                      style={{
+                        top: box.top,
+                        left: box.left,
+                        width: box.width,
+                        height: box.height,
+                        borderColor: box.color || "var(--accent-cyan)",
+                      }}
+                    >
+                      <div
+                        className="ai-box-tag-glow"
+                        style={{
+                          background: box.color
+                            ? `linear-gradient(135deg, ${box.color} 0%, #1e293b 100%)`
+                            : "var(--accent-gradient)",
+                        }}
+                      >
+                        {box.tag}
+                      </div>
                     </div>
                   ))}
                 </div>
-              </div>
+              )}
+            </div>
 
-              {/* Police & Insurance Policy Details */}
-              <div className="card-glass">
-                <div className="card-header">
-                  <div className="card-title">
-                    <span>🏛️</span> Authority &amp; Insurance Policy Details
-                  </div>
-                </div>
+            {/* Category Chips */}
+            <div className="photo-category-strip">
+              {photoCategories.map((cat) => {
+                const count =
+                  cat === "All Photos"
+                    ? caseData.photos.length
+                    : caseData.photos.filter((p) => p.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`photo-cat-btn ${activeCategory === cat ? "active" : ""}`}
+                    onClick={() => setActiveCategory(cat)}
+                  >
+                    {cat} ({count})
+                  </button>
+                );
+              })}
+            </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, fontSize: 13 }}>
-                  <div>
-                    <div className="detail-field-label">Police Station</div>
-                    <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.police.station}</div>
+            {/* Thumbnail Selector Strip */}
+            <div className="photo-thumb-strip">
+              {caseData.photos.map((p, idx) => {
+                const isMatch = activeCategory === "All Photos" || p.category === activeCategory;
+                if (!isMatch) return null;
+                return (
+                  <div
+                    key={p.id || idx}
+                    className={`photo-thumb ${activePhotoIndex === idx ? "active" : ""}`}
+                    onClick={() => setActivePhotoIndex(idx)}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.src} alt={p.id} />
                   </div>
-                  <div>
-                    <div className="detail-field-label">Report Reference Number</div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)", marginTop: 2 }}>
-                      {caseData.police.ref}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="detail-field-label">Insurance Provider</div>
-                    <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.insurance.company}</div>
-                  </div>
-                  <div>
-                    <div className="detail-field-label">Policy &amp; Claim Type</div>
-                    <div style={{ fontWeight: 600, marginTop: 2 }}>
-                      {caseData.insurance.policy} &bull; {caseData.insurance.type}
-                    </div>
-                  </div>
-                </div>
-              </div>
+                );
+              })}
             </div>
           </div>
         </div>
-      )}
 
-      {/* =========================================================================
-          TAB 2: COMMAND CENTER (OVERVIEW DASHBOARD)
-          ========================================================================= */}
-      {activeTab === "overview" && (
-        <div>
-          {/* KPI Tiles */}
-          <div className="kpi-grid-modern">
-            <div className="kpi-card-glow">
-              <div className="kpi-label">Total Logged Cases</div>
-              <div className="kpi-val">42</div>
-              <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
-                ↑ +14% vs last month
+        {/* Right Column: AI Insights & Tables */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Gemini Analysis Card */}
+          <div
+            style={{
+              background: "var(--surface-elevated)",
+              border: "1px solid var(--border-hover)",
+              borderLeft: "4px solid var(--accent-cyan)",
+              borderRadius: "12px",
+              padding: "18px 20px",
+              boxShadow: "var(--shadow-sm)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13 }}>
+                <span>🤖</span> Gemini Multimodal Vision Analysis
               </div>
-            </div>
-
-            <div className="kpi-card-glow">
-              <div className="kpi-label">Pending Surveyor Review</div>
-              <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>
-                07
-              </div>
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                Avg response: 42 mins
-              </div>
-            </div>
-
-            <div className="kpi-card-glow">
-              <div className="kpi-label">Signed-Off Reports</div>
-              <div className="kpi-val" style={{ color: "var(--badge-green-text)" }}>
-                35
-              </div>
-              <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
-                ✓ 100% compliance
-              </div>
-            </div>
-
-            <div className="kpi-card-glow">
-              <div className="kpi-label">Severe Collision Cases</div>
-              <div className="kpi-val" style={{ color: "var(--badge-red-text)" }}>
-                04
-              </div>
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                Loss Adjuster Sign-Off Required
-              </div>
-            </div>
-          </div>
-
-          {/* Search & Filter Bar */}
-          <div className="card-glass" style={{ marginBottom: 20, padding: "16px 20px" }}>
-            <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <input
-                  type="text"
-                  placeholder="🔍 Search by Plate (e.g. SLK 3063 Z), Driver, Location, Case ID..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    border: "1px solid var(--border-color)",
-                    background: "var(--surface-card)",
-                    color: "var(--text-primary)",
-                    fontSize: 13,
-                    outline: "none",
-                  }}
-                />
-              </div>
-
-              <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  type="button"
-                  className={`photo-cat-btn ${severityFilter === "all" ? "active" : ""}`}
-                  onClick={() => setSeverityFilter("all")}
-                >
-                  All Cases
-                </button>
-                <button
-                  type="button"
-                  className={`photo-cat-btn ${severityFilter === "Severe" ? "active" : ""}`}
-                  onClick={() => setSeverityFilter("Severe")}
-                >
-                  Severe
-                </button>
-                <button
-                  type="button"
-                  className={`photo-cat-btn ${severityFilter === "Moderate" ? "active" : ""}`}
-                  onClick={() => setSeverityFilter("Moderate")}
-                >
-                  Moderate
-                </button>
-                <button
-                  type="button"
-                  className={`photo-cat-btn ${severityFilter === "Minor" ? "active" : ""}`}
-                  onClick={() => setSeverityFilter("Minor")}
-                >
-                  Minor
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className="btn-primary-modern"
-                onClick={() => setActiveTab("wizard")}
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  background: "var(--accent-gradient)",
+                  color: "#ffffff",
+                  padding: "3px 10px",
+                  borderRadius: "12px",
+                }}
               >
-                + File New Incident
-              </button>
+                {caseData.aiConfidence} AI Confidence
+              </span>
+            </div>
+
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 10, lineHeight: 1.6 }}>
+              {caseData.aiSummary}
+            </p>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {caseData.keyFactors.map((f, i) => (
+                <span key={i} className="chip-severity minor" style={{ fontSize: 10 }}>
+                  {f}
+                </span>
+              ))}
             </div>
           </div>
 
-          {/* Cases Master Table */}
-          <div className="card-glass" style={{ padding: 0 }}>
+          {/* Damage Verification Checklist Table */}
+          <div className="card-glass">
+            <div className="card-header">
+              <div>
+                <div className="card-title">
+                  <span>📋</span> Damage Verification &amp; Parts Checklist
+                </div>
+                <div className="card-subtitle">Surveyor confirmation required for claim approval</div>
+              </div>
+              <span className="chip-severity minor" style={{ fontSize: 10 }}>
+                {caseData.damageItems.length} Components
+              </span>
+            </div>
+
             <table className="damage-table-modern">
               <thead>
                 <tr>
-                  <th>Case ID</th>
-                  <th>Vehicle Specification</th>
-                  <th>Intake Channel</th>
-                  <th>Accident Mechanism</th>
-                  <th>Incident Location</th>
+                  <th>Damaged Component</th>
+                  <th>Damage Mechanism</th>
                   <th>Severity</th>
-                  <th>Claim Status</th>
-                  <th>Studio Action</th>
+                  <th>AI Score</th>
+                  <th>Surveyor Sign</th>
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(DEFAULT_CASES).map(([key, item]) => {
-                  const matchSearch =
-                    item.plate.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    item.vehicle.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    item.location.toLowerCase().includes(searchQuery.toLowerCase());
-                  const matchSev = severityFilter === "all" || item.severity.includes(severityFilter);
-                  if (!matchSearch || !matchSev) return null;
-
+                {caseData.damageItems.map((item, idx) => {
+                  const isVerified = verifiedItems[idx] !== undefined ? verifiedItems[idx] : item.verified;
                   return (
-                    <tr
-                      key={key}
-                      style={{ cursor: "pointer" }}
-                      onClick={() => {
-                        handleSelectCase(key);
-                        setActiveTab("studio");
-                      }}
-                    >
+                    <tr key={idx}>
                       <td>
-                        <strong style={{ color: "var(--accent-cyan)", fontFamily: "var(--font-mono)" }}>
-                          {item.id}
-                        </strong>
+                        <strong>{item.part}</strong>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                          {item.desc}
+                        </div>
                       </td>
+                      <td>{item.mechanism}</td>
                       <td>
-                        <span className="badge-plate-glow" style={{ fontSize: 11, padding: "2px 8px" }}>
-                          {item.plate}
-                        </span>
-                        <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 6 }}>
-                          {item.vehicle}
+                        <span className={`chip-severity ${item.severity.toLowerCase()}`}>
+                          {item.severity}
                         </span>
                       </td>
                       <td>
-                        <span className="chip-severity minor" style={{ fontSize: 10 }}>
-                          {item.channel}
-                        </span>
-                      </td>
-                      <td>{item.accidentType}</td>
-                      <td>{item.location}</td>
-                      <td>
-                        <span className={`chip-severity ${item.severityClass}`}>{item.severity}</span>
-                      </td>
-                      <td>
-                        <strong style={{ color: "var(--badge-amber-text)" }}>Under Review</strong>
+                        <strong style={{ fontFamily: "var(--font-mono)" }}>{item.aiScore}</strong>
                       </td>
                       <td>
                         <button
                           type="button"
-                          className="btn-primary-modern"
-                          style={{ fontSize: 11, padding: "4px 10px" }}
+                          className={`verify-toggle-modern ${isVerified ? "verified" : ""}`}
+                          onClick={() => toggleItemVerify(idx)}
                         >
-                          Open Studio →
+                          {isVerified ? "✓ Verified" : "Pending"}
                         </button>
                       </td>
                     </tr>
@@ -1117,158 +723,61 @@ export function StudioApp({ initialReports = [], initialCaseKey = "SLK-3063-Z" }
               </tbody>
             </table>
           </div>
-        </div>
-      )}
 
-      {/* =========================================================================
-          TAB 3: INCIDENT INTAKE WIZARD
-          ========================================================================= */}
-      {activeTab === "wizard" && (
-        <div style={{ maxWidth: 860, margin: "0 auto" }}>
-          <div className="card-glass" style={{ padding: 32 }}>
-            <div style={{ marginBottom: 24, borderBottom: "1px solid var(--border-color)", paddingBottom: 14 }}>
-              <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>File New Vehicle Incident Report</h2>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-                Gemini Multimodal Vision will automatically parse evidence photos into normalized claims structures.
-              </p>
-            </div>
-
-            <div
-              style={{
-                border: "2px dashed var(--border-hover)",
-                borderRadius: "12px",
-                padding: "36px 20px",
-                textAlign: "center",
-                background: "var(--surface-elevated)",
-                cursor: "pointer",
-                marginBottom: 20,
-              }}
-              onClick={() => {
-                alert("Simulated AI Vision Scan: Extracted 4 Damaged Parts for Honda Vezel (SLK 3063 Z)!");
-                handleSelectCase("SLK-3063-Z");
-                setActiveTab("studio");
-              }}
-            >
-              <div style={{ fontSize: 36, marginBottom: 8 }}>📸</div>
-              <h3 style={{ fontSize: 15, fontWeight: 700 }}>Drop accident photos here or click to browse</h3>
-              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
-                Supports JPG, PNG, WEBP &bull; Max 20 High-Res Evidence Photos per Case
-              </p>
-              <button type="button" className="btn-primary-modern" style={{ marginTop: 14 }}>
-                Select Evidence Photos
-              </button>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              <div>
-                <label className="detail-field-label">Vehicle Plate Number</label>
-                <input
-                  type="text"
-                  defaultValue="SLK 3063 Z"
-                  style={{
-                    width: "100%",
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    border: "1px solid var(--border-color)",
-                    background: "var(--surface-card)",
-                    color: "var(--text-primary)",
-                    marginTop: 4,
-                  }}
-                />
-              </div>
-              <div>
-                <label className="detail-field-label">Vehicle Make &amp; Model</label>
-                <input
-                  type="text"
-                  defaultValue="Honda Vezel 1.5 Hybrid"
-                  style={{
-                    width: "100%",
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    border: "1px solid var(--border-color)",
-                    background: "var(--surface-card)",
-                    color: "var(--text-primary)",
-                    marginTop: 4,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
-              <button type="button" className="btn-secondary-modern" onClick={() => setActiveTab("studio")}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-primary-modern"
-                onClick={() => {
-                  handleSelectCase("SLK-3063-Z");
-                  setActiveTab("studio");
-                }}
-              >
-                Process &amp; Open in Loss Adjuster Studio →
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================
-          TAB 4: AI ANALYTICS
-          ========================================================================= */}
-      {activeTab === "analytics" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+          {/* Smart Repair Cost Matrix */}
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title">Damaged Parts Frequency Heatmap</div>
+              <div className="card-title">
+                <span>💰</span> Smart Repair &amp; Claims Cost Estimator
+              </div>
+              <span className="chip-severity minor" style={{ fontSize: 10 }}>
+                Thatcham Standard
+              </span>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, fontSize: 13 }}>
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-                  <span>Rear Tailgate / Boot Lid Assembly</span>
-                  <span>46%</span>
+
+            <div className="cost-matrix-glow">
+              {caseData.costs.map((c, i) => (
+                <div key={i} className={`cost-row ${c.total ? "total" : ""}`}>
+                  <span>{c.label}</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{c.amount}</span>
                 </div>
-                <div style={{ height: 8, background: "var(--surface-elevated)", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: "46%", height: "100%", background: "#ef4444" }} />
-                </div>
-              </div>
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-                  <span>Rear Bumper Lower Cover &amp; Fascia</span>
-                  <span>38%</span>
-                </div>
-                <div style={{ height: 8, background: "var(--surface-elevated)", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: "38%", height: "100%", background: "#f59e0b" }} />
-                </div>
-              </div>
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-                  <span>Rear Left Quarter Panel / Fender</span>
-                  <span>29%</span>
-                </div>
-                <div style={{ height: 8, background: "var(--surface-elevated)", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: "29%", height: "100%", background: "var(--accent-cyan)" }} />
-                </div>
-              </div>
+              ))}
             </div>
           </div>
 
+          {/* Police & Insurance Policy Details */}
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title">Surveyor First-Pass Concordance</div>
-            </div>
-            <div style={{ textAlign: "center", padding: "32px 0" }}>
-              <div style={{ fontSize: 52, fontWeight: 800, color: "var(--badge-green-text)", letterSpacing: "-0.03em" }}>
-                96.2%
+              <div className="card-title">
+                <span>🏛️</span> Authority &amp; Insurance Policy Details
               </div>
-              <div style={{ fontSize: 14, fontWeight: 700, marginTop: 4 }}>AI First-Pass Accuracy</div>
-              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8, maxWidth: 320, margin: "8px auto 0" }}>
-                Only 3.8% of damage items required manual surveyor correction before official PDF sign-off.
-              </p>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, fontSize: 13 }}>
+              <div>
+                <div className="detail-field-label">Police Station</div>
+                <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.police.station}</div>
+              </div>
+              <div>
+                <div className="detail-field-label">Report Reference Number</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)", marginTop: 2 }}>
+                  {caseData.police.ref}
+                </div>
+              </div>
+              <div>
+                <div className="detail-field-label">Insurance Provider</div>
+                <div style={{ fontWeight: 600, marginTop: 2 }}>{caseData.insurance.company}</div>
+              </div>
+              <div>
+                <div className="detail-field-label">Policy &amp; Claim Type</div>
+                <div style={{ fontWeight: 600, marginTop: 2 }}>
+                  {caseData.insurance.policy} &bull; {caseData.insurance.type}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* =========================================================================
           MODAL 1: LIVE 20-SECTION OFFICIAL INSURANCE REPORT PREVIEW

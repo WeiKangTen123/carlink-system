@@ -23,19 +23,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <div className="app-shell">
           <header className="top-nav">
-            <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
+              {/* Brand Logo */}
               <Link href="/" className="brand">
                 <div className="brand-icon">🚗</div>
                 <span>Carlink Studio</span>
                 <span className="brand-badge">v2.0</span>
               </Link>
 
-              <nav style={{ display: "flex", gap: 4 }}>
+              {/* Universal Top Navigation */}
+              <nav style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <Link href="/" className="nav-link">
                   <span>🔍</span> Loss Adjuster Studio
                 </Link>
                 <Link href="/reports" className="nav-link">
                   <span>📁</span> Cases Repository
+                </Link>
+                <Link href="/reports/new" className="nav-link">
+                  <span>✨</span> Incident Intake
                 </Link>
                 <Link href="/analytics" className="nav-link">
                   <span>📈</span> Analytics
@@ -46,14 +51,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </nav>
             </div>
 
+            {/* Right Action Area */}
             <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
-              {/* Case Selector Dropdown */}
+              {/* Active Case Selector Dropdown */}
               <CaseSelectorDropdown />
 
               {/* Dual Theme Switcher (Dark & White) */}
               <ThemeToggle />
 
-              {/* Surveyor Pill */}
+              {/* Surveyor Profile Pill */}
               <div
                 style={{
                   display: "flex",
@@ -88,7 +94,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </header>
 
-          <main className="main-content" style={{ maxWidth: 1440, margin: "0 auto", padding: "20px 24px" }}>
+          <main className="main-content" style={{ maxWidth: 1440, margin: "0 auto", padding: "20px 24px 60px" }}>
             {children}
           </main>
         </div>
