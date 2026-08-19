@@ -16,6 +16,8 @@ dist/
 # Environment & Secret files
 .env
 .env.*
+server.MD
+server.md
 docs/*.txt
 !requirements.txt
 !apps/bot-service/requirements.txt
@@ -37,3 +39,4 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+.claude/

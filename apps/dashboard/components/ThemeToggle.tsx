@@ -12,34 +12,68 @@ export function ThemeToggle() {
     document.documentElement.setAttribute("data-theme", initial);
   }, []);
 
-  const toggleTheme = () => {
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    setTheme(nextTheme);
-    document.documentElement.setAttribute("data-theme", nextTheme);
-    localStorage.setItem("carlink-theme", nextTheme);
+  const setThemeMode = (mode: "light" | "dark") => {
+    setTheme(mode);
+    document.documentElement.setAttribute("data-theme", mode);
+    localStorage.setItem("carlink-theme", mode);
   };
 
   return (
-    <button
-      type="button"
-      onClick={toggleTheme}
-      title="Toggle Light / Dark Theme"
+    <div
       style={{
+        display: "inline-flex",
+        alignItems: "center",
         background: "var(--surface-hover)",
         border: "1px solid var(--border-color)",
-        color: "var(--text-primary)",
-        padding: "6px 12px",
-        borderRadius: "6px",
-        cursor: "pointer",
-        fontSize: "13px",
-        fontWeight: 600,
-        display: "flex",
-        alignItems: "center",
-        gap: "6px",
-        transition: "all 0.15s ease",
+        padding: "3px",
+        borderRadius: "24px",
+        gap: "3px",
       }}
+      title="Toggle Dark / White Theme"
     >
-      {theme === "dark" ? "☀️ Light Mode" : "🌙 Dark Mode"}
-    </button>
+      <button
+        type="button"
+        onClick={() => setThemeMode("dark")}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "5px",
+          fontSize: "11px",
+          fontWeight: 700,
+          padding: "4px 10px",
+          borderRadius: "18px",
+          border: "none",
+          background: theme === "dark" ? "linear-gradient(135deg, #38bdf8 0%, #6366f1 100%)" : "transparent",
+          color: theme === "dark" ? "#ffffff" : "var(--text-muted)",
+          cursor: "pointer",
+          boxShadow: theme === "dark" ? "0 0 10px rgba(56, 189, 248, 0.35)" : "none",
+          transition: "all 0.2s ease",
+        }}
+      >
+        <span>🌙</span> Dark
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setThemeMode("light")}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "5px",
+          fontSize: "11px",
+          fontWeight: 700,
+          padding: "4px 10px",
+          borderRadius: "18px",
+          border: "none",
+          background: theme === "light" ? "#ffffff" : "transparent",
+          color: theme === "light" ? "#0f172a" : "var(--text-muted)",
+          cursor: "pointer",
+          boxShadow: theme === "light" ? "0 2px 8px rgba(0,0,0,0.15)" : "none",
+          transition: "all 0.2s ease",
+        }}
+      >
+        <span>☀️</span> White
+      </button>
+    </div>
   );
 }

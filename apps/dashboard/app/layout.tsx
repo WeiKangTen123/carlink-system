@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { CaseSelectorDropdown } from "@/components/CaseSelectorDropdown";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Carlink Incident Reporting & Damage System",
-  description: "Incident reporting dashboard with AI vision extraction, vehicle damage summary, and PDF generation.",
+  title: "Carlink Studio 2.0 // Intelligent Loss Adjuster & Incident System",
+  description:
+    "Intelligent loss adjuster studio with AI vision extraction, interactive vehicle blueprint, and official PDF sign-off workflow.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -20,30 +22,41 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <div className="app-shell">
-          <nav className="top-nav">
+          <header className="top-nav">
             <Link href="/" className="brand">
-              <span>🚗</span> <span>Carlink System</span>
+              <div className="brand-icon">🚗</div>
+              <span>Carlink Studio</span>
+              <span className="brand-badge">v2.0</span>
             </Link>
+
             <Link href="/" className="nav-link">
-              Overview
+              <span>📊</span> Overview
             </Link>
             <Link href="/reports" className="nav-link">
-              Reports
+              <span>📁</span> Cases
             </Link>
             <Link href="/analytics" className="nav-link">
-              Analytics
+              <span>📈</span> Analytics
             </Link>
             <Link href="/settings" className="nav-link">
-              Settings
+              <span>⚙️</span> Settings
             </Link>
+
             <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
+              {/* Case Selector Dropdown */}
+              <CaseSelectorDropdown />
+
+              {/* Dual Theme Switcher (Dark & White) */}
               <ThemeToggle />
+
+              {/* Action Button */}
               <Link href="/reports/new" className="button-primary">
-                + File Report
+                <span>+</span> File Incident
               </Link>
             </div>
-          </nav>
-          <main className="main-content" style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 24px" }}>
+          </header>
+
+          <main className="main-content" style={{ maxWidth: 1440, margin: "0 auto", padding: "24px" }}>
             {children}
           </main>
         </div>

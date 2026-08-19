@@ -1,0 +1,2345 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carlink AI 2.0 // Intelligent Loss Adjuster &amp; Damage Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    /* ==========================================================================
+       MODERN DUAL THEME ENGINE (DARK MODE & WHITE / LIGHT MODE)
+       ========================================================================== */
+    :root {
+      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --transition-smooth: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* 1. DARK THEME (Linear / Obsidian Midnight + Electric Cyan Glow) */
+    [data-theme="dark"] {
+      --bg-base: #080b12;
+      --bg-surface: rgba(16, 22, 36, 0.78);
+      --bg-surface-solid: #101624;
+      --bg-surface-elevated: #182238;
+      --bg-hover: rgba(56, 189, 248, 0.09);
+      --bg-active: rgba(56, 189, 248, 0.18);
+
+      --border-subtle: rgba(255, 255, 255, 0.09);
+      --border-medium: rgba(56, 189, 248, 0.3);
+      --border-glow: #38bdf8;
+
+      --text-main: #f8fafc;
+      --text-sub: #cbd5e1;
+      --text-muted: #8294a8;
+
+      --accent-primary: #38bdf8;
+      --accent-secondary: #6366f1;
+      --accent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
+      --accent-glow: rgba(56, 189, 248, 0.35);
+
+      --danger-color: #f87171;
+      --danger-bg: rgba(239, 68, 68, 0.15);
+      --danger-border: rgba(239, 68, 68, 0.4);
+
+      --warning-color: #fbbf24;
+      --warning-bg: rgba(245, 158, 11, 0.15);
+      --warning-border: rgba(245, 158, 11, 0.4);
+
+      --success-color: #34d399;
+      --success-bg: rgba(16, 185, 129, 0.15);
+      --success-border: rgba(16, 185, 129, 0.4);
+
+      --card-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.6);
+      --grid-line: rgba(56, 189, 248, 0.05);
+      --scan-laser: rgba(56, 189, 248, 0.85);
+      --hotspot-pulse: rgba(56, 189, 248, 0.7);
+    }
+
+    /* 2. WHITE / LIGHT THEME (Clean Apple / Stripe Ice Slate + Royal Cobalt) */
+    [data-theme="light"] {
+      --bg-base: #f4f6fa;
+      --bg-surface: rgba(255, 255, 255, 0.9);
+      --bg-surface-solid: #ffffff;
+      --bg-surface-elevated: #ffffff;
+      --bg-hover: #f1f5f9;
+      --bg-active: #e2e8f0;
+
+      --border-subtle: #e2e8f0;
+      --border-medium: #cbd5e1;
+      --border-glow: #2563eb;
+
+      --text-main: #0f172a;
+      --text-sub: #334155;
+      --text-muted: #64748b;
+
+      --accent-primary: #2563eb;
+      --accent-secondary: #4f46e5;
+      --accent-gradient: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+      --accent-glow: rgba(37, 99, 235, 0.22);
+
+      --danger-color: #dc2626;
+      --danger-bg: #fee2e2;
+      --danger-border: #fca5a5;
+
+      --warning-color: #d97706;
+      --warning-bg: #fef3c7;
+      --warning-border: #fde68a;
+
+      --success-color: #16a34a;
+      --success-bg: #dcfce7;
+      --success-border: #86efac;
+
+      --card-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.06), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
+      --grid-line: rgba(0, 0, 0, 0.04);
+      --scan-laser: rgba(37, 99, 235, 0.75);
+      --hotspot-pulse: rgba(37, 99, 235, 0.6);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.3s ease, color 0.3s ease;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Ambient Background Glow Effect */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -150px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 450px;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.6;
+      filter: blur(60px);
+      transition: all 0.4s ease;
+    }
+
+    /* ==========================================================================
+       TOP NAVIGATION BAR
+       ========================================================================== */
+    .top-navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 28px;
+      background: var(--bg-surface);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-subtle);
+      transition: var(--transition-smooth);
+    }
+
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text-main);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 16px;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .brand-badge {
+      font-size: 10px;
+      font-weight: 800;
+      background: var(--accent-gradient);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .nav-tabs-glass {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border-subtle);
+      padding: 4px;
+      border-radius: 10px;
+    }
+
+    [data-theme="light"] .nav-tabs-glass {
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .nav-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 15px;
+      border-radius: 7px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: var(--transition-smooth);
+    }
+
+    .nav-tab-btn:hover {
+      color: var(--text-main);
+      background: var(--bg-hover);
+    }
+
+    .nav-tab-btn.active {
+      color: #ffffff;
+      background: var(--accent-gradient);
+      box-shadow: 0 4px 14px var(--accent-glow);
+      font-weight: 700;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* CASE SELECTOR DROPDOWN (NAVBAR) */
+    .case-selector-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-medium);
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .case-select-dropdown {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .case-select-dropdown option {
+      background: var(--bg-surface-solid);
+      color: var(--text-main);
+    }
+
+    /* DARK / WHITE DUAL THEME TOGGLE SWITCH */
+    .theme-toggle-switch {
+      display: flex;
+      align-items: center;
+      background: var(--bg-hover);
+      border: 1px solid var(--border-medium);
+      padding: 3px;
+      border-radius: 24px;
+      cursor: pointer;
+      gap: 4px;
+      transition: var(--transition-smooth);
+    }
+
+    .theme-toggle-option {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 18px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+
+    .theme-toggle-option.active {
+      background: var(--bg-surface-solid);
+      color: var(--text-main);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+
+    [data-theme="dark"] .theme-toggle-option.active {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: var(--transition-smooth);
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px var(--accent-glow);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+      border-color: var(--border-subtle);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-medium);
+      transform: translateY(-1px);
+    }
+
+    .user-pill-glass {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px 4px 4px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .user-avatar-glow {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: 0 0 8px var(--accent-glow);
+    }
+
+    /* ==========================================================================
+       CONTAINER & CARDS
+       ========================================================================== */
+    .app-container {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .view-section {
+      display: none;
+      animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    .view-section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .card-glass {
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 20px 24px;
+      box-shadow: var(--card-shadow);
+      transition: var(--transition-smooth);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-glass:hover {
+      border-color: var(--border-medium);
+      box-shadow: 0 12px 40px 0 rgba(0,0,0,0.4);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* ==========================================================================
+       1. CLAIMS LIFECYCLE PROGRESS STEPPER
+       ========================================================================== */
+    .claim-stepper-glass {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 12px 18px;
+      margin-bottom: 24px;
+      gap: 12px;
+      box-shadow: var(--card-shadow);
+    }
+
+    .step-node {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      transition: var(--transition-smooth);
+      position: relative;
+    }
+
+    .step-circle {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      flex-shrink: 0;
+      background: var(--bg-surface-elevated);
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+      transition: var(--transition-smooth);
+    }
+
+    .step-node.completed .step-circle {
+      background: var(--success-bg);
+      color: var(--success-color);
+      border-color: var(--success-border);
+    }
+
+    .step-node.active {
+      background: var(--bg-hover);
+      border-color: var(--border-medium);
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .step-node.active .step-circle {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .step-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .step-desc {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* ==========================================================================
+       2. LOSS ADJUSTER STUDIO (SPLIT SCREEN VIEW)
+       ========================================================================== */
+    .studio-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .badge-plate-glow {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 800;
+      background: #000000;
+      color: #f8fafc;
+      border: 2px solid var(--accent-primary);
+      box-shadow: 0 0 12px var(--accent-glow);
+      padding: 4px 14px;
+      border-radius: 6px;
+      letter-spacing: 0.1em;
+      display: inline-block;
+    }
+
+    .chip-severity {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .chip-severity.severe {
+      background: var(--danger-bg);
+      color: var(--danger-color);
+      border: 1px solid var(--danger-border);
+    }
+
+    .chip-severity.moderate {
+      background: var(--warning-bg);
+      color: var(--warning-color);
+      border: 1px solid var(--warning-border);
+    }
+
+    .chip-severity.minor {
+      background: var(--success-bg);
+      color: var(--success-color);
+      border: 1px solid var(--success-border);
+    }
+
+    .studio-layout {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 1024px) {
+      .studio-layout {
+        grid-template-columns: 1fr;
+      }
+      .claim-stepper-glass {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Left Column: Interactive Radar Blueprint & AI Photo Studio */
+    .evidence-column {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* RADAR VEHICLE BLUEPRINT */
+    .blueprint-stage-radar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: var(--bg-surface-elevated);
+      background-image: 
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+      background-size: 24px 24px;
+      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+      position: relative;
+      min-height: 240px;
+      overflow: hidden;
+    }
+
+    .radar-laser-beam {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: var(--scan-laser);
+      box-shadow: 0 0 16px var(--accent-primary);
+      animation: laserSweep 3.5s ease-in-out infinite alternate;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    @keyframes laserSweep {
+      0% { top: 5%; opacity: 0.2; }
+      50% { opacity: 0.9; }
+      100% { top: 95%; opacity: 0.2; }
+    }
+
+    .svg-car-container {
+      width: 100%;
+      max-width: 440px;
+      position: relative;
+      z-index: 3;
+    }
+
+    /* Animated Pulsing Hotspots */
+    .hotspot-beacon {
+      position: absolute;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--accent-gradient);
+      color: #ffffff;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 16px var(--accent-glow);
+      animation: beaconPulse 2s infinite;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+      z-index: 10;
+    }
+
+    .hotspot-beacon:hover {
+      transform: scale(1.35);
+    }
+
+    .hotspot-beacon.severe-spot {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.8);
+      animation: beaconPulseRed 1.8s infinite;
+    }
+
+    @keyframes beaconPulse {
+      0% { box-shadow: 0 0 0 0 var(--hotspot-pulse); }
+      70% { box-shadow: 0 0 0 14px rgba(0,0,0,0); }
+      100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+    }
+
+    @keyframes beaconPulseRed {
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8); }
+      70% { box-shadow: 0 0 0 14px rgba(239, 68, 68, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+
+    /* CASE PHOTO INSPECTOR HUD */
+    .photo-inspector-box {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .inspector-main-img {
+      width: 100%;
+      height: 330px;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.3s ease;
+    }
+
+    .ai-bounding-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    .ai-box-marker-glow {
+      position: absolute;
+      border: 2px solid var(--accent-primary);
+      background: rgba(56, 189, 248, 0.16);
+      border-radius: 6px;
+      box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px var(--accent-glow);
+    }
+
+    .ai-box-tag-glow {
+      position: absolute;
+      top: -26px;
+      left: 0;
+      background: var(--accent-gradient);
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+
+    /* Photo Category Filter Chips (Within the Case) */
+    .photo-category-strip {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .photo-cat-btn {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      padding: 4px 10px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: var(--transition-smooth);
+    }
+
+    .photo-cat-btn.active {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+
+    .photo-thumb-strip {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .photo-thumb {
+      height: 60px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: var(--transition-smooth);
+      opacity: 0.7;
+    }
+
+    .photo-thumb:hover {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+
+    .photo-thumb.active {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 12px var(--accent-glow);
+      opacity: 1;
+    }
+
+    .photo-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Right Column: AI Insights & Claims Table */
+    .studio-data-column {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .ai-insight-panel-glow {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-medium);
+      border-left: 4px solid var(--accent-primary);
+      border-radius: 12px;
+      padding: 18px 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+
+    .ai-insight-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .ai-score-pill {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+      background: var(--accent-gradient);
+      color: #ffffff;
+      padding: 3px 10px;
+      border-radius: 12px;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    /* Damage Verification Table */
+    .damage-table-modern {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .damage-table-modern th {
+      text-align: left;
+      padding: 12px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(0, 0, 0, 0.08);
+      letter-spacing: 0.05em;
+    }
+
+    [data-theme="light"] .damage-table-modern th {
+      background: #f8fafc;
+    }
+
+    .damage-table-modern td {
+      padding: 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      vertical-align: middle;
+    }
+
+    .damage-table-modern tr {
+      transition: background 0.15s ease;
+    }
+
+    .damage-table-modern tr:hover td {
+      background: var(--bg-hover);
+    }
+
+    .verify-toggle-modern {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-surface-elevated);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+
+    .verify-toggle-modern.verified {
+      background: var(--success-bg);
+      border-color: var(--success-border);
+      color: var(--success-color);
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+    }
+
+    /* Claims Cost Calculation Box */
+    .cost-matrix-glow {
+      background: var(--bg-surface-elevated);
+      border-radius: 12px;
+      padding: 18px 20px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .cost-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      font-size: 13px;
+      color: var(--text-sub);
+    }
+
+    .cost-row.total {
+      border-top: 1px dashed var(--border-medium);
+      margin-top: 10px;
+      padding-top: 12px;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+
+    .cost-row.total span:last-child {
+      color: var(--accent-primary);
+      font-family: var(--font-mono);
+      font-size: 18px;
+    }
+
+    /* ==========================================================================
+       3. OVERVIEW / COMMAND CENTER
+       ========================================================================== */
+    .kpi-grid-modern {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .kpi-card-glow {
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: var(--card-shadow);
+      position: relative;
+      overflow: hidden;
+      transition: var(--transition-smooth);
+    }
+
+    .kpi-card-glow:hover {
+      border-color: var(--border-medium);
+      transform: translateY(-2px);
+    }
+
+    .kpi-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .kpi-val {
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text-main);
+      letter-spacing: -0.03em;
+    }
+
+    .filter-bar-modern {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .search-box-glow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 9px 16px;
+      border-radius: 10px;
+      flex: 1;
+      max-width: 400px;
+      transition: var(--transition-smooth);
+    }
+
+    .search-box-glow:focus-within {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .search-box-glow input {
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      width: 100%;
+    }
+
+    .filter-chips {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chip-btn {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+
+    .chip-btn.active {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 2px 10px var(--accent-glow);
+    }
+
+    .incidents-table-card {
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: var(--card-shadow);
+    }
+
+    .master-table-modern {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .master-table-modern th {
+      padding: 14px 18px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      background: rgba(0, 0, 0, 0.08);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    [data-theme="light"] .master-table-modern th {
+      background: #f8fafc;
+    }
+
+    .master-table-modern td {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      vertical-align: middle;
+    }
+
+    .master-table-modern tr:hover td {
+      background: var(--bg-hover);
+      cursor: pointer;
+    }
+
+    /* ==========================================================================
+       4. INTAKE WIZARD
+       ========================================================================== */
+    .wizard-card-glow {
+      max-width: 860px;
+      margin: 0 auto;
+      background: var(--bg-surface);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 32px;
+      box-shadow: var(--card-shadow);
+    }
+
+    .dropzone-glow {
+      border: 2px dashed var(--border-medium);
+      border-radius: 12px;
+      padding: 36px 20px;
+      text-align: center;
+      background: var(--bg-surface-elevated);
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+
+    .dropzone-glow:hover {
+      border-color: var(--accent-primary);
+      background: var(--bg-hover);
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-sub);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .form-control {
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      outline: none;
+      transition: var(--transition-smooth);
+    }
+
+    .form-control:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    /* ==========================================================================
+       5. MODALS & LIVE PDF PREVIEW
+       ========================================================================== */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-box {
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--border-medium);
+      border-radius: 16px;
+      width: 90%;
+      max-width: 900px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.8);
+      transform: scale(0.95);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      overflow: hidden;
+    }
+
+    .modal-overlay.active .modal-box {
+      transform: scale(1);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .modal-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    /* Printable PDF Paper Format */
+    .pdf-paper-preview {
+      background: #ffffff;
+      color: #0f172a;
+      padding: 36px 42px;
+      border-radius: 4px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .pdf-header-banner {
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .pdf-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #1e3a8a;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==========================================================================
+       TOP NAVIGATION BAR
+       ========================================================================== -->
+  <header class="top-navbar">
+    <div style="display: flex; align-items: center; gap: 20px;">
+      <a href="#" class="brand-logo" onclick="switchTab('overview')">
+        <div class="brand-icon">🚗</div>
+        <span>Carlink Studio</span>
+        <span class="brand-badge">v2.0</span>
+      </a>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs-glass">
+        <button class="nav-tab-btn active" id="tab-btn-detail" onclick="switchTab('detail')">
+          <span>🔍</span> Loss Adjuster Studio
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-overview" onclick="switchTab('overview')">
+          <span>📊</span> Command Center
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-wizard" onclick="switchTab('wizard')">
+          <span>✨</span> Incident Intake
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-analytics" onclick="switchTab('analytics')">
+          <span>📈</span> AI Analytics
+        </button>
+      </nav>
+    </div>
+
+    <div class="nav-actions">
+      <!-- ACTIVE CASE SELECTOR (SWITCH BETWEEN REAL VEHICLE CASES) -->
+      <div class="case-selector-box" title="Switch Active Incident Case">
+        <span style="color: var(--accent-primary); font-size: 11px;">CASE:</span>
+        <select class="case-select-dropdown" id="caseSelector" onchange="loadCaseData(this.value)">
+          <option value="SLK-3063-Z" selected>SLK 3063 Z (Honda Vezel)</option>
+          <option value="VAY-4821">VAY 4821 (Honda Civic RS)</option>
+          <option value="WX-8888-A">WX 8888 A (Toyota Hilux)</option>
+        </select>
+      </div>
+
+      <!-- MODERN DARK / WHITE DUAL THEME TOGGLE SWITCH -->
+      <div class="theme-toggle-switch" title="Toggle Dark / White Theme">
+        <button class="theme-toggle-option active" id="theme-opt-dark" onclick="setTheme('dark')">
+          <span>🌙</span> Dark
+        </button>
+        <button class="theme-toggle-option" id="theme-opt-light" onclick="setTheme('light')">
+          <span>☀️</span> White
+        </button>
+      </div>
+
+      <!-- Quick Action Buttons -->
+      <button class="btn btn-secondary" onclick="openPdfModal()">
+        <span>📄</span> Live PDF
+      </button>
+      <button class="btn btn-primary" onclick="openSignOffModal()">
+        <span>✍️</span> Sign Off
+      </button>
+
+      <!-- Surveyor User Pill -->
+      <div class="user-pill-glass">
+        <div class="user-avatar-glow">AW</div>
+        <span>Alex Wong (Loss Adjuster)</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-container">
+
+    <!-- ==========================================================================
+         VIEW 1: LOSS ADJUSTER LIVE INSPECTION STUDIO (DETAIL VIEW)
+         ========================================================================== -->
+    <section id="view-detail" class="view-section active">
+
+      <!-- 5-Stage Claim Lifecycle Progress Stepper -->
+      <div class="claim-stepper-glass">
+        <div class="step-node completed">
+          <div class="step-circle">✓</div>
+          <div>
+            <div class="step-title">1. Bot Ingestion</div>
+            <div class="step-desc" id="stepperChannel">Telegram Intake</div>
+          </div>
+        </div>
+        <div class="step-node completed">
+          <div class="step-circle">✓</div>
+          <div>
+            <div class="step-title">2. AI Vision Scan</div>
+            <div class="step-desc" id="stepperAiScore">Gemini-2.5 &bull; 97.1%</div>
+          </div>
+        </div>
+        <div class="step-node active" id="stepper-review-node">
+          <div class="step-circle">3</div>
+          <div>
+            <div class="step-title">3. Surveyor Audit</div>
+            <div class="step-desc">Under Review (You)</div>
+          </div>
+        </div>
+        <div class="step-node" id="stepper-sign-node">
+          <div class="step-circle">4</div>
+          <div>
+            <div class="step-title">4. Manager Sign-Off</div>
+            <div class="step-desc">Pending Verification</div>
+          </div>
+        </div>
+        <div class="step-node">
+          <div class="step-circle">5</div>
+          <div>
+            <div class="step-title">5. Claim Settled</div>
+            <div class="step-desc" id="stepperInsurer">NTUC Income</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Studio Header Strip -->
+      <div class="studio-header">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <span class="badge-plate-glow" id="casePlateBadge">SLK 3063 Z</span>
+            <span class="chip-severity moderate" id="caseSeverityPill">⚡ Moderate Damage</span>
+            <span style="font-size: 12px; color: var(--text-muted);" id="caseMetaText">
+              CASE_ID: CL-11900-SLK3063Z &bull; Incident at Tuas Bay Drive, Singapore
+            </span>
+          </div>
+          <h1 style="font-size: 22px; font-weight: 800; letter-spacing: -0.02em;" id="caseHeadline">
+            Honda Vezel 1.5 Hybrid &mdash; Rear-Left Corner Collision
+          </h1>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" onclick="toggleOverlay()">
+            <span id="overlayIcon">👁️</span> <span id="overlayText">Hide AI Vision Box</span>
+          </button>
+          <button class="btn btn-primary" onclick="openSignOffModal()">
+            <span>✓</span> Finalize &amp; Lock Sign-Off
+          </button>
+        </div>
+      </div>
+
+      <!-- Split Studio Layout -->
+      <div class="studio-layout">
+
+        <!-- Left Column: Interactive Radar Blueprint & AI Photo Studio -->
+        <div class="evidence-column">
+
+          <!-- Radar Vehicle Blueprint Card -->
+          <div class="card-glass">
+            <div class="card-header">
+              <div>
+                <div class="card-title">
+                  <span>📐</span> Interactive Vehicle Body Blueprint
+                </div>
+                <div class="card-subtitle">Click pulsing damage hotspots to jump directly to evidence photo angles</div>
+              </div>
+              <span class="chip-severity moderate" id="blueprintZonesBadge">3 Damaged Zones</span>
+            </div>
+
+            <div class="blueprint-stage-radar">
+              <!-- Animated Scanning Laser Line -->
+              <div class="radar-laser-beam"></div>
+
+              <div class="svg-car-container">
+                <svg viewBox="0 0 400 180" width="100%" height="auto" style="display: block;">
+                  <!-- Car Outline Body (Wireframe style) -->
+                  <path d="M 60 90 Q 60 40 100 35 L 140 35 L 180 20 L 260 20 L 300 35 L 340 40 Q 365 90 340 140 L 300 145 L 260 160 L 180 160 L 140 145 L 100 145 Q 60 140 60 90 Z" 
+                        fill="none" stroke="var(--border-glow)" stroke-width="2.2" stroke-linejoin="round" />
+                  
+                  <!-- Windshield & Windows -->
+                  <path d="M 175 35 L 255 35 L 275 50 L 155 50 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-subtle)" stroke-width="1.5" />
+                  <path d="M 175 145 L 255 145 L 275 130 L 155 130 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-subtle)" stroke-width="1.5" />
+                  <rect x="180" y="55" width="80" height="70" rx="6" fill="none" stroke="var(--border-subtle)" stroke-width="1.5" />
+
+                  <!-- Wheels with Calipers -->
+                  <rect x="105" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4"/>
+                  <rect x="270" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4"/>
+                  <rect x="105" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4"/>
+                  <rect x="270" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4"/>
+
+                  <!-- Front & Rear Indicators -->
+                  <text x="35" y="94" font-family="JetBrains Mono" font-size="9" font-weight="700" fill="var(--text-muted)" text-anchor="middle">FRONT</text>
+                  <text x="365" y="94" font-family="JetBrains Mono" font-size="9" font-weight="700" fill="var(--text-muted)" text-anchor="middle">REAR</text>
+                </svg>
+
+                <!-- Dynamic Case Hotspots Container -->
+                <div id="hotspotsContainer"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Photo Evidence Inspector with AI Overlays (Dynamic per Case) -->
+          <div class="card-glass">
+            <div class="card-header">
+              <div>
+                <div class="card-title">
+                  <span>📸</span> AI Vision Photo Inspector
+                </div>
+                <div class="card-subtitle" id="photoInspectorSub">Photo 1 of 6 &bull; Photo ID: P1273082.JPG</div>
+              </div>
+              <span class="chip-severity minor" id="photoAngleBadge">Rear Impact</span>
+            </div>
+
+            <!-- Main High-Res Photo View with AI Bounding Overlay -->
+            <div class="photo-inspector-box" id="photoInspector">
+              <img src="assets/slk3063z/P1273082.JPG" alt="Incident Evidence" class="inspector-main-img" id="mainEvidenceImg" />
+              
+              <!-- Dynamic AI Bounding Boxes Overlay -->
+              <div class="ai-bounding-overlay" id="aiOverlay"></div>
+            </div>
+
+            <!-- Photo Category Filter Buttons for Current Case -->
+            <div class="photo-category-strip" id="photoCategoryStrip"></div>
+
+            <!-- Thumbnail Selector Strip for Current Case -->
+            <div class="photo-thumb-strip" id="photoThumbStrip"></div>
+          </div>
+
+        </div>
+
+        <!-- Right Column: AI Insights & Claims Table -->
+        <div class="studio-data-column">
+
+          <!-- AI Vision Insight Card -->
+          <div class="ai-insight-panel-glow">
+            <div class="ai-insight-top">
+              <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px;">
+                <span>🤖</span> Gemini Multimodal Vision Analysis
+              </div>
+              <span class="ai-score-pill" id="aiScorePill">97.1% AI Confidence</span>
+            </div>
+            <p style="font-size: 13px; color: var(--text-sub); margin-bottom: 10px;" id="aiNarrativeText">
+              Detected rear-left impact deformation. Severe denting on left tailgate lower section, structural buckling on rear-left quarter panel, and abrasive scuffing across rear bumper fascia. Rear parking sensors displaced.
+            </p>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;" id="aiKeyFactors"></div>
+          </div>
+
+          <!-- Structured Damage Verification Table -->
+          <div class="card-glass">
+            <div class="card-header">
+              <div>
+                <div class="card-title">
+                  <span>📋</span> Damage Verification &amp; Parts Checklist
+                </div>
+                <div class="card-subtitle">Surveyor confirmation required for claim approval</div>
+              </div>
+              <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="addDamageItem()">
+                + Add Part
+              </button>
+            </div>
+
+            <table class="damage-table-modern" id="damageTable">
+              <thead>
+                <tr>
+                  <th>Damaged Component</th>
+                  <th>Damage Mechanism</th>
+                  <th>Severity</th>
+                  <th>AI Score</th>
+                  <th>Surveyor Sign</th>
+                </tr>
+              </thead>
+              <tbody id="damageTableBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Smart Repair Cost Estimation Calculator -->
+          <div class="card-glass">
+            <div class="card-header">
+              <div class="card-title">
+                <span>💰</span> Smart Repair &amp; Claims Cost Estimator
+              </div>
+              <span class="chip-severity minor" style="font-size: 10px;">Thatcham Standard</span>
+            </div>
+
+            <div class="cost-matrix-glow" id="costMatrixContainer"></div>
+          </div>
+
+          <!-- Police & Insurance Metadata -->
+          <div class="card-glass">
+            <div class="card-header">
+              <div class="card-title">
+                <span>🏛️</span> Police &amp; Insurance Policy Details
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; font-size: 13px;">
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Police Station</div>
+                <div style="font-weight: 600; margin-top: 2px;" id="policeStationText">Singapore Traffic Police HQ</div>
+              </div>
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Report Reference</div>
+                <div style="font-family: var(--font-mono); font-weight: 700; color: var(--accent-primary); margin-top: 2px;" id="policeRefText">TP/2026/11900-Z</div>
+              </div>
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Insurance Provider</div>
+                <div style="font-weight: 600; margin-top: 2px;" id="insuranceProviderText">NTUC Income Insurance Co-operative</div>
+              </div>
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Policy &amp; Claim Type</div>
+                <div style="font-weight: 600; margin-top: 2px;" id="insurancePolicyText">INC-99021-VZ &bull; Own Damage (OD)</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+    <!-- ==========================================================================
+         VIEW 2: INCIDENT COMMAND CENTER (OVERVIEW)
+         ========================================================================== -->
+    <section id="view-overview" class="view-section">
+      
+      <div class="kpi-grid-modern">
+        <div class="kpi-card-glow">
+          <div class="kpi-label">Total Incidents Logged</div>
+          <div class="kpi-val">42</div>
+          <div style="font-size: 11px; color: var(--success-color); font-weight: 700; margin-top: 4px;">↑ +14% vs last month</div>
+        </div>
+        <div class="kpi-card-glow">
+          <div class="kpi-label">Pending Surveyor Review</div>
+          <div class="kpi-val" style="color: var(--warning-color);">07</div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Avg wait: 42 mins</div>
+        </div>
+        <div class="kpi-card-glow">
+          <div class="kpi-label">Signed-Off Reports</div>
+          <div class="kpi-val" style="color: var(--success-color);">35</div>
+          <div style="font-size: 11px; color: var(--success-color); font-weight: 700; margin-top: 4px;">✓ 100% compliance</div>
+        </div>
+        <div class="kpi-card-glow">
+          <div class="kpi-label">Severe Structural Cases</div>
+          <div class="kpi-val" style="color: var(--danger-color);">04</div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Loss Adjuster Sign-Off Required</div>
+        </div>
+      </div>
+
+      <!-- Filter Bar -->
+      <div class="filter-bar-modern">
+        <div class="search-box-glow">
+          <span>🔍</span>
+          <input type="text" placeholder="Search by Plate (e.g. SLK 3063 Z), ID, Driver, Location..." id="searchInput" oninput="filterIncidents()" />
+        </div>
+
+        <div class="filter-chips">
+          <button class="chip-btn active" onclick="filterBySeverity('all', this)">All</button>
+          <button class="chip-btn" onclick="filterBySeverity('Severe', this)">Severe</button>
+          <button class="chip-btn" onclick="filterBySeverity('Moderate', this)">Moderate</button>
+          <button class="chip-btn" onclick="filterBySeverity('Minor', this)">Minor</button>
+        </div>
+
+        <button class="btn btn-primary" onclick="switchTab('wizard')">
+          + File New Incident
+        </button>
+      </div>
+
+      <!-- Master Incidents Table -->
+      <div class="incidents-table-card">
+        <table class="master-table-modern" id="incidentsMasterTable">
+          <thead>
+            <tr>
+              <th>Case ID</th>
+              <th>Vehicle Specification</th>
+              <th>Channel</th>
+              <th>Accident Mechanism</th>
+              <th>Incident Location</th>
+              <th>Severity</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr onclick="loadCaseAndOpen('SLK-3063-Z')">
+              <td><strong style="color: var(--accent-primary); font-family: var(--font-mono);">CL-11900-SLK3063Z</strong></td>
+              <td>
+                <span class="badge-plate-glow" style="font-size: 11px; padding: 2px 8px;">SLK 3063 Z</span>
+                <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">Honda Vezel 1.5 Hybrid</span>
+              </td>
+              <td><span class="chip-severity minor" style="font-size: 10px;">Telegram</span></td>
+              <td>Rear-Left Corner Collision</td>
+              <td>Tuas Bay Drive, Singapore</td>
+              <td><span class="chip-severity moderate">Moderate</span></td>
+              <td><strong style="color: var(--warning-color);">Pending Review</strong></td>
+              <td><button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;">Inspect →</button></td>
+            </tr>
+            <tr onclick="loadCaseAndOpen('VAY-4821')">
+              <td><strong style="color: var(--accent-primary); font-family: var(--font-mono);">CIR-2026-E973</strong></td>
+              <td>
+                <span class="badge-plate-glow" style="font-size: 11px; padding: 2px 8px;">VAY 4821</span>
+                <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">2023 Honda Civic 1.5 RS</span>
+              </td>
+              <td><span class="chip-severity minor" style="font-size: 10px;">Telegram</span></td>
+              <td>Frontal-Offset Collision</td>
+              <td>Federal Highway KM 14.2</td>
+              <td><span class="chip-severity moderate">Moderate</span></td>
+              <td><strong style="color: var(--warning-color);">Pending Review</strong></td>
+              <td><button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;">Inspect →</button></td>
+            </tr>
+            <tr onclick="loadCaseAndOpen('WX-8888-A')">
+              <td><strong style="color: var(--accent-primary); font-family: var(--font-mono);">CIR-2026-F7A3</strong></td>
+              <td>
+                <span class="badge-plate-glow" style="font-size: 11px; padding: 2px 8px;">WX 8888 A</span>
+                <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">2021 Toyota Hilux 2.8</span>
+              </td>
+              <td><span class="chip-severity minor" style="font-size: 10px;">WhatsApp</span></td>
+              <td>Rear-End Barrier Collision</td>
+              <td>Workshop Bay 2, Subang</td>
+              <td><span class="chip-severity minor">Minor</span></td>
+              <td><strong style="color: var(--success-color);">Signed Off</strong></td>
+              <td><button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;">Inspect →</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+
+    <!-- ==========================================================================
+         VIEW 3: INTAKE WIZARD
+         ========================================================================== -->
+    <section id="view-wizard" class="view-section">
+      <div class="wizard-card-glow">
+        <div style="margin-bottom: 24px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 14px;">
+          <h2 style="font-size: 18px; font-weight: 800;">File New Vehicle Incident Report</h2>
+          <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+            Gemini Multimodal Vision will automatically parse evidence photos into normalized claims structures.
+          </p>
+        </div>
+
+        <div class="dropzone-glow" onclick="triggerSimulatedScan()">
+          <div style="font-size: 36px; margin-bottom: 8px;">📸</div>
+          <h3 style="font-size: 15px; font-weight: 700;">Drop accident photos here or click to browse</h3>
+          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+            Supports JPG, PNG, WEBP &bull; Max 20 High-Res Evidence Photos per Case
+          </p>
+          <button class="btn btn-primary" style="margin-top: 14px;">
+            Select Evidence Photos
+          </button>
+        </div>
+
+        <div id="aiScanProgress" style="display: none; margin-top: 20px; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); padding: 16px; border-radius: 10px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: var(--accent-primary); margin-bottom: 6px;">
+            <span>🤖 Gemini AI Multimodal Vision Scanning Evidence...</span>
+            <span id="scanPercent">85%</span>
+          </div>
+          <div style="width: 100%; height: 6px; background: rgba(0,0,0,0.2); border-radius: 10px; overflow: hidden;">
+            <div id="scanBar" style="width: 85%; height: 100%; background: var(--accent-gradient); transition: width 0.3s ease;"></div>
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label class="form-label">Vehicle Registration Number</label>
+            <input type="text" class="form-control" value="SLK 3063 Z" placeholder="e.g. SLK 3063 Z" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Vehicle Make &amp; Model</label>
+            <input type="text" class="form-control" value="Honda Vezel 1.5 Hybrid" placeholder="e.g. Toyota Hilux" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Incident Date &amp; Time</label>
+            <input type="text" class="form-control" value="2026-08-19 14:15" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Incident Location</label>
+            <input type="text" class="form-control" value="Tuas Bay Drive, Singapore" />
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 16px;">
+          <label class="form-label">Narrative Incident Description</label>
+          <textarea class="form-control" rows="3">Vehicle reversing in parking bay impacted stationary pillar on the rear-left corner.</textarea>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px;">
+          <button class="btn btn-secondary" onclick="switchTab('overview')">Cancel</button>
+          <button class="btn btn-primary" onclick="loadCaseAndOpen('SLK-3063-Z')">Process &amp; Open in Loss Adjuster Studio →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         VIEW 4: AI ANALYTICS
+         ========================================================================== -->
+    <section id="view-analytics" class="view-section">
+      <div style="margin-bottom: 20px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+        <h2 style="font-size: 18px; font-weight: 800;">AI Vision Extraction &amp; Concordance Analytics</h2>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="card-glass">
+          <div class="card-header">
+            <div class="card-title">Damaged Parts Frequency Heatmap</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px; font-size: 12px;">
+            <div>
+              <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px;">
+                <span>Rear Bumper Assembly / Fascia</span>
+                <span>46%</span>
+              </div>
+              <div style="height: 6px; background: var(--bg-surface-elevated); border-radius: 3px; overflow: hidden;">
+                <div style="width: 46%; height: 100%; background: #ef4444;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px;">
+                <span>Tailgate / Boot Lid Assembly</span>
+                <span>38%</span>
+              </div>
+              <div style="height: 6px; background: var(--bg-surface-elevated); border-radius: 3px; overflow: hidden;">
+                <div style="width: 38%; height: 100%; background: #f59e0b;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px;">
+                <span>Rear Quarter Panel / Arch</span>
+                <span>29%</span>
+              </div>
+              <div style="height: 6px; background: var(--bg-surface-elevated); border-radius: 3px; overflow: hidden;">
+                <div style="width: 29%; height: 100%; background: var(--accent-primary);"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-glass">
+          <div class="card-header">
+            <div class="card-title">Surveyor First-Pass Concordance</div>
+          </div>
+          <div style="text-align: center; padding: 24px 0;">
+            <div style="font-size: 48px; font-weight: 800; color: var(--success-color); letter-spacing: -0.03em;">96.2%</div>
+            <div style="font-size: 13px; font-weight: 700; margin-top: 4px;">AI First-Pass Accuracy</div>
+            <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px; max-width: 320px; margin-left: auto; margin-right: auto;">
+              Only 3.8% of damage items required manual surveyor correction before official PDF sign-off.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==========================================================================
+       MODAL 1: LIVE 20-SECTION OFFICIAL INSURANCE REPORT PREVIEW
+       ========================================================================== -->
+  <div class="modal-overlay" id="pdfModal" onclick="closePdfModal(event)">
+    <div class="modal-box" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">📄</span>
+          <h3 style="font-size: 15px; font-weight: 700;" id="pdfModalTitle">Official Insurance Report Preview</h3>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" onclick="alert('Sending to printer...')">🖨️ Print</button>
+          <button class="btn btn-primary" onclick="alert('Downloading locked PDF...')">⬇️ Download PDF</button>
+          <button class="btn btn-secondary" onclick="closePdfModal()">✕</button>
+        </div>
+      </div>
+      <div class="modal-body" style="background: #334155;">
+        <div class="pdf-paper-preview" id="pdfPreviewContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       MODAL 2: DIGITAL SURVEYOR SIGN-OFF
+       ========================================================================== -->
+  <div class="modal-overlay" id="signOffModal" onclick="closeSignOffModal(event)">
+    <div class="modal-box" style="max-width: 500px;" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 style="font-size: 16px; font-weight: 700;">Surveyor Digital Sign-Off</h3>
+        <button class="btn btn-secondary" onclick="closeSignOffModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-sub); margin-bottom: 16px;" id="signOffNoticeText">
+          By signing below, you certify that the damage items and photos for report have been verified and comply with loss adjuster standards.
+        </p>
+
+        <div style="border: 2px dashed var(--border-medium); border-radius: 8px; height: 110px; display: flex; align-items: center; justify-content: center; background: var(--bg-surface-elevated); margin-bottom: 16px;">
+          <span style="font-family: 'Brush Script MT', cursive, sans-serif; font-size: 34px; color: var(--accent-primary);">Alex Wong</span>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button class="btn btn-secondary" onclick="closeSignOffModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="executeSignOff()">
+            <span>✍️</span> Confirm &amp; Lock PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       CASE DATA & JAVASCRIPT LOGIC
+       ========================================================================== -->
+  <script>
+    // MULTI-CASE DATA REPOSITORY (Organized by Case with real survey photos)
+    const CASES_DATA = {
+      "SLK-3063-Z": {
+        id: "CL-11900-SLK3063Z",
+        plate: "SLK 3063 Z",
+        vehicle: "Honda Vezel 1.5 Hybrid",
+        accidentType: "Rear-Left Corner Collision",
+        severity: "Moderate Damage",
+        severityClass: "moderate",
+        location: "Tuas Bay Drive, Singapore",
+        date: "2026-08-18 16:45",
+        channel: "Telegram Bot",
+        aiConfidence: "97.1%",
+        aiSummary: "Detected rear-left corner impact. Severe deformation and sheet metal crease on lower tailgate panel, structural buckling on rear-left quarter panel, and abrasive scuffing across rear bumper lower cover. Reverse parking sensor bracket displaced.",
+        keyFactors: ["Impact Zone: Rear Left Corner", "Airbags: Not Deployed", "Chassis Subframe: Nominal", "Tailgate Gap: Distorted (8mm)"],
+        blueprintHotspots: [
+          { id: 0, top: "135px", left: "330px", label: "01", title: "P1273082: Rear Bumper Cover Fracture", severe: false },
+          { id: 1, top: "115px", left: "320px", label: "02", title: "P1273082: Left Tailgate Panel Crease", severe: true },
+          { id: 2, top: "145px", left: "265px", label: "03", title: "P1273084: Rear Left Quarter Panel Buckle", severe: false }
+        ],
+        photos: [
+          { id: "P1273082", src: "assets/slk3063z/P1273082.JPG", title: "Rear-Left 3/4 Corner Angle", category: "Rear Impact", boxes: [
+            { top: "52%", left: "42%", width: "24%", height: "26%", tag: "⚡ Tailgate Crease // 98.2%", color: "#ef4444" },
+            { top: "58%", left: "26%", width: "24%", height: "22%", tag: "⚡ Bumper Scuff & Crush // 96.5%", color: "#f59e0b" }
+          ]},
+          { id: "P1273083", src: "assets/slk3063z/P1273083.JPG", title: "Rear Full Perspective & Plate", category: "Rear Impact", boxes: [
+            { top: "48%", left: "46%", width: "20%", height: "28%", tag: "⚡ Tailgate Dent // 97.4%", color: "#ef4444" }
+          ]},
+          { id: "P1273087", src: "assets/slk3063z/P1273087.JPG", title: "Macro: Tailgate & Bumper Seam", category: "Macro Close-up", boxes: [
+            { top: "28%", left: "30%", width: "42%", height: "45%", tag: "⚡ Sheetmetal Tear // 98.9%", color: "#ef4444" }
+          ]},
+          { id: "P1273090", src: "assets/slk3063z/P1273090.JPG", title: "Rear Right Angle (Baseline)", category: "Side / Quarter", boxes: [] },
+          { id: "P1273084", src: "assets/slk3063z/P1273084.JPG", title: "Rear Left Wheel & Arch Seam", category: "Side / Quarter", boxes: [
+            { top: "42%", left: "22%", width: "32%", height: "36%", tag: "⚡ Arch Misalignment // 94.0%", color: "#f59e0b" }
+          ]},
+          { id: "P1273088", src: "assets/slk3063z/P1273088.JPG", title: "Macro: Tailgate Gap Distortion", category: "Macro Close-up", boxes: [
+            { top: "34%", left: "36%", width: "32%", height: "35%", tag: "⚡ Gap Distortion > 8mm // 96.1%", color: "#ef4444" }
+          ]}
+        ],
+        damageItems: [
+          { part: "Rear Tailgate / Boot Lid Assembly", oem: "OEM-HON-68100-T7A", desc: "Ref: P1273082 • Deep dent & paint crack", mechanism: "Plastic Deformation / Crease", severity: "Severe", aiScore: "98.2%", verified: true },
+          { part: "Rear Bumper Lower Cover & Fascia", oem: "OEM-HON-71501-T7A", desc: "Ref: P1273082 • Scuffing & lower lip fracture", mechanism: "Impact Abrasion & Fracture", severity: "Moderate", aiScore: "96.5%", verified: true },
+          { part: "Rear Left Quarter Panel / Fender", oem: "OEM-HON-63700-T7A", desc: "Ref: P1273084 • Sheet metal buckled 35mm", mechanism: "Buckling & Torsion", severity: "Moderate", aiScore: "94.0%", verified: true },
+          { part: "Ultrasonic Reverse Parking Sensor (LH)", oem: "OEM-HON-39680-TEX", desc: "Ref: P1273087 • Sensor bracket displaced", mechanism: "Sensor Misalignment", severity: "Minor", aiScore: "92.5%", verified: true }
+        ],
+        costs: [
+          { label: "OEM Parts (Tailgate Panel + Bumper Lower + Sensor)", amount: "SGD 1,850.00" },
+          { label: "Panel Beating & Tailgate Realignment (6.0 hrs @ $85/hr)", amount: "SGD 510.00" },
+          { label: "Spray Painting (Pearl Metallic • 3 Panels)", amount: "SGD 750.00" },
+          { label: "Parking Sensor Calibration & Diagnostics", amount: "SGD 180.00" },
+          { label: "Total Estimated Insurance Claim", amount: "SGD 3,290.00", total: true }
+        ],
+        police: { station: "Singapore Traffic Police HQ", ref: "TP/2026/11900-Z" },
+        insurance: { company: "NTUC Income Insurance Co-operative", policy: "INC-99021-VZ", type: "Own Damage (OD) • Comprehensive" }
+      },
+
+      "VAY-4821": {
+        id: "CIR-2026-E973",
+        plate: "VAY 4821",
+        vehicle: "2023 Honda Civic 1.5 Turbo RS",
+        accidentType: "Frontal-Offset Collision",
+        severity: "Moderate Damage",
+        severityClass: "moderate",
+        location: "Federal Highway KM 14.2, PJ",
+        date: "2026-08-19 14:15",
+        channel: "Telegram Bot",
+        aiConfidence: "96.4%",
+        aiSummary: "Identified direct frontal-offset collision against roadside barrier. Severe mechanical deformation detected on front bumper bar, right fender panel buckled, and right LED headlamp casing destroyed. Structural engine subframe appears intact.",
+        keyFactors: ["Impact Angle: 25° Right Offset", "Airbags: Not Deployed", "Subframe: Nominal", "Fluid Leakage: Low Risk"],
+        blueprintHotspots: [
+          { id: 0, top: "76px", left: "62px", label: "01", title: "P01: Front Bumper Crush", severe: true },
+          { id: 1, top: "36px", left: "110px", label: "02", title: "P02: Right Front Fender Torsion", severe: false },
+          { id: 2, top: "48px", left: "75px", label: "03", title: "P03: Headlamp Lens Shattered", severe: false }
+        ],
+        photos: [
+          { id: "P01", src: "assets/car_accident_1.jpg", title: "Frontal Impact Perspective", category: "Front Damage", boxes: [
+            { top: "35%", left: "22%", width: "48%", height: "50%", tag: "⚡ Bumper Deform // 97.2%", color: "#ef4444" },
+            { top: "20%", left: "65%", width: "28%", height: "35%", tag: "⚡ Fender Scratch // 94.1%", color: "#f59e0b" }
+          ]},
+          { id: "P02", src: "assets/car_accident_2.jpg", title: "Right Quarter Panel", category: "Side Impact", boxes: [
+            { top: "40%", left: "30%", width: "40%", height: "40%", tag: "⚡ Panel Torsion // 95.0%", color: "#f59e0b" }
+          ]},
+          { id: "P03", src: "assets/malaysia_sample_2.jpg", title: "License Plate & Underbody", category: "Front Damage", boxes: [] },
+          { id: "P04", src: "assets/online_sample_1.jpg", title: "Wide Angle Overview", category: "Wide Angle", boxes: [] }
+        ],
+        damageItems: [
+          { part: "Front Bumper Assembly", oem: "OEM-HON-71101-T20", desc: "Ref: P01 • Lower lip tear", mechanism: "Severe Crush / Tear", severity: "Severe", aiScore: "97.2%", verified: true },
+          { part: "Right Front Fender Panel", oem: "OEM-HON-60211-T20", desc: "Ref: P02 • Panel buckled 40mm", mechanism: "Buckling & Torsion", severity: "Moderate", aiScore: "94.1%", verified: true },
+          { part: "Right LED Headlamp Unit", oem: "OEM-HON-33100-T20", desc: "Ref: P01 • Lens shattered", mechanism: "Lens Shattered", severity: "Moderate", aiScore: "98.5%", verified: true }
+        ],
+        costs: [
+          { label: "OEM Replacement Parts (Bumper + Headlamp)", amount: "RM 2,450.00" },
+          { label: "Panel Beating & Alignment Labor (5.5 hrs)", amount: "RM 850.00" },
+          { label: "Spray Painting (2-Stage Pearl Coat • 2 Panels)", amount: "RM 900.00" },
+          { label: "ADAS Radar Calibration & Diagnostics", amount: "RM 200.00" },
+          { label: "Total Estimated Insurance Claim", amount: "RM 4,400.00", total: true }
+        ],
+        police: { station: "Balai Polis Trafik Petaling Jaya", ref: "PJ/TRAF/2026/08912" },
+        insurance: { company: "Allianz General Insurance Bhd", policy: "ALZ-99214-08", type: "Own Damage (OD)" }
+      },
+
+      "WX-8888-A": {
+        id: "CIR-2026-F7A3",
+        plate: "WX 8888 A",
+        vehicle: "2021 Toyota Hilux 2.8 D-4D",
+        accidentType: "Rear-End Barrier Collision",
+        severity: "Minor Damage",
+        severityClass: "minor",
+        location: "Workshop Bay 2, Subang",
+        date: "2026-08-15 11:20",
+        channel: "WhatsApp",
+        aiConfidence: "95.8%",
+        aiSummary: "Detected minor reverse impact against parking curb. Rear steel step bumper scratched, left mudflap dislodged, minimal cosmetic paint scuffing.",
+        keyFactors: ["Impact Zone: Rear Bumper Step", "Chassis: Intact", "Bed Alignment: Nominal"],
+        blueprintHotspots: [
+          { id: 0, top: "135px", left: "320px", label: "01", title: "P01: Steel Bumper Step Scratch", severe: false }
+        ],
+        photos: [
+          { id: "P01", src: "assets/malaysia_sample_2.jpg", title: "Rear Bumper Step", category: "Rear Impact", boxes: [
+            { top: "45%", left: "35%", width: "30%", height: "30%", tag: "⚡ Step Scuff // 95.8%", color: "#10b981" }
+          ]}
+        ],
+        damageItems: [
+          { part: "Rear Step Bumper Assembly", oem: "OEM-TOY-52151-0K0", desc: "Ref: P01 • Minor cosmetic scratch", mechanism: "Surface Abrasion", severity: "Minor", aiScore: "95.8%", verified: true }
+        ],
+        costs: [
+          { label: "Rear Step Buffing & Touch-Up Paint", amount: "RM 350.00" },
+          { label: "Mudflap Clip Replacement", amount: "RM 60.00" },
+          { label: "Total Estimated Insurance Claim", amount: "RM 410.00", total: true }
+        ],
+        police: { station: "Balai Polis Subang Jaya", ref: "SJ/2026/0411" },
+        insurance: { company: "Etiqa General Insurance Bhd", policy: "ETQ-55219-HL", type: "Own Damage (OD)" }
+      }
+    };
+
+    let currentCaseKey = "SLK-3063-Z";
+    let activePhotoIndex = 0;
+
+    // Load full Case Data into UI
+    function loadCaseData(caseKey) {
+      currentCaseKey = caseKey;
+      const data = CASES_DATA[caseKey];
+      if (!data) return;
+
+      document.getElementById('caseSelector').value = caseKey;
+      document.getElementById('casePlateBadge').innerText = data.plate;
+      document.getElementById('caseHeadline').innerText = `${data.vehicle} — ${data.accidentType}`;
+      document.getElementById('caseMetaText').innerText = `CASE_ID: ${data.id} • Incident at ${data.location}`;
+      
+      const pill = document.getElementById('caseSeverityPill');
+      pill.innerText = `⚡ ${data.severity}`;
+      pill.className = `chip-severity ${data.severityClass}`;
+
+      document.getElementById('stepperChannel').innerText = `${data.channel} Intake`;
+      document.getElementById('stepperAiScore').innerText = `Gemini-2.5 • ${data.aiConfidence}`;
+      document.getElementById('stepperInsurer').innerText = data.insurance.company.split(' ')[0];
+
+      // Load Hotspots on Blueprint
+      const hotspotsContainer = document.getElementById('hotspotsContainer');
+      hotspotsContainer.innerHTML = '';
+      data.blueprintHotspots.forEach((h, idx) => {
+        const spot = document.createElement('div');
+        spot.className = `hotspot-beacon ${h.severe ? 'severe-spot' : ''}`;
+        spot.style.top = h.top;
+        spot.style.left = h.left;
+        spot.innerText = h.label;
+        spot.title = h.title;
+        spot.onclick = () => selectDamagePart(idx);
+        hotspotsContainer.appendChild(spot);
+      });
+      document.getElementById('blueprintZonesBadge').innerText = `${data.blueprintHotspots.length} Damaged Zones`;
+
+      // Load Photos for this Case
+      renderCasePhotos(data);
+
+      // Load AI Insights
+      document.getElementById('aiScorePill').innerText = `${data.aiConfidence} AI Confidence`;
+      document.getElementById('aiNarrativeText').innerText = data.aiSummary;
+      const factorsDiv = document.getElementById('aiKeyFactors');
+      factorsDiv.innerHTML = data.keyFactors.map(f => `<span class="chip-severity minor" style="font-size: 10px;">${f}</span>`).join('');
+
+      // Load Damage Items
+      const tableBody = document.getElementById('damageTableBody');
+      tableBody.innerHTML = '';
+      data.damageItems.forEach((item, idx) => {
+        const tr = document.createElement('tr');
+        tr.id = `row-damage-${idx}`;
+        tr.innerHTML = `
+          <td>
+            <strong>${item.part}</strong>
+            <div style="font-size: 11px; color: var(--text-muted);">${item.desc}</div>
+          </td>
+          <td>${item.mechanism}</td>
+          <td><span class="chip-severity ${item.severity.toLowerCase()}">${item.severity}</span></td>
+          <td><strong style="font-family: var(--font-mono);">${item.aiScore}</strong></td>
+          <td>
+            <button class="verify-toggle-modern verified" onclick="toggleVerify(this)">
+              ✓ Verified
+            </button>
+          </td>
+        `;
+        tableBody.appendChild(tr);
+      });
+
+      // Load Costs
+      const costContainer = document.getElementById('costMatrixContainer');
+      costContainer.innerHTML = data.costs.map(c => `
+        <div class="cost-row ${c.total ? 'total' : ''}">
+          <span>${c.label}</span>
+          <span style="font-family: var(--font-mono); font-weight: 600;">${c.amount}</span>
+        </div>
+      `).join('');
+
+      // Load Authority & Policy
+      document.getElementById('policeStationText').innerText = data.police.station;
+      document.getElementById('policeRefText').innerText = data.police.ref;
+      document.getElementById('insuranceProviderText').innerText = data.insurance.company;
+      document.getElementById('insurancePolicyText').innerText = `${data.insurance.policy} • ${data.insurance.type}`;
+
+      // Update PDF Preview
+      renderPdfContent(data);
+    }
+
+    // Render Photos for Case
+    function renderCasePhotos(data) {
+      activePhotoIndex = 0;
+      const categories = ['All Photos', ...new Set(data.photos.map(p => p.category))];
+      
+      const catStrip = document.getElementById('photoCategoryStrip');
+      catStrip.innerHTML = categories.map((cat, i) => `
+        <button class="photo-cat-btn ${i === 0 ? 'active' : ''}" onclick="filterPhotoCategory('${cat}', this)">
+          ${cat} (${cat === 'All Photos' ? data.photos.length : data.photos.filter(p => p.category === cat).length})
+        </button>
+      `).join('');
+
+      const thumbStrip = document.getElementById('photoThumbStrip');
+      thumbStrip.innerHTML = data.photos.map((p, i) => `
+        <div class="photo-thumb ${i === 0 ? 'active' : ''}" data-cat="${p.category}" onclick="switchPhotoCase(${i})">
+          <img src="${p.src}" alt="${p.id}" />
+        </div>
+      `).join('');
+
+      updateMainPhotoDisplay(0);
+    }
+
+    // Switch Photo inside Case
+    function switchPhotoCase(index) {
+      activePhotoIndex = index;
+      const data = CASES_DATA[currentCaseKey];
+      document.querySelectorAll('#photoThumbStrip .photo-thumb').forEach((th, i) => {
+        th.classList.toggle('active', i === index);
+      });
+      updateMainPhotoDisplay(index);
+    }
+
+    function updateMainPhotoDisplay(index) {
+      const data = CASES_DATA[currentCaseKey];
+      const photo = data.photos[index];
+      if (!photo) return;
+
+      document.getElementById('mainEvidenceImg').src = photo.src;
+      document.getElementById('photoInspectorSub').innerText = `Photo ${index + 1} of ${data.photos.length} • Evidence ID: ${photo.id}`;
+      document.getElementById('photoAngleBadge').innerText = photo.category;
+
+      const overlay = document.getElementById('aiOverlay');
+      overlay.innerHTML = '';
+      if (photo.boxes && photo.boxes.length > 0) {
+        photo.boxes.forEach(b => {
+          const box = document.createElement('div');
+          box.className = 'ai-box-marker-glow';
+          box.style.top = b.top;
+          box.style.left = b.left;
+          box.style.width = b.width;
+          box.style.height = b.height;
+          box.innerHTML = `<div class="ai-box-tag-glow">${b.tag}</div>`;
+          overlay.appendChild(box);
+        });
+      }
+    }
+
+    function filterPhotoCategory(cat, btn) {
+      document.querySelectorAll('#photoCategoryStrip .photo-cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      const thumbs = document.querySelectorAll('#photoThumbStrip .photo-thumb');
+      thumbs.forEach(t => {
+        if (cat === 'All Photos' || t.getAttribute('data-cat') === cat) {
+          t.style.display = '';
+        } else {
+          t.style.display = 'none';
+        }
+      });
+    }
+
+    // Switch case and navigate to Studio
+    function loadCaseAndOpen(caseKey) {
+      loadCaseData(caseKey);
+      switchTab('detail');
+    }
+
+    // Render PDF Preview Document
+    function renderPdfContent(data) {
+      const preview = document.getElementById('pdfPreviewContent');
+      preview.innerHTML = `
+        <div class="pdf-header-banner">
+          <div>
+            <div style="font-size: 10px; font-weight: 700; color: #64748b; letter-spacing: 0.05em;">CARLINK MOTOR CLAIMS CONSULTANCY</div>
+            <div class="pdf-title">Vehicle Damage Assessment Report</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="font-family: var(--font-mono); font-size: 13px; font-weight: 800; color: #1e3a8a;">${data.id}</div>
+            <div style="font-size: 10px; color: #64748b;">Date: ${data.date}</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; background: #f8fafc; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
+          <div>
+            <div style="font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase;">Vehicle Plate</div>
+            <div style="font-family: var(--font-mono); font-size: 12px; font-weight: 800;">${data.plate}</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase;">Make &amp; Model</div>
+            <div style="font-size: 12px; font-weight: 600;">${data.vehicle}</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase;">Accident Type</div>
+            <div style="font-size: 12px; font-weight: 600;">${data.accidentType}</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase;">Severity</div>
+            <div style="font-size: 12px; font-weight: 800; color: #b45309;">${data.severity}</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #1e3a8a; margin-bottom: 6px;">
+            Structured Damage Schedule (${data.damageItems.length} Verified Components)
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+            <thead>
+              <tr style="background: #e2e8f0; text-align: left;">
+                <th style="padding: 6px 8px;">Part</th>
+                <th style="padding: 6px 8px;">Damage Type</th>
+                <th style="padding: 6px 8px;">Severity</th>
+                <th style="padding: 6px 8px;">AI Score</th>
+                <th style="padding: 6px 8px;">Verified</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.damageItems.map(item => `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 6px 8px;">${item.part}</td>
+                  <td style="padding: 6px 8px;">${item.mechanism}</td>
+                  <td style="padding: 6px 8px;">${item.severity}</td>
+                  <td style="padding: 6px 8px; font-family: var(--font-mono);">${item.aiScore}</td>
+                  <td style="padding: 6px 8px; color: #166534; font-weight: 700;">✓ Verified</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 10px;">
+          <div>
+            <strong>Prepared By:</strong> Field Driver (${data.channel})
+          </div>
+          <div>
+            <strong>Surveyor Sign-Off:</strong> Alex Wong (Loss Adjuster #9921)
+          </div>
+          <div>
+            <strong>Status:</strong> <span style="color: #166534; font-weight: 700;">LOCKED &amp; VERIFIED</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // Dark / White Theme Toggle
+    function setTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('carlink-theme-mode', theme);
+
+      const darkOpt = document.getElementById('theme-opt-dark');
+      const lightOpt = document.getElementById('theme-opt-light');
+
+      if (theme === 'dark') {
+        darkOpt.classList.add('active');
+        lightOpt.classList.remove('active');
+      } else {
+        lightOpt.classList.add('active');
+        darkOpt.classList.remove('active');
+      }
+    }
+
+    // Initialize on boot
+    (function initApp() {
+      const savedTheme = localStorage.getItem('carlink-theme-mode') || 'dark';
+      setTheme(savedTheme);
+      loadCaseData('SLK-3063-Z');
+    })();
+
+    // Tab Switcher
+    function switchTab(tabId) {
+      document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-tab-btn').forEach(el => el.classList.remove('active'));
+
+      const target = document.getElementById('view-' + tabId);
+      const btn = document.getElementById('tab-btn-' + tabId);
+
+      if (target) target.classList.add('active');
+      if (btn) btn.classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Toggle AI Vision Overlays
+    let overlayVisible = true;
+    function toggleOverlay() {
+      overlayVisible = !overlayVisible;
+      const overlay = document.getElementById('aiOverlay');
+      const text = document.getElementById('overlayText');
+      const icon = document.getElementById('overlayIcon');
+
+      if (overlayVisible) {
+        overlay.style.opacity = '1';
+        text.innerText = 'Hide AI Vision Box';
+        icon.innerText = '👁️';
+      } else {
+        overlay.style.opacity = '0';
+        text.innerText = 'Show AI Vision Box';
+        icon.innerText = '🙈';
+      }
+    }
+
+    // Select Damage Part from Blueprint
+    function selectDamagePart(partIndex) {
+      document.querySelectorAll('.damage-table-modern tr').forEach(tr => tr.style.background = '');
+      const row = document.getElementById('row-damage-' + partIndex);
+      if (row) {
+        row.style.background = 'var(--bg-hover)';
+        row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      switchPhotoCase(partIndex % CASES_DATA[currentCaseKey].photos.length);
+    }
+
+    // Verification Checkbox Toggle
+    function toggleVerify(btn) {
+      if (btn.classList.contains('verified')) {
+        btn.classList.remove('verified');
+        btn.innerHTML = 'Pending';
+      } else {
+        btn.classList.add('verified');
+        btn.innerHTML = '✓ Verified';
+      }
+    }
+
+    // Modals
+    function openPdfModal() {
+      document.getElementById('pdfModal').classList.add('active');
+    }
+    function closePdfModal(e) {
+      document.getElementById('pdfModal').classList.remove('active');
+    }
+
+    function openSignOffModal() {
+      document.getElementById('signOffNoticeText').innerText = `By signing below, you certify that the damage items and photos for report ${CASES_DATA[currentCaseKey].id} (${CASES_DATA[currentCaseKey].plate}) have been verified and comply with loss adjuster standards.`;
+      document.getElementById('signOffModal').classList.add('active');
+    }
+    function closeSignOffModal(e) {
+      document.getElementById('signOffModal').classList.remove('active');
+    }
+
+    function executeSignOff() {
+      closeSignOffModal();
+      document.getElementById('stepper-review-node').classList.remove('active');
+      document.getElementById('stepper-review-node').classList.add('completed');
+      document.getElementById('stepper-review-node').querySelector('.step-circle').innerText = '✓';
+
+      document.getElementById('stepper-sign-node').classList.add('completed');
+      document.getElementById('stepper-sign-node').querySelector('.step-circle').innerText = '✓';
+
+      const pill = document.getElementById('caseSeverityPill');
+      pill.innerText = 'SIGNED OFF & LOCKED';
+      pill.style.background = 'var(--success-bg)';
+      pill.style.color = 'var(--success-color)';
+      pill.style.borderColor = 'var(--success-border)';
+
+      alert(`✓ Report ${CASES_DATA[currentCaseKey].id} (${CASES_DATA[currentCaseKey].plate}) has been officially Signed Off! Locked PDF generated.`);
+    }
+
+    // Simulated AI Scan in Wizard
+    function triggerSimulatedScan() {
+      const progress = document.getElementById('aiScanProgress');
+      progress.style.display = 'block';
+      let width = 10;
+      const interval = setInterval(() => {
+        width += 15;
+        if (width > 100) {
+          width = 100;
+          clearInterval(interval);
+          setTimeout(() => {
+            alert('AI Vision Scan Complete: Extracted 4 Damaged Parts for Honda Vezel (SLK 3063 Z)!');
+          }, 300);
+        }
+        document.getElementById('scanBar').style.width = width + '%';
+        document.getElementById('scanPercent').innerText = width + '%';
+      }, 150);
+    }
+
+    // Table Filtering
+    function filterBySeverity(severity, btn) {
+      document.querySelectorAll('.filter-chips .chip-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const rows = document.querySelectorAll('#incidentsMasterTable tbody tr');
+      rows.forEach(r => {
+        if (severity === 'all' || r.innerText.includes(severity)) {
+          r.style.display = '';
+        } else {
+          r.style.display = 'none';
+        }
+      });
+    }
+
+    function filterIncidents() {
+      const query = document.getElementById('searchInput').value.toLowerCase();
+      const rows = document.querySelectorAll('#incidentsMasterTable tbody tr');
+      rows.forEach(r => {
+        if (r.innerText.toLowerCase().includes(query)) {
+          r.style.display = '';
+        } else {
+          r.style.display = 'none';
+        }
+      });
+    }
+  </script>
+</body>
+</html>
