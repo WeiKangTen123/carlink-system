@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { listReports, getAnalyticsSummary, CATEGORY_OPTIONS } from "@/lib/api";
+import { listReports, getAnalyticsSummary, CATEGORY_OPTIONS, type ReportSummary } from "@/lib/api";
 import { CategoryBarChart } from "@/components/charts/CategoryBarChart";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
 import { ChannelBarChart } from "@/components/charts/ChannelBarChart";
 import { ChannelBadge } from "@/components/ChannelBadge";
 
 export default async function DashboardHomePage() {
-  let reports = [];
+  let reports: ReportSummary[] = [];
   try {
     reports = await listReports();
   } catch (err) {
