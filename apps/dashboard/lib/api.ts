@@ -224,6 +224,7 @@ export type AnalyticsSummary = {
   high_severity: number;
   category_counts: Record<string, number>;
   severity_counts: Record<string, number>;
+  damaged_parts_frequency: Record<string, number>;
   recent_activity: Array<{
     id: string;
     created_at: string;
@@ -233,8 +234,11 @@ export type AnalyticsSummary = {
     reporter: string;
     category: string[];
   }>;
-  avg_resolution_time: string;
-  ai_confidence_avg: string;
+  /** Null until at least one report has been signed off / has a rated
+   * damage item -- see get_analytics_summary in api/main.py. Never a
+   * placeholder number. */
+  avg_resolution_time: string | null;
+  ai_confidence_avg: string | null;
 };
 
 export async function listReports(): Promise<ReportSummary[]> {

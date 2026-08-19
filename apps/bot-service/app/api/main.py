@@ -1,6 +1,7 @@
 import shutil
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -268,6 +269,9 @@ def sign_off_report(report_id: str, reviewer_name: str = "Surveyor / Loss Adjust
         sign_off = data.get("sign_off") or {}
         sign_off["status"] = "Signed Off"
         sign_off["reviewed_by"] = reviewer_name
+        # Enables a real avg_resolution_time in /analytics/summary -- this
+        # field existed in the schema already but nothing ever set it.
+        sign_off["signature_date"] = datetime.now(timezone.utc).isoformat()
         data["sign_off"] = sign_off
         r.data = data
         
@@ -293,15 +297,56 @@ def get_analytics_summary() -> dict:
         
         category_counts: dict[str, int] = {}
         severity_counts: dict[str, int] = {"Minor": 0, "Moderate": 0, "Severe": 0}
-        
+        damaged_parts_frequency: dict[str, int] = {}
+        confidence_counts: dict[str, int] = {}
+        resolution_hours: list[float] = []
+
         for r in reports:
-            cats = (r.data or {}).get("category") or ["Vehicle Collision or Damage"]
+            data = r.data or {}
+            cats = data.get("category") or ["Vehicle Collision or Damage"]
             for c in cats:
                 category_counts[c] = category_counts.get(c, 0) + 1
-            
-            sev = (r.data or {}).get("severity_level") or "Moderate"
+
+            sev = data.get("severity_level") or "Moderate"
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
-            
+
+            # Same damage_summary-else-damaged_parts fallback used everywhere
+            # else in this codebase (see the dashboard's report detail page).
+            damage_items = data.get("damage_summary") or [{"part": p} for p in (data.get("damaged_parts") or [])]
+            for item in damage_items:
+                part = item.get("part")
+                if part:
+                    damaged_parts_frequency[part] = damaged_parts_frequency.get(part, 0) + 1
+                conf = item.get("ai_confidence")
+                if conf:
+                    confidence_counts[conf] = confidence_counts.get(conf, 0) + 1
+
+            sign_off = data.get("sign_off") or {}
+            sig_date = sign_off.get("signature_date")
+            if sign_off.get("status") == "Signed Off" and sig_date:
+                try:
+                    signed_at = datetime.fromisoformat(sig_date)
+                    created_at = r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=timezone.utc)
+                    resolution_hours.append((signed_at - created_at).total_seconds() / 3600)
+                except (ValueError, TypeError):
+                    pass
+
+        total_rated = sum(confidence_counts.values())
+        # Real, computed ratio rather than an invented percentage -- the
+        # model only ever gives a qualitative High/Medium/Low self-rating
+        # (see extraction.py's SYSTEM_PROMPT), so this is "what share of
+        # rated detections were High confidence," not a fabricated score.
+        ai_confidence_avg = (
+            f"{round(100 * confidence_counts.get('High', 0) / total_rated)}% High confidence"
+            if total_rated > 0
+            else None
+        )
+        avg_resolution_time = (
+            f"{round(sum(resolution_hours) / len(resolution_hours), 1)}h"
+            if resolution_hours
+            else None
+        )
+
         recent_activity = [
             {
                 "id": r.id,
@@ -322,9 +367,10 @@ def get_analytics_summary() -> dict:
             "high_severity": high_severity,
             "category_counts": category_counts,
             "severity_counts": severity_counts,
+            "damaged_parts_frequency": damaged_parts_frequency,
             "recent_activity": recent_activity,
-            "avg_resolution_time": "1.4 hours",
-            "ai_confidence_avg": "93.8%",
+            "avg_resolution_time": avg_resolution_time,
+            "ai_confidence_avg": ai_confidence_avg,
         }
     finally:
         db.close()
