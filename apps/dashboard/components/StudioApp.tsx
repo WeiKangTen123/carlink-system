@@ -1,72 +1,19 @@
 "use client";
 
 import React, { useState } from "react";
+import dynamic from "next/dynamic";
 import { type ReportDetail, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 
-/** Approximate schematic zone per damaged-part name, for the blueprint
- * hotspots -- placement only (front/rear/side of a generic top-down car
- * outline), never a per-case measured coordinate, since nothing in the
- * data model records where on the actual vehicle a photo was taken.
- *
- * Keyword matching, not an exact-string lookup: real damage_summary.part
- * values (whether AI-drafted or, as here, transcribed from a real
- * assessor's report) are free text -- "Rear bumper fascia", "Tail gate
- * lock striker" -- not the schema's example vocabulary verbatim. An exact
- * lookup against a fixed part-name list matched none of a real 18-item
- * damage schedule and silently collapsed every hotspot onto one default
- * position, stacked unreadably on top of each other. Checked in order,
- * most specific first, so e.g. "tail gate" doesn't fall through to a
- * generic "gate" rule that doesn't exist, and "rear bumper" is checked
- * before a bare "bumper" rule would be. */
-const ZONE_RULES: { test: RegExp; zone: { top: string; left: string } }[] = [
-  { test: /tail\s*-?gate|\bboot\b|\btrunk\b/i, zone: { top: "32px", left: "320px" } },
-  { test: /rear\s*(end|body)?\s*panel|floor\s*panel/i, zone: { top: "60px", left: "300px" } },
-  { test: /rear.*bumper|bumper.*rear/i, zone: { top: "88px", left: "336px" } },
-  { test: /front.*bumper|bumper.*front/i, zone: { top: "88px", left: "66px" } },
-  { test: /\bbumper\b/i, zone: { top: "88px", left: "200px" } },
-  { test: /tail\s*-?lamp|tail\s*-?light|rear.*light|rear.*lamp/i, zone: { top: "50px", left: "332px" } },
-  { test: /head\s*-?lamp|head\s*-?light/i, zone: { top: "50px", left: "68px" } },
-  { test: /wind\s*-?screen|wind\s*-?shield/i, zone: { top: "38px", left: "200px" } },
-  { test: /\broof\b/i, zone: { top: "88px", left: "200px" } },
-  { test: /\bbonnet\b|\bhood\b/i, zone: { top: "32px", left: "95px" } },
-  { test: /mirror/i, zone: { top: "95px", left: "150px" } },
-  { test: /fender|wheel\s*arch|wing/i, zone: { top: "62px", left: "112px" } },
-  { test: /wheel|\brim\b|tyre|\btire\b/i, zone: { top: "18px", left: "122px" } },
-  { test: /sensor|reverse/i, zone: { top: "88px", left: "336px" } },
-  { test: /plate/i, zone: { top: "88px", left: "336px" } },
-  { test: /chassis|\bframe\b|subframe|undercarriage/i, zone: { top: "88px", left: "200px" } },
-  { test: /\bdoor\b/i, zone: { top: "95px", left: "150px" } },
-];
-const DEFAULT_ZONE = { top: "88px", left: "200px" };
-
-function zoneFor(part: string): { top: string; left: string } {
-  const rule = ZONE_RULES.find((r) => r.test.test(part));
-  return rule ? rule.zone : DEFAULT_ZONE;
-}
-
-/** Spreads hotspots that land in the same zone (e.g. several real,
- * distinct tailgate sub-components) into a small fan around that zone's
- * anchor point instead of stacking pixel-for-pixel -- still an
- * approximate placement, just a legible one when several real items
- * genuinely share one physical area. */
-function spreadZones<T>(items: T[], zoneOf: (item: T) => { top: string; left: string }) {
-  const seen = new Map<string, number>();
-  return items.map((item) => {
-    const base = zoneOf(item);
-    const key = `${base.top},${base.left}`;
-    const idx = seen.get(key) ?? 0;
-    seen.set(key, idx + 1);
-    if (idx === 0) return base;
-    const angle = (idx * 137.5 * Math.PI) / 180; // golden-angle fan, avoids axis-aligned overlap
-    const radius = 14 + Math.floor(idx / 6) * 10;
-    const top = parseFloat(base.top) + Math.sin(angle) * radius;
-    const left = parseFloat(base.left) + Math.cos(angle) * radius;
-    return { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` };
-  });
-}
+// Three.js/WebGL only exists client-side -- SSR-rendering the Canvas would
+// either crash on the server or produce a hydration mismatch, so this is
+// loaded only after mount, same as the rest of the studio's client-only UI.
+const VehicleBlueprint3D = dynamic(
+  () => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D),
+  { ssr: false, loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint&hellip;</div> }
+);
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see
  * schema.py) -- this is the same indexing scheme applied to photo_urls. */
@@ -88,7 +35,7 @@ function bboxToCss(bbox: number[] | null | undefined): { top: string; left: stri
   };
 }
 
-function severityClass(severity?: string | null): string {
+export function severityClass(severity?: string | null): string {
   const s = (severity || "").toLowerCase();
   if (s.includes("severe")) return "severe";
   if (s.includes("moderate")) return "moderate";
@@ -118,8 +65,6 @@ export function StudioApp({ report }: { report: ReportDetail }) {
     d.damage_summary && d.damage_summary.length > 0
       ? d.damage_summary
       : (d.damaged_parts || []).map((p) => ({ part: p, severity: d.severity_level || null, human_verified: false }));
-
-  const hotspotZones = spreadZones(damageEntries, (item) => zoneFor(item.part));
 
   const photos = report.photo_urls || [];
   const currentPhotoUrl = photos[activePhotoIndex];
@@ -245,7 +190,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                   <span>📐</span> Vehicle Body Blueprint
                 </div>
                 <div className="card-subtitle">
-                  Approximate zone per damaged part &mdash; click to jump to its evidence photo
+                  Approximate 3D zone per damaged part &mdash; click a marker to jump to its evidence photo
                 </div>
               </div>
               <span className={`chip-severity ${severityClass(d.severity_level)}`}>
@@ -253,51 +198,11 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               </span>
             </div>
 
-            <div className="blueprint-stage-radar">
-              <div className="radar-laser-beam" />
-              <div className="svg-car-container">
-                <svg viewBox="0 0 400 180" width="100%" height="auto" style={{ display: "block" }}>
-                  <path
-                    d="M 60 90 Q 60 40 100 35 L 140 35 L 180 20 L 260 20 L 300 35 L 340 40 Q 365 90 340 140 L 300 145 L 260 160 L 180 160 L 140 145 L 100 145 Q 60 140 60 90 Z"
-                    fill="none"
-                    stroke="var(--border-glow, #38bdf8)"
-                    strokeWidth="2.2"
-                    strokeLinejoin="round"
-                  />
-                  <path d="M 175 35 L 255 35 L 275 50 L 155 50 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-color)" strokeWidth="1.5" />
-                  <path d="M 175 145 L 255 145 L 275 130 L 155 130 Z" fill="rgba(56, 189, 248, 0.08)" stroke="var(--border-color)" strokeWidth="1.5" />
-                  <rect x="180" y="55" width="80" height="70" rx="6" fill="none" stroke="var(--border-color)" strokeWidth="1.5" />
-                  <rect x="105" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                  <rect x="270" y="14" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                  <rect x="105" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                  <rect x="270" y="150" width="36" height="16" rx="3" fill="var(--text-muted)" opacity="0.4" />
-                  <text x="35" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">FRONT</text>
-                  <text x="365" y="94" fontFamily="var(--font-mono)" fontSize="9" fontWeight="700" fill="var(--text-muted)" textAnchor="middle">REAR</text>
-                </svg>
-
-                {damageEntries.length === 0 && (
-                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "var(--text-muted)" }}>
-                    No damaged parts recorded yet
-                  </div>
-                )}
-
-                {damageEntries.map((item, idx) => {
-                  const zone = hotspotZones[idx];
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      className={`hotspot-beacon ${severityClass(item.severity) === "severe" ? "severe-spot" : ""}`}
-                      style={{ top: zone.top, left: zone.left }}
-                      title={`${item.part}${item.damage_type ? " — " + item.damage_type : ""}`}
-                      onClick={() => handleHotspotClick(idx, item)}
-                    >
-                      {String(idx + 1).padStart(2, "0")}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <VehicleBlueprint3D
+              damageEntries={damageEntries}
+              onHotspotClick={handleHotspotClick}
+              highlightedDamageIndex={highlightedDamageIndex}
+            />
           </div>
 
           {/* Photo Evidence Inspector */}
