@@ -23,7 +23,7 @@ from pathlib import Path
 
 from app.ai.client import get_client
 from app.config import settings
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,58 @@ def _strip_placeholder_people(draft: SecurityIncidentDraft) -> SecurityIncidentD
     return draft
 
 
+# Confirmed live (trial 7 of a 10-run backfill test): the model can leak
+# its own internal reasoning straight into a structured field instead of a
+# clean value -- one 'severity' came back as a ~600-character run-on
+# string of the model visibly talking itself through the bbox_* fields
+# ("...let us match prompt rules carefully only set when confident...").
+# Constraining these to their documented enums and nulling anything else
+# is safer than displaying whatever leaked through -- an honest null reads
+# far better in the dashboard than a wall of garbled text in a severity
+# badge.
+_VALID_SEVERITIES = {"Minor", "Moderate", "Severe"}
+_VALID_CONFIDENCE = {"High", "Medium", "Low"}
+
+
+def _sanitize_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
+    for item in draft.damage_summary:
+        if item.severity not in _VALID_SEVERITIES:
+            item.severity = None
+        if item.ai_confidence not in _VALID_CONFIDENCE:
+            item.ai_confidence = None
+        # A real part name is a short label ("Rear Bumper"), not a
+        # sentence -- same shape check as _looks_like_fabricated_name.
+        if item.part and (any(ch in item.part for ch in "\n") or len(item.part) > 80):
+            item.part = item.part[:80].strip()
+    if draft.severity_level not in _VALID_SEVERITIES:
+        draft.severity_level = None
+    return draft
+
+
+def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
+    """damage_summary comes back empty on a large share of real calls even
+    when damaged_parts is populated -- confirmed live: the key is simply
+    absent from the model's raw JSON in those responses (not an explicit
+    []), typically alongside a shorter overall response, so this looks
+    like the model treating a structured per-item breakdown as skippable
+    effort rather than a deliberate "nothing to report" signal. The
+    dashboard and PDF template already fall back to damaged_parts for
+    display when damage_summary is empty (see ReportDetailPage's damage
+    table) -- doing the same synthesis here, once, at draft time, keeps
+    every consumer consistent instead of re-deriving it in three places.
+    Adds nothing the model didn't already say: same part names, severity
+    copied from the one already-drafted severity_level, everything else
+    (damage_type, photo_reference, bounding box, ai_confidence) left null
+    rather than guessed."""
+    if draft.damage_summary or not draft.damaged_parts:
+        return draft
+    draft.damage_summary = [
+        DamageSummaryItem(part=part, severity=draft.severity_level, human_verified=False)
+        for part in draft.damaged_parts
+    ]
+    return draft
+
+
 def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
     client = get_client()
     input_parts = _build_input(description, photo_paths)
@@ -143,7 +195,9 @@ def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDr
                 },
             )
             draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
-            return _strip_placeholder_people(draft)
+            draft = _strip_placeholder_people(draft)
+            draft = _sanitize_damage_summary(draft)
+            return _backfill_damage_summary(draft)
         except Exception as exc:
             # Covers rate limits, quota exhaustion, and other transient
             # failures on this model -- move to the next one in the chain.
