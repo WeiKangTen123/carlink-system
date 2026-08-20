@@ -32,6 +32,16 @@ class Witness(BaseModel):
     observation_time: Optional[str] = None
 
 
+class BoundingBox(BaseModel):
+    """Where a damaged part appears within its referenced photo, as a
+    percentage-based box (top-left origin) -- resolution-independent, so it
+    still lines up regardless of what size the photo is displayed at."""
+    top: float = Field(description="Top edge of the box as a percentage (0-100) of the photo's height")
+    left: float = Field(description="Left edge of the box as a percentage (0-100) of the photo's width")
+    width: float = Field(description="Box width as a percentage (0-100) of the photo's width")
+    height: float = Field(description="Box height as a percentage (0-100) of the photo's height")
+
+
 class DamageSummaryItem(BaseModel):
     part: str = Field(description="Front Bumper, Rear Bumper, Left Door, Right Door, Bonnet/Hood, Boot/Trunk, Headlight, Taillight, Windshield, Side Mirror, Fender, Wheel/Rim, Tire, Roof, Chassis, Undercarriage")
     damage_type: Optional[str] = Field(default=None, description="Scratch, Dent, Crack, Broken, Bent, Loose, Missing, Water damage, Structural damage -- only set if actually known")
@@ -39,6 +49,10 @@ class DamageSummaryItem(BaseModel):
     photo_reference: Optional[str] = Field(
         default=None,
         description="Which uploaded photo actually shows this damage, e.g. 'P01' for the first photo, 'P02' for the second. Photos are given to you in that order -- only set this when you can genuinely tell which photo shows the part; leave null if unclear or if it's not visible in any single photo.",
+    )
+    bounding_box: Optional[BoundingBox] = Field(
+        default=None,
+        description="Where this damage appears within the photo_reference photo specifically. Only set this when photo_reference is also set and you can genuinely localize the damage in that frame -- never a rough guess just to fill the field.",
     )
     ai_confidence: Optional[str] = Field(
         default=None,

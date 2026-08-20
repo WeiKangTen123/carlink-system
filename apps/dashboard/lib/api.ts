@@ -70,6 +70,13 @@ export const CLAIM_TYPE_OPTIONS = [
   "Special case",
 ] as const;
 
+export type BoundingBox = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
 export type DamageSummaryItem = {
   part: string;
   damage_type?: string | null;
@@ -79,6 +86,7 @@ export type DamageSummaryItem = {
   human_verified?: boolean;
   repair_required?: boolean;
   oem_part_number?: string | null;
+  bounding_box?: BoundingBox | null;
 };
 
 export type VehicleInfo = {

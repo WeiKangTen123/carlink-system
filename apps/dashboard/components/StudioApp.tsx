@@ -9,29 +9,64 @@ import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 /** Approximate schematic zone per damaged-part name, for the blueprint
  * hotspots -- placement only (front/rear/side of a generic top-down car
  * outline), never a per-case measured coordinate, since nothing in the
- * data model records where on the actual vehicle a photo was taken. This
- * intentionally mirrors damage_summary.part's own vocabulary in
- * apps/bot-service/app/reports/schema.py. */
-const PART_ZONES: Record<string, { top: string; left: string }> = {
-  "Front Bumper": { top: "88px", left: "66px" },
-  "Bonnet/Hood": { top: "32px", left: "95px" },
-  Headlight: { top: "50px", left: "68px" },
-  Windshield: { top: "38px", left: "200px" },
-  Roof: { top: "88px", left: "200px" },
-  "Left Door": { top: "95px", left: "150px" },
-  "Right Door": { top: "95px", left: "150px" },
-  "Side Mirror": { top: "95px", left: "150px" },
-  Fender: { top: "62px", left: "112px" },
-  "Wheel/Rim": { top: "18px", left: "122px" },
-  Tire: { top: "18px", left: "122px" },
-  Chassis: { top: "88px", left: "200px" },
-  Undercarriage: { top: "88px", left: "200px" },
-  Taillight: { top: "50px", left: "332px" },
-  "Boot/Trunk": { top: "32px", left: "320px" },
-  "Rear Bumper": { top: "88px", left: "336px" },
-};
+ * data model records where on the actual vehicle a photo was taken.
+ *
+ * Keyword matching, not an exact-string lookup: real damage_summary.part
+ * values (whether AI-drafted or, as here, transcribed from a real
+ * assessor's report) are free text -- "Rear bumper fascia", "Tail gate
+ * lock striker" -- not the schema's example vocabulary verbatim. An exact
+ * lookup against a fixed part-name list matched none of a real 18-item
+ * damage schedule and silently collapsed every hotspot onto one default
+ * position, stacked unreadably on top of each other. Checked in order,
+ * most specific first, so e.g. "tail gate" doesn't fall through to a
+ * generic "gate" rule that doesn't exist, and "rear bumper" is checked
+ * before a bare "bumper" rule would be. */
+const ZONE_RULES: { test: RegExp; zone: { top: string; left: string } }[] = [
+  { test: /tail\s*-?gate|\bboot\b|\btrunk\b/i, zone: { top: "32px", left: "320px" } },
+  { test: /rear\s*(end|body)?\s*panel|floor\s*panel/i, zone: { top: "60px", left: "300px" } },
+  { test: /rear.*bumper|bumper.*rear/i, zone: { top: "88px", left: "336px" } },
+  { test: /front.*bumper|bumper.*front/i, zone: { top: "88px", left: "66px" } },
+  { test: /\bbumper\b/i, zone: { top: "88px", left: "200px" } },
+  { test: /tail\s*-?lamp|tail\s*-?light|rear.*light|rear.*lamp/i, zone: { top: "50px", left: "332px" } },
+  { test: /head\s*-?lamp|head\s*-?light/i, zone: { top: "50px", left: "68px" } },
+  { test: /wind\s*-?screen|wind\s*-?shield/i, zone: { top: "38px", left: "200px" } },
+  { test: /\broof\b/i, zone: { top: "88px", left: "200px" } },
+  { test: /\bbonnet\b|\bhood\b/i, zone: { top: "32px", left: "95px" } },
+  { test: /mirror/i, zone: { top: "95px", left: "150px" } },
+  { test: /fender|wheel\s*arch|wing/i, zone: { top: "62px", left: "112px" } },
+  { test: /wheel|\brim\b|tyre|\btire\b/i, zone: { top: "18px", left: "122px" } },
+  { test: /sensor|reverse/i, zone: { top: "88px", left: "336px" } },
+  { test: /plate/i, zone: { top: "88px", left: "336px" } },
+  { test: /chassis|\bframe\b|subframe|undercarriage/i, zone: { top: "88px", left: "200px" } },
+  { test: /\bdoor\b/i, zone: { top: "95px", left: "150px" } },
+];
 const DEFAULT_ZONE = { top: "88px", left: "200px" };
-const zoneFor = (part: string) => PART_ZONES[part] || DEFAULT_ZONE;
+
+function zoneFor(part: string): { top: string; left: string } {
+  const rule = ZONE_RULES.find((r) => r.test.test(part));
+  return rule ? rule.zone : DEFAULT_ZONE;
+}
+
+/** Spreads hotspots that land in the same zone (e.g. several real,
+ * distinct tailgate sub-components) into a small fan around that zone's
+ * anchor point instead of stacking pixel-for-pixel -- still an
+ * approximate placement, just a legible one when several real items
+ * genuinely share one physical area. */
+function spreadZones<T>(items: T[], zoneOf: (item: T) => { top: string; left: string }) {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const base = zoneOf(item);
+    const key = `${base.top},${base.left}`;
+    const idx = seen.get(key) ?? 0;
+    seen.set(key, idx + 1);
+    if (idx === 0) return base;
+    const angle = (idx * 137.5 * Math.PI) / 180; // golden-angle fan, avoids axis-aligned overlap
+    const radius = 14 + Math.floor(idx / 6) * 10;
+    const top = parseFloat(base.top) + Math.sin(angle) * radius;
+    const left = parseFloat(base.left) + Math.cos(angle) * radius;
+    return { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` };
+  });
+}
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see
  * schema.py) -- this is the same indexing scheme applied to photo_urls. */
@@ -67,6 +102,8 @@ export function StudioApp({ report }: { report: ReportDetail }) {
     d.damage_summary && d.damage_summary.length > 0
       ? d.damage_summary
       : (d.damaged_parts || []).map((p) => ({ part: p, severity: d.severity_level || null, human_verified: false }));
+
+  const hotspotZones = spreadZones(damageEntries, (item) => zoneFor(item.part));
 
   const photos = report.photo_urls || [];
   const currentPhotoUrl = photos[activePhotoIndex];
@@ -229,7 +266,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                 )}
 
                 {damageEntries.map((item, idx) => {
-                  const zone = zoneFor(item.part);
+                  const zone = hotspotZones[idx];
                   return (
                     <button
                       key={idx}
@@ -268,6 +305,38 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               <div className="photo-inspector-box">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={fileUrl(currentPhotoUrl)} alt={currentPhotoLabel} className="inspector-main-img" />
+
+                {/* Real AI-detected bounding boxes only -- Gemini localizes
+                    these itself (see extraction.py's bounding_box prompt);
+                    never drawn from an invented/estimated position. Items
+                    without a real box just don't get one, no fallback
+                    guess. */}
+                {showBadges && (
+                  <div className="ai-bounding-overlay">
+                    {currentPhotoDamage
+                      .filter((item) => item.bounding_box)
+                      .map((item, i) => {
+                        const box = item.bounding_box!;
+                        return (
+                          <div
+                            key={i}
+                            className="ai-box-marker-glow"
+                            style={{
+                              top: `${box.top}%`,
+                              left: `${box.left}%`,
+                              width: `${box.width}%`,
+                              height: `${box.height}%`,
+                            }}
+                          >
+                            <div className="ai-box-tag-glow">
+                              ⚡ {item.part}
+                              {item.ai_confidence ? ` // ${item.ai_confidence}` : ""}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
               </div>
 
               {showBadges && (
@@ -277,6 +346,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                       <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11 }}>
                         ⚡ {item.part}
                         {item.ai_confidence ? ` // ${item.ai_confidence} confidence` : ""}
+                        {item.bounding_box ? " 🔲" : ""}
                       </span>
                     ))
                   ) : (
