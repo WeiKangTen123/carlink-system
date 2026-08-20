@@ -48,9 +48,10 @@ SYSTEM_PROMPT = (
     "   - When 'photo_reference' is set, also try to localize the damage within that specific photo using 'bbox_top'/'bbox_left'/'bbox_width'/'bbox_height': percentages (0-100) of that photo's dimensions, measured from the top-left corner, tightly around the visible damage (not the whole part or the whole vehicle). Set all four together or none at all. Only set them when you can actually see the damage clearly enough to place a box around it with real confidence -- leave them null rather than a rough or centered guess.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
-    "4. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
-    "5. Only fill in 'recommendations' fields when there is a genuine, specific basis for the suggestion from the described damage -- do not fabricate generic repair advice.\n"
-    "6. Only set 'ai_analysis.confidence_score' if you can give a genuine confidence estimate; otherwise leave it null. Do not output a placeholder percentage.\n"
+    "4. Leave 'witnesses' and 'people_involved' as empty arrays [] unless a specific person is actually named or clearly described (e.g. \"my colleague Ahmad saw it happen\"). The reporter describing their own incident is not a witness or a person_involved entry -- do not create one for them. Never add a placeholder entry like 'Reporter', 'Unknown', or 'Unspecified' just to have something in the array; an empty array is the correct, honest answer when no one else is actually mentioned.\n"
+    "5. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
+    "6. Only fill in 'recommendations' fields when there is a genuine, specific basis for the suggestion from the described damage -- do not fabricate generic repair advice.\n"
+    "7. Only set 'ai_analysis.confidence_score' if you can give a genuine confidence estimate; otherwise leave it null. Do not output a placeholder percentage.\n"
     "Never fabricate names, phone numbers, plate numbers, VINs, claim numbers, timestamps, or confidence scores "
     "to make the report look more complete than the actual evidence supports."
 )
@@ -75,6 +76,26 @@ def _build_input(description: str, photo_paths: list[str]) -> list[dict]:
     return parts
 
 
+# Names structured-output models reach for when they populate a
+# witnesses/people_involved entry despite being told to leave it empty --
+# confirmed reproducible against the live model chain (~35% of trials)
+# even after the system prompt explicitly said not to. Prompting alone
+# isn't reliable enough for a "never fabricate" requirement, so this is a
+# deterministic backstop: strip any entry whose name is one of these
+# known placeholder patterns rather than trust instruction-following alone.
+_PLACEHOLDER_NAMES = {
+    "unknown", "unspecified", "n/a", "na", "reporter", "string", "none",
+    "not specified", "not applicable", "tbd", "pending", "witness", "person",
+    "jane doe", "john doe", "",
+}
+
+
+def _strip_placeholder_people(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
+    draft.witnesses = [w for w in draft.witnesses if w.name.strip().lower() not in _PLACEHOLDER_NAMES]
+    draft.people_involved = [p for p in draft.people_involved if p.name.strip().lower() not in _PLACEHOLDER_NAMES]
+    return draft
+
+
 def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
     client = get_client()
     input_parts = _build_input(description, photo_paths)
@@ -93,7 +114,8 @@ def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDr
                     "schema": schema,
                 },
             )
-            return SecurityIncidentDraft.model_validate_json(interaction.output_text)
+            draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
+            return _strip_placeholder_people(draft)
         except Exception as exc:
             # Covers rate limits, quota exhaustion, and other transient
             # failures on this model -- move to the next one in the chain.
