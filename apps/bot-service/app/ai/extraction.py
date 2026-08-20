@@ -76,23 +76,51 @@ def _build_input(description: str, photo_paths: list[str]) -> list[dict]:
     return parts
 
 
-# Names structured-output models reach for when they populate a
-# witnesses/people_involved entry despite being told to leave it empty --
-# confirmed reproducible against the live model chain (~35% of trials)
-# even after the system prompt explicitly said not to. Prompting alone
-# isn't reliable enough for a "never fabricate" requirement, so this is a
-# deterministic backstop: strip any entry whose name is one of these
-# known placeholder patterns rather than trust instruction-following alone.
+# Structured-output models reach for a placeholder witnesses/people_involved
+# entry despite being told to leave it empty -- confirmed reproducible
+# against the live model chain (~35% of trials) even after the system
+# prompt explicitly said not to. Prompting alone isn't reliable enough for
+# a "never fabricate" requirement, so this is a deterministic backstop.
+#
+# An exact-match blocklist wasn't enough on its own -- live testing turned
+# up a growing, unpredictable set of patterns beyond simple placeholders
+# like "Unknown": the literal schema field name ("name"), and full
+# explanatory sentences ("No other witnesses mentioned."). A real person's
+# name doesn't look like either of those, so this checks the *shape* of
+# the string rather than trying to enumerate every placeholder the model
+# might invent next.
 _PLACEHOLDER_NAMES = {
     "unknown", "unspecified", "n/a", "na", "reporter", "string", "none",
     "not specified", "not applicable", "tbd", "pending", "witness", "person",
-    "jane doe", "john doe", "",
+    "jane doe", "john doe", "name", "value", "n.a.", "not provided",
+    "not available", "not given", "not applicable.", "unidentified",
 }
+_PLACEHOLDER_SUBSTRINGS = (
+    "no other", "not mentioned", "not identified", "no witness", "no name",
+    "witnesses were", "person involved", "no one", "n/a", "unspecified",
+)
+
+
+def _looks_like_fabricated_name(name: str) -> bool:
+    cleaned = name.strip()
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if lowered in _PLACEHOLDER_NAMES:
+        return True
+    if any(sub in lowered for sub in _PLACEHOLDER_SUBSTRINGS):
+        return True
+    # A real name is a short label, not a sentence -- explanatory text
+    # ("No other witnesses were mentioned in the report.") is exactly the
+    # shape the model reaches for instead of an empty array.
+    if any(ch in cleaned for ch in ".!?") or len(cleaned.split()) > 5:
+        return True
+    return False
 
 
 def _strip_placeholder_people(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
-    draft.witnesses = [w for w in draft.witnesses if w.name.strip().lower() not in _PLACEHOLDER_NAMES]
-    draft.people_involved = [p for p in draft.people_involved if p.name.strip().lower() not in _PLACEHOLDER_NAMES]
+    draft.witnesses = [w for w in draft.witnesses if not _looks_like_fabricated_name(w.name)]
+    draft.people_involved = [p for p in draft.people_involved if not _looks_like_fabricated_name(p.name)]
     return draft
 
 
