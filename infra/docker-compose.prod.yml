@@ -26,7 +26,11 @@ x-bot-service: &bot-service
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
     - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
-    - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3.5-flash-lite,gemini-3.1-flash-lite,antigravity}
+    # Kept in sync with config.py's default -- see the comment there for
+    # why this order (bbox-capable models first, -lite models as the
+    # always-available fallback) and why antigravity was dropped (no
+    # image input support, so it could never serve a photo-analysis call).
+    - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite}
     - STORAGE_DIR=/app/storage
     - DATABASE_URL=sqlite:////app/storage/carlink.db
   volumes:

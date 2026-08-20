@@ -193,6 +193,13 @@ def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDr
                     "mime_type": "application/json",
                     "schema": schema,
                 },
+                # Without this, a stalled call hangs indefinitely (hit
+                # this directly while testing model candidates locally --
+                # one model call sat for 100+s with no response and no
+                # error) -- ties up a request/worker for no benefit since
+                # the whole point of the chain is to keep trying other
+                # models, not wait forever on one.
+                timeout=45.0,
             )
             draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
             draft = _strip_placeholder_people(draft)
