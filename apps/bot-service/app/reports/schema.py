@@ -32,16 +32,6 @@ class Witness(BaseModel):
     observation_time: Optional[str] = None
 
 
-class BoundingBox(BaseModel):
-    """Where a damaged part appears within its referenced photo, as a
-    percentage-based box (top-left origin) -- resolution-independent, so it
-    still lines up regardless of what size the photo is displayed at."""
-    top: float = Field(description="Top edge of the box as a percentage (0-100) of the photo's height")
-    left: float = Field(description="Left edge of the box as a percentage (0-100) of the photo's width")
-    width: float = Field(description="Box width as a percentage (0-100) of the photo's width")
-    height: float = Field(description="Box height as a percentage (0-100) of the photo's height")
-
-
 class DamageSummaryItem(BaseModel):
     part: str = Field(description="Front Bumper, Rear Bumper, Left Door, Right Door, Bonnet/Hood, Boot/Trunk, Headlight, Taillight, Windshield, Side Mirror, Fender, Wheel/Rim, Tire, Roof, Chassis, Undercarriage")
     damage_type: Optional[str] = Field(default=None, description="Scratch, Dent, Crack, Broken, Bent, Loose, Missing, Water damage, Structural damage -- only set if actually known")
@@ -50,10 +40,17 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="Which uploaded photo actually shows this damage, e.g. 'P01' for the first photo, 'P02' for the second. Photos are given to you in that order -- only set this when you can genuinely tell which photo shows the part; leave null if unclear or if it's not visible in any single photo.",
     )
-    bounding_box: Optional[BoundingBox] = Field(
-        default=None,
-        description="Where this damage appears within the photo_reference photo specifically. Only set this when photo_reference is also set and you can genuinely localize the damage in that frame -- never a rough guess just to fill the field.",
-    )
+    # Flat fields rather than a nested BoundingBox object: a nested $ref
+    # inside an anyOf, inside an array item, measurably broke structured
+    # output for this field specifically -- damage_summary came back
+    # empty (confirmed reproducible against the live model) even though
+    # damaged_parts and the description were populated correctly. Flat
+    # optional floats keep the same array-of-objects shape (Bar → Item)
+    # without the extra indirection.
+    bbox_top: Optional[float] = Field(default=None, description="Top edge of a box around this damage within its photo_reference photo, as a percentage (0-100) of that photo's height. Only set alongside photo_reference and bbox_left/width/height, and only when you can genuinely localize the damage -- never a rough guess.")
+    bbox_left: Optional[float] = Field(default=None, description="Left edge of the box, as a percentage (0-100) of the photo's width.")
+    bbox_width: Optional[float] = Field(default=None, description="Box width, as a percentage (0-100) of the photo's width.")
+    bbox_height: Optional[float] = Field(default=None, description="Box height, as a percentage (0-100) of the photo's height.")
     ai_confidence: Optional[str] = Field(
         default=None,
         description="The model's own 'High', 'Medium', or 'Low' assessment of how clearly it can identify this specific damage from the photo. A qualitative self-assessment, not a fabricated-looking precise percentage.",

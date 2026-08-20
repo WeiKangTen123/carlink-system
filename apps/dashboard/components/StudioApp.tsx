@@ -307,34 +307,30 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                 <img src={fileUrl(currentPhotoUrl)} alt={currentPhotoLabel} className="inspector-main-img" />
 
                 {/* Real AI-detected bounding boxes only -- Gemini localizes
-                    these itself (see extraction.py's bounding_box prompt);
-                    never drawn from an invented/estimated position. Items
-                    without a real box just don't get one, no fallback
-                    guess. */}
+                    these itself (see extraction.py's bbox_* prompt); never
+                    drawn from an invented/estimated position. Items without
+                    a real box just don't get one, no fallback guess. */}
                 {showBadges && (
                   <div className="ai-bounding-overlay">
                     {currentPhotoDamage
-                      .filter((item) => item.bounding_box)
-                      .map((item, i) => {
-                        const box = item.bounding_box!;
-                        return (
-                          <div
-                            key={i}
-                            className="ai-box-marker-glow"
-                            style={{
-                              top: `${box.top}%`,
-                              left: `${box.left}%`,
-                              width: `${box.width}%`,
-                              height: `${box.height}%`,
-                            }}
-                          >
-                            <div className="ai-box-tag-glow">
-                              ⚡ {item.part}
-                              {item.ai_confidence ? ` // ${item.ai_confidence}` : ""}
-                            </div>
+                      .filter((item) => item.bbox_top != null && item.bbox_left != null && item.bbox_width != null && item.bbox_height != null)
+                      .map((item, i) => (
+                        <div
+                          key={i}
+                          className="ai-box-marker-glow"
+                          style={{
+                            top: `${item.bbox_top}%`,
+                            left: `${item.bbox_left}%`,
+                            width: `${item.bbox_width}%`,
+                            height: `${item.bbox_height}%`,
+                          }}
+                        >
+                          <div className="ai-box-tag-glow">
+                            ⚡ {item.part}
+                            {item.ai_confidence ? ` // ${item.ai_confidence}` : ""}
                           </div>
-                        );
-                      })}
+                        </div>
+                      ))}
                   </div>
                 )}
               </div>
@@ -346,7 +342,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                       <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11 }}>
                         ⚡ {item.part}
                         {item.ai_confidence ? ` // ${item.ai_confidence} confidence` : ""}
-                        {item.bounding_box ? " 🔲" : ""}
+                        {item.bbox_top != null ? " 🔲" : ""}
                       </span>
                     ))
                   ) : (
