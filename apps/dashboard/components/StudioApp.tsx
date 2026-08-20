@@ -72,6 +72,22 @@ function spreadZones<T>(items: T[], zoneOf: (item: T) => { top: string; left: st
  * schema.py) -- this is the same indexing scheme applied to photo_urls. */
 const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
 
+/** Converts Gemini's native bbox_2d format ([y_min, x_min, y_max, x_max],
+ * each 0-1000) into CSS percentage positioning for an absolutely-
+ * positioned overlay div. Returns null for anything malformed rather than
+ * rendering a garbled box. */
+function bboxToCss(bbox: number[] | null | undefined): { top: string; left: string; width: string; height: string } | null {
+  if (!bbox || bbox.length !== 4) return null;
+  const [yMin, xMin, yMax, xMax] = bbox;
+  if ([yMin, xMin, yMax, xMax].some((v) => typeof v !== "number" || Number.isNaN(v))) return null;
+  return {
+    top: `${yMin / 10}%`,
+    left: `${xMin / 10}%`,
+    width: `${(xMax - xMin) / 10}%`,
+    height: `${(yMax - yMin) / 10}%`,
+  };
+}
+
 function severityClass(severity?: string | null): string {
   const s = (severity || "").toLowerCase();
   if (s.includes("severe")) return "severe";
@@ -307,24 +323,18 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                 <img src={fileUrl(currentPhotoUrl)} alt={currentPhotoLabel} className="inspector-main-img" />
 
                 {/* Real AI-detected bounding boxes only -- Gemini localizes
-                    these itself (see extraction.py's bbox_* prompt); never
-                    drawn from an invented/estimated position. Items without
-                    a real box just don't get one, no fallback guess. */}
+                    these itself (see extraction.py's bbox_2d prompt, using
+                    Gemini's own native [y_min,x_min,y_max,x_max]/1000
+                    convention); never drawn from an invented/estimated
+                    position. Items without a real box just don't get one,
+                    no fallback guess. */}
                 {showBadges && (
                   <div className="ai-bounding-overlay">
                     {currentPhotoDamage
-                      .filter((item) => item.bbox_top != null && item.bbox_left != null && item.bbox_width != null && item.bbox_height != null)
-                      .map((item, i) => (
-                        <div
-                          key={i}
-                          className="ai-box-marker-glow"
-                          style={{
-                            top: `${item.bbox_top}%`,
-                            left: `${item.bbox_left}%`,
-                            width: `${item.bbox_width}%`,
-                            height: `${item.bbox_height}%`,
-                          }}
-                        >
+                      .map((item, i) => ({ item, i, css: bboxToCss(item.bbox_2d) }))
+                      .filter((x): x is { item: DamageSummaryItem; i: number; css: NonNullable<ReturnType<typeof bboxToCss>> } => x.css !== null)
+                      .map(({ item, i, css }) => (
+                        <div key={i} className="ai-box-marker-glow" style={css}>
                           <div className="ai-box-tag-glow">
                             ⚡ {item.part}
                             {item.ai_confidence ? ` // ${item.ai_confidence}` : ""}
@@ -342,7 +352,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                       <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11 }}>
                         ⚡ {item.part}
                         {item.ai_confidence ? ` // ${item.ai_confidence} confidence` : ""}
-                        {item.bbox_top != null ? " 🔲" : ""}
+                        {item.bbox_2d ? " 🔲" : ""}
                       </span>
                     ))
                   ) : (

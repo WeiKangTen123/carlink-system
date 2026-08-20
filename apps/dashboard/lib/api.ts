@@ -79,10 +79,10 @@ export type DamageSummaryItem = {
   human_verified?: boolean;
   repair_required?: boolean;
   oem_part_number?: string | null;
-  bbox_top?: number | null;
-  bbox_left?: number | null;
-  bbox_width?: number | null;
-  bbox_height?: number | null;
+  /** Gemini's native bounding-box convention: [y_min, x_min, y_max, x_max],
+   * each normalized 0-1000 with a top-left origin. See fileUrl-adjacent
+   * bboxToCss() in StudioApp.tsx for the conversion to CSS percentages. */
+  bbox_2d?: number[] | null;
 };
 
 export type VehicleInfo = {

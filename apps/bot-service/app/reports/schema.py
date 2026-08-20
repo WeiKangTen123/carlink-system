@@ -40,17 +40,18 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="Which uploaded photo actually shows this damage, e.g. 'P01' for the first photo, 'P02' for the second. Photos are given to you in that order -- only set this when you can genuinely tell which photo shows the part; leave null if unclear or if it's not visible in any single photo.",
     )
-    # Flat fields rather than a nested BoundingBox object: a nested $ref
-    # inside an anyOf, inside an array item, measurably broke structured
-    # output for this field specifically -- damage_summary came back
-    # empty (confirmed reproducible against the live model) even though
-    # damaged_parts and the description were populated correctly. Flat
-    # optional floats keep the same array-of-objects shape (Bar → Item)
-    # without the extra indirection.
-    bbox_top: Optional[float] = Field(default=None, description="Top edge of a box around this damage within its photo_reference photo, as a percentage (0-100) of that photo's height. Only set alongside photo_reference and bbox_left/width/height, and only when you can genuinely localize the damage -- never a rough guess.")
-    bbox_left: Optional[float] = Field(default=None, description="Left edge of the box, as a percentage (0-100) of the photo's width.")
-    bbox_width: Optional[float] = Field(default=None, description="Box width, as a percentage (0-100) of the photo's width.")
-    bbox_height: Optional[float] = Field(default=None, description="Box height, as a percentage (0-100) of the photo's height.")
+    # box_2d / [y_min, x_min, y_max, x_max] on a 0-1000 scale is Gemini's
+    # own native, specifically-trained bounding-box convention (see
+    # https://github.com/google/skills/blob/main/skills/cloud/gemini-api/references/bounding_box.md)
+    # -- a custom top/left/width/height-as-percentage format (tried first)
+    # made the model translate out of its trained convention on every
+    # call, which likely explains why it almost never committed to a box.
+    # A flat list also avoids the nested-object $ref that separately broke
+    # damage_summary entirely (see git history on this field).
+    bbox_2d: Optional[list[int]] = Field(
+        default=None,
+        description="This damage's bounding box within its photo_reference photo, as [y_min, x_min, y_max, x_max] with each value normalized 0-1000 (top-left origin). Only set alongside photo_reference, and only when you can genuinely localize the damage -- never a rough or centered guess.",
+    )
     ai_confidence: Optional[str] = Field(
         default=None,
         description="The model's own 'High', 'Medium', or 'Low' assessment of how clearly it can identify this specific damage from the photo. A qualitative self-assessment, not a fabricated-looking precise percentage.",
