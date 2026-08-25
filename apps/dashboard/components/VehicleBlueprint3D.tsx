@@ -384,7 +384,18 @@ export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedD
   const handleFocusRequest = (center: THREE.Vector3, size: THREE.Vector3) => {
     const radius = Math.max(size.x, size.y, size.z, 0.25);
     const dist = Math.max(radius * 2.6, 0.9);
-    const dir = (controlsRef.current ? controlsRef.current.object.position.clone().sub(controlsRef.current.target) : home.position.clone().sub(home.target)).normalize();
+    // Approach from the direction the part actually sits relative to the
+    // car's center (the model is always normalized to sit at x=0,z=0),
+    // not from wherever the camera's *current* angle happens to be --
+    // auto-rotate keeps spinning the camera whenever nothing is focused,
+    // so "current angle" at the moment of a click is effectively random
+    // and could zoom in from the wrong side of the car entirely. This way
+    // the right door is always approached from the right, the front
+    // bumper always from the front, regardless of click timing.
+    const outward = new THREE.Vector3(center.x, 0, center.z);
+    if (outward.lengthSq() < 0.0001) outward.set(0.5, 0, 0.7);
+    outward.normalize();
+    const dir = outward.multiplyScalar(0.82).add(new THREE.Vector3(0, 0.45, 0)).normalize();
     setFocus({ position: center.clone().addScaledVector(dir, dist), target: center.clone() });
   };
 
