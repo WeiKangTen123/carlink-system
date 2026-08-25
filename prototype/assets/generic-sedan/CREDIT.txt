@@ -1,0 +1,4 @@
+"Generic Sedan Car" by MMC Works
+Source: https://sketchfab.com/3d-models/generic-sedan-car-58c33766470d46e7b2aed542650494e5
+License: CC Attribution (CC-BY 4.0) -- https://creativecommons.org/licenses/by/4.0/
+Used unmodified (geometry only, rendered in wireframe -- no texture repack).

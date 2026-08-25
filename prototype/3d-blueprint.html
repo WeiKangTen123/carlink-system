@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Carlink — 3D Blueprint Real Model Prototype</title>
+<style>
+  :root {
+    --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --bg-page: #0b1120;
+    --surface-elevated: #182238;
+    --surface-card: #101a30;
+    --border-color: rgba(148, 163, 184, 0.18);
+    --border-glow: #38bdf8;
+    --text-primary: #f1f5f9;
+    --text-muted: #94a3b8;
+    --accent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
+    --accent-glow: rgba(56, 189, 248, 0.35);
+    --grid-line: rgba(56, 189, 248, 0.06);
+    --sev-severe: #ef4444;
+    --sev-moderate: #f59e0b;
+    --sev-minor: #10b981;
+  }
+  [data-theme="light"] {
+    --bg-page: #eef2f7;
+    --surface-elevated: #ffffff;
+    --surface-card: #f8fafc;
+    --border-color: rgba(15, 23, 42, 0.12);
+    --border-glow: #2563eb;
+    --text-primary: #0f172a;
+    --text-muted: #64748b;
+    --accent-gradient: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+    --accent-glow: rgba(37, 99, 235, 0.22);
+    --grid-line: rgba(0, 0, 0, 0.05);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    padding: 28px;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 4px; }
+  .subtitle { font-size: 13px; color: var(--text-muted); margin: 0 0 20px; }
+  .note {
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--surface-card);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-glow);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    line-height: 1.5;
+  }
+  .note code, .note a { color: var(--border-glow); }
+  .card {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .card-title {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+  .controls-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .field label {
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+  }
+  .field input[type="text"] {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    outline: none;
+    width: 220px;
+  }
+  .seg {
+    display: inline-flex;
+    background: var(--surface-card);
+    border: 1px solid var(--border-color);
+    padding: 3px;
+    border-radius: 24px;
+    gap: 3px;
+  }
+  .seg button {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 18px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .seg button.active {
+    background: var(--accent-gradient);
+    color: #fff;
+    box-shadow: 0 0 10px var(--accent-glow);
+  }
+  .detected-chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+  }
+  .detected-chip strong { color: var(--border-glow); }
+  .stage {
+    position: relative;
+    width: 100%;
+    height: 440px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    background: var(--surface-card);
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 24px 24px;
+    overflow: hidden;
+  }
+  .hint {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  .loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--surface-card);
+    z-index: 5;
+  }
+  .flip-btn {
+    position: absolute;
+    bottom: 8px;
+    left: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(15, 23, 42, 0.6);
+    color: var(--text-muted);
+    cursor: pointer;
+    z-index: 4;
+  }
+  .back-btn {
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--border-glow);
+    background: rgba(15, 23, 42, 0.75);
+    color: var(--border-glow);
+    cursor: pointer;
+    z-index: 4;
+    display: none;
+  }
+  .part-badge-3d {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.85);
+    color: #ffffff;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #ffffff;
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateY(-14px);
+  }
+  .axis-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .parts-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .part-chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--border-color);
+    background: var(--surface-card);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .part-chip:hover { border-color: var(--border-glow); }
+  .part-chip.sev-minor { background: rgba(16, 185, 129, 0.15); color: var(--sev-minor); border-color: rgba(16, 185, 129, 0.4); }
+  .part-chip.sev-moderate { background: rgba(245, 158, 11, 0.15); color: var(--sev-moderate); border-color: rgba(245, 158, 11, 0.4); }
+  .part-chip.sev-severe { background: rgba(239, 68, 68, 0.15); color: var(--sev-severe); border-color: rgba(239, 68, 68, 0.4); }
+  .toolbar-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+  .btn-mini {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .legend b { color: var(--text-primary); }
+  .stage canvas { cursor: pointer; }
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .detail-title { font-size: 15px; font-weight: 800; }
+  .detail-sev {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+  }
+  .detail-sources {
+    font-size: 12px;
+    margin: 0;
+    padding-left: 18px;
+    line-height: 1.6;
+  }
+  .detail-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .part-chip.selected { box-shadow: 0 0 0 2px var(--border-glow); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🚗 3D Blueprint — Real Sedan Model Prototype</h1>
+  <p class="subtitle">A genuine, artist-modeled sedan (real body panels, not a merged blob) rendered as a clean cyan wireframe, with actual named parts recoloring on detection.</p>
+  <div class="note">
+    Model: <a href="https://sketchfab.com/3d-models/generic-sedan-car-58c33766470d46e7b2aed542650494e5" target="_blank" rel="noopener">"Generic Sedan Car" by MMC Works</a> (CC-BY 4.0, credited in
+    <code>assets/generic-sedan/CREDIT.txt</code>) -- 113k triangles, real separated body panels (bumpers, hood, trunk, 4 doors, fenders, headlights,
+    taillights, mirrors, glass), not a single merged shell. Interior/engine/suspension detail is hidden by name so the wireframe stays legible. Damage
+    highlighting now recolors the <b>actual named mesh part</b> directly -- no floating patch guesswork for the car. The van preset still uses the
+    earlier procedural silhouette (no matching free van model sourced yet).
+  </div>
+
+  <div class="card">
+    <div class="controls-row">
+      <div class="field">
+        <label>Vehicle make / model (from report data)</label>
+        <input id="modelInput" type="text" value="Honda Vezel 1.5X CVT" />
+      </div>
+      <div class="field">
+        <label>Detected / override body type</label>
+        <div class="seg" id="bodySeg">
+          <button data-body="auto" class="active">Auto-detect</button>
+          <button data-body="car">Force Car</button>
+          <button data-body="van">Force Van</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Theme</label>
+        <div class="seg" id="themeSeg">
+          <button data-theme="dark" class="active">🌙 Dark</button>
+          <button data-theme="light">☀️ White</button>
+        </div>
+      </div>
+      <div class="field" style="margin-left: auto;">
+        <label>&nbsp;</label>
+        <span class="detected-chip">Rendering: <strong id="detectedLabel">CAR</strong></span>
+      </div>
+    </div>
+
+    <div class="stage" id="stage">
+      <div class="hint">🖱️ drag to rotate &bull; scroll to zoom</div>
+    </div>
+
+    <div class="legend">
+      <span><b style="color:#10b981">Green</b> = Minor</span>
+      <span><b style="color:#f59e0b">Amber</b> = Moderate</span>
+      <span><b style="color:#ef4444">Red</b> = Severe</span>
+      <span>Undetected parts stay plain wireframe &bull; click any part on the car to see its details</span>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none;">
+    <div class="card-title">Selected Part</div>
+    <div id="detailBody"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Simulate detected damage per part (click to cycle severity)</div>
+    <div class="parts-grid" id="partsGrid"></div>
+    <div class="toolbar-row">
+      <button class="btn-mini" id="realCaseBtn" style="border-color: var(--border-glow); color: var(--border-glow);">📋 Load authoritative record (human assessor)</button>
+      <button class="btn-mini" id="freshAiBtn" style="border-color: #10b981; color: #10b981;">🧪 Load fresh AI detection (just ran)</button>
+      <button class="btn-mini" id="randomizeBtn">🎲 Randomize a few</button>
+      <button class="btn-mini" id="clearBtn">🧹 Clear all</button>
+    </div>
+    <p id="realCaseNote" style="font-size:11px;color:var(--text-muted);margin:10px 0 0;line-height:1.5;display:none;"></p>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+
+const stage = document.getElementById("stage");
+const modelInput = document.getElementById("modelInput");
+const bodySeg = document.getElementById("bodySeg");
+const themeSeg = document.getElementById("themeSeg");
+const detectedLabel = document.getElementById("detectedLabel");
+const partsGrid = document.getElementById("partsGrid");
+const randomizeBtn = document.getElementById("randomizeBtn");
+const clearBtn = document.getElementById("clearBtn");
+const realCaseBtn = document.getElementById("realCaseBtn");
+const freshAiBtn = document.getElementById("freshAiBtn");
+const realCaseNote = document.getElementById("realCaseNote");
+const detailCard = document.getElementById("detailCard");
+const detailBody = document.getElementById("detailBody");
+
+let bodyOverride = "auto";
+let carFlipped = false;
+
+const VAN_PATTERN = /\b(hiace|van|alphard|starex|caravelle|transporter|kombi|mpv)\b/i;
+function detectBodyType(modelText) {
+  if (bodyOverride === "car") return "car";
+  if (bodyOverride === "van") return "van";
+  return VAN_PATTERN.test(modelText) ? "van" : "car";
+}
+
+// ---- Renderer / scene setup ----
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+stage.appendChild(renderer.domElement);
+renderer.domElement.style.position = "absolute";
+renderer.domElement.style.inset = "0";
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.domElement.style.position = "absolute";
+labelRenderer.domElement.style.inset = "0";
+labelRenderer.domElement.style.pointerEvents = "none";
+stage.appendChild(labelRenderer.domElement);
+
+const loadingOverlay = document.createElement("div");
+loadingOverlay.className = "loading-overlay";
+loadingOverlay.textContent = "Loading model…";
+loadingOverlay.style.display = "none";
+stage.appendChild(loadingOverlay);
+
+const flipBtn = document.createElement("button");
+flipBtn.className = "flip-btn";
+flipBtn.textContent = "🔄 Flip Front/Rear";
+flipBtn.title = "The source file's own front/rear axis wasn't fully verifiable from its metadata -- use this if FRONT/REAR look backwards";
+stage.appendChild(flipBtn);
+
+const backBtn = document.createElement("button");
+backBtn.className = "back-btn";
+backBtn.textContent = "◀ Back to full view";
+stage.appendChild(backBtn);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+
+// Bound to the actual WebGL canvas, not labelRenderer.domElement -- that
+// overlay is deliberately pointer-events:none (so the floating CSS2D part
+// labels don't block clicks from reaching the 3D scene underneath), which
+// meant OrbitControls' own drag listeners never fired when attached there.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  labelRenderer.setSize(w, h);
+}
+window.addEventListener("resize", resize);
+
+function getColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--border-glow").trim() || "#38bdf8";
+}
+
+function axisLabel(text, position) {
+  const el = document.createElement("div");
+  el.className = "axis-label";
+  el.textContent = text;
+  const obj = new CSS2DObject(el);
+  obj.position.set(...position);
+  return obj;
+}
+
+function partBadge(text, position) {
+  const el = document.createElement("div");
+  el.className = "part-badge-3d";
+  el.textContent = text;
+  const obj = new CSS2DObject(el);
+  obj.position.set(...position);
+  return obj;
+}
+
+const SEVERITY_CYCLE = [null, "minor", "moderate", "severe"];
+const SEVERITY_COLOR = { minor: "#10b981", moderate: "#f59e0b", severe: "#ef4444" };
+const SEVERITY_RANK = { minor: 1, moderate: 2, severe: 3 };
+
+// =========================================================================
+// CAR (real model): "Generic Sedan Car" by MMC Works, CC-BY 4.0 -- see
+// assets/generic-sedan/CREDIT.txt. 124 separate meshes with real names
+// (bumper-front, door-front-l, headlight-projector-l, etc), not a merged
+// blob, so damage highlighting targets the actual mesh by name instead of
+// a floating patch. The file's own accessor min/max metadata didn't hold
+// up under scrutiny (some part bounding boxes overlapped in ways that
+// don't correspond to real geometry -- likely stale exporter metadata), so
+// positions here are never hand-typed coordinates: everything is read from
+// the actual loaded geometry at runtime via THREE.Box3().setFromObject().
+// =========================================================================
+
+// Interior/mechanical detail hidden by name so the wireframe silhouette
+// stays legible -- otherwise seats, the dashboard, brake calipers, and
+// suspension springs all show through the "glass" as visual noise.
+const CAR_EXCLUDE = /interior|dashboard|seat|steering-wheel|column-wheel|center-console|engine|escape-pipes|radiator|brake-|shock-absorber|spring|suspension-|frame-front|frame-middle|frame-rear|roof-pillars-interior/i;
+
+// zone key -> { label, match: [RegExp,...] } -- any mesh whose node name
+// matches one of these patterns belongs to that zone. Multiple real nodes
+// commonly make up one real-world "part" (a headlight is 4-6 separate
+// meshes: lens, LED, frame, trim...), so match is an array, not a single name.
+const CAR_PARTS_REAL = [
+  { key: "front_bumper", label: "Front Bumper", match: [/^bumper-front/i] },
+  { key: "rear_bumper", label: "Rear Bumper", match: [/^bumper-rear/i] },
+  { key: "bonnet", label: "Bonnet/Hood", match: [/^hood_/i] },
+  { key: "windscreen", label: "Windscreen", match: [/^windshield_/i, /^windshield-grill/i] },
+  { key: "rear_glass", label: "Rear Glass", match: [/^glass-rear/i] },
+  { key: "tailgate", label: "Trunk", match: [/^trunk_/i] },
+  { key: "l_headlamp", label: "Left Headlamp", match: [/^headlights?-.*-l[_.]/i] },
+  { key: "r_headlamp", label: "Right Headlamp", match: [/^headlights?-.*-r[_.]/i] },
+  { key: "l_taillamp", label: "Left Taillamp", match: [/^taillight-.*-l[_.]/i] },
+  { key: "r_taillamp", label: "Right Taillamp", match: [/^taillight-.*-r[_.]/i] },
+  { key: "l_door_front", label: "Left Front Door", match: [/^door-front-l_/i] },
+  { key: "r_door_front", label: "Right Front Door", match: [/^door-front-r_/i] },
+  { key: "l_door_rear", label: "Left Rear Door", match: [/^door-rear-l_/i] },
+  { key: "r_door_rear", label: "Right Rear Door", match: [/^door-rear-r_/i] },
+  { key: "l_fender", label: "Left Fender", match: [/^fender-front-l_/i, /^wheel-fender-l_/i] },
+  { key: "r_fender", label: "Right Fender", match: [/^fender-front-r_/i, /^wheel-fender-r_/i] },
+  { key: "l_mirror", label: "Left Mirror", match: [/^side-mirror-l/i] },
+  { key: "r_mirror", label: "Right Mirror", match: [/^side-mirror-r/i] },
+  { key: "roof", label: "Roof", match: [] }, // no separate roof mesh in this model -- handled as a fallback point, see below
+];
+
+function zoneForMeshName(name) {
+  return CAR_PARTS_REAL.find((part) => part.match.some((re) => re.test(name))) || null;
+}
+
+const carModelCache = { root: null, paintable: [], box: null };
+
+// Sketchfab's Blender->glTF export puts the real, descriptive name
+// ("bumper-front_8") on a wrapper Group one level up, while the mesh
+// itself is a generically-named child ("Object_23") -- confirmed by
+// inspecting the raw glTF node list directly. Every name-based lookup
+// here has to go through the mesh's parent, never the mesh's own .name.
+function partName(mesh) {
+  return mesh.parent ? mesh.parent.name : mesh.name;
+}
+
+function loadCarModel() {
+  if (carModelCache.root) return Promise.resolve(carModelCache);
+  return new Promise((resolve, reject) => {
+    new GLTFLoader().load(
+      "assets/generic-sedan/sedan.glb",
+      (gltf) => {
+        const root = gltf.scene;
+        const paintable = [];
+        root.traverse((obj) => {
+          if (!obj.isMesh) return;
+          if (CAR_EXCLUDE.test(partName(obj))) {
+            obj.visible = false;
+            return;
+          }
+          paintable.push(obj);
+        });
+        // Normalize to sit on the ground plane, centered on X/Z -- computed
+        // from the actual filtered geometry, not a hand-guessed offset.
+        const box = new THREE.Box3().setFromObject(root);
+        const center = box.getCenter(new THREE.Vector3());
+        root.position.set(-center.x, -box.min.y, -center.z);
+        const normalizedBox = new THREE.Box3().setFromObject(root);
+        carModelCache.root = root;
+        carModelCache.paintable = paintable;
+        carModelCache.box = normalizedBox;
+        resolve(carModelCache);
+      },
+      undefined,
+      reject
+    );
+  });
+}
+
+function paintCarDefault(root, color) {
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.visible) return;
+    obj.material = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.85 });
+  });
+}
+
+function findCarMeshes(root, patterns) {
+  if (!patterns.length) return [];
+  const found = [];
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.visible) return;
+    if (patterns.some((re) => re.test(partName(obj)))) found.push(obj);
+  });
+  return found;
+}
+
+function applyCarDamage(root, box, damageState) {
+  const badges = [];
+  CAR_PARTS_REAL.forEach((part) => {
+    const sev = damageState[part.key];
+    if (!sev) return;
+    const color = SEVERITY_COLOR[sev];
+    const meshes = findCarMeshes(root, part.match);
+    let anchor;
+    if (meshes.length) {
+      meshes.forEach((m) => {
+        m.material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
+      });
+      const partBox = new THREE.Box3();
+      meshes.forEach((m) => partBox.expandByObject(m));
+      anchor = partBox.getCenter(new THREE.Vector3());
+    } else {
+      // No matching real mesh (e.g. "Roof" -- this model has no separate
+      // roof panel) -- fall back to a point derived from the model's own
+      // real bounding box rather than a hand-guessed coordinate.
+      anchor = new THREE.Vector3(box.min.x + (box.max.x - box.min.x) / 2, box.max.y + 0.03, box.min.z + (box.max.z - box.min.z) / 2);
+    }
+    const badge = partBadge(part.label.split(" ").pop(), [anchor.x, anchor.y + 0.12, anchor.z]);
+    scene.add(badge);
+    badges.push(badge);
+  });
+  return badges;
+}
+
+// =========================================================================
+// VAN (procedural): no matching free/realistic van model sourced yet, so
+// this keeps the earlier extruded-silhouette approach as an interim
+// placeholder -- same technique, honestly still a schematic approximation
+// rather than a real model, unlike the car above.
+// =========================================================================
+const VAN_PROFILE = [
+  [-1.85, 0.12], [-1.9, 0.3], [-1.85, 0.5], [-1.8, 1.05],
+  [-1.55, 1.55], [1.7, 1.58], [1.95, 1.15], [1.95, 0.5],
+  [1.85, 0.12],
+];
+const VAN_WIDTH = 1.9;
+
+function buildVanShell(color) {
+  const shape = new THREE.Shape();
+  VAN_PROFILE.forEach(([z, y], i) => {
+    const x = -z;
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  });
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: VAN_WIDTH, bevelEnabled: false, curveSegments: 1 });
+  geo.translate(0, 0, -VAN_WIDTH / 2);
+  geo.rotateY(Math.PI / 2);
+  const edges = new THREE.EdgesGeometry(geo, 1);
+  const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  const fill = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.05, depthWrite: false, side: THREE.DoubleSide }));
+  const group = new THREE.Group();
+  group.add(line, fill);
+  return group;
+}
+
+function buildVanWheel(position, color, radius = 0.4) {
+  const geo = new THREE.CylinderGeometry(radius, radius, 0.26, 12);
+  const edges = new THREE.EdgesGeometry(geo);
+  const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  const fill = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false }));
+  const group = new THREE.Group();
+  group.add(line, fill);
+  group.position.set(...position);
+  group.rotation.set(0, 0, Math.PI / 2);
+  return group;
+}
+
+function damagePatch(position, color) {
+  const geo = new THREE.PlaneGeometry(0.36, 0.26);
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(...position);
+  const outward = new THREE.Vector3(position[0], 0, position[2]);
+  if (outward.lengthSq() < 0.0001) outward.set(0, 0, 1);
+  outward.normalize();
+  mesh.position.addScaledVector(outward, 0.02);
+  mesh.lookAt(position[0] + outward.x, position[1], position[2] + outward.z);
+  return mesh;
+}
+
+const VAN_PARTS = [
+  { key: "front_bumper", label: "Front Bumper", pos: [0, 0.3, -1.87] },
+  { key: "rear_bumper", label: "Rear Bumper", pos: [0, 0.3, 1.87] },
+  { key: "windscreen", label: "Windscreen", pos: [0, 1.32, -1.68] },
+  { key: "roof", label: "Roof", pos: [0, 1.6, 0.0] },
+  { key: "rear_door", label: "Rear Cargo Door", pos: [0, 1.0, 1.92] },
+  { key: "l_sliding_door", label: "Left Sliding Door", pos: [-0.92, 0.9, 0.3] },
+  { key: "r_sliding_door", label: "Right Sliding Door", pos: [0.92, 0.9, 0.3] },
+  { key: "l_headlamp", label: "Left Headlamp", pos: [-0.82, 0.55, -1.88] },
+  { key: "r_headlamp", label: "Right Headlamp", pos: [0.82, 0.55, -1.88] },
+  { key: "l_taillamp", label: "Left Taillamp", pos: [-0.82, 0.6, 1.92] },
+  { key: "r_taillamp", label: "Right Taillamp", pos: [0.82, 0.6, 1.92] },
+  { key: "l_mirror", label: "Left Mirror", pos: [-0.98, 1.35, -1.5] },
+  { key: "r_mirror", label: "Right Mirror", pos: [0.98, 1.35, -1.5] },
+];
+
+// =========================================================================
+// Real case data -- pulled live from GET /api/reports/8ec6129affe0 (SLK
+// 3063 Z, Honda Vezel), an actual assessor's 18-line rear-left-collision
+// damage schedule. Several granular real part names collapse onto one
+// broader zone here; each zone takes the worst severity among the real
+// items mapped to it.
+// =========================================================================
+const REAL_CASE = {
+  model: "Honda Vezel 1.5X CVT",
+  sourceByZone: {
+    rear_bumper: ["Rear bumper fascia (Severe)", "Rear bumper beam (Severe)", "Rear bumper side LH (Moderate)", "Rear bumper reflector LH (Minor)", "Reverse sensor with control unit (Moderate)", "Rear end panel (Severe)", "Rear end panel top trim (Moderate)", "Rear floor panel board (Moderate)", "Rear floor panel under garnish cover (Minor)"],
+    tailgate: ["Tail gate (Severe)", "Tail gate lock (Moderate)", "Tail gate lock striker (Minor)", "Tail gate weatherstripe (Minor)", "Tail gate inner trim board (Minor)", "Tail gate reflector LH (Minor)"],
+    l_taillamp: ["Tail lamp LH (Moderate)"],
+    l_fender: ["Rear fender wheel arch garnish LH (Minor)", "Rear fender inner trim board LH (Moderate)"],
+  },
+};
+REAL_CASE.damage = Object.fromEntries(
+  Object.entries(REAL_CASE.sourceByZone).map(([zone, items]) => {
+    const worst = items.reduce((best, s) => {
+      const sev = /severe/i.test(s) ? "severe" : /moderate/i.test(s) ? "moderate" : "minor";
+      return !best || SEVERITY_RANK[sev] > SEVERITY_RANK[best] ? sev : best;
+    }, null);
+    return [zone, worst];
+  })
+);
+
+// =========================================================================
+// Fresh AI detection -- not a historical record, an actual live call made
+// just now: POST /api/reports/analyze-photos (the same production Gemini
+// pipeline the Telegram bot and dashboard both use) against 4 real photos
+// from this exact case (P1273083/85/87/89.JPG). Raw response saved at
+// /tmp/slk_fresh_detection.json. Only 2 parts came back because only 4 of
+// the real case's 65 photos were sent -- an honest reflection of what the
+// AI can actually see, not the full 18-line authoritative record.
+// Notably the AI rated both Moderate where the human assessor's real,
+// verified record rates the equivalent items Severe -- a genuine gap
+// between a first-pass AI read and a verified professional assessment,
+// which is exactly why the real app requires human review before anything
+// is finalized (human_verified stays false until someone actually checks).
+// =========================================================================
+const FRESH_AI_CASE = {
+  model: "Honda Vezel",
+  sourceByZone: {
+    rear_bumper: ['AI: "Rear Bumper" -- Dent, Moderate, confidence High, photo P02, bbox [48,186,561,965]'],
+    l_fender: ['AI: "Fender" (left rear/quarter panel) -- Scratch, Moderate, confidence High, photo P02, bbox [0,144,491,538]'],
+  },
+};
+FRESH_AI_CASE.damage = Object.fromEntries(Object.keys(FRESH_AI_CASE.sourceByZone).map((zone) => [zone, "moderate"]));
+
+let activeScenario = null; // null | "real" | "fresh" -- which source's line items to show in tooltips/detail panel
+function sourcesFor(key) {
+  if (activeScenario === "real") return REAL_CASE.sourceByZone[key];
+  if (activeScenario === "fresh") return FRESH_AI_CASE.sourceByZone[key];
+  return null;
+}
+
+let damageState = {};
+let currentBodyType = null;
+let currentRoot = null;
+let currentDecor = [];
+let currentBadges = [];
+let currentPatches = [];
+let loadToken = 0;
+let selectedPartKey = null;
+let homeCamera = null; // {position, target, minDistance} for the current body's full-car framing
+let cameraAnim = null; // {fromPos, toPos, fromTarget, toTarget, start, duration} while a fly-to is in progress
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function animateCameraTo(targetPos, targetLookAt, duration = 550) {
+  cameraAnim = {
+    fromPos: camera.position.clone(),
+    toPos: targetPos.clone(),
+    fromTarget: controls.target.clone(),
+    toTarget: targetLookAt.clone(),
+    start: performance.now(),
+    duration,
+  };
+}
+
+// Bounding box to frame for a given part key -- read from the actual live
+// geometry (same technique already used to place the damage badges), never
+// a hand-typed camera position. Falls back to a small box around the same
+// anchor point used for parts with no real mesh (e.g. "Roof").
+function computeFocusBox(key) {
+  if (currentBodyType === "car") {
+    const zone = CAR_PARTS_REAL.find((p) => p.key === key);
+    if (!zone || !currentRoot) return null;
+    const meshes = findCarMeshes(currentRoot, zone.match);
+    if (meshes.length) {
+      const box = new THREE.Box3();
+      meshes.forEach((m) => box.expandByObject(m));
+      return box;
+    }
+    const b = carModelCache.box;
+    const cx = b.min.x + (b.max.x - b.min.x) / 2;
+    const cz = b.min.z + (b.max.z - b.min.z) / 2;
+    return new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(cx, b.max.y, cz), new THREE.Vector3(0.6, 0.3, 0.6));
+  }
+  const part = VAN_PARTS.find((p) => p.key === key);
+  if (!part) return null;
+  return new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(...part.pos), new THREE.Vector3(0.5, 0.4, 0.5));
+}
+
+// Pushes the camera in toward a part while keeping the current viewing
+// angle (so it reads as "zooming toward what you clicked", not a cut to a
+// canned angle) -- and widens minDistance if needed so OrbitControls
+// doesn't immediately clamp the camera back out once the animation ends.
+function focusOnPartKey(key) {
+  const box = computeFocusBox(key);
+  if (!box) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z, 0.25);
+  const dist = Math.max(radius * 2.6, 0.9);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 0.0001) dir.set(0.6, 0.4, 0.7);
+  dir.normalize();
+  const newPos = center.clone().addScaledVector(dir, dist);
+  controls.autoRotate = false;
+  controls.minDistance = Math.min(controls.minDistance, dist * 0.5);
+  animateCameraTo(newPos, center);
+}
+
+function deselectAndZoomHome() {
+  selectedPartKey = null;
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  renderPartsGrid();
+  if (!homeCamera) return;
+  controls.minDistance = homeCamera.minDistance;
+  controls.autoRotate = true;
+  animateCameraTo(homeCamera.position, homeCamera.target);
+}
+
+function currentParts() {
+  return currentBodyType === "van" ? VAN_PARTS : CAR_PARTS_REAL.map((p) => ({ key: p.key, label: p.label }));
+}
+
+// The click-to-detail panel -- this is what the real StudioApp.tsx already
+// does when you click a 2D hotspot (jump to the linked evidence photo +
+// scroll the damage table to that row); this prototype has no photos/table
+// of its own, so it shows the same underlying info (part, severity, and
+// either the real assessor line items or an honest "simulated" label)
+// inline instead.
+function showDetail(key) {
+  const part = currentParts().find((p) => p.key === key);
+  if (!part) return;
+  selectedPartKey = key;
+  renderPartsGrid();
+
+  const sev = damageState[key];
+  const sources = sourcesFor(key);
+  let html = `<div class="detail-header">
+    <div class="detail-title">${part.label}</div>
+    <span class="detail-sev" style="${sev ? `color:${SEVERITY_COLOR[sev]};border-color:${SEVERITY_COLOR[sev]}` : ""}">${sev ? sev : "No damage detected"}</span>
+  </div>`;
+  if (sources && activeScenario === "real") {
+    html += `<div class="detail-hint" style="margin-bottom:6px;">Real assessor line items, from the live SLK 3063 Z report (<code>GET /api/reports/8ec6129affe0</code>):</div>
+      <ul class="detail-sources">${sources.map((s) => `<li>${s}</li>`).join("")}</ul>`;
+  } else if (sources && activeScenario === "fresh") {
+    html += `<div class="detail-hint" style="margin-bottom:6px;">Live AI detection, from an actual <code>POST /api/reports/analyze-photos</code> call just now against 4 real photos from this case:</div>
+      <ul class="detail-sources">${sources.map((s) => `<li>${s}</li>`).join("")}</ul>`;
+  } else if (sev) {
+    html += `<div class="detail-hint">Simulated for this preview. In the real app this would also show the real <code>damage_type</code>, AI confidence, and a jump straight to the linked evidence photo -- same as clicking a 2D hotspot does today in the live report view.</div>`;
+  } else {
+    html += `<div class="detail-hint">No damage recorded for this part in the current scenario. Click its chip below to simulate one, or load the real case.</div>`;
+  }
+  detailBody.innerHTML = html;
+  detailCard.style.display = "block";
+  backBtn.style.display = "block";
+}
+
+function renderPartsGrid() {
+  partsGrid.innerHTML = "";
+  currentParts().forEach((part) => {
+    const btn = document.createElement("button");
+    const sev = damageState[part.key];
+    btn.className = "part-chip" + (sev ? ` sev-${sev}` : "") + (selectedPartKey === part.key ? " selected" : "");
+    btn.textContent = sev ? `${part.label} — ${sev}` : part.label;
+    const sources = sourcesFor(part.key);
+    if (sources) btn.title = (activeScenario === "real" ? "Real assessor line items:\n" : "Live AI detection:\n") + sources.join("\n");
+    btn.addEventListener("click", () => {
+      const idx = SEVERITY_CYCLE.indexOf(damageState[part.key] || null);
+      damageState[part.key] = SEVERITY_CYCLE[(idx + 1) % SEVERITY_CYCLE.length];
+      renderDamageVisuals();
+      showDetail(part.key);
+      focusOnPartKey(part.key);
+    });
+    partsGrid.appendChild(btn);
+  });
+}
+
+function clearDecor() {
+  currentDecor.forEach((d) => scene.remove(d));
+  currentBadges.forEach((b) => scene.remove(b));
+  currentPatches.forEach((p) => scene.remove(p));
+  currentDecor = [];
+  currentBadges = [];
+  currentPatches = [];
+}
+
+function renderDamageVisuals() {
+  currentBadges.forEach((b) => scene.remove(b));
+  currentPatches.forEach((p) => scene.remove(p));
+  currentBadges = [];
+  currentPatches = [];
+
+  if (currentBodyType === "car" && currentRoot) {
+    paintCarDefault(currentRoot, getColor());
+    currentBadges = applyCarDamage(currentRoot, carModelCache.box, damageState);
+  } else if (currentBodyType === "van") {
+    VAN_PARTS.forEach((part) => {
+      const sev = damageState[part.key];
+      if (!sev) return;
+      const patch = damagePatch(part.pos, SEVERITY_COLOR[sev]);
+      patch.userData.partKey = part.key;
+      scene.add(patch);
+      currentPatches.push(patch);
+      const badge = partBadge(part.label.split(" ")[0], [part.pos[0], part.pos[1] + 0.16, part.pos[2]]);
+      scene.add(badge);
+      currentPatches.push(badge);
+    });
+  }
+}
+
+async function renderBody(bodyType) {
+  const myToken = ++loadToken;
+  const color = getColor();
+
+  if (currentRoot) scene.remove(currentRoot);
+  clearDecor();
+  currentRoot = null;
+  flipBtn.style.display = bodyType === "car" ? "block" : "none";
+  controls.autoRotate = true;
+  cameraAnim = null;
+
+  if (bodyType === "car") {
+    loadingOverlay.style.display = "flex";
+    const { root, box } = await loadCarModel();
+    if (myToken !== loadToken) return;
+    loadingOverlay.style.display = "none";
+
+    const clone = root.clone(true);
+    clone.rotation.y = carFlipped ? Math.PI : 0;
+    currentRoot = clone;
+    scene.add(clone);
+
+    const size = box.getSize(new THREE.Vector3());
+    const dist = Math.max(size.x, size.y, size.z) * 1.9;
+    camera.position.set(dist * 0.62, dist * 0.42, dist * 0.68);
+    controls.target.set(0, size.y * 0.4, 0);
+    controls.minDistance = dist * 0.4;
+    controls.maxDistance = dist * 2.2;
+    controls.maxPolarAngle = Math.PI / 2 - 0.02;
+    homeCamera = { position: camera.position.clone(), target: controls.target.clone(), minDistance: controls.minDistance };
+
+    const half = Math.max(size.x, size.z) / 2 + 0.4;
+    const frontLabel = axisLabel("FRONT", [0, 0.05, -half * (carFlipped ? -1 : 1)]);
+    const rearLabel = axisLabel("REAR", [0, 0.05, half * (carFlipped ? -1 : 1)]);
+    scene.add(frontLabel, rearLabel);
+    currentDecor.push(frontLabel, rearLabel);
+
+    const gridHelper = new THREE.GridHelper(Math.max(size.x, size.z) * 2.5, 16, color, color);
+    gridHelper.material.transparent = true;
+    gridHelper.material.opacity = 0.12;
+    scene.add(gridHelper);
+    currentDecor.push(gridHelper);
+  } else {
+    const group = new THREE.Group();
+    group.add(buildVanShell(color));
+    const wheelZ = 1.3, wheelX = 0.95, wheelR = 0.4;
+    [[-wheelX, -wheelZ], [wheelX, -wheelZ], [-wheelX, wheelZ], [wheelX, wheelZ]].forEach(([x, z]) => {
+      group.add(buildVanWheel([x, wheelR, z], color, wheelR));
+    });
+    currentRoot = group;
+    scene.add(group);
+
+    camera.position.set(4.2, 2.6, 4.6);
+    controls.target.set(0, 0.55, 0);
+    controls.minDistance = 2.6;
+    controls.maxDistance = 9;
+    controls.maxPolarAngle = Math.PI / 2 - 0.02;
+    homeCamera = { position: camera.position.clone(), target: controls.target.clone(), minDistance: controls.minDistance };
+
+    const frontLabel = axisLabel("FRONT", [0, 0.06, -2.05]);
+    const rearLabel = axisLabel("REAR", [0, 0.06, 2.05]);
+    scene.add(frontLabel, rearLabel);
+    currentDecor.push(frontLabel, rearLabel);
+
+    const gridHelper = new THREE.GridHelper(8, 16, color, color);
+    gridHelper.material.transparent = true;
+    gridHelper.material.opacity = 0.12;
+    scene.add(gridHelper);
+    currentDecor.push(gridHelper);
+  }
+
+  detectedLabel.textContent = bodyType.toUpperCase();
+  renderDamageVisuals();
+}
+
+function refresh() {
+  const bodyType = detectBodyType(modelInput.value);
+  const bodyChanged = bodyType !== currentBodyType;
+  currentBodyType = bodyType;
+  if (bodyChanged) {
+    damageState = {};
+    selectedPartKey = null;
+    detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  }
+  renderBody(bodyType);
+  renderPartsGrid();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (cameraAnim) {
+    const t = Math.min(1, (performance.now() - cameraAnim.start) / cameraAnim.duration);
+    const e = easeInOutCubic(t);
+    camera.position.lerpVectors(cameraAnim.fromPos, cameraAnim.toPos, e);
+    controls.target.lerpVectors(cameraAnim.fromTarget, cameraAnim.toTarget, e);
+    if (t >= 1) cameraAnim = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+
+// ---- Click a real part on the model itself to see its details and zoom
+// in on it -- the same raycasting approach any Three.js scene uses for
+// picking. For the car, this hits one of the ~90 real named meshes
+// directly; for the van (still procedural, no real per-part mesh), it
+// hits a damage patch plane if one is currently showing. Clicking empty
+// space, or clicking the already-selected part again, zooms back out.
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+renderer.domElement.addEventListener("click", (e) => {
+  if (!currentRoot) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const hits = raycaster.intersectObjects(currentRoot.children, true).filter((h) => h.object.isMesh && h.object.visible);
+
+  let key = null;
+  if (hits.length) {
+    if (currentBodyType === "car") {
+      const zone = zoneForMeshName(partName(hits[0].object));
+      key = zone ? zone.key : null;
+    } else {
+      key = hits[0].object.userData.partKey || null;
+    }
+  }
+
+  if (!key || key === selectedPartKey) {
+    deselectAndZoomHome();
+    return;
+  }
+  showDetail(key);
+  focusOnPartKey(key);
+});
+
+modelInput.addEventListener("input", refresh);
+
+bodySeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  bodySeg.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  bodyOverride = btn.dataset.body;
+  refresh();
+});
+
+themeSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  themeSeg.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  document.documentElement.setAttribute("data-theme", btn.dataset.theme);
+  refresh();
+});
+
+flipBtn.addEventListener("click", () => {
+  carFlipped = !carFlipped;
+  selectedPartKey = null;
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  refresh();
+});
+
+backBtn.addEventListener("click", () => {
+  deselectAndZoomHome();
+});
+
+randomizeBtn.addEventListener("click", () => {
+  const sevs = ["minor", "moderate", "severe"];
+  const parts = currentParts();
+  damageState = {};
+  const count = 2 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i++) {
+    const part = parts[Math.floor(Math.random() * parts.length)];
+    damageState[part.key] = sevs[Math.floor(Math.random() * sevs.length)];
+  }
+  selectedPartKey = null;
+  activeScenario = null;
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  realCaseNote.style.display = "none";
+  renderPartsGrid();
+  renderDamageVisuals();
+});
+
+clearBtn.addEventListener("click", () => {
+  damageState = {};
+  selectedPartKey = null;
+  activeScenario = null;
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  realCaseNote.style.display = "none";
+  renderPartsGrid();
+  renderDamageVisuals();
+});
+
+realCaseBtn.addEventListener("click", () => {
+  modelInput.value = REAL_CASE.model;
+  bodyOverride = "auto";
+  bodySeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.body === "auto"));
+  const bodyType = detectBodyType(modelInput.value); // "car"
+  currentBodyType = bodyType;
+  damageState = { ...REAL_CASE.damage };
+  selectedPartKey = null;
+  activeScenario = "real";
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  renderBody(bodyType);
+  renderPartsGrid();
+  realCaseNote.style.display = "block";
+  realCaseNote.innerHTML = "Loaded from the live report's real damage_summary (<code>GET /api/reports/8ec6129affe0</code>): " +
+    "18 real assessor line items collapsed onto 4 zones by worst severity. Rear Bumper and Trunk are genuinely Severe in the source data; " +
+    "hover a lit chip to see which real line items it represents.";
+});
+
+freshAiBtn.addEventListener("click", () => {
+  modelInput.value = FRESH_AI_CASE.model;
+  bodyOverride = "auto";
+  bodySeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.body === "auto"));
+  const bodyType = detectBodyType(modelInput.value); // "car"
+  currentBodyType = bodyType;
+  damageState = { ...FRESH_AI_CASE.damage };
+  selectedPartKey = null;
+  activeScenario = "fresh";
+  detailCard.style.display = "none";
+  backBtn.style.display = "none";
+  renderBody(bodyType);
+  renderPartsGrid();
+  realCaseNote.style.display = "block";
+  realCaseNote.innerHTML = "Live Gemini call made just now (<code>POST /api/reports/analyze-photos</code>, the same pipeline the Telegram bot uses) against 4 real photos " +
+    "(P1273083/85/87/89.JPG) from this case -- not a replay of stored data. Rated both Moderate, where the human assessor's authoritative record rates the same " +
+    "area Severe -- a real example of why the app requires human review before anything is finalized.";
+});
+
+resize();
+refresh();
+animate();
+</script>
+</body>
+</html>

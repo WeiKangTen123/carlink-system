@@ -202,6 +202,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               damageEntries={damageEntries}
               onHotspotClick={handleHotspotClick}
               highlightedDamageIndex={highlightedDamageIndex}
+              vehicleName={vehicleName}
             />
           </div>
 
