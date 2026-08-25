@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import type { DamageSummaryItem } from "@/lib/api";
+import { resolveZones, type ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "./StudioApp";
 
 /** Reads a CSS custom property off <html> and keeps it live across the
@@ -35,85 +36,15 @@ function severityColor(severity?: string | null): string | null {
 const SEVERITY_RANK: Record<string, number> = { minor: 1, moderate: 2, severe: 3 };
 
 // =============================================================================
-// LAYER 1: free-text damage_summary.part -> zone key.
-//
-// Same keyword-regex philosophy as the 2D blueprint's old ZONE_RULES and the
-// previous coordinate-based ZONE_RULES_3D (see git history) -- checked in
-// order, most specific first, never an exact-string lookup since real part
-// text ("Rear bumper fascia", "Tail gate lock striker") never matches a
-// fixed vocabulary. The difference here: this resolves to a *zone key*
-// string that Layer 2 (below) maps to real mesh names in the sedan model,
-// not a raw coordinate.
-//
-// Left/right ambiguity is handled differently from the old system on
-// purpose: the old coordinate placement defaulted to a generic point when
-// side wasn't stated (an approximate marker, never claimed to BE a specific
-// panel). This system recolors an actual, specific, real body panel red --
-// so guessing a side when the source text doesn't say one would mean
-// falsely claiming "the right door is damaged" when the report never said
-// that. Rather than risk that, an unresolvable side returns null (no 3D
-// highlight for that item -- it still shows in the regular damage table).
-// Front/rear ambiguity is lower-stakes (same side, adjacent zone) so that
-// still defaults sensibly, consistent with the existing codebase's
-// "sensible default over gap" precedent for that specific kind of gap.
-// =============================================================================
-interface CategoryRule {
-  test: RegExp;
-  zoneKey?: string; // set for rules that resolve directly, no side/depth needed
-  base?: string; // set for rules needing side and/or depth resolution
-  paired?: boolean;
-  depthVar?: boolean;
-}
-
-const CATEGORY_RULES: CategoryRule[] = [
-  // Structural/rear-body items without their own visible panel in this
-  // model -- the closest real, visible zone is the rear bumper area.
-  { test: /rear\s*(end|body)?\s*panel|floor\s*panel/i, zoneKey: "rear_bumper" },
-  { test: /sensor|reverse/i, zoneKey: "rear_bumper" },
-  { test: /plate/i, zoneKey: "rear_bumper" },
-  { test: /tail\s*-?gate|\bboot\b|\btrunk\b/i, zoneKey: "tailgate" },
-  { test: /rear.*(glass|window|screen)\b|back\s*glass/i, zoneKey: "rear_glass" },
-  { test: /wind\s*-?screen|wind\s*-?shield/i, zoneKey: "windscreen" },
-  { test: /\broof\b/i, zoneKey: "roof" },
-  { test: /\bbonnet\b|\bhood\b/i, zoneKey: "bonnet" },
-  { test: /\bbumper\b/i, base: "bumper", depthVar: true },
-  { test: /head\s*-?lamp|head\s*-?light/i, base: "headlamp", paired: true },
-  { test: /tail\s*-?lamp|tail\s*-?light|rear.*light|rear.*lamp/i, base: "taillamp", paired: true },
-  { test: /mirror/i, base: "mirror", paired: true },
-  { test: /fender|wheel\s*arch|wing/i, base: "fender", paired: true },
-  { test: /\bdoor\b/i, base: "door", paired: true, depthVar: true },
-];
-
-const SIDE_LEFT = /\bleft\b/i;
-const SIDE_RIGHT = /\bright\b/i;
-const DEPTH_REAR = /rear|\bback\b/i;
-
-function zoneKeyFor(part: string): string | null {
-  const rule = CATEGORY_RULES.find((r) => r.test.test(part));
-  if (!rule) return null;
-  if (rule.zoneKey) return rule.zoneKey;
-
-  let side: "l" | "r" | null = null;
-  if (rule.paired) {
-    if (SIDE_LEFT.test(part)) side = "l";
-    else if (SIDE_RIGHT.test(part)) side = "r";
-    if (!side) return null; // can't tell which real side -- never guess
-  }
-  const depth = rule.depthVar ? (DEPTH_REAR.test(part) ? "rear" : "front") : null;
-
-  if (side && depth) return `${side}_${rule.base}_${depth}`; // l_door_front
-  if (side) return `${side}_${rule.base}`; // l_headlamp
-  if (depth) return `${depth}_${rule.base}`; // front_bumper
-  return rule.base!;
-}
-
-// =============================================================================
-// LAYER 2: zone key -> real mesh names in the sedan model.
+// Zone key -> real mesh names in the sedan model.
 //
 // "Generic Sedan Car" by MMC Works (CC-BY 4.0, credited in
 // public/assets/generic-sedan/CREDIT.txt) -- 124 separate real meshes
 // (bumper-front, door-front-l, headlight-projector-l, etc), not a merged
-// blob, so damage highlighting recolors the actual named part.
+// blob, so damage highlighting recolors the actual named part. The
+// free-text-part -> zone-key mapping itself lives in lib/vehicleZones.ts,
+// shared with the Damage & Parts Checklist table so both always agree on
+// numbering.
 //
 // Sketchfab's Blender->glTF export puts the descriptive name on a wrapper
 // Group one level up from the mesh itself (mesh nodes are generically
@@ -218,13 +149,17 @@ function CameraRig({
 function CarModel({
   color,
   damageEntries,
-  onPartClick,
+  zoneResolutions,
   highlightedIdx,
+  onZoneClick,
+  onFocusRequest,
 }: {
   color: string;
   damageEntries: DamageSummaryItem[];
-  onPartClick: (zoneKey: string, worldPos: THREE.Vector3, size: THREE.Vector3) => void;
+  zoneResolutions: (ZoneResolution | null)[];
   highlightedIdx: number | null;
+  onZoneClick: (idx: number) => void;
+  onFocusRequest: (center: THREE.Vector3, size: THREE.Vector3) => void;
 }) {
   const gltf = useGLTF("/assets/generic-sedan/sedan.glb");
 
@@ -250,22 +185,22 @@ function CarModel({
   // Zone key -> worst severity among the real damage_summary items that
   // resolved to it (several granular real part names can share one zone,
   // e.g. "Rear bumper fascia" + "Reverse sensor" both -> rear_bumper), and
-  // the index of the first item that resolved there -- used so the badge
-  // shows the same numbering the damage table uses, rather than inventing
-  // a separate labeling scheme.
-  const { zoneSeverity, zoneFirstIdx } = useMemo(() => {
+  // zone key -> the shared badge number from resolveZones() -- the same
+  // number shown in the Damage & Parts Checklist table, so a marker on the
+  // model and a row in the table always visibly match.
+  const { zoneSeverity, zoneBadge } = useMemo(() => {
     const severity = new Map<string, string>();
-    const firstIdx = new Map<string, number>();
+    const badge = new Map<string, number>();
     damageEntries.forEach((item, idx) => {
-      const key = zoneKeyFor(item.part);
-      if (!key) return;
-      if (!firstIdx.has(key)) firstIdx.set(key, idx);
+      const res = zoneResolutions[idx];
+      if (!res) return;
+      if (!badge.has(res.key)) badge.set(res.key, res.badgeNumber);
       const sev = severityClass(item.severity);
-      const existing = severity.get(key);
-      if (!existing || (SEVERITY_RANK[sev] ?? 0) > (SEVERITY_RANK[existing] ?? 0)) severity.set(key, sev);
+      const existing = severity.get(res.key);
+      if (!existing || (SEVERITY_RANK[sev] ?? 0) > (SEVERITY_RANK[existing] ?? 0)) severity.set(res.key, sev);
     });
-    return { zoneSeverity: severity, zoneFirstIdx: firstIdx };
-  }, [damageEntries]);
+    return { zoneSeverity: severity, zoneBadge: badge };
+  }, [damageEntries, zoneResolutions]);
 
   useEffect(() => {
     root.traverse((obj) => {
@@ -284,16 +219,40 @@ function CarModel({
     });
   }, [root, color, zoneSeverity]);
 
+  // Reacts to highlightedIdx regardless of WHERE the selection came from --
+  // clicking a part/badge here, or clicking a row in the Damage & Parts
+  // Checklist table (which sets the same prop one level up in
+  // StudioApp.tsx) -- both funnel through here, so the camera zooms in the
+  // same way either way instead of needing two separate code paths.
+  const lastHandledRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (highlightedIdx === null || highlightedIdx === lastHandledRef.current) return;
+    lastHandledRef.current = highlightedIdx;
+    const res = zoneResolutions[highlightedIdx];
+    if (!res) return;
+    const zone = CAR_PARTS_REAL.find((z) => z.key === res.key);
+    if (!zone) return;
+    const meshes = findCarMeshes(root, zone.match);
+    if (!meshes.length) return;
+    const partBox = new THREE.Box3();
+    meshes.forEach((m) => partBox.expandByObject(m));
+    onFocusRequest(partBox.getCenter(new THREE.Vector3()), partBox.getSize(new THREE.Vector3()));
+  }, [highlightedIdx, zoneResolutions, root, onFocusRequest]);
+
+  const zoneIdxLookup = useMemo(() => {
+    const map = new Map<string, number>();
+    zoneResolutions.forEach((res, idx) => {
+      if (res && !map.has(res.key)) map.set(res.key, idx);
+    });
+    return map;
+  }, [zoneResolutions]);
+
   const handleClick = (e: any) => {
     e.stopPropagation();
     const zone = CAR_PARTS_REAL.find((z) => z.match.some((re) => re.test(partName(e.object))));
     if (!zone) return;
-    const meshes = findCarMeshes(root, zone.match);
-    const partBox = new THREE.Box3();
-    meshes.forEach((m) => partBox.expandByObject(m));
-    const center = partBox.getCenter(new THREE.Vector3());
-    const size = partBox.getSize(new THREE.Vector3());
-    onPartClick(zone.key, center, size);
+    const idx = zoneIdxLookup.get(zone.key);
+    if (idx !== undefined) onZoneClick(idx);
   };
 
   return (
@@ -307,17 +266,17 @@ function CarModel({
         const partBox = new THREE.Box3();
         meshes.forEach((m) => partBox.expandByObject(m));
         const center = partBox.getCenter(new THREE.Vector3());
-        const size = partBox.getSize(new THREE.Vector3());
-        const idx = zoneFirstIdx.get(zone.key);
+        const badgeNumber = zoneBadge.get(zone.key);
+        const idx = zoneIdxLookup.get(zone.key);
         return (
           <Html key={zone.key} position={[center.x, center.y + 0.14, center.z]} center occlude={false} zIndexRange={[10, 0]}>
             <button
               type="button"
               className={`hotspot-beacon-3d ${sev === "severe" ? "severe-spot" : ""} ${highlightedIdx === idx ? "active-spot" : ""}`}
               title={zone.label}
-              onClick={() => onPartClick(zone.key, center, size)}
+              onClick={() => idx !== undefined && onZoneClick(idx)}
             >
-              {idx !== undefined ? String(idx + 1).padStart(2, "0") : "?"}
+              {badgeNumber !== undefined ? String(badgeNumber).padStart(2, "0") : "?"}
             </button>
           </Html>
         );
@@ -411,18 +370,18 @@ export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedD
   const [focus, setFocus] = useState<FocusState | null>(null);
   const home = bodyType === "van" ? VAN_HOME : CAR_HOME;
 
+  const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
+
   // Reset any camera focus whenever the report itself changes (new
   // damageEntries identity), so switching reports never leaves a stale
   // zoom-in from the previous one.
   useEffect(() => setFocus(null), [damageEntries]);
 
-  const handlePartClick = (zoneKey: string, center: THREE.Vector3, size: THREE.Vector3) => {
-    // Jump to whichever real damage item actually resolved to this zone --
-    // reuses the exact same click-to-photo/scroll-to-row behavior the 2D
-    // hotspots already had, so this is additive, not a new interaction.
-    const idx = damageEntries.findIndex((item) => zoneKeyFor(item.part) === zoneKey);
-    if (idx >= 0) onHotspotClick(idx, damageEntries[idx]);
+  const handleZoneClick = (idx: number) => {
+    onHotspotClick(idx, damageEntries[idx]);
+  };
 
+  const handleFocusRequest = (center: THREE.Vector3, size: THREE.Vector3) => {
     const radius = Math.max(size.x, size.y, size.z, 0.25);
     const dist = Math.max(radius * 2.6, 0.9);
     const dir = (controlsRef.current ? controlsRef.current.object.position.clone().sub(controlsRef.current.target) : home.position.clone().sub(home.target)).normalize();
@@ -433,7 +392,14 @@ export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedD
     <div className="blueprint-stage-3d">
       <Canvas camera={{ position: home.position.toArray(), fov: 40 }} dpr={[1, 2]}>
         {bodyType === "car" ? (
-          <CarModel color={accent} damageEntries={damageEntries} onPartClick={handlePartClick} highlightedIdx={highlightedDamageIndex} />
+          <CarModel
+            color={accent}
+            damageEntries={damageEntries}
+            zoneResolutions={zoneResolutions}
+            highlightedIdx={highlightedDamageIndex}
+            onZoneClick={handleZoneClick}
+            onFocusRequest={handleFocusRequest}
+          />
         ) : (
           <VanModel color={accent} />
         )}

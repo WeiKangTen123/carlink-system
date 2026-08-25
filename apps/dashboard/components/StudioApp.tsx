@@ -6,6 +6,7 @@ import { type ReportDetail, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
+import { resolveZones } from "@/lib/vehicleZones";
 
 // Three.js/WebGL only exists client-side -- SSR-rendering the Canvas would
 // either crash on the server or produce a hydration mismatch, so this is
@@ -65,6 +66,14 @@ export function StudioApp({ report }: { report: ReportDetail }) {
     d.damage_summary && d.damage_summary.length > 0
       ? d.damage_summary
       : (d.damaged_parts || []).map((p) => ({ part: p, severity: d.severity_level || null, human_verified: false }));
+
+  // Same resolution the 3D blueprint uses for its numbered markers -- one
+  // shared function so a badge number always means the same part in both
+  // places, never two independently-computed numbering schemes drifting
+  // apart. A null entry just means this item didn't resolve to any 3D
+  // zone (e.g. genuinely ambiguous left/right) -- still a real row here,
+  // just without a marker to match.
+  const zoneResolutions = resolveZones(damageEntries);
 
   const photos = report.photo_urls || [];
   const currentPhotoUrl = photos[activePhotoIndex];
@@ -367,17 +376,36 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {damageEntries.map((item, idx) => (
+                  {damageEntries.map((item, idx) => {
+                    const badgeNumber = zoneResolutions[idx]?.badgeNumber;
+                    return (
                     <tr
                       key={idx}
                       id={`damage-row-${idx}`}
-                      style={{ background: highlightedDamageIndex === idx ? "var(--bg-hover, rgba(56,189,248,0.08))" : undefined }}
+                      onClick={() => handleHotspotClick(idx, item)}
+                      style={{
+                        background: highlightedDamageIndex === idx ? "var(--bg-hover, rgba(56,189,248,0.08))" : undefined,
+                        cursor: "pointer",
+                      }}
+                      title="Click to view on the 3D blueprint"
                     >
                       <td>
-                        <strong>{item.part}</strong>
-                        {item.photo_reference && (
-                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Ref: {item.photo_reference}</div>
-                        )}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {badgeNumber !== undefined && (
+                            <span
+                              className={`hotspot-beacon-3d ${severityClass(item.severity) === "severe" ? "severe-spot" : ""}`}
+                              style={{ position: "static", width: 20, height: 20, fontSize: 9, flexShrink: 0 }}
+                            >
+                              {String(badgeNumber).padStart(2, "0")}
+                            </span>
+                          )}
+                          <div>
+                            <strong>{item.part}</strong>
+                            {item.photo_reference && (
+                              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Ref: {item.photo_reference}</div>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td>{item.damage_type || "—"}</td>
                       <td>
@@ -393,7 +421,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
             )}
