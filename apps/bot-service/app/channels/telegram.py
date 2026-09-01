@@ -73,7 +73,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     if not session.template_sent:
         session.template_sent = True
-        await update.message.reply_text(build_template_prompt())
+        await update.message.reply_text(build_template_prompt(), parse_mode="Markdown")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

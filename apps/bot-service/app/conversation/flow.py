@@ -23,7 +23,18 @@ class DraftResult:
 
 def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
     draft = draft_report(description, photo_paths)
-    if session is not None:
+    # Only pin these fields to the template's original answers on the FIRST
+    # draft (pending_edits still empty) -- past that, the reporter is in the
+    # free-text edit loop (handle_text's AWAITING_CONFIRMATION branch), and
+    # combined_description() already feeds every edit back into the AI on
+    # each redraft. Applying this override unconditionally meant a genuine
+    # correction sent as a later chat message (e.g. "the plate is actually
+    # ABC1234") got extracted correctly by the AI and then immediately
+    # discarded here, silently reverting to the stale first-draft value --
+    # confirmed live: session.vehicle_plate (and the six fields below it)
+    # is set exactly once, from the initial template reply, and nothing
+    # else in the conversation flow ever updates it.
+    if session is not None and not session.pending_edits:
         # User-stated ground truth (from the template) always wins over
         # anything the AI guessed for these fields -- category, damaged
         # parts, and severity stay AI-derived, never overridden here.
@@ -45,17 +56,25 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
     return DraftResult(draft=draft, summary_text=summarize(draft))
 
 
+# *bold* is rendered by both channels without extra work: Telegram needs
+# parse_mode="Markdown" on the reply_text() call that sends this (see
+# telegram.py's handle_photo), while WhatsApp/Twilio interprets *bold* and
+# _italic_ in the message body natively, no equivalent flag needed.
 TEMPLATE_PROMPT = (
-    "📋 Please fill in these details and send them back (edit only what you need "
-    "to -- Category, Damaged Parts, and Severity are worked out automatically "
-    "from your photos, no need to fill those in):\n\n"
+    "📋 *Incident Report — Reporter Details*\n\n"
+    "Please fill in the fields below and send them back. I'll work out *Category*, "
+    "*Damaged Parts*, and *Severity* automatically from your photos -- no need to "
+    "fill those in.\n\n"
+    "👤 *Reporter Information*\n"
     "Name: \n"
     "Role/Position: \n"
-    "Contact Number: \n"
+    "Contact Number: \n\n"
+    "🚘 *Vehicle & Incident*\n"
     "Vehicle Plate: \n"
     "Location: \n"
     "Date/Time: {now}\n"
-    "Description: \n"
+    "Description: \n\n"
+    "🚓 *Authority Report*\n"
     "Reported to Authorities (Yes/No): No"
 )
 
@@ -65,38 +84,76 @@ def build_template_prompt() -> str:
     return TEMPLATE_PROMPT.format(now=now)
 
 
-_TEMPLATE_REPLY_RE = re.compile(
-    r"name\s*:\s*(?P<name>.*?)\s*"
-    r"role\s*/?\s*position\s*:\s*(?P<role>.*?)\s*"
-    r"contact\s*number\s*:\s*(?P<contact>.*?)\s*"
-    r"vehicle\s*plate\s*:\s*(?P<plate>.*?)\s*"
-    r"location\s*:\s*(?P<location>.*?)\s*"
-    r"date\s*/?\s*time\s*:\s*(?P<datetime>.*?)\s*"
-    r"description\s*:\s*(?P<description>.*?)\s*"
-    r"reported\s*to\s*authorities[^:]*:\s*(?P<reported>.*)",
-    re.IGNORECASE | re.DOTALL,
-)
+# One pattern per field, matched line-by-line rather than as a single
+# sequential blob -- the old version required all 8 labels to appear
+# back-to-back with nothing in between, which broke the moment the
+# template gained section headers ("👤 *Reporter Information*") between
+# fields: the old regex's non-greedy .*? would silently swallow that
+# header line into the PRECEDING field's captured value instead of
+# skipping over it. This version tolerates any decorative/header lines
+# interspersed between fields, and doesn't care what order the reporter
+# actually filled them in.
+_FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("name", re.compile(r"^\s*name\s*:\s*(.*)$", re.IGNORECASE)),
+    ("role", re.compile(r"^\s*role\s*/?\s*position\s*:\s*(.*)$", re.IGNORECASE)),
+    ("contact", re.compile(r"^\s*contact\s*number\s*:\s*(.*)$", re.IGNORECASE)),
+    ("plate", re.compile(r"^\s*vehicle\s*plate\s*:\s*(.*)$", re.IGNORECASE)),
+    ("location", re.compile(r"^\s*location\s*:\s*(.*)$", re.IGNORECASE)),
+    ("datetime", re.compile(r"^\s*date\s*/?\s*time\s*:\s*(.*)$", re.IGNORECASE)),
+    ("description", re.compile(r"^\s*description\s*:\s*(.*)$", re.IGNORECASE)),
+    ("reported", re.compile(r"^\s*reported\s*to\s*authorities[^:]*:\s*(.*)$", re.IGNORECASE)),
+]
 
 
 def parse_template_reply(text: str) -> Optional[dict]:
     """Pulls the 8 reporter-filled fields out of a reply to build_template_prompt().
     Returns None (rather than a best-effort partial parse) if the reply doesn't
-    match the template shape at all, so the caller can fall back to treating
-    the whole message as a free-text description -- same as before this
-    template step existed -- instead of silently dropping content.
+    contain all 8 field labels, so the caller can fall back to treating the
+    whole message as a free-text description -- same bar the old sequential
+    regex enforced, just checked per-line instead of as one ordered blob.
     """
-    match = _TEMPLATE_REPLY_RE.search(text)
-    if not match:
+    values: dict[str, list[str]] = {}
+    current_field: Optional[str] = None
+    for line in text.splitlines():
+        if not line.strip():
+            # A blank line always ends any in-progress multi-line
+            # continuation -- the template itself uses a blank line to
+            # separate sections, so without this a description that spans
+            # to the end of its section would keep "continuing" straight
+            # through the blank line and swallow the next section's own
+            # header text (confirmed live: "🚓 *Authority Report*" ended up
+            # appended onto the description before this check existed).
+            current_field = None
+            continue
+        for key, pattern in _FIELD_PATTERNS:
+            m = pattern.match(line)
+            if m:
+                values[key] = [m.group(1).strip()]
+                current_field = key
+                break
+        else:
+            # Not a recognized label line -- if we're mid-"description"
+            # (the one field that's realistically multi-line), treat it as
+            # a continuation; otherwise it's decoration (a section header)
+            # and gets skipped rather than polluting a field.
+            if current_field == "description":
+                values["description"].append(line.strip())
+
+    if not all(key in values for key, _ in _FIELD_PATTERNS):
         return None
-    reported_raw = match.group("reported").strip().splitlines()[0].strip().lower()
+
+    def get(key: str) -> str:
+        return " ".join(values[key]).strip()
+
+    reported_raw = get("reported").splitlines()[0].strip().lower() if get("reported") else ""
     return {
-        "reporter_name": match.group("name").strip() or None,
-        "reporter_role": match.group("role").strip() or None,
-        "reporter_contact": match.group("contact").strip() or None,
-        "vehicle_plate": match.group("plate").strip() or None,
-        "location": match.group("location").strip() or None,
-        "incident_datetime": match.group("datetime").strip() or None,
-        "description": match.group("description").strip(),
+        "reporter_name": get("name") or None,
+        "reporter_role": get("role") or None,
+        "reporter_contact": get("contact") or None,
+        "vehicle_plate": get("plate") or None,
+        "location": get("location") or None,
+        "incident_datetime": get("datetime") or None,
+        "description": get("description"),
         "reported_to_authorities": reported_raw in {"yes", "y", "true"},
     }
 
