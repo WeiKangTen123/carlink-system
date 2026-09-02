@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -139,7 +140,14 @@ async def analyze_report_photos(
         saved_paths.append(str(dest))
 
     try:
-        draft = draft_report(description, saved_paths)
+        # draft_report() makes a blocking Gemini network call (up to 45s per
+        # model, x5 fallback models worst case). Called directly, it runs ON
+        # this FastAPI process's event loop -- freezing the entire dashboard
+        # (every /reports request, every user) for the full duration of one
+        # person's photo analysis. render_pdf() elsewhere in this service
+        # already gets this right via asyncio.to_thread; this call was
+        # missed, along with the same call in both channel adapters.
+        draft = await asyncio.to_thread(draft_report, description, saved_paths)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
 

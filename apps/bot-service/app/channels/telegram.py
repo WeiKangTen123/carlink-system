@@ -56,7 +56,26 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 
+# Raising concurrent_updates (see build_app()) lets DIFFERENT chats' updates
+# be handled at the same time, which is safe -- they mutate different
+# Session objects. It does NOT stop the SAME chat's updates from
+# overlapping (e.g. a user double-texting while their photo upload is
+# still being handled), which would race on that chat's shared in-memory
+# Session. These per-chat locks serialize same-chat updates against each
+# other without blocking unrelated chats.
+_chat_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(chat_id: str) -> asyncio.Lock:
+    return _chat_locks.setdefault(chat_id, asyncio.Lock())
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async with _lock_for(str(update.effective_chat.id)):
+        await _handle_photo(update, context)
+
+
+async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     session = get_session(chat_id)
     if session.stage != Stage.AWAITING_PHOTOS:
@@ -77,6 +96,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async with _lock_for(str(update.effective_chat.id)):
+        await _handle_text(update, context)
+
+
+async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     session = get_session(chat_id)
     text = update.message.text.strip()
@@ -116,7 +140,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def draft_and_reply(update: Update, session, description: str) -> None:
     await update.message.reply_text("Drafting your report...")
     try:
-        result = build_draft(description, session.photo_paths, session)
+        # build_draft() makes a blocking Gemini network call (up to 45s per
+        # model, x5 fallback models worst case) -- called directly (as this
+        # used to) it runs ON the bot's single asyncio event loop, freezing
+        # the ENTIRE bot for EVERY user, not just this conversation, for the
+        # whole duration. render_pdf() below already gets this right via
+        # asyncio.to_thread(); this call was just missed.
+        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
     except Exception:
         logger.exception("AI drafting failed")
         await update.message.reply_text(
@@ -181,7 +211,21 @@ async def _post_init(app: Application) -> None:
 
 def build_app() -> Application:
     init_db()
-    application = Application.builder().token(settings.telegram_bot_token).post_init(_post_init).build()
+    # Default is effectively 1 (python-telegram-bot's own default, never
+    # overridden here before) -- every update, from every chat, was handled
+    # one at a time end-to-end. Safe to raise now that per-chat locks above
+    # protect same-chat state, and the Gemini call itself is both off the
+    # event loop (asyncio.to_thread) and separately rate-gated
+    # (extraction.py's _wait_for_rate_limit) -- so this only affects how
+    # many DIFFERENT chats can be mid-conversation at once, not how fast
+    # Gemini gets hit.
+    application = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .concurrent_updates(8)
+        .post_init(_post_init)
+        .build()
+    )
     application.add_handler(CommandHandler(["start", "new"], start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel_command))

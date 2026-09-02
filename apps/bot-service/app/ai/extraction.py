@@ -19,6 +19,8 @@ back to the reporter for confirmation before a PDF is generated.
 import base64
 import logging
 import mimetypes
+import threading
+import time
 from pathlib import Path
 
 from app.ai.client import get_client
@@ -176,7 +178,29 @@ def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
     return draft
 
 
+# draft_report() is called via asyncio.to_thread() from three separate
+# entry points (Telegram, WhatsApp, and the dashboard's /reports/
+# analyze-photos), so concurrent calls land in real, distinct OS threads --
+# a plain threading.Lock (not asyncio.Lock, which only coordinates within
+# one event loop) is what actually serializes them. Holding the lock across
+# the sleep is deliberate: it makes every caller queue up and get released
+# one at a time, spaced by the interval, rather than all waking up at once
+# and racing each other on the next check.
+_rate_lock = threading.Lock()
+_last_call_started_at = 0.0
+
+
+def _wait_for_rate_limit() -> None:
+    global _last_call_started_at
+    with _rate_lock:
+        wait = settings.gemini_min_call_interval_seconds - (time.monotonic() - _last_call_started_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_started_at = time.monotonic()
+
+
 def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
+    _wait_for_rate_limit()
     client = get_client()
     input_parts = _build_input(description, photo_paths)
     schema = SecurityIncidentDraft.model_json_schema()

@@ -121,7 +121,11 @@ async def whatsapp_webhook(request: Request) -> Response:
         session.pending_edits.append(body)
         description = combined_description(session)
         try:
-            result = build_draft(description, session.photo_paths, session)
+            # See the asyncio.to_thread note below -- this runs inside the
+            # `api` FastAPI process, the same one serving the whole
+            # dashboard, so a blocking call here freezes the entire
+            # dashboard for every user, not just this WhatsApp reply.
+            result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
         except Exception:
             logger.exception("AI drafting failed")
             return _twiml(_DRAFT_ERROR_MESSAGE)
@@ -146,7 +150,13 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     session.description = description
     try:
-        result = build_draft(description, session.photo_paths, session)
+        # build_draft() makes a blocking Gemini network call (up to 45s per
+        # model, x5 fallback models worst case). Called directly (as this
+        # used to be), it runs ON this FastAPI process's event loop --
+        # freezing the whole api container, dashboard included, for the
+        # full duration. render_pdf() (see _finalize above) already gets
+        # this right via asyncio.to_thread; this call was just missed.
+        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
     except Exception:
         logger.exception("AI drafting failed")
         return _twiml(_DRAFT_ERROR_MESSAGE)

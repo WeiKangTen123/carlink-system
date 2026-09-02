@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
+    # Minimum spacing enforced between Gemini calls, per process (see
+    # extraction.py's _wait_for_rate_limit) -- a conservative placeholder
+    # until real RPM numbers from the account's actual quota tier are
+    # available to tune this precisely. Only paces calls made *within* one
+    # process (telegram-bot and api are separate processes sharing the same
+    # GEMINI_API_KEY, so this doesn't coordinate across them) -- a real
+    # cross-process limit would need a shared store (Redis, or the sqlite
+    # db both containers already mount), not worth the added infra until
+    # this is actually the bottleneck in practice.
+    gemini_min_call_interval_seconds: float = 10.0
 
 
 settings = Settings()
