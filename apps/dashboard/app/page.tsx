@@ -1,7 +1,16 @@
 import Link from "next/link";
-import { listReports, getAnalyticsSummary } from "@/lib/api";
+import { listReports, getAnalyticsSummary, type ReportSummary } from "@/lib/api";
 
 const PENDING_STATUSES = new Set(["confirmed", "draft", "pending", "Under Review"]);
+
+// Plate is the most specific real identifier a case has; vehicle name is
+// the next best thing; category is the last resort -- and a weak one here,
+// since every real report in this app shares the same category ("Vehicle
+// Collision or Damage"), so falling back to it makes every row look
+// identical instead of actually telling cases apart.
+function caseTitle(r: ReportSummary): string {
+  return r.plate_number || r.vehicle_name || r.category[0] || "Incident";
+}
 
 export default async function OverviewPage() {
   const reports = await listReports();
@@ -87,7 +96,7 @@ export default async function OverviewPage() {
                 >
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
-                      {r.category[0] || "Incident"}{r.location ? ` — ${r.location}` : ""}
+                      {caseTitle(r)}{r.location ? ` — ${r.location}` : ""}
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                       {new Date(r.created_at).toLocaleDateString()} &bull; {r.channel}
@@ -117,7 +126,7 @@ export default async function OverviewPage() {
               >
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
-                    {r.category[0] || "Incident"}{r.location ? ` — ${r.location}` : ""}
+                    {caseTitle(r)}{r.location ? ` — ${r.location}` : ""}
                   </div>
                   <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                     {new Date(r.created_at).toLocaleDateString()} &bull; {r.channel}

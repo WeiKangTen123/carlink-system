@@ -172,6 +172,8 @@ export type ReportSummary = {
   location: string | null;
   category: string[];
   thumbnail_url: string | null;
+  plate_number: string | null;
+  vehicle_name: string | null;
 };
 
 export type ReportData = {

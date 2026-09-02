@@ -6,44 +6,16 @@ import { type ReportSummary, fileUrl } from "@/lib/api";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { DeleteButton } from "@/components/DeleteButton";
 
-const FALLBACK_CASES: ReportSummary[] = [
-  {
-    id: "slk-3063-z",
-    type: "vehicle_damage",
-    status: "Under Review",
-    channel: "telegram",
-    created_at: new Date().toISOString(),
-    location: "Tuas Bay Drive, Singapore",
-    category: ["Vehicle Collision", "Rear-Left Corner"],
-    thumbnail_url: "/cases/slk3063z/P1273082.JPG",
-  },
-  {
-    id: "vay-4821",
-    type: "vehicle_damage",
-    status: "Under Review",
-    channel: "telegram",
-    created_at: new Date(Date.now() - 3600000).toISOString(),
-    location: "Federal Highway KM 14.2, PJ",
-    category: ["Vehicle Collision", "Frontal Offset"],
-    thumbnail_url: "/cases/sample/car_accident_1.jpg",
-  },
-  {
-    id: "wx-8888-a",
-    type: "vehicle_damage",
-    status: "Signed Off",
-    channel: "whatsapp",
-    created_at: new Date(Date.now() - 86400000).toISOString(),
-    location: "Workshop Bay 2, Subang",
-    category: ["Vehicle Collision", "Rear Step"],
-    thumbnail_url: "/cases/sample/malaysia_sample_2.jpg",
-  },
-];
-
 export function ReportsClient({ initialReports }: { initialReports: ReportSummary[] }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  const reportsList = initialReports && initialReports.length > 0 ? initialReports : FALLBACK_CASES;
+  // No fallback to placeholder cases -- an empty repository is a real,
+  // honest state (see the empty-state row below), not something to paper
+  // over with fabricated "slk-3063-z"/"vay-4821" demo entries (found and
+  // removed here: they were still live, silently shown to real users
+  // whenever the API returned zero reports).
+  const reportsList = initialReports || [];
 
   const filteredReports = reportsList.filter((r) => {
     const matchesSearch =
@@ -280,7 +252,7 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
               {filteredReports.length === 0 && (
                 <tr>
                   <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
-                    No incident reports match your search criteria.
+                    {reportsList.length === 0 ? "No incident reports filed yet." : "No incident reports match your search criteria."}
                   </td>
                 </tr>
               )}

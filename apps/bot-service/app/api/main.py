@@ -41,19 +41,29 @@ def list_reports() -> list[dict]:
     db = SessionLocal()
     try:
         reports = db.query(Report).order_by(Report.created_at.desc()).all()
-        return [
-            {
+        result = []
+        for r in reports:
+            data = r.data or {}
+            # Same make+model-else-vehicle_details fallback StudioApp.tsx
+            # already uses for its own header -- added because the
+            # dashboard's list views only had `category` to show per case,
+            # and every real report here has the same category ("Vehicle
+            # Collision or Damage"), making every row look identical.
+            vehicle_info = data.get("vehicle_info") or {}
+            vehicle_name = " ".join(filter(None, [vehicle_info.get("make"), vehicle_info.get("model")])) or data.get("vehicle_details")
+            result.append({
                 "id": r.id,
                 "type": r.type,
                 "status": r.status,
                 "channel": r.channel,
                 "created_at": r.created_at.isoformat(),
-                "location": (r.data or {}).get("location"),
-                "category": (r.data or {}).get("category"),
+                "location": data.get("location"),
+                "category": data.get("category"),
                 "thumbnail_url": to_public_url(r.photo_paths[0]) if r.photo_paths else None,
-            }
-            for r in reports
-        ]
+                "plate_number": vehicle_info.get("plate_number"),
+                "vehicle_name": vehicle_name,
+            })
+        return result
     finally:
         db.close()
 
