@@ -6,6 +6,7 @@ import {
   deleteReport,
   updateReport,
   reopenReport,
+  reviewDamageItem,
   signOffReport,
   analyzeReportPhotos,
   analyzeExistingReportPhotos,
@@ -94,6 +95,26 @@ export async function signOffReportAction(
     return result;
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Sign-off failed" };
+  }
+}
+
+/** Server action wrapper so the browser never fetches the API directly --
+ * same CORS reason every other mutation here is a server action (see
+ * signOffReportAction's note). Returns the error instead of throwing so
+ * the checklist can revert its optimistic state and show what went wrong
+ * (e.g. a 409 when the report is signed off and locked). */
+export async function reviewDamageItemAction(
+  reportId: string,
+  itemIndex: number,
+  patch: { human_verified?: boolean; oem_part_number?: string }
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    await reviewDamageItem(reportId, itemIndex, patch);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return { ok: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update damage item" };
   }
 }
 

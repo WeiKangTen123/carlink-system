@@ -17,6 +17,7 @@ const VehicleBlueprint3D = dynamic(
 
 interface Props {
   report: ReportDetail;
+  isSignedOff: boolean;
   damageEntries: DamageSummaryItem[];
   zoneResolutions: (ZoneResolution | null)[];
   vehicleName: string;
@@ -41,6 +42,7 @@ interface Props {
  */
 export function CaseInspectionTab({
   report,
+  isSignedOff,
   damageEntries,
   zoneResolutions,
   vehicleName,
@@ -89,6 +91,8 @@ export function CaseInspectionTab({
 
       {/* Full width: the checklist needs the room for its six columns */}
       <CaseDamageTab
+        reportId={report.id}
+        isSignedOff={isSignedOff}
         damageEntries={damageEntries}
         zoneResolutions={zoneResolutions}
         highlightedDamageIndex={highlightedDamageIndex}

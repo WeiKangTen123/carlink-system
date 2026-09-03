@@ -229,6 +229,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
       {activeTab === "inspection" && (
         <CaseInspectionTab
           report={report}
+          isSignedOff={isSignedOff}
           damageEntries={damageEntries}
           zoneResolutions={zoneResolutions}
           vehicleName={vehicleName}

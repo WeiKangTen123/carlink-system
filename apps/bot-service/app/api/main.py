@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import uuid
+from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,6 +250,72 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
 
         db.commit()
         return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
+    finally:
+        db.close()
+
+
+class DamageItemReviewRequest(BaseModel):
+    """Only the two fields a reviewer actually fills in on the checklist.
+    Both optional so a caller can tick the verified box without touching
+    the part number, or vice versa."""
+    human_verified: Optional[bool] = None
+    oem_part_number: Optional[str] = None
+
+
+@app.patch("/reports/{report_id}/damage-items/{item_index}")
+def review_damage_item(report_id: str, item_index: int, body: DamageItemReviewRequest) -> dict:
+    """Marks one damage line item verified and/or records its OEM part
+    number -- the two things a surveyor is meant to do while reviewing the
+    checklist, which the schema always had fields for (oem_part_number's
+    own description says "a human enters this during review") but nothing
+    could actually set.
+
+    Deliberately NOT routed through PUT /reports/{id}: that replaces the
+    entire data blob and re-renders the PDF through Chromium on every
+    call, which is far too heavy for ticking a checkbox (and this project
+    has already hit Chromium crashes rendering photo-heavy reports). The
+    PDF does show verification state, but sign_off_report/reopen_report
+    both re-render it, so the authoritative document still picks these up
+    at the moment it actually matters.
+    """
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Report not found")
+        # Same lock rule update_report enforces -- a signed-off report is
+        # a finalized record; reopen it first.
+        if r.status == "Signed Off":
+            raise HTTPException(
+                status_code=409,
+                detail="Report is signed off and locked. Reopen it before editing.",
+            )
+
+        data = dict(r.data or {})
+        damage_summary = list(data.get("damage_summary") or [])
+        if not 0 <= item_index < len(damage_summary):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Damage item {item_index} not found (report has {len(damage_summary)})",
+            )
+
+        item = dict(damage_summary[item_index])
+        if body.human_verified is not None:
+            item["human_verified"] = body.human_verified
+        if body.oem_part_number is not None:
+            # Empty string clears the field rather than storing "" -- keeps
+            # "not entered" as a single honest null everywhere downstream.
+            item["oem_part_number"] = body.oem_part_number.strip() or None
+        damage_summary[item_index] = item
+
+        # Reassigned rather than mutated in place: `data` is a plain JSON
+        # column, so SQLAlchemy only detects the change on assignment (same
+        # reason sign_off_report/reopen_report rebuild the dict).
+        data["damage_summary"] = damage_summary
+        r.data = data
+
+        db.commit()
+        return {"id": r.id, "item_index": item_index, "item": item}
     finally:
         db.close()
 

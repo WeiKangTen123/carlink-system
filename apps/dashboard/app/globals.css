@@ -1099,6 +1099,48 @@ a:hover {
   box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
 }
 
+/* Only hint interactivity when it's actually actionable -- a locked
+   (signed-off) report renders these disabled. */
+.verify-toggle-modern:not(:disabled):hover {
+  border-color: var(--border-glow);
+  color: var(--text-primary);
+}
+.verify-toggle-modern.verified:not(:disabled):hover {
+  color: var(--badge-green-text);
+  border-color: var(--badge-green-text);
+}
+.verify-toggle-modern:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* OEM PART NUMBER INLINE ENTRY */
+.oem-input {
+  width: 100%;
+  min-width: 120px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  transition: var(--transition-smooth);
+}
+.oem-input::placeholder {
+  color: var(--text-muted);
+}
+.oem-input:hover {
+  border-color: var(--border-color);
+  background: var(--surface-card);
+}
+.oem-input:focus {
+  outline: none;
+  border-color: var(--border-glow);
+  background: var(--surface-card);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 /* Cost matrix */
 .cost-matrix-glow {
   background: var(--surface-elevated);

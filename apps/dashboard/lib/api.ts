@@ -351,6 +351,26 @@ export async function updateReport(
   return res.json();
 }
 
+/** Patches just the two reviewer-owned fields on one damage line item.
+ * Deliberately not updateReport(): that replaces the whole report and
+ * re-renders the PDF, which is far too heavy for a checkbox toggle. */
+export async function reviewDamageItem(
+  reportId: string,
+  itemIndex: number,
+  patch: { human_verified?: boolean; oem_part_number?: string }
+): Promise<{ id: string; item_index: number; item: DamageSummaryItem }> {
+  const res = await fetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to update damage item (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
 export async function reopenReport(id: string): Promise<{ id: string; status: string }> {
   const res = await fetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
   if (!res.ok) {

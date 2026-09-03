@@ -18,10 +18,19 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
   const reportsList = initialReports || [];
 
   const filteredReports = reportsList.filter((r) => {
+    // Plate and vehicle name matter most here and were missing: every real
+    // report shares the same category, and location is null on several, so
+    // searching by the thing a person actually remembers ("SLK 3063 Z",
+    // "Honda") previously matched nothing at all.
+    const q = searchTerm.toLowerCase().trim();
     const matchesSearch =
-      r.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (r.location || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (r.category || []).some((c) => c.toLowerCase().includes(searchTerm.toLowerCase()));
+      q === "" ||
+      r.id.toLowerCase().includes(q) ||
+      (r.plate_number || "").toLowerCase().includes(q) ||
+      (r.vehicle_name || "").toLowerCase().includes(q) ||
+      (r.location || "").toLowerCase().includes(q) ||
+      (r.severity_level || "").toLowerCase().includes(q) ||
+      (r.category || []).some((c) => c.toLowerCase().includes(q));
 
     const matchesStatus =
       statusFilter === "all"
@@ -103,7 +112,7 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
           <div style={{ flex: 1, minWidth: 240, position: "relative" }}>
             <input
               type="text"
-              placeholder="🔍 Search by Case ID (e.g. SLK 3063 Z), Location, Category..."
+              placeholder="🔍 Search by plate (e.g. SLK 3063 Z), vehicle, location, severity, or case ID..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{
