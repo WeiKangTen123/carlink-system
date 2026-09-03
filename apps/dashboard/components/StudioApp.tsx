@@ -6,9 +6,7 @@ import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import { Breadcrumb } from "@/components/Breadcrumb";
-import { CaseOverviewTab } from "@/components/CaseOverviewTab";
-import { CaseEvidenceTab } from "@/components/CaseEvidenceTab";
-import { CaseDamageTab } from "@/components/CaseDamageTab";
+import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseSignOffTab } from "@/components/CaseSignOffTab";
 import { resolveZones } from "@/lib/vehicleZones";
 
@@ -20,12 +18,15 @@ export function severityClass(severity?: string | null): string {
   return "minor";
 }
 
-type CaseTab = "overview" | "evidence" | "damage" | "signoff";
+// Two tabs, not four: the blueprint, evidence photos, and parts checklist
+// are three views of the same damage data that get cross-referenced
+// constantly, so they share one screen (see CaseInspectionTab). Sign-off
+// is a genuinely different mode -- finalizing paperwork rather than
+// inspecting damage -- so that stays separate.
+type CaseTab = "inspection" | "signoff";
 
 const TABS: { id: CaseTab; label: string; icon: string }[] = [
-  { id: "overview", label: "Overview", icon: "📐" },
-  { id: "evidence", label: "Evidence & Photos", icon: "📸" },
-  { id: "damage", label: "Damage Assessment", icon: "📋" },
+  { id: "inspection", label: "Damage Inspection", icon: "🔍" },
   { id: "signoff", label: "Sign-off & Documents", icon: "✍️" },
 ];
 
@@ -33,7 +34,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const d = report.data;
   const v = d.vehicle_info;
 
-  const [activeTab, setActiveTab] = useState<CaseTab>("overview");
+  const [activeTab, setActiveTab] = useState<CaseTab>("inspection");
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
   const [isSignOffModalOpen, setIsSignOffModalOpen] = useState(false);
@@ -62,16 +63,18 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const vehicleName = [v?.make, v?.model].filter(Boolean).join(" ") || d.vehicle_details || "Vehicle";
   const reportCode = d.report_id || `CIR-2026-${report.id.slice(0, 4).toUpperCase()}`;
 
+  const conditionChips = [d.weather_condition, d.road_condition, d.traffic_condition].filter(Boolean) as string[];
+
+  // Selecting a damage item from anywhere -- a blueprint marker, a
+  // checklist row -- highlights it everywhere at once. No tab switch
+  // needed any more: the blueprint, the photo, and the checklist are all
+  // on screen together, which is the whole point of merging them.
   const handleHotspotClick = (idx: number, item: DamageSummaryItem) => {
     setHighlightedDamageIndex(idx);
     if (item.photo_reference) {
       const photoIdx = parseInt(item.photo_reference.replace(/\D/g, ""), 10) - 1;
       if (photoIdx >= 0 && photoIdx < photos.length) setActivePhotoIndex(photoIdx);
     }
-    // Jumping to a photo only makes sense if the reporter can actually see
-    // it -- switch to the Evidence tab so this isn't a silent no-op when
-    // triggered from Overview's blueprint or the Damage tab's table.
-    setActiveTab("evidence");
   };
 
   const handleSignOff = async () => {
@@ -166,6 +169,44 @@ export function StudioApp({ report }: { report: ReportDetail }) {
         </div>
       </div>
 
+      {/* AI-Drafted Summary -- context you read once when opening the case,
+          not something cross-referenced item-by-item, so it sits as a strip
+          under the header rather than competing for space inside the
+          inspection workspace. */}
+      <div className="ai-summary-strip">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13 }}>
+            <span>🤖</span> AI-Drafted Incident Summary
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {conditionChips.map((f, i) => (
+              <span key={i} className="chip-severity minor" style={{ fontSize: 10 }}>
+                {f}
+              </span>
+            ))}
+            <span className="chip-severity minor" style={{ fontSize: 10 }}>
+              Authorities: {d.reported_to_authorities ? "Yes" : "No"}
+            </span>
+            {d.ai_analysis?.confidence_score && (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  background: "var(--accent-gradient)",
+                  color: "#ffffff",
+                  padding: "3px 10px",
+                  borderRadius: "12px",
+                }}
+              >
+                {d.ai_analysis.confidence_score}
+              </span>
+            )}
+          </div>
+        </div>
+        <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0, lineHeight: 1.6 }}>{d.description}</p>
+      </div>
+
       {/* Case Section Tabs */}
       <div className="case-tab-bar">
         {TABS.map((tab) => (
@@ -180,30 +221,17 @@ export function StudioApp({ report }: { report: ReportDetail }) {
         ))}
       </div>
 
-      {activeTab === "overview" && (
-        <CaseOverviewTab
+      {activeTab === "inspection" && (
+        <CaseInspectionTab
           report={report}
           damageEntries={damageEntries}
-          vehicleName={vehicleName}
-          highlightedDamageIndex={highlightedDamageIndex}
-          onHotspotClick={handleHotspotClick}
-        />
-      )}
-      {activeTab === "evidence" && (
-        <CaseEvidenceTab
-          photos={photos}
-          damageEntries={damageEntries}
-          activePhotoIndex={activePhotoIndex}
-          onSelectPhoto={setActivePhotoIndex}
-        />
-      )}
-      {activeTab === "damage" && (
-        <CaseDamageTab
-          damageEntries={damageEntries}
           zoneResolutions={zoneResolutions}
+          vehicleName={vehicleName}
+          photos={photos}
+          activePhotoIndex={activePhotoIndex}
           highlightedDamageIndex={highlightedDamageIndex}
+          onSelectPhoto={setActivePhotoIndex}
           onHotspotClick={handleHotspotClick}
-          estimatedRepairCost={d.insurance_details?.estimated_repair_cost}
         />
       )}
       {activeTab === "signoff" && <CaseSignOffTab report={report} />}

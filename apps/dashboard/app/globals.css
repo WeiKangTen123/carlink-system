@@ -339,6 +339,120 @@ a:hover {
   font-weight: 700;
 }
 
+/* AI SUMMARY STRIP (case header context band) */
+.ai-summary-strip {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-hover);
+  border-left: 4px solid var(--accent-cyan);
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 20px;
+}
+
+/* INSPECTION WORKSPACE: blueprint + evidence side by side */
+.inspection-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1200px) {
+  .inspection-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* CASE ROWS (overview priority queue / recent list) */
+.case-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  text-decoration: none !important;
+  transition: var(--transition-smooth);
+}
+.case-row:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-hover);
+  transform: translateX(2px);
+}
+
+.case-row-thumb {
+  width: 44px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-color);
+}
+
+.case-row-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-hover);
+  font-size: 15px;
+}
+
+.case-row-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.case-row-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.case-row-age {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 34px;
+  text-align: right;
+}
+
+.priority-queue-card {
+  border-color: var(--border-hover);
+}
+
+/* SEVERITY MIX BARS */
+.severity-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+.severity-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.severity-bar-fill.severe {
+  background: var(--badge-red-text);
+}
+.severity-bar-fill.moderate {
+  background: var(--badge-amber-text);
+}
+.severity-bar-fill.minor {
+  background: var(--badge-green-text);
+}
+
 /* BUTTONS */
 .button-primary, .btn-primary-modern {
   display: inline-flex;

@@ -51,6 +51,11 @@ def list_reports() -> list[dict]:
             # Collision or Damage"), making every row look identical.
             vehicle_info = data.get("vehicle_info") or {}
             vehicle_name = " ".join(filter(None, [vehicle_info.get("make"), vehicle_info.get("model")])) or data.get("vehicle_details")
+            # Same damage_summary-else-damaged_parts fallback used in the
+            # dashboard and get_analytics_summary -- lets the Overview
+            # page's priority queue rank and label cases without having to
+            # fetch every full report just to read two fields.
+            damage_items = data.get("damage_summary") or data.get("damaged_parts") or []
             result.append({
                 "id": r.id,
                 "type": r.type,
@@ -62,6 +67,8 @@ def list_reports() -> list[dict]:
                 "thumbnail_url": to_public_url(r.photo_paths[0]) if r.photo_paths else None,
                 "plate_number": vehicle_info.get("plate_number"),
                 "vehicle_name": vehicle_name,
+                "severity_level": data.get("severity_level"),
+                "damage_count": len(damage_items),
             })
         return result
     finally:

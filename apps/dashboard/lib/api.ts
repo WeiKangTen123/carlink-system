@@ -174,6 +174,8 @@ export type ReportSummary = {
   thumbnail_url: string | null;
   plate_number: string | null;
   vehicle_name: string | null;
+  severity_level: string | null;
+  damage_count: number;
 };
 
 export type ReportData = {
