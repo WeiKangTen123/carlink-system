@@ -26,20 +26,38 @@ const CATEGORY_RULES: CategoryRule[] = [
   { test: /sensor|reverse/i, zoneKey: "rear_bumper" },
   { test: /plate/i, zoneKey: "rear_bumper" },
   { test: /tail\s*-?gate|\bboot\b|\btrunk\b/i, zoneKey: "tailgate" },
-  { test: /rear.*(glass|window|screen)\b|back\s*glass/i, zoneKey: "rear_glass" },
   { test: /wind\s*-?screen|wind\s*-?shield/i, zoneKey: "windscreen" },
   { test: /\broof\b/i, zoneKey: "roof" },
   { test: /\bbonnet\b|\bhood\b/i, zoneKey: "bonnet" },
+  { test: /\b(front\s*)?grill(e)?\b/i, zoneKey: "front_grill" },
+  // Door glass before the generic door rule and before rear_glass, so
+  // "rear door window glass LH" resolves to the door's own glass rather
+  // than the tailgate/back windscreen or the door panel itself.
+  { test: /door.*(window|glass)|(window|glass).*door|quarter\s*glass/i, base: "door_glass", paired: true, depthVar: true },
+  { test: /rear.*(glass|window|screen)\b|back\s*glass/i, zoneKey: "rear_glass" },
   { test: /\bbumper\b/i, base: "bumper", depthVar: true },
   { test: /head\s*-?lamp|head\s*-?light/i, base: "headlamp", paired: true },
   { test: /tail\s*-?lamp|tail\s*-?light|rear.*light|rear.*lamp/i, base: "taillamp", paired: true },
   { test: /mirror/i, base: "mirror", paired: true },
-  { test: /fender|wheel\s*arch|wing/i, base: "fender", paired: true },
+  // Tyre/rim before the fender rule: "wheel arch" is bodywork (fender),
+  // but a bare "wheel"/"rim"/"tyre" is the wheel itself, and the fender
+  // rule's own /wheel\s*arch/ would otherwise swallow both.
+  { test: /\btyre\b|\btire\b|\brim\b|\bwheel\b(?!\s*arch)/i, base: "wheel", paired: true, depthVar: true },
+  { test: /fender|wheel\s*arch|wing|quarter\s*panel/i, base: "fender", paired: true },
   { test: /\bdoor\b/i, base: "door", paired: true, depthVar: true },
 ];
 
-const SIDE_LEFT = /\bleft\b/i;
-const SIDE_RIGHT = /\bright\b/i;
+// Real assessor reports in this market write sides as LH/RH (and L/H,
+// R/H), not "Left"/"Right" -- confirmed on the live SLK 3063 Z report,
+// where "Tail lamp LH", "Rear fender wheel arch garnish LH" and "Rear
+// fender inner trim board LH" were all silently getting NO 3D marker
+// because only the spelled-out words were recognised.
+//
+// Deliberately NOT matching nearside/offside: which physical side those
+// mean depends on whether the market is left- or right-hand drive, so
+// guessing would risk highlighting the wrong real panel.
+const SIDE_LEFT = /\bleft\b|\bl\s*[/.]?\s*h\b|\blh\b/i;
+const SIDE_RIGHT = /\bright\b|\br\s*[/.]?\s*h\b|\brh\b/i;
 const DEPTH_REAR = /rear|\bback\b/i;
 
 /** `sideHint` is only ever used when the part's own text doesn't say
@@ -67,8 +85,16 @@ export function zoneKeyFor(part: string, sideHint?: "l" | "r"): string | null {
 }
 
 export interface ZoneResolution {
+  /** Which 3D zone (and therefore which real mesh) this item belongs to.
+   * Several items commonly share one key -- a real 18-line rear-collision
+   * report puts 9 separate items on `rear_bumper` alone. */
   key: string;
-  badgeNumber: number; // 1-based, matches the numbered marker shown on the 3D model
+  /** 1-based, and deliberately the item's own row number rather than its
+   * zone's: badges used to be numbered per-zone, which meant all 9 of
+   * those rear-bumper rows showed an identical "01" in the checklist and
+   * only one marker ever appeared on the model. Numbering per item makes
+   * checklist row N and blueprint marker N the same thing. */
+  badgeNumber: number;
 }
 
 /** Resolves every damage item to a zone + a shared badge number in one
@@ -91,15 +117,23 @@ export function resolveZones(damageEntries: DamageSummaryItem[]): (ZoneResolutio
   });
   const dominantSide: "l" | "r" | undefined = leftCount === rightCount ? undefined : leftCount > rightCount ? "l" : "r";
 
-  const zoneOrder: string[] = [];
-  return damageEntries.map((item) => {
+  return damageEntries.map((item, idx) => {
     const key = zoneKeyFor(item.part, dominantSide);
     if (!key) return null;
-    let order = zoneOrder.indexOf(key);
-    if (order === -1) {
-      zoneOrder.push(key);
-      order = zoneOrder.length - 1;
-    }
-    return { key, badgeNumber: order + 1 };
+    return { key, badgeNumber: idx + 1 };
   });
+}
+
+/** Groups resolved items by zone, preserving each item's own index.
+ * The 3D view needs this to fan a marker per real damage item around its
+ * shared zone, instead of collapsing a nine-item bumper into one dot. */
+export function groupByZone(resolutions: (ZoneResolution | null)[]): Map<string, number[]> {
+  const byZone = new Map<string, number[]>();
+  resolutions.forEach((res, idx) => {
+    if (!res) return;
+    const list = byZone.get(res.key);
+    if (list) list.push(idx);
+    else byZone.set(res.key, [idx]);
+  });
+  return byZone;
 }

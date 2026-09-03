@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import type { DamageSummaryItem } from "@/lib/api";
-import { resolveZones, type ZoneResolution } from "@/lib/vehicleZones";
+import { resolveZones, groupByZone, type ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "./StudioApp";
 
 /** Reads a CSS custom property off <html> and keeps it live across the
@@ -70,12 +70,35 @@ const CAR_PARTS_REAL: { key: string; label: string; match: RegExp[] }[] = [
   { key: "r_door_rear", label: "Right Rear Door", match: [/^door-rear-r_/i] },
   { key: "l_fender", label: "Left Fender", match: [/^fender-front-l_/i, /^wheel-fender-l_/i] },
   { key: "r_fender", label: "Right Fender", match: [/^fender-front-r_/i, /^wheel-fender-r_/i] },
-  { key: "l_mirror", label: "Left Mirror", match: [/^side-mirror-l/i] },
-  { key: "r_mirror", label: "Right Mirror", match: [/^side-mirror-r/i] },
+  { key: "l_mirror", label: "Left Mirror", match: [/^side-mirror-l/i, /^side-mirror-trim-l/i] },
+  { key: "r_mirror", label: "Right Mirror", match: [/^side-mirror-r/i, /^side-mirror-trim-r/i] },
+  { key: "front_grill", label: "Front Grille", match: [/^front-grill/i, /^honeycomb-grill/i, /^bumper-front-grill-frame/i] },
+  // Door glass -- its own zone rather than being lumped into the door
+  // panel, since a smashed window and a dented door are different repairs.
+  { key: "l_door_glass_front", label: "Left Front Door Glass", match: [/^door-front-window-glass-l_/i] },
+  { key: "r_door_glass_front", label: "Right Front Door Glass", match: [/^door-front-window-glass-r_/i] },
+  { key: "l_door_glass_rear", label: "Left Rear Door Glass", match: [/^door-rear-window-glass-l_/i, /^door-rear-trim-glass-l_/i] },
+  { key: "r_door_glass_rear", label: "Right Rear Door Glass", match: [/^door-rear-trim-glass-r_/i, /^door-rear-window-glass-r_/i] },
+  // Wheels/tyres are named generically in this model ("generic-wheel",
+  // "generic-tire-low.001"...) with NOTHING in the mesh's own parent name
+  // saying which corner it is -- that only appears one level further up
+  // ("Name-Wheel.Ft.L"). Hence the grandparent matching in findCarMeshes.
+  { key: "l_wheel_front", label: "Left Front Wheel", match: [/^Name-Wheel\.Ft\.L/i] },
+  { key: "r_wheel_front", label: "Right Front Wheel", match: [/^Name-Wheel\.Ft\.R/i] },
+  { key: "l_wheel_rear", label: "Left Rear Wheel", match: [/^Name-Wheel\.Bk\.L/i] },
+  { key: "r_wheel_rear", label: "Right Rear Wheel", match: [/^Name-Wheel\.Bk\.R/i] },
 ];
 
 function partName(mesh: THREE.Object3D): string {
   return mesh.parent ? mesh.parent.name : mesh.name;
+}
+
+/** The wheel groups carry their corner ("Name-Wheel.Ft.L") one level above
+ * the mesh's own parent, so lookups test the grandparent too. Every
+ * pattern above is anchored with ^, so widening the search this way can't
+ * make an existing body-panel rule match something new by accident. */
+function partGroupName(mesh: THREE.Object3D): string {
+  return mesh.parent?.parent ? mesh.parent.parent.name : "";
 }
 
 function findCarMeshes(root: THREE.Object3D, patterns: RegExp[]): THREE.Mesh[] {
@@ -83,7 +106,9 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[]): THREE.Mesh[] {
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh || !mesh.visible) return;
-    if (patterns.some((re) => re.test(partName(mesh)))) found.push(mesh);
+    const name = partName(mesh);
+    const group = partGroupName(mesh);
+    if (patterns.some((re) => re.test(name) || (group && re.test(group)))) found.push(mesh);
   });
   return found;
 }
@@ -183,24 +208,66 @@ function CarModel({
   }, [gltf]);
 
   // Zone key -> worst severity among the real damage_summary items that
-  // resolved to it (several granular real part names can share one zone,
-  // e.g. "Rear bumper fascia" + "Reverse sensor" both -> rear_bumper), and
-  // zone key -> the shared badge number from resolveZones() -- the same
-  // number shown in the Damage & Parts Checklist table, so a marker on the
-  // model and a row in the table always visibly match.
-  const { zoneSeverity, zoneBadge } = useMemo(() => {
+  // resolved to it. The mesh itself can only be one colour, so a zone
+  // holding both a Severe and a Minor item paints the worse of the two --
+  // per-item detail lives in the markers below, which are one-per-item.
+  const zoneSeverity = useMemo(() => {
     const severity = new Map<string, string>();
-    const badge = new Map<string, number>();
     damageEntries.forEach((item, idx) => {
       const res = zoneResolutions[idx];
       if (!res) return;
-      if (!badge.has(res.key)) badge.set(res.key, res.badgeNumber);
       const sev = severityClass(item.severity);
       const existing = severity.get(res.key);
       if (!existing || (SEVERITY_RANK[sev] ?? 0) > (SEVERITY_RANK[existing] ?? 0)) severity.set(res.key, sev);
     });
-    return { zoneSeverity: severity, zoneBadge: badge };
+    return severity;
   }, [damageEntries, zoneResolutions]);
+
+  // One marker per real damage item, not per zone. A real 18-line
+  // rear-collision report puts 9 separate items on the rear bumper alone;
+  // showing a single dot there hid 8 of them. Items sharing a zone are
+  // fanned around its centre on a golden-angle spiral (the same trick the
+  // old 2D blueprint used for exactly this) so they don't stack into one
+  // another.
+  const markers = useMemo(() => {
+    const byZone = groupByZone(zoneResolutions);
+    const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
+
+    byZone.forEach((itemIdxs, zoneKey) => {
+      const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
+      if (!zone) return;
+      const meshes = findCarMeshes(root, zone.match);
+      if (!meshes.length) return;
+      const partBox = new THREE.Box3();
+      meshes.forEach((m) => partBox.expandByObject(m));
+      const center = partBox.getCenter(new THREE.Vector3());
+      const size = partBox.getSize(new THREE.Vector3());
+      // Fan radius scales with the part: a bumper can spread its markers
+      // much wider than a tail lamp before they leave the panel.
+      const spread = Math.max(Math.min(size.x, size.z) * 0.32, 0.09);
+
+      itemIdxs.forEach((itemIdx, n) => {
+        const res = zoneResolutions[itemIdx]!;
+        const item = damageEntries[itemIdx];
+        const pos = center.clone();
+        if (itemIdxs.length > 1) {
+          const angle = (n * 137.5 * Math.PI) / 180; // golden angle
+          const r = spread * Math.sqrt(n / itemIdxs.length + 0.15);
+          pos.x += Math.cos(angle) * r;
+          pos.z += Math.sin(angle) * r;
+          pos.y += (n % 3) * 0.045; // slight stagger so overlaps stay readable head-on
+        }
+        out.push({
+          idx: itemIdx,
+          label: item.part,
+          badge: res.badgeNumber,
+          severity: severityClass(item.severity),
+          pos,
+        });
+      });
+    });
+    return out;
+  }, [damageEntries, zoneResolutions, root]);
 
   useEffect(() => {
     root.traverse((obj) => {
@@ -249,7 +316,9 @@ function CarModel({
 
   const handleClick = (e: any) => {
     e.stopPropagation();
-    const zone = CAR_PARTS_REAL.find((z) => z.match.some((re) => re.test(partName(e.object))));
+    const name = partName(e.object);
+    const group = partGroupName(e.object);
+    const zone = CAR_PARTS_REAL.find((z) => z.match.some((re) => re.test(name) || (group && re.test(group))));
     if (!zone) return;
     const idx = zoneIdxLookup.get(zone.key);
     if (idx !== undefined) onZoneClick(idx);
@@ -258,29 +327,18 @@ function CarModel({
   return (
     <>
       <primitive object={root} onClick={handleClick} />
-      {CAR_PARTS_REAL.map((zone) => {
-        const sev = zoneSeverity.get(zone.key);
-        if (!sev) return null;
-        const meshes = findCarMeshes(root, zone.match);
-        if (!meshes.length) return null;
-        const partBox = new THREE.Box3();
-        meshes.forEach((m) => partBox.expandByObject(m));
-        const center = partBox.getCenter(new THREE.Vector3());
-        const badgeNumber = zoneBadge.get(zone.key);
-        const idx = zoneIdxLookup.get(zone.key);
-        return (
-          <Html key={zone.key} position={[center.x, center.y + 0.14, center.z]} center occlude={false} zIndexRange={[10, 0]}>
-            <button
-              type="button"
-              className={`hotspot-beacon-3d ${sev === "severe" ? "severe-spot" : ""} ${highlightedIdx === idx ? "active-spot" : ""}`}
-              title={zone.label}
-              onClick={() => idx !== undefined && onZoneClick(idx)}
-            >
-              {badgeNumber !== undefined ? String(badgeNumber).padStart(2, "0") : "?"}
-            </button>
-          </Html>
-        );
-      })}
+      {markers.map((m) => (
+        <Html key={m.idx} position={[m.pos.x, m.pos.y + 0.12, m.pos.z]} center occlude={false} zIndexRange={[10, 0]}>
+          <button
+            type="button"
+            className={`hotspot-beacon-3d ${m.severity === "severe" ? "severe-spot" : ""} ${highlightedIdx === m.idx ? "active-spot" : ""}`}
+            title={m.label}
+            onClick={() => onZoneClick(m.idx)}
+          >
+            {String(m.badge).padStart(2, "0")}
+          </button>
+        </Html>
+      ))}
       <Html position={[0, 0.05, -box.getSize(new THREE.Vector3()).z / 2 - 0.35]} center distanceFactor={8} occlude={false}>
         <span className="blueprint-3d-axis-label">FRONT</span>
       </Html>
