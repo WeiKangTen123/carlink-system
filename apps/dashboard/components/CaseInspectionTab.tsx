@@ -93,7 +93,6 @@ export function CaseInspectionTab({
         zoneResolutions={zoneResolutions}
         highlightedDamageIndex={highlightedDamageIndex}
         onHotspotClick={onHotspotClick}
-        estimatedRepairCost={d.insurance_details?.estimated_repair_cost}
       />
     </div>
   );

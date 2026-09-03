@@ -7,7 +7,8 @@ import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { CaseInspectionTab } from "@/components/CaseInspectionTab";
-import { CaseSignOffTab } from "@/components/CaseSignOffTab";
+import { CaseFileTab } from "@/components/CaseFileTab";
+import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
 import { resolveZones } from "@/lib/vehicleZones";
 
 export function severityClass(severity?: string | null): string {
@@ -18,16 +19,20 @@ export function severityClass(severity?: string | null): string {
   return "minor";
 }
 
-// Two tabs, not four: the blueprint, evidence photos, and parts checklist
-// are three views of the same damage data that get cross-referenced
-// constantly, so they share one screen (see CaseInspectionTab). Sign-off
-// is a genuinely different mode -- finalizing paperwork rather than
-// inspecting damage -- so that stays separate.
-type CaseTab = "inspection" | "signoff";
+// Three tabs by mode, not by data type. The blueprint, evidence photos,
+// and parts checklist are three linked views of the same damage data that
+// get cross-referenced constantly, so they share ONE tab (see
+// CaseInspectionTab) rather than being split apart. Case File (the
+// reporter, vehicle identity, timeline, people) is reference lookup, and
+// Assessment (recommendations, cost, claim, sign-off) is the commercial
+// conclusion -- both are genuinely separate modes of working, not linked
+// views, so those do earn their own tabs.
+type CaseTab = "inspection" | "file" | "assessment";
 
 const TABS: { id: CaseTab; label: string; icon: string }[] = [
   { id: "inspection", label: "Damage Inspection", icon: "🔍" },
-  { id: "signoff", label: "Sign-off & Documents", icon: "✍️" },
+  { id: "file", label: "Case File", icon: "📄" },
+  { id: "assessment", label: "Assessment & Sign-off", icon: "✍️" },
 ];
 
 export function StudioApp({ report }: { report: ReportDetail }) {
@@ -234,7 +239,8 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           onHotspotClick={handleHotspotClick}
         />
       )}
-      {activeTab === "signoff" && <CaseSignOffTab report={report} />}
+      {activeTab === "file" && <CaseFileTab report={report} />}
+      {activeTab === "assessment" && <CaseAssessmentTab report={report} />}
 
       {/* Sign-Off Confirmation Modal */}
       {isSignOffModalOpen && (

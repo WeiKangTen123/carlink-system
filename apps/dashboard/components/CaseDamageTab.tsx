@@ -9,10 +9,13 @@ interface Props {
   zoneResolutions: (ZoneResolution | null)[];
   highlightedDamageIndex: number | null;
   onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
-  estimatedRepairCost?: string | null;
 }
 
-export function CaseDamageTab({ damageEntries, zoneResolutions, highlightedDamageIndex, onHotspotClick, estimatedRepairCost }: Props) {
+// Repair cost used to live here, but it belongs with the rest of the
+// commercial/claim picture (estimated vs final approved, adjuster,
+// workshop) in CaseAssessmentTab -- showing it in both places would just
+// be the same number in two spots with no added context.
+export function CaseDamageTab({ damageEntries, zoneResolutions, highlightedDamageIndex, onHotspotClick }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div className="card-glass">
@@ -94,22 +97,6 @@ export function CaseDamageTab({ damageEntries, zoneResolutions, highlightedDamag
           </table>
         )}
       </div>
-
-      {estimatedRepairCost && (
-        <div className="card-glass">
-          <div className="card-header">
-            <div className="card-title">
-              <span>💰</span> Estimated Repair Cost
-            </div>
-          </div>
-          <div className="cost-matrix-glow">
-            <div className="cost-row total">
-              <span>Total Estimated Repair Cost</span>
-              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{estimatedRepairCost}</span>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
