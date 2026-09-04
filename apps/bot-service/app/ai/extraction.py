@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.ai.client import get_client
+from app.ai.client import available_api_keys, get_client
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 
@@ -201,40 +201,54 @@ def _wait_for_rate_limit() -> None:
 
 def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
     _wait_for_rate_limit()
-    client = get_client()
     input_parts = _build_input(description, photo_paths)
     schema = SecurityIncidentDraft.model_json_schema()
 
+    # Two nested fallbacks. Inner: each model in the chain, since they have
+    # independent per-model quotas. Outer: each configured API key, since
+    # every model shares one key's allowance -- once a key is exhausted
+    # across the whole chain, only a different key helps. Ordered so a
+    # single key's full chain is tried before moving on, rather than
+    # burning every key on the first model.
+    api_keys = available_api_keys() or [None]
     last_error: Exception | None = None
-    for model_id in _model_chain():
-        try:
-            interaction = client.interactions.create(
-                model=model_id,
-                system_instruction=SYSTEM_PROMPT,
-                input=input_parts,
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": schema,
-                },
-                # Without this, a stalled call hangs indefinitely (hit
-                # this directly while testing model candidates locally --
-                # one model call sat for 100+s with no response and no
-                # error) -- ties up a request/worker for no benefit since
-                # the whole point of the chain is to keep trying other
-                # models, not wait forever on one.
-                timeout=45.0,
-            )
-            draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
-            draft = _strip_placeholder_people(draft)
-            draft = _sanitize_damage_summary(draft)
-            return _backfill_damage_summary(draft)
-        except Exception as exc:
-            # Covers rate limits, quota exhaustion, and other transient
-            # failures on this model -- move to the next one in the chain.
-            logger.warning("Gemini model %r failed, trying next fallback model: %s", model_id, exc)
-            last_error = exc
+
+    for key_index, api_key in enumerate(api_keys):
+        client = get_client(api_key)
+        for model_id in _model_chain():
+            try:
+                interaction = client.interactions.create(
+                    model=model_id,
+                    system_instruction=SYSTEM_PROMPT,
+                    input=input_parts,
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": schema,
+                    },
+                    # Without this, a stalled call hangs indefinitely (hit
+                    # this directly while testing model candidates locally
+                    # -- one model call sat for 100+s with no response and
+                    # no error) -- ties up a request/worker for no benefit
+                    # since the whole point of the chain is to keep trying
+                    # other models, not wait forever on one.
+                    timeout=45.0,
+                )
+                draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
+                draft = _strip_placeholder_people(draft)
+                draft = _sanitize_damage_summary(draft)
+                return _backfill_damage_summary(draft)
+            except Exception as exc:
+                # Covers rate limits, quota exhaustion, and other transient
+                # failures on this model -- move to the next one in the
+                # chain, then (outer loop) to the next API key.
+                logger.warning(
+                    "Gemini model %r failed on key #%d, trying next: %s",
+                    model_id, key_index + 1, exc,
+                )
+                last_error = exc
 
     raise RuntimeError(
-        f"All Gemini fallback models ({', '.join(_model_chain())}) failed."
+        f"All Gemini fallback models ({', '.join(_model_chain())}) failed "
+        f"across {len(api_keys)} configured API key(s)."
     ) from last_error

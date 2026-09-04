@@ -1,55 +1,251 @@
 "use client";
 
-import { useState } from "react";
-import type { AppSettings, SystemInfo } from "@/lib/api";
-import { updateSettingsAction } from "./actions";
+import { useEffect, useState } from "react";
+import type { AppSettings, LlmKey, SystemInfo } from "@/lib/api";
+import {
+  updateSettingsAction,
+  listLlmKeysAction,
+  addLlmKeyAction,
+  deleteLlmKeyAction,
+  testServiceAction,
+} from "./actions";
 
-type Tab = "general" | "ai" | "channels" | "access" | "system";
+type TestState = { ok: boolean; message: string } | null;
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "general", label: "General", icon: "⚙️" },
-  { id: "ai", label: "AI Engine", icon: "🤖" },
-  { id: "channels", label: "Channels", icon: "🔌" },
-  { id: "access", label: "Access Control", icon: "🔒" },
-  { id: "system", label: "System", icon: "ℹ️" },
-];
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${units[i]}`;
-}
-
-/** A labelled read-only row. Used throughout the read-only sections so
- * deploy-time config is visually distinct from the editable form fields
- * in General -- the old page styled hardcoded values as editable inputs
- * with a Save button that did nothing. */
-function InfoRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+function TestResult({ result }: { result: TestState }) {
+  if (!result) return null;
   return (
-    <div className="settings-info-row">
-      <span className="settings-info-label">{label}</span>
-      <span style={{ fontFamily: mono ? "var(--font-mono)" : undefined, fontSize: 13, fontWeight: 600 }}>{value}</span>
-    </div>
-  );
-}
-
-function StatusDot({ ok, label }: { ok: boolean; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600 }}>
-      <span style={{ color: ok ? "var(--badge-green-text)" : "var(--text-muted)", fontSize: 15, lineHeight: 1 }}>●</span>
-      {label}
+    <span className={`setup-test-result ${result.ok ? "ok" : "fail"}`}>
+      {result.ok ? "✓" : "✕"} {result.message}
     </span>
   );
 }
 
-export function SettingsClient({ settings, system }: { settings: AppSettings; system: SystemInfo }) {
-  const [activeTab, setActiveTab] = useState<Tab>("general");
+/** Where to actually GO to get the credential this card asks for --
+ * shown as a real link, not just described in prose. */
+function HelpLink({ url, label }: { url: string; label: string }) {
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className="setup-help-link">
+      {label} ↗
+    </a>
+  );
+}
+
+function SetupCard({
+  icon,
+  title,
+  subtitle,
+  helpUrl,
+  helpLabel,
+  testKey,
+  status,
+  children,
+}: {
+  icon: string;
+  title: string;
+  subtitle: string;
+  helpUrl?: string;
+  helpLabel?: string;
+  testKey?: string;
+  status?: { ok: boolean; label: string };
+  children: React.ReactNode;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<TestState>(null);
+
+  const runTest = async () => {
+    if (!testKey) return;
+    setTesting(true);
+    setResult(null);
+    setResult(await testServiceAction(testKey));
+    setTesting(false);
+  };
+
+  return (
+    <div className="card-glass setup-card">
+      <div className="setup-card-head">
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          <div className="setup-card-icon">{icon}</div>
+          <div style={{ minWidth: 0 }}>
+            <div className="card-title" style={{ marginBottom: 2 }}>{title}</div>
+            <div className="card-subtitle" style={{ marginBottom: 0 }}>{subtitle}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+          <TestResult result={result} />
+          {status && !result && (
+            <span className="setup-status">
+              <span style={{ color: status.ok ? "var(--badge-green-text)" : "var(--text-muted)" }}>●</span> {status.label}
+            </span>
+          )}
+          {testKey && (
+            <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "5px 12px" }} onClick={runTest} disabled={testing}>
+              {testing ? "Testing…" : "⚡ Test"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {helpUrl && helpLabel && (
+        <div style={{ marginBottom: 14 }}>
+          <HelpLink url={helpUrl} label={helpLabel} />
+        </div>
+      )}
+
+      <div className="setup-card-divider" />
+      {children}
+    </div>
+  );
+}
+
+function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
+  const [keys, setKeys] = useState<LlmKey[] | null>(null);
+  const [newKey, setNewKey] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    const result = await listLlmKeysAction();
+    setKeys("error" in result ? [] : result.keys);
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKey.trim()) return;
+    setAdding(true);
+    setError("");
+    const result = await addLlmKeyAction(newKey.trim(), newLabel.trim() || undefined);
+    setAdding(false);
+    if ("error" in result) {
+      setError(result.error);
+      return;
+    }
+    setNewKey("");
+    setNewLabel("");
+    setShowKey(false);
+    refresh();
+  };
+
+  const handleRemove = async (id: string) => {
+    setRemoving(id);
+    setError("");
+    const result = await deleteLlmKeyAction(id);
+    setRemoving(null);
+    if ("error" in result) setError(result.error);
+    else refresh();
+  };
+
+  const hasAny = (keys?.length ?? 0) > 0 || envKeyConfigured;
+
+  return (
+    <SetupCard
+      icon="🤖"
+      title="Gemini AI"
+      subtitle="Reads incident photos and detects damaged parts"
+      helpUrl="https://aistudio.google.com/apikey"
+      helpLabel="Get a Gemini API key at Google AI Studio"
+      testKey="llm"
+      status={{ ok: hasAny, label: hasAny ? "Configured" : "Not set up" }}
+    >
+      <p className="setup-note">
+        Add more than one key for extra headroom — when one key&apos;s quota runs out, the next is used
+        automatically. Nothing else to configure.
+      </p>
+
+      {error && <div className="setup-error">{error}</div>}
+
+      {keys === null ? (
+        <p className="setup-note" style={{ marginTop: 0 }}>Loading keys…</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+          {keys.map((k) => (
+            <div key={k.id} className="setup-key-row">
+              <span style={{ fontSize: 15 }}>🔑</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700 }}>
+                ••••••••••••{k.last4}
+              </span>
+              {k.label && <span className="chip-severity minor" style={{ fontSize: 10 }}>{k.label}</span>}
+              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>
+                added {new Date(k.created_at).toLocaleDateString()}
+              </span>
+              <button
+                type="button"
+                className="btn-secondary-modern"
+                style={{ fontSize: 11, padding: "4px 10px", color: "var(--danger, #ef4444)" }}
+                onClick={() => handleRemove(k.id)}
+                disabled={removing === k.id}
+              >
+                {removing === k.id ? "…" : "Remove"}
+              </button>
+            </div>
+          ))}
+
+          {keys.length === 0 && envKeyConfigured && (
+            <div className="setup-key-row" style={{ opacity: 0.75 }}>
+              <span style={{ fontSize: 15 }}>🔒</span>
+              <span style={{ fontSize: 12 }}>Using the key set on the server</span>
+              <span className="settings-readonly-tag" style={{ marginLeft: "auto" }}>Environment</span>
+            </div>
+          )}
+
+          {keys.length === 0 && !envKeyConfigured && (
+            <p className="setup-note" style={{ marginTop: 0, color: "var(--badge-amber-text)" }}>
+              No API key configured — photo analysis will fail until one is added.
+            </p>
+          )}
+        </div>
+      )}
+
+      <form onSubmit={handleAdd} className="setup-add-key">
+        <div style={{ position: "relative", flex: 1, minWidth: 220 }}>
+          <input
+            type={showKey ? "text" : "password"}
+            className="settings-input"
+            style={{ marginTop: 0, paddingRight: 38 }}
+            placeholder="Paste a Gemini API key"
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            autoComplete="new-password"
+          />
+          <button
+            type="button"
+            className="setup-reveal-btn"
+            onClick={() => setShowKey(!showKey)}
+            title={showKey ? "Hide" : "Reveal"}
+          >
+            {showKey ? "🙈" : "👁"}
+          </button>
+        </div>
+        <input
+          type="text"
+          className="settings-input"
+          style={{ marginTop: 0, width: 150, flexShrink: 0 }}
+          placeholder="Label (optional)"
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+        />
+        <button type="submit" className="btn-primary-modern" disabled={adding || !newKey.trim()}>
+          {adding ? "Adding…" : "+ Add key"}
+        </button>
+      </form>
+    </SetupCard>
+  );
+}
+
+export function SettingsClient({
+  settings,
+  system,
+}: {
+  settings: AppSettings;
+  system: SystemInfo;
+}) {
   const [companyName, setCompanyName] = useState(settings.company_name);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -73,42 +269,88 @@ export function SettingsClient({ settings, system }: { settings: AppSettings; sy
     setTimeout(() => setSaved(false), 3000);
   };
 
+  const tgCount = system.channels.reports_by_channel.telegram ?? 0;
+  const waCount = system.channels.reports_by_channel.whatsapp ?? 0;
+
   return (
-    <div>
+    <div style={{ maxWidth: 900 }}>
       <div className="page-header" style={{ marginBottom: 20 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Settings</h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            Deployment configuration, connected channels, and system status
+            Connect the services Carlink needs, and check they&apos;re working
           </p>
         </div>
       </div>
 
-      <div className="case-tab-bar">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={`case-tab ${activeTab === tab.id ? "active" : ""}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span>{tab.icon}</span> {tab.label}
-          </button>
-        ))}
-      </div>
+      {!system.auth.configured && (
+        <div className="setup-warning-banner">
+          <strong>⚠️ This dashboard has no login.</strong> Anyone who can reach its URL can view and change
+          everything here, including adding or removing API keys. Keys themselves are never displayed back —
+          only their last 4 characters — but treat this address as sensitive until access control is added.
+        </div>
+      )}
 
-      {activeTab === "general" && (
-        <form onSubmit={handleSave} className="card-glass" style={{ maxWidth: 640 }}>
-          <div className="card-header">
-            <div>
-              <div className="card-title">
-                <span>🏢</span> Report Branding
-              </div>
-              <div className="card-subtitle">Shown as the issuing organisation on generated PDF reports</div>
-            </div>
-          </div>
+      <GeminiKeysCard envKeyConfigured={system.ai.api_key_configured} />
 
-          <label style={{ display: "block", marginBottom: 16 }}>
+      <SetupCard
+        icon="✈️"
+        title="Telegram Bot"
+        subtitle="Lets people file incident reports by chat"
+        helpUrl="https://t.me/BotFather"
+        helpLabel="Create a bot and get a token from @BotFather"
+        testKey="telegram"
+        status={{
+          ok: system.channels.telegram_configured,
+          label: system.channels.telegram_configured ? "Configured" : "Not set up",
+        }}
+      >
+        <div className="settings-info-row">
+          <span className="settings-info-label">Bot token</span>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>
+            {system.channels.telegram_configured ? "Set on the server" : "Not set"}
+            {system.channels.telegram_configured && (
+              <span className="settings-readonly-tag" style={{ marginLeft: 8 }}>Environment</span>
+            )}
+          </span>
+        </div>
+        <div className="settings-info-row">
+          <span className="settings-info-label">Reports filed via Telegram</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600 }}>{tgCount}</span>
+        </div>
+      </SetupCard>
+
+      <SetupCard
+        icon="💬"
+        title="WhatsApp"
+        subtitle="Optional — file reports over WhatsApp via Twilio"
+        helpUrl="https://console.twilio.com/"
+        helpLabel="Get your credentials from the Twilio Console"
+        testKey="whatsapp"
+        status={{
+          ok: system.channels.whatsapp_configured,
+          label: system.channels.whatsapp_configured ? "Configured" : "Not set up",
+        }}
+      >
+        <div className="settings-info-row">
+          <span className="settings-info-label">Twilio credentials</span>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>
+            {system.channels.whatsapp_configured ? "Set on the server" : "Not set"}
+          </span>
+        </div>
+        <div className="settings-info-row">
+          <span className="settings-info-label">Reports filed via WhatsApp</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600 }}>{waCount}</span>
+        </div>
+        <p className="setup-note">
+          Known limitation: drafting and confirmation work, but the finished PDF isn&apos;t sent back over
+          WhatsApp — Twilio can only attach media it can fetch from a public URL, and reports are stored locally.
+        </p>
+      </SetupCard>
+
+      <form onSubmit={handleSave}>
+        <SetupCard icon="🏢" title="Report Branding" subtitle="Shown as the issuing organisation on PDF reports">
+          <label style={{ display: "block" }}>
             <span className="detail-field-label">Company / Consultancy Name</span>
             <input
               type="text"
@@ -118,171 +360,19 @@ export function SettingsClient({ settings, system }: { settings: AppSettings; sy
               onChange={(e) => setCompanyName(e.target.value)}
             />
           </label>
+          {error && <div className="setup-error" style={{ marginTop: 12 }}>{error}</div>}
+        </SetupCard>
 
-          {error && <p style={{ fontSize: 12, color: "var(--danger, #ef4444)", marginBottom: 12 }}>{error}</p>}
-
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button type="submit" className="btn-primary-modern" disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save Changes"}
-            </button>
-            {saved && (
-              <span style={{ fontSize: 12, color: "var(--badge-green-text)", fontWeight: 700 }}>✓ Saved</span>
-            )}
-            {dirty && !saving && !saved && (
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Unsaved changes</span>
-            )}
-          </div>
-        </form>
-      )}
-
-      {activeTab === "ai" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <div className="card-glass">
-            <div className="card-header">
-              <div>
-                <div className="card-title">
-                  <span>🧠</span> Model Fallback Chain
-                </div>
-                <div className="card-subtitle">
-                  Tried in order — each model has its own quota, so hitting one limit doesn&apos;t stop drafting
-                </div>
-              </div>
-              <span className="settings-readonly-tag">Read-only</span>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {system.ai.model_chain.map((model, i) => (
-                <div key={model} className="model-chain-row">
-                  <span className="model-chain-index">{i + 1}</span>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 700, flex: 1 }}>{model}</span>
-                  {i === 0 && <span className="chip-severity minor" style={{ fontSize: 10 }}>Primary</span>}
-                  {model.includes("lite") && (
-                    <span className="chip-severity moderate" style={{ fontSize: 10 }} title="Reliably drafts text, but has not produced damage bounding boxes in testing">
-                      No bounding boxes
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <p className="settings-hint">
-              Set via the <code>GEMINI_MODEL_CHAIN</code> environment variable — changing it requires a redeploy,
-              so it isn&apos;t editable here.
-            </p>
-          </div>
-
-          <div className="card-glass" style={{ maxWidth: 640 }}>
-            <div className="card-header">
-              <div className="card-title">
-                <span>⏱</span> Rate Limiting &amp; Timeouts
-              </div>
-              <span className="settings-readonly-tag">Read-only</span>
-            </div>
-            <InfoRow label="Minimum interval between AI calls" value={`${system.ai.min_call_interval_seconds}s`} mono />
-            <InfoRow label="Request timeout per model" value={`${system.ai.request_timeout_seconds}s`} mono />
-            <InfoRow
-              label="API key"
-              value={<StatusDot ok={system.ai.api_key_configured} label={system.ai.api_key_configured ? "Configured" : "Not configured"} />}
-            />
-            <p className="settings-hint">
-              The interval is applied per process. The Telegram bot and the dashboard API run separately and share
-              one Gemini key, so their limits are independent.
-            </p>
-          </div>
+        <div className="setup-save-bar">
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Keys are hidden by default — click 👁 to reveal what you&apos;re typing
+          </span>
+          {saved && <span style={{ fontSize: 12, color: "var(--badge-green-text)", fontWeight: 700 }}>✓ Saved</span>}
+          <button type="submit" className="btn-primary-modern" disabled={saving || !dirty}>
+            {saving ? "Saving…" : "💾 Save settings"}
+          </button>
         </div>
-      )}
-
-      {activeTab === "channels" && (
-        <div className="settings-split">
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>✈️</span> Telegram
-              </div>
-              <StatusDot ok={system.channels.telegram_configured} label={system.channels.telegram_configured ? "Configured" : "Not configured"} />
-            </div>
-            <InfoRow label="Bot token" value={system.channels.telegram_configured ? "Set" : "Missing"} />
-            <InfoRow label="Mode" value="Long-polling (no public webhook needed)" />
-            <InfoRow label="Reports filed" value={system.channels.reports_by_channel.telegram ?? 0} mono />
-          </div>
-
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>💬</span> WhatsApp
-              </div>
-              <StatusDot ok={system.channels.whatsapp_configured} label={system.channels.whatsapp_configured ? "Configured" : "Not configured"} />
-            </div>
-            <InfoRow label="Twilio credentials" value={system.channels.whatsapp_configured ? "Set" : "Missing"} />
-            <InfoRow label="Reports filed" value={system.channels.reports_by_channel.whatsapp ?? 0} mono />
-            <p className="settings-hint">
-              Known limitation: drafting and confirmation work, but the finished PDF isn&apos;t attached back over
-              WhatsApp — Twilio can only send media it can fetch from a public URL, and generated PDFs are stored
-              locally.
-            </p>
-          </div>
-
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>🖥</span> Dashboard (manual entry)
-              </div>
-              <StatusDot ok label="Available" />
-            </div>
-            <InfoRow label="Reports filed" value={system.channels.reports_by_channel.manual ?? 0} mono />
-          </div>
-        </div>
-      )}
-
-      {activeTab === "access" && (
-        <div className="card-glass settings-warning-card" style={{ maxWidth: 760 }}>
-          <div className="card-header">
-            <div className="card-title">
-              <span>⚠️</span> No authentication configured
-            </div>
-          </div>
-          <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, margin: "0 0 14px" }}>
-            This dashboard has no login. Anyone who can reach its URL can view, edit, sign off and delete every
-            case — including owner names, VINs, engine numbers, plate numbers, claim numbers and workshop details.
-          </p>
-          <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, margin: 0 }}>
-            The role shown in the top bar (&ldquo;Surveyor / Loss Adjuster&rdquo;) is a fixed label describing the
-            intended user of this tool. It is not an identity, an account, or a permission level, and nothing is
-            checked against it.
-          </p>
-          <p className="settings-hint" style={{ marginTop: 16 }}>
-            Adding real accounts and roles is a deliberate scope decision, not something this page can toggle.
-          </p>
-        </div>
-      )}
-
-      {activeTab === "system" && (
-        <div className="settings-split">
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>💾</span> Stored Data
-              </div>
-            </div>
-            <InfoRow label="Reports" value={system.storage.reports} mono />
-            <InfoRow label="Photos" value={system.storage.photos} mono />
-            <InfoRow label="Generated PDFs" value={system.storage.pdfs} mono />
-            <InfoRow label="Disk used" value={formatBytes(system.storage.bytes_used)} mono />
-          </div>
-
-          <div className="card-glass">
-            <div className="card-header">
-              <div className="card-title">
-                <span>🗄</span> Infrastructure
-              </div>
-              <span className="settings-readonly-tag">Read-only</span>
-            </div>
-            <InfoRow label="Database engine" value={system.database.engine} mono />
-            <InfoRow label="Storage directory" value={system.storage.storage_dir} mono />
-            <InfoRow label="Authentication" value={<StatusDot ok={system.auth.configured} label={system.auth.configured ? "Enabled" : "None"} />} />
-          </div>
-        </div>
-      )}
+      </form>
     </div>
   );
 }

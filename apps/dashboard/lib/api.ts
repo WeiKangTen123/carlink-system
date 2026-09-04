@@ -439,6 +439,39 @@ export async function updateAppSettings(patch: Partial<AppSettings>): Promise<Ap
   return res.json();
 }
 
+/** Never contains key material -- only enough to tell keys apart. */
+export type LlmKey = { id: string; label: string; last4: string; created_at: string };
+
+export async function listLlmKeys(): Promise<{ keys: LlmKey[]; env_key_configured: boolean }> {
+  const res = await fetch(`${API_BASE_URL}/setup/llm-keys`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load API keys (${res.status})`);
+  return res.json();
+}
+
+export async function addLlmKey(apiKey: string, label?: string): Promise<LlmKey> {
+  const res = await fetch(`${API_BASE_URL}/setup/llm-keys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, label }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Failed to add key (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function deleteLlmKey(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/setup/llm-keys/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to remove key (${res.status})`);
+}
+
+export async function testService(service: string): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/setup/test/${service}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Test failed (${res.status})`);
+  return res.json();
+}
+
 export async function getSystemInfo(): Promise<SystemInfo> {
   const res = await fetch(`${API_BASE_URL}/system/info`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load system info (${res.status})`);

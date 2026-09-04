@@ -39,6 +39,30 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ApiKey(Base):
+    """Operator-supplied provider API keys (currently Gemini).
+
+    Multiple keys are supported on purpose: every model in the fallback
+    chain shares one key's quota, so once that key is exhausted across all
+    models, drafting stops entirely. A second key is a whole fresh set of
+    quota buckets -- this project hit free-tier limits repeatedly during
+    development, so this is a real operational need, not a nicety.
+
+    The key itself is never returned by the API -- only `last4` and
+    whether one exists (see the /setup/llm-keys endpoints). It's stored
+    as-is rather than encrypted because any decryption key would have to
+    live on the same box, so encryption here would be theatre rather than
+    protection; the real control is not exposing it over HTTP.
+    """
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
+    provider: Mapped[str] = mapped_column(String, default="gemini")
+    label: Mapped[str] = mapped_column(String, default="")
+    key: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Report(Base):
     __tablename__ = "reports"
 

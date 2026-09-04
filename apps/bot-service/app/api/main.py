@@ -14,7 +14,8 @@ from app.ai.extraction import draft_report
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
-from app.reports.models import AppSetting, Report
+from app.ai.client import available_api_keys, get_client, reset_client_cache
+from app.reports.models import ApiKey, AppSetting, Report
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
 from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url
@@ -601,3 +602,164 @@ def get_system_info() -> dict:
         }
     finally:
         db.close()
+
+
+# =============================================================================
+# Setup: operator-supplied API keys and connection tests
+#
+# The Settings page is a SETUP surface, not an internals dashboard -- the
+# operator supplies credentials and gets told whether they work. Model
+# chain, rate limits and timeouts are deliberately not exposed: they're
+# implementation detail the operator can't act on, and the fallback
+# behaviour is the system's job to handle silently.
+#
+# SECURITY: no endpoint here ever returns key material. /setup/llm-keys
+# returns only an id, label, created_at and the last 4 characters -- enough
+# to tell two keys apart in a list, useless to steal. Note this does NOT
+# protect against tampering: with no authentication on this deployment,
+# anyone who can reach the URL can add or delete keys.
+# =============================================================================
+
+
+class AddApiKeyRequest(BaseModel):
+    apiKey: str
+    label: Optional[str] = None
+
+
+def _mask(key: str) -> str:
+    return key[-4:] if len(key) >= 4 else "****"
+
+
+@app.get("/setup/llm-keys")
+def list_llm_keys() -> dict:
+    db = SessionLocal()
+    try:
+        rows = db.query(ApiKey).filter(ApiKey.provider == "gemini").order_by(ApiKey.created_at).all()
+        return {
+            "keys": [
+                {"id": r.id, "label": r.label or "", "last4": _mask(r.key), "created_at": r.created_at.isoformat()}
+                for r in rows
+            ],
+            # Surfaces that drafting still works off the deploy-time env var
+            # even with no keys added here, so an empty list doesn't look
+            # like a broken install.
+            "env_key_configured": bool(settings.gemini_api_key),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/setup/llm-keys")
+def add_llm_key(body: AddApiKeyRequest) -> dict:
+    key = body.apiKey.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key cannot be empty")
+
+    db = SessionLocal()
+    try:
+        existing = db.query(ApiKey).filter(ApiKey.provider == "gemini", ApiKey.key == key).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="That API key has already been added")
+        row = ApiKey(provider="gemini", key=key, label=(body.label or "").strip())
+        db.add(row)
+        db.commit()
+        reset_client_cache()
+        return {"id": row.id, "label": row.label, "last4": _mask(row.key)}
+    finally:
+        db.close()
+
+
+@app.delete("/setup/llm-keys/{key_id}")
+def delete_llm_key(key_id: str) -> dict:
+    db = SessionLocal()
+    try:
+        row = db.get(ApiKey, key_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="API key not found")
+        db.delete(row)
+        db.commit()
+        reset_client_cache()
+        return {"deleted": key_id}
+    finally:
+        db.close()
+
+
+@app.post("/setup/test/{service}")
+async def test_service(service: str) -> dict:
+    """Proves a credential actually works, rather than only checking that
+    a non-empty string is present. Returns ok/false plus a short message
+    for display -- never raises for a failed credential, since 'your key
+    is wrong' is a normal result here, not a server error."""
+    if service == "llm":
+        keys = available_api_keys()
+        if not keys:
+            return {"ok": False, "message": "No API key configured"}
+
+        def _probe(api_key: str) -> tuple[bool, str]:
+            try:
+                client = get_client(api_key)
+                # Cheapest real call that still proves the key is accepted:
+                # list models. Avoids spending generation quota just to
+                # answer "does this key work".
+                next(iter(client.models.list()), None)
+                return True, "Key accepted"
+            except Exception as exc:
+                return False, str(exc)[:160]
+
+        working = 0
+        first_error = ""
+        for k in keys:
+            ok, msg = await asyncio.to_thread(_probe, k)
+            if ok:
+                working += 1
+            elif not first_error:
+                first_error = msg
+        if working:
+            return {"ok": True, "message": f"{working} of {len(keys)} key(s) working"}
+        return {"ok": False, "message": first_error or "No key accepted"}
+
+    if service == "telegram":
+        if not settings.telegram_bot_token:
+            return {"ok": False, "message": "No bot token configured"}
+
+        def _probe_tg() -> tuple[bool, str]:
+            try:
+                import httpx
+
+                r = httpx.get(
+                    f"https://api.telegram.org/bot{settings.telegram_bot_token}/getMe",
+                    timeout=10.0,
+                )
+                data = r.json()
+                if r.status_code == 200 and data.get("ok"):
+                    return True, f"Connected as @{data['result'].get('username', 'unknown')}"
+                return False, str(data.get("description", "Token rejected"))[:160]
+            except Exception as exc:
+                return False, str(exc)[:160]
+
+        ok, msg = await asyncio.to_thread(_probe_tg)
+        return {"ok": ok, "message": msg}
+
+    if service == "whatsapp":
+        if not (settings.twilio_account_sid and settings.twilio_auth_token):
+            return {"ok": False, "message": "Twilio credentials not configured"}
+
+        def _probe_twilio() -> tuple[bool, str]:
+            try:
+                import httpx
+
+                r = httpx.get(
+                    f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}.json",
+                    auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                    timeout=10.0,
+                )
+                if r.status_code == 200:
+                    return True, "Credentials accepted"
+                return False, f"Twilio rejected the credentials ({r.status_code})"
+            except Exception as exc:
+                return False, str(exc)[:160]
+
+        ok, msg = await asyncio.to_thread(_probe_twilio)
+        return {"ok": ok, "message": msg}
+
+    raise HTTPException(status_code=404, detail=f"Unknown service {service!r}")
