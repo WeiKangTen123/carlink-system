@@ -321,6 +321,25 @@ def review_damage_item(report_id: str, item_index: int, body: DamageItemReviewRe
         db.close()
 
 
+def _with_sign_off(report_data: dict, **updates) -> dict:
+    """Returns a NEW report-data dict with sign_off fields applied.
+
+    Copies at every level on purpose. `dict(r.data)` is a shallow copy, so
+    `data["sign_off"]` is the *same object* SQLAlchemy loaded -- mutating
+    it in place also mutates the "old" value it compares against, the JSON
+    column looks unchanged, and the UPDATE is silently skipped. That is
+    exactly what happened here: sign-off appeared to work because
+    Report.status (a plain string) did persist, while reviewed_by and
+    signature_date never saved at all -- which is why avg_resolution_time
+    in /analytics/summary was permanently null.
+    """
+    data = dict(report_data or {})
+    sign_off = dict(data.get("sign_off") or {})
+    sign_off.update(updates)
+    data["sign_off"] = sign_off
+    return data
+
+
 @app.post("/reports/{report_id}/reopen")
 def reopen_report(report_id: str) -> dict:
     """Explicitly unlocks a Signed Off report for editing -- a deliberate
@@ -333,11 +352,7 @@ def reopen_report(report_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Report not found")
 
         r.status = "confirmed"
-        data = dict(r.data or {})
-        sign_off = data.get("sign_off") or {}
-        sign_off["status"] = "Draft"
-        data["sign_off"] = sign_off
-        r.data = data
+        r.data = _with_sign_off(r.data, status="Draft")
 
         pdf_path = r.pdf_path or report_pdf_path(r.id)
         render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
@@ -358,15 +373,15 @@ def sign_off_report(report_id: str, reviewer_name: str = "Surveyor / Loss Adjust
             raise HTTPException(status_code=404, detail="Report not found")
         
         r.status = "Signed Off"
-        data = dict(r.data or {})
-        sign_off = data.get("sign_off") or {}
-        sign_off["status"] = "Signed Off"
-        sign_off["reviewed_by"] = reviewer_name
-        # Enables a real avg_resolution_time in /analytics/summary -- this
-        # field existed in the schema already but nothing ever set it.
-        sign_off["signature_date"] = datetime.now(timezone.utc).isoformat()
-        data["sign_off"] = sign_off
-        r.data = data
+        # Enables a real avg_resolution_time in /analytics/summary -- these
+        # fields existed in the schema already but never actually persisted
+        # before (see _with_sign_off for why).
+        r.data = _with_sign_off(
+            r.data,
+            status="Signed Off",
+            reviewed_by=reviewer_name,
+            signature_date=datetime.now(timezone.utc).isoformat(),
+        )
         
         pdf_path = r.pdf_path or report_pdf_path(r.id)
         render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
