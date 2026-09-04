@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { type ReportDetail, type DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
-import { severityClass } from "./StudioApp";
+import { severityClass } from "@/lib/caseFields";
 import { CaseEvidenceTab } from "./CaseEvidenceTab";
 import { CaseDamageTab } from "./CaseDamageTab";
 

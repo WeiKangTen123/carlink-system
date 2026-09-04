@@ -1626,6 +1626,16 @@ a:hover {
   border: 1px solid var(--badge-green-border);
 }
 
+/* Severity not assessed -- deliberately neutral, never green. An
+   unrated part previously fell through to the "minor" style, which
+   showed an em-dash on a green chip: that reads as "assessed, and it's
+   fine" when the truth is nobody has judged it yet. */
+.chip-severity.unrated {
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+}
+
 /* KPI GRID */
 .kpi-grid-modern {
   display: grid;

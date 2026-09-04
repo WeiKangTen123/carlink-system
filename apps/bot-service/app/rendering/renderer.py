@@ -24,11 +24,44 @@ def _to_data_uri(path: str) -> str:
     return f"data:{media_type};base64,{data}"
 
 
+def _org_name() -> str:
+    """The operator's company name from Settings, used on the PDF header.
+
+    Looked up here rather than passed in by callers because render_pdf is
+    invoked from six places (both channel adapters plus create/update/
+    sign-off/reopen), and threading an extra argument through all of them
+    would be easy to miss on the next one added.
+
+    Imported lazily and wrapped: a rendering failure must never be caused
+    by a settings lookup, so any DB problem falls back to the default
+    rather than propagating.
+    """
+    try:
+        from app.reports.db import SessionLocal
+        from app.reports.models import AppSetting
+
+        db = SessionLocal()
+        try:
+            row = db.get(AppSetting, "company_name")
+            if row and row.value.strip():
+                return row.value.strip()
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return "Carlink Consultancy"
+
+
 def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id=None) -> None:
     template = _env.get_template("security_incident.html")
     html = template.render(
         report=report,
         report_id=report_id or report.get("report_id") or "—",
+        # A report's own company_name still wins when set (it belongs to
+        # that specific inspection); the Settings value is the fallback
+        # for the usual case where the report doesn't carry one -- which
+        # is every real report currently on file.
+        org_name=_org_name(),
         photo_data_uris=[_to_data_uri(p) for p in photo_paths],
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { type DamageSummaryItem, fileUrl } from "@/lib/api";
-import { severityClass } from "./StudioApp";
+import { severityClass } from "@/lib/caseFields";
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see
  * schema.py) -- this is the same indexing scheme applied to photo_urls. */

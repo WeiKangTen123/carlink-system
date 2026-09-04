@@ -227,7 +227,7 @@
   <div class="header-banner">
     <div>
       <div class="brand-title">{{ 'Vehicle Incident Report' if report.accident_type else 'Security Incident Report' }}</div>
-      <div class="brand-subtitle">{{ report.company_name or 'Carlink Consultancy' }} &middot; Official Inspection &amp; Claims Record</div>
+      <div class="brand-subtitle">{{ report.company_name or org_name }} &middot; Official Inspection &amp; Claims Record</div>
     </div>
     <div class="report-badge">
       <div class="id">{{ report_id }}</div>

@@ -10,14 +10,12 @@ import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
 import { resolveZones } from "@/lib/vehicleZones";
+import { severityClass } from "@/lib/caseFields";
 
-export function severityClass(severity?: string | null): string {
-  const s = (severity || "").toLowerCase();
-  if (s.includes("severe")) return "severe";
-  if (s.includes("moderate")) return "moderate";
-  if (s.includes("minor")) return "minor";
-  return "minor";
-}
+// Re-exported so the components that already import it from here keep
+// working; the implementation now lives in lib/caseFields.ts alongside
+// the other shared report derivations.
+export { severityClass } from "@/lib/caseFields";
 
 // Three tabs by mode, not by data type. The blueprint, evidence photos,
 // and parts checklist are three linked views of the same damage data that

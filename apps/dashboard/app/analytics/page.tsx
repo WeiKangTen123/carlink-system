@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { listReports, getAnalyticsSummary, type ReportSummary } from "@/lib/api";
+import { listReports, getAnalyticsSummary } from "@/lib/api";
+import { caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
 
 const SEVERITY_META: { key: string; label: string; color: string }[] = [
@@ -7,16 +8,6 @@ const SEVERITY_META: { key: string; label: string; color: string }[] = [
   { key: "Moderate", label: "Moderate", color: "var(--chart-moderate)" },
   { key: "Minor", label: "Minor", color: "var(--chart-minor)" },
 ];
-
-const PENDING_STATUSES = new Set(["confirmed", "draft", "pending", "Under Review"]);
-
-function daysOpen(createdAt: string): number {
-  return Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000));
-}
-
-function caseTitle(r: ReportSummary): string {
-  return r.plate_number || r.vehicle_name || r.category?.[0] || "Incident";
-}
 
 export default async function AnalyticsPage() {
   const reports = await listReports();
@@ -42,7 +33,7 @@ export default async function AnalyticsPage() {
 
   // Pipeline ageing -- only cases still awaiting sign-off, since a
   // signed-off case isn't "waiting" for anything.
-  const open = reports.filter((r) => PENDING_STATUSES.has(r.status));
+  const open = reports.filter((r) => isAwaitingSignOff(r.status));
   const buckets = [
     { label: "0–3 days", min: 0, max: 3 },
     { label: "4–7 days", min: 4, max: 7 },

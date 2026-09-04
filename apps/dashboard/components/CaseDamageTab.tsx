@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { reviewDamageItemAction } from "@/app/reports/actions";
-import { severityClass } from "./StudioApp";
+import { severityClass } from "@/lib/caseFields";
 
 interface Props {
   reportId: string;

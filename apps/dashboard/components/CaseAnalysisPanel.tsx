@@ -1,5 +1,5 @@
 import type { ReportDetail, DamageSummaryItem } from "@/lib/api";
-import { severityClass } from "./StudioApp";
+import { severityClass, daysOpen as computeDaysOpen } from "@/lib/caseFields";
 
 /** A completeness ratio shown as a meter, not a chart -- a single ratio
  * against a limit is exactly the case where a bar of one value beats a
@@ -75,10 +75,7 @@ export function CaseAnalysisPanel({
     if (item.repair_required) repairRequired++;
   });
 
-  const daysOpen = Math.max(
-    0,
-    Math.floor((Date.now() - new Date(report.created_at).getTime()) / 86400000)
-  );
+  const daysOpen = computeDaysOpen(report.created_at);
   const cost = report.data.insurance_details?.estimated_repair_cost;
 
   // Damage types get a table rather than a chart on purpose: real

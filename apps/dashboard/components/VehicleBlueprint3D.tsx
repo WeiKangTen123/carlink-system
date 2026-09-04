@@ -6,7 +6,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import type { DamageSummaryItem } from "@/lib/api";
 import { resolveZones, groupByZone, type ZoneResolution } from "@/lib/vehicleZones";
-import { severityClass } from "./StudioApp";
+import { severityClass } from "@/lib/caseFields";
 
 /** Reads a CSS custom property off <html> and keeps it live across the
  * app's dark/white theme toggle (ThemeToggle.tsx flips data-theme with no

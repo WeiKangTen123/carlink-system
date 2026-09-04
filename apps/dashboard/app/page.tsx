@@ -1,31 +1,7 @@
 import Link from "next/link";
 import { listReports, getAnalyticsSummary, fileUrl, type ReportSummary } from "@/lib/api";
+import { caseTitle, daysOpen, severityClass, isAwaitingSignOff, SEVERITY_RANK } from "@/lib/caseFields";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
-
-const PENDING_STATUSES = new Set(["confirmed", "draft", "pending", "Under Review"]);
-
-// Plate is the most specific real identifier a case has; vehicle name is
-// the next best thing; category is the last resort -- and a weak one here,
-// since every real report in this app shares the same category ("Vehicle
-// Collision or Damage"), so falling back to it makes every row look
-// identical instead of actually telling cases apart.
-function caseTitle(r: ReportSummary): string {
-  return r.plate_number || r.vehicle_name || r.category?.[0] || "Incident";
-}
-
-function severityClass(severity?: string | null): string {
-  const s = (severity || "").toLowerCase();
-  if (s.includes("severe")) return "severe";
-  if (s.includes("moderate")) return "moderate";
-  return "minor";
-}
-
-const SEVERITY_RANK: Record<string, number> = { severe: 3, moderate: 2, minor: 1 };
-
-function daysOpen(createdAt: string): number {
-  const ms = Date.now() - new Date(createdAt).getTime();
-  return Math.max(0, Math.floor(ms / 86400000));
-}
 
 /** A case row shared by both lists. Shows the real photo thumbnail when the
  * report actually has one -- reports filed without photos just get a
@@ -85,7 +61,7 @@ export default async function OverviewPage() {
   // reason to exist -- "which case do I open right now?" -- so it's the
   // hero, not a sidebar afterthought.
   const priorityQueue = reports
-    .filter((r) => PENDING_STATUSES.has(r.status))
+    .filter((r) => isAwaitingSignOff(r.status))
     .sort((a, b) => {
       const sevDiff = (SEVERITY_RANK[severityClass(b.severity_level)] ?? 0) - (SEVERITY_RANK[severityClass(a.severity_level)] ?? 0);
       if (sevDiff !== 0) return sevDiff;
