@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AppSettings, LlmKey, SystemInfo } from "@/lib/api";
+import type { AppSettings, LlmKey } from "@/lib/api";
 import {
   updateSettingsAction,
   listLlmKeysAction,
@@ -239,12 +239,24 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
   );
 }
 
+/** Only the facts this page actually displays. Deliberately not the full
+ * SystemInfo -- see the note in page.tsx about not shipping deployment
+ * internals into the page payload. */
+export interface SetupStatus {
+  authConfigured: boolean;
+  geminiEnvKeyConfigured: boolean;
+  telegramConfigured: boolean;
+  whatsappConfigured: boolean;
+  telegramReports: number;
+  whatsappReports: number;
+}
+
 export function SettingsClient({
   settings,
-  system,
+  setup,
 }: {
   settings: AppSettings;
-  system: SystemInfo;
+  setup: SetupStatus;
 }) {
   const [companyName, setCompanyName] = useState(settings.company_name);
   const [saving, setSaving] = useState(false);
@@ -269,8 +281,8 @@ export function SettingsClient({
     setTimeout(() => setSaved(false), 3000);
   };
 
-  const tgCount = system.channels.reports_by_channel.telegram ?? 0;
-  const waCount = system.channels.reports_by_channel.whatsapp ?? 0;
+  const tgCount = setup.telegramReports;
+  const waCount = setup.whatsappReports;
 
   return (
     <div style={{ maxWidth: 900 }}>
@@ -283,7 +295,7 @@ export function SettingsClient({
         </div>
       </div>
 
-      {!system.auth.configured && (
+      {!setup.authConfigured && (
         <div className="setup-warning-banner">
           <strong>⚠️ This dashboard has no login.</strong> Anyone who can reach its URL can view and change
           everything here, including adding or removing API keys. Keys themselves are never displayed back —
@@ -291,7 +303,7 @@ export function SettingsClient({
         </div>
       )}
 
-      <GeminiKeysCard envKeyConfigured={system.ai.api_key_configured} />
+      <GeminiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 
       <SetupCard
         icon="✈️"
@@ -301,15 +313,15 @@ export function SettingsClient({
         helpLabel="Create a bot and get a token from @BotFather"
         testKey="telegram"
         status={{
-          ok: system.channels.telegram_configured,
-          label: system.channels.telegram_configured ? "Configured" : "Not set up",
+          ok: setup.telegramConfigured,
+          label: setup.telegramConfigured ? "Configured" : "Not set up",
         }}
       >
         <div className="settings-info-row">
           <span className="settings-info-label">Bot token</span>
           <span style={{ fontSize: 13, fontWeight: 600 }}>
-            {system.channels.telegram_configured ? "Set on the server" : "Not set"}
-            {system.channels.telegram_configured && (
+            {setup.telegramConfigured ? "Set on the server" : "Not set"}
+            {setup.telegramConfigured && (
               <span className="settings-readonly-tag" style={{ marginLeft: 8 }}>Environment</span>
             )}
           </span>
@@ -328,14 +340,14 @@ export function SettingsClient({
         helpLabel="Get your credentials from the Twilio Console"
         testKey="whatsapp"
         status={{
-          ok: system.channels.whatsapp_configured,
-          label: system.channels.whatsapp_configured ? "Configured" : "Not set up",
+          ok: setup.whatsappConfigured,
+          label: setup.whatsappConfigured ? "Configured" : "Not set up",
         }}
       >
         <div className="settings-info-row">
           <span className="settings-info-label">Twilio credentials</span>
           <span style={{ fontSize: 13, fontWeight: 600 }}>
-            {system.channels.whatsapp_configured ? "Set on the server" : "Not set"}
+            {setup.whatsappConfigured ? "Set on the server" : "Not set"}
           </span>
         </div>
         <div className="settings-info-row">
