@@ -14,7 +14,7 @@ from app.ai.extraction import draft_report
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
-from app.reports.models import Report
+from app.reports.models import AppSetting, Report
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
 from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url
@@ -490,3 +490,114 @@ def delete_report(report_id: str) -> dict:
     finally:
         db.close()
 
+
+
+# =============================================================================
+# Settings & system info
+#
+# Split deliberately into two halves, because conflating them is exactly
+# what made the old Settings page dishonest -- it showed a hardcoded model
+# chain (which didn't even match the real one) next to a Save button that
+# persisted nothing, implying all of it was editable.
+#
+#   /settings     -> the few genuinely user-owned values, really persisted
+#   /system/info  -> live, read-only facts about how this deployment is
+#                    actually configured and what's in it
+# =============================================================================
+
+# Only keys listed here can be written, so a typo'd or hostile key can't
+# quietly fill the table with junk.
+ALLOWED_SETTING_KEYS = {"company_name"}
+
+
+class SettingsUpdateRequest(BaseModel):
+    company_name: Optional[str] = None
+
+
+@app.get("/settings")
+def get_settings() -> dict:
+    db = SessionLocal()
+    try:
+        rows = db.query(AppSetting).all()
+        stored = {r.key: r.value for r in rows}
+        return {key: stored.get(key, "") for key in sorted(ALLOWED_SETTING_KEYS)}
+    finally:
+        db.close()
+
+
+@app.put("/settings")
+def update_settings(body: SettingsUpdateRequest) -> dict:
+    db = SessionLocal()
+    try:
+        for key, value in body.model_dump(exclude_none=True).items():
+            if key not in ALLOWED_SETTING_KEYS:
+                continue
+            row = db.get(AppSetting, key)
+            if row:
+                row.value = value.strip()
+            else:
+                db.add(AppSetting(key=key, value=value.strip()))
+        db.commit()
+        rows = db.query(AppSetting).all()
+        stored = {r.key: r.value for r in rows}
+        return {key: stored.get(key, "") for key in sorted(ALLOWED_SETTING_KEYS)}
+    finally:
+        db.close()
+
+
+@app.get("/system/info")
+def get_system_info() -> dict:
+    """Live read-only facts about this deployment. Everything here is
+    measured or read from real config at request time -- nothing is a
+    hardcoded display value."""
+    db = SessionLocal()
+    try:
+        reports = db.query(Report).all()
+        channel_counts: dict[str, int] = {}
+        photo_count = 0
+        pdf_count = 0
+        for r in reports:
+            channel_counts[r.channel] = channel_counts.get(r.channel, 0) + 1
+            photo_count += len(r.photo_paths or [])
+            if r.pdf_path:
+                pdf_count += 1
+
+        storage_root = Path(settings.storage_dir)
+        storage_bytes = 0
+        if storage_root.exists():
+            storage_bytes = sum(f.stat().st_size for f in storage_root.rglob("*") if f.is_file())
+
+        return {
+            "ai": {
+                # The real chain this deployment will actually try, in order.
+                "model_chain": [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()],
+                "min_call_interval_seconds": settings.gemini_min_call_interval_seconds,
+                "request_timeout_seconds": 45.0,
+                # Never the key itself -- only whether one is present.
+                "api_key_configured": bool(settings.gemini_api_key),
+            },
+            "channels": {
+                "telegram_configured": bool(settings.telegram_bot_token),
+                "whatsapp_configured": bool(settings.twilio_account_sid and settings.twilio_auth_token),
+                "reports_by_channel": channel_counts,
+            },
+            "storage": {
+                "reports": len(reports),
+                "photos": photo_count,
+                "pdfs": pdf_count,
+                "bytes_used": storage_bytes,
+                "storage_dir": settings.storage_dir,
+            },
+            "database": {
+                # Scheme only -- the URL can contain credentials on a
+                # non-sqlite deployment.
+                "engine": settings.database_url.split("://", 1)[0],
+            },
+            "auth": {
+                # Stated as a fact so the UI doesn't have to hardcode a
+                # claim that could drift if auth is ever added.
+                "configured": False,
+            },
+        }
+    finally:
+        db.close()

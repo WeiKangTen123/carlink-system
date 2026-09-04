@@ -397,6 +397,54 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   return res.json();
 }
 
+export type AppSettings = {
+  company_name: string;
+};
+
+/** Live read-only facts about the running deployment. Never contains the
+ * API key or bot token themselves -- only whether they're configured. */
+export type SystemInfo = {
+  ai: {
+    model_chain: string[];
+    min_call_interval_seconds: number;
+    request_timeout_seconds: number;
+    api_key_configured: boolean;
+  };
+  channels: {
+    telegram_configured: boolean;
+    whatsapp_configured: boolean;
+    reports_by_channel: Record<string, number>;
+  };
+  storage: { reports: number; photos: number; pdfs: number; bytes_used: number; storage_dir: string };
+  database: { engine: string };
+  auth: { configured: boolean };
+};
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const res = await fetch(`${API_BASE_URL}/settings`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load settings (${res.status})`);
+  return res.json();
+}
+
+export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const res = await fetch(`${API_BASE_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to save settings (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const res = await fetch(`${API_BASE_URL}/system/info`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load system info (${res.status})`);
+  return res.json();
+}
+
 export async function deleteReport(id: string): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/reports/${id}`, { method: "DELETE" });
   if (!res.ok) {

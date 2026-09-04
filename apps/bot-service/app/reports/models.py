@@ -22,6 +22,23 @@ def gen_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+class AppSetting(Base):
+    """Key/value store for the handful of settings a user can actually
+    change at runtime.
+
+    Deliberately separate from Settings in config.py: those are env-var,
+    deploy-time configuration (API keys, model chain, storage paths) that
+    a dashboard form has no business rewriting -- the Settings page shows
+    them read-only and says so. This table is only for things that are
+    genuinely user-owned, like the company name printed on PDFs.
+    """
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Report(Base):
     __tablename__ = "reports"
 
