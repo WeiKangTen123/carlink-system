@@ -1,4 +1,5 @@
-import type { ReportDetail } from "@/lib/api";
+import type { ReportDetail, DamageSummaryItem } from "@/lib/api";
+import { CaseAnalysisPanel } from "./CaseAnalysisPanel";
 
 function Field({ label, value, mono }: { label: string; value?: string | null; mono?: boolean }) {
   return (
@@ -24,7 +25,13 @@ function Field({ label, value, mono }: { label: string; value?: string | null; m
  * the vehicle and the claim, as opposed to the damage inspection itself.
  * Cards render only when they hold real data, so a report filed without
  * recommendations or a claim doesn't show empty scaffolding. */
-export function CaseAssessmentTab({ report }: { report: ReportDetail }) {
+export function CaseAssessmentTab({
+  report,
+  damageEntries,
+}: {
+  report: ReportDetail;
+  damageEntries: DamageSummaryItem[];
+}) {
   const d = report.data;
   const pol = d.police_report;
   const ins = d.insurance_details;
@@ -51,6 +58,10 @@ export function CaseAssessmentTab({ report }: { report: ReportDetail }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Leads the tab: "what does this job involve and is it ready to
+          finalize" is the question this whole tab exists to answer. */}
+      <CaseAnalysisPanel report={report} damageEntries={damageEntries} />
+
       {hasRecommendations && (
         <div className="card-glass">
           <div className="card-header">

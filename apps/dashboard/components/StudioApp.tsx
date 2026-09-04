@@ -241,7 +241,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
         />
       )}
       {activeTab === "file" && <CaseFileTab report={report} />}
-      {activeTab === "assessment" && <CaseAssessmentTab report={report} />}
+      {activeTab === "assessment" && <CaseAssessmentTab report={report} damageEntries={damageEntries} />}
 
       {/* Sign-Off Confirmation Modal */}
       {isSignOffModalOpen && (

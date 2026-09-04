@@ -1,12 +1,22 @@
-import { listReports, getAnalyticsSummary } from "@/lib/api";
-import { CategoryBarChart } from "@/components/charts/CategoryBarChart";
+import Link from "next/link";
+import { listReports, getAnalyticsSummary, type ReportSummary } from "@/lib/api";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
 
-const SEVERITY_COLORS: Record<string, string> = {
-  Minor: "var(--badge-green-text)",
-  Moderate: "var(--badge-amber-text)",
-  Severe: "var(--badge-red-text)",
-};
+const SEVERITY_META: { key: string; label: string; color: string }[] = [
+  { key: "Severe", label: "Severe", color: "var(--chart-severe)" },
+  { key: "Moderate", label: "Moderate", color: "var(--chart-moderate)" },
+  { key: "Minor", label: "Minor", color: "var(--chart-minor)" },
+];
+
+const PENDING_STATUSES = new Set(["confirmed", "draft", "pending", "Under Review"]);
+
+function daysOpen(createdAt: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000));
+}
+
+function caseTitle(r: ReportSummary): string {
+  return r.plate_number || r.vehicle_name || r.category?.[0] || "Incident";
+}
 
 export default async function AnalyticsPage() {
   const reports = await listReports();
@@ -20,82 +30,171 @@ export default async function AnalyticsPage() {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     const key = d.toISOString().slice(0, 10);
-    const count = reports.filter((r) => r.created_at.slice(0, 10) === key).length;
-    days.push({ date: key.slice(5), count });
+    days.push({ date: key.slice(5), count: reports.filter((r) => r.created_at.slice(0, 10) === key).length });
   }
 
-  const byCategory = Object.entries(analytics.category_counts)
-    .map(([category, count]) => ({ category, count }))
-    .sort((a, b) => b.count - a.count);
-
   const partsFrequency = Object.entries(analytics.damaged_parts_frequency).sort((a, b) => b[1] - a[1]);
-  const maxPartCount = partsFrequency[0]?.[1] ?? 0;
-  const topParts = partsFrequency.slice(0, 6);
+  const topParts = partsFrequency.slice(0, 8);
+  const maxPartCount = topParts[0]?.[1] ?? 0;
+  const totalDamageItems = partsFrequency.reduce((sum, [, n]) => sum + n, 0);
 
-  const severityTotal = Object.values(analytics.severity_counts).reduce((a, b) => a + b, 0);
+  const severityTotal = SEVERITY_META.reduce((sum, s) => sum + (analytics.severity_counts[s.key] ?? 0), 0);
+
+  // Pipeline ageing -- only cases still awaiting sign-off, since a
+  // signed-off case isn't "waiting" for anything.
+  const open = reports.filter((r) => PENDING_STATUSES.has(r.status));
+  const buckets = [
+    { label: "0–3 days", min: 0, max: 3 },
+    { label: "4–7 days", min: 4, max: 7 },
+    { label: "8–14 days", min: 8, max: 14 },
+    { label: "15+ days", min: 15, max: Infinity },
+  ].map((b) => ({
+    ...b,
+    cases: open.filter((r) => {
+      const d = daysOpen(r.created_at);
+      return d >= b.min && d <= b.max;
+    }),
+  }));
+  const maxBucket = Math.max(1, ...buckets.map((b) => b.cases.length));
+  const oldest = [...open].sort((a, b) => daysOpen(b.created_at) - daysOpen(a.created_at)).slice(0, 5);
+
+  // Stated plainly rather than hidden: with a handful of reports, a
+  // confident-looking distribution chart would imply a pattern the data
+  // can't support. Shown as a note instead of suppressing the panels,
+  // since the counts themselves are still real and useful.
+  const lowVolume = reports.length < 20;
 
   return (
     <div>
-      {/* Header */}
       <div className="page-header" style={{ marginBottom: 24 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Incident Analytics</h1>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Analytics</h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            System-wide incident volume, review pipeline, and damaged-component frequency across all filed reports
+            Workload, parts demand, and where cases are getting stuck
           </p>
         </div>
       </div>
 
-      {/* KPI Cards -- every value here comes straight from /analytics/summary,
-          computed from real reports; null fields show "--" rather than a
-          placeholder number (see AnalyticsSummary's comment in lib/api.ts). */}
+      {lowVolume && reports.length > 0 && (
+        <div className="analytics-lowvolume-note">
+          Based on <strong>{reports.length} report{reports.length === 1 ? "" : "s"}</strong> and{" "}
+          <strong>{totalDamageItems} damage item{totalDamageItems === 1 ? "" : "s"}</strong>. Counts below are exact,
+          but there isn&apos;t enough history yet for the proportions to indicate a reliable trend.
+        </div>
+      )}
+
       <div className="kpi-grid-modern" style={{ marginBottom: 24 }}>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Total Incidents</div>
+          <div className="kpi-label">Total Cases</div>
           <div className="kpi-val">{analytics.total_incidents}</div>
         </div>
-
         <div className="kpi-card-glow">
-          <div className="kpi-label">Pending Review</div>
-          <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>
-            {analytics.pending_review}
-          </div>
+          <div className="kpi-label">Awaiting Sign-Off</div>
+          <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>{analytics.pending_review}</div>
         </div>
-
         <div className="kpi-card-glow">
-          <div className="kpi-label">Signed Off</div>
-          <div className="kpi-val" style={{ color: "var(--badge-green-text)" }}>
-            {analytics.signed_off}
-          </div>
+          <div className="kpi-label">Severe Cases</div>
+          <div className="kpi-val" style={{ color: "var(--badge-red-text)" }}>{analytics.high_severity}</div>
         </div>
-
         <div className="kpi-card-glow">
-          <div className="kpi-label">Avg. Filing-to-Sign-Off</div>
-          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>
-            {analytics.avg_resolution_time ?? "—"}
+          <div className="kpi-label">Damage Items Logged</div>
+          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>{totalDamageItems}</div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+        {/* Decision: what parts should I keep in stock? */}
+        <div className="card-glass">
+          <div className="card-header">
+            <div>
+              <div className="card-title">
+                <span>🔧</span> Parts Demand
+              </div>
+              <div className="card-subtitle">
+                Most frequently damaged components{partsFrequency.length > 8 ? ` — top 8 of ${partsFrequency.length}` : ""}
+              </div>
+            </div>
           </div>
-          {!analytics.avg_resolution_time && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>No signed-off reports yet</div>
+          {topParts.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>No structured damage recorded yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {topParts.map(([part, count]) => (
+                <div key={part}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{part}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)", flexShrink: 0 }}>{count}</span>
+                  </div>
+                  <div className="severity-bar-track">
+                    <div
+                      className="readiness-bar-fill"
+                      style={{ width: `${maxPartCount ? (count / maxPartCount) * 100 : 0}%`, background: "var(--accent-cyan)" }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
-        <div className="kpi-card-glow">
-          <div className="kpi-label">AI High-Confidence Rate</div>
-          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>
-            {analytics.ai_confidence_avg ?? "—"}
+        {/* Decision: what's going stale and needs chasing? */}
+        <div className="card-glass">
+          <div className="card-header">
+            <div>
+              <div className="card-title">
+                <span>⏱</span> Pipeline Age
+              </div>
+              <div className="card-subtitle">How long open cases have been awaiting sign-off</div>
+            </div>
           </div>
-          {!analytics.ai_confidence_avg && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>No rated detections yet</div>
+          {open.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>Nothing awaiting sign-off.</p>
+          ) : (
+            <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+                {buckets.map((b) => (
+                  <div key={b.label}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                      <span style={{ fontWeight: 600 }}>{b.label}</span>
+                      <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{b.cases.length}</span>
+                    </div>
+                    <div className="severity-bar-track">
+                      <div
+                        className="readiness-bar-fill"
+                        style={{
+                          width: `${(b.cases.length / maxBucket) * 100}%`,
+                          background: b.min >= 15 ? "var(--chart-severe)" : b.min >= 8 ? "var(--chart-moderate)" : "var(--accent-cyan)",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="detail-field-label" style={{ marginBottom: 8 }}>Longest waiting</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {oldest.map((r) => (
+                  <Link key={r.id} href={`/reports/${r.id}`} className="analytics-case-link">
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700 }}>{caseTitle(r)}</span>
+                    <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                      {daysOpen(r.created_at)}d
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
 
-      {/* Charts Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
         <div className="card-glass">
           <div className="card-header">
-            <div className="card-title">
-              <span>📈</span> Incident Frequency (Last 14 Days)
+            <div>
+              <div className="card-title">
+                <span>📈</span> Intake Volume
+              </div>
+              <div className="card-subtitle">Reports filed per day, last 14 days</div>
             </div>
           </div>
           <TimelineBarChart data={days} />
@@ -103,83 +202,42 @@ export default async function AnalyticsPage() {
 
         <div className="card-glass">
           <div className="card-header">
-            <div className="card-title">
-              <span>📊</span> Incidents by Category
-            </div>
-          </div>
-          <CategoryBarChart data={byCategory} />
-        </div>
-      </div>
-
-      {/* Parts Frequency & Severity Distribution */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-        <div className="card-glass">
-          <div className="card-header">
-            <div className="card-title">
-              <span>🔥</span> Most Frequent Damaged Components
-            </div>
-          </div>
-          {topParts.length === 0 ? (
-            <div className="chart-empty" style={{ height: "auto", padding: "24px 0" }}>
-              No structured damage recorded yet.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, fontSize: 13 }}>
-              {topParts.map(([part, count]) => (
-                <div key={part}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-                    <span>{part}</span>
-                    <span>
-                      {count} {count === 1 ? "case" : "cases"}
-                    </span>
-                  </div>
-                  <div style={{ height: 8, background: "var(--surface-elevated)", borderRadius: 4, overflow: "hidden" }}>
-                    <div
-                      style={{
-                        width: `${maxPartCount ? (count / maxPartCount) * 100 : 0}%`,
-                        height: "100%",
-                        background: "var(--accent-cyan)",
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="card-glass">
-          <div className="card-header">
-            <div className="card-title">
-              <span>⚡</span> Severity Breakdown
+            <div>
+              <div className="card-title">
+                <span>⚡</span> Severity Mix
+              </div>
+              <div className="card-subtitle">Across all filed cases</div>
             </div>
           </div>
           {severityTotal === 0 ? (
-            <div className="chart-empty" style={{ height: "auto", padding: "24px 0" }}>
-              No reports yet.
-            </div>
+            <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>No severity ratings yet.</p>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, fontSize: 13, padding: "8px 0" }}>
-              {Object.entries(analytics.severity_counts).map(([sev, count]) => (
-                <div key={sev}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-                    <span>{sev}</span>
-                    <span>
-                      {Math.round((count / severityTotal) * 100)}% ({count} {count === 1 ? "case" : "cases"})
-                    </span>
-                  </div>
-                  <div style={{ height: 8, background: "var(--surface-elevated)", borderRadius: 4, overflow: "hidden" }}>
-                    <div
-                      style={{
-                        width: `${(count / severityTotal) * 100}%`,
-                        height: "100%",
-                        background: SEVERITY_COLORS[sev] || "var(--accent-cyan)",
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
+            <>
+              {/* Part-to-whole -> one stacked bar rather than a pie. */}
+              <div className="stacked-severity-bar" style={{ marginBottom: 12 }}>
+                {SEVERITY_META.map((s) => {
+                  const count = analytics.severity_counts[s.key] ?? 0;
+                  if (count === 0) return null;
+                  return (
+                    <div key={s.key} style={{ width: `${(count / severityTotal) * 100}%`, background: s.color }} title={`${s.label}: ${count}`} />
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {SEVERITY_META.map((s) => {
+                  const count = analytics.severity_counts[s.key] ?? 0;
+                  return (
+                    <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+                      <span style={{ fontWeight: 600 }}>{s.label}</span>
+                      <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
+                        {count} · {severityTotal ? Math.round((count / severityTotal) * 100) : 0}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
       </div>

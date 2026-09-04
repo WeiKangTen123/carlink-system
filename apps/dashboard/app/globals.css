@@ -44,6 +44,19 @@
   --badge-green-text: #34d399;
   --badge-green-border: rgba(16, 185, 129, 0.4);
 
+  /* Chart-only severity fills, kept separate from the --badge-*-text
+     tokens above: those are TEXT colours sitting on a tinted badge
+     background, while these are solid fills sitting on the card surface,
+     so they're judged against different contrast requirements.
+     Validated with the dataviz palette validator against this surface.
+     Dark passes CVD (ΔE 10.6), normal-vision (21.2) and contrast; it
+     trips only the lightness-band comfort check, which is acceptable
+     because severity is a status scale and every segment is always
+     accompanied by a text label, never colour alone. */
+  --chart-severe: #f87171;
+  --chart-moderate: #fbbf24;
+  --chart-minor: #34d399;
+
   --badge-blue-bg: rgba(56, 189, 248, 0.15);
   --badge-blue-text: #7dd3fc;
   --badge-blue-border: rgba(56, 189, 248, 0.4);
@@ -117,6 +130,17 @@
   --badge-green-bg: #dcfce7;
   --badge-green-text: #16a34a;
   --badge-green-border: #86efac;
+
+  /* Light mode needed different values, not a flip: the badge trio
+     (#dc2626/#d97706/#16a34a) failed the validator's normal-vision floor
+     at ΔE 14.4 between Severe and Moderate -- below 15, i.e. hard to tell
+     apart even with full colour vision, which is a real defect on a
+     damage report. This trio passes every check (normal-vision ΔE 22.6,
+     CVD ΔE 14.1); its contrast WARN on the amber is discharged by the
+     text labels that always accompany these fills. */
+  --chart-severe: #b91c1c;
+  --chart-moderate: #ca8a04;
+  --chart-minor: #047857;
 
   --badge-blue-bg: #e0f2fe;
   --badge-blue-text: #0284c7;
@@ -817,6 +841,126 @@ a:hover {
 }
 .setup-warning-banner strong {
   color: var(--badge-amber-text);
+}
+
+/* ==========================================================================
+   ANALYTICS / CASE ANALYSIS
+   ========================================================================== */
+.readiness-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* Part-to-whole in one bar rather than a pie -- keeps long category
+   names readable and stays honest at small counts. */
+.stacked-severity-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-hover);
+  gap: 2px;
+}
+
+.case-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.case-stat-block {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+}
+
+.case-stat-value {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.case-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.case-analysis-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+@media (max-width: 900px) {
+  .case-analysis-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.case-analysis-verdict {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+.case-analysis-verdict.ready {
+  color: var(--badge-green-text);
+  background: var(--badge-green-bg);
+  border: 1px solid var(--badge-green-border);
+}
+.case-analysis-verdict.blocked {
+  color: var(--badge-amber-text);
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-amber-border);
+}
+
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mini-table td {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+.mini-table tr:last-child td {
+  border-bottom: none;
+}
+
+.analytics-lowvolume-note {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-cyan);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+}
+
+.analytics-case-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  text-decoration: none !important;
+  color: var(--text-primary) !important;
+  transition: var(--transition-smooth);
+}
+.analytics-case-link:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-hover);
 }
 
 /* BUTTONS */
