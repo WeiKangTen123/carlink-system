@@ -174,7 +174,7 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
               {filteredReports.map((r) => (
                 <tr key={r.id}>
                   <td>
-                    <Link href={`/reports/${r.id}`}>
+                    <Link href={`/reports/${r.id}`} aria-label={`Open case ${r.id}`}>
                       {r.thumbnail_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img

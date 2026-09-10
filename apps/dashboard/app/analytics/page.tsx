@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { listReports, getAnalyticsSummary } from "@/lib/api";
 import { caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
+import { resolveRange, bucketReports, daysSinceMostRecent } from "@/lib/dateRange";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
+import { DateRangePicker, WidenRangeButton } from "@/components/DateRangePicker";
 
 const SEVERITY_META: { key: string; label: string; color: string }[] = [
   { key: "Severe", label: "Severe", color: "var(--chart-severe)" },
@@ -9,20 +11,22 @@ const SEVERITY_META: { key: string; label: string; color: string }[] = [
   { key: "Minor", label: "Minor", color: "var(--chart-minor)" },
 ];
 
-export default async function AnalyticsPage() {
+export default async function AnalyticsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
+}) {
+  const params = await searchParams;
   const reports = await listReports();
   const analytics = await getAnalyticsSummary();
 
-  // Real day-by-day count from actual report creation dates, not a random
-  // walk -- each report's created_at (UTC ISO string) bucketed by its date.
-  const now = new Date();
-  const days: { date: string; count: number }[] = [];
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    days.push({ date: key.slice(5), count: reports.filter((r) => r.created_at.slice(0, 10) === key).length });
-  }
+  // Range comes from the URL so this stays a server component and a chosen
+  // window is shareable. Buckets are real counts of created_at, daily up to
+  // ~5 weeks and weekly beyond so a long range stays readable.
+  const range = resolveRange(params);
+  const days = bucketReports(reports, range);
+  const rangeTotal = days.reduce((sum, d) => sum + d.count, 0);
+  const sinceRecent = daysSinceMostRecent(reports);
 
   const partsFrequency = Object.entries(analytics.damaged_parts_frequency).sort((a, b) => b[1] - a[1]);
   const topParts = partsFrequency.slice(0, 8);
@@ -180,15 +184,38 @@ export default async function AnalyticsPage() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
         <div className="card-glass">
-          <div className="card-header">
+          <div className="card-header" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
             <div>
               <div className="card-title">
                 <span>📈</span> Intake Volume
               </div>
-              <div className="card-subtitle">Reports filed per day, last 14 days</div>
+              <div className="card-subtitle">
+                {rangeTotal} report{rangeTotal === 1 ? "" : "s"} &middot;{" "}
+                {range.key === "custom" ? range.label : range.label}
+                {days.length > 0 && days.length < range.days ? " (weekly)" : ""}
+              </div>
             </div>
+            <DateRangePicker activeKey={range.key} from={range.from} to={range.to} />
           </div>
-          <TimelineBarChart data={days} />
+          <TimelineBarChart
+            data={days}
+            emptyState={
+              <div>
+                <div>No reports filed in {range.key === "custom" ? "this range" : range.label}.</div>
+                {sinceRecent !== null && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+                    The most recent was {sinceRecent} day{sinceRecent === 1 ? "" : "s"} ago.
+                  </div>
+                )}
+                {sinceRecent !== null && sinceRecent < 90 && (
+                  <WidenRangeButton
+                    toKey={sinceRecent < 30 ? "30d" : "90d"}
+                    label={`Show last ${sinceRecent < 30 ? "30" : "90"} days`}
+                  />
+                )}
+              </div>
+            }
+          />
         </div>
 
         <div className="card-glass">

@@ -1992,3 +1992,157 @@ a:hover {
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* ==========================================================================
+   PREVIOUSLY-UNSTYLED ELEMENTS
+   These classes were referenced in components but never defined in CSS, so
+   they rendered with raw browser defaults -- a grey system Delete button in
+   the cases table, and a zero-size (invisible) channel dot.
+   ========================================================================== */
+
+/* Destructive row action. Reads as secondary until hovered, so Delete never
+   competes with the primary "Open Studio" action sitting beside it. */
+.row-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+.row-delete:hover {
+  color: var(--badge-red-text);
+  border-color: var(--badge-red-border);
+  background: var(--badge-red-bg);
+}
+.row-delete:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Intake channel pill. The dot is the only thing distinguishing channels at
+   a glance, and with no width/height it was rendering as nothing at all. */
+.channel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 4px 11px 4px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  white-space: nowrap;
+}
+
+.channel-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  /* background is set inline, per channel */
+}
+
+/* Was carrying its layout as inline styles on <main> while the class itself
+   didn't exist; moved here so the hook and the styling live together. */
+.main-content {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 20px 24px 60px;
+  width: 100%;
+}
+
+/* ==========================================================================
+   DATE RANGE PICKER (intake volume)
+   Filters sit in one row above the chart they control.
+   ========================================================================== */
+.range-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.range-picker-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-hover);
+  flex-wrap: wrap;
+}
+
+.range-btn {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+.range-btn:hover {
+  color: var(--text-primary);
+}
+.range-btn.active {
+  background: var(--accent-gradient);
+  color: #ffffff;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+.range-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.range-custom-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.range-custom-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.range-custom-field span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.range-custom-field input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  color-scheme: dark;
+}
+[data-theme="light"] .range-custom-field input {
+  color-scheme: light;
+}
+.range-custom-field input:focus {
+  outline: none;
+  border-color: var(--border-glow);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}

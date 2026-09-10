@@ -218,6 +218,7 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
             type="button"
             className="setup-reveal-btn"
             onClick={() => setShowKey(!showKey)}
+            aria-label={showKey ? "Hide API key" : "Reveal API key"}
             title={showKey ? "Hide" : "Reveal"}
           >
             {showKey ? "🙈" : "👁"}

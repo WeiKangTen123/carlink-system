@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listReports, getAnalyticsSummary, fileUrl, type ReportSummary } from "@/lib/api";
 import { caseTitle, daysOpen, severityClass, isAwaitingSignOff, SEVERITY_RANK } from "@/lib/caseFields";
+import { resolveRange, bucketReports, daysSinceMostRecent } from "@/lib/dateRange";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
 
 /** A case row shared by both lists. Shows the real photo thumbnail when the
@@ -70,16 +71,13 @@ export default async function OverviewPage() {
 
   const recentCases = reports.slice(0, 5);
 
-  // Real day-by-day count from actual report creation dates -- same
-  // derivation the Analytics page already uses, no random walk.
-  const now = new Date();
-  const days: { date: string; count: number }[] = [];
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    days.push({ date: key.slice(5), count: reports.filter((r) => r.created_at.slice(0, 10) === key).length });
-  }
+  // Same bucketing the Analytics page uses. Fixed at 30 days here rather
+  // than offering a picker -- this is a triage page, not an analysis one --
+  // but 30 rather than the old hardcoded 14, because a 14-day window was
+  // rendering an empty chart against real filing patterns.
+  const volumeRange = resolveRange({ range: "30d" });
+  const days = bucketReports(reports, volumeRange);
+  const sinceRecent = daysSinceMostRecent(reports);
 
   const severityTotal = Object.values(analytics.severity_counts).reduce((a, b) => a + b, 0);
 
@@ -165,10 +163,23 @@ export default async function OverviewPage() {
               <div className="card-title">
                 <span>📈</span> Incident Volume
               </div>
-              <div className="card-subtitle">Reports filed per day, last 14 days</div>
+              <div className="card-subtitle">Reports filed per day, last 30 days</div>
             </div>
           </div>
-          <TimelineBarChart data={days} />
+          <TimelineBarChart
+            data={days}
+            emptyState={
+              <div>
+                <div>No reports filed in the last 30 days.</div>
+                {sinceRecent !== null && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+                    The most recent was {sinceRecent} day{sinceRecent === 1 ? "" : "s"} ago —{" "}
+                    <Link href="/analytics?range=90d">view a wider range</Link>.
+                  </div>
+                )}
+              </div>
+            }
+          />
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
