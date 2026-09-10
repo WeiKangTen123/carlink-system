@@ -11,6 +11,22 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "25mb",
     },
   },
+
+  // Files under /public are served with `Cache-Control: max-age=0` by
+  // default, because Next can't know whether their contents changed. That
+  // meant the 16.7MB vehicle model was re-downloaded in full on EVERY case
+  // page view (~6s each time). These are static assets that only change
+  // when the file itself is replaced, so cache them hard.
+  async headers() {
+    return [
+      {
+        source: "/assets/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

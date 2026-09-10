@@ -180,6 +180,8 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
                         <img
                           src={r.thumbnail_url.startsWith("/") ? r.thumbnail_url : fileUrl(r.thumbnail_url)}
                           alt=""
+                          loading="lazy"
+                          decoding="async"
                           style={{
                             width: 54,
                             height: 40,

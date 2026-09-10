@@ -22,6 +22,7 @@ interface Props {
   zoneResolutions: (ZoneResolution | null)[];
   vehicleName: string;
   photos: string[];
+  photoThumbs?: string[];
   activePhotoIndex: number;
   highlightedDamageIndex: number | null;
   onSelectPhoto: (idx: number) => void;
@@ -47,6 +48,7 @@ export function CaseInspectionTab({
   zoneResolutions,
   vehicleName,
   photos,
+  photoThumbs,
   activePhotoIndex,
   highlightedDamageIndex,
   onSelectPhoto,
@@ -83,6 +85,7 @@ export function CaseInspectionTab({
 
         <CaseEvidenceTab
           photos={photos}
+          photoThumbs={photoThumbs}
           damageEntries={damageEntries}
           activePhotoIndex={activePhotoIndex}
           onSelectPhoto={onSelectPhoto}

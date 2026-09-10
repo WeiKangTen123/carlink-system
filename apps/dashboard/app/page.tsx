@@ -13,7 +13,7 @@ function CaseRow({ report, showAge }: { report: ReportSummary; showAge?: boolean
     <Link href={`/reports/${report.id}`} className="case-row">
       {report.thumbnail_url ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={fileUrl(report.thumbnail_url)} alt="" className="case-row-thumb" />
+        <img src={fileUrl(report.thumbnail_url)} alt="" className="case-row-thumb" loading="lazy" decoding="async" />
       ) : (
         <div className="case-row-thumb case-row-thumb-empty">🚗</div>
       )}

@@ -26,12 +26,15 @@ function bboxToCss(bbox: number[] | null | undefined): { top: string; left: stri
 
 interface Props {
   photos: string[];
+  /** Same order/length as photos; falls back to the full image per-index
+   * when absent, which is what a report with no thumbnails yet returns. */
+  photoThumbs?: string[];
   damageEntries: DamageSummaryItem[];
   activePhotoIndex: number;
   onSelectPhoto: (idx: number) => void;
 }
 
-export function CaseEvidenceTab({ photos, damageEntries, activePhotoIndex, onSelectPhoto }: Props) {
+export function CaseEvidenceTab({ photos, photoThumbs, damageEntries, activePhotoIndex, onSelectPhoto }: Props) {
   const [showBadges, setShowBadges] = useState(true);
 
   if (photos.length === 0) {
@@ -117,7 +120,7 @@ export function CaseEvidenceTab({ photos, damageEntries, activePhotoIndex, onSel
             onClick={() => onSelectPhoto(idx)}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={fileUrl(src)} alt={photoLabel(idx)} />
+            <img src={fileUrl(photoThumbs?.[idx] || src)} alt={photoLabel(idx)} loading="lazy" decoding="async" />
           </div>
         ))}
       </div>

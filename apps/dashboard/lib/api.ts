@@ -222,6 +222,10 @@ export type ReportDetail = {
   created_at: string;
   data: ReportData;
   photo_urls: string[];
+  /** Small versions of photo_urls, same order and length. The inspector
+   * still shows the full image for the photo being examined; these are for
+   * the thumbnail strip. Optional so an older API response still parses. */
+  photo_thumb_urls?: string[];
   pdf_url: string | null;
 };
 

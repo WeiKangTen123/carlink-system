@@ -7,6 +7,10 @@ google-genai>=0.1.0
 python-telegram-bot>=21.0
 playwright>=1.42.0
 jinja2>=3.1.3
+# Thumbnail generation. Real incident photos come off phones at ~2560x1920
+# and average 1.3MB; served as-is they were being downloaded in full to
+# fill a 54x40px table cell (one was 8.8MB / 17s).
+pillow>=10.2.0
 sqlalchemy>=2.0.28
 httpx>=0.27.0
 python-dotenv>=1.0.1

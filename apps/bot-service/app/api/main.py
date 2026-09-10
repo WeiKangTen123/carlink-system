@@ -18,7 +18,7 @@ from app.ai.client import available_api_keys, get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, Report
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url
+from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url, to_thumbnail_url
 
 
 @asynccontextmanager
@@ -30,7 +30,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
 app.include_router(whatsapp_router)
-app.mount("/files", StaticFiles(directory=settings.storage_dir), name="files")
+class _ImmutableStaticFiles(StaticFiles):
+    """Serves /files with long-lived caching.
+
+    Stored photos and generated PDFs are write-once at a given path -- a
+    report's photo_00.jpg is never rewritten in place -- so they can be
+    cached hard. Previously these went out with NO Cache-Control at all,
+    so every photo was re-downloaded on every page view.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
+app.mount("/files", _ImmutableStaticFiles(directory=settings.storage_dir), name="files")
 
 
 @app.get("/health")
@@ -66,7 +81,7 @@ def list_reports() -> list[dict]:
                 "created_at": r.created_at.isoformat(),
                 "location": data.get("location"),
                 "category": data.get("category"),
-                "thumbnail_url": to_public_url(r.photo_paths[0]) if r.photo_paths else None,
+                "thumbnail_url": to_thumbnail_url(r.photo_paths[0]) if r.photo_paths else None,
                 "plate_number": vehicle_info.get("plate_number"),
                 "vehicle_name": vehicle_name,
                 "severity_level": data.get("severity_level"),
@@ -93,7 +108,13 @@ def get_report(report_id: str) -> dict:
             r.pdf_path = pdf_path
             db.commit()
 
-        photo_urls = [to_public_url(p) for p in (r.photo_paths or []) if Path(p).exists()]
+        existing_photos = [p for p in (r.photo_paths or []) if Path(p).exists()]
+        photo_urls = [to_public_url(p) for p in existing_photos]
+        # Parallel array, same order/length as photo_urls. The inspector
+        # still loads the full image for the photo you're actually looking
+        # at -- these are for the strip, which was pulling 17 full-size
+        # originals to render 17 postage stamps.
+        photo_thumb_urls = [to_thumbnail_url(p) for p in existing_photos]
 
         return {
             "id": r.id,
@@ -102,6 +123,7 @@ def get_report(report_id: str) -> dict:
             "channel": r.channel,
             "data": r.data,
             "photo_urls": photo_urls,
+            "photo_thumb_urls": photo_thumb_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
             "created_at": r.created_at.isoformat(),
         }

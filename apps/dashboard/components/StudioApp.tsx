@@ -61,6 +61,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const zoneResolutions = resolveZones(damageEntries);
 
   const photos = report.photo_urls || [];
+  const photoThumbs = report.photo_thumb_urls;
 
   const plate = v?.plate_number || d.vehicle_details || null;
   const vehicleName = [v?.make, v?.model].filter(Boolean).join(" ") || d.vehicle_details || "Vehicle";
@@ -232,6 +233,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           zoneResolutions={zoneResolutions}
           vehicleName={vehicleName}
           photos={photos}
+          photoThumbs={photoThumbs}
           activePhotoIndex={activePhotoIndex}
           highlightedDamageIndex={highlightedDamageIndex}
           onSelectPhoto={setActivePhotoIndex}
