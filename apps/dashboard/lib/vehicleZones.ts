@@ -30,6 +30,13 @@ const CATEGORY_RULES: CategoryRule[] = [
   { test: /\broof\b/i, zoneKey: "roof" },
   { test: /\bbonnet\b|\bhood\b/i, zoneKey: "bonnet" },
   { test: /\b(front\s*)?grill(e)?\b/i, zoneKey: "front_grill" },
+  // Underbody. Real assessor and AI output both reach for these terms on
+  // rear/front impacts ("Undercarriage" came back on every test run against
+  // a real collision photo), and they previously matched no zone at all --
+  // so a case whose only detected damage was structural showed a completely
+  // blank blueprint. Checked before the bumper/fender rules so "rear
+  // subframe" resolves to the chassis rather than the bumper skin.
+  { test: /undercarriage|under\s*-?body|chassis|sub\s*-?frame|floor\s*pan|cross\s*-?member|\bsill\b|rocker\s*panel/i, zoneKey: "underbody" },
   // Door glass before the generic door rule and before rear_glass, so
   // "rear door window glass LH" resolves to the door's own glass rather
   // than the tailgate/back windscreen or the door panel itself.

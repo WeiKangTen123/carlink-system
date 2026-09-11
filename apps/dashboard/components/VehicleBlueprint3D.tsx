@@ -83,6 +83,11 @@ const CAR_PARTS_REAL: { key: string; label: string; match: RegExp[] }[] = [
   // "generic-tire-low.001"...) with NOTHING in the mesh's own parent name
   // saying which corner it is -- that only appears one level further up
   // ("Name-Wheel.Ft.L"). Hence the grandparent matching in findCarMeshes.
+  // Structural underbody. These meshes are in CAR_EXCLUDE so the chassis
+  // doesn't clutter a normal view -- they're revealed only when damage
+  // actually maps here (see the recolour effect below), so the frame shows
+  // up exactly when it's the thing being reported on.
+  { key: "underbody", label: "Underbody / Chassis", match: [/^frame-front/i, /^frame-middle/i, /^frame-rear/i] },
   { key: "l_wheel_front", label: "Left Front Wheel", match: [/^Name-Wheel\.Ft\.L/i] },
   { key: "r_wheel_front", label: "Right Front Wheel", match: [/^Name-Wheel\.Ft\.R/i] },
   { key: "l_wheel_rear", label: "Left Rear Wheel", match: [/^Name-Wheel\.Bk\.L/i] },
@@ -101,11 +106,14 @@ function partGroupName(mesh: THREE.Object3D): string {
   return mesh.parent?.parent ? mesh.parent.parent.name : "";
 }
 
-function findCarMeshes(root: THREE.Object3D, patterns: RegExp[]): THREE.Mesh[] {
+function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden = false): THREE.Mesh[] {
   const found: THREE.Mesh[] = [];
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.visible) return;
+    if (!mesh.isMesh) return;
+    // Hidden meshes are skipped by default so excluded clutter can't be
+    // matched or clicked; the underbody zone opts in deliberately.
+    if (!mesh.visible && !includeHidden) return;
     const name = partName(mesh);
     const group = partGroupName(mesh);
     if (patterns.some((re) => re.test(name) || (group && re.test(group)))) found.push(mesh);
@@ -236,7 +244,7 @@ function CarModel({
     byZone.forEach((itemIdxs, zoneKey) => {
       const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
       if (!zone) return;
-      const meshes = findCarMeshes(root, zone.match);
+      const meshes = findCarMeshes(root, zone.match, true);
       if (!meshes.length) return;
       const partBox = new THREE.Box3();
       meshes.forEach((m) => partBox.expandByObject(m));
@@ -270,17 +278,25 @@ function CarModel({
   }, [damageEntries, zoneResolutions, root]);
 
   useEffect(() => {
+    // Re-assert the base hidden/visible state first. Without this, a zone
+    // revealed for a previous report would stay revealed after the damage
+    // list changes.
     root.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.visible) return;
-      mesh.material = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.85 });
+      if (!mesh.isMesh) return;
+      mesh.visible = !CAR_EXCLUDE.test(partName(mesh));
+      if (mesh.visible) {
+        mesh.material = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.85 });
+      }
     });
     CAR_PARTS_REAL.forEach((zone) => {
       const sev = zoneSeverity.get(zone.key);
       if (!sev) return;
       const hex = severityColor(sev);
       if (!hex) return;
-      findCarMeshes(root, zone.match).forEach((m) => {
+      findCarMeshes(root, zone.match, true).forEach((m) => {
+        // Reveal a normally-hidden structural mesh when it's the damaged part.
+        m.visible = true;
         m.material = new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
       });
     });
@@ -299,7 +315,7 @@ function CarModel({
     if (!res) return;
     const zone = CAR_PARTS_REAL.find((z) => z.key === res.key);
     if (!zone) return;
-    const meshes = findCarMeshes(root, zone.match);
+    const meshes = findCarMeshes(root, zone.match, true);
     if (!meshes.length) return;
     const partBox = new THREE.Box3();
     meshes.forEach((m) => partBox.expandByObject(m));
