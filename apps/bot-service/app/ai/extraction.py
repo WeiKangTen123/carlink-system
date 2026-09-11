@@ -60,6 +60,44 @@ SYSTEM_PROMPT = (
 
 
 
+# Fields the model must EMIT rather than silently skip.
+#
+# Structured output treats an absent optional key as valid, so the model was
+# free to write a rich `description` and then omit the expensive extraction
+# entirely. Observed live against every model in the chain: a clear
+# rear-collision photo produced an accurate prose description naming the
+# buckled boot lid and deformed bumper, while damage_summary, damaged_parts
+# and severity_level were simply not present in the response -- 6 of 33
+# fields emitted. A case filed that way gets a good write-up and a totally
+# blank damage checklist and 3D blueprint.
+#
+# The system prompt already told the model not to do this; prompting alone
+# didn't hold (the same lesson as _strip_placeholder_people below). Marking
+# the keys required is the deterministic fix.
+#
+# This does NOT force fabrication: these fields are nullable, so "required"
+# means the key must be present, not that it must be non-null. The model can
+# still answer null honestly when the evidence isn't there -- it just has to
+# actually consider the field instead of skipping it.
+_REQUIRED_OUTPUT_FIELDS = [
+    "description",
+    "category",
+    "damage_summary",
+    "damaged_parts",
+    "severity_level",
+    "accident_type",
+    "vehicle_info",
+]
+
+
+def _response_schema() -> dict:
+    schema = SecurityIncidentDraft.model_json_schema()
+    required = set(schema.get("required") or [])
+    required.update(_REQUIRED_OUTPUT_FIELDS)
+    schema["required"] = sorted(required)
+    return schema
+
+
 def _model_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()]
 
@@ -202,7 +240,7 @@ def _wait_for_rate_limit() -> None:
 def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
     _wait_for_rate_limit()
     input_parts = _build_input(description, photo_paths)
-    schema = SecurityIncidentDraft.model_json_schema()
+    schema = _response_schema()
 
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each configured API key, since

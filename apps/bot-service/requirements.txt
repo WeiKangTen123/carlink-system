@@ -3,7 +3,11 @@ python-multipart>=0.0.9
 uvicorn>=0.28.0
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
-google-genai>=0.1.0
+# Pinned deliberately. These were unpinned (>=0.1.0), so any image rebuild
+# silently picked up whatever was current -- for an SDK that mediates model
+# behaviour and structured-output handling, that means a rebuild done for an
+# unrelated reason can change extraction results with no code change.
+google-genai==2.22.0
 python-telegram-bot>=21.0
 playwright>=1.42.0
 jinja2>=3.1.3
