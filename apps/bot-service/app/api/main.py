@@ -16,6 +16,13 @@ from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, Report
+from app.reports.taxonomy import (
+    BODY_TYPES,
+    CANONICAL_DAMAGE_TYPES,
+    CANONICAL_PARTS,
+    CANONICAL_SEVERITIES,
+    MODEL_BODY_TYPES,
+)
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
 from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url, to_thumbnail_url
@@ -800,3 +807,51 @@ async def test_service(service: str) -> dict:
         return {"ok": ok, "message": msg}
 
     raise HTTPException(status_code=404, detail=f"Unknown service {service!r}")
+
+
+@app.get("/taxonomy")
+def get_taxonomy() -> dict:
+    """The controlled vocabulary, plus how much of it real cases actually use.
+
+    Usage counts are what make this more than a list: they show which parts
+    are genuinely being seen, and -- via `legacy_terms` -- which free-text
+    names from before the vocabulary existed are still in the data, so it's
+    visible that older reports read differently rather than that being a
+    silent inconsistency.
+    """
+    db = SessionLocal()
+    try:
+        reports = db.query(Report).all()
+        canonical = set(CANONICAL_PARTS)
+        part_usage: dict[str, int] = {}
+        legacy_usage: dict[str, int] = {}
+        type_usage: dict[str, int] = {}
+
+        for r in reports:
+            for item in ((r.data or {}).get("damage_summary") or []):
+                name = item.get("part")
+                if name:
+                    bucket = part_usage if name in canonical else legacy_usage
+                    bucket[name] = bucket.get(name, 0) + 1
+                dtype = item.get("damage_type")
+                if dtype:
+                    type_usage[dtype] = type_usage.get(dtype, 0) + 1
+
+        return {
+            "parts": CANONICAL_PARTS,
+            "damage_types": CANONICAL_DAMAGE_TYPES,
+            "severities": CANONICAL_SEVERITIES,
+            "body_types": BODY_TYPES,
+            "model_body_types": MODEL_BODY_TYPES,
+            "usage": {
+                "parts": part_usage,
+                "damage_types": type_usage,
+                # Free-text names predating the vocabulary. Shown rather
+                # than hidden so the gap between old and new reports is
+                # explicit.
+                "legacy_terms": legacy_usage,
+                "reports_counted": len(reports),
+            },
+        }
+    finally:
+        db.close()

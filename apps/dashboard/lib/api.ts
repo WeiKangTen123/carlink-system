@@ -479,6 +479,27 @@ export async function testService(service: string): Promise<{ ok: boolean; messa
   return res.json();
 }
 
+export type Taxonomy = {
+  parts: string[];
+  damage_types: string[];
+  severities: string[];
+  body_types: string[];
+  model_body_types: Record<string, string>;
+  usage: {
+    parts: Record<string, number>;
+    damage_types: Record<string, number>;
+    /** Free-text names from reports filed before the vocabulary existed. */
+    legacy_terms: Record<string, number>;
+    reports_counted: number;
+  };
+};
+
+export async function getTaxonomy(): Promise<Taxonomy> {
+  const res = await fetch(`${API_BASE_URL}/taxonomy`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load taxonomy (${res.status})`);
+  return res.json();
+}
+
 export async function getSystemInfo(): Promise<SystemInfo> {
   const res = await fetch(`${API_BASE_URL}/system/info`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load system info (${res.status})`);
