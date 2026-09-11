@@ -125,8 +125,17 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden =
 // for cars/SUVs (the SLK 3063 Z Vezel and the Civics in real data both fall
 // here), and a procedural van silhouette -- no free/realistic van model has
 // been sourced yet, so that stays an honest approximation, not a real model.
+// Only two real assets exist: the sedan GLB and a procedural van
+// silhouette, so the catalogue's finer body types collapse to those two.
+const VAN_BODY_TYPES = new Set(["Van", "MPV"]);
+
+// Legacy fallback only. Reports filed before the vehicle catalogue existed
+// carry no body_type, so their name is still pattern-matched -- which is
+// exactly the guesswork the catalogue replaces for everything new.
 const VAN_PATTERN = /\b(hiace|van|alphard|starex|caravelle|transporter|kombi|mpv)\b/i;
-function detectBodyType(vehicleText: string): "car" | "van" {
+
+function detectBodyType(vehicleText: string, statedBodyType?: string | null): "car" | "van" {
+  if (statedBodyType) return VAN_BODY_TYPES.has(statedBodyType) ? "van" : "car";
   return VAN_PATTERN.test(vehicleText) ? "van" : "car";
 }
 
@@ -432,14 +441,15 @@ interface Props {
   onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
   highlightedDamageIndex: number | null;
   vehicleName: string;
+  bodyType?: string | null;
 }
 
 const CAR_HOME: FocusState = { position: new THREE.Vector3(3.6, 2.4, 3.9), target: new THREE.Vector3(0, 0.55, 0) };
 const VAN_HOME: FocusState = { position: new THREE.Vector3(4.2, 2.6, 4.6), target: new THREE.Vector3(0, 0.55, 0) };
 
-export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedDamageIndex, vehicleName }: Props) {
+export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedDamageIndex, vehicleName, bodyType: statedBodyType }: Props) {
   const accent = useThemeColor("--border-glow", "#38bdf8");
-  const bodyType = detectBodyType(vehicleName);
+  const bodyType = detectBodyType(vehicleName, statedBodyType);
   const controlsRef = useRef<any>(null);
   const [focus, setFocus] = useState<FocusState | null>(null);
   const home = bodyType === "van" ? VAN_HOME : CAR_HOME;

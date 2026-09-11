@@ -26,6 +26,12 @@ from pathlib import Path
 from app.ai.client import available_api_keys, get_client
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
+from app.reports.taxonomy import (
+    BODY_TYPES,
+    CANONICAL_DAMAGE_TYPES,
+    CANONICAL_PARTS,
+    CANONICAL_SEVERITIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +96,57 @@ _REQUIRED_OUTPUT_FIELDS = [
 ]
 
 
+def _constrain(node: dict, values: list[str]) -> None:
+    """Applies an enum to a field that may be `str` or `anyOf[str, null]`.
+
+    Written to handle both shapes because the nullable fields render as
+    anyOf; a naive `node["enum"] = ...` silently does nothing there, which
+    would look like the constraint was applied when it wasn't.
+    """
+    if "anyOf" in node:
+        for branch in node["anyOf"]:
+            if branch.get("type") == "string":
+                branch["enum"] = values
+    elif node.get("type") == "string":
+        node["enum"] = values
+
+
 def _response_schema() -> dict:
+    """The schema handed to Gemini -- deliberately stricter than the Pydantic
+    model itself.
+
+    The model stays permissive so the six reports already on file, which
+    hold free-text parts like "Rear bumper fascia" and damage types like
+    "Grazed/slack/cut", keep parsing and rendering. Only NEW extractions are
+    constrained, so the vocabulary tightens going forward without
+    invalidating history.
+    """
     schema = SecurityIncidentDraft.model_json_schema()
     required = set(schema.get("required") or [])
     required.update(_REQUIRED_OUTPUT_FIELDS)
     schema["required"] = sorted(required)
+
+    defs = schema.get("$defs", {})
+    item = defs.get("DamageSummaryItem", {}).get("properties", {})
+    if "part" in item:
+        _constrain(item["part"], CANONICAL_PARTS)
+    if "damage_type" in item:
+        _constrain(item["damage_type"], CANONICAL_DAMAGE_TYPES)
+    if "severity" in item:
+        _constrain(item["severity"], CANONICAL_SEVERITIES)
+
+    top = schema.get("properties", {})
+    if "severity_level" in top:
+        _constrain(top["severity_level"], CANONICAL_SEVERITIES)
+    if "damaged_parts" in top:
+        items = top["damaged_parts"].get("items")
+        if isinstance(items, dict):
+            _constrain(items, CANONICAL_PARTS)
+
+    vehicle = defs.get("VehicleInfo", {}).get("properties", {})
+    if "body_type" in vehicle:
+        _constrain(vehicle["body_type"], BODY_TYPES)
+
     return schema
 
 

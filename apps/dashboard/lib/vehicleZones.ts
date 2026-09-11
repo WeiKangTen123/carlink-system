@@ -63,6 +63,88 @@ const CATEGORY_RULES: CategoryRule[] = [
 // Deliberately NOT matching nearside/offside: which physical side those
 // mean depends on whether the market is left- or right-hand drive, so
 // guessing would risk highlighting the wrong real panel.
+/** Canonical part name -> 3D zone.
+ *
+ * Gemini is now constrained to these exact names (see taxonomy.py, fed to
+ * the model as a schema enum), so for anything extracted from here on this
+ * is a direct lookup rather than pattern-matching. The regex rules below
+ * remain as the fallback for the six reports already on file, which hold
+ * free text like "Rear bumper fascia" and "Undercarriage".
+ *
+ * `null` means the part is real but the sedan model has no mesh for it --
+ * an honest gap. Those items still appear in the damage checklist, just
+ * without a marker, rather than being silently attached to the wrong panel.
+ */
+const CANONICAL_ZONES: Record<string, string | null> = {
+  "Front Bumper": "front_bumper",
+  "Front Grille": "front_grill",
+  "Bonnet": "bonnet",
+  "Left Headlamp": "l_headlamp",
+  "Right Headlamp": "r_headlamp",
+  "Front Windscreen": "windscreen",
+  "Left Front Fender": "l_fender",
+  "Right Front Fender": "r_fender",
+
+  "Left Front Door": "l_door_front",
+  "Right Front Door": "r_door_front",
+  "Left Rear Door": "l_door_rear",
+  "Right Rear Door": "r_door_rear",
+  "Left Front Door Glass": "l_door_glass_front",
+  "Right Front Door Glass": "r_door_glass_front",
+  "Left Rear Door Glass": "l_door_glass_rear",
+  "Right Rear Door Glass": "r_door_glass_rear",
+  "Left Wing Mirror": "l_mirror",
+  "Right Wing Mirror": "r_mirror",
+
+  "Rear Bumper": "rear_bumper",
+  "Boot Lid": "tailgate",
+  "Rear Windscreen": "rear_glass",
+  "Left Tail Lamp": "l_taillamp",
+  "Right Tail Lamp": "r_taillamp",
+  // The sedan's rear arch is part of the same fender mesh group.
+  "Left Rear Quarter Panel": "l_fender",
+  "Right Rear Quarter Panel": "r_fender",
+  "Rear Number Plate": "rear_bumper",
+
+  "Left Front Wheel": "l_wheel_front",
+  "Right Front Wheel": "r_wheel_front",
+  "Left Rear Wheel": "l_wheel_rear",
+  "Right Rear Wheel": "r_wheel_rear",
+
+  "Underbody / Chassis": "underbody",
+  "Left Sill / Rocker Panel": "underbody",
+  "Right Sill / Rocker Panel": "underbody",
+  "Rear Floor Panel": "underbody",
+  "Front Subframe": "underbody",
+  "Rear Subframe": "underbody",
+
+  // No mesh for these in the sedan model. Roof in particular was already
+  // failing silently: CATEGORY_RULES emits a "roof" zone key that no 3D
+  // zone implements, so roof damage produced no marker and no explanation.
+  "Roof": null,
+  "Radiator": null,
+  "Air Conditioning Condenser": null,
+  "Exhaust System": null,
+  "Fuel Tank": null,
+  "Suspension - Front": null,
+  "Suspension - Rear": null,
+  "Steering Assembly": null,
+  "Airbag System": null,
+  "Parking Sensor": "rear_bumper",
+  "Reversing Camera": "rear_bumper",
+  "Interior Trim": null,
+  "Seat": null,
+  "Dashboard": null,
+  "Other / Not Listed": null,
+};
+
+/** True when the name is a canonical part we deliberately have no mesh for,
+ * as opposed to one we simply failed to match. Lets the UI distinguish
+ * "no 3D geometry exists for this" from "couldn't interpret this". */
+export function isKnownUnmappedPart(part: string): boolean {
+  return part in CANONICAL_ZONES && CANONICAL_ZONES[part] === null;
+}
+
 const SIDE_LEFT = /\bleft\b|\bl\s*[/.]?\s*h\b|\blh\b/i;
 const SIDE_RIGHT = /\bright\b|\br\s*[/.]?\s*h\b|\brh\b/i;
 const DEPTH_REAR = /rear|\bback\b/i;
@@ -72,6 +154,13 @@ const DEPTH_REAR = /rear|\bback\b/i;
  * and why it's safe (only applied when the rest of the same report is
  * unambiguous about which side). */
 export function zoneKeyFor(part: string, sideHint?: "l" | "r"): string | null {
+  // Exact canonical match first -- for anything extracted since the
+  // vocabulary was introduced this is unambiguous, and it can't be
+  // mis-claimed by a broad regex the way "rear subframe" could be caught
+  // by the bumper rule.
+  const canonical = CANONICAL_ZONES[part.trim()];
+  if (canonical !== undefined) return canonical;
+
   const rule = CATEGORY_RULES.find((r) => r.test.test(part));
   if (!rule) return null;
   if (rule.zoneKey) return rule.zoneKey;

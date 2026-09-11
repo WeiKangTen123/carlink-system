@@ -80,6 +80,7 @@ export function CaseInspectionTab({
             onHotspotClick={onHotspotClick}
             highlightedDamageIndex={highlightedDamageIndex}
             vehicleName={vehicleName}
+            bodyType={report.data.vehicle_info?.body_type}
           />
         </div>
 

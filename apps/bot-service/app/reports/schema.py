@@ -33,8 +33,13 @@ class Witness(BaseModel):
 
 
 class DamageSummaryItem(BaseModel):
-    part: str = Field(description="Front Bumper, Rear Bumper, Left Door, Right Door, Bonnet/Hood, Boot/Trunk, Headlight, Taillight, Windshield, Side Mirror, Fender, Wheel/Rim, Tire, Roof, Chassis, Undercarriage")
-    damage_type: Optional[str] = Field(default=None, description="Scratch, Dent, Crack, Broken, Bent, Loose, Missing, Water damage, Structural damage -- only set if actually known")
+    # Deliberately no example list here. The allowed values are supplied to
+    # the model as a schema enum from taxonomy.CANONICAL_PARTS; examples in
+    # this description previously contradicted that list ("Boot/Trunk" vs
+    # "Boot Lid", "Headlight" vs "Left Headlamp"), giving the model two
+    # different answers to the same question.
+    part: str = Field(description="The damaged part. Choose the closest match from the allowed values; side is part of the name where it applies.")
+    damage_type: Optional[str] = Field(default=None, description="How the part is damaged -- choose from the allowed values. Pick the dominant type for compound damage and leave the nuance to the description. Only set if actually known.")
     severity: Optional[str] = Field(default=None, description="Minor, Moderate, or Severe -- only set if actually assessable from the photo/description")
     photo_reference: Optional[str] = Field(
         default=None,
@@ -75,6 +80,11 @@ class VehicleInfo(BaseModel):
     ownership_type: Optional[str] = None
     driver_name: Optional[str] = None
     driver_contact: Optional[str] = None
+    # Sedan / SUV / Van / ... -- decides which 3D model the dashboard shows.
+    # Left as a plain string rather than an enum on the model itself so
+    # reports stored before this field existed still parse; the enum is
+    # applied only to the schema handed to Gemini (see _response_schema).
+    body_type: Optional[str] = None
 
 
 class PoliceReportDetails(BaseModel):

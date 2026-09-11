@@ -96,6 +96,9 @@ export type VehicleInfo = {
   ownership_type?: string | null;
   driver_name?: string | null;
   driver_contact?: string | null;
+  /** Sedan / SUV / Van / ... -- from the vehicle catalogue in taxonomy.py.
+   * Absent on reports filed before the catalogue existed. */
+  body_type?: string | null;
 };
 
 export type PoliceReportDetails = {
