@@ -135,8 +135,29 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Interior Trim": null,
   "Seat": null,
   "Dashboard": null,
+
+  // Side-agnostic variants: the panel is identified, the side isn't.
+  // Deliberately no zone -- highlighting a left or right mesh would assert
+  // the one fact the model explicitly could not determine. The part still
+  // appears in the damage checklist, where a reviewer can set the side.
+  "Quarter Panel (side undetermined)": null,
+  "Front Fender (side undetermined)": null,
+  "Door (side undetermined)": null,
+  "Door Glass (side undetermined)": null,
+  "Headlamp (side undetermined)": null,
+  "Tail Lamp (side undetermined)": null,
+  "Wing Mirror (side undetermined)": null,
+  "Wheel (side undetermined)": null,
+  "Sill / Rocker Panel (side undetermined)": null,
+
   "Other / Not Listed": null,
 };
+
+/** True when a part names a panel but leaves the side open. The UI can then
+ * prompt for the side rather than just showing a missing marker. */
+export function isSideUndetermined(part: string): boolean {
+  return part.includes("(side undetermined)");
+}
 
 /** True when the name is a canonical part we deliberately have no mesh for,
  * as opposed to one we simply failed to match. Lets the UI distinguish

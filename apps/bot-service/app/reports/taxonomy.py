@@ -82,6 +82,30 @@ CANONICAL_PARTS: list[str] = [
     "Interior Trim",
     "Seat",
     "Dashboard",
+    # Side-agnostic variants.
+    #
+    # A close-up photo frequently shows WHICH panel is damaged without
+    # showing which side of the car it belongs to. With only Left/Right
+    # names available, the model's single honest option was
+    # "Other / Not Listed" -- observed on a real filing, where it wrote
+    # "likely a rear quarter panel, though the side is not specified" and
+    # then had to discard that identification entirely, producing two
+    # unnamed items and a blank 3D blueprint.
+    #
+    # Naming the part without asserting a side keeps the identification,
+    # keeps it aggregatable in parts analytics, and leaves a surveyor able
+    # to correct the side in the damage checklist. These map to no 3D mesh
+    # (see vehicleZones.ts) because picking a side to highlight would be
+    # inventing the one fact the model said it could not determine.
+    "Quarter Panel (side undetermined)",
+    "Front Fender (side undetermined)",
+    "Door (side undetermined)",
+    "Door Glass (side undetermined)",
+    "Headlamp (side undetermined)",
+    "Tail Lamp (side undetermined)",
+    "Wing Mirror (side undetermined)",
+    "Wheel (side undetermined)",
+    "Sill / Rocker Panel (side undetermined)",
     # Escape hatch. Without this the model is forced to mislabel anything
     # genuinely outside the list; with it, unusual damage stays honest and
     # the free-text detail survives in damage_type and the description.

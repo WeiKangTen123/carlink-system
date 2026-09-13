@@ -5,6 +5,7 @@ import type { DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { reviewDamageItemAction } from "@/app/reports/actions";
 import { severityClass } from "@/lib/caseFields";
+import { isSideUndetermined } from "@/lib/vehicleZones";
 
 interface Props {
   reportId: string;
@@ -138,6 +139,20 @@ export function CaseDamageTab({
                         )}
                         <div>
                           <strong>{item.part}</strong>
+                          {/* The AI identified the panel but not which side it
+                              was on, so no 3D marker is shown -- guessing a
+                              side would invent the one fact it couldn't
+                              determine. Flagged so a reviewer knows it's
+                              fixable rather than just missing. */}
+                          {isSideUndetermined(item.part) && (
+                            <span
+                              className="chip-severity moderate"
+                              style={{ fontSize: 9, marginLeft: 6 }}
+                              title="Side not identified from the photo — set it via Edit Report to place it on the blueprint"
+                            >
+                              set side
+                            </span>
+                          )}
                           {item.photo_reference && (
                             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Ref: {item.photo_reference}</div>
                           )}
