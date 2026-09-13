@@ -31,7 +31,14 @@ class Settings(BaseSettings):
     # cross-process limit would need a shared store (Redis, or the sqlite
     # db both containers already mount), not worth the added infra until
     # this is actually the bottleneck in practice.
-    gemini_min_call_interval_seconds: float = 10.0
+    # Minimum gap between consecutive calls, so a burst under the per-minute
+    # cap still arrives spaced rather than all at once.
+    gemini_min_call_interval_seconds: float = 4.0
+    # Hard ceiling per API key per rolling 60s, enforced across BOTH the API
+    # and bot processes (see ai/rate_limit.py). Deliberately under the free
+    # tier's 20/min for gemini-3-flash, because one draft can spend several
+    # requests walking the fallback chain.
+    gemini_max_requests_per_minute: int = 12
 
 
 settings = Settings()

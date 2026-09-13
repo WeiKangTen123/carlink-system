@@ -19,11 +19,11 @@ back to the reporter for confirmation before a PDF is generated.
 import base64
 import logging
 import mimetypes
-import threading
 import time
 from pathlib import Path
 
 from app.ai.client import available_api_keys, get_client
+from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
@@ -310,29 +310,14 @@ def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
     return draft
 
 
-# draft_report() is called via asyncio.to_thread() from three separate
-# entry points (Telegram, WhatsApp, and the dashboard's /reports/
-# analyze-photos), so concurrent calls land in real, distinct OS threads --
-# a plain threading.Lock (not asyncio.Lock, which only coordinates within
-# one event loop) is what actually serializes them. Holding the lock across
-# the sleep is deliberate: it makes every caller queue up and get released
-# one at a time, spaced by the interval, rather than all waking up at once
-# and racing each other on the next check.
-_rate_lock = threading.Lock()
-_last_call_started_at = 0.0
-
-
-def _wait_for_rate_limit() -> None:
-    global _last_call_started_at
-    with _rate_lock:
-        wait = settings.gemini_min_call_interval_seconds - (time.monotonic() - _last_call_started_at)
-        if wait > 0:
-            time.sleep(wait)
-        _last_call_started_at = time.monotonic()
+# draft_report() is called via asyncio.to_thread() from three separate entry
+# points (Telegram, WhatsApp, and the dashboard's /reports/analyze-photos),
+# so concurrent calls land in real, distinct OS threads. Serialising them is
+# now ai/rate_limit.py's job, which additionally coordinates across the two
+# processes that share one API key -- something module state never could.
 
 
 def draft_report(description: str, photo_paths: list[str], known_facts: dict | None = None) -> SecurityIncidentDraft:
-    _wait_for_rate_limit()
     input_parts = _build_input(description, photo_paths, known_facts)
     schema = _response_schema()
 
@@ -348,37 +333,51 @@ def draft_report(description: str, photo_paths: list[str], known_facts: dict | N
     for key_index, api_key in enumerate(api_keys):
         client = get_client(api_key)
         for model_id in _model_chain():
-            try:
-                interaction = client.interactions.create(
-                    model=model_id,
-                    system_instruction=SYSTEM_PROMPT,
-                    input=input_parts,
-                    response_format={
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": schema,
-                    },
-                    # Without this, a stalled call hangs indefinitely (hit
-                    # this directly while testing model candidates locally
-                    # -- one model call sat for 100+s with no response and
-                    # no error) -- ties up a request/worker for no benefit
-                    # since the whole point of the chain is to keep trying
-                    # other models, not wait forever on one.
-                    timeout=45.0,
-                )
-                draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
-                draft = _strip_placeholder_people(draft)
-                draft = _sanitize_damage_summary(draft)
-                return _backfill_damage_summary(draft)
-            except Exception as exc:
-                # Covers rate limits, quota exhaustion, and other transient
-                # failures on this model -- move to the next one in the
-                # chain, then (outer loop) to the next API key.
-                logger.warning(
-                    "Gemini model %r failed on key #%d, trying next: %s",
-                    model_id, key_index + 1, exc,
-                )
-                last_error = exc
+            # Every attempt takes a slot, not just the first. Previously the
+            # gate ran once before these loops, so a draft that fell through
+            # the chain fired up to five requests back-to-back -- which is
+            # what tripped the quota during testing.
+            acquire(api_key)
+            # One retry per model on a 429, using the delay the server itself
+            # supplies. Falling straight through to the next model is
+            # pointless: it draws on the same per-key quota and 429s too.
+            for attempt in (1, 2):
+                try:
+                    interaction = client.interactions.create(
+                        model=model_id,
+                        system_instruction=SYSTEM_PROMPT,
+                        input=input_parts,
+                        response_format={
+                            "type": "text",
+                            "mime_type": "application/json",
+                            "schema": schema,
+                        },
+                        # Without this, a stalled call hangs indefinitely
+                        # (hit directly while testing model candidates --
+                        # one call sat for 100+s with no response and no
+                        # error), tying up a worker for no benefit since the
+                        # point of the chain is to keep trying other models.
+                        timeout=45.0,
+                    )
+                    draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
+                    draft = _strip_placeholder_people(draft)
+                    draft = _sanitize_damage_summary(draft)
+                    return _backfill_damage_summary(draft)
+                except Exception as exc:
+                    last_error = exc
+                    delay = retry_after_seconds(exc) if is_rate_limit_error(exc) else None
+                    if delay is not None and attempt == 1:
+                        logger.warning(
+                            "Gemini model %r rate-limited on key #%d; waiting %.1fs as instructed",
+                            model_id, key_index + 1, delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    logger.warning(
+                        "Gemini model %r failed on key #%d, trying next: %s",
+                        model_id, key_index + 1, exc,
+                    )
+                    break
 
     raise RuntimeError(
         f"All Gemini fallback models ({', '.join(_model_chain())}) failed "

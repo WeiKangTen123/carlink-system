@@ -10,6 +10,8 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
+from app.ai.client import available_api_keys
+from app.ai.rate_limit import estimate_wait
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
@@ -139,7 +141,22 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def draft_and_reply(update: Update, session, description: str) -> None:
-    await update.message.reply_text("Drafting your report...")
+    # If the key's per-minute window is full this call will sit and wait, so
+    # say so. Otherwise the reporter watches a silent "Drafting your
+    # report..." for most of a minute with no idea anything is happening.
+    def _queued_seconds() -> float:
+        # Must ask about the SAME key draft_report will try first, or the
+        # estimate describes a window nothing is about to use.
+        keys = available_api_keys()
+        return estimate_wait(keys[0] if keys else None)
+
+    queued = await asyncio.to_thread(_queued_seconds)
+    if queued >= 5:
+        await update.message.reply_text(
+            f"Drafting your report... (busy right now -- about {round(queued)}s in the queue)"
+        )
+    else:
+        await update.message.reply_text("Drafting your report...")
     try:
         # build_draft() makes a blocking Gemini network call (up to 45s per
         # model, x5 fallback models worst case) -- called directly (as this
