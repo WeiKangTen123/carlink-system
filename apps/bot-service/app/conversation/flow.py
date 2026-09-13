@@ -13,12 +13,73 @@ from typing import Optional
 
 from app.ai.extraction import draft_report
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo
+from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES
 
 
 @dataclass
 class DraftResult:
     draft: SecurityIncidentDraft
     summary_text: str
+
+
+def _damage_vocabulary() -> re.Pattern:
+    """Words that mean a reporter's message is about the damage itself, built
+    from the same vocabulary the model chooses parts and damage types from,
+    so a new canonical part is covered without touching this list."""
+    words = {
+        "damage", "damaged", "dent", "dented", "scratch", "scratched", "scrape", "scraped",
+        "broken", "crack", "cracked", "severity", "part", "parts", "left", "right", "side", "panel",
+    }
+    # Words that appear in part names but do not, on their own, mean the
+    # message is about damage: "number"/"plate" (a plate correction),
+    # "front"/"rear" (a location: "at the rear carpark"), and the generic
+    # tails of a few part names.
+    skip = {"side", "undetermined", "not", "listed", "other", "and", "the",
+            "number", "plate", "front", "rear", "system", "assembly", "trim"}
+    for name in (*CANONICAL_PARTS, *CANONICAL_DAMAGE_TYPES, *CANONICAL_SEVERITIES):
+        for word in re.findall(r"[a-z]+", name.lower()):
+            if len(word) > 2 and word not in skip:
+                words.add(word)
+    return re.compile(r"\b(" + "|".join(sorted(map(re.escape, words))) + r")\b", re.IGNORECASE)
+
+
+_DAMAGE_WORDS = _damage_vocabulary()
+
+
+def edit_mentions_damage(text: str) -> bool:
+    return bool(_DAMAGE_WORDS.search(text or ""))
+
+
+def _carry_over_damage(draft: SecurityIncidentDraft, previous: SecurityIncidentDraft, latest_edit: str) -> SecurityIncidentDraft:
+    """Keeps the photo-derived findings stable across a redraft.
+
+    The photos do not change between drafts, but every redraft is a fresh
+    model call, and on a real filing a time-only correction ("16:45 not
+    08:00") turned two parts with photo references, bounding boxes and
+    confidence into one part with none of them, and moved the severity
+    from Moderate to Severe. Reproduced 3 of 3 locally. So unless the
+    reporter's latest message is actually about the damage, the previous
+    findings are carried over whole; when it is, the model's revised list
+    stands and only metadata it left blank is filled from the matching
+    previous item.
+    """
+    if not previous.damage_summary:
+        return draft
+    if not edit_mentions_damage(latest_edit):
+        draft.damage_summary = [item.model_copy(deep=True) for item in previous.damage_summary]
+        draft.damaged_parts = list(previous.damaged_parts or []) or [i.part for i in previous.damage_summary]
+        if previous.severity_level:
+            draft.severity_level = previous.severity_level
+        return draft
+    by_part = {item.part: item for item in previous.damage_summary}
+    for item in draft.damage_summary or []:
+        prev = by_part.get(item.part)
+        if prev is None:
+            continue
+        for field_name in ("damage_type", "severity", "photo_reference", "bbox_2d", "ai_confidence"):
+            if getattr(item, field_name) in (None, "", []) and getattr(prev, field_name) not in (None, "", []):
+                setattr(item, field_name, getattr(prev, field_name))
+    return draft
 
 
 def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
@@ -42,7 +103,20 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
                 "vehicle plate": session.vehicle_plate,
                 "reporter name": session.reporter_name,
             })
+            # The findings from the previous draft, so a damage-related
+            # correction is applied TO them rather than re-derived from a
+            # blank slate (see _carry_over_damage for the non-damage case).
+            previous = getattr(session, "draft", None)
+            if previous is not None and previous.damage_summary:
+                known_facts["damage already identified from the photos"] = "; ".join(
+                    item.part + (f" ({item.damage_type}, {item.severity})" if item.damage_type or item.severity else "")
+                    for item in previous.damage_summary
+                )
+                if previous.severity_level:
+                    known_facts["overall severity"] = previous.severity_level
     draft = draft_report(description, photo_paths, known_facts or None)
+    if session is not None and session.pending_edits and getattr(session, "draft", None) is not None:
+        draft = _carry_over_damage(draft, session.draft, session.pending_edits[-1])
     # Merging the reporter's typed template answers with the AI's draft.
     #
     # Two failure modes have to be avoided at once, and each earlier attempt

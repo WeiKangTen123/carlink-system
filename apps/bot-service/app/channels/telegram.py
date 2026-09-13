@@ -113,8 +113,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await finalize_report(update, session, chat_id)
             return
         session.pending_edits.append(text)
-        await update.message.reply_text("Redrafting with your changes...")
-        await draft_and_reply(update, session, combined_description(session))
+        await draft_and_reply(update, session, combined_description(session), redrafting=True)
         return
 
     if not session.photo_paths:
@@ -141,7 +140,11 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await draft_and_reply(update, session, description)
 
 
-async def draft_and_reply(update: Update, session, description: str) -> None:
+async def draft_and_reply(update: Update, session, description: str, redrafting: bool = False) -> None:
+    # One status line, not two: the redraft path used to send "Redrafting
+    # with your changes..." and then this sent "Drafting your report..."
+    # right after it.
+    notice = "Redrafting with your changes..." if redrafting else "Drafting your report..."
     # If the key's per-minute window is full this call will sit and wait, so
     # say so. Otherwise the reporter watches a silent "Drafting your
     # report..." for most of a minute with no idea anything is happening.
@@ -154,10 +157,10 @@ async def draft_and_reply(update: Update, session, description: str) -> None:
     queued = await asyncio.to_thread(_queued_seconds)
     if queued >= 5:
         await update.message.reply_text(
-            f"Drafting your report... (busy right now -- about {round(queued)}s in the queue)"
+            f"{notice} (busy right now -- about {round(queued)}s in the queue)"
         )
     else:
-        await update.message.reply_text("Drafting your report...")
+        await update.message.reply_text(notice)
     try:
         # build_draft() makes a blocking Gemini network call (up to 45s per
         # model, x5 fallback models worst case) -- called directly (as this

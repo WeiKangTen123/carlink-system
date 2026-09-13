@@ -374,6 +374,11 @@ def draft_report(description: str, photo_paths: list[str], known_facts: dict | N
                         timeout=45.0,
                     )
                     draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
+                    # Which model actually answered. The fallbacks return
+                    # visibly thinner analyses (no photo reference, bounding
+                    # box or confidence), and without this line a thin draft
+                    # in production is indistinguishable from a bug.
+                    logger.info("Gemini draft produced by %r on key #%d", model_id, key_index + 1)
                     draft = _strip_placeholder_people(draft)
                     draft = _sanitize_damage_summary(draft)
                     return _backfill_damage_summary(draft)
