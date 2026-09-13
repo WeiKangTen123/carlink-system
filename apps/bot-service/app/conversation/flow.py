@@ -22,7 +22,20 @@ class DraftResult:
 
 
 def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
-    draft = draft_report(description, photo_paths)
+    # Hand the model what the reporter already told us, so a partial
+    # correction ("the time was 16:45 not 08:00") has something to be applied
+    # TO. Only on a redraft: on the first pass these values are what the
+    # template just supplied, and repeating them back as context would invite
+    # the model to treat its own echo as corroboration.
+    known_facts = None
+    if session is not None and session.pending_edits:
+        known_facts = {
+            "incident date and time": session.incident_datetime,
+            "location": session.location,
+            "vehicle plate": session.vehicle_plate,
+            "reporter name": session.reporter_name,
+        }
+    draft = draft_report(description, photo_paths, known_facts)
     # Merging the reporter's typed template answers with the AI's draft.
     #
     # Two failure modes have to be avoided at once, and each earlier attempt

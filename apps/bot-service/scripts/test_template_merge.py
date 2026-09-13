@@ -49,7 +49,7 @@ def _ai(**fields):
     """Stands in for draft_report. Defaults mimic the normal case: the model
     returns nothing for reporter identity, because it cannot see a name or a
     phone number in a photo."""
-    def _call(description, photo_paths):
+    def _call(description, photo_paths, known_facts=None):
         base = dict(
             description="Rear-end collision.",
             category=["Vehicle Collision or Damage"],

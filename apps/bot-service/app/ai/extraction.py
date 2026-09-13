@@ -175,8 +175,29 @@ def _model_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()]
 
 
-def _build_input(description: str, photo_paths: list[str]) -> list[dict]:
-    parts: list[dict] = [{"type": "text", "text": f"Reporter's description:\n{description}"}]
+def _build_input(description: str, photo_paths: list[str], known_facts: dict | None = None) -> list[dict]:
+    parts: list[dict] = []
+    if known_facts:
+        # Facts the reporter already gave, passed so a PARTIAL correction can
+        # be applied to them. Without this the model only ever saw the
+        # description plus the reporter's edits: told "the time was 16:45 not
+        # 08:00" it had no date to attach, correctly refused to invent one,
+        # and returned null -- so the correction silently did nothing and the
+        # stale value survived. Kept as its own labelled block, not folded
+        # into the description, so it is context to reconcile rather than
+        # narrative to repeat back.
+        established = "\n".join(f"- {k}: {v}" for k, v in known_facts.items() if v)
+        if established:
+            parts.append({
+                "type": "text",
+                "text": (
+                    "Already established by the reporter (treat as current values). "
+                    "Keep each one exactly as-is UNLESS the reporter's message below corrects it; "
+                    "if a message corrects only part of a value, such as the time within a date and "
+                    "time, change only that part and keep the rest:\n" + established
+                ),
+            })
+    parts.append({"type": "text", "text": f"Reporter's description:\n{description}"})
     for i, path in enumerate(photo_paths, start=1):
         media_type, _ = mimetypes.guess_type(path)
         media_type = media_type or "image/jpeg"
@@ -310,9 +331,9 @@ def _wait_for_rate_limit() -> None:
         _last_call_started_at = time.monotonic()
 
 
-def draft_report(description: str, photo_paths: list[str]) -> SecurityIncidentDraft:
+def draft_report(description: str, photo_paths: list[str], known_facts: dict | None = None) -> SecurityIncidentDraft:
     _wait_for_rate_limit()
-    input_parts = _build_input(description, photo_paths)
+    input_parts = _build_input(description, photo_paths, known_facts)
     schema = _response_schema()
 
     # Two nested fallbacks. Inner: each model in the chain, since they have
