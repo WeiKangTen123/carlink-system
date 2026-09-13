@@ -182,45 +182,120 @@ def parse_template_reply(text: str) -> Optional[dict]:
     }
 
 
-def summarize(draft: SecurityIncidentDraft) -> str:
-    lines = [
-        "Here's the draft -- reply 'confirm' to generate the PDF, or tell me what to change.",
-        "",
-    ]
-    if draft.reporter_name or draft.reporter_role or draft.reporter_contact:
-        reporter_line = draft.reporter_name or "Not specified"
-        if draft.reporter_role:
-            reporter_line += f" ({draft.reporter_role})"
-        if draft.reporter_contact:
-            reporter_line += f" -- {draft.reporter_contact}"
-        lines.append(f"Reporter: 👤 {reporter_line}")
-    if draft.vehicle_info and draft.vehicle_info.plate_number:
-        lines.append(f"Vehicle Plate: 🚘 {draft.vehicle_info.plate_number}")
-    lines.extend([
-        f"Location: {draft.location or 'Not specified'}",
-        f"Date/time: {draft.incident_datetime or 'Not specified'}",
-        f"Category: {', '.join(draft.category) or 'Not specified'}",
-    ])
-    if draft.accident_type:
-        lines.append(f"Accident Type: 🚗 {draft.accident_type}")
-    if draft.damaged_parts:
-        lines.append(f"Damaged Parts: 🛠️ {', '.join(draft.damaged_parts)}")
-    if draft.severity_level:
-        lines.append(f"Severity: ⚠️ {draft.severity_level}")
-    if draft.vehicle_details:
-        lines.append(f"Vehicle: 🚘 {draft.vehicle_details}")
+# Telegram caps a message at 4096 characters. A real assessment can carry 18
+# damage lines plus a long AI description, so the budget is enforced rather
+# than hoped for -- and it's the DESCRIPTION that gets trimmed, never the
+# damage list, because the parts list is the thing the reporter is being
+# asked to verify.
+_MAX_MESSAGE_CHARS = 3900
 
-    lines.append(f"Description: {draft.description}")
+_SEVERITY_DOT = {"severe": "🔴", "moderate": "🟠", "minor": "🟢"}
+
+
+def _severity_dot(severity: Optional[str]) -> str:
+    """Colour-codes a part by severity, matching the dashboard's severity
+    colours. Unrated deliberately gets a neutral dot rather than green --
+    "nobody has assessed this" is not the same as "it's fine"."""
+    return _SEVERITY_DOT.get((severity or "").strip().lower(), "⚪")
+
+
+def _damage_lines(draft: SecurityIncidentDraft) -> list[str]:
+    """One line per damaged part.
+
+    Uses damage_summary rather than the bare damaged_parts name list, so the
+    severity and damage type the AI already produced are actually shown --
+    previously both were discarded into a single comma-separated run of
+    names, which is the hardest possible shape to check against a vehicle.
+    """
+    items = draft.damage_summary or []
+    if items:
+        return [
+            f"{_severity_dot(i.severity)} {i.part}" + (f" · {i.damage_type}" if i.damage_type else "")
+            for i in items
+        ]
+    # Older drafts (and any extraction that returned only names) still render.
+    return [f"⚪ {p}" for p in (draft.damaged_parts or [])]
+
+
+def summarize(draft: SecurityIncidentDraft) -> str:
+    """Draft summary for the reporter to check before confirming.
+
+    Grouped into sections with *bold* headers -- rendered by Telegram with
+    parse_mode="Markdown" and by WhatsApp/Twilio natively, so one function
+    serves both channels. Previously this was a flat run of "Label: value"
+    lines sent as plain text, with the long description wedged between the
+    facts and the call-to-action at the very top where it scrolled away.
+
+    Order is deliberate: what the vehicle is and how bad it is first, then
+    the damage list to check, then context, then the prose, then the action.
+    """
+    vehicle_bits = [b for b in [draft.vehicle_info.make if draft.vehicle_info else None,
+                                draft.vehicle_info.model if draft.vehicle_info else None] if b]
+    vehicle_name = " ".join(vehicle_bits) or draft.vehicle_details
+    plate = draft.vehicle_info.plate_number if draft.vehicle_info else None
+
+    # Only pair the plate with a real make/model. A generic "Vehicle" beside
+    # a genuine plate number reads as though the make is unknown-but-stated.
+    if plate and vehicle_name:
+        head = f"🚗 *{plate}* · {vehicle_name}"
+    elif plate:
+        head = f"🚗 *{plate}*"
+    else:
+        head = f"🚗 *{vehicle_name or 'Vehicle'}*"
+    lines = [head]
+
+    damage = _damage_lines(draft)
+    if draft.severity_level or damage:
+        count = f"{len(damage)} damaged part{'' if len(damage) == 1 else 's'}" if damage else "no parts listed"
+        sev = f"{_severity_dot(draft.severity_level)} *{draft.severity_level.upper()}*" if draft.severity_level else "⚪ *UNRATED*"
+        lines.append(f"{sev} · {count}")
+
+    if damage:
+        lines += ["", "🔧 *Damage Found*", *damage]
+
+    incident = []
+    if draft.accident_type:
+        incident.append(draft.accident_type)
+    where_when = " · ".join(b for b in [draft.location, draft.incident_datetime] if b)
+    if where_when:
+        incident.append(where_when)
+    incident.append(f"Police report: {'Yes' if draft.reported_to_authorities else 'No'}")
+    lines += ["", "📍 *Incident*", *incident]
+
+    reporter = []
+    if draft.reporter_name or draft.reporter_role:
+        reporter.append(" · ".join(b for b in [draft.reporter_name, draft.reporter_role] if b))
+    if draft.reporter_contact:
+        reporter.append(f"📞 {draft.reporter_contact}")
+    if reporter:
+        lines += ["", "👤 *Reporter*", *reporter]
 
     if draft.people_involved:
-        lines.append("People involved: " + "; ".join(p.name for p in draft.people_involved))
+        lines += ["", "👥 *People Involved*", *[f"• {p.name}" + (f" ({p.role})" if p.role else "") for p in draft.people_involved]]
     if draft.witnesses:
-        lines.append("Witnesses: " + "; ".join(w.name for w in draft.witnesses))
+        lines += ["", "👁 *Witnesses*", *[f"• {w.name}" for w in draft.witnesses]]
     if draft.immediate_actions:
-        lines.append(f"Immediate actions: {draft.immediate_actions}")
-    lines.append(f"Reported to authorities: {'Yes' if draft.reported_to_authorities else 'No'}")
-    return "\n".join(lines)
+        lines += ["", "🚨 *Immediate Actions*", draft.immediate_actions]
 
+    # Named rather than silently omitted: a blank location is something the
+    # reporter can fix in their next message, but only if they notice it.
+    missing = [label for label, value in
+               [("location", draft.location), ("date/time", draft.incident_datetime)] if not value]
+    if missing:
+        lines += ["", f"⚠️ *Missing:* {', '.join(missing)} — tell me and I'll add it"]
+
+    footer = ["", "━━━━━━━━━━━━━━", "✅ Reply *confirm* to generate the PDF",
+              "✏️ Or tell me what to change"]
+
+    fixed = "\n".join(lines + footer)
+    description = draft.description or ""
+    room = _MAX_MESSAGE_CHARS - len(fixed) - len("\n\n📝 *What Happened*\n")
+    if description and room > 120:
+        if len(description) > room:
+            description = description[: room - 40].rstrip() + "… _(full text in the PDF)_"
+        lines += ["", "📝 *What Happened*", description]
+
+    return "\n".join(lines + footer)
 
 
 def combined_description(session) -> str:

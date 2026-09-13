@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
@@ -156,7 +157,17 @@ async def draft_and_reply(update: Update, session, description: str) -> None:
         return
     session.draft = result.draft
     session.stage = Stage.AWAITING_CONFIRMATION
-    await update.message.reply_text(result.summary_text)
+    # Markdown is an enhancement, never a reason to lose the message. A stray
+    # "*" or "_" in an AI-written description or a typed name makes Telegram
+    # reject the WHOLE send, so a parse failure falls back to plain text
+    # rather than leaving the reporter staring at nothing. Escaping instead
+    # isn't an option here: summarize() is shared with WhatsApp, where the
+    # backslashes would show up literally.
+    try:
+        await update.message.reply_text(result.summary_text, parse_mode="Markdown")
+    except BadRequest:
+        logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
+        await update.message.reply_text(result.summary_text)
 
 
 async def finalize_report(update: Update, session, chat_id: str) -> None:
