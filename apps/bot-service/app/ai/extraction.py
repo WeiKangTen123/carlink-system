@@ -57,9 +57,13 @@ SYSTEM_PROMPT = (
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
     "4. Leave 'witnesses' and 'people_involved' as empty arrays [] unless a specific person is actually named or clearly described (e.g. \"my colleague Ahmad saw it happen\"). The reporter describing their own incident is not a witness or a person_involved entry -- do not create one for them. Never add a placeholder entry like 'Reporter', 'Unknown', or 'Unspecified' just to have something in the array; an empty array is the correct, honest answer when no one else is actually mentioned.\n"
-    "5. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
-    "6. Only fill in 'recommendations' fields when there is a genuine, specific basis for the suggestion from the described damage -- do not fabricate generic repair advice.\n"
-    "7. Only set 'ai_analysis.confidence_score' if you can give a genuine confidence estimate; otherwise leave it null. Do not output a placeholder percentage.\n"
+    "5. Set 'location' to where the incident happened and 'incident_datetime' to when, but ONLY as actually "
+    "stated by the reporter -- never inferred from scenery in a photo, and never invented. If the reporter "
+    "corrects either one in a later message (e.g. \"actually it was Jurong West\"), the corrected value is "
+    "the one to use. Leave either null when it genuinely was not given.\n"
+    "6. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
+    "7. Only fill in 'recommendations' fields when there is a genuine, specific basis for the suggestion from the described damage -- do not fabricate generic repair advice.\n"
+    "8. Only set 'ai_analysis.confidence_score' if you can give a genuine confidence estimate; otherwise leave it null. Do not output a placeholder percentage.\n"
     "Never fabricate names, phone numbers, plate numbers, VINs, claim numbers, timestamps, or confidence scores "
     "to make the report look more complete than the actual evidence supports."
 )
@@ -93,6 +97,16 @@ _REQUIRED_OUTPUT_FIELDS = [
     "severity_level",
     "accident_type",
     "vehicle_info",
+    # These two matter for corrections, not just completeness. A reporter who
+    # follows up with "actually the location was Jurong West" only has that
+    # honoured if the model EMITS location on the redraft -- otherwise
+    # build_draft() falls back to the stale template answer and the correction
+    # is silently dropped. Measured across four identical calls the model
+    # emitted between 9 and 14 of the 33 keys: location happened to appear
+    # every time, incident_datetime appeared in none, so a date/time
+    # correction could never win.
+    "location",
+    "incident_datetime",
 ]
 
 
