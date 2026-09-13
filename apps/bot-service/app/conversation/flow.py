@@ -23,36 +23,60 @@ class DraftResult:
 
 def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
     draft = draft_report(description, photo_paths)
-    # Only pin these fields to the template's original answers on the FIRST
-    # draft (pending_edits still empty) -- past that, the reporter is in the
-    # free-text edit loop (handle_text's AWAITING_CONFIRMATION branch), and
-    # combined_description() already feeds every edit back into the AI on
-    # each redraft. Applying this override unconditionally meant a genuine
-    # correction sent as a later chat message (e.g. "the plate is actually
-    # ABC1234") got extracted correctly by the AI and then immediately
-    # discarded here, silently reverting to the stale first-draft value --
-    # confirmed live: session.vehicle_plate (and the six fields below it)
-    # is set exactly once, from the initial template reply, and nothing
-    # else in the conversation flow ever updates it.
-    if session is not None and not session.pending_edits:
-        # User-stated ground truth (from the template) always wins over
-        # anything the AI guessed for these fields -- category, damaged
-        # parts, and severity stay AI-derived, never overridden here.
-        if session.location:
-            draft.location = session.location
-        if session.incident_datetime:
-            draft.incident_datetime = session.incident_datetime
-        draft.reported_to_authorities = session.reported_to_authorities
-        if session.reporter_name:
-            draft.reporter_name = session.reporter_name
-        if session.reporter_role:
-            draft.reporter_role = session.reporter_role
-        if session.reporter_contact:
-            draft.reporter_contact = session.reporter_contact
+    # Merging the reporter's typed template answers with the AI's draft.
+    #
+    # Two failure modes have to be avoided at once, and each earlier attempt
+    # traded one for the other:
+    #
+    #  1. Overriding unconditionally meant a genuine correction sent as a
+    #     later chat message ("the plate is actually ABC1234") was extracted
+    #     correctly by the AI and then immediately discarded, silently
+    #     reverting to the stale first-draft value.
+    #  2. Pinning only on the first draft (the fix for 1) meant ANY follow-up
+    #     message dropped every template field, because the redraft comes
+    #     from an AI that has never seen the reporter's name, role or phone
+    #     number -- those exist only in the template. Confirmed on a real
+    #     filed report: name, role, contact, location and date/time were all
+    #     stored empty, and the typed plate was replaced by one the model
+    #     read off the photo.
+    #
+    # One rule covers both: the template wins outright on the FIRST draft,
+    # where it is freshly-stated ground truth; on any redraft it only fills
+    # what the AI left empty, so a real correction still wins while nothing
+    # the AI cannot know gets silently lost.
+    if session is not None:
+        first_draft = not session.pending_edits
+
+        def keep(field: str, value) -> None:
+            if not value:
+                return
+            if first_draft or not getattr(draft, field, None):
+                setattr(draft, field, value)
+
+        keep("location", session.location)
+        keep("incident_datetime", session.incident_datetime)
+        # The AI can never see these in a photo, so "the AI left it empty"
+        # is their normal state on every redraft -- which is exactly why
+        # they were the fields that vanished.
+        keep("reporter_name", session.reporter_name)
+        keep("reporter_role", session.reporter_role)
+        keep("reporter_contact", session.reporter_contact)
+
+        # A bool has no empty state to fall back on, so it is pinned on the
+        # first draft only. Later changes still reach the model, because
+        # combined_description() feeds every edit back in on each redraft.
+        if first_draft:
+            draft.reported_to_authorities = session.reported_to_authorities
+
         if session.vehicle_plate:
             if draft.vehicle_info is None:
                 draft.vehicle_info = VehicleInfo()
-            draft.vehicle_info.plate_number = session.vehicle_plate
+            # The person standing at the vehicle knows its plate better than
+            # a model reading a possibly-obscured or adjacent car, so the
+            # typed value wins on the first draft.
+            if first_draft or not draft.vehicle_info.plate_number:
+                draft.vehicle_info.plate_number = session.vehicle_plate
+
     return DraftResult(draft=draft, summary_text=summarize(draft))
 
 
