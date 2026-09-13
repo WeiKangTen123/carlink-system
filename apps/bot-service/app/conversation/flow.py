@@ -27,15 +27,22 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
     # TO. Only on a redraft: on the first pass these values are what the
     # template just supplied, and repeating them back as context would invite
     # the model to treat its own echo as corroboration.
-    known_facts = None
-    if session is not None and session.pending_edits:
-        known_facts = {
-            "incident date and time": session.incident_datetime,
-            "location": session.location,
-            "vehicle plate": session.vehicle_plate,
-            "reporter name": session.reporter_name,
-        }
-    draft = draft_report(description, photo_paths, known_facts)
+    known_facts: dict = {}
+    if session is not None:
+        # The side is the one fact the photo cannot be trusted for (see the
+        # prompt), so it goes in on the first draft too: the person at the
+        # car stated it, and nothing in the photo can corroborate or
+        # contradict it.
+        if getattr(session, "damaged_side", None):
+            known_facts["side of the vehicle the damage is on (stated by the reporter at the car)"] = session.damaged_side
+        if session.pending_edits:
+            known_facts.update({
+                "incident date and time": session.incident_datetime,
+                "location": session.location,
+                "vehicle plate": session.vehicle_plate,
+                "reporter name": session.reporter_name,
+            })
+    draft = draft_report(description, photo_paths, known_facts or None)
     # Merging the reporter's typed template answers with the AI's draft.
     #
     # Two failure modes have to be avoided at once, and each earlier attempt
@@ -108,6 +115,7 @@ TEMPLATE_PROMPT = (
     "Contact Number: \n\n"
     "🚘 *Vehicle & Incident*\n"
     "Vehicle Plate: \n"
+    "Damaged Side (Left / Right / Front / Rear): \n"
     "Location: \n"
     "Date/Time: {now}\n"
     "Description: \n\n"
@@ -135,6 +143,8 @@ _FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("role", re.compile(r"^\s*role\s*/?\s*position\s*:\s*(.*)$", re.IGNORECASE)),
     ("contact", re.compile(r"^\s*contact\s*number\s*:\s*(.*)$", re.IGNORECASE)),
     ("plate", re.compile(r"^\s*vehicle\s*plate\s*:\s*(.*)$", re.IGNORECASE)),
+    # Optional: templates issued before this field existed still parse.
+    ("side", re.compile(r"^\s*damaged\s*side[^:]*:\s*(.*)$", re.IGNORECASE)),
     ("location", re.compile(r"^\s*location\s*:\s*(.*)$", re.IGNORECASE)),
     ("datetime", re.compile(r"^\s*date\s*/?\s*time\s*:\s*(.*)$", re.IGNORECASE)),
     ("description", re.compile(r"^\s*description\s*:\s*(.*)$", re.IGNORECASE)),
@@ -143,7 +153,7 @@ _FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 
 def parse_template_reply(text: str) -> Optional[dict]:
-    """Pulls the 8 reporter-filled fields out of a reply to build_template_prompt().
+    """Pulls the reporter-filled fields out of a reply to build_template_prompt().
     Returns None (rather than a best-effort partial parse) if the reply doesn't
     contain all 8 field labels, so the caller can fall back to treating the
     whole message as a free-text description -- same bar the old sequential
@@ -176,11 +186,11 @@ def parse_template_reply(text: str) -> Optional[dict]:
             if current_field == "description":
                 values["description"].append(line.strip())
 
-    if not all(key in values for key, _ in _FIELD_PATTERNS):
+    if not all(key in values for key, _ in _FIELD_PATTERNS if key != "side"):
         return None
 
     def get(key: str) -> str:
-        return " ".join(values[key]).strip()
+        return " ".join(values.get(key, [])).strip()
 
     reported_raw = get("reported").splitlines()[0].strip().lower() if get("reported") else ""
     return {
@@ -188,6 +198,7 @@ def parse_template_reply(text: str) -> Optional[dict]:
         "reporter_role": get("role") or None,
         "reporter_contact": get("contact") or None,
         "vehicle_plate": get("plate") or None,
+        "damaged_side": get("side") or None,
         "location": get("location") or None,
         "incident_datetime": get("datetime") or None,
         "description": get("description"),
@@ -296,6 +307,17 @@ def summarize(draft: SecurityIncidentDraft) -> str:
                [("location", draft.location), ("date/time", draft.incident_datetime)] if not value]
     if missing:
         lines += ["", f"⚠️ *Missing:* {', '.join(missing)} — tell me and I'll add it"]
+
+    # A part the model could name but not place left/right gets no 3D
+    # marker on the dashboard. The reporter is standing at the car and knows
+    # the side instantly, so ask -- their reply comes back through the
+    # redraft, where the model applies a stated side reliably.
+    unsided = sorted({item.part.replace(" (side undetermined)", "")
+                      for item in (draft.damage_summary or [])
+                      if "(side undetermined)" in item.part})
+    if unsided:
+        lines += ["", f"❓ *Which side?* {', '.join(unsided)} — reply e.g. "
+                      "\"the damage is on the right side\" and I'll place it"]
 
     footer = ["", "━━━━━━━━━━━━━━", "✅ Reply *confirm* to generate the PDF",
               "✏️ Or tell me what to change"]

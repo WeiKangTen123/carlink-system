@@ -58,6 +58,20 @@ SYSTEM_PROMPT = (
     "matching '(side undetermined)' option rather than 'Other / Not Listed' -- naming the part is more "
     "useful than discarding it, and a reviewer can set the side later. Reserve 'Other / Not Listed' for "
     "damage that genuinely matches no listed part.\n"
+    # Left/right is the reporter's call, not the model's. Tested on a real
+    # close-up: left to infer it, the model bailed to "(side undetermined)"
+    # on 2 of 3 runs and named the WRONG side on the third; nudged with
+    # orientation cues it committed more often but still flipped between
+    # runs. Given the reporter's stated side it named the correct sided
+    # parts 3 of 3. So the photo decides the panel, the person at the car
+    # decides the side, and a guess never reaches a claims document.
+    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward. If the "
+    "reporter has stated which side of the vehicle the damage is on, that statement is authoritative: use it "
+    "for every sided part (doors, fenders, quarter panels, lamps, mirrors, wheels, sills). If the reporter has "
+    "NOT stated a side, do not work it out from the photo -- a close-up of one panel cannot reliably show which "
+    "side of the vehicle it is on -- use the '(side undetermined)' option instead, and the reporter will be "
+    "asked. The only exception is a side that is unmistakable in the photo itself, such as the whole vehicle "
+    "visible with its number plate or steering wheel position in view.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
     "4. Leave 'witnesses' and 'people_involved' as empty arrays [] unless a specific person is actually named or clearly described (e.g. \"my colleague Ahmad saw it happen\"). The reporter describing their own incident is not a witness or a person_involved entry -- do not create one for them. Never add a placeholder entry like 'Reporter', 'Unknown', or 'Unspecified' just to have something in the array; an empty array is the correct, honest answer when no one else is actually mentioned.\n"

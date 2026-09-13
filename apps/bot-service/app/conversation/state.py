@@ -37,6 +37,7 @@ class Session:
     reporter_role: Optional[str] = None
     reporter_contact: Optional[str] = None
     vehicle_plate: Optional[str] = None
+    damaged_side: Optional[str] = None
 
 
 _sessions: dict[str, Session] = {}
