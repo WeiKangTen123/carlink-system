@@ -598,20 +598,32 @@ PART_RATES_SGD = {
 }
 
 
-def _enrich_single_report_data(data: dict) -> dict:
+def _enrich_single_report_data(raw_data: dict) -> dict:
     """Enriches a report's data with loss adjuster quantum, vehicle specs, and insurer assignment."""
-    vinfo = data.setdefault("vehicle_info", {})
-    ins = data.setdefault("insurance_details", {})
-    recs = data.setdefault("recommendations", {})
+    import copy
+    data = copy.deepcopy(raw_data or {})
+    
+    raw_vinfo = data.get("vehicle_info")
+    vinfo = copy.deepcopy(raw_vinfo) if isinstance(raw_vinfo, dict) else {}
 
-    parts = data.get("damaged_parts") or []
-    if not parts and data.get("damage_summary"):
-        parts = [d.get("part") for d in data["damage_summary"] if d.get("part")]
+    raw_ins = data.get("insurance_details")
+    ins = copy.deepcopy(raw_ins) if isinstance(raw_ins, dict) else {}
+
+    raw_recs = data.get("recommendations")
+    recs = copy.deepcopy(raw_recs) if isinstance(raw_recs, dict) else {}
+
+    raw_parts = data.get("damaged_parts")
+    parts = [str(p) for p in raw_parts if p] if isinstance(raw_parts, list) else []
+    if not parts and isinstance(data.get("damage_summary"), list):
+        for d in data["damage_summary"]:
+            if isinstance(d, dict) and d.get("part"):
+                parts.append(str(d.get("part")))
 
     # 1. Infer make and model
-    desc = (data.get("description") or "").lower()
-    plate = (vinfo.get("plate_number") or "").upper()
-    if not vinfo.get("make") or vinfo.get("make") in ("None", "Motor Vehicle"):
+    desc = str(data.get("description") or "").lower()
+    plate = str(vinfo.get("plate_number") or "").upper()
+    current_make = str(vinfo.get("make") or "")
+    if not current_make or current_make in ("None", "Motor Vehicle", "Unknown"):
         if "bmw" in desc or "SLB3939" in plate:
             vinfo["make"] = "BMW"
             vinfo["model"] = "320i Sedan"
@@ -641,11 +653,12 @@ def _enrich_single_report_data(data: dict) -> dict:
             vinfo["model"] = "Sedan"
 
     # 2. Compute Singapore Loss Adjuster Quantum ($ SGD)
-    if not ins.get("estimated_repair_cost") or ins.get("estimated_repair_cost") == "$0":
+    cost = ins.get("estimated_repair_cost")
+    if not cost or cost in ("$0", "S$0", "S$0.00", "0"):
         base_parts_sum = sum(PART_RATES_SGD.get(p, 1200) for p in parts)
         labor_and_paint = len(parts) * 450
         total_sgd = max(2400, base_parts_sum + labor_and_paint)
-        sev = (data.get("severity_level") or "").lower()
+        sev = str(data.get("severity_level") or "").lower()
         if "severe" in sev:
             total_sgd = int(total_sgd * 1.35)
         elif "moderate" in sev:
@@ -672,7 +685,7 @@ def _enrich_single_report_data(data: dict) -> dict:
 
     # 4. Authorized Workshop Assignment
     if not ins.get("workshop_assigned"):
-        loc = (data.get("location") or "").lower()
+        loc = str(data.get("location") or "").lower()
         if "kaki bukit" in loc or "eunos" in loc or "bedok" in loc or "east" in loc:
             ins["workshop_assigned"] = "Precise Auto Service (Kaki Bukit Autobay)"
         elif "sin ming" in loc or "amk" in loc or "bishan" in loc or "north" in loc:
@@ -682,9 +695,12 @@ def _enrich_single_report_data(data: dict) -> dict:
         else:
             ins["workshop_assigned"] = "ComfortDelGro Engineering (Toh Guan Hub)"
 
-    if len(parts) >= 5 or "severe" in (data.get("severity_level") or "").lower():
+    if len(parts) >= 5 or "severe" in str(data.get("severity_level") or "").lower():
         recs["disassembly_required"] = True
 
+    data["vehicle_info"] = vinfo
+    data["insurance_details"] = ins
+    data["recommendations"] = recs
     return data
 
 
@@ -696,8 +712,7 @@ def ai_enrich_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
-        data = r.data or {}
-        enriched_data = _enrich_single_report_data(data)
+        enriched_data = _enrich_single_report_data(r.data or {})
         r.data = enriched_data
         db.commit()
         return {"id": r.id, "status": "enriched", "data": r.data}
@@ -713,8 +728,7 @@ def ai_enrich_all_reports() -> dict:
         reports = db.query(Report).all()
         count = 0
         for r in reports:
-            data = r.data or {}
-            enriched_data = _enrich_single_report_data(data)
+            enriched_data = _enrich_single_report_data(r.data or {})
             r.data = enriched_data
             count += 1
         db.commit()
