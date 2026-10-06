@@ -1,3 +1,4 @@
+import { BarChart3 } from "lucide-react";
 import type { ReportDetail, DamageSummaryItem } from "@/lib/api";
 import { severityClass, daysOpen as computeDaysOpen } from "@/lib/caseFields";
 
@@ -101,8 +102,8 @@ export function CaseAnalysisPanel({
     return (
       <div className="card-glass">
         <div className="card-header">
-          <div className="card-title">
-            <span>📊</span> Case Analysis
+          <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <BarChart3 style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Case Analysis
           </div>
         </div>
         <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>
@@ -123,8 +124,8 @@ export function CaseAnalysisPanel({
     <div className="card-glass">
       <div className="card-header">
         <div>
-          <div className="card-title">
-            <span>📊</span> Case Analysis
+          <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <BarChart3 style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Case Analysis
           </div>
           <div className="card-subtitle">Job scope and whether this case is ready to quote</div>
         </div>

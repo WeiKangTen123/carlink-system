@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { Box } from "lucide-react";
 import { type ReportDetail, type DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
@@ -63,8 +64,8 @@ export function CaseInspectionTab({
         <div className="card-glass">
           <div className="card-header">
             <div>
-              <div className="card-title">
-                <span>📐</span> Vehicle Body Blueprint
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Box style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Body Blueprint
               </div>
               <div className="card-subtitle">
                 Click a marker to highlight it in the photo and parts list below

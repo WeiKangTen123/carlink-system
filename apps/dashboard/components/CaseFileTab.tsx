@@ -1,3 +1,13 @@
+import {
+  UserCheck,
+  Calendar,
+  Car,
+  Clock,
+  Users,
+  FileText,
+  AlertCircle,
+  ShieldCheck,
+} from "lucide-react";
 import type { ReportDetail } from "@/lib/api";
 
 /** A single label/value pair. Renders an em-dash for a missing value
@@ -15,12 +25,12 @@ function Field({ label, value }: { label: string; value?: string | null }) {
 /** Cards only render when they actually have something to show (same
  * pattern the authority/insurance card already used) -- a thin report
  * shouldn't render a wall of empty labelled boxes. */
-function Card({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+function Card({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div className="card-glass">
       <div className="card-header">
-        <div className="card-title">
-          <span>{icon}</span> {title}
+        <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {icon} {title}
         </div>
       </div>
       {children}
@@ -44,7 +54,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
       <div className="case-file-split">
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           {hasReporter && (
-            <Card icon="👤" title="Reporter / Assessor">
+            <Card icon={<UserCheck style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="Reporter / Assessor">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <Field label="Name" value={d.reporter_name} />
                 <Field label="Role" value={d.reporter_role} />
@@ -54,7 +64,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
             </Card>
           )}
 
-          <Card icon="📅" title="Incident Details">
+          <Card icon={<Calendar style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="Incident Details">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <Field label="Date / Time" value={d.incident_datetime} />
               <Field label="Accident Type" value={d.accident_type} />
@@ -78,7 +88,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
         </div>
 
         {hasVehicle && (
-          <Card icon="🚘" title="Vehicle Identity">
+          <Card icon={<Car style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="Vehicle Identity">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <Field label="Plate Number" value={v?.plate_number} />
               <Field label="Make" value={v?.make} />
@@ -112,7 +122,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
       </div>
 
       {timeline.length > 0 && (
-        <Card icon="🕒" title="Incident Timeline">
+        <Card icon={<Clock style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="Incident Timeline">
           <div className="case-timeline">
             {timeline.map((event, i) => (
               <div key={i} className="case-timeline-item">
@@ -126,7 +136,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
       )}
 
       <div className="case-file-split">
-        <Card icon="👥" title="People & Witnesses">
+        <Card icon={<Users style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="People & Witnesses">
           <div className="detail-field-label" style={{ marginBottom: 8 }}>People Involved</div>
           {people.length === 0 ? (
             <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 14px" }}>None recorded.</p>
@@ -164,23 +174,29 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
         </Card>
 
         {hasNotes && (
-          <Card icon="📝" title="Actions & Notes">
+          <Card icon={<FileText style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />} title="Actions & Notes">
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {d.immediate_actions && (
                 <div>
-                  <div className="detail-field-label">🚨 Immediate Actions Taken</div>
+                  <div className="detail-field-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <AlertCircle style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} /> Immediate Actions Taken
+                  </div>
                   <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 0", lineHeight: 1.6 }}>{d.immediate_actions}</p>
                 </div>
               )}
               {d.preventive_measures && (
                 <div>
-                  <div className="detail-field-label">🛡 Preventive Measures</div>
+                  <div className="detail-field-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <ShieldCheck style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Preventive Measures
+                  </div>
                   <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 0", lineHeight: 1.6 }}>{d.preventive_measures}</p>
                 </div>
               )}
               {d.additional_comments && (
                 <div>
-                  <div className="detail-field-label">📌 Additional Comments</div>
+                  <div className="detail-field-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <FileText style={{ width: 13, height: 13, color: "var(--text-muted)" }} /> Additional Comments
+                  </div>
                   <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 0", lineHeight: 1.6 }}>{d.additional_comments}</p>
                 </div>
               )}

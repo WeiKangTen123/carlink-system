@@ -1,5 +1,6 @@
 "use client";
 
+import { Trash2 } from "lucide-react";
 import { deleteReportAction } from "@/app/reports/actions";
 
 export function DeleteButton({ id }: { id: string }) {
@@ -14,8 +15,17 @@ export function DeleteButton({ id }: { id: string }) {
       style={{ display: "inline" }}
     >
       <input type="hidden" name="id" value={id} />
-      <button type="submit" className="row-delete">
-        Delete
+      <button
+        type="submit"
+        className="row-delete"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          cursor: "pointer",
+        }}
+      >
+        <Trash2 style={{ width: 12, height: 12 }} /> Delete
       </button>
     </form>
   );

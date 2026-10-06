@@ -1,3 +1,15 @@
+import {
+  Wrench,
+  RefreshCw,
+  Search,
+  ArrowRight,
+  Shield,
+  AlertTriangle,
+  DollarSign,
+  ClipboardList,
+  Building2,
+  ShieldCheck,
+} from "lucide-react";
 import type { ReportDetail, DamageSummaryItem } from "@/lib/api";
 import { CaseAnalysisPanel } from "./CaseAnalysisPanel";
 
@@ -40,11 +52,11 @@ export function CaseAssessmentTab({
   const isSignedOff = report.status === "Signed Off" || signOff?.status === "Signed Off";
 
   const recRows = [
-    { label: "🔧 Repair", value: rec?.repair_recommendation },
-    { label: "🔄 Replacement", value: rec?.replacement_recommendation },
-    { label: "🔍 Inspection", value: rec?.inspection_recommendation },
-    { label: "➡️ Follow-Up", value: rec?.follow_up_action },
-    { label: "🛡 Preventive", value: rec?.preventive_action },
+    { label: "Repair", icon: Wrench, value: rec?.repair_recommendation },
+    { label: "Replacement", icon: RefreshCw, value: rec?.replacement_recommendation },
+    { label: "Inspection", icon: Search, value: rec?.inspection_recommendation },
+    { label: "Follow-Up", icon: ArrowRight, value: rec?.follow_up_action },
+    { label: "Preventive", icon: Shield, value: rec?.preventive_action },
   ].filter((r) => Boolean(r.value));
 
   const hasRecommendations = recRows.length > 0 || rec?.disassembly_required;
@@ -66,25 +78,30 @@ export function CaseAssessmentTab({
         <div className="card-glass">
           <div className="card-header">
             <div>
-              <div className="card-title">
-                <span>🔧</span> Assessor Recommendations
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Wrench style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Assessor Recommendations
               </div>
               <div className="card-subtitle">Actions advised by the surveyor after inspection</div>
             </div>
             {rec?.disassembly_required && (
-              <span className="chip-severity moderate" style={{ fontSize: 10 }}>
-                ⚠️ Disassembly Required
+              <span className="chip-severity moderate" style={{ fontSize: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <AlertTriangle style={{ width: 12, height: 12 }} /> Disassembly Required
               </span>
             )}
           </div>
           {recRows.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {recRows.map((r, i) => (
-                <div key={i} className="recommendation-row">
-                  <div className="recommendation-label">{r.label}</div>
-                  <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>{r.value}</div>
-                </div>
-              ))}
+              {recRows.map((r, i) => {
+                const Icon = r.icon;
+                return (
+                  <div key={i} className="recommendation-row">
+                    <div className="recommendation-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <Icon style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> {r.label}
+                    </div>
+                    <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>{r.value}</div>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>
@@ -98,8 +115,8 @@ export function CaseAssessmentTab({
         {hasCost && (
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title">
-                <span>💰</span> Repair Cost
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <DollarSign style={{ width: 16, height: 16, color: "var(--badge-green-text)" }} /> Repair Cost
               </div>
             </div>
             <div className="cost-matrix-glow">
@@ -120,8 +137,8 @@ export function CaseAssessmentTab({
         {hasClaim && (
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title">
-                <span>📋</span> Claim Details
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ClipboardList style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Claim Details
               </div>
               {ins?.claim_status && (
                 <span className="chip-severity minor" style={{ fontSize: 10 }}>
@@ -148,8 +165,8 @@ export function CaseAssessmentTab({
       <div className="case-file-split">
         <div className="card-glass">
           <div className="card-header">
-            <div className="card-title">
-              <span>🏛</span> Police Report
+            <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Building2 style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Police Report
             </div>
           </div>
           {!hasPolice ? (
@@ -171,8 +188,8 @@ export function CaseAssessmentTab({
             shown anywhere in the studio before this. */}
         <div className="card-glass">
           <div className="card-header">
-            <div className="card-title">
-              <span>✍️</span> Sign-Off Status
+            <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ShieldCheck style={{ width: 16, height: 16, color: "var(--badge-green-text)" }} /> Sign-Off Status
             </div>
             <span className={`chip-severity ${isSignedOff ? "minor" : "moderate"}`} style={{ fontSize: 10 }}>
               {isSignedOff ? "✓ Locked" : "Pending"}

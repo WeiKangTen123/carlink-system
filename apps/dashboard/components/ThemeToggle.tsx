@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Moon, Sun } from "lucide-react";
 
 export function ThemeToggle() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -23,13 +24,13 @@ export function ThemeToggle() {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        background: "var(--surface-hover)",
+        background: "var(--surface-elevated)",
         border: "1px solid var(--border-color)",
         padding: "3px",
-        borderRadius: "24px",
-        gap: "3px",
+        borderRadius: "20px",
+        gap: "2px",
       }}
-      title="Toggle Dark / White Theme"
+      title="Toggle Dark / Light Theme"
     >
       <button
         type="button"
@@ -39,18 +40,19 @@ export function ThemeToggle() {
           alignItems: "center",
           gap: "5px",
           fontSize: "11px",
-          fontWeight: 700,
-          padding: "4px 10px",
-          borderRadius: "18px",
+          fontWeight: 600,
+          padding: "4px 9px",
+          borderRadius: "16px",
           border: "none",
-          background: theme === "dark" ? "linear-gradient(135deg, #38bdf8 0%, #6366f1 100%)" : "transparent",
+          background: theme === "dark" ? "var(--accent-primary)" : "transparent",
           color: theme === "dark" ? "#ffffff" : "var(--text-muted)",
           cursor: "pointer",
-          boxShadow: theme === "dark" ? "0 0 10px rgba(56, 189, 248, 0.35)" : "none",
+          boxShadow: theme === "dark" ? "0 2px 8px var(--accent-glow)" : "none",
           transition: "all 0.2s ease",
         }}
       >
-        <span>🌙</span> Dark
+        <Moon style={{ width: 13, height: 13 }} />
+        <span>Dark</span>
       </button>
 
       <button
@@ -61,19 +63,21 @@ export function ThemeToggle() {
           alignItems: "center",
           gap: "5px",
           fontSize: "11px",
-          fontWeight: 700,
-          padding: "4px 10px",
-          borderRadius: "18px",
+          fontWeight: 600,
+          padding: "4px 9px",
+          borderRadius: "16px",
           border: "none",
           background: theme === "light" ? "#ffffff" : "transparent",
           color: theme === "light" ? "#0f172a" : "var(--text-muted)",
           cursor: "pointer",
-          boxShadow: theme === "light" ? "0 2px 8px rgba(0,0,0,0.15)" : "none",
+          boxShadow: theme === "light" ? "0 2px 6px rgba(0,0,0,0.12)" : "none",
           transition: "all 0.2s ease",
         }}
       >
-        <span>☀️</span> White
+        <Sun style={{ width: 13, height: 13 }} />
+        <span>Light</span>
       </button>
     </div>
   );
 }
+

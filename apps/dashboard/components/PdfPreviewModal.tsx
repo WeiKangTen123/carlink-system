@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { FileText, FileDown, X } from "lucide-react";
 import { pdfDownloadUrl, API_BASE_URL } from "@/lib/api";
 
 export function PdfPreviewModal({
@@ -13,24 +14,15 @@ export function PdfPreviewModal({
   reportId: string;
   pdfUrl?: string | null;
   reportCode: string;
-  /** Opens the modal immediately on mount -- used right after filing or
-   * saving a report so the regenerated PDF shows up without an extra click
-   * to find this button. */
   autoOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(autoOpen);
-  // Captured once on mount rather than read from the live prop -- stripping
-  // ?preview=1 below causes a re-render with autoOpen back to false, which
-  // would otherwise flip the header text back to the generic copy right
-  // after the modal opens.
   const [wasAutoOpened] = useState(autoOpen);
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
     if (autoOpen) {
-      // Strip the ?preview=1 marker once it's done its job, so refreshing
-      // or navigating back to this URL doesn't keep popping the modal open.
       router.replace(pathname);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -53,7 +45,7 @@ export function PdfPreviewModal({
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        className="button-primary"
+        className="btn-secondary-modern"
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -61,7 +53,8 @@ export function PdfPreviewModal({
           cursor: "pointer",
         }}
       >
-        <span>📄</span> Preview &amp; Download PDF
+        <FileText style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
+        <span>Preview &amp; Download PDF</span>
       </button>
 
       {isOpen && (
@@ -95,8 +88,9 @@ export function PdfPreviewModal({
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 18, fontWeight: 700 }}>
-                📄 Report PDF Document Preview ({reportCode})
+              <FileText style={{ width: 20, height: 20, color: "var(--accent-primary)" }} />
+              <span style={{ fontSize: 17, fontWeight: 700 }}>
+                Report Document Preview ({reportCode})
               </span>
               <span
                 style={{
@@ -107,7 +101,7 @@ export function PdfPreviewModal({
                   color: "#e2e8f0",
                 }}
               >
-                {wasAutoOpened ? "Here's your generated PDF" : "Review pages before downloading"}
+                {wasAutoOpened ? "Generated PDF Document" : "Official Surveyor Draft"}
               </span>
             </div>
 
@@ -115,37 +109,38 @@ export function PdfPreviewModal({
               <a
                 href={downloadUrl}
                 download={fileName}
-                className="button-primary"
+                className="btn-primary-modern"
                 style={{
-                  background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                  padding: "8px 18px",
-                  fontSize: 13,
-                  fontWeight: 600,
+                  padding: "8px 16px",
+                  fontSize: 12,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
                 }}
               >
-                💾 Confirm &amp; Download PDF
+                <FileDown style={{ width: 14, height: 14 }} />
+                <span>Download PDF</span>
               </a>
 
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
                 style={{
-                  background: "rgba(255,255,255,0.15)",
+                  background: "rgba(255,255,255,0.12)",
                   border: "none",
                   color: "#fff",
-                  fontSize: 18,
-                  fontWeight: "bold",
-                  width: 36,
-                  height: 36,
+                  width: 32,
+                  height: 32,
                   borderRadius: "50%",
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
+                  transition: "background 0.2s",
                 }}
                 title="Close Modal (ESC)"
               >
-                ✕
+                <X style={{ width: 16, height: 16 }} />
               </button>
             </div>
           </div>

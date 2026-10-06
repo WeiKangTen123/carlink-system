@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Sparkles, AlertTriangle, CheckCircle2, Plus } from "lucide-react";
 import { analyzePhotosAction, reanalyzeExistingPhotosAction } from "./actions";
 import {
   CATEGORY_OPTIONS,
@@ -251,7 +252,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
         <button
           type="button"
           className="add-row-button"
-          style={{ marginTop: 12 }}
+          style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
           onClick={() => (photos.length > 0 ? runAnalysis(photos, description) : reanalyzeExistingPhotos())}
           disabled={uploading || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
           title={
@@ -260,18 +261,17 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
               : "Re-run AI analysis against this report's already-saved photos"
           }
         >
-          {uploading ? "Analyzing..." : "🔄 Re-analyze with AI"}
+          <Sparkles style={{ width: 14, height: 14 }} /> {uploading ? "Analyzing..." : "Re-analyze with AI"}
         </button>
 
         {analyzeError && (
-          <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600 }}>
-            ⚠️ AI analysis failed: {analyzeError} -- photos may not be attached; try again before saving.
+          <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError} -- photos may not be attached; try again before saving.
           </p>
         )}
         {aiApplied && !analyzeError && (
-          <p className="form-hint" style={{ color: "var(--badge-green-text)", marginTop: 8 }}>
-            AI filled in Accident Type, Severity, Damaged Parts, and Category below -- review before
-            saving.
+          <p className="form-hint" style={{ color: "var(--badge-green-text)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <CheckCircle2 style={{ width: 14, height: 14, flexShrink: 0 }} /> AI filled in Accident Type, Severity, Damaged Parts, and Category below -- review before saving.
           </p>
         )}
 
@@ -420,11 +420,12 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
         <button
           type="button"
           className="add-row-button"
+          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
           onClick={() =>
             setPeople([...people, { id: nextRowId++, name: "", role: "Driver", department: "", contact: "" }])
           }
         >
-          + Add Person
+          <Plus style={{ width: 14, height: 14 }} /> Add Person
         </button>
       </section>
 
@@ -448,9 +449,10 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
         <button
           type="button"
           className="add-row-button"
+          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
           onClick={() => setWitnesses([...witnesses, { id: nextRowId++, name: "", contact: "", statement: "" }])}
         >
-          + Add Witness
+          <Plus style={{ width: 14, height: 14 }} /> Add Witness
         </button>
       </section>
 

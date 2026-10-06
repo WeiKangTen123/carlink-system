@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { ArrowLeft, RotateCcw } from "lucide-react";
 import type { DamageSummaryItem } from "@/lib/api";
 import { resolveZones, groupByZone, type ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
@@ -529,11 +530,18 @@ export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedD
 
       {damageEntries.length === 0 && <div className="blueprint-3d-empty">No damaged parts recorded yet</div>}
       {focus && (
-        <button type="button" className="blueprint-3d-back-btn" onClick={() => setFocus(null)}>
-          ◀ Back to full view
+        <button
+          type="button"
+          className="blueprint-3d-back-btn"
+          onClick={() => setFocus(null)}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          <ArrowLeft style={{ width: 12, height: 12 }} /> Back to full view
         </button>
       )}
-      <div className="blueprint-3d-hint">🖱️ drag to rotate &bull; scroll to zoom &bull; click a part to inspect</div>
+      <div className="blueprint-3d-hint" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+        <RotateCcw style={{ width: 11, height: 11 }} /> Drag to rotate &bull; Scroll to zoom &bull; Click a part to inspect
+      </div>
     </div>
   );
 }

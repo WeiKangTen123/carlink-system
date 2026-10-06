@@ -2,6 +2,16 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import {
+  Plus,
+  Search,
+  CheckCircle2,
+  Clock,
+  ArrowRight,
+  ShieldCheck,
+  Layers,
+  TrendingUp,
+} from "lucide-react";
 import { type ReportSummary, fileUrl } from "@/lib/api";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { DeleteButton } from "@/components/DeleteButton";
@@ -45,6 +55,7 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
   const totalCount = reportsList.length;
   const pendingCount = reportsList.filter((r) => r.status !== "Signed Off").length;
   const signedCount = reportsList.filter((r) => r.status === "Signed Off").length;
+  const verificationRate = totalCount > 0 ? Math.round((signedCount / totalCount) * 100) : 0;
 
   return (
     <div>
@@ -59,23 +70,27 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
             Inspect, filter, audit, and sign off vehicle claims cases across all channels
           </p>
         </div>
-        <Link href="/reports/new" className="btn-primary-modern">
-          <span>+</span> File New Incident
+        <Link href="/reports/new" className="btn-primary-modern" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Plus style={{ width: 16, height: 16 }} /> File New Incident
         </Link>
       </div>
 
       {/* KPI Cards */}
       <div className="kpi-grid-modern" style={{ marginBottom: 24 }}>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Total Logged Cases</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Layers style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> Total Logged Cases
+          </div>
           <div className="kpi-val">{totalCount}</div>
-          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
-            ↑ Active Repository
+          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px", display: "flex", alignItems: "center", gap: 4 }}>
+            <TrendingUp style={{ width: 12, height: 12 }} /> Active Repository
           </div>
         </div>
 
         <div className="kpi-card-glow">
-          <div className="kpi-label">Pending Surveyor Review</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Pending Surveyor Review
+          </div>
           <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>
             {pendingCount < 10 ? `0${pendingCount}` : pendingCount}
           </div>
@@ -85,22 +100,26 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
         </div>
 
         <div className="kpi-card-glow">
-          <div className="kpi-label">Signed-Off Reports</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <ShieldCheck style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Signed-Off Reports
+          </div>
           <div className="kpi-val" style={{ color: "var(--badge-green-text)" }}>
             {signedCount < 10 ? `0${signedCount}` : signedCount}
           </div>
-          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px" }}>
-            ✓ Verified &amp; Locked
+          <div style={{ fontSize: "11px", color: "var(--badge-green-text)", fontWeight: 700, marginTop: "4px", display: "flex", alignItems: "center", gap: 4 }}>
+            <CheckCircle2 style={{ width: 12, height: 12 }} /> Verified &amp; Locked
           </div>
         </div>
 
         <div className="kpi-card-glow">
-          <div className="kpi-label">AI First-Pass Concordance</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <CheckCircle2 style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Completion Rate
+          </div>
           <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>
-            96.2%
+            {verificationRate}%
           </div>
           <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-            Vision Accuracy
+            Survey Sign-off Ratio
           </div>
         </div>
       </div>
@@ -110,14 +129,15 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
         <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
           {/* Search Box */}
           <div style={{ flex: 1, minWidth: 240, position: "relative" }}>
+            <Search style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 15, height: 15, color: "var(--text-muted)", pointerEvents: "none" }} />
             <input
               type="text"
-              placeholder="🔍 Search by plate (e.g. SLK 3063 Z), vehicle, location, severity, or case ID..."
+              placeholder="Search by plate (e.g. SLK 3063 Z), vehicle, location, severity, or case ID..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{
                 width: "100%",
-                padding: "10px 14px",
+                padding: "10px 14px 10px 36px",
                 borderRadius: 8,
                 border: "1px solid var(--border-color)",
                 background: "var(--surface-card)",
@@ -250,11 +270,14 @@ export function ReportsClient({ initialReports }: { initialReports: ReportSummar
                       className="btn-primary-modern"
                       style={{
                         fontSize: 11,
-                        padding: "4px 10px",
+                        padding: "5px 10px",
                         marginRight: 10,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
                       }}
                     >
-                      Open Studio →
+                      Open Studio <ArrowRight style={{ width: 12, height: 12 }} />
                     </Link>
                     <DeleteButton id={r.id} />
                   </td>

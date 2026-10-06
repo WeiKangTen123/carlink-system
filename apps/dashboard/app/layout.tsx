@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ShieldCheck } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sidebar } from "@/components/Sidebar";
 import "./globals.css";
@@ -28,18 +29,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
                 <ThemeToggle />
 
-                {/* Role Pill -- there's no login/auth system, so this names a
-                    role, not a specific person (see signOffReportAction's
-                    default reviewer name for the same convention). Showing an
-                    invented name here as if someone were logged in is exactly
-                    the kind of fabricated-identity bug this project has
-                    already had to fix elsewhere. */}
                 <div
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
-                    padding: "4px 12px 4px 4px",
+                    padding: "4px 12px 4px 6px",
                     background: "var(--surface-elevated)",
                     border: "1px solid var(--border-color)",
                     borderRadius: "20px",
@@ -49,19 +44,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 >
                   <div
                     style={{
-                      width: 24,
-                      height: 24,
+                      width: 22,
+                      height: 22,
                       borderRadius: "50%",
-                      background: "var(--accent-gradient)",
+                      background: "var(--accent-primary)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       color: "white",
-                      fontSize: 10,
-                      fontWeight: 800,
                     }}
                   >
-                    SA
+                    <ShieldCheck style={{ width: 13, height: 13 }} />
                   </div>
                   <span>Surveyor / Loss Adjuster</span>
                 </div>

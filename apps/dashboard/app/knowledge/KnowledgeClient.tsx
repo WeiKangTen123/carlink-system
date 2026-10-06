@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Wrench, Zap, Car, FolderArchive, BarChart2, Boxes } from "lucide-react";
 import type { Taxonomy } from "@/lib/api";
 
 export interface PartRow {
@@ -12,10 +13,10 @@ export interface PartRow {
 
 type Tab = "parts" | "damage" | "vehicles";
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "parts", label: "Vehicle Parts", icon: "🔧" },
-  { id: "damage", label: "Damage Types", icon: "⚡" },
-  { id: "vehicles", label: "Vehicle Catalogue", icon: "🚘" },
+const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }> }[] = [
+  { id: "parts", label: "Vehicle Parts", icon: Wrench },
+  { id: "damage", label: "Damage Types", icon: Zap },
+  { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
 ];
 
 const STATUS_META: Record<PartRow["status"], { label: string; cls: string; title: string }> = {
@@ -91,11 +92,14 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
       </div>
 
       <div className="case-tab-bar">
-        {TABS.map((t) => (
-          <button key={t.id} type="button" className={`case-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
-            <span>{t.icon}</span> {t.label}
-          </button>
-        ))}
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button key={t.id} type="button" className={`case-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
+              <Icon style={{ width: 14, height: 14 }} /> {t.label}
+            </button>
+          );
+        })}
       </div>
 
       {tab === "parts" && (
@@ -103,7 +107,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
           <div className="card-glass">
             <div className="card-header">
               <div>
-                <div className="card-title"><span>🔧</span> Vehicle Parts</div>
+                <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Wrench style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Parts
+                </div>
                 <div className="card-subtitle">
                   {visibleParts.length} of {parts.length} shown &mdash; &ldquo;3D zone&rdquo; means damage there
                   highlights on the blueprint
@@ -162,7 +168,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
             <div className="card-glass">
               <div className="card-header">
                 <div>
-                  <div className="card-title"><span>🗂</span> Legacy Terms Still in the Data</div>
+                  <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <FolderArchive style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Legacy Terms Still in the Data
+                  </div>
                   <div className="card-subtitle">
                     Free-text part names from reports filed before the vocabulary existed
                   </div>
@@ -191,7 +199,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
           <div className="card-glass">
             <div className="card-header">
               <div>
-                <div className="card-title"><span>⚡</span> Damage Types</div>
+                <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Zap style={{ width: 16, height: 16, color: "var(--badge-amber-text)" }} /> Damage Types
+                </div>
                 <div className="card-subtitle">Compound damage picks the dominant type; nuance goes in the description</div>
               </div>
             </div>
@@ -214,7 +224,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
 
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title"><span>📊</span> Severity Levels</div>
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <BarChart2 style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Severity Levels
+              </div>
             </div>
             <p className="setup-note" style={{ marginTop: 0 }}>
               Severity may be left unset when the evidence doesn&apos;t support a judgement — an unrated part
@@ -243,7 +255,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
           <div className="card-glass">
             <div className="card-header">
               <div>
-                <div className="card-title"><span>🚘</span> Vehicle Catalogue</div>
+                <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Car style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Catalogue
+                </div>
                 <div className="card-subtitle">
                   Decides which 3D model a case renders &mdash; matched on make and model text
                 </div>
@@ -277,7 +291,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
 
           <div className="card-glass">
             <div className="card-header">
-              <div className="card-title"><span>🧩</span> Body Types</div>
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Boxes style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Body Types
+              </div>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {taxonomy.body_types.map((b) => (

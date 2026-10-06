@@ -1,4 +1,13 @@
 import Link from "next/link";
+import {
+  FileText,
+  Clock,
+  AlertTriangle,
+  Layers,
+  Wrench,
+  TrendingUp,
+  ShieldAlert,
+} from "lucide-react";
 import { listReports, getAnalyticsSummary } from "@/lib/api";
 import { caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
 import { resolveRange, bucketReports, daysSinceMostRecent } from "@/lib/dateRange";
@@ -80,19 +89,27 @@ export default async function AnalyticsPage({
 
       <div className="kpi-grid-modern" style={{ marginBottom: 24 }}>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Total Cases</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <FileText style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> Total Cases
+          </div>
           <div className="kpi-val">{analytics.total_incidents}</div>
         </div>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Awaiting Sign-Off</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Awaiting Sign-Off
+          </div>
           <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>{analytics.pending_review}</div>
         </div>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Severe Cases</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertTriangle style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} /> Severe Cases
+          </div>
           <div className="kpi-val" style={{ color: "var(--badge-red-text)" }}>{analytics.high_severity}</div>
         </div>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Damage Items Logged</div>
+          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Layers style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Damage Items Logged
+          </div>
           <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>{totalDamageItems}</div>
         </div>
       </div>
@@ -102,8 +119,8 @@ export default async function AnalyticsPage({
         <div className="card-glass">
           <div className="card-header">
             <div>
-              <div className="card-title">
-                <span>🔧</span> Parts Demand
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Wrench style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Parts Demand
               </div>
               <div className="card-subtitle">
                 Most frequently damaged components{partsFrequency.length > 8 ? ` — top 8 of ${partsFrequency.length}` : ""}
@@ -136,8 +153,8 @@ export default async function AnalyticsPage({
         <div className="card-glass">
           <div className="card-header">
             <div>
-              <div className="card-title">
-                <span>⏱</span> Pipeline Age
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Clock style={{ width: 16, height: 16, color: "var(--badge-amber-text)" }} /> Pipeline Age
               </div>
               <div className="card-subtitle">How long open cases have been awaiting sign-off</div>
             </div>
@@ -186,8 +203,8 @@ export default async function AnalyticsPage({
         <div className="card-glass">
           <div className="card-header" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
             <div>
-              <div className="card-title">
-                <span>📈</span> Intake Volume
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <TrendingUp style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Intake Volume
               </div>
               <div className="card-subtitle">
                 {rangeTotal} report{rangeTotal === 1 ? "" : "s"} &middot;{" "}
@@ -221,8 +238,8 @@ export default async function AnalyticsPage({
         <div className="card-glass">
           <div className="card-header">
             <div>
-              <div className="card-title">
-                <span>⚡</span> Severity Mix
+              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ShieldAlert style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Severity Mix
               </div>
               <div className="card-subtitle">Across all filed cases</div>
             </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { CheckCircle2, ShieldCheck } from "lucide-react";
 import { signOffReportAction } from "@/app/reports/actions";
 
 export function SignOffButton({ id, currentStatus }: { id: string; currentStatus: string }) {
@@ -8,8 +9,21 @@ export function SignOffButton({ id, currentStatus }: { id: string; currentStatus
 
   if (currentStatus === "Signed Off") {
     return (
-      <span style={{ background: "#dcfce7", color: "#166534", padding: "6px 12px", borderRadius: 4, fontWeight: "bold", fontSize: 13 }}>
-        ✓ Signed Off &amp; Locked
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          background: "var(--badge-green-bg)",
+          color: "var(--badge-green-text)",
+          border: "1px solid var(--badge-green-border)",
+          padding: "6px 12px",
+          borderRadius: 6,
+          fontWeight: 700,
+          fontSize: 12,
+        }}
+      >
+        <ShieldCheck style={{ width: 14, height: 14 }} /> Signed Off &amp; Locked
       </span>
     );
   }
@@ -20,12 +34,6 @@ export function SignOffButton({ id, currentStatus }: { id: string; currentStatus
     try {
       const result = await signOffReportAction(id, "Surveyor Sign-Off");
       if ("error" in result) throw new Error(result.error);
-      // router.refresh() left this showing the pre-signoff button for up to
-      // ~30s (Next.js 16's client Router Cache staleTime for this dynamic
-      // route) despite revalidatePath having already run server-side --
-      // confirmed live: the backend's status flipped to "Signed Off"
-      // immediately, but the rendered page didn't. A full reload sidesteps
-      // that cache entirely instead of trying to tune staleTimes globally.
       window.location.reload();
     } catch (err: any) {
       alert(`Sign-off failed: ${err.message}`);
@@ -39,10 +47,16 @@ export function SignOffButton({ id, currentStatus }: { id: string; currentStatus
       type="button"
       onClick={handleSignOff}
       disabled={loading}
-      className="button-primary"
-      style={{ background: "#16a34a", color: "#fff", padding: "8px 16px", borderRadius: 4, cursor: "pointer", border: "none" }}
+      className="btn-primary-modern"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 16px",
+      }}
     >
-      {loading ? "Signing Off..." : "✍️ Sign Off & Finalize PDF"}
+      <CheckCircle2 style={{ width: 14, height: 14 }} />
+      {loading ? "Signing Off..." : "Sign Off & Finalize PDF"}
     </button>
   );
 }

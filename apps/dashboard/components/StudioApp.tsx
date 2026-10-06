@@ -1,6 +1,17 @@
 "use client";
 
 import React, { useState } from "react";
+import {
+  Search,
+  FileText,
+  FileCheck2,
+  Pencil,
+  Trash2,
+  Bot,
+  ShieldCheck,
+  CheckCircle2,
+  Lock,
+} from "lucide-react";
 import { type ReportDetail, type DamageSummaryItem } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
@@ -12,25 +23,14 @@ import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
 import { resolveZones } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 
-// Re-exported so the components that already import it from here keep
-// working; the implementation now lives in lib/caseFields.ts alongside
-// the other shared report derivations.
 export { severityClass } from "@/lib/caseFields";
 
-// Three tabs by mode, not by data type. The blueprint, evidence photos,
-// and parts checklist are three linked views of the same damage data that
-// get cross-referenced constantly, so they share ONE tab (see
-// CaseInspectionTab) rather than being split apart. Case File (the
-// reporter, vehicle identity, timeline, people) is reference lookup, and
-// Assessment (recommendations, cost, claim, sign-off) is the commercial
-// conclusion -- both are genuinely separate modes of working, not linked
-// views, so those do earn their own tabs.
 type CaseTab = "inspection" | "file" | "assessment";
 
-const TABS: { id: CaseTab; label: string; icon: string }[] = [
-  { id: "inspection", label: "Damage Inspection", icon: "🔍" },
-  { id: "file", label: "Case File", icon: "📄" },
-  { id: "assessment", label: "Assessment & Sign-off", icon: "✍️" },
+const TABS: { id: CaseTab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }> }[] = [
+  { id: "inspection", label: "Damage Inspection", icon: Search },
+  { id: "file", label: "Case File", icon: FileText },
+  { id: "assessment", label: "Assessment & Sign-off", icon: FileCheck2 },
 ];
 
 export function StudioApp({ report }: { report: ReportDetail }) {
@@ -149,12 +149,12 @@ export function StudioApp({ report }: { report: ReportDetail }) {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <a href={`/reports/${report.id}/edit`} className="btn-secondary-modern">
-            <span>✏️</span> {isSignedOff ? "Reopen & Edit" : "Edit Report"}
+            <Pencil style={{ width: 13, height: 13 }} /> {isSignedOff ? "Reopen & Edit" : "Edit Report"}
           </a>
           <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={reportCode} />
           {!isSignedOff && (
             <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
-              <span>✍️</span> Finalize &amp; Sign Off
+              <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize &amp; Sign Off
             </button>
           )}
           <form
@@ -167,7 +167,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           >
             <input type="hidden" name="id" value={report.id} />
             <button type="submit" className="btn-secondary-modern" style={{ color: "var(--danger, #ef4444)" }}>
-              🗑️ Delete
+              <Trash2 style={{ width: 13, height: 13 }} /> Delete
             </button>
           </form>
         </div>
@@ -180,7 +180,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
       <div className="ai-summary-strip">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13 }}>
-            <span>🤖</span> AI-Drafted Incident Summary
+            <Bot style={{ width: 15, height: 15, color: "var(--accent-primary)" }} /> AI-Drafted Incident Summary
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {conditionChips.map((f, i) => (
@@ -213,16 +213,19 @@ export function StudioApp({ report }: { report: ReportDetail }) {
 
       {/* Case Section Tabs */}
       <div className="case-tab-bar">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={`case-tab ${activeTab === tab.id ? "active" : ""}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span>{tab.icon}</span> {tab.label}
-          </button>
-        ))}
+        {TABS.map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              className={`case-tab ${activeTab === tab.id ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <Icon style={{ width: 15, height: 15 }} /> {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === "inspection" && (
@@ -272,7 +275,10 @@ export function StudioApp({ report }: { report: ReportDetail }) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ fontSize: 16, fontWeight: 800, marginBottom: 10 }}>Surveyor Digital Sign-Off</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <ShieldCheck style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />
+              <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Surveyor Digital Sign-Off</h3>
+            </div>
             <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
               By signing off, you certify that the damage items and photos for report <strong>{report.id}</strong>
               {plate && <> ({plate})</>} have been verified. This locks the report against further edits until
@@ -288,7 +294,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                 Cancel
               </button>
               <button type="button" className="btn-primary-modern" onClick={handleSignOff} disabled={isSigningOff}>
-                <span>✍️</span> {isSigningOff ? "Signing Off..." : "Confirm & Lock"}
+                <CheckCircle2 style={{ width: 14, height: 14 }} /> {isSigningOff ? "Signing Off..." : "Confirm & Lock"}
               </button>
             </div>
           </div>

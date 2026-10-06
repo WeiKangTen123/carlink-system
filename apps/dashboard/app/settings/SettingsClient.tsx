@@ -1,6 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  Bot,
+  Key,
+  Lock,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  Send,
+  MessageCircle,
+  Building2,
+  Save,
+  Zap,
+  ExternalLink,
+  Check,
+  X,
+} from "lucide-react";
 import type { AppSettings, LlmKey } from "@/lib/api";
 import {
   updateSettingsAction,
@@ -15,8 +31,8 @@ type TestState = { ok: boolean; message: string } | null;
 function TestResult({ result }: { result: TestState }) {
   if (!result) return null;
   return (
-    <span className={`setup-test-result ${result.ok ? "ok" : "fail"}`}>
-      {result.ok ? "✓" : "✕"} {result.message}
+    <span className={`setup-test-result ${result.ok ? "ok" : "fail"}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {result.ok ? <Check style={{ width: 12, height: 12 }} /> : <X style={{ width: 12, height: 12 }} />} {result.message}
     </span>
   );
 }
@@ -25,8 +41,8 @@ function TestResult({ result }: { result: TestState }) {
  * shown as a real link, not just described in prose. */
 function HelpLink({ url, label }: { url: string; label: string }) {
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className="setup-help-link">
-      {label} ↗
+    <a href={url} target="_blank" rel="noopener noreferrer" className="setup-help-link" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {label} <ExternalLink style={{ width: 12, height: 12 }} />
     </a>
   );
 }
@@ -41,7 +57,7 @@ function SetupCard({
   status,
   children,
 }: {
-  icon: string;
+  icon: React.ReactNode;
   title: string;
   subtitle: string;
   helpUrl?: string;
@@ -65,7 +81,7 @@ function SetupCard({
     <div className="card-glass setup-card">
       <div className="setup-card-head">
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
-          <div className="setup-card-icon">{icon}</div>
+          <div className="setup-card-icon" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>{icon}</div>
           <div style={{ minWidth: 0 }}>
             <div className="card-title" style={{ marginBottom: 2 }}>{title}</div>
             <div className="card-subtitle" style={{ marginBottom: 0 }}>{subtitle}</div>
@@ -79,8 +95,14 @@ function SetupCard({
             </span>
           )}
           {testKey && (
-            <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "5px 12px" }} onClick={runTest} disabled={testing}>
-              {testing ? "Testing…" : "⚡ Test"}
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 4 }}
+              onClick={runTest}
+              disabled={testing}
+            >
+              <Zap style={{ width: 12, height: 12 }} /> {testing ? "Testing…" : "Test"}
             </button>
           )}
         </div>
@@ -146,7 +168,7 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
 
   return (
     <SetupCard
-      icon="🤖"
+      icon={<Bot style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />}
       title="Gemini AI"
       subtitle="Reads incident photos and detects damaged parts"
       helpUrl="https://aistudio.google.com/apikey"
@@ -167,7 +189,7 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
           {keys.map((k) => (
             <div key={k.id} className="setup-key-row">
-              <span style={{ fontSize: 15 }}>🔑</span>
+              <Key style={{ width: 15, height: 15, color: "var(--accent-cyan)" }} />
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700 }}>
                 ••••••••••••{k.last4}
               </span>
@@ -189,7 +211,7 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
 
           {keys.length === 0 && envKeyConfigured && (
             <div className="setup-key-row" style={{ opacity: 0.75 }}>
-              <span style={{ fontSize: 15 }}>🔒</span>
+              <Lock style={{ width: 15, height: 15, color: "var(--text-muted)" }} />
               <span style={{ fontSize: 12 }}>Using the key set on the server</span>
               <span className="settings-readonly-tag" style={{ marginLeft: "auto" }}>Environment</span>
             </div>
@@ -220,8 +242,9 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
             onClick={() => setShowKey(!showKey)}
             aria-label={showKey ? "Hide API key" : "Reveal API key"}
             title={showKey ? "Hide" : "Reveal"}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
           >
-            {showKey ? "🙈" : "👁"}
+            {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
           </button>
         </div>
         <input
@@ -297,17 +320,20 @@ export function SettingsClient({
       </div>
 
       {!setup.authConfigured && (
-        <div className="setup-warning-banner">
-          <strong>⚠️ This dashboard has no login.</strong> Anyone who can reach its URL can view and change
-          everything here, including adding or removing API keys. Keys themselves are never displayed back —
-          only their last 4 characters — but treat this address as sensitive until access control is added.
+        <div className="setup-warning-banner" style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <AlertTriangle style={{ width: 18, height: 18, color: "var(--badge-amber-text)", flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <strong>This dashboard has no login.</strong> Anyone who can reach its URL can view and change
+            everything here, including adding or removing API keys. Keys themselves are never displayed back —
+            only their last 4 characters — but treat this address as sensitive until access control is added.
+          </div>
         </div>
       )}
 
       <GeminiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 
       <SetupCard
-        icon="✈️"
+        icon={<Send style={{ width: 22, height: 22, color: "var(--accent-cyan)" }} />}
         title="Telegram Bot"
         subtitle="Lets people file incident reports by chat"
         helpUrl="https://t.me/BotFather"
@@ -334,7 +360,7 @@ export function SettingsClient({
       </SetupCard>
 
       <SetupCard
-        icon="💬"
+        icon={<MessageCircle style={{ width: 22, height: 22, color: "var(--badge-green-text)" }} />}
         title="WhatsApp"
         subtitle="Optional — file reports over WhatsApp via Twilio"
         helpUrl="https://console.twilio.com/"
@@ -362,7 +388,11 @@ export function SettingsClient({
       </SetupCard>
 
       <form onSubmit={handleSave}>
-        <SetupCard icon="🏢" title="Report Branding" subtitle="Shown as the issuing organisation on PDF reports">
+        <SetupCard
+          icon={<Building2 style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />}
+          title="Report Branding"
+          subtitle="Shown as the issuing organisation on PDF reports"
+        >
           <label style={{ display: "block" }}>
             <span className="detail-field-label">Company / Consultancy Name</span>
             <input
@@ -378,11 +408,15 @@ export function SettingsClient({
 
         <div className="setup-save-bar">
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            Keys are hidden by default — click 👁 to reveal what you&apos;re typing
+            Keys are hidden by default — click reveal icon to view what you&apos;re typing
           </span>
-          {saved && <span style={{ fontSize: 12, color: "var(--badge-green-text)", fontWeight: 700 }}>✓ Saved</span>}
-          <button type="submit" className="btn-primary-modern" disabled={saving || !dirty}>
-            {saving ? "Saving…" : "💾 Save settings"}
+          {saved && (
+            <span style={{ fontSize: 12, color: "var(--badge-green-text)", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <Check style={{ width: 13, height: 13 }} /> Saved
+            </span>
+          )}
+          <button type="submit" className="btn-primary-modern" disabled={saving || !dirty} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <Save style={{ width: 14, height: 14 }} /> {saving ? "Saving…" : "Save settings"}
           </button>
         </div>
       </form>

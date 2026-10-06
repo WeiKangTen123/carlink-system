@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ClipboardCheck } from "lucide-react";
 import type { DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { reviewDamageItemAction } from "@/app/reports/actions";
@@ -76,8 +77,8 @@ export function CaseDamageTab({
       <div className="card-glass">
         <div className="card-header">
           <div>
-            <div className="card-title">
-              <span>📋</span> Damage &amp; Parts Checklist
+            <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ClipboardCheck style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Damage &amp; Parts Checklist
             </div>
             <div className="card-subtitle">
               {isSignedOff
