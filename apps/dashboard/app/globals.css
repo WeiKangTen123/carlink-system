@@ -95,6 +95,12 @@
   --series-6: #008300;
   --series-7: #9085e9;
   --series-8: #e66767;
+
+  /* Modern Scrollbar Tokens (Dark Mode: Floating capsule with Electric Cyan glow) */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(56, 189, 248, 0.6);
+  --scrollbar-thumb-active: rgba(56, 189, 248, 0.9);
 }
 
 /* 2. WHITE / LIGHT THEME (Clean Apple / Stripe Ice Slate + Royal Cobalt) */
@@ -175,6 +181,12 @@
   --series-6: #008300;
   --series-7: #4a3aa7;
   --series-8: #e34948;
+
+  /* Modern Scrollbar Tokens (Light Mode: Clean slate capsule) */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: rgba(100, 116, 139, 0.28);
+  --scrollbar-thumb-hover: rgba(51, 65, 85, 0.55);
+  --scrollbar-thumb-active: rgba(15, 23, 42, 0.75);
 }
 
 /* ==========================================================================
@@ -185,6 +197,52 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* ==========================================================================
+   MODERN MINIMALIST SCROLLBAR ENGINE (Cross-Browser WebKit & Standards)
+   ========================================================================== */
+
+/* 1. Standards-compliant for Firefox & modern spec */
+html, body, * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* 2. WebKit / Blink (Chrome, Edge, Safari, Brave, Opera) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 body {
