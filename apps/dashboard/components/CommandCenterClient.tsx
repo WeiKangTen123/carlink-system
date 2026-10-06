@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import {
   ShieldCheck,
@@ -16,7 +16,6 @@ import {
   CheckCircle2,
   MapPin,
   SlidersHorizontal,
-  ExternalLink,
   FileText,
   Layers,
   CarFront,
@@ -24,12 +23,17 @@ import {
   Download,
   Send,
   ClipboardCheck,
+  Navigation,
+  X,
+  Filter,
 } from "lucide-react";
 import type { ReportSummary, AnalyticsSummary } from "@/lib/api";
 import { fileUrl } from "@/lib/api";
 import { severityClass, caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
+import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 
 type Swimlane = "all" | "sje" | "tma" | "tp" | "dv";
+type QuickFilter = "all" | "urgent_sla" | "strip_down" | "sje_court" | "severe" | "high_quantum";
 
 interface Props {
   initialReports: ReportSummary[];
@@ -107,15 +111,43 @@ function getEstimatedCostSGD(r: ReportSummary): number {
 
 export function CommandCenterClient({ initialReports, analytics }: Props) {
   const [selectedSwimlane, setSelectedSwimlane] = useState<Swimlane>("all");
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
   const [selectedInsurer, setSelectedInsurer] = useState<string>("all");
   const [searchTerm, setSearchTerm] = useState<string>("");
+  const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
   const [chaserNotice, setChaserNotice] = useState<string | null>(null);
+  const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
+  const [sgtTime, setSgtTime] = useState<string>("");
 
-  // Compute domain financial indicators
+  // Live SGT (Asia/Singapore, UTC+8) Real-Time Clock Hook
+  useEffect(() => {
+    const updateTime = () => {
+      try {
+        const now = new Date();
+        const formatted = new Intl.DateTimeFormat("en-SG", {
+          timeZone: "Asia/Singapore",
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(now);
+        setSgtTime(formatted);
+      } catch {
+        setSgtTime(new Date().toLocaleTimeString());
+      }
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const reports = initialReports;
   const openCases = useMemo(() => reports.filter((r) => isAwaitingSignOff(r.status)), [reports]);
-  
+
   // Total assessed repair reserves
   const totalAssessedReservesSGD = useMemo(() => {
     return openCases.reduce((sum, r) => sum + getEstimatedCostSGD(r), 0);
@@ -134,16 +166,90 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
     });
   }, [openCases]);
 
-  // Filtered Caseload
+  // Dynamic swimlane counts
+  const sjeCount = useMemo(() => openCases.filter((r) => getClaimArchetype(r).key === "sje").length, [openCases]);
+  const tmaCount = useMemo(() => openCases.filter((r) => getClaimArchetype(r).key === "tma").length, [openCases]);
+  const tpCount = useMemo(() => openCases.filter((r) => {
+    const k = getClaimArchetype(r).key;
+    return k === "tp-conv" || k === "tp-direct";
+  }).length, [openCases]);
+  const dvAgingCount = useMemo(() => openCases.filter((r) => daysOpen(r.created_at) >= 2).length, [openCases]);
+
+  // Quick filter counts
+  const quickFilterCounts = useMemo(() => {
+    return {
+      urgent_sla: openCases.filter((r) => daysOpen(r.created_at) >= 2 || getClaimArchetype(r).key === "sje").length,
+      strip_down: openCases.filter((r) => !!r.disassembly_required).length,
+      sje_court: sjeCount,
+      severe: openCases.filter((r) => (r.severity_level || "").toLowerCase().includes("severe")).length,
+      high_quantum: openCases.filter((r) => getEstimatedCostSGD(r) >= 15000).length,
+    };
+  }, [openCases, sjeCount]);
+
+  // Insurer Exposure distribution and visual share bar
+  const insurerExposure = useMemo(() => {
+    const map = new Map<string, { count: number; totalCost: number }>();
+    openCases.forEach((r) => {
+      const ins = r.insurer_name || "Tokio Marine Singapore";
+      const cost = getEstimatedCostSGD(r);
+      const curr = map.get(ins) || { count: 0, totalCost: 0 };
+      map.set(ins, { count: curr.count + 1, totalCost: curr.totalCost + cost });
+    });
+
+    const colors = [
+      "#38bdf8", // Cyan / Sky
+      "#f59e0b", // Amber
+      "#10b981", // Emerald
+      "#a855f7", // Purple
+      "#ec4899", // Pink
+      "#64748b", // Slate
+    ];
+
+    const totalCount = openCases.length || 1;
+    const list: Array<{
+      name: string;
+      count: number;
+      totalCost: number;
+      pct: number;
+      color: string;
+    }> = [];
+
+    let colorIdx = 0;
+    map.forEach((val, key) => {
+      list.push({
+        name: key,
+        count: val.count,
+        totalCost: val.totalCost,
+        pct: Math.round((val.count / totalCount) * 100),
+        color: colors[colorIdx % colors.length],
+      });
+      colorIdx++;
+    });
+
+    return list.sort((a, b) => b.count - a.count);
+  }, [openCases]);
+
+  // Filtered Caseload Matrix
   const filteredCases = useMemo(() => {
     return openCases.filter((r) => {
-      // 1. Swimlane
       const arch = getClaimArchetype(r);
+      const cost = getEstimatedCostSGD(r);
+      const age = daysOpen(r.created_at);
+
+      // 1. Swimlane
       if (selectedSwimlane === "sje" && arch.key !== "sje") return false;
       if (selectedSwimlane === "tma" && arch.key !== "tma") return false;
       if (selectedSwimlane === "tp" && arch.key !== "tp-conv" && arch.key !== "tp-direct") return false;
+      if (selectedSwimlane === "dv" && age < 2) return false;
 
-      // 2. Cluster
+      // 2. Quick filter chip
+      if (quickFilter === "urgent_sla" && age < 2 && arch.key !== "sje") return false;
+      if (quickFilter === "strip_down" && !r.disassembly_required) return false;
+      if (quickFilter === "sje_court" && arch.key !== "sje") return false;
+      if (quickFilter === "severe" && !(r.severity_level || "").toLowerCase().includes("severe")) return false;
+      if (quickFilter === "high_quantum" && cost < 15000) return false;
+
+      // 3. Cluster
       if (selectedCluster) {
         const clusterDef = SG_CLUSTERS.find((c) => c.id === selectedCluster);
         if (clusterDef) {
@@ -153,13 +259,13 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         }
       }
 
-      // 3. Insurer
+      // 4. Insurer
       if (selectedInsurer !== "all") {
         const ins = (r.insurer_name || "").toLowerCase();
         if (!ins.includes(selectedInsurer.toLowerCase())) return false;
       }
 
-      // 4. Search
+      // 5. Search
       if (searchTerm.trim() !== "") {
         const q = searchTerm.toLowerCase();
         const haystack = `${r.id} ${r.plate_number || ""} ${r.vehicle_name || ""} ${r.location || ""} ${r.insurer_name || ""} ${r.workshop_assigned || ""}`.toLowerCase();
@@ -168,7 +274,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
 
       return true;
     });
-  }, [openCases, selectedSwimlane, selectedCluster, selectedInsurer, searchTerm]);
+  }, [openCases, selectedSwimlane, quickFilter, selectedCluster, selectedInsurer, searchTerm]);
 
   // Unique insurers list for filter dropdown
   const insurerOptions = useMemo(() => {
@@ -176,7 +282,6 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
     reports.forEach((r) => {
       if (r.insurer_name) set.add(r.insurer_name);
     });
-    // Add Singapore staple insurers if not present
     ["NTUC Income", "Tokio Marine", "AIG Singapore", "Great American", "MSIG"].forEach((i) => set.add(i));
     return Array.from(set);
   }, [reports]);
@@ -198,9 +303,36 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
     setTimeout(() => setChaserNotice(null), 6000);
   };
 
+  const handleExportDispatchSheet = () => {
+    const header = ["Case ID", "Plate Number", "Vehicle Model", "Archetype", "Insurer", "Location / Workshop", "Est Reserve (SGD)", "Days Open"];
+    const rows = filteredCases.map((r) => [
+      `"${r.id}"`,
+      `"${r.plate_number || "UNASSIGNED"}"`,
+      `"${(r.vehicle_name || "Motor Vehicle").replace(/"/g, '""')}"`,
+      `"${getClaimArchetype(r).label}"`,
+      `"${(r.insurer_name || "Tokio Marine Singapore").replace(/"/g, '""')}"`,
+      `"${(r.workshop_assigned || r.location || "ComfortDelGro Toh Guan").replace(/"/g, '""')}"`,
+      getEstimatedCostSGD(r),
+      daysOpen(r.created_at),
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [header.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.setAttribute("download", `carlink_surveyor_dispatch_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setDispatchNotice(`Exported ${filteredCases.length} vehicle dispatch manifest to CSV.`);
+    setTimeout(() => setDispatchNotice(null), 5000);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* 1. Header & Operational Status Strip */}
+      {/* 1. Header & Operational Status Strip with Live SGT Clock */}
       <div className="page-header" style={{ marginBottom: 0 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
@@ -208,6 +340,14 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 6px var(--badge-green-text)" }} />
               COMMAND CENTER LIVE
             </span>
+
+            {/* Live Singapore Standard Time (SGT) Clock */}
+            <span className="live-clock-badge">
+              <Clock style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+              <span>{sgtTime ? `${sgtTime} SGT` : "Singapore (UTC+8)"}</span>
+              <span className="live-clock-pulse" />
+            </span>
+
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               Principal Assessor: <strong style={{ color: "var(--text-primary)" }}>Patrick Ng</strong> (Forensic Loss Adjuster)
             </span>
@@ -224,6 +364,15 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={handleExportDispatchSheet}
+            className="btn-secondary-modern"
+            style={{ fontSize: 12, padding: "8px 14px" }}
+            title="Download CSV manifest for today's workshop inspection route"
+          >
+            <Download style={{ width: 14, height: 14 }} /> Export Dispatch Manifest
+          </button>
           <Link href="/analytics" className="btn-secondary-modern" style={{ fontSize: 12, padding: "8px 14px" }}>
             <SlidersHorizontal style={{ width: 14, height: 14 }} /> Analytics Hub
           </Link>
@@ -232,6 +381,15 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           </Link>
         </div>
       </div>
+
+      {dispatchNotice && (
+        <div style={{ padding: "8px 14px", borderRadius: 8, background: "var(--badge-green-bg)", border: "1px solid var(--badge-green-border)", color: "var(--badge-green-text)", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>{dispatchNotice}</span>
+          <button type="button" onClick={() => setDispatchNotice(null)} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>
+            <X style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
+      )}
 
       {/* 2. Critical SLA & Court Litigation Alerts Banner */}
       <div className="command-alert-box">
@@ -280,143 +438,239 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         </div>
       </div>
 
-      {/* 3. 5-Tier Operational & Financial KPI Cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14 }}>
+      {/* 3. 5-Tier Operational & Financial KPI Cards (Strict Equal Height Grid) */}
+      <div className="kpi-grid-command">
         {/* KPI 1 */}
-        <div className="kpi-card-glow">
-          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <ClipboardCheck style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Active Triage
+        <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-cyan)" } as React.CSSProperties}>
+          <div>
+            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <ClipboardCheck style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Active Triage
+            </div>
+            <div className="kpi-val" style={{ color: "var(--text-primary)", marginTop: 4 }}>{openCases.length} Cases</div>
           </div>
-          <div className="kpi-val" style={{ color: "var(--text-primary)" }}>{openCases.length} Cases</div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             {analytics.pending_review} awaiting sign-off &bull; {analytics.signed_off} archived
           </div>
         </div>
 
         {/* KPI 2 */}
-        <div className="kpi-card-glow">
-          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Assessed Reserves
+        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-green-text)" } as React.CSSProperties}>
+          <div>
+            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Assessed Reserves
+            </div>
+            <div className="kpi-val" style={{ color: "var(--badge-green-text)", marginTop: 4 }}>
+              ${(totalAssessedReservesSGD).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
+            </div>
           </div>
-          <div className="kpi-val" style={{ color: "var(--badge-green-text)" }}>
-            ${(totalAssessedReservesSGD).toLocaleString()} <span style={{ fontSize: 14 }}>SGD</span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             Cumulative open claims quantum
           </div>
         </div>
 
         {/* KPI 3 */}
-        <div className="kpi-card-glow">
-          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <ShieldCheck style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> Quantum Savings
+        <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-primary)" } as React.CSSProperties}>
+          <div>
+            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <ShieldCheck style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> Quantum Savings
+            </div>
+            <div className="kpi-val" style={{ color: "var(--accent-primary)", marginTop: 4 }}>
+              ${(estimatedSavingsSGD).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
+            </div>
           </div>
-          <div className="kpi-val" style={{ color: "var(--accent-primary)" }}>
-            ${(estimatedSavingsSGD).toLocaleString()} <span style={{ fontSize: 14 }}>SGD</span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             ~21% negotiated indemnity delta
           </div>
         </div>
 
         {/* KPI 4 */}
-        <div className="kpi-card-glow">
-          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Flame style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} /> SJE / TMA Active
+        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-red-text)" } as React.CSSProperties}>
+          <div>
+            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Flame style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} /> SJE / TMA Active
+            </div>
+            <div className="kpi-val" style={{ color: "var(--badge-red-text)", marginTop: 4 }}>
+              {highStakesCases.length} <span style={{ fontSize: 13, fontWeight: 600 }}>High-Stakes</span>
+            </div>
           </div>
-          <div className="kpi-val" style={{ color: "var(--badge-red-text)" }}>
-            {highStakesCases.length || 4} <span style={{ fontSize: 14 }}>High-Stakes</span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             Court evidence &amp; crash cushions
           </div>
         </div>
 
         {/* KPI 5 */}
-        <div className="kpi-card-glow">
-          <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Fee Aging Backlog
+        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-amber-text)" } as React.CSSProperties}>
+          <div>
+            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Fee Aging Backlog
+            </div>
+            <div className="kpi-val" style={{ color: "var(--badge-amber-text)", marginTop: 4 }}>
+              $46,200 <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
+            </div>
           </div>
-          <div className="kpi-val" style={{ color: "var(--badge-amber-text)" }}>
-            $46,200 <span style={{ fontSize: 14 }}>SGD</span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             Workshop discharge voucher recovery
           </div>
         </div>
       </div>
 
-      {/* 4. Triage Swimlanes Filter Bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-        <div className="swimlane-tab-bar" style={{ margin: 0 }}>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("all")}
-          >
-            All Open ({openCases.length})
-          </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("sje")}
-          >
-            SJE Court Disputes (2)
-          </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("tma")}
-          >
-            TMA Expressway (2)
-          </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("tp")}
-          >
-            TP Conventional (6)
-          </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "dv" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("dv")}
-          >
-            DV &amp; Fee Aging (4)
-          </button>
+      {/* 4. Triage Swimlanes & Quick Triage Filter Chips Bar */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          {/* Main Swimlane Tabs with dynamic database counters */}
+          <div className="swimlane-tab-bar" style={{ margin: 0 }}>
+            <button
+              type="button"
+              className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`}
+              onClick={() => setSelectedSwimlane("all")}
+            >
+              All Open ({openCases.length})
+            </button>
+            <button
+              type="button"
+              className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`}
+              onClick={() => setSelectedSwimlane("sje")}
+            >
+              SJE Court ({sjeCount})
+            </button>
+            <button
+              type="button"
+              className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`}
+              onClick={() => setSelectedSwimlane("tma")}
+            >
+              TMA Expressway ({tmaCount})
+            </button>
+            <button
+              type="button"
+              className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`}
+              onClick={() => setSelectedSwimlane("tp")}
+            >
+              TP Conventional ({tpCount})
+            </button>
+            <button
+              type="button"
+              className={`swimlane-tab ${selectedSwimlane === "dv" ? "active" : ""}`}
+              onClick={() => setSelectedSwimlane("dv")}
+            >
+              DV &amp; Aging ({dvAgingCount})
+            </button>
+          </div>
+
+          {/* Search Input */}
+          <div style={{ position: "relative", minWidth: 260 }}>
+            <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "var(--text-muted)" }} />
+            <input
+              type="text"
+              placeholder="Search plate, insurer, or cluster..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "7px 12px 7px 32px",
+                borderRadius: 8,
+                border: "1px solid var(--border-color)",
+                background: "var(--surface-card)",
+                color: "var(--text-primary)",
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+          </div>
         </div>
 
-        {/* Search Input */}
-        <div style={{ position: "relative", minWidth: 260 }}>
-          <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "var(--text-muted)" }} />
-          <input
-            type="text"
-            placeholder="Search plate, insurer, or cluster..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "7px 12px 7px 32px",
-              borderRadius: 8,
-              border: "1px solid var(--border-color)",
-              background: "var(--surface-card)",
-              color: "var(--text-primary)",
-              fontSize: 12,
-              outline: "none",
-            }}
-          />
+        {/* Quick Triage Filter Chips */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+            <Filter style={{ width: 12, height: 12 }} /> Quick Filter:
+          </span>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "all" ? "active" : ""}`}
+            onClick={() => setQuickFilter("all")}
+          >
+            All Active
+          </button>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "urgent_sla" ? "active" : ""}`}
+            onClick={() => setQuickFilter(quickFilter === "urgent_sla" ? "all" : "urgent_sla")}
+          >
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-red-text)" }} />
+            Urgent SLA &le;6h ({quickFilterCounts.urgent_sla})
+          </button>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "strip_down" ? "active" : ""}`}
+            onClick={() => setQuickFilter(quickFilter === "strip_down" ? "all" : "strip_down")}
+          >
+            <Wrench style={{ width: 11, height: 11, color: "var(--badge-amber-text)" }} />
+            Strip-Down Req ({quickFilterCounts.strip_down})
+          </button>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "sje_court" ? "active" : ""}`}
+            onClick={() => setQuickFilter(quickFilter === "sje_court" ? "all" : "sje_court")}
+          >
+            SJE Court Docket ({quickFilterCounts.sje_court})
+          </button>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "severe" ? "active" : ""}`}
+            onClick={() => setQuickFilter(quickFilter === "severe" ? "all" : "severe")}
+          >
+            Severe Structural ({quickFilterCounts.severe})
+          </button>
+
+          <button
+            type="button"
+            className={`quick-filter-chip ${quickFilter === "high_quantum" ? "active" : ""}`}
+            onClick={() => setQuickFilter(quickFilter === "high_quantum" ? "all" : "high_quantum")}
+          >
+            High Quantum &gt;$15k ({quickFilterCounts.high_quantum})
+          </button>
+
+          {(quickFilter !== "all" || selectedCluster || selectedInsurer !== "all" || searchTerm) && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuickFilter("all");
+                setSelectedCluster(null);
+                setSelectedInsurer("all");
+                setSearchTerm("");
+              }}
+              style={{
+                fontSize: 11,
+                background: "none",
+                border: "none",
+                color: "var(--accent-cyan)",
+                cursor: "pointer",
+                textDecoration: "underline",
+                marginLeft: 4,
+              }}
+            >
+              Reset Filters
+            </button>
+          )}
         </div>
       </div>
 
-      {/* 5. Main Split Grid: 65% Caseload Triage Matrix / 35% Route Logistics & DV Aging */}
+      {/* 5. Main Split Grid: Caseload Triage Matrix / Route Logistics & DV Aging */}
       <div className="command-grid" style={{ marginTop: 0 }}>
         {/* Left Column: Caseload Triage Matrix */}
         <div className="card-glass triage-table-card">
-          <div className="card-header">
+          <div className="card-header" style={{ marginBottom: 12 }}>
             <div>
               <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <CarFront style={{ width: 18, height: 18, color: "var(--accent-primary)" }} />
                 <span>Caseload Triage Matrix</span>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: "var(--surface-hover)", color: "var(--text-secondary)" }}>
+                  {filteredCases.length} {filteredCases.length === 1 ? "case" : "cases"}
+                </span>
               </div>
               <div className="card-subtitle">
                 Prioritized by court deadlines, GIA 48h SLA window, and structural severity
@@ -447,6 +701,49 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             </div>
           </div>
 
+          {/* Interactive Insurer Exposure Share Mini-Bar */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, marginBottom: 5 }}>
+              <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>Insurer Portfolio Exposure:</span>
+              <span style={{ fontSize: 10, color: "var(--text-muted)" }}>Click segment to isolate caseload</span>
+            </div>
+            <div className="insurer-exposure-track">
+              {insurerExposure.map((item) => (
+                <div
+                  key={item.name}
+                  className="insurer-exposure-segment"
+                  style={{
+                    width: `${Math.max(item.pct, 4)}%`,
+                    background: item.color,
+                    opacity: selectedInsurer === "all" || selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? 1 : 0.35,
+                  }}
+                  title={`${item.name}: ${item.count} cases (${item.pct}%) - $${item.totalCost.toLocaleString()} SGD`}
+                  onClick={() => setSelectedInsurer(selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? "all" : item.name)}
+                />
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontSize: 10 }}>
+              {insurerExposure.slice(0, 4).map((item) => (
+                <span
+                  key={item.name}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    color: selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? "var(--accent-cyan)" : "var(--text-muted)",
+                    cursor: "pointer",
+                    fontWeight: selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? 700 : 500,
+                  }}
+                  onClick={() => setSelectedInsurer(selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? "all" : item.name)}
+                >
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: item.color }} />
+                  {item.name} ({item.count})
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Table Container with Sticky Headers & No Overflow Issues */}
           <div className="triage-table-wrapper">
             <table className="triage-table">
               <thead>
@@ -454,9 +751,9 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   <th>Vehicle Registration</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
-                  <th>Reserve ($)</th>
+                  <th className="col-reserve">Reserve ($ SGD)</th>
                   <th>SLA Window</th>
-                  <th style={{ textAlign: "right" }}>Actions</th>
+                  <th className="col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -485,11 +782,11 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                           )}
                           <div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <span className="badge-plate-glow" style={{ fontSize: 11, padding: "2px 8px" }}>
+                              <span className="badge-plate-command">
                                 {r.plate_number || r.id.slice(0, 8).toUpperCase()}
                               </span>
                             </div>
-                            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                            <div className="triage-cell-truncate" style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                               {r.vehicle_name || "Motor Vehicle"} &bull; {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
                             </div>
                           </div>
@@ -538,16 +835,16 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
 
                       <td>
                         <div style={{ fontSize: 11 }}>
-                          <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+                          <div className="triage-cell-truncate" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                             {r.insurer_name || "Tokio Marine Singapore"}
                           </div>
-                          <div style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 1 }}>
+                          <div className="triage-cell-truncate" style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 1 }}>
                             {r.workshop_assigned || r.location || "ComfortDelGro Toh Guan"}
                           </div>
                         </div>
                       </td>
 
-                      <td>
+                      <td className="col-reserve">
                         <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: "var(--accent-cyan)" }}>
                           ${cost.toLocaleString()}
                         </div>
@@ -573,14 +870,29 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                         </div>
                       </td>
 
-                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                        <Link
-                          href={`/reports/${r.id}`}
-                          className="btn-primary-modern"
-                          style={{ fontSize: 11, padding: "4px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}
-                        >
-                          Studio <ArrowRight style={{ width: 12, height: 12 }} />
-                        </Link>
+                      <td className="col-actions">
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewReport(r)}
+                            className="btn-secondary-modern"
+                            style={{ fontSize: 11, padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 4 }}
+                            title="Instant in-console PDF preview"
+                          >
+                            <FileText style={{ width: 12, height: 12, color: "var(--accent-primary)" }} />
+                            <span>Preview</span>
+                          </button>
+
+                          <Link
+                            href={`/reports/${r.id}`}
+                            className="btn-primary-modern"
+                            style={{ fontSize: 11, padding: "4px 9px", display: "inline-flex", alignItems: "center", gap: 3 }}
+                            title="Open Full Loss Adjuster Studio"
+                          >
+                            <span>Studio</span>
+                            <ArrowRight style={{ width: 12, height: 12 }} />
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -600,7 +912,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
 
         {/* Right Column: Singapore Workshop Cluster Route Logistics & DV Fee Recovery */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          {/* Card A: Singapore Workshop Cluster Logistics */}
+          {/* Card A: Singapore Workshop Cluster Logistics & Route Circuit */}
           <div className="card-glass">
             <div className="card-header" style={{ marginBottom: 12 }}>
               <div>
@@ -609,7 +921,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   <span>Singapore Workshop Clusters</span>
                 </div>
                 <div className="card-subtitle">
-                  Today&apos;s physical loss adjuster survey routes
+                  Physical surveyor inspection route order
                 </div>
               </div>
               {selectedCluster && (
@@ -621,6 +933,20 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   Clear Filter
                 </button>
               )}
+            </div>
+
+            {/* Surveyor Route Order Circuit */}
+            <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 8, background: "var(--surface-hover)", border: "1px solid var(--border-color)" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em", marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
+                <Navigation style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} /> Recommended Route Order
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                <span className="route-circuit-step">1. West (Toh Guan)</span>
+                <span className="route-circuit-arrow">&rarr;</span>
+                <span className="route-circuit-step">2. North (Sin Ming)</span>
+                <span className="route-circuit-arrow">&rarr;</span>
+                <span className="route-circuit-step">3. East (Kaki Bukit)</span>
+              </div>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -753,6 +1079,17 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           </div>
         </div>
       </div>
+
+      {/* In-Console Lightbox PDF Preview Modal */}
+      {previewReport && (
+        <PdfPreviewModal
+          reportId={previewReport.id}
+          reportCode={previewReport.plate_number || previewReport.id.slice(0, 8).toUpperCase()}
+          isOpen={true}
+          onClose={() => setPreviewReport(null)}
+          trigger={null}
+        />
+      )}
     </div>
   );
 }

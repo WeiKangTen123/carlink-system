@@ -2166,6 +2166,53 @@ a:hover {
   color: var(--accent-cyan);
 }
 
+.live-clock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.live-clock-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--badge-green-text);
+  box-shadow: 0 0 6px var(--badge-green-text);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.route-circuit-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.route-circuit-arrow {
+  color: var(--accent-cyan);
+  font-weight: 800;
+  font-size: 12px;
+}
+
 .command-alert-box {
   background: var(--surface-card);
   backdrop-filter: blur(16px);
@@ -2174,7 +2221,7 @@ a:hover {
   border-left: 4px solid var(--badge-amber-text);
   border-radius: 12px;
   padding: 14px 18px;
-  margin-bottom: 22px;
+  margin-bottom: 20px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2183,7 +2230,7 @@ a:hover {
 
 .command-alert-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
@@ -2194,6 +2241,64 @@ a:hover {
 .command-alert-item:last-child {
   padding-bottom: 0;
   border-bottom: none;
+}
+
+/* 5-Column Equal-Height KPI Grid */
+.kpi-grid-command {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1380px) {
+  .kpi-grid-command {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .kpi-grid-command {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .kpi-grid-command {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kpi-card-command {
+  background: var(--surface-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition-smooth);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 110px;
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card-command:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-card-command::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--kpi-border, var(--accent-primary));
 }
 
 .command-grid {
@@ -2209,12 +2314,12 @@ a:hover {
   }
 }
 
+/* Swimlanes & Quick Triage Filter Bar */
 .swimlane-tab-bar {
   display: flex;
   gap: 8px;
   overflow-x: auto;
   padding-bottom: 4px;
-  margin-bottom: 16px;
   scrollbar-width: thin;
 }
 
@@ -2247,13 +2352,68 @@ a:hover {
   box-shadow: 0 0 10px var(--accent-glow);
 }
 
-.triage-table-card {
+/* 1-Click Quick Triage Filter Chips */
+.quick-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px dashed var(--border-color);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+
+.quick-filter-chip:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.quick-filter-chip.active {
+  border-style: solid;
+  border-color: var(--accent-cyan);
+  background: var(--surface-elevated);
+  color: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* Insurer Exposure Bar */
+.insurer-exposure-track {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface-hover);
+  display: flex;
   overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.insurer-exposure-segment {
+  height: 100%;
+  cursor: pointer;
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+
+.insurer-exposure-segment:hover {
+  filter: brightness(1.25);
+}
+
+/* Caseload Triage Table */
+.triage-table-card {
+  display: flex;
+  flex-direction: column;
 }
 
 .triage-table-wrapper {
   overflow-x: auto;
-  margin: 0 -20px -20px -20px;
+  overflow-y: auto;
+  max-height: 560px;
+  margin: 0 -24px -20px -24px;
+  scrollbar-width: thin;
 }
 
 .triage-table {
@@ -2263,6 +2423,9 @@ a:hover {
 }
 
 .triage-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   text-align: left;
   padding: 10px 16px;
   font-size: 10px;
@@ -2270,13 +2433,13 @@ a:hover {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-  background: var(--surface-hover);
+  background: var(--surface-card-solid);
   border-bottom: 1px solid var(--border-color);
   white-space: nowrap;
 }
 
 .triage-table td {
-  padding: 12px 16px;
+  padding: 11px 16px;
   border-bottom: 1px solid var(--border-color);
   vertical-align: middle;
 }
@@ -2289,8 +2452,55 @@ a:hover {
   border-bottom: none;
 }
 
+.triage-table th.col-reserve,
+.triage-table td.col-reserve {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-right: 18px;
+}
+
+.triage-table th.col-center,
+.triage-table td.col-center {
+  text-align: center;
+}
+
+.triage-table th.col-actions,
+.triage-table td.col-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.triage-cell-truncate {
+  max-width: 165px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Theme-Adaptive Plate Badge */
+.badge-plate-command {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  display: inline-block;
+  background: #090d16;
+  color: #f8fafc;
+  border: 1px solid var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+[data-theme="light"] .badge-plate-command {
+  background: #0f172a;
+  color: #ffffff;
+  border: 1px solid #2563eb;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.2);
+}
+
 .cluster-card {
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-radius: 10px;
   border: 1px solid var(--border-color);
   background: var(--surface-card);
@@ -2321,4 +2531,5 @@ a:hover {
   height: 100%;
   transition: width 0.3s ease;
 }
+
 

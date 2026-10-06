@@ -10,16 +10,32 @@ export function PdfPreviewModal({
   pdfUrl,
   reportCode,
   autoOpen = false,
+  isOpen: controlledIsOpen,
+  onClose: controlledOnClose,
+  trigger,
 }: {
   reportId: string;
   pdfUrl?: string | null;
   reportCode: string;
   autoOpen?: boolean;
+  isOpen?: boolean;
+  onClose?: () => void;
+  trigger?: React.ReactNode;
 }) {
-  const [isOpen, setIsOpen] = useState(autoOpen);
+  const [internalIsOpen, setInternalIsOpen] = useState(autoOpen);
   const [wasAutoOpened] = useState(autoOpen);
   const router = useRouter();
   const pathname = usePathname();
+
+  const isControlled = controlledIsOpen !== undefined;
+  const isOpen = isControlled ? controlledIsOpen : internalIsOpen;
+  const handleClose = () => {
+    if (isControlled) {
+      controlledOnClose?.();
+    } else {
+      setInternalIsOpen(false);
+    }
+  };
 
   useEffect(() => {
     if (autoOpen) {
@@ -30,7 +46,7 @@ export function PdfPreviewModal({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsOpen(false);
+      if (e.key === "Escape") handleClose();
     };
     if (isOpen) window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -42,24 +58,32 @@ export function PdfPreviewModal({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setIsOpen(true)}
-        className="btn-secondary-modern"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          cursor: "pointer",
-        }}
-      >
-        <FileText style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-        <span>Preview &amp; Download PDF</span>
-      </button>
+      {trigger !== null && (
+        trigger !== undefined ? (
+          <span onClick={() => isControlled ? undefined : setInternalIsOpen(true)}>
+            {trigger}
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setInternalIsOpen(true)}
+            className="btn-secondary-modern"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
+          >
+            <FileText style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
+            <span>Preview &amp; Download PDF</span>
+          </button>
+        )
+      )}
 
       {isOpen && (
         <div
-          onClick={() => setIsOpen(false)}
+          onClick={handleClose}
           style={{
             position: "fixed",
             inset: 0,
@@ -124,7 +148,7 @@ export function PdfPreviewModal({
 
               <button
                 type="button"
-                onClick={() => setIsOpen(false)}
+                onClick={handleClose}
                 style={{
                   background: "rgba(255,255,255,0.12)",
                   border: "none",
