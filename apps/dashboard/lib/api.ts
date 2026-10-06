@@ -179,6 +179,14 @@ export type ReportSummary = {
   vehicle_name: string | null;
   severity_level: string | null;
   damage_count: number;
+  accident_type?: string | null;
+  estimated_repair_cost?: string | null;
+  final_approved_cost?: string | null;
+  insurer_name?: string | null;
+  workshop_assigned?: string | null;
+  claim_type?: string | null;
+  disassembly_required?: boolean;
+  reported_to_police?: boolean;
 };
 
 export type ReportData = {

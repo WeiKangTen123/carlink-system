@@ -80,6 +80,9 @@ def list_reports() -> list[dict]:
             # page's priority queue rank and label cases without having to
             # fetch every full report just to read two fields.
             damage_items = data.get("damage_summary") or data.get("damaged_parts") or []
+            insurance = data.get("insurance_details") or {}
+            recommendations = data.get("recommendations") or {}
+            police_report = data.get("police_report") or {}
             result.append({
                 "id": r.id,
                 "type": r.type,
@@ -93,6 +96,14 @@ def list_reports() -> list[dict]:
                 "vehicle_name": vehicle_name,
                 "severity_level": data.get("severity_level"),
                 "damage_count": len(damage_items),
+                "accident_type": data.get("accident_type"),
+                "estimated_repair_cost": insurance.get("estimated_repair_cost"),
+                "final_approved_cost": insurance.get("final_approved_cost"),
+                "insurer_name": insurance.get("insurer_name"),
+                "workshop_assigned": insurance.get("workshop_assigned"),
+                "claim_type": insurance.get("claim_type"),
+                "disassembly_required": recommendations.get("disassembly_required"),
+                "reported_to_police": police_report.get("reported_to_police"),
             })
         return result
     finally:
