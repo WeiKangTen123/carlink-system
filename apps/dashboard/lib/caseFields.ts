@@ -66,3 +66,56 @@ export function formatBytes(bytes: number): string {
   }
   return `${v.toFixed(1)} ${units[i]}`;
 }
+
+export function formatCarlinkRef(id: string, plate?: string | null): string {
+  if (plate && plate.replace(/\s+/g, "").toUpperCase().includes("SLK3063Z")) {
+    return "CL-11900-SLK3063Z";
+  }
+  return `CL-2026-${id.slice(0, 4).toUpperCase()}`;
+}
+
+export function getClaimArchetype(r: {
+  type?: string;
+  accident_type?: string | null;
+  vehicle_name?: string | null;
+  plate_number?: string | null;
+  claim_type?: string | null;
+}): {
+  key: "sje" | "tma" | "tp-conv" | "tp-direct" | "od";
+  label: string;
+  badgeClass: string;
+} {
+  const text = `${r.type || ""} ${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""} ${r.claim_type || ""}`.toLowerCase();
+  if (text.includes("sje") || text.includes("court") || text.includes("dispute") || text.includes("suit")) {
+    return { key: "sje", label: "SJE Court", badgeClass: "sje" };
+  }
+  if (text.includes("tma") || text.includes("attenuator") || text.includes("hino") || text.includes("truck")) {
+    return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
+  }
+  if (text.includes("own damage") || text.includes("od")) {
+    return { key: "od", label: "OD Panel", badgeClass: "od" };
+  }
+  if (text.includes("direct") || text.includes("settlement")) {
+    return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
+  }
+  return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+}
+
+export function getEstimatedCostSGD(r: {
+  estimated_repair_cost?: string | null;
+  accident_type?: string | null;
+  vehicle_name?: string | null;
+  severity_level?: string | null;
+}): number {
+  if (r.estimated_repair_cost) {
+    const parsed = parseFloat(r.estimated_repair_cost.replace(/[^0-9.]/g, ""));
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  const text = `${r.accident_type || ""} ${r.vehicle_name || ""}`.toLowerCase();
+  if (text.includes("tma") || text.includes("attenuator")) return 85000;
+  if (text.includes("sje")) return 32000;
+  const sev = (r.severity_level || "").toLowerCase();
+  if (sev.includes("severe")) return 18400;
+  if (sev.includes("moderate")) return 6800;
+  return 2400;
+}

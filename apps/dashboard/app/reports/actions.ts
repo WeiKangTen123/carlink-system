@@ -23,6 +23,14 @@ export async function deleteReportAction(formData: FormData) {
   redirect("/reports");
 }
 
+export async function getReportDetailAction(id: string) {
+  try {
+    return await getReport(id);
+  } catch {
+    return null;
+  }
+}
+
 /** Runs on the server so the browser never talks to the API's port
  * directly (avoids CORS) -- called imperatively from the client component,
  * not via <form action>, since the result drives React state (auto-filling
