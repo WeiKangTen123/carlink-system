@@ -187,6 +187,7 @@ export type ReportSummary = {
   claim_type?: string | null;
   disassembly_required?: boolean;
   reported_to_police?: boolean;
+  incident_datetime?: string | null;
 };
 
 export type ReportData = {
@@ -528,4 +529,21 @@ export async function deleteReport(id: string): Promise<void> {
 export function fileUrl(path: string): string {
   return path.startsWith("http") ? path : `${CLIENT_FILES_BASE_URL}${path}`;
 }
+
+export async function aiEnrichReport(id: string): Promise<{ id: string; status: string; data: ReportData }> {
+  const res = await fetch(`${API_BASE_URL}/reports/${id}/ai-enrich`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`AI enrich failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function aiEnrichAllReports(): Promise<{ status: string; enriched_count: number }> {
+  const res = await fetch(`${API_BASE_URL}/reports/ai-enrich-all`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Batch AI enrich failed: ${res.statusText}`);
+  return res.json();
+}
+
 

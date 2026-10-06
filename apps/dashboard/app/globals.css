@@ -2574,28 +2574,63 @@ a:hover {
 
 .workstation-split-container {
   display: grid;
-  grid-template-columns: 390px 1fr;
+  grid-template-columns: 400px 1fr;
   gap: 16px;
-  min-height: 680px;
-  max-height: calc(100vh - 210px);
+  height: calc(100vh - 200px);
+  min-height: 540px;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1380px) {
   .workstation-split-container {
-    grid-template-columns: 340px 1fr;
+    grid-template-columns: 360px 1fr;
   }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .workstation-split-container {
     grid-template-columns: 1fr;
+    height: auto;
     max-height: none;
+    overflow: visible;
   }
+}
+
+/* Compact Executive Metric Strip (Replaces tall bulky cards) */
+.kpi-strip-command {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kpi-chip-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  transition: var(--transition-smooth);
+}
+
+.kpi-chip-metric:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
+}
+
+.kpi-chip-metric .metric-val {
+  font-weight: 800;
+  font-family: var(--font-mono);
 }
 
 .case-queue-pane {
   display: flex;
   flex-direction: column;
+  height: 100%;
   overflow: hidden;
   background: var(--surface-card);
   border: 1px solid var(--border-color);
@@ -2603,17 +2638,18 @@ a:hover {
 }
 
 .case-queue-header {
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: var(--surface-card-solid);
+  flex-shrink: 0;
 }
 
 .case-queue-scrollable {
   overflow-y: auto;
-  padding: 12px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2622,7 +2658,7 @@ a:hover {
 }
 
 .case-queue-item {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: 8px;
   background: var(--surface-card);
   border: 1px solid var(--border-color);
@@ -2630,7 +2666,7 @@ a:hover {
   transition: var(--transition-smooth);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   position: relative;
 }
 
@@ -2661,19 +2697,53 @@ a:hover {
 .case-dossier-pane {
   display: flex;
   flex-direction: column;
+  height: 100%;
   overflow-y: auto;
   background: var(--surface-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  padding: 20px;
-  gap: 16px;
+  padding: 18px 20px;
+  gap: 14px;
   scrollbar-width: thin;
+}
+
+/* Dossier Statutory Audit Strip */
+.dossier-audit-strip {
+  background: var(--surface-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.dossier-audit-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dossier-audit-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dossier-audit-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 
 .dossier-hero-frame {
   position: relative;
   width: 100%;
-  height: 320px;
+  height: 300px;
   border-radius: 10px;
   overflow: hidden;
   background: #000000;
@@ -2720,6 +2790,7 @@ a:hover {
   height: 100%;
   object-fit: cover;
 }
+
 
 
 

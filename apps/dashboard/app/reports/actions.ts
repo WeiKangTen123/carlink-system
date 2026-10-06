@@ -140,3 +140,28 @@ export async function reopenReportAction(id: string) {
   revalidatePath(`/reports/${id}`);
   revalidatePath("/reports");
 }
+
+export async function aiEnrichReportAction(id: string) {
+  try {
+    const { aiEnrichReport } = await import("@/lib/api");
+    const res = await aiEnrichReport(id);
+    revalidatePath("/reports");
+    revalidatePath(`/reports/${id}`);
+    return { ok: true, report: res };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to enrich report" };
+  }
+}
+
+export async function aiEnrichAllReportsAction() {
+  try {
+    const { aiEnrichAllReports } = await import("@/lib/api");
+    const res = await aiEnrichAllReports();
+    revalidatePath("/reports");
+    revalidatePath("/");
+    return { ok: true, count: res.enriched_count };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to batch enrich reports" };
+  }
+}
+

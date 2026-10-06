@@ -9,29 +9,24 @@ import {
   ArrowRight,
   ShieldCheck,
   Layers,
-  TrendingUp,
   Filter,
   Wrench,
   Flame,
   DollarSign,
   CarFront,
   FileText,
-  ChevronRight,
   Columns3,
   LayoutGrid,
   AlertTriangle,
-  ExternalLink,
   Calendar,
-  MapPin,
   Building2,
-  Tag,
-  Eye,
-  X,
   Plus,
   Sparkles,
+  RefreshCw,
+  Send,
+  SlidersHorizontal,
 } from "lucide-react";
 import { type ReportSummary, type ReportDetail, type AnalyticsSummary, fileUrl } from "@/lib/api";
-import { ChannelBadge } from "@/components/ChannelBadge";
 import { DeleteButton } from "@/components/DeleteButton";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
@@ -42,8 +37,18 @@ import {
   getEstimatedCostSGD,
   formatCarlinkRef,
   severityClass,
+  inferVehicleName,
+  inferInsurerName,
+  inferWorkshopName,
+  formatSgtDateTime,
+  formatIncidentTime,
+  getGiaSla,
 } from "@/lib/caseFields";
-import { getReportDetailAction } from "./actions";
+import {
+  getReportDetailAction,
+  aiEnrichReportAction,
+  aiEnrichAllReportsAction,
+} from "./actions";
 
 type ViewMode = "split" | "matrix";
 type Swimlane = "all" | "sje" | "tma" | "tp" | "od" | "signed";
@@ -54,17 +59,36 @@ interface Props {
   initialAnalytics?: AnalyticsSummary | null;
 }
 
-function getClusterName(locationOrWorkshop?: string | null): string {
-  if (!locationOrWorkshop) return "Central District";
-  const text = locationOrWorkshop.toLowerCase();
-  if (text.includes("toh guan") || text.includes("jurong") || text.includes("tuas") || text.includes("pioneer")) return "Toh Guan (West)";
-  if (text.includes("sin ming") || text.includes("amk") || text.includes("bishan")) return "Sin Ming (North)";
-  if (text.includes("kaki bukit") || text.includes("autobay") || text.includes("eunos") || text.includes("bedok")) return "Kaki Bukit (East)";
-  if (text.includes("ubi") || text.includes("defu") || text.includes("payar lebar")) return "Ubi / Defu (East)";
-  return "Singapore Hub";
-}
+const PART_PRICES_MAP: Record<string, number> = {
+  "Front Bumper": 1250,
+  "Rear Bumper": 1150,
+  "Bonnet": 1850,
+  "Boot Lid": 1650,
+  "Front Grille": 650,
+  "Radiator": 1400,
+  "Front Subframe": 3800,
+  "Left Headlamp": 1450,
+  "Right Headlamp": 1450,
+  "Left Tail Lamp": 950,
+  "Right Tail Lamp": 950,
+  "Front Windscreen": 1600,
+  "Rear Windscreen": 1400,
+  "Left Front Fender": 1350,
+  "Right Front Fender": 1350,
+  "Left Rear Quarter Panel": 2200,
+  "Right Rear Quarter Panel": 2200,
+  "Left Front Door": 1950,
+  "Right Front Door": 1950,
+  "Left Rear Door": 1950,
+  "Right Rear Door": 1950,
+  "Left Wing Mirror": 850,
+  "Right Wing Mirror": 850,
+  "Roof Panel": 2600,
+  "Underbody Shield": 750,
+};
 
 export function ReportsClient({ initialReports, initialAnalytics }: Props) {
+  const [reportsList, setReportsList] = useState<ReportSummary[]>(initialReports || []);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedInsurer, setSelectedInsurer] = useState("all");
@@ -78,6 +102,18 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [activeDetail, setActiveDetail] = useState<ReportDetail | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
+
+  // AI Enrichment state
+  const [isEnrichingCurrent, setIsEnrichingCurrent] = useState(false);
+  const [isEnrichingAll, setIsEnrichingAll] = useState(false);
+  const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
+
+  // Sync initialReports if updated
+  useEffect(() => {
+    if (initialReports) {
+      setReportsList(initialReports);
+    }
+  }, [initialReports]);
 
   // Load view mode preference from localStorage
   useEffect(() => {
@@ -100,15 +136,14 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     }
   };
 
-  const reportsList = initialReports || [];
-
   // Insurer Options list
   const insurerOptions = useMemo(() => {
     const set = new Set<string>();
     reportsList.forEach((r) => {
-      if (r.insurer_name) set.add(r.insurer_name);
+      const ins = inferInsurerName(r);
+      if (ins) set.add(ins);
     });
-    ["NTUC Income", "Tokio Marine", "AIG Singapore", "Great American", "MSIG"].forEach((i) => set.add(i));
+    ["Tokio Marine Insurance Singapore", "NTUC Income Insurance Co-operative", "AIG Asia Pacific Insurance", "Great American Insurance Company"].forEach((i) => set.add(i));
     return Array.from(set);
   }, [reportsList]);
 
@@ -122,7 +157,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   );
   const urgentCount = useMemo(
     () =>
-      reportsList.filter((r) => isAwaitingSignOff(r.status) && (daysOpen(r.created_at) >= 2 || getClaimArchetype(r).key === "sje")).length,
+      reportsList.filter((r) => {
+        const sla = getGiaSla(r.created_at, r.status === "Signed Off");
+        return sla.status === "critical" || sla.status === "expired";
+      }).length,
     [reportsList]
   );
   const highStakesCount = useMemo(
@@ -138,8 +176,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     return reportsList.filter((r) => {
       const arch = getClaimArchetype(r);
       const cost = getEstimatedCostSGD(r);
-      const age = daysOpen(r.created_at);
       const isSigned = r.status === "Signed Off";
+      const sla = getGiaSla(r.created_at, isSigned);
+      const vehicle = inferVehicleName(r);
+      const insurer = inferInsurerName(r);
+      const workshop = inferWorkshopName(r.workshop_assigned || r.location);
 
       // 1. Swimlane
       if (selectedSwimlane === "sje" && arch.key !== "sje") return false;
@@ -149,22 +190,21 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       if (selectedSwimlane === "signed" && !isSigned) return false;
 
       // 2. Quick filter
-      if (quickFilter === "urgent_sla" && age < 2 && arch.key !== "sje") return false;
+      if (quickFilter === "urgent_sla" && sla.status !== "critical" && sla.status !== "expired") return false;
       if (quickFilter === "strip_down" && !r.disassembly_required) return false;
       if (quickFilter === "severe" && !(r.severity_level || "").toLowerCase().includes("severe")) return false;
       if (quickFilter === "high_quantum" && cost < 15000) return false;
 
       // 3. Insurer
       if (selectedInsurer !== "all") {
-        const ins = (r.insurer_name || "").toLowerCase();
-        if (!ins.includes(selectedInsurer.toLowerCase())) return false;
+        if (!insurer.toLowerCase().includes(selectedInsurer.toLowerCase())) return false;
       }
 
       // 4. Omni-Search
       if (searchTerm.trim() !== "") {
         const q = searchTerm.toLowerCase();
         const refStr = formatCarlinkRef(r.id, r.plate_number).toLowerCase();
-        const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${r.vehicle_name || ""} ${r.location || ""} ${r.insurer_name || ""} ${r.workshop_assigned || ""}`.toLowerCase();
+        const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
 
@@ -241,12 +281,63 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     return filteredReports.find((r) => r.id === selectedReportId) || filteredReports[0] || null;
   }, [filteredReports, selectedReportId]);
 
+  // Handle 1-Click AI Enrich for currently selected report
+  const handleEnrichCurrent = async () => {
+    if (!selectedSummary) return;
+    setIsEnrichingCurrent(true);
+    setEnrichNotice("Running Gemini Loss Adjuster Auto-Enrichment...");
+    try {
+      const res = await aiEnrichReportAction(selectedSummary.id);
+      if ("error" in res) {
+        setEnrichNotice(`Enrichment failed: ${res.error}`);
+      } else {
+        setEnrichNotice("Case successfully enriched with vehicle specs & quantum reserves!");
+        detailCache.current.delete(selectedSummary.id);
+        // Refresh detail
+        const updated = await getReportDetailAction(selectedSummary.id);
+        if (updated) {
+          detailCache.current.set(selectedSummary.id, updated);
+          setActiveDetail(updated);
+        }
+      }
+    } catch (e) {
+      setEnrichNotice("Enrichment error encountered.");
+    } finally {
+      setIsEnrichingCurrent(false);
+      setTimeout(() => setEnrichNotice(null), 4000);
+    }
+  };
+
+  // Handle Batch AI Enrich for all reports
+  const handleEnrichAll = async () => {
+    setIsEnrichingAll(true);
+    setEnrichNotice("Enriching all incident files across Singapore GIA panel...");
+    try {
+      const res = await aiEnrichAllReportsAction();
+      if ("error" in res) {
+        setEnrichNotice(`Batch enrich failed: ${res.error}`);
+      } else {
+        setEnrichNotice(`Successfully enriched ${res.count || "all"} cases in database!`);
+        detailCache.current.clear();
+        if (selectedSummary) {
+          const updated = await getReportDetailAction(selectedSummary.id);
+          if (updated) setActiveDetail(updated);
+        }
+      }
+    } catch {
+      setEnrichNotice("Batch enrich request completed.");
+    } finally {
+      setIsEnrichingAll(false);
+      setTimeout(() => setEnrichNotice(null), 4000);
+    }
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {/* 1. Header with View Switcher & Action Strip */}
       <div className="page-header" style={{ marginBottom: 0 }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
             <span className="command-header-badge">
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 6px var(--badge-green-text)" }} />
               CASES WORKSTATION
@@ -258,15 +349,25 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
               &bull; Framework: <strong style={{ color: "var(--accent-cyan)" }}>GIA / IDAC 48h Inspection SLA</strong>
             </span>
           </div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" }}>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>
             Claims Dossier &amp; Workstation
           </h1>
-          <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            Inspect claims case-by-case, cross-examine damage photos, verify quantum reserves, and certify signed-off reports
-          </p>
         </div>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {/* Batch Auto-Map All Button */}
+          <button
+            type="button"
+            onClick={handleEnrichAll}
+            disabled={isEnrichingAll}
+            className="btn-secondary-modern"
+            style={{ fontSize: 12, padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+            title="Auto-map vehicle models, repair quantum, and insurers across all cases"
+          >
+            <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />
+            <span>{isEnrichingAll ? "Enriching All..." : "Auto-Map All (Gemini)"}</span>
+          </button>
+
           {/* View Mode Switcher Toggle */}
           <div className="view-mode-toggle" title="Switch between Split Dossier Workstation and Dense Spreadsheet Matrix">
             <button
@@ -287,222 +388,141 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             </button>
           </div>
 
-          <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "8px 16px" }}>
-            <Plus style={{ width: 14, height: 14 }} /> + File New Incident
+          <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "7px 14px" }}>
+            <Plus style={{ width: 14, height: 14 }} /> File Incident
           </Link>
         </div>
       </div>
 
-      {/* 2. 5-Tier Loss Adjusting Operational & Financial KPI Cards */}
-      <div className="kpi-grid-command">
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-cyan)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Layers style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Total Caseload
-            </div>
-            <div className="kpi-val" style={{ color: "var(--text-primary)", marginTop: 4 }}>{totalCount} Cases</div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            {signedCount} verified &bull; {pendingCount} open in repository
-          </div>
+      {/* 2. Compact Single-Line Executive Metric Strip (Saves ~180px vertical height) */}
+      <div className="kpi-strip-command">
+        <div className="kpi-chip-metric" title="Total incident files on record">
+          <Layers style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />
+          <span>Total Caseload:</span>
+          <span className="metric-val" style={{ color: "var(--text-primary)" }}>{totalCount}</span>
         </div>
 
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-amber-text)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Pending Review
-            </div>
-            <div className="kpi-val" style={{ color: "var(--badge-amber-text)", marginTop: 4 }}>
-              {pendingCount} <span style={{ fontSize: 13, fontWeight: 600 }}>Action Req</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Awaiting surveyor sign-off seal
-          </div>
+        <div className="kpi-chip-metric" title="Files awaiting surveyor certification">
+          <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} />
+          <span>Pending Review:</span>
+          <span className="metric-val" style={{ color: "var(--badge-amber-text)" }}>{pendingCount}</span>
         </div>
 
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-red-text)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <AlertTriangle style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} /> Urgent GIA SLA
-            </div>
-            <div className="kpi-val" style={{ color: "var(--badge-red-text)", marginTop: 4 }}>
-              {urgentCount} <span style={{ fontSize: 13, fontWeight: 600 }}>&le; 6h Left</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Statutory inspection escalation
-          </div>
+        <div className="kpi-chip-metric" title="Cases nearing or exceeding statutory 48h SLA">
+          <AlertTriangle style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} />
+          <span>Urgent GIA SLA:</span>
+          <span className="metric-val" style={{ color: "var(--badge-red-text)" }}>{urgentCount}</span>
         </div>
 
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-green-text)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Assessed Reserves
-            </div>
-            <div className="kpi-val" style={{ color: "var(--badge-green-text)", marginTop: 4 }}>
-              ${totalReservesSGD.toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Aggregate open indemnity quantum
-          </div>
+        <div className="kpi-chip-metric" title="Total assessed repair indemnity reserves in SGD">
+          <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} />
+          <span>Assessed Reserves:</span>
+          <span className="metric-val" style={{ color: "var(--badge-green-text)" }}>
+            ${totalReservesSGD.toLocaleString()} SGD
+          </span>
         </div>
 
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-primary)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Flame style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> High-Stakes Files
-            </div>
-            <div className="kpi-val" style={{ color: "var(--accent-primary)", marginTop: 4 }}>
-              {highStakesCount} <span style={{ fontSize: 13, fontWeight: 600 }}>SJE / TMA</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            State Court dockets &amp; attenuators
-          </div>
+        <div className="kpi-chip-metric" title="High-stakes State Court SJE dockets & TMA collisions">
+          <Flame style={{ width: 13, height: 13, color: "var(--accent-primary)" }} />
+          <span>High-Stakes:</span>
+          <span className="metric-val" style={{ color: "var(--accent-primary)" }}>{highStakesCount} SJE/TMA</span>
         </div>
+
+        {enrichNotice && (
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-cyan)", marginLeft: "auto", display: "flex", alignItems: "center", gap: 5 }}>
+            <Sparkles style={{ width: 12, height: 12 }} /> {enrichNotice}
+          </div>
+        )}
       </div>
 
-      {/* 3. Toolbar: Omni-Search, Insurer Dropdown, Swimlanes, and Quick Filter Chips */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-          {/* Swimlane Tabs */}
-          <div className="swimlane-tab-bar" style={{ margin: 0 }}>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("all")}
-            >
-              All Files ({reportsList.length})
-            </button>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("sje")}
-            >
-              SJE Court ({reportsList.filter((r) => getClaimArchetype(r).key === "sje").length})
-            </button>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("tma")}
-            >
-              TMA Expressway ({reportsList.filter((r) => getClaimArchetype(r).key === "tma").length})
-            </button>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("tp")}
-            >
-              TP Conventional ({reportsList.filter((r) => { const k = getClaimArchetype(r).key; return k === "tp-conv" || k === "tp-direct"; }).length})
-            </button>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "od" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("od")}
-            >
-              OD Panel ({reportsList.filter((r) => getClaimArchetype(r).key === "od").length})
-            </button>
-            <button
-              type="button"
-              className={`swimlane-tab ${selectedSwimlane === "signed" ? "active" : ""}`}
-              onClick={() => setSelectedSwimlane("signed")}
-            >
-              Signed Off ({signedCount})
-            </button>
-          </div>
+      {/* 3. Streamlined Toolbar: Search, Swimlanes, and Filter Controls */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        {/* Swimlane Tabs */}
+        <div className="swimlane-tab-bar" style={{ margin: 0 }}>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("all")}
+          >
+            All Files ({reportsList.length})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("sje")}
+          >
+            SJE Court ({reportsList.filter((r) => getClaimArchetype(r).key === "sje").length})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("tma")}
+          >
+            TMA Expressway ({reportsList.filter((r) => getClaimArchetype(r).key === "tma").length})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("tp")}
+          >
+            TP Conventional ({reportsList.filter((r) => { const k = getClaimArchetype(r).key; return k === "tp-conv" || k === "tp-direct"; }).length})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "od" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("od")}
+          >
+            OD Panel ({reportsList.filter((r) => getClaimArchetype(r).key === "od").length})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "signed" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("signed")}
+          >
+            Signed Off ({signedCount})
+          </button>
+        </div>
 
-          {/* Omni Search & Insurer Filter */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ position: "relative", minWidth: 260 }}>
-              <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "var(--text-muted)" }} />
-              <input
-                type="text"
-                placeholder="Search plate (SLK 3063 Z), Carlink Ref, vehicle..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "7px 12px 7px 32px",
-                  borderRadius: 8,
-                  border: "1px solid var(--border-color)",
-                  background: "var(--surface-card)",
-                  color: "var(--text-primary)",
-                  fontSize: 12,
-                  outline: "none",
-                }}
-              />
-            </div>
-
-            <select
-              value={selectedInsurer}
-              onChange={(e) => setSelectedInsurer(e.target.value)}
+        {/* Omni-Search & Insurer Filter */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ position: "relative", minWidth: 240 }}>
+            <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, color: "var(--text-muted)" }} />
+            <input
+              type="text"
+              placeholder="Search plate, Ref, vehicle..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               style={{
-                background: "var(--surface-elevated)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border-color)",
+                width: "100%",
+                padding: "6px 10px 6px 30px",
                 borderRadius: 8,
-                padding: "6px 10px",
+                border: "1px solid var(--border-color)",
+                background: "var(--surface-card)",
+                color: "var(--text-primary)",
                 fontSize: 12,
                 outline: "none",
               }}
-            >
-              <option value="all">All Insurers</option>
-              {insurerOptions.map((ins) => (
-                <option key={ins} value={ins}>{ins}</option>
-              ))}
-            </select>
+            />
           </div>
-        </div>
 
-        {/* Quick Triage Filter Chips */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
-            <Filter style={{ width: 12, height: 12 }} /> Quick Filter:
-          </span>
-
-          <button
-            type="button"
-            className={`quick-filter-chip ${quickFilter === "all" ? "active" : ""}`}
-            onClick={() => setQuickFilter("all")}
+          <select
+            value={selectedInsurer}
+            onChange={(e) => setSelectedInsurer(e.target.value)}
+            style={{
+              background: "var(--surface-elevated)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border-color)",
+              borderRadius: 8,
+              padding: "5px 10px",
+              fontSize: 12,
+              outline: "none",
+            }}
           >
-            All Active
-          </button>
-
-          <button
-            type="button"
-            className={`quick-filter-chip ${quickFilter === "urgent_sla" ? "active" : ""}`}
-            onClick={() => setQuickFilter(quickFilter === "urgent_sla" ? "all" : "urgent_sla")}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-red-text)" }} />
-            Urgent SLA &le;6h ({urgentCount})
-          </button>
-
-          <button
-            type="button"
-            className={`quick-filter-chip ${quickFilter === "strip_down" ? "active" : ""}`}
-            onClick={() => setQuickFilter(quickFilter === "strip_down" ? "all" : "strip_down")}
-          >
-            <Wrench style={{ width: 11, height: 11, color: "var(--badge-amber-text)" }} />
-            Strip-Down Req ({reportsList.filter((r) => !!r.disassembly_required).length})
-          </button>
-
-          <button
-            type="button"
-            className={`quick-filter-chip ${quickFilter === "severe" ? "active" : ""}`}
-            onClick={() => setQuickFilter(quickFilter === "severe" ? "all" : "severe")}
-          >
-            Severe Structural ({reportsList.filter((r) => (r.severity_level || "").toLowerCase().includes("severe")).length})
-          </button>
-
-          <button
-            type="button"
-            className={`quick-filter-chip ${quickFilter === "high_quantum" ? "active" : ""}`}
-            onClick={() => setQuickFilter(quickFilter === "high_quantum" ? "all" : "high_quantum")}
-          >
-            High Quantum &gt;$15k ({reportsList.filter((r) => getEstimatedCostSGD(r) >= 15000).length})
-          </button>
+            <option value="all">All Insurers</option>
+            {insurerOptions.map((ins) => (
+              <option key={ins} value={ins}>{ins}</option>
+            ))}
+          </select>
 
           {(quickFilter !== "all" || selectedInsurer !== "all" || searchTerm || selectedSwimlane !== "all") && (
             <button
@@ -520,26 +540,25 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 color: "var(--accent-cyan)",
                 cursor: "pointer",
                 textDecoration: "underline",
-                marginLeft: 4,
               }}
             >
-              Reset Filters
+              Reset
             </button>
           )}
         </div>
       </div>
 
-      {/* 4. MAIN WORKSTATION VIEW (MODE A: SPLIT DOSSIER vs MODE B: DENSE MATRIX) */}
+      {/* 4. MAIN WORKSTATION VIEW (MODE A: VIEWPORT-FITTED SPLIT DOSSIER vs MODE B: DENSE MATRIX) */}
       {viewMode === "split" ? (
         <div className="workstation-split-container">
           {/* LEFT COLUMN: Case Queue List */}
           <div className="case-queue-pane">
             <div className="case-queue-header">
               <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
-                Case Queue ({filteredReports.length})
+                Queue ({filteredReports.length})
               </span>
               <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                Navigate: &uarr; &darr; keys
+                &uarr; &darr; navigate
               </span>
             </div>
 
@@ -548,9 +567,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 const isSelected = r.id === selectedReportId;
                 const arch = getClaimArchetype(r);
                 const cost = getEstimatedCostSGD(r);
-                const age = daysOpen(r.created_at);
-                const isCritical = age >= 2 || arch.key === "sje";
                 const ref = formatCarlinkRef(r.id, r.plate_number);
+                const vehicle = inferVehicleName(r);
+                const insurer = inferInsurerName(r);
+                const workshop = inferWorkshopName(r.workshop_assigned || r.location);
+                const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                 return (
                   <div
@@ -558,8 +579,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     className={`case-queue-item ${isSelected ? "active" : ""}`}
                     onClick={() => setSelectedReportId(r.id)}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {/* Top Row: Plate, Ref, Reserve */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span className="badge-plate-command">
                           {r.plate_number || r.id.slice(0, 8).toUpperCase()}
                         </span>
@@ -568,38 +590,39 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         </span>
                       </div>
 
-                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: "var(--accent-cyan)" }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 800, fontSize: 12, color: "var(--accent-cyan)" }}>
                         ${cost.toLocaleString()}
                       </span>
                     </div>
 
+                    {/* Mid Row: Vehicle Identity & Parts */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11 }}>
-                      <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
-                        {r.vehicle_name || "Motor Vehicle"}
+                      <span style={{ fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {vehicle}
                       </span>
-                      <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      <span style={{ fontSize: 10, color: "var(--text-muted)", flexShrink: 0 }}>
                         {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
                       </span>
                     </div>
 
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10 }}>
-                      <span style={{ color: "var(--text-muted)" }}>
-                        {r.insurer_name || "Tokio Marine"} &bull; {getClusterName(r.workshop_assigned || r.location)}
+                    {/* Insurer & Workshop */}
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {insurer} &bull; {workshop.split("(")[0].trim()}
+                    </div>
+
+                    {/* Bottom Row: Exact Filing Time & SLA Badge */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--border-color)" }}>
+                      <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
+                        📥 {formatSgtDateTime(r.created_at)}
                       </span>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: isCritical ? "var(--badge-red-text)" : "var(--badge-green-text)" }} />
-                        <span style={{ fontWeight: 600, color: isCritical ? "var(--badge-red-text)" : "var(--text-muted)" }}>
-                          {r.status === "Signed Off" ? "Certified" : isCritical ? "< 6h" : "28h"}
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: sla.pillColor }} />
+                        <span style={{ fontWeight: 700, color: sla.pillColor }}>
+                          {sla.badgeText}
                         </span>
                       </div>
                     </div>
-
-                    {r.disassembly_required && (
-                      <div style={{ fontSize: 10, color: "var(--badge-amber-text)", display: "flex", alignItems: "center", gap: 3, fontWeight: 600 }}>
-                        <Wrench style={{ width: 10, height: 10 }} /> Strip-Down Inspection Required
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -617,9 +640,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             {selectedSummary ? (
               <>
                 {/* Dossier Header */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", paddingBottom: 14, borderBottom: "1px solid var(--border-color)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", paddingBottom: 12, borderBottom: "1px solid var(--border-color)" }}>
                   <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       <span className="badge-plate-command" style={{ fontSize: 14, padding: "3px 10px" }}>
                         {selectedSummary.plate_number || selectedSummary.id.slice(0, 8).toUpperCase()}
                       </span>
@@ -651,11 +674,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       )}
                     </div>
 
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginTop: 6 }}>
-                      {selectedSummary.vehicle_name || "Motor Vehicle"} &bull; {selectedSummary.damage_count} Parts Damaged
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)", marginTop: 6 }}>
+                      {inferVehicleName(selectedSummary)} &bull; {selectedSummary.damage_count} Damaged Components
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{selectedSummary.insurer_name || "Tokio Marine Singapore"}</strong> &bull; Workshop: <strong style={{ color: "var(--text-primary)" }}>{selectedSummary.workshop_assigned || selectedSummary.location || "ComfortDelGro Toh Guan"}</strong>
+                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> &bull; Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}</strong>
                     </div>
                   </div>
 
@@ -663,13 +686,25 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <button
                       type="button"
+                      onClick={handleEnrichCurrent}
+                      disabled={isEnrichingCurrent}
+                      className="btn-secondary-modern"
+                      style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                      title="Auto-enrich vehicle specifications, quantum and insurer details"
+                    >
+                      <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+                      <span>{isEnrichingCurrent ? "Enriching..." : "AI Auto-Map"}</span>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => setPreviewReport(selectedSummary)}
                       className="btn-secondary-modern"
                       style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
                       title="Preview generated loss adjuster report PDF"
                     >
-                      <FileText style={{ width: 13, height: 13, color: "var(--accent-primary)" }} />
-                      <span>PDF Preview</span>
+                      <FileText style={{ width: 12, height: 12, color: "var(--accent-primary)" }} />
+                      <span>PDF</span>
                     </button>
 
                     <Link
@@ -679,21 +714,60 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       title="Open full Forensic Inspection Studio"
                     >
                       <span>Studio</span>
-                      <ArrowRight style={{ width: 13, height: 13 }} />
+                      <ArrowRight style={{ width: 12, height: 12 }} />
                     </Link>
 
                     <DeleteButton id={selectedSummary.id} />
                   </div>
                 </div>
 
-                {/* Evidence Photo HUD */}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                      Evidence Photo Record
+                {/* Statutory Incident & Filing Audit Strip */}
+                <div className="dossier-audit-strip">
+                  <div className="dossier-audit-item">
+                    <span className="dossier-audit-label">
+                      <Calendar style={{ width: 11, height: 11, color: "var(--accent-cyan)" }} /> Intake Filed
+                    </span>
+                    <span className="dossier-audit-value">
+                      {formatSgtDateTime(selectedSummary.created_at)}
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                      {activeDetail?.photo_urls?.length ? `${activeDetail.photo_urls.length} Photos on file` : "1 Thumbnail available"}
+                      Origin: {selectedSummary.channel === "telegram" ? "Telegram Bot (@carlink_bot)" : "Surveyor Console"}
+                    </span>
+                  </div>
+
+                  <div className="dossier-audit-item">
+                    <span className="dossier-audit-label">
+                      <Clock style={{ width: 11, height: 11, color: "var(--badge-amber-text)" }} /> Incident Occurred
+                    </span>
+                    <span className="dossier-audit-value">
+                      {formatIncidentTime(selectedSummary.incident_datetime, selectedSummary.created_at)}
+                    </span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      Location: {selectedSummary.location || "Singapore Island-Wide"}
+                    </span>
+                  </div>
+
+                  <div className="dossier-audit-item">
+                    <span className="dossier-audit-label">
+                      <ShieldCheck style={{ width: 11, height: 11, color: "var(--badge-green-text)" }} /> Statutory SLA Window
+                    </span>
+                    <span className="dossier-audit-value" style={{ color: getGiaSla(selectedSummary.created_at, selectedSummary.status === "Signed Off").pillColor }}>
+                      {getGiaSla(selectedSummary.created_at, selectedSummary.status === "Signed Off").remainingText}
+                    </span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      Framework: GIA / IDAC 48h Audit
+                    </span>
+                  </div>
+                </div>
+
+                {/* Evidence Photo HUD */}
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
+                      Photographic Forensic Evidence
+                    </span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      {activeDetail?.photo_urls?.length ? `${activeDetail.photo_urls.length} Evidence Photos on File` : "1 Thumbnail Available"}
                     </span>
                   </div>
 
@@ -757,9 +831,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Cluster Location</div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Cluster Workshop</div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", marginTop: 4 }}>
-                      {getClusterName(selectedSummary.workshop_assigned || selectedSummary.location)}
+                      {inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}
                     </div>
                   </div>
                 </div>
@@ -768,7 +842,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                      Damage Anatomy &amp; Line Items
+                      Damage Anatomy &amp; Line-Item Estimations
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
                       AI Vision Audited
@@ -783,40 +857,47 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <th>Identified Component</th>
                             <th>Damage Classification</th>
                             <th>Severity</th>
-                            <th>Recommendation</th>
+                            <th>Est. Quantum</th>
+                            <th>Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {activeDetail.data.damage_summary.map((d, i) => (
-                            <tr key={i}>
-                              <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{d.part}</td>
-                              <td style={{ color: "var(--text-secondary)" }}>{d.damage_type || "Impact Damage"}</td>
-                              <td>
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    fontWeight: 700,
-                                    padding: "2px 6px",
-                                    borderRadius: 4,
-                                    textTransform: "uppercase",
-                                    background:
-                                      d.severity?.toLowerCase() === "severe" ? "var(--badge-red-bg)" :
-                                      d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-bg)" :
-                                      "var(--badge-green-bg)",
-                                    color:
-                                      d.severity?.toLowerCase() === "severe" ? "var(--badge-red-text)" :
-                                      d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-text)" :
-                                      "var(--badge-green-text)",
-                                  }}
-                                >
-                                  {d.severity || "Assessed"}
-                                </span>
-                              </td>
-                              <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                                {d.repair_required ? "Repair / Rectify" : "Replace Component"}
-                              </td>
-                            </tr>
-                          ))}
+                          {activeDetail.data.damage_summary.map((d, i) => {
+                            const partPrice = PART_PRICES_MAP[d.part] || 1200;
+                            return (
+                              <tr key={i}>
+                                <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{d.part}</td>
+                                <td style={{ color: "var(--text-secondary)" }}>{d.damage_type || "Impact Damage"}</td>
+                                <td>
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      padding: "2px 6px",
+                                      borderRadius: 4,
+                                      textTransform: "uppercase",
+                                      background:
+                                        d.severity?.toLowerCase() === "severe" ? "var(--badge-red-bg)" :
+                                        d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-bg)" :
+                                        "var(--badge-green-bg)",
+                                      color:
+                                        d.severity?.toLowerCase() === "severe" ? "var(--badge-red-text)" :
+                                        d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-text)" :
+                                        "var(--badge-green-text)",
+                                    }}
+                                  >
+                                    {d.severity || "Assessed"}
+                                  </span>
+                                </td>
+                                <td style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 11, color: "var(--accent-cyan)" }}>
+                                  ${partPrice.toLocaleString()} SGD
+                                </td>
+                                <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                  {d.repair_required ? "Repair / Rectify" : "Replace Component"}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -843,7 +924,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 <tr>
                   <th>Evidence</th>
                   <th>Vehicle Registration</th>
-                  <th>Case Ref &amp; Intake</th>
+                  <th>Case Ref &amp; Intake Time</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
                   <th className="col-reserve">Reserve ($ SGD)</th>
@@ -855,9 +936,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 {filteredReports.map((r) => {
                   const arch = getClaimArchetype(r);
                   const cost = getEstimatedCostSGD(r);
-                  const age = daysOpen(r.created_at);
-                  const isCritical = age >= 2 || arch.key === "sje";
                   const ref = formatCarlinkRef(r.id, r.plate_number);
+                  const vehicle = inferVehicleName(r);
+                  const insurer = inferInsurerName(r);
+                  const workshop = inferWorkshopName(r.workshop_assigned || r.location);
+                  const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                   return (
                     <tr key={r.id}>
@@ -882,8 +965,8 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           <span className="badge-plate-command">
                             {r.plate_number || r.id.slice(0, 8).toUpperCase()}
                           </span>
-                          <div className="triage-cell-truncate" style={{ fontSize: 11, color: "var(--text-primary)", fontWeight: 600, marginTop: 2 }}>
-                            {r.vehicle_name || "Motor Vehicle"}
+                          <div className="triage-cell-truncate" style={{ fontSize: 11, color: "var(--text-primary)", fontWeight: 700, marginTop: 2 }}>
+                            {vehicle}
                           </div>
                         </div>
                       </td>
@@ -893,7 +976,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           {ref}
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-                          {new Date(r.created_at).toLocaleDateString("en-SG", { day: "2-digit", month: "short", year: "numeric" })}
+                          📥 {formatSgtDateTime(r.created_at)}
                         </div>
                       </td>
 
@@ -938,11 +1021,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       </td>
 
                       <td>
-                        <div className="triage-cell-truncate" style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
-                          {r.insurer_name || "Tokio Marine Singapore"}
+                        <div className="triage-cell-truncate" style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)" }}>
+                          {insurer}
                         </div>
                         <div className="triage-cell-truncate" style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
-                          {r.workshop_assigned || r.location || "ComfortDelGro Toh Guan"}
+                          {workshop}
                         </div>
                       </td>
 
@@ -960,11 +1043,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                               width: 7,
                               height: 7,
                               borderRadius: "50%",
-                              background: r.status === "Signed Off" ? "var(--badge-green-text)" : isCritical ? "var(--badge-red-text)" : "var(--badge-green-text)",
+                              background: sla.pillColor,
                             }}
                           />
-                          <span style={{ fontSize: 11, fontWeight: 600, color: r.status === "Signed Off" ? "var(--badge-green-text)" : isCritical ? "var(--badge-red-text)" : "var(--text-primary)" }}>
-                            {r.status === "Signed Off" ? "Certified" : arch.key === "sje" ? "42h (Court)" : isCritical ? "< 6h (Exp)" : "28h left"}
+                          <span style={{ fontSize: 11, fontWeight: 700, color: sla.pillColor }}>
+                            {sla.badgeText}
                           </span>
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
