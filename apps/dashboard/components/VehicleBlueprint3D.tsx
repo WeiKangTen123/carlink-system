@@ -194,14 +194,18 @@ function CarModel({
   damageEntries,
   zoneResolutions,
   highlightedIdx,
+  selectedZone,
   onZoneClick,
+  onZoneSelect,
   onFocusRequest,
 }: {
   color: string;
   damageEntries: DamageSummaryItem[];
   zoneResolutions: (ZoneResolution | null)[];
   highlightedIdx: number | null;
+  selectedZone?: string | null;
   onZoneClick: (idx: number) => void;
+  onZoneSelect?: (zoneKey: string | null) => void;
   onFocusRequest: (center: THREE.Vector3, size: THREE.Vector3) => void;
 }) {
   const gltf = useGLTF("/assets/generic-sedan/sedan.glb");
@@ -332,6 +336,22 @@ function CarModel({
     onFocusRequest(partBox.getCenter(new THREE.Vector3()), partBox.getSize(new THREE.Vector3()));
   }, [highlightedIdx, zoneResolutions, root, onFocusRequest]);
 
+  // Synchronize 3D camera when an automotive zone is selected from the evidence strip
+  useEffect(() => {
+    if (!selectedZone) return;
+    let targetKey = selectedZone;
+    if (selectedZone === "skeleton") targetKey = "underbody";
+    if (selectedZone === "lighting") targetKey = "l_taillamp";
+    if (selectedZone === "boot_floor") targetKey = "tailgate";
+    const zone = CAR_PARTS_REAL.find((z) => z.key === targetKey || z.key.includes(targetKey));
+    if (!zone) return;
+    const meshes = findCarMeshes(root, zone.match, true);
+    if (!meshes.length) return;
+    const partBox = new THREE.Box3();
+    meshes.forEach((m) => partBox.expandByObject(m));
+    onFocusRequest(partBox.getCenter(new THREE.Vector3()), partBox.getSize(new THREE.Vector3()));
+  }, [selectedZone, root, onFocusRequest]);
+
   const zoneIdxLookup = useMemo(() => {
     const map = new Map<string, number>();
     zoneResolutions.forEach((res, idx) => {
@@ -346,6 +366,7 @@ function CarModel({
     const group = partGroupName(e.object);
     const zone = CAR_PARTS_REAL.find((z) => z.match.some((re) => re.test(name) || (group && re.test(group))));
     if (!zone) return;
+    onZoneSelect?.(zone.key);
     const idx = zoneIdxLookup.get(zone.key);
     if (idx !== undefined) onZoneClick(idx);
   };
@@ -443,12 +464,22 @@ interface Props {
   highlightedDamageIndex: number | null;
   vehicleName: string;
   bodyType?: string | null;
+  selectedZone?: string | null;
+  onZoneSelect?: (zoneKey: string | null) => void;
 }
 
 const CAR_HOME: FocusState = { position: new THREE.Vector3(3.6, 2.4, 3.9), target: new THREE.Vector3(0, 0.55, 0) };
 const VAN_HOME: FocusState = { position: new THREE.Vector3(4.2, 2.6, 4.6), target: new THREE.Vector3(0, 0.55, 0) };
 
-export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedDamageIndex, vehicleName, bodyType: statedBodyType }: Props) {
+export function VehicleBlueprint3D({
+  damageEntries,
+  onHotspotClick,
+  highlightedDamageIndex,
+  vehicleName,
+  bodyType: statedBodyType,
+  selectedZone,
+  onZoneSelect,
+}: Props) {
   const accent = useThemeColor("--border-glow", "#38bdf8");
   const bodyType = detectBodyType(vehicleName, statedBodyType);
   const controlsRef = useRef<any>(null);
@@ -493,7 +524,9 @@ export function VehicleBlueprint3D({ damageEntries, onHotspotClick, highlightedD
             damageEntries={damageEntries}
             zoneResolutions={zoneResolutions}
             highlightedIdx={highlightedDamageIndex}
+            selectedZone={selectedZone}
             onZoneClick={handleZoneClick}
+            onZoneSelect={onZoneSelect}
             onFocusRequest={handleFocusRequest}
           />
         ) : (

@@ -26,8 +26,10 @@ interface Props {
   photoThumbs?: string[];
   activePhotoIndex: number;
   highlightedDamageIndex: number | null;
+  selectedZone: string | null;
   onSelectPhoto: (idx: number) => void;
   onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
+  onSelectZone: (zoneId: string | null) => void;
 }
 
 /** The three views of a case's damage -- 3D blueprint, evidence photos,
@@ -52,8 +54,10 @@ export function CaseInspectionTab({
   photoThumbs,
   activePhotoIndex,
   highlightedDamageIndex,
+  selectedZone,
   onSelectPhoto,
   onHotspotClick,
+  onSelectZone,
 }: Props) {
   const d = report.data;
 
@@ -82,6 +86,8 @@ export function CaseInspectionTab({
             highlightedDamageIndex={highlightedDamageIndex}
             vehicleName={vehicleName}
             bodyType={report.data.vehicle_info?.body_type}
+            selectedZone={selectedZone}
+            onZoneSelect={onSelectZone}
           />
         </div>
 
@@ -90,7 +96,9 @@ export function CaseInspectionTab({
           photoThumbs={photoThumbs}
           damageEntries={damageEntries}
           activePhotoIndex={activePhotoIndex}
+          selectedZone={selectedZone}
           onSelectPhoto={onSelectPhoto}
+          onSelectZone={onSelectZone}
         />
       </div>
 

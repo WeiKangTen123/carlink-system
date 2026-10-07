@@ -254,3 +254,228 @@ export function groupByZone(resolutions: (ZoneResolution | null)[]): Map<string,
   });
   return byZone;
 }
+
+// =============================================================================
+// STUDIO 3.0: 7-ZONE AUTOMOTIVE TAXONOMY & PHOTO SEGMENTATION ENGINE
+// Matches real Singapore loss adjuster practice (Presentation1.pptx & SLK 3063 Z)
+// =============================================================================
+
+export interface VehicleZoneGroup {
+  id: string;
+  label: string;
+  shortLabel: string;
+  iconName?: string;
+  keywords: RegExp[];
+  cameraAngle: {
+    position: [number, number, number];
+    target: [number, number, number];
+  };
+}
+
+export const VEHICLE_ZONE_GROUPS: VehicleZoneGroup[] = [
+  {
+    id: "survey",
+    label: "Survey & Identification",
+    shortLabel: "Survey & VIN",
+    keywords: [/\b(vin|chassis|plate|speedo|odometer|tyre|tire|wheel|overview|static|baseline|survey)\b/i],
+    cameraAngle: {
+      position: [3.6, 2.4, 3.9],
+      target: [0, 0.55, 0],
+    },
+  },
+  {
+    id: "rear_bumper",
+    label: "Rear Bumper & Sensors",
+    shortLabel: "Rear Bumper",
+    keywords: [/\b(rear\s*bumper|bumper\s*fascia|bumper\s*side|bumper\s*beam|bumper\s*clip|reverse\s*sensor|bumper\s*retainer|diffuser)\b/i],
+    cameraAngle: {
+      position: [0, 1.25, 4.2],
+      target: [0, 0.6, 1.8],
+    },
+  },
+  {
+    id: "tailgate",
+    label: "Tailgate & Rear Glass",
+    shortLabel: "Tailgate & Glass",
+    keywords: [/\b(tail\s*gate|boot\s*lid|trunk|rear\s*windscreen|rear\s*glass|lock\s*striker|tail\s*gate\s*lock|hinge|weatherstripe|weatherstrip|vezel|emblem)\b/i],
+    cameraAngle: {
+      position: [0, 2.1, 3.7],
+      target: [0, 1.1, 1.6],
+    },
+  },
+  {
+    id: "lighting",
+    label: "Lighting & Lens",
+    shortLabel: "Tail Lamps",
+    keywords: [/\b(tail\s*lamp|tail\s*light|reflector|lamp\s*clip|sealant|headlamp|fog\s*lamp)\b/i],
+    cameraAngle: {
+      position: [-1.8, 1.3, 3.6],
+      target: [-0.7, 0.8, 1.7],
+    },
+  },
+  {
+    id: "quarter_panel",
+    label: "Quarter Panel & Wheel Arch",
+    shortLabel: "Quarter Panel",
+    keywords: [/\b(quarter\s*panel|wheel\s*arch|garnish|fender|splash\s*guard|inner\s*trim)\b/i],
+    cameraAngle: {
+      position: [-3.8, 1.4, 1.2],
+      target: [-0.5, 0.7, 0.5],
+    },
+  },
+  {
+    id: "boot_floor",
+    label: "Boot Interior & Floor Pan",
+    shortLabel: "Boot Floor",
+    keywords: [/\b(floor\s*panel|floor\s*board|insulator\s*cloth|tool\s*tray|sponge|spare\s*wheel|spare\s*tyre|boot\s*interior|luggage|scuff\s*plate)\b/i],
+    cameraAngle: {
+      position: [0, 3.0, 2.2],
+      target: [0, 0.5, 1.2],
+    },
+  },
+  {
+    id: "skeleton",
+    label: "Structural Skeleton & Undercarriage",
+    shortLabel: "Skeleton & Frame",
+    keywords: [/\b(rear\s*end\s*panel|chassis|underbody|undercarriage|frame\s*member|car\s*o\s*liner|subframe|crossmember|straighten)\b/i],
+    cameraAngle: {
+      position: [0, 0.35, 3.6],
+      target: [0, 0.3, 1.4],
+    },
+  },
+];
+
+export interface ClassifiedPhoto {
+  index: number;
+  photoRef: string; // "P01", "P02", ...
+  url: string;
+  thumbUrl?: string;
+  zoneId: string;
+  zoneLabel: string;
+  damageItems: DamageSummaryItem[];
+}
+
+/** Classifies photos into the 7 primary functional automotive zones.
+ * Uses exact damage_summary.photo_reference bindings first, followed by
+ * sequential assessor shooting clusters (as proven in Presentation1.pptx
+ * and SLK 3063 Z), ensuring all 50-70 photos are cleanly segmented.
+ */
+export function classifyPhotos(
+  photos: string[],
+  photoThumbs: string[] | undefined,
+  damageEntries: DamageSummaryItem[]
+): ClassifiedPhoto[] {
+  if (!photos || photos.length === 0) return [];
+
+  // Build photoRef -> damage items lookup
+  const damageByPhoto = new Map<string, DamageSummaryItem[]>();
+  damageEntries.forEach((item) => {
+    if (item.photo_reference) {
+      const ref = item.photo_reference.trim().toUpperCase();
+      const list = damageByPhoto.get(ref) || [];
+      list.push(item);
+      damageByPhoto.set(ref, list);
+    }
+  });
+
+  // Helper to test part against zone groups
+  const matchZoneId = (partText: string): string | null => {
+    for (const group of VEHICLE_ZONE_GROUPS) {
+      if (group.keywords.some((rx) => rx.test(partText))) {
+        return group.id;
+      }
+    }
+    return null;
+  };
+
+  // First pass: direct zone match from linked damage items
+  const directZones: (string | null)[] = photos.map((_, idx) => {
+    const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
+    const linked = damageByPhoto.get(photoRef);
+    if (linked && linked.length > 0) {
+      for (const item of linked) {
+        const matched = matchZoneId(item.part);
+        if (matched) return matched;
+      }
+    }
+    return null;
+  });
+
+  // Second pass: sequential cluster propagation & loss-adjuster photo workflow heuristics
+  // In real Singapore insurance surveys (SLK 3063 Z & SMW 7530X):
+  // 1. Initial 10% are overview & impact entry (rear_bumper / survey)
+  // 2. Middle 60% are exterior panels -> disassembly -> boot floor -> underbody
+  // 3. Final 15% are static compliance (VIN plate, odometer, tyres) -> survey
+  const n = photos.length;
+  const classifiedZones: string[] = directZones.map((direct, idx) => {
+    if (direct) return direct;
+
+    // Check adjacent neighbors (within 2 photos) with direct matches
+    for (let offset = 1; offset <= 3; offset++) {
+      if (idx - offset >= 0 && directZones[idx - offset]) return directZones[idx - offset]!;
+      if (idx + offset < n && directZones[idx + offset]) return directZones[idx + offset]!;
+    }
+
+    // Survey heuristic for standard 50-70 photo cases
+    if (n >= 30) {
+      const ratio = idx / n;
+      if (ratio > 0.82) return "survey"; // VIN, odometer, tread depths at end of survey
+      if (ratio < 0.12) return "survey"; // initial 4-corner overview
+      if (ratio > 0.55 && ratio <= 0.72) return "skeleton"; // teardown & chassis jig
+      if (ratio > 0.40 && ratio <= 0.55) return "boot_floor"; // interior floor pan
+      if (ratio > 0.22 && ratio <= 0.40) return "tailgate"; // tailgate latch & trim
+      return "rear_bumper"; // primary impact zone
+    }
+
+    return "rear_bumper";
+  });
+
+  return photos.map((url, idx) => {
+    const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
+    const zoneId = classifiedZones[idx] || "rear_bumper";
+    const group = VEHICLE_ZONE_GROUPS.find((g) => g.id === zoneId) || VEHICLE_ZONE_GROUPS[1];
+    return {
+      index: idx,
+      photoRef,
+      url,
+      thumbUrl: photoThumbs?.[idx] || url,
+      zoneId,
+      zoneLabel: group.label,
+      damageItems: damageByPhoto.get(photoRef) || [],
+    };
+  });
+}
+
+/** Chunks photos into 4-quadrant slides matching Presentation1.pptx:
+ * Q1: Top-Left, Q2: Top-Right, Q3: Bottom-Left, Q4: Bottom-Right.
+ */
+export interface PresentationSlide {
+  slideNumber: number; // 1-based
+  quadrants: {
+    q1: ClassifiedPhoto | null; // Top-Left
+    q2: ClassifiedPhoto | null; // Top-Right
+    q3: ClassifiedPhoto | null; // Bottom-Left
+    q4: ClassifiedPhoto | null; // Bottom-Right
+  };
+}
+
+export function buildPresentationSlides(photos: ClassifiedPhoto[]): PresentationSlide[] {
+  if (!photos || photos.length === 0) return [];
+  const slides: PresentationSlide[] = [];
+  const totalSlides = Math.ceil(photos.length / 4);
+
+  for (let s = 0; s < totalSlides; s++) {
+    const base = s * 4;
+    slides.push({
+      slideNumber: s + 1,
+      quadrants: {
+        q1: photos[base] || null,
+        q2: photos[base + 1] || null,
+        q3: photos[base + 2] || null,
+        q4: photos[base + 3] || null,
+      },
+    });
+  }
+
+  return slides;
+}

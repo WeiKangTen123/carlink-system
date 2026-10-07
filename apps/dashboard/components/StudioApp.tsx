@@ -20,7 +20,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
-import { resolveZones } from "@/lib/vehicleZones";
+import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 
 export { severityClass } from "@/lib/caseFields";
@@ -40,6 +40,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const [activeTab, setActiveTab] = useState<CaseTab>("inspection");
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [isSignOffModalOpen, setIsSignOffModalOpen] = useState(false);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
@@ -70,14 +71,28 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const conditionChips = [d.weather_condition, d.road_condition, d.traffic_condition].filter(Boolean) as string[];
 
   // Selecting a damage item from anywhere -- a blueprint marker, a
-  // checklist row -- highlights it everywhere at once. No tab switch
-  // needed any more: the blueprint, the photo, and the checklist are all
-  // on screen together, which is the whole point of merging them.
+  // checklist row -- highlights it everywhere at once and synchronizes
+  // with the 3D camera and photo evidence strip.
   const handleHotspotClick = (idx: number, item: DamageSummaryItem) => {
     setHighlightedDamageIndex(idx);
+    const zKey = zoneKeyFor(item.part);
+    if (zKey) setSelectedZone(zKey);
     if (item.photo_reference) {
       const photoIdx = parseInt(item.photo_reference.replace(/\D/g, ""), 10) - 1;
       if (photoIdx >= 0 && photoIdx < photos.length) setActivePhotoIndex(photoIdx);
+    }
+  };
+
+  const handleSelectZone = (zoneId: string | null) => {
+    setSelectedZone(zoneId);
+    if (zoneId) {
+      const matchingIdx = damageEntries.findIndex((item) => {
+        const z = zoneKeyFor(item.part);
+        return z === zoneId || (zoneId === "skeleton" && z === "underbody");
+      });
+      if (matchingIdx >= 0) {
+        setHighlightedDamageIndex(matchingIdx);
+      }
     }
   };
 
@@ -239,8 +254,10 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           photoThumbs={photoThumbs}
           activePhotoIndex={activePhotoIndex}
           highlightedDamageIndex={highlightedDamageIndex}
+          selectedZone={selectedZone}
           onSelectPhoto={setActivePhotoIndex}
           onHotspotClick={handleHotspotClick}
+          onSelectZone={handleSelectZone}
         />
       )}
       {activeTab === "file" && <CaseFileTab report={report} />}

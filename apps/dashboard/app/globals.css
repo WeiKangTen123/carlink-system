@@ -1498,6 +1498,254 @@ a:hover {
 }
 
 /* ==========================================================================
+   STUDIO 3.0: MULTI-PART FORENSIC INSPECTION & 2x2 PRESENTATION MATRIX
+   ========================================================================== */
+.studio-zone-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+  scrollbar-width: thin;
+}
+
+.studio-zone-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+
+.studio-zone-pill:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  transform: translateY(-1px);
+}
+
+.studio-zone-pill.active {
+  background: var(--accent-surface);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.zone-damage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 6px #ef4444;
+  display: inline-block;
+}
+
+.studio-view-toggle {
+  display: inline-flex;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.studio-view-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.studio-view-toggle-btn.active {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-color);
+}
+
+/* 2x2 Presentation Matrix Mode (matching Presentation1.pptx) */
+.studio-matrix-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.studio-matrix-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 7px 12px;
+}
+
+.studio-matrix-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .studio-matrix-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.studio-quadrant-card {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: #050811;
+  display: flex;
+  flex-direction: column;
+  aspect-ratio: 16 / 11;
+  transition: var(--transition-smooth);
+  cursor: pointer;
+}
+
+.studio-quadrant-card:hover {
+  border-color: var(--accent-primary);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.studio-quadrant-card.active {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.studio-quadrant-header {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.studio-quadrant-badge {
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(8px);
+  color: var(--accent-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-glow);
+}
+
+.studio-quadrant-footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.88), transparent);
+  padding: 12px 10px 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  z-index: 5;
+}
+
+.studio-capsule-rail-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-top: 14px;
+  gap: 6px;
+}
+
+.studio-capsule-rail {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  max-height: 90px;
+  padding: 4px 2px;
+  width: 100%;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+}
+
+.studio-capsule-thumb {
+  width: 74px;
+  height: 60px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: var(--transition-smooth);
+  background: #000;
+  opacity: 0.7;
+}
+
+.studio-capsule-thumb:hover {
+  opacity: 1;
+  transform: translateY(-2px);
+  border-color: var(--border-hover);
+}
+
+.studio-capsule-thumb.active {
+  opacity: 1;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 10px var(--accent-glow);
+  transform: translateY(-2px);
+}
+
+.studio-capsule-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.studio-thumb-ref {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.studio-thumb-damage-indicator {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 5px #ef4444;
+}
+
+/* ==========================================================================
    4. DAMAGE TABLE & COST ESTIMATION MATRIX
    ========================================================================== */
 .damage-table-modern {
