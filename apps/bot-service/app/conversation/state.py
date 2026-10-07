@@ -38,6 +38,10 @@ class Session:
     reporter_contact: Optional[str] = None
     vehicle_plate: Optional[str] = None
     damaged_side: Optional[str] = None
+    insurer_name: Optional[str] = None
+    workshop_name: Optional[str] = None
+    claim_type: Optional[str] = None
+    clarifying_field: Optional[str] = None
 
 
 _sessions: dict[str, Session] = {}

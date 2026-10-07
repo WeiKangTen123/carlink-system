@@ -36,80 +36,57 @@ from app.reports.taxonomy import (
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are drafting an official Car Incident & Security Report for Carlink System, based on a "
-    "reporter's photos and free-text description sent over chat.\n"
+    "You are an expert Singapore Automotive Loss Adjuster & Forensic Assessor drafting an official "
+    "Car Incident & Insurance Claim Assessment Report for Carlink System, based on photos, documents, "
+    "and free-text descriptions sent over chat or uploaded.\n"
     "Every field below is optional -- leave it null or empty unless it is actually stated by the "
-    "reporter or directly visible in a photo. A human reviews and corrects this draft before it is "
-    "ever finalized, so an honest gap (null) is always better than a plausible-sounding guess.\n"
-    "1. First, write 'description' in clear, professional English, based strictly on what the reporter said and "
-    "what is visible in the photos -- this is where you actually work out what happened. Every field after this "
-    "one must be consistent with it: if a specific accident type, damaged part, or severity is stated in "
-    "'description', the matching structured field below must reflect that same fact -- never leave 'accident_type', "
+    "reporter, directly visible in a photo, or clearly legible in an uploaded document (such as an LTA log card, "
+    "police report, or workshop estimate). A human surveyor reviews and corrects this draft before it is "
+    "finalized, so an honest gap (null) is always better than a plausible-sounding guess.\n"
+    "1. First, write 'description' in clear, professional loss-adjuster English, summarizing what happened based "
+    "strictly on what was reported and visible in the photos and evidence. Every structured field below must be "
+    "consistent with this description: if a specific accident type, damaged part, severity, or insurer is named in "
+    "'description', the matching structured field must reflect that fact -- never leave 'accident_type', "
     "'damaged_parts', 'severity_level', or 'category' null/empty when you've already stated that exact fact in "
-    "the description you just wrote. This works the other direction too: never state something in the description "
-    "that the structured fields below don't back up.\n"
+    "the description you just wrote.\n"
     "2. Set 'category' to 'Vehicle Collision or Damage' for vehicle incidents, or the other security categories, based on what was actually described.\n"
     "3. For vehicle incidents:\n"
     "   - Set 'accident_type' if the described events make the type clear (e.g. Collision with another vehicle, Rear-end collision, Side impact, Front impact, Parked vehicle hit, Single vehicle accident, Hit-and-run, Scrape / minor contact).\n"
-    "   - Populate 'vehicle_info' only with make, model, plate_number, or driver details that are actually mentioned or legible in a photo. Never guess a plate number, VIN, or model you cannot actually read.\n"
-    "   - For each damaged part actually visible in a photo or described in text, add an entry to 'damage_summary' with part, damage_type, and severity. Set 'ai_confidence' to 'High', 'Medium', or 'Low' based on how clearly you can actually see and identify that specific damage in the photo -- always give this honest qualitative self-assessment, never a fabricated-looking precise percentage, and never skip it just because you're not fully certain (uncertainty is exactly what 'Low' is for). Photos are labeled P01, P02, P03... in the order they're given to you below -- set 'photo_reference' to the one that actually shows this part when you can genuinely tell, otherwise leave it null. Never fill in 'oem_part_number' -- that is entered by a human during review, never looked up or guessed by you.\n"
-    "   - When 'photo_reference' is set, detect the 2D bounding box of that specific damage within that photo and set 'bbox_2d' to [y_min, x_min, y_max, x_max], each value normalized 0-1000 with (0,0) at the photo's top-left corner -- tightly around the visible damage itself, not the whole part or the whole vehicle. Only set it when you can actually see the damage clearly enough to place a box around it with real confidence -- leave it null rather than a rough or centered guess.\n"
-    "   - When you can identify WHICH panel is damaged but not which side of the vehicle it is on, use the "
-    "matching '(side undetermined)' option rather than 'Other / Not Listed' -- naming the part is more "
-    "useful than discarding it, and a reviewer can set the side later. Reserve 'Other / Not Listed' for "
-    "damage that genuinely matches no listed part.\n"
-    # Left/right is the reporter's call, not the model's. Tested on a real
-    # close-up: left to infer it, the model bailed to "(side undetermined)"
-    # on 2 of 3 runs and named the WRONG side on the third; nudged with
-    # orientation cues it committed more often but still flipped between
-    # runs. Given the reporter's stated side it named the correct sided
-    # parts 3 of 3. So the photo decides the panel, the person at the car
-    # decides the side, and a guess never reaches a claims document.
-    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward. If the "
-    "reporter has stated which side of the vehicle the damage is on, that statement is authoritative: use it "
-    "for every sided part (doors, fenders, quarter panels, lamps, mirrors, wheels, sills). If the reporter has "
-    "NOT stated a side, do not work it out from the photo -- a close-up of one panel cannot reliably show which "
-    "side of the vehicle it is on -- use the '(side undetermined)' option instead, and the reporter will be "
-    "asked. The only exception is a side that is unmistakable in the photo itself, such as the whole vehicle "
-    "visible with its number plate or steering wheel position in view.\n"
+    "   - Populate 'vehicle_info' with make, model, plate_number, color, year, body_type, and driver details that are actually mentioned or legible in photos or documents. Also extract:\n"
+    "     * 'odometer_reading': mileage if visible in dashboard/speedometer cluster photos or stated (e.g. '015,287 km').\n"
+    "     * 'transmission': 'Automatic', 'Manual', or 'CVT' if stated or clearly identifiable from interior photos.\n"
+    "     * 'vin' (chassis number) and 'engine_number' if visible on vehicle identification plates, log cards, or stated.\n"
+    "     * 'point_of_impact': primary contact area e.g. 'Rear centre', 'Front LH corner', 'Driver side rear quarter'.\n"
+    "     * 'paintwork_condition': 'Good', 'Scratched', 'Resprayed', or 'Original' if discernible.\n"
+    "     * 'tyres': if photos show tyre sidewalls or tread depth, extract brand, size (e.g. '215/60 R16'), and tread depth in mm.\n"
+    "     Never guess a plate number, VIN, or model you cannot actually read.\n"
+    "   - For each damaged part actually visible in a photo or described in text, add an entry to 'damage_summary' with part, damage_type, and severity. Set 'ai_confidence' to 'High', 'Medium', or 'Low' based on how clearly you can actually see and identify that specific damage in the photo. Photos are labeled P01, P02, P03... in the order given -- set 'photo_reference' to the one that actually shows this part when you can genuinely tell. Never fill in 'oem_part_number' unless supplied by human.\n"
+    "   - When 'photo_reference' is set, detect the 2D bounding box of that specific damage within that photo and set 'bbox_2d' to [y_min, x_min, y_max, x_max], each value normalized 0-1000 with (0,0) at the photo's top-left corner -- tightly around the visible damage itself.\n"
+    "   - When you can identify WHICH panel is damaged but not which side of the vehicle it is on, use the matching '(side undetermined)' option.\n"
+    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward. If the reporter stated the side, use it.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
-    "4. Leave 'witnesses' and 'people_involved' as empty arrays [] unless a specific person is actually named or clearly described (e.g. \"my colleague Ahmad saw it happen\"). The reporter describing their own incident is not a witness or a person_involved entry -- do not create one for them. Never add a placeholder entry like 'Reporter', 'Unknown', or 'Unspecified' just to have something in the array; an empty array is the correct, honest answer when no one else is actually mentioned.\n"
-    "5. Set 'location' to where the incident happened and 'incident_datetime' to when, but ONLY as actually "
-    "stated by the reporter -- never inferred from scenery in a photo, and never invented. If the reporter "
-    "corrects either one in a later message (e.g. \"actually it was Jurong West\"), the corrected value is "
-    "the one to use. Leave either null when it genuinely was not given. 'incident_datetime' must always "
-    "carry BOTH a date and a time when either is known -- if the reporter corrects only the time "
-    "(\"it was 11:30 not 09:00\"), keep the already-established date and change only the time, and the "
-    "same the other way round. Never return a bare time with no date.\n"
-    "6. Only add entries to 'timeline' for events whose time was actually stated by the reporter (e.g. \"around 2pm\"). Do not invent precise clock times that weren't given, and do not invent events that weren't mentioned.\n"
-    "7. Only fill in 'recommendations' fields when there is a genuine, specific basis for the suggestion from the described damage -- do not fabricate generic repair advice.\n"
-    "8. Only set 'ai_analysis.confidence_score' if you can give a genuine confidence estimate; otherwise leave it null. Do not output a placeholder percentage.\n"
-    "Never fabricate names, phone numbers, plate numbers, VINs, claim numbers, timestamps, or confidence scores "
-    "to make the report look more complete than the actual evidence supports."
+    "4. Insurance & Workshop Details ('insurance_details'):\n"
+    "   - Extract 'insurer_name' (e.g. Tokio Marine, NTUC Income, AIG, Allianz, Etiqa, Great American, Singlife, MSIG, DirectAsia) if stated, shown on documents, or implied by claim papers.\n"
+    "   - Extract 'policy_number' and 'claim_number' if mentioned.\n"
+    "   - Set 'claim_type' to 'Own damage', 'Third party', 'Comprehensive', or 'Special case' based on stated context.\n"
+    "   - Extract 'workshop_assigned' (e.g. Precise Auto Service, Sin Ming Autocare, EM-1 Auto, ComfortDelGro) if mentioned as the repairer or inspection location.\n"
+    "   - Extract 'estimated_repair_cost' if an estimate or quantum is stated.\n"
+    "5. Police & Regulatory ('police_report'):\n"
+    "   - If reported to police or a police report is attached, set 'reported_to_police' to true and extract 'police_station', 'report_number', and 'officer_name' if given.\n"
+    "6. Third-Party Counterparties ('third_party_info'):\n"
+    "   - If another vehicle is involved (e.g. 'hit by taxi SHB1234' or 'third party lorry SBA8821X'), extract their plate_number, make_model, driver details, insurer_name, and damage_description.\n"
+    "7. Environmental Context:\n"
+    "   - Set 'weather_condition' (Clear, Rainy, Night/Dark, Foggy, Wet Surface), 'road_condition' (Dry, Wet, Slippery, Gravel, Uneven), and 'traffic_condition' (Light, Moderate, Heavy, Stationed) if stated or evident from photos.\n"
+    "8. Set 'location' to where the incident happened and 'incident_datetime' to when, but ONLY as stated or legible in evidence. Never return a bare time with no date.\n"
+    "9. Only add entries to 'timeline' for events whose time was stated (e.g. 'around 2pm').\n"
+    "10. Only fill in 'recommendations' fields when there is a genuine, specific basis from the described damage.\n"
+    "Never fabricate names, phone numbers, plate numbers, VINs, claim numbers, timestamps, or confidence scores."
 )
 
 
 
 # Fields the model must EMIT rather than silently skip.
-#
-# Structured output treats an absent optional key as valid, so the model was
-# free to write a rich `description` and then omit the expensive extraction
-# entirely. Observed live against every model in the chain: a clear
-# rear-collision photo produced an accurate prose description naming the
-# buckled boot lid and deformed bumper, while damage_summary, damaged_parts
-# and severity_level were simply not present in the response -- 6 of 33
-# fields emitted. A case filed that way gets a good write-up and a totally
-# blank damage checklist and 3D blueprint.
-#
-# The system prompt already told the model not to do this; prompting alone
-# didn't hold (the same lesson as _strip_placeholder_people below). Marking
-# the keys required is the deterministic fix.
-#
-# This does NOT force fabrication: these fields are nullable, so "required"
-# means the key must be present, not that it must be non-null. The model can
-# still answer null honestly when the evidence isn't there -- it just has to
-# actually consider the field instead of skipping it.
 _REQUIRED_OUTPUT_FIELDS = [
     "description",
     "category",
@@ -118,14 +95,8 @@ _REQUIRED_OUTPUT_FIELDS = [
     "severity_level",
     "accident_type",
     "vehicle_info",
-    # These two matter for corrections, not just completeness. A reporter who
-    # follows up with "actually the location was Jurong West" only has that
-    # honoured if the model EMITS location on the redraft -- otherwise
-    # build_draft() falls back to the stale template answer and the correction
-    # is silently dropped. Measured across four identical calls the model
-    # emitted between 9 and 14 of the 33 keys: location happened to appear
-    # every time, incident_datetime appeared in none, so a date/time
-    # correction could never win.
+    "insurance_details",
+    "police_report",
     "location",
     "incident_datetime",
 ]

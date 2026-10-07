@@ -69,6 +69,31 @@ class DamageSummaryItem(BaseModel):
     )
 
 
+class TyreItem(BaseModel):
+    tread_depth_mm: Optional[float] = Field(default=None, description="Tread depth in mm (e.g. 6.0)")
+    brand: Optional[str] = Field(default=None, description="Tyre manufacturer e.g. Dunlop, Michelin, Goodride")
+    size: Optional[str] = Field(default=None, description="Tyre size specification e.g. 215/60 R16")
+    condition: Optional[str] = Field(default=None, description="Good, Worn, LTA Violation (<1.6mm)")
+
+
+class TyreCondition(BaseModel):
+    front_nearside: Optional[TyreItem] = Field(default_factory=TyreItem, description="Front Left tyre")
+    front_offside: Optional[TyreItem] = Field(default_factory=TyreItem, description="Front Right tyre")
+    rear_nearside: Optional[TyreItem] = Field(default_factory=TyreItem, description="Rear Left tyre")
+    rear_offside: Optional[TyreItem] = Field(default_factory=TyreItem, description="Rear Right tyre")
+
+
+class ThirdPartyInfo(BaseModel):
+    plate_number: Optional[str] = None
+    make_model: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_nric: Optional[str] = None
+    driver_contact: Optional[str] = None
+    insurer_name: Optional[str] = None
+    policy_number: Optional[str] = None
+    damage_description: Optional[str] = None
+
+
 class VehicleInfo(BaseModel):
     plate_number: Optional[str] = None
     make: Optional[str] = None
@@ -80,11 +105,15 @@ class VehicleInfo(BaseModel):
     ownership_type: Optional[str] = None
     driver_name: Optional[str] = None
     driver_contact: Optional[str] = None
-    # Sedan / SUV / Van / ... -- decides which 3D model the dashboard shows.
-    # Left as a plain string rather than an enum on the model itself so
-    # reports stored before this field existed still parse; the enum is
-    # applied only to the schema handed to Gemini (see _response_schema).
     body_type: Optional[str] = None
+    odometer_reading: Optional[str] = Field(default=None, description="Speedometer / odometer mileage e.g. '015,287 km'")
+    transmission: Optional[str] = Field(default=None, description="Automatic, Manual, CVT")
+    date_of_registration: Optional[str] = None
+    paintwork_condition: Optional[str] = Field(default=None, description="Good, Scratched, Resprayed, Original")
+    steering_condition: Optional[str] = Field(default=None, description="Operable, Impaired, Damaged")
+    brakes_condition: Optional[str] = Field(default=None, description="Operable, Impaired, Damaged")
+    tyres: Optional[TyreCondition] = Field(default_factory=TyreCondition)
+    point_of_impact: Optional[str] = Field(default=None, description="Point of impact e.g. 'Rear centre', 'Front LH quarter'")
 
 
 class PoliceReportDetails(BaseModel):
@@ -199,6 +228,7 @@ class SecurityIncidentDraft(BaseModel):
     immediate_actions: Optional[str] = None
     police_report: Optional[PoliceReportDetails] = Field(default_factory=PoliceReportDetails)
     insurance_details: Optional[InsuranceDetails] = Field(default_factory=InsuranceDetails)
+    third_party_info: Optional[ThirdPartyInfo] = Field(default_factory=ThirdPartyInfo)
     ai_analysis: Optional[AIAnalysisInfo] = Field(default_factory=AIAnalysisInfo)
     timeline: list[TimelineEvent] = Field(default_factory=list)
     recommendations: Optional[RecommendationsInfo] = Field(default_factory=RecommendationsInfo)

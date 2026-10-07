@@ -85,6 +85,31 @@ export type DamageSummaryItem = {
   bbox_2d?: number[] | null;
 };
 
+export type TyreItem = {
+  tread_depth_mm?: number | null;
+  brand?: string | null;
+  size?: string | null;
+  condition?: string | null;
+};
+
+export type TyreCondition = {
+  front_nearside?: TyreItem | null;
+  front_offside?: TyreItem | null;
+  rear_nearside?: TyreItem | null;
+  rear_offside?: TyreItem | null;
+};
+
+export type ThirdPartyInfo = {
+  plate_number?: string | null;
+  make_model?: string | null;
+  driver_name?: string | null;
+  driver_nric?: string | null;
+  driver_contact?: string | null;
+  insurer_name?: string | null;
+  policy_number?: string | null;
+  damage_description?: string | null;
+};
+
 export type VehicleInfo = {
   plate_number?: string | null;
   make?: string | null;
@@ -99,6 +124,14 @@ export type VehicleInfo = {
   /** Sedan / SUV / Van / ... -- from the vehicle catalogue in taxonomy.py.
    * Absent on reports filed before the catalogue existed. */
   body_type?: string | null;
+  odometer_reading?: string | null;
+  transmission?: string | null;
+  date_of_registration?: string | null;
+  paintwork_condition?: string | null;
+  steering_condition?: string | null;
+  brakes_condition?: string | null;
+  tyres?: TyreCondition | null;
+  point_of_impact?: string | null;
 };
 
 export type PoliceReportDetails = {
@@ -164,6 +197,7 @@ export type Witness = {
   name: string;
   contact?: string | null;
   statement?: string | null;
+  observation_time?: string | null;
 };
 
 export type ReportSummary = {
@@ -216,6 +250,7 @@ export type ReportData = {
   immediate_actions?: string | null;
   police_report?: PoliceReportDetails | null;
   insurance_details?: InsuranceDetails | null;
+  third_party_info?: ThirdPartyInfo | null;
   ai_analysis?: AIAnalysisInfo | null;
   timeline?: TimelineEvent[];
   recommendations?: RecommendationsInfo | null;

@@ -5,9 +5,9 @@ section B). Get a token from @BotFather, put it in .env, and this runs.
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
 from app.ai.client import available_api_keys
@@ -25,14 +25,13 @@ WELCOME_GUIDE = (
     "🚨 *Carlink AI Incident Reporting System* 🚨\n\n"
     "I will assist you in generating an official, structured **Security Incident Report PDF** from your photos & description.\n\n"
     "📋 *3 Simple Steps to File a Report:*\n\n"
-    "1️⃣ *Send Photos* 📸\n"
-    "   • Upload 1 or more photos of the scene or damage.\n\n"
-    "2️⃣ *Fill In the Template* 📝\n"
-    "   • I'll send you a short template (Name, Role/Position, Contact Number, Vehicle Plate, Damaged Side, Location, Date/Time, Description, Reported to Authorities).\n"
-    "   • Copy it, fill in the blanks, and send it back. Category, Damaged Parts, and Severity are worked out automatically from your photos.\n\n"
-    "3️⃣ *Review & Confirm* 📄\n"
-    "   • Carlink AI will draft a formatted summary for you.\n"
-    "   • Reply *'confirm'* to generate your PDF report, or reply with edits to modify it.\n\n"
+    "1️⃣ *Send Photos / Documents* 📸\n"
+    "   • Upload 1 or more photos of the scene, damage, log card, or repair estimate.\n\n"
+    "2️⃣ *Provide Incident Particulars* 📝\n"
+    "   • Reply with details or copy the short template.\n"
+    "   • Or type naturally (e.g. 'SLK3063Z rear ended at PIE, Insurer Tokio Marine, Workshop Precise Auto').\n\n"
+    "3️⃣ *Interactive Review & Buttons* 📄\n"
+    "   • Tap the interactive buttons below the draft to select side, insurer, or confirm.\n\n"
     "----------------------------------------\n"
     "💡 *Available Commands:*\n"
     "• /new or /start — Start a new report session\n"
@@ -58,19 +57,35 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("🔄 Current report session cancelled and reset. Send /new or a photo to start a fresh report.")
 
 
-
-# Raising concurrent_updates (see build_app()) lets DIFFERENT chats' updates
-# be handled at the same time, which is safe -- they mutate different
-# Session objects. It does NOT stop the SAME chat's updates from
-# overlapping (e.g. a user double-texting while their photo upload is
-# still being handled), which would race on that chat's shared in-memory
-# Session. These per-chat locks serialize same-chat updates against each
-# other without blocking unrelated chats.
 _chat_locks: dict[str, asyncio.Lock] = {}
 
 
 def _lock_for(chat_id: str) -> asyncio.Lock:
     return _chat_locks.setdefault(chat_id, asyncio.Lock())
+
+
+def _build_inline_keyboard(session) -> InlineKeyboardMarkup:
+    buttons = []
+    # Primary confirmation button
+    buttons.append([InlineKeyboardButton("✅ Confirm & Save to Studio", callback_data="confirm")])
+
+    # Side placement options if undetermined
+    if session.draft and any("(side undetermined)" in (item.part or "") for item in (session.draft.damage_summary or [])):
+        buttons.append([
+            InlineKeyboardButton("⬅️ Left Side", callback_data="side_left"),
+            InlineKeyboardButton("➡️ Right Side", callback_data="side_right"),
+            InlineKeyboardButton("⬆️ Front", callback_data="side_front"),
+            InlineKeyboardButton("⬇️ Rear", callback_data="side_rear"),
+        ])
+
+    # Insurer options if missing
+    if session.draft and session.draft.insurance_details and not session.draft.insurance_details.insurer_name:
+        buttons.append([
+            InlineKeyboardButton("🏢 Tokio Marine", callback_data="ins_tokio"),
+            InlineKeyboardButton("🏢 NTUC Income", callback_data="ins_income"),
+            InlineKeyboardButton("🏢 AIG", callback_data="ins_aig"),
+        ])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,8 +96,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     session = get_session(chat_id)
-    if session.stage != Stage.AWAITING_PHOTOS:
-        session = reset_session(chat_id)
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -90,12 +103,62 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await file.download_to_drive(str(dest))
     session.photo_paths.append(str(dest))
 
+    caption = (update.message.caption or "").strip()
+    if caption:
+        parsed = parse_template_reply(caption)
+        if parsed:
+            if parsed.get("location"): session.location = parsed["location"]
+            if parsed.get("incident_datetime"): session.incident_datetime = parsed["incident_datetime"]
+            if parsed.get("reporter_name"): session.reporter_name = parsed["reporter_name"]
+            if parsed.get("vehicle_plate"): session.vehicle_plate = parsed["vehicle_plate"]
+            if parsed.get("insurer_name"): session.insurer_name = parsed["insurer_name"]
+            if parsed.get("workshop_name"): session.workshop_name = parsed["workshop_name"]
+            if parsed.get("damaged_side"): session.damaged_side = parsed["damaged_side"]
+            session.description = parsed.get("description") or caption
+        else:
+            session.pending_edits.append(caption)
+
+    if session.stage == Stage.AWAITING_CONFIRMATION:
+        await update.message.reply_text(
+            f"📸 Additional photo received ({len(session.photo_paths)} total). Updating draft..."
+        )
+        await draft_and_reply(update, session, combined_description(session), redrafting=True)
+        return
+
     await update.message.reply_text(
-        f"Got it -- {len(session.photo_paths)} photo(s) received. Send more if you have any."
+        f"Got it -- {len(session.photo_paths)} photo(s) received. Send more or describe what happened."
     )
     if not session.template_sent:
         session.template_sent = True
         await update.message.reply_text(build_template_prompt(), parse_mode="Markdown")
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async with _lock_for(str(update.effective_chat.id)):
+        chat_id = str(update.effective_chat.id)
+        session = get_session(chat_id)
+        doc = update.message.document
+        if not doc:
+            return
+        mime = doc.mime_type or ""
+        ext = ".pdf" if "pdf" in mime else ".jpg"
+        file = await doc.get_file()
+        dest = tmp_dir() / f"{chat_id}_{len(session.photo_paths)}{ext}"
+        await file.download_to_drive(str(dest))
+        session.photo_paths.append(str(dest))
+
+        caption = (update.message.caption or "").strip()
+        if caption:
+            session.pending_edits.append(caption)
+
+        await update.message.reply_text(
+            f"📄 Evidence document received: {doc.file_name or 'file'}. Added to case."
+        )
+        if session.stage == Stage.AWAITING_CONFIRMATION:
+            await draft_and_reply(update, session, combined_description(session), redrafting=True)
+        elif not session.template_sent:
+            session.template_sent = True
+            await update.message.reply_text(build_template_prompt(), parse_mode="Markdown")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,21 +181,23 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not session.photo_paths:
         await update.message.reply_text(
-            "Please send at least one photo first, then describe what happened."
+            "Please send at least one incident photo or document first, then describe what happened."
         )
         return
 
     parsed = parse_template_reply(text)
     if parsed:
-        session.location = parsed["location"]
-        session.incident_datetime = parsed["incident_datetime"]
-        session.reported_to_authorities = parsed["reported_to_authorities"]
-        session.reporter_name = parsed["reporter_name"]
-        session.reporter_role = parsed["reporter_role"]
-        session.reporter_contact = parsed["reporter_contact"]
-        session.vehicle_plate = parsed["vehicle_plate"]
-        session.damaged_side = parsed["damaged_side"]
-        description = parsed["description"]
+        if parsed.get("location"): session.location = parsed["location"]
+        if parsed.get("incident_datetime"): session.incident_datetime = parsed["incident_datetime"]
+        if parsed.get("reported_to_authorities") is not None: session.reported_to_authorities = parsed["reported_to_authorities"]
+        if parsed.get("reporter_name"): session.reporter_name = parsed["reporter_name"]
+        if parsed.get("reporter_role"): session.reporter_role = parsed["reporter_role"]
+        if parsed.get("reporter_contact"): session.reporter_contact = parsed["reporter_contact"]
+        if parsed.get("vehicle_plate"): session.vehicle_plate = parsed["vehicle_plate"]
+        if parsed.get("damaged_side"): session.damaged_side = parsed["damaged_side"]
+        if parsed.get("insurer_name"): session.insurer_name = parsed["insurer_name"]
+        if parsed.get("workshop_name"): session.workshop_name = parsed["workshop_name"]
+        description = parsed.get("description") or text
     else:
         description = text
 
@@ -141,57 +206,74 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def draft_and_reply(update: Update, session, description: str, redrafting: bool = False) -> None:
-    # One status line, not two: the redraft path used to send "Redrafting
-    # with your changes..." and then this sent "Drafting your report..."
-    # right after it.
     notice = "Redrafting with your changes..." if redrafting else "Drafting your report..."
-    # If the key's per-minute window is full this call will sit and wait, so
-    # say so. Otherwise the reporter watches a silent "Drafting your
-    # report..." for most of a minute with no idea anything is happening.
+    msg_target = update.message or (update.callback_query.message if update.callback_query else None)
+
     def _queued_seconds() -> float:
-        # Must ask about the SAME key draft_report will try first, or the
-        # estimate describes a window nothing is about to use.
         keys = available_api_keys()
         return estimate_wait(keys[0] if keys else None)
 
     queued = await asyncio.to_thread(_queued_seconds)
-    if queued >= 5:
-        await update.message.reply_text(
-            f"{notice} (busy right now -- about {round(queued)}s in the queue)"
-        )
-    else:
-        await update.message.reply_text(notice)
+    if msg_target:
+        if queued >= 5:
+            await msg_target.reply_text(f"{notice} (busy right now -- about {round(queued)}s in queue)")
+        else:
+            await msg_target.reply_text(notice)
+
     try:
-        # build_draft() makes a blocking Gemini network call (up to 45s per
-        # model, x5 fallback models worst case) -- called directly (as this
-        # used to) it runs ON the bot's single asyncio event loop, freezing
-        # the ENTIRE bot for EVERY user, not just this conversation, for the
-        # whole duration. render_pdf() below already gets this right via
-        # asyncio.to_thread(); this call was just missed.
         result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
     except Exception:
         logger.exception("AI drafting failed")
-        await update.message.reply_text(
-            "Something went wrong while drafting the report (check the server's "
-            "GEMINI_API_KEY and connectivity). Please try again."
-        )
+        if msg_target:
+            await msg_target.reply_text(
+                "Something went wrong while drafting the report. Please try again."
+            )
         return
+
     session.draft = result.draft
     session.stage = Stage.AWAITING_CONFIRMATION
-    # Markdown is an enhancement, never a reason to lose the message. A stray
-    # "*" or "_" in an AI-written description or a typed name makes Telegram
-    # reject the WHOLE send, so a parse failure falls back to plain text
-    # rather than leaving the reporter staring at nothing. Escaping instead
-    # isn't an option here: summarize() is shared with WhatsApp, where the
-    # backslashes would show up literally.
-    try:
-        await update.message.reply_text(result.summary_text, parse_mode="Markdown")
-    except BadRequest:
-        logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
-        await update.message.reply_text(result.summary_text)
+    keyboard = _build_inline_keyboard(session)
+
+    if msg_target:
+        try:
+            await msg_target.reply_text(result.summary_text, parse_mode="Markdown", reply_markup=keyboard)
+        except BadRequest:
+            logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
+            await msg_target.reply_text(result.summary_text, reply_markup=keyboard)
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    chat_id = str(update.effective_chat.id)
+    session = get_session(chat_id)
+    data = query.data
+
+    if data == "confirm":
+        if session.draft:
+            await finalize_report(update, session, chat_id)
+        else:
+            await query.message.reply_text("No active report draft to confirm. Send photos to begin.")
+        return
+    elif data.startswith("side_"):
+        side = data.replace("side_", "")
+        session.damaged_side = side
+        session.pending_edits.append(f"the damage is on the {side} side")
+        await draft_and_reply(update, session, combined_description(session), redrafting=True)
+    elif data.startswith("ins_"):
+        insurer_map = {
+            "ins_tokio": "Tokio Marine Insurance Singapore",
+            "ins_income": "NTUC Income Insurance Co-operative",
+            "ins_aig": "AIG Asia Pacific Insurance",
+        }
+        ins_name = insurer_map.get(data, "Tokio Marine Singapore")
+        session.insurer_name = ins_name
+        session.pending_edits.append(f"insurer is {ins_name}")
+        await draft_and_reply(update, session, combined_description(session), redrafting=True)
 
 
 async def finalize_report(update: Update, session, chat_id: str) -> None:
+    msg_target = update.message or (update.callback_query.message if update.callback_query else None)
     db = SessionLocal()
     try:
         report = Report(
@@ -216,9 +298,17 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
     finally:
         db.close()
 
-    with open(pdf_path, "rb") as f:
-        await update.message.reply_document(document=f, filename="security_incident_report.pdf")
-    await update.message.reply_text("Report saved. Send /new to file another.")
+    if msg_target:
+        with open(pdf_path, "rb") as f:
+            await msg_target.reply_document(document=f, filename="security_incident_report.pdf")
+        rep_code = report.id[:8].upper()
+        await msg_target.reply_text(
+            f"✅ Report *CIR-{rep_code}* finalized and saved to Carlink System!\n\n"
+            f"🖥️ *Open in Loss Adjuster Studio:*\n"
+            f"https://carlink.34-45-253-162.sslip.io/reports/{report.id}\n\n"
+            f"Send /new or a photo to file another report.",
+            parse_mode="Markdown"
+        )
     reset_session(chat_id)
 
 
@@ -243,14 +333,6 @@ async def _post_init(app: Application) -> None:
 
 def build_app() -> Application:
     init_db()
-    # Default is effectively 1 (python-telegram-bot's own default, never
-    # overridden here before) -- every update, from every chat, was handled
-    # one at a time end-to-end. Safe to raise now that per-chat locks above
-    # protect same-chat state, and the Gemini call itself is both off the
-    # event loop (asyncio.to_thread) and separately rate-gated
-    # (extraction.py's _wait_for_rate_limit) -- so this only affects how
-    # many DIFFERENT chats can be mid-conversation at once, not how fast
-    # Gemini gets hit.
     application = (
         Application.builder()
         .token(settings.telegram_bot_token)
@@ -261,7 +343,9 @@ def build_app() -> Application:
     application.add_handler(CommandHandler(["start", "new"], start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return application
 
