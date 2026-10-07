@@ -71,12 +71,14 @@ def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id
         browser = p.chromium.launch()
         try:
             page = browser.new_page()
-            page.set_content(html)
+            page.emulate_media(media="print")
+            page.set_content(html, wait_until="networkidle")
             page.pdf(
                 path=output_path,
                 format="A4",
                 print_background=True,
-                margin={"top": "0mm", "bottom": "12mm", "left": "0mm", "right": "0mm"},
+                prefer_css_page_size=True,
+                margin={"top": "10mm", "bottom": "12mm", "left": "12mm", "right": "12mm"},
             )
         finally:
             browser.close()

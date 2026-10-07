@@ -3388,6 +3388,311 @@ a:hover {
   object-fit: cover;
 }
 
+/* ==========================================================================
+   ENTERPRISE LOSS ADJUSTER ASSESSMENT & ENDORSEMENT WORKSTATION
+   ========================================================================== */
+.assessment-workstation {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+/* Tier 1: Quantum Ribbon */
+.quantum-ribbon {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+  width: 100%;
+}
+
+.quantum-kpi-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition-smooth);
+}
+
+.quantum-kpi-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-1px);
+}
+
+.quantum-kpi-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quantum-kpi-value {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.quantum-kpi-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Tier 2: Annex Navigation Tabs */
+.annex-nav-bar {
+  display: flex;
+  gap: 8px;
+  border-bottom: 2px solid var(--border-color);
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.annex-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -4px;
+}
+
+.annex-tab-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.annex-tab-btn.active {
+  color: var(--accent-cyan);
+  border-bottom: 3px solid var(--accent-cyan);
+  background: var(--surface-card);
+}
+
+/* Financial Annex Ledgers */
+.annex-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card);
+}
+
+.annex-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.annex-table th {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.annex-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.annex-table tr:hover td {
+  background: var(--surface-hover);
+}
+
+.annex-table tfoot td {
+  background: var(--surface-hover);
+  font-weight: 800;
+  font-family: var(--font-mono);
+  border-top: 2px solid var(--border-color);
+}
+
+/* Badges & Chips for Ledgers */
+.annex-action-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.annex-action-badge.replace {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.annex-action-badge.repair {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.annex-action-badge.disallow {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  text-decoration: line-through;
+}
+
+.annex-action-badge.straighten {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+/* Tier 3: Settlement Waterfall */
+.waterfall-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.waterfall-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border-color);
+  font-size: 13px;
+}
+
+.waterfall-row:last-child {
+  border-bottom: none;
+}
+
+.waterfall-row.subtotal {
+  font-weight: 700;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  padding: 10px 0;
+  font-size: 14px;
+}
+
+.waterfall-row.grand {
+  background: var(--surface-hover);
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-cyan);
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--accent-cyan);
+}
+
+/* Endorsement Console */
+.endorsement-console {
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-shadow: var(--shadow-md);
+}
+
+.surveyor-credentials-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--surface-hover);
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+}
+
+.surveyor-signature-box {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 800px) {
+  .surveyor-signature-box {
+    grid-template-columns: 1fr;
+  }
+}
+
+.signature-canvas-pad {
+  border: 2px dashed var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-base);
+  height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: crosshair;
+}
+
+.surveyor-chop-preview {
+  border: 2px solid var(--accent-primary);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: rgba(37, 99, 235, 0.04);
+  gap: 6px;
+}
+
+.compliance-check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.compliance-check-item input[type="checkbox"] {
+  margin-top: 3px;
+  cursor: pointer;
+}
+
+
 
 
 

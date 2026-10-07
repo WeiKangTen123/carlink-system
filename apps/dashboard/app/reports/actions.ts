@@ -12,6 +12,8 @@ import {
   analyzeExistingReportPhotos,
   getReport,
   type PhotoAnalysisDraft,
+  type SignOffRequest,
+  type SignOffInfo,
 } from "@/lib/api";
 import { buildReportPayload } from "./form-payload";
 
@@ -93,10 +95,10 @@ export async function updateReportAction(id: string, formData: FormData) {
  * had been missed. */
 export async function signOffReportAction(
   id: string,
-  reviewerName: string
-): Promise<{ id: string; status: string; pdf_url: string } | { error: string }> {
+  payload?: SignOffRequest | string
+): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo } | { error: string }> {
   try {
-    const result = await signOffReport(id, reviewerName);
+    const result = await signOffReport(id, payload);
     revalidatePath(`/reports/${id}`);
     revalidatePath(`/reports/${id}/edit`);
     revalidatePath("/reports");

@@ -169,12 +169,92 @@ export type RecommendationsInfo = {
   preventive_action?: string | null;
 };
 
+export type AnnexAPartItem = {
+  item_no: string;
+  part_name: string;
+  condition: string;
+  action: string;
+  qty: number;
+  workshop_est: number;
+  discount_pct: number;
+  adjusted_cost: number;
+  is_net_item: boolean;
+  oem_part_number?: string | null;
+};
+
+export type AnnexAInfo = {
+  items: AnnexAPartItem[];
+  total_workshop_est: number;
+  total_adjusted_cost: number;
+};
+
+export type AnnexBLabourItem = {
+  item_no: string;
+  description: string;
+  workshop_est: number;
+  adjusted_cost: number;
+  justification?: string | null;
+};
+
+export type AnnexBInfo = {
+  items: AnnexBLabourItem[];
+  total_workshop_est: number;
+  total_adjusted_cost: number;
+};
+
+export type AnnexCInfo = {
+  workshop_total: number;
+  adjusted_total: number;
+  agreed_lump_sum?: number | null;
+  gst_rate: number;
+  gst_amount?: number | null;
+  total_with_gst?: number | null;
+  repair_days?: number | null;
+  terms?: string | null;
+  without_prejudice: boolean;
+};
+
+export type BolaLiabilityAssessment = {
+  scenario_number?: number | null;
+  scenario_name?: string | null;
+  insured_liability_pct: number;
+  third_party_liability_pct: number;
+  dispute_status: string;
+  apportionment_rationale?: string | null;
+  subrogation_prospect?: string | null;
+};
+
+export type SignOffRequest = {
+  surveyor_name?: string;
+  qualifications?: string;
+  license_number?: string;
+  firm_name?: string;
+  signature_hash?: string;
+  signature_data_url?: string;
+  agreed_quantum?: number;
+  turnaround_days?: number;
+  liability_opinion?: string;
+  remarks?: string;
+  terms_accepted?: boolean;
+};
+
 export type SignOffInfo = {
   prepared_by?: string | null;
   reviewed_by?: string | null;
   approved_by?: string | null;
+  surveyor_name?: string | null;
+  qualifications?: string | null;
+  license_number?: string | null;
+  firm_name?: string | null;
+  signature_hash?: string | null;
+  signature_data_url?: string | null;
+  agreed_quantum?: number | null;
+  turnaround_days?: number | null;
+  liability_opinion?: string | null;
+  remarks?: string | null;
   status?: string;
   signature_date?: string | null;
+  terms_accepted?: boolean;
 };
 
 export type AIAnalysisInfo = {
@@ -255,6 +335,10 @@ export type ReportData = {
   timeline?: TimelineEvent[];
   recommendations?: RecommendationsInfo | null;
   sign_off?: SignOffInfo | null;
+  annex_a?: AnnexAInfo | null;
+  annex_b?: AnnexBInfo | null;
+  annex_c?: AnnexCInfo | null;
+  bola_assessment?: BolaLiabilityAssessment | null;
   reported_to_authorities: boolean;
   authority_reference?: string | null;
   preventive_measures?: string | null;
@@ -431,9 +515,19 @@ export async function reopenReport(id: string): Promise<{ id: string; status: st
   return res.json();
 }
 
-export async function signOffReport(id: string, reviewerName: string = "Surveyor / Loss Adjuster"): Promise<{ id: string; status: string; pdf_url: string }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}/sign-off?reviewer_name=${encodeURIComponent(reviewerName)}`, {
+export async function signOffReport(
+  id: string,
+  payload?: SignOffRequest | string
+): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo }> {
+  const isString = typeof payload === "string";
+  const requestBody = isString
+    ? { surveyor_name: payload, reviewed_by: payload }
+    : (payload || {});
+  const reviewerParam = isString ? payload : (payload?.surveyor_name || "Patrick Ng");
+  const res = await fetch(`${API_BASE_URL}/reports/${id}/sign-off?reviewer_name=${encodeURIComponent(reviewerParam)}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody),
   });
   if (!res.ok) {
     const text = await res.text();

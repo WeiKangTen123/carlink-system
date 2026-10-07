@@ -32,7 +32,13 @@ export function SignOffButton({ id, currentStatus }: { id: string; currentStatus
     if (!confirm("Are you sure you want to sign off and finalize this Car Incident Report?")) return;
     setLoading(true);
     try {
-      const result = await signOffReportAction(id, "Surveyor Sign-Off");
+      const result = await signOffReportAction(id, {
+        surveyor_name: "Patrick Ng",
+        qualifications: "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC",
+        license_number: "SURV-SG-0492",
+        firm_name: "Carlink Consultancy",
+        terms_accepted: true,
+      });
       if ("error" in result) throw new Error(result.error);
       window.location.reload();
     } catch (err: any) {

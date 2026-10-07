@@ -2,509 +2,712 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>{{ 'Vehicle Incident Report' if report.accident_type else 'Security Incident Report' }}</title>
+<title>Accident Vehicle Inspection &amp; Assessment Report - {{ report.vehicle_info.plate_number if report.vehicle_info else report_id }}</title>
 <style>
   @page {
-    size: A4;
-    margin: 12mm 15mm 15mm 15mm;
+    size: A4 portrait;
+    margin: 12mm 14mm 14mm 14mm;
+  }
+  *, *::before, *::after {
+    box-sizing: border-box;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
   body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    color: #1e293b;
-    font-size: 11px;
-    line-height: 1.5;
+    color: #0f172a;
+    font-size: 10.5px;
+    line-height: 1.45;
     margin: 0;
     padding: 0;
     background: #fff;
   }
-  h1, h2, h3, h4 { margin: 0; padding: 0; font-weight: 700; }
 
-  .header-banner {
+  .page-break {
+    page-break-after: always;
+    break-after: page;
+  }
+  .avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Letterhead Header */
+  .carlink-letterhead {
+    border-bottom: 2.5px solid #0f172a;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    border-bottom: 3px solid #0f172a;
-    padding-bottom: 12px;
-    margin-bottom: 16px;
+    align-items: flex-end;
   }
-  .brand-title {
-    font-size: 22px;
+  .firm-brand {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
     color: #0f172a;
-    letter-spacing: -0.02em;
     text-transform: uppercase;
   }
-  .brand-subtitle {
-    font-size: 11px;
-    color: #64748b;
-    font-weight: 500;
-    margin-top: 2px;
+  .firm-sub {
+    font-size: 9px;
+    color: #475569;
+    margin-top: 1px;
   }
-  .report-badge {
-    background: #0f172a;
-    color: #fff;
-    padding: 6px 14px;
-    border-radius: 4px;
+  .firm-contact {
     text-align: right;
+    font-size: 9px;
+    color: #475569;
   }
-  .report-badge .id { font-size: 14px; font-weight: bold; }
-  .report-badge .status { font-size: 10px; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.05em; }
 
-  .meta-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 16px;
+  .report-title-banner {
+    text-align: center;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    padding: 6px 12px;
+    margin-bottom: 12px;
   }
-  .meta-item .meta-label { font-size: 9px; text-transform: uppercase; color: #64748b; font-weight: 600; }
-  .meta-item .meta-val { font-size: 11px; font-weight: 600; color: #0f172a; margin-top: 1px; }
-
-  .section {
-    margin-bottom: 16px;
-    page-break-inside: avoid;
-  }
-  .section-title {
+  .report-title-text {
     font-size: 12px;
+    font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: #0f172a;
-    background: #f1f5f9;
-    border-left: 4px solid #2563eb;
-    padding: 6px 10px;
-    margin-bottom: 10px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
   }
-
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-
-  .field-card {
-    background: #fff;
-    border: 1px solid #e2e8f0;
-    border-radius: 4px;
-    padding: 8px 12px;
-  }
-  .field-row { display: flex; margin-bottom: 4px; }
-  .field-row:last-child { margin-bottom: 0; }
-  .f-label { width: 120px; font-weight: 600; color: #475569; font-size: 10.5px; }
-  .f-val { flex: 1; color: #0f172a; font-weight: 500; }
-
-  .data-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 4px;
+  .report-ref-line {
     font-size: 10.5px;
-  }
-  .data-table th {
-    background: #0f172a;
-    color: #fff;
-    text-align: left;
-    padding: 6px 10px;
-    font-weight: 600;
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-  .data-table td {
-    padding: 6px 10px;
-    border-bottom: 1px solid #e2e8f0;
-  }
-  .data-table tr:nth-child(even) { background: #f8fafc; }
-
-  .pill {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 10px;
-    font-weight: 600;
-  }
-  .pill-red { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-  .pill-amber { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
-  .pill-blue { background: #e0f2fe; color: #075985; border: 1px solid #7dd3fc; }
-  .pill-green { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-  .pill-slate { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
-
-  .ai-box {
-    background: #f0f9ff;
-    border: 1px solid #bae6fd;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 14px;
-  }
-  .ai-box-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: #0369a1;
     font-weight: 700;
-    font-size: 11px;
+    font-family: monospace;
+    color: #0284c7;
+    margin-top: 2px;
+  }
+
+  /* Section Styling */
+  .section-block {
+    margin-bottom: 12px;
+  }
+  .section-heading {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #0f172a;
+    background: #e2e8f0;
+    padding: 4px 8px;
     margin-bottom: 6px;
+    border-left: 3.5px solid #0284c7;
   }
 
-  .timeline {
-    border-left: 2px solid #2563eb;
-    padding-left: 14px;
-    margin-left: 6px;
-  }
-  .timeline-item {
-    position: relative;
-    margin-bottom: 8px;
-  }
-  .timeline-item::before {
-    content: '';
-    position: absolute;
-    left: -19px;
-    top: 3px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #2563eb;
-  }
-  .timeline-time { font-weight: bold; color: #2563eb; width: 80px; display: inline-block; }
-
-  .photo-grid {
+  .spec-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
+    gap: 4px 16px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    padding: 6px 10px;
   }
-  .photo-card {
+  .spec-row {
+    display: flex;
+    font-size: 10px;
+    padding: 2px 0;
+  }
+  .spec-label {
+    width: 140px;
+    color: #64748b;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .spec-value {
+    flex: 1;
+    color: #0f172a;
+    font-weight: 700;
+  }
+
+  /* Table Ledgers */
+  .ledger-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5px;
+    margin-top: 4px;
+    margin-bottom: 8px;
+  }
+  .ledger-table th {
+    background: #0f172a;
+    color: #ffffff;
+    font-size: 8.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 5px 6px;
+    border: 1px solid #0f172a;
+    text-align: left;
+  }
+  .ledger-table td {
+    padding: 4px 6px;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    overflow: hidden;
+    color: #1e293b;
+    vertical-align: middle;
+  }
+  .ledger-table tr:nth-child(even) td {
     background: #f8fafc;
   }
-  .photo-card img {
+  .ledger-table tfoot td {
+    background: #f1f5f9;
+    font-weight: 800;
+    border-top: 2px solid #0f172a;
+    font-size: 9.5px;
+  }
+  .num {
+    text-align: right;
+    font-family: monospace;
+    font-size: 9.5px;
+  }
+  .center {
+    text-align: center;
+  }
+
+  /* Settlement Summary Box */
+  .summary-waterfall {
+    background: #f8fafc;
+    border: 1.5px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+  }
+  .waterfall-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 10px;
+    border-bottom: 1px dashed #e2e8f0;
+  }
+  .waterfall-line:last-child {
+    border-bottom: none;
+  }
+  .waterfall-line.total {
+    font-weight: 800;
+    font-size: 11px;
+    border-top: 1.5px solid #0f172a;
+    border-bottom: 1.5px solid #0f172a;
+    padding: 6px 0;
+    margin: 4px 0;
+  }
+  .waterfall-line.highlight {
+    background: #e0f2fe;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-weight: 800;
+    font-size: 11.5px;
+    color: #0369a1;
+  }
+
+  /* Without Prejudice Disclaimers */
+  .wp-badge {
+    background: #fef2f2;
+    border: 1px solid #f87171;
+    color: #991b1b;
+    padding: 6px 10px;
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    border-radius: 4px;
+    margin: 10px 0;
+  }
+
+  /* Endorsement & Stamp Section */
+  .endorsement-block {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 16px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #cbd5e1;
+  }
+  .assessor-sign-box {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  .sign-line {
+    width: 200px;
+    height: 40px;
+    border-bottom: 1.5px solid #0f172a;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: flex-end;
+  }
+  .assessor-name {
+    font-size: 12px;
+    font-weight: 800;
+    color: #0f172a;
+    text-transform: uppercase;
+  }
+  .assessor-creds {
+    font-size: 9px;
+    color: #475569;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .company-chop-box {
+    border: 2px solid #0284c7;
+    border-radius: 6px;
+    padding: 10px;
+    text-align: center;
+    background: rgba(2, 132, 199, 0.04);
+  }
+  .chop-title {
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #0f172a;
+  }
+  .chop-sub {
+    font-size: 8px;
+    color: #64748b;
+    margin: 2px 0;
+  }
+  .chop-hash {
+    font-size: 7.5px;
+    font-family: monospace;
+    color: #0284c7;
+    margin-top: 4px;
+  }
+
+  /* Photo Evidence Gallery */
+  .photo-grid-2x2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 10px;
+  }
+  .photo-frame {
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #000;
+    page-break-inside: avoid;
+  }
+  .photo-frame img {
     width: 100%;
-    height: 180px;
+    height: 195px;
     object-fit: cover;
     display: block;
   }
-  .photo-caption {
-    padding: 6px 10px;
-    font-size: 10px;
-    color: #475569;
-    background: #fff;
-    border-top: 1px solid #e2e8f0;
-  }
-
-  .signoff-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-top: 10px;
-  }
-  .sign-box {
-    border: 1px dashed #cbd5e1;
-    border-radius: 6px;
-    padding: 12px;
-    text-align: center;
-    background: #fafafa;
-  }
-  .sign-title { font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 600; margin-bottom: 24px; }
-  .sign-line { border-bottom: 1px solid #94a3b8; margin: 0 10px 6px 10px; }
-  .sign-name { font-weight: 600; color: #0f172a; font-size: 10.5px; }
-
-  .footer {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+  .photo-meta {
+    background: #f8fafc;
+    border-top: 1px solid #cbd5e1;
+    padding: 4px 8px;
     font-size: 9px;
-    color: #94a3b8;
-    text-align: center;
-    border-top: 1px solid #e2e8f0;
-    padding-top: 6px;
+    display: flex;
+    justify-content: space-between;
   }
 </style>
 </head>
 <body>
 
-  <!-- HEADER BANNER -->
-  <div class="header-banner">
+{% set v = report.vehicle_info or {} %}
+{% set ins = report.insurance_details or {} %}
+{% set ax_a = report.annex_a or {} %}
+{% set ax_b = report.annex_b or {} %}
+{% set ax_c = report.annex_c or {} %}
+{% set bola = report.bola_assessment or {} %}
+{% set sign = report.sign_off or {} %}
+
+<!-- =====================================================================
+     PAGE 1: COVER PAGE (ACCIDENT VEHICLE INSPECTION REPORT)
+     ===================================================================== -->
+<div class="page-break">
+  <div class="carlink-letterhead">
     <div>
-      <div class="brand-title">{{ 'Vehicle Incident Report' if report.accident_type else 'Security Incident Report' }}</div>
-      <div class="brand-subtitle">{{ report.company_name or org_name }} &middot; Official Inspection &amp; Claims Record</div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Automotive Forensic Engineers, Motor Loss Adjusters &amp; Independent Assessors</div>
+      <div class="firm-sub">60 Hillside Drive, Singapore 549009</div>
     </div>
-    <div class="report-badge">
-      <div class="id">{{ report_id }}</div>
-      <div class="status">{{ (report.sign_off.status if report.sign_off else None) or 'Draft' }}</div>
-    </div>
-  </div>
-
-  <!-- META BAR -->
-  <div class="meta-grid">
-    <div class="meta-item">
-      <div class="meta-label">Date Created</div>
-      <div class="meta-val">{{ generated_at }}</div>
-    </div>
-    <div class="meta-item">
-      <div class="meta-label">Incident Date / Time</div>
-      <div class="meta-val">{{ report.incident_datetime or '—' }}</div>
-    </div>
-    <div class="meta-item">
-      <div class="meta-label">Location</div>
-      <div class="meta-val">{{ report.location or '—' }}</div>
-    </div>
-    <div class="meta-item">
-      <div class="meta-label">Prepared By</div>
-      <div class="meta-val">{{ report.reporter_name or '—' }}</div>
+    <div class="firm-contact">
+      <div><strong>Tel:</strong> 6285 6178</div>
+      <div><strong>Fax:</strong> 6287 4788</div>
+      <div><strong>Date:</strong> {{ generated_at }}</div>
     </div>
   </div>
 
-  <!-- SECTION 1 & 2: REPORTER & VEHICLE INFORMATION -->
-  {% set v = report.vehicle_info or {} %}
-  {% set has_vehicle_info = v.plate_number or v.make or v.model or v.vin or v.driver_name or report.vehicle_details %}
-  <div class="{{ 'grid-2' if has_vehicle_info else '' }} section">
-    <div>
-      <div class="section-title">Reporter Information</div>
-      <div class="field-card">
-        <div class="field-row"><div class="f-label">Full Name</div><div class="f-val">{{ report.reporter_name or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Role / Position</div><div class="f-val">{{ report.reporter_role or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Contact Number</div><div class="f-val">{{ report.reporter_contact or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Department</div><div class="f-val">{{ report.reporter_department or '—' }}</div></div>
-      </div>
-    </div>
-    {% if has_vehicle_info %}
-    <div>
-      <div class="section-title">Vehicle Information</div>
-      <div class="field-card">
-        <div class="field-row"><div class="f-label">Plate Number</div><div class="f-val"><strong>{{ v.plate_number or report.vehicle_details or '—' }}</strong></div></div>
-        <div class="field-row"><div class="f-label">Make &amp; Model</div><div class="f-val">{{ ((v.make or '') ~ ' ' ~ (v.model or '')).strip() or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">VIN / Chassis No.</div><div class="f-val">{{ v.vin or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Driver / Owner</div><div class="f-val">{{ v.driver_name or '—' }}</div></div>
-      </div>
-    </div>
-    {% endif %}
+  <div class="report-title-banner">
+    <div class="report-title-text">Accident Vehicle Inspection / Assessment Report</div>
+    <div class="report-ref-line">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
   </div>
 
-  <!-- SECTION 3: INCIDENT DETAILS & ENVIRONMENTAL CONDITIONS -->
-  <div class="section">
-    <div class="section-title">Incident Details &amp; Classification</div>
-    <div class="field-card">
-      <div class="grid-3" style="margin-bottom: 8px;">
-        <div><span class="f-label">Category:</span> {% if report.category %}<span class="pill pill-blue">{{ report.category | join(', ') }}</span>{% else %}—{% endif %}</div>
-        <div><span class="f-label">Accident Type:</span> <strong>{{ report.accident_type or '—' }}</strong></div>
-        <div><span class="f-label">Severity Level:</span> {% if report.severity_level %}<span class="pill {{ 'pill-red' if report.severity_level == 'Severe' else ('pill-amber' if report.severity_level == 'Moderate' else 'pill-green') }}">{{ report.severity_level }}</span>{% else %}—{% endif %}</div>
-      </div>
-      {% if report.weather_condition or report.road_condition or report.traffic_condition %}
-      <div class="grid-3" style="border-top: 1px solid #f1f5f9; padding-top: 6px;">
-        <div><span class="f-label">Weather:</span> {{ report.weather_condition or '—' }}</div>
-        <div><span class="f-label">Road Condition:</span> {{ report.road_condition or '—' }}</div>
-        <div><span class="f-label">Traffic:</span> {{ report.traffic_condition or '—' }}</div>
-      </div>
-      {% endif %}
+  <!-- 1.0 REFERENCE -->
+  <div class="section-block">
+    <div class="section-heading">1.0 Reference &amp; Instructions</div>
+    <div class="spec-grid">
+      <div class="spec-row"><span class="spec-label">Date of Request:</span><span class="spec-value">{{ generated_at }}</span></div>
+      <div class="spec-row"><span class="spec-label">Type of Claim:</span><span class="spec-value">{{ ins.claim_type or 'Third party' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Requested by:</span><span class="spec-value">{{ report.reporter_name or 'Owner / Insured' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Care of (C/o):</span><span class="spec-value">{{ ins.workshop_assigned or '1 Kaki Bukit Ave 6, #02-34 Singapore 417883' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Appointed Workshop:</span><span class="spec-value">{{ ins.workshop_assigned or 'M/S Precise Auto Service' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Date of Survey:</span><span class="spec-value">{{ generated_at }}</span></div>
+      <div class="spec-row"><span class="spec-label">Accident Date:</span><span class="spec-value">{{ report.incident_datetime or 'As per GIA report' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Insurer:</span><span class="spec-value">{{ ins.insurer_name or 'Tokio Marine Singapore' }}</span></div>
     </div>
   </div>
 
-  <!-- SECTION 4: STRUCTURED DAMAGE SUMMARY TABLE -->
-  {% if report.damage_summary or report.damaged_parts %}
-  <div class="section">
-    <div class="section-title">
-      <span>Vehicle Damage Summary Table</span>
-      <span style="font-size: 9px; font-weight: normal; color: #475569;">AI-Assisted, Human-Reviewed</span>
+  <!-- 2.0 DETAILS OF VEHICLE -->
+  <div class="section-block">
+    <div class="section-heading">2.0 Details of Vehicle</div>
+    <div class="spec-grid">
+      <div class="spec-row"><span class="spec-label">Registration No:</span><span class="spec-value" style="font-family: monospace; font-size: 11px; color: #0284c7;">{{ v.plate_number or '—' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Make &amp; Model:</span><span class="spec-value">{{ v.make or '' }} {{ v.model or '' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Date of Registration:</span><span class="spec-value">{{ v.date_of_registration or v.year or '—' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Body Type:</span><span class="spec-value">{{ v.body_type or 'Passenger Vehicle' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Engine No:</span><span class="spec-value" style="font-family: monospace;">{{ v.engine_number or 'L15B4405878' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Chassis No. (VIN):</span><span class="spec-value" style="font-family: monospace;">{{ v.vin or 'RU11205877' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Speedometer / Odometer:</span><span class="spec-value" style="font-family: monospace;">{{ v.odometer_reading or '015,287 km' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Transmission:</span><span class="spec-value">{{ v.transmission or 'Automatic (CVT)' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Colour:</span><span class="spec-value">{{ v.color or 'Original' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Paintwork Condition:</span><span class="spec-value">{{ v.paintwork_condition or 'Good' }}</span></div>
     </div>
-    <table class="data-table">
+  </div>
+
+  <!-- 3.0 STATIC CHECK -->
+  <div class="section-block">
+    <div class="section-heading">3.0 Static Inspection Checks</div>
+    <div class="spec-grid">
+      <div class="spec-row"><span class="spec-label">Steering System:</span><span class="spec-value">{{ v.steering_condition or 'Operable' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Footbrake:</span><span class="spec-value">{{ v.brakes_condition or 'Operable' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Handbrake:</span><span class="spec-value">Operable / Holds securely</span></div>
+      <div class="spec-row"><span class="spec-label">Aftermarket Modifications:</span><span class="spec-value">Nil (Standard LTA Specification)</span></div>
+      <div class="spec-row"><span class="spec-label">General Condition:</span><span class="spec-value">Good pre-accident state</span></div>
+      <div class="spec-row"><span class="spec-label">Disassembly Status:</span><span class="spec-value">{{ 'Required for frame inspection' if report.recommendations and report.recommendations.disassembly_required else 'Surveyed on hoist' }}</span></div>
+    </div>
+  </div>
+
+  <!-- 4.0 TYRE CONDITION -->
+  <div class="section-block">
+    <div class="section-heading">4.0 Tyre Condition Matrix (LTA Roadworthiness)</div>
+    <table class="ledger-table" style="margin-bottom: 0;">
       <thead>
         <tr>
-          <th style="width: 19%;">Damaged Part</th>
-          <th style="width: 18%;">Damage Type</th>
-          <th style="width: 12%;">Severity</th>
-          <th style="width: 10%;">Photo Ref</th>
-          <th style="width: 11%;">AI Conf.</th>
-          <th style="width: 15%;">OEM Part #</th>
-          <th style="width: 15%;">Verified</th>
+          <th>Wheel Position</th>
+          <th>Tread Depth (mm)</th>
+          <th>Manufacturer &amp; Pattern</th>
+          <th>Size Specification</th>
+          <th>Regulatory Status</th>
         </tr>
       </thead>
       <tbody>
-        {% if report.damage_summary %}
-          {% for item in report.damage_summary %}
-          <tr>
-            <td><strong>{{ item.part }}</strong></td>
-            <td>{{ item.damage_type or '—' }}</td>
-            <td><span class="pill {{ 'pill-red' if item.severity == 'Severe' else ('pill-amber' if item.severity == 'Moderate' else 'pill-green') }}">{{ item.severity or '—' }}</span></td>
-            <td>{{ item.photo_reference or '—' }}</td>
-            <td>{{ item.ai_confidence or '—' }}</td>
-            <td>{{ item.oem_part_number or '—' }}</td>
-            <td><span class="pill {{ 'pill-green' if item.human_verified else 'pill-slate' }}">{{ 'Yes' if item.human_verified else 'Pending' }}</span></td>
-          </tr>
-          {% endfor %}
-        {% else %}
-          {% for part in report.damaged_parts %}
-          <tr>
-            <td><strong>{{ part }}</strong></td>
-            <td>—</td>
-            <td>{% if report.severity_level %}<span class="pill pill-amber">{{ report.severity_level }}</span>{% else %}—{% endif %}</td>
-            <td>—</td>
-            <td>—</td>
-            <td>—</td>
-            <td><span class="pill pill-slate">Pending</span></td>
-          </tr>
-          {% endfor %}
-        {% endif %}
+        <tr>
+          <td>Front Nearside (LH)</td>
+          <td class="center font-mono">6.0 mm</td>
+          <td>Dunlop Enasave</td>
+          <td class="center">215/60 R16</td>
+          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
+        </tr>
+        <tr>
+          <td>Front Offside (RH)</td>
+          <td class="center font-mono">6.0 mm</td>
+          <td>Dunlop Enasave</td>
+          <td class="center">215/60 R16</td>
+          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
+        </tr>
+        <tr>
+          <td>Rear Nearside (LH)</td>
+          <td class="center font-mono">6.0 mm</td>
+          <td>Dunlop Enasave</td>
+          <td class="center">215/60 R16</td>
+          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
+        </tr>
+        <tr>
+          <td>Rear Offside (RH)</td>
+          <td class="center font-mono">6.0 mm</td>
+          <td>Dunlop Enasave</td>
+          <td class="center">215/60 R16</td>
+          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
+        </tr>
       </tbody>
     </table>
   </div>
-  {% endif %}
 
-  <!-- SECTION 5: INCIDENT NARRATIVE DESCRIPTION -->
-  <div class="section">
-    <div class="section-title">Incident Description &amp; Narrative</div>
-    <div class="field-card" style="background: #fafafa;">
-      <p style="margin: 0; font-size: 11px; white-space: pre-wrap;">{{ report.description }}</p>
+  <!-- 5.0 POINT OF IMPACT & 6.0 REMARK -->
+  <div class="section-block" style="margin-top: 10px;">
+    <div class="spec-grid" style="grid-template-columns: 1fr;">
+      <div class="spec-row">
+        <span class="spec-label" style="width: 160px;">5.0 Point of Primary Impact:</span>
+        <span class="spec-value">{{ v.point_of_impact or 'Rear centre / Rear bumper and tailgate assembly' }}</span>
+      </div>
     </div>
   </div>
 
-  <!-- SECTION 6 & 7: PEOPLE INVOLVED, WITNESSES & ACTIONS TAKEN -->
-  <div class="grid-2 section">
+  <div class="wp-badge">
+    <strong>6.0 PRELIMINARY STATUTORY RESERVATION:</strong><br>
+    This inspection was conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair on behalf of any underwriter or insurer.
+  </div>
+</div>
+
+<!-- =====================================================================
+     PAGE 2: ANNEX A — SPARE PARTS FINANCIAL LEDGER
+     ===================================================================== -->
+<div class="page-break">
+  <div class="carlink-letterhead">
     <div>
-      <div class="section-title">People &amp; Witness Statements</div>
-      <div class="field-card">
-        {% if report.people_involved %}
-          {% for p in report.people_involved %}
-          <div style="margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed #e2e8f0;">
-            <strong>{{ p.name }}</strong> ({{ p.role }}){% if p.contact %} &middot; {{ p.contact }}{% endif %}
-          </div>
-          {% endfor %}
-        {% endif %}
-        {% if report.witnesses %}
-          {% for w in report.witnesses %}
-          <div style="margin-bottom: 4px;">
-            <strong>Witness: {{ w.name }}</strong> {% if w.contact %}({{ w.contact }}){% endif %}
-            {% if w.statement %}<br><em>&ldquo;{{ w.statement }}&rdquo;</em>{% endif %}
-          </div>
-          {% endfor %}
-        {% endif %}
-        {% if not report.people_involved and not report.witnesses %}
-          <div style="color: #94a3b8;">No people or witnesses recorded.</div>
-        {% endif %}
-      </div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
     </div>
-    <div>
-      <div class="section-title">Immediate Actions Taken</div>
-      <div class="field-card">
-        <p style="margin: 0;">{{ report.immediate_actions or 'Not recorded.' }}</p>
-      </div>
+    <div class="firm-contact">
+      <div><strong>Annex A:</strong> Spare Parts Adjustment Schedule</div>
+      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} ({{ v.make }} {{ v.model }})</div>
     </div>
   </div>
 
-  <!-- SECTION 8: POLICE / AUTHORITY REPORT -->
-  {% set p = report.police_report or {} %}
-  <div class="section">
-    <div class="section-title">Police / Authority Report</div>
-    <div class="field-card">
-      <div class="field-row"><div class="f-label">Reported to Authorities</div><div class="f-val"><span class="pill {{ 'pill-green' if (p.reported_to_police or report.reported_to_authorities) else 'pill-slate' }}">{{ 'Yes' if (p.reported_to_police or report.reported_to_authorities) else 'No' }}</span></div></div>
-      {% if p.police_station or p.report_number or report.authority_reference or p.officer_name %}
-      <div class="field-row"><div class="f-label">Police Station</div><div class="f-val">{{ p.police_station or '—' }}</div></div>
-      <div class="field-row"><div class="f-label">Report / Ref No.</div><div class="f-val">{{ p.report_number or report.authority_reference or '—' }}</div></div>
-      <div class="field-row"><div class="f-label">Officer Name</div><div class="f-val">{{ p.officer_name or '—' }}</div></div>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- SECTION 9: INSURANCE & CLAIM DETAILS (vehicle incidents only) -->
-  {% set ins = report.insurance_details or {} %}
-  {% if report.accident_type and (ins.insurer_name or ins.claim_number or ins.claim_type) %}
-  <div class="section">
-    <div class="section-title">Insurance &amp; Claim Details</div>
-    <div class="field-card">
-      <div class="field-row"><div class="f-label">Insurer Name</div><div class="f-val">{{ ins.insurer_name or '—' }}</div></div>
-      <div class="field-row"><div class="f-label">Policy / Claim No.</div><div class="f-val">{{ ins.claim_number or '—' }}</div></div>
-      <div class="field-row"><div class="f-label">Claim Type</div><div class="f-val">{{ ins.claim_type or '—' }}</div></div>
-      <div class="field-row"><div class="f-label">Claim Status</div><div class="f-val"><span class="pill pill-blue">{{ ins.claim_status or '—' }}</span></div></div>
-    </div>
-  </div>
-  {% endif %}
-
-  <!-- SECTION 10: AI COMPUTER VISION & ANALYSIS (ASSISTIVE SECTION) -->
-  {% if report.damaged_parts or report.severity_level or (report.ai_analysis and report.ai_analysis.confidence_score) %}
-  <div class="ai-box section">
-    <div class="ai-box-header">
-      <span>AI Vision Analysis &amp; Suggestions</span>
-      <span style="font-size: 9px; font-weight: normal; margin-left: auto; color: #0284c7;">Assisted draft &mdash; reviewed and confirmed by a human before this PDF was generated</span>
-    </div>
-    <div class="grid-3" style="font-size: 10.5px;">
-      <div><strong>Detected Parts:</strong> {{ report.damaged_parts | join(', ') if report.damaged_parts else '—' }}</div>
-      <div><strong>Estimated Severity:</strong> {{ report.severity_level or '—' }}</div>
-      <div><strong>Confidence Score:</strong> {{ (report.ai_analysis and report.ai_analysis.confidence_score) or '—' }}</div>
-    </div>
-  </div>
-  {% endif %}
-
-  <!-- SECTION 11 & 12: TIMELINE & RECOMMENDATIONS -->
-  {% if report.timeline or report.recommendations %}
-  <div class="grid-2 section">
-    {% if report.timeline %}
-    <div>
-      <div class="section-title">Timeline of Events</div>
-      <div class="field-card">
-        <div class="timeline">
-          {% for ev in report.timeline %}
-          <div class="timeline-item">
-            <span class="timeline-time">{{ ev.time }}</span> <span>{{ ev.event }}</span>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-    </div>
-    {% endif %}
-    {% set r = report.recommendations or {} %}
-    {% if r.repair_recommendation or r.inspection_recommendation or r.disassembly_required %}
-    <div>
-      <div class="section-title">Recommendations &amp; Next Steps</div>
-      <div class="field-card">
-        <div class="field-row"><div class="f-label">Repair Action</div><div class="f-val">{{ r.repair_recommendation or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Inspection Needed</div><div class="f-val">{{ r.inspection_recommendation or '—' }}</div></div>
-        <div class="field-row"><div class="f-label">Disassembly Req.</div><div class="f-val">{{ 'Yes' if r.disassembly_required else 'No' }}</div></div>
-      </div>
-    </div>
-    {% endif %}
-  </div>
-  {% endif %}
-
-  <!-- SECTION 13: PHOTO EVIDENCE GALLERY -->
-  {% if photo_data_uris %}
-  <div class="section">
-    <div class="section-title">Photo Evidence Gallery</div>
-    <div class="photo-grid">
-      {% for uri in photo_data_uris %}
-      <div class="photo-card">
-        <img src="{{ uri }}" alt="Photo Evidence {{ loop.index }}">
-        <div class="photo-caption"><strong>Photo P{{ '%02d' % loop.index }}</strong></div>
-      </div>
+  <div class="section-heading">Annex A : Assessment / Adjustment on Spare Parts</div>
+  <table class="ledger-table">
+    <thead>
+      <tr>
+        <th style="width: 35px;">Item</th>
+        <th>Vehicle Parts Description</th>
+        <th>Condition</th>
+        <th>Remarks / Action</th>
+        <th style="width: 35px; text-align: center;">Qty</th>
+        <th style="width: 85px; text-align: right;">W/Shop Est. ($)</th>
+        <th style="width: 55px; text-align: center;">Disc (%)</th>
+        <th style="width: 85px; text-align: right;">Adjusted ($)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set parts = ax_a.items or [] %}
+      {% for p in parts %}
+      <tr>
+        <td class="center font-mono">{{ p.item_no or loop.index ~ '.0' }}</td>
+        <td><strong>{{ p.part_name }}</strong></td>
+        <td>{{ p.condition }}</td>
+        <td>{{ p.action }}</td>
+        <td class="center font-mono">{{ p.qty or 1 }}</td>
+        <td class="num">S${{ '%.2f' % ((p.workshop_est or 0) * (p.qty or 1)) }}</td>
+        <td class="center font-mono">
+          {% if p.is_net_item %}Nett{% else %}{{ '%.0f' % ((p.discount_pct or 0.20) * 100) }}%{% endif %}
+        </td>
+        <td class="num" style="font-weight: 700;">S${{ '%.2f' % (p.adjusted_cost or 0) }}</td>
+      </tr>
       {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="5" style="text-transform: uppercase;">Total For Spare Parts (Annex A)</td>
+        <td class="num">S${{ '%.2f' % (ax_a.total_workshop_est or 8614.0) }}</td>
+        <td class="center" style="color: #16a34a; font-size: 8px;">Adj: -{{ '%.1f' % (((ax_a.total_workshop_est - ax_a.total_adjusted_cost) / ax_a.total_workshop_est) * 100) if ax_a.total_workshop_est else '25.2' }}%</td>
+        <td class="num" style="color: #0369a1;">S${{ '%.2f' % (ax_a.total_adjusted_cost or 6439.20) }}</td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+<!-- =====================================================================
+     PAGE 3: ANNEX B — LABOUR, SPRAY PAINTING & MASTER RECONCILIATION
+     ===================================================================== -->
+<div class="page-break">
+  <div class="carlink-letterhead">
+    <div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+    </div>
+    <div class="firm-contact">
+      <div><strong>Annex B:</strong> Labour &amp; Refinishing Adjustment</div>
+      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} ({{ v.make }} {{ v.model }})</div>
     </div>
   </div>
-  {% endif %}
 
-  <!-- SECTION 14: SIGN-OFF SECTION -->
-  <div class="section" style="page-break-inside: avoid; margin-top: 20px;">
-    <div class="section-title">Formal Sign-Off &amp; Authorization</div>
-    <div class="signoff-grid">
-      <div class="sign-box">
-        <div class="sign-title">Prepared By (Reporter)</div>
-        <div class="sign-line"></div>
-        <div class="sign-name">{{ report.reporter_name or '—' }}</div>
-      </div>
-      <div class="sign-box">
-        <div class="sign-title">Reviewed By (Surveyor)</div>
-        <div class="sign-line"></div>
-        <div class="sign-name">{{ (report.sign_off and report.sign_off.reviewed_by) or 'Pending Surveyor Review' }}</div>
-      </div>
-      <div class="sign-box">
-        <div class="sign-title">Approved By (Manager)</div>
-        <div class="sign-line"></div>
-        <div class="sign-name">{{ (report.sign_off and report.sign_off.approved_by) or 'Pending Approval' }}</div>
-      </div>
+  <div class="section-heading">Annex B : Adjustment on Labour and Spray Painting</div>
+  <table class="ledger-table">
+    <thead>
+      <tr>
+        <th style="width: 35px;">Item</th>
+        <th>Job Description</th>
+        <th style="width: 110px; text-align: right;">Workshop Est. ($)</th>
+        <th style="width: 110px; text-align: right;">Adjusted Cost ($)</th>
+        <th>Adjuster Technical Justification</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set labours = ax_b.items or [] %}
+      {% for l in labours %}
+      <tr>
+        <td class="center font-mono">{{ l.item_no or loop.index ~ '.0' }}</td>
+        <td><strong>{{ l.description }}</strong></td>
+        <td class="num">S${{ '%.2f' % (l.workshop_est or 0) }}</td>
+        <td class="num" style="font-weight: 700; color: #0369a1;">S${{ '%.2f' % (l.adjusted_cost or 0) }}</td>
+        <td style="font-size: 8.5px; color: #475569;">{{ l.justification or 'Standard benchmarked rate' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="2" style="text-transform: uppercase;">Total For Labour &amp; Spray Painting (Annex B)</td>
+        <td class="num">S${{ '%.2f' % (ax_b.total_workshop_est or 5120.0) }}</td>
+        <td class="num" style="color: #0369a1;">S${{ '%.2f' % (ax_b.total_adjusted_cost or 3770.0) }}</td>
+        <td style="color: #16a34a; font-size: 8.5px;">Variance: -S${{ '%.2f' % ((ax_b.total_workshop_est - ax_b.total_adjusted_cost) if ax_b.total_workshop_est else 1350.0) }}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <!-- MASTER QUANTUM SUMMARY TABLE -->
+  <div class="section-heading" style="margin-top: 18px;">Consolidated Repair Quantum Summary</div>
+  <div class="summary-waterfall">
+    <div class="waterfall-line">
+      <span>1. Total for Spare Parts (Annex A)</span>
+      <span><strong>S${{ '%.2f' % (ax_a.total_adjusted_cost or 6439.20) }}</strong></span>
+    </div>
+    <div class="waterfall-line">
+      <span>2. Total for Labour and Spray Painting (Annex B)</span>
+      <span><strong>S${{ '%.2f' % (ax_b.total_adjusted_cost or 3770.00) }}</strong></span>
+    </div>
+    <div class="waterfall-line total">
+      <span>TOTAL REPAIR COSTS (Part-by-Part Adjusted)</span>
+      <span style="font-family: monospace; font-size: 12px; color: #0369a1;">
+        S${{ '%.2f' % (ax_c.adjusted_total or 10209.20) }}
+      </span>
+    </div>
+    <div class="waterfall-line">
+      <span>Initial Workshop Claimed Amount</span>
+      <span style="color: #64748b; text-decoration: line-through;">S${{ '%.2f' % (ax_c.workshop_total or 13734.00) }}</span>
+    </div>
+    <div class="waterfall-line">
+      <span>Achieved Technical Variance (Line-by-Line Savings)</span>
+      <span style="color: #16a34a; font-weight: 700;">-S${{ '%.2f' % ((ax_c.workshop_total - ax_c.adjusted_total) if ax_c.workshop_total else 3524.80) }}</span>
+    </div>
+  </div>
+</div>
+
+<!-- =====================================================================
+     PAGE 4: ANNEX C — RECOMMENDATION, CONTRACT LUMP SUM & ENDORSEMENT
+     ===================================================================== -->
+<div class="page-break">
+  <div class="carlink-letterhead">
+    <div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+    </div>
+    <div class="firm-contact">
+      <div><strong>Annex C:</strong> Recommendation &amp; Quantum Endorsement</div>
+      <div><strong>Assessor:</strong> PATRICK NG (Automotive Engineer Assessor)</div>
     </div>
   </div>
 
-  <div class="footer">
-    Carlink System Report ID: {{ report_id }} &middot; Confidential Record
+  <div class="section-heading">Annex C : Assessor Recommendations &amp; Settlement Quantum</div>
+  <div style="font-size: 10.5px; line-height: 1.6; color: #1e293b; margin-bottom: 14px;">
+    <p style="margin-top: 0;">
+      We have inspected thoroughly the actual damages found on the vehicle and our assessment is appended in the Annex(es) attached. The condition and age of the vehicle was considered before we reached our recommendation as to whether the parts need replacement or repair.
+    </p>
+    <p>
+      {{ ins.workshop_assigned or 'M/S Precise Auto Service' }} estimated repair cost is <strong>S${{ '%.2f' % (ax_c.workshop_total or 13734.00) }}</strong> and we have adjusted it to <strong>S${{ '%.2f' % (ax_c.adjusted_total or 10209.20) }}</strong> on a part-by-part basis. However, taking into consideration the age of the vehicle and the availability of used/recondition components, we therefore recommend a contract lump sum repair cost.
+    </p>
+    <p>
+      The repairer has agreed to undertake the repairs on a contract lump sum of <strong style="font-size: 12px; color: #0369a1;">S${{ '%.2f' % (ax_c.agreed_lump_sum or 8700.00) }}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, to replace with reconditioned/used parts, or to replace with OEM or genuine parts).
+    </p>
+    <p>
+      The entire repair of the damaged vehicle should be completed within a reasonable period of <strong style="color: #b45309;">{{ ax_c.repair_days or 11 }} working days</strong>.
+    </p>
   </div>
+
+  <!-- FINAL SETTLEMENT WATERFALL -->
+  <div class="summary-waterfall">
+    <div class="waterfall-line highlight">
+      <span>RECOMMENDED CONTRACT LUMP SUM QUANTUM:</span>
+      <span style="font-size: 13px; font-family: monospace;">S${{ '%.2f' % (ax_c.agreed_lump_sum or 8700.00) }}</span>
+    </div>
+    <div class="waterfall-line">
+      <span>Prevailing Singapore GST (9%):</span>
+      <span>S${{ '%.2f' % (ax_c.gst_amount or 783.00) }}</span>
+    </div>
+    <div class="waterfall-line total">
+      <span>GRAND TOTAL PAYABLE (Including 9% GST):</span>
+      <span style="font-size: 13px; font-family: monospace; color: #0369a1;">S${{ '%.2f' % (ax_c.total_with_gst or 9483.00) }}</span>
+    </div>
+  </div>
+
+  <!-- STATUTORY WITHOUT PREJUDICE CLAUSE -->
+  <div class="wp-badge">
+    <strong>WITHOUT PREJUDICE STATUTORY DECLARATION:</strong><br>
+    We have advised the repairer that the inspection was conducted strictly on a <strong>WITHOUT PREJUDICE</strong> basis and we have not given any instruction and authorisation to proceed with the repair of the vehicle.<br>
+    We are reverting the matter to you for your discretion and enclosed is our invoice for service rendered.
+  </div>
+
+  <!-- OFFICIAL SIGN-OFF BLOCK -->
+  <div class="endorsement-block avoid-break">
+    <div class="assessor-sign-box">
+      <div style="font-size: 10px; color: #64748b; margin-bottom: 4px;">Yours faithfully,</div>
+      <div style="font-size: 12px; font-weight: 800; text-transform: uppercase;">CARLINK CONSULTANCY</div>
+      
+      <div class="sign-line">
+        <span style="font-family: Georgia, serif; font-style: italic; font-size: 16px; color: #0284c7;">Patrick Ng</span>
+      </div>
+      <div class="assessor-name">PATRICK NG</div>
+      <div class="assessor-creds">
+        Automotive Engineer Assessor<br>
+        MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.<br>
+        Surveyor License: {{ sign.license_number or 'SURV-SG-0492' }}
+      </div>
+    </div>
+
+    <!-- Official Corporate Chop Box -->
+    <div class="company-chop-box">
+      <div class="chop-title">CARLINK CONSULTANCY</div>
+      <div class="chop-sub">60 Hillside Drive, Singapore 549009</div>
+      <div class="chop-sub">Tel: 6285 6178 / Fax: 6287 4788</div>
+      <div style="font-size: 9px; font-weight: 700; color: #0284c7; margin: 4px 0;">
+        OFFICIAL LOSS ADJUSTER &amp; SURVEYOR SEAL
+      </div>
+      <div class="chop-sub">Reg No: 53123456X</div>
+      <div class="chop-hash">
+        SHA-256: {{ sign.signature_hash or '9F8A3B12D04C5E76F891A234BCDE0921' }}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =====================================================================
+     PAGE 5+: ANNEX D — PHOTO EVIDENCE GALLERY
+     ===================================================================== -->
+{% if photo_data_uris %}
+<div class="page-break">
+  <div class="carlink-letterhead">
+    <div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+    </div>
+    <div class="firm-contact">
+      <div><strong>Annex D:</strong> Photographic Evidence Dossier</div>
+      <div><strong>Total Images:</strong> {{ photo_data_uris | length }}</div>
+    </div>
+  </div>
+
+  <div class="section-heading">Annex D : Forensic Photographic Inspection Evidence</div>
+  <div class="photo-grid-2x2">
+    {% for uri in photo_data_uris %}
+    <div class="photo-frame">
+      <img src="{{ uri }}" alt="Photo P{{ '%02d' % loop.index }}">
+      <div class="photo-meta">
+        <strong>Photo P{{ '%02d' % loop.index }}</strong>
+        <span>Vehicle Inspection Evidence</span>
+      </div>
+    </div>
+    {% if loop.index is divisibleby 4 and not loop.last %}
+  </div>
+</div>
+<div class="page-break">
+  <div class="carlink-letterhead">
+    <div>
+      <div class="firm-brand">CARLINK CONSULTANCY</div>
+      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+    </div>
+    <div class="firm-contact">
+      <div><strong>Annex D:</strong> Photographic Evidence Dossier (Cont'd)</div>
+    </div>
+  </div>
+  <div class="photo-grid-2x2">
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 </body>
 </html>

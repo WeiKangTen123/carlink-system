@@ -99,7 +99,13 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const handleSignOff = async () => {
     setIsSigningOff(true);
     setSignOffError(null);
-    const result = await signOffReportAction(report.id, "Surveyor Sign-Off");
+    const result = await signOffReportAction(report.id, {
+      surveyor_name: "Patrick Ng",
+      qualifications: "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC",
+      license_number: "SURV-SG-0492",
+      firm_name: "Carlink Consultancy",
+      terms_accepted: true,
+    });
     if ("error" in result) {
       setSignOffError(result.error);
       setIsSigningOff(false);

@@ -151,12 +151,84 @@ class RecommendationsInfo(BaseModel):
     preventive_action: Optional[str] = None
 
 
+class AnnexAPartItem(BaseModel):
+    item_no: str = Field(default="1.0", description="Item number e.g. '1.0'")
+    part_name: str = Field(description="Part description e.g. 'Rear bumper fascia'")
+    condition: str = Field(default="Deformed/cut", description="Observed condition e.g. 'Deformed/cut', 'Grazed/cracked', 'Necessary', 'Serviceable'")
+    action: str = Field(default="Replace", description="Action e.g. 'Replace', 'Repair', 'Straighten', 'Disallow'")
+    qty: float = Field(default=1.0, description="Quantity")
+    workshop_est: float = Field(default=0.0, description="Workshop claimed estimate in SGD")
+    discount_pct: float = Field(default=0.20, description="Depreciation/trade discount (0.20 = 20%, 1.0 = 100% disallowed)")
+    adjusted_cost: float = Field(default=0.0, description="Adjusted cost in SGD")
+    is_net_item: bool = Field(default=False, description="True for net items (clips, sealants, plate) with 0% discount")
+    oem_part_number: Optional[str] = Field(default=None, description="OEM part number")
+
+
+class AnnexAInfo(BaseModel):
+    items: list[AnnexAPartItem] = Field(default_factory=list)
+    total_workshop_est: float = 0.0
+    total_adjusted_cost: float = 0.0
+
+
+class AnnexBLabourItem(BaseModel):
+    item_no: str = Field(default="1.0", description="Item number e.g. '1.0'")
+    description: str = Field(description="Job description e.g. 'To respray affected areas'")
+    workshop_est: float = Field(default=0.0, description="Workshop claimed cost in SGD")
+    adjusted_cost: float = Field(default=0.0, description="Surveyor adjusted cost in SGD")
+    justification: Optional[str] = Field(default=None, description="Technical rationale")
+
+
+class AnnexBInfo(BaseModel):
+    items: list[AnnexBLabourItem] = Field(default_factory=list)
+    total_workshop_est: float = 0.0
+    total_adjusted_cost: float = 0.0
+
+
+class AnnexCInfo(BaseModel):
+    workshop_total: float = Field(default=0.0, description="Annex A + Annex B workshop total")
+    adjusted_total: float = Field(default=0.0, description="Annex A + Annex B adjusted total")
+    agreed_lump_sum: Optional[float] = Field(default=None, description="Recommended negotiated contract lump sum")
+    gst_rate: float = Field(default=0.09, description="Singapore GST rate (9%)")
+    gst_amount: Optional[float] = Field(default=None, description="GST on lump sum or adjusted total")
+    total_with_gst: Optional[float] = Field(default=None, description="Total including GST")
+    repair_days: Optional[int] = Field(default=11, description="Reasonable repair turnaround in working days")
+    terms: Optional[str] = Field(
+        default="Repairs undertaken on contract lump sum basis according to acceptable quality and standard (Repairer discretion to repair parts, replace with reconditioned/used parts, or OEM/genuine parts).",
+        description="Settlement terms"
+    )
+    without_prejudice: bool = Field(default=True, description="Strictly without prejudice declaration")
+
+
+class BolaLiabilityAssessment(BaseModel):
+    scenario_number: Optional[int] = Field(default=14, description="GIA BOLA Matrix scenario index e.g. 14")
+    scenario_name: Optional[str] = Field(default="Chain / Direct Rear Collision", description="Scenario title")
+    insured_liability_pct: float = Field(default=0.0, description="Insured fault percentage (0% to 100%)")
+    third_party_liability_pct: float = Field(default=100.0, description="Third-party fault percentage (0% to 100%)")
+    dispute_status: str = Field(default="Agreed", description="'Agreed', 'Disputed', 'Pending Police Findings'")
+    apportionment_rationale: Optional[str] = Field(
+        default="Rear-end impact into stationary lead vehicle. Tortfeasor failed to maintain safe braking distance under BOLA Rule 14.",
+        description="Surveyor liability analysis"
+    )
+    subrogation_prospect: Optional[str] = Field(default="100% TPPD Recovery Recommended", description="Subrogation advice")
+
+
 class SignOffInfo(BaseModel):
     prepared_by: Optional[str] = None
-    reviewed_by: Optional[str] = None
-    approved_by: Optional[str] = None
+    reviewed_by: Optional[str] = "Patrick Ng"
+    approved_by: Optional[str] = "Patrick Ng"
+    surveyor_name: Optional[str] = "Patrick Ng"
+    qualifications: Optional[str] = "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC"
+    license_number: Optional[str] = "SURV-SG-0492"
+    firm_name: Optional[str] = "Carlink Consultancy"
+    signature_hash: Optional[str] = None
+    signature_data_url: Optional[str] = None
+    agreed_quantum: Optional[float] = None
+    turnaround_days: Optional[int] = None
+    liability_opinion: Optional[str] = None
+    remarks: Optional[str] = None
     status: str = "Draft"
     signature_date: Optional[str] = None
+    terms_accepted: bool = False
 
 
 class AIAnalysisInfo(BaseModel):
@@ -233,6 +305,10 @@ class SecurityIncidentDraft(BaseModel):
     timeline: list[TimelineEvent] = Field(default_factory=list)
     recommendations: Optional[RecommendationsInfo] = Field(default_factory=RecommendationsInfo)
     sign_off: Optional[SignOffInfo] = Field(default_factory=SignOffInfo)
+    annex_a: Optional[AnnexAInfo] = Field(default_factory=AnnexAInfo)
+    annex_b: Optional[AnnexBInfo] = Field(default_factory=AnnexBInfo)
+    annex_c: Optional[AnnexCInfo] = Field(default_factory=AnnexCInfo)
+    bola_assessment: Optional[BolaLiabilityAssessment] = Field(default_factory=BolaLiabilityAssessment)
     reported_to_authorities: bool = False
     authority_reference: Optional[str] = None
     preventive_measures: Optional[str] = None

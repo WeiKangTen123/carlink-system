@@ -351,8 +351,10 @@ def draft_report(description: str, photo_paths: list[str], known_facts: dict | N
                     # in production is indistinguishable from a bug.
                     logger.info("Gemini draft produced by %r on key #%d", model_id, key_index + 1)
                     draft = _strip_placeholder_people(draft)
-                    draft = _sanitize_damage_summary(draft)
-                    return _backfill_damage_summary(draft)
+                    draft = _backfill_damage_summary(draft)
+                    from app.reports.synthesize_annexes import synthesize_annexes_for_report
+                    enriched_dict = synthesize_annexes_for_report(draft.model_dump())
+                    return SecurityIncidentDraft.model_validate(enriched_dict)
                 except Exception as exc:
                     last_error = exc
                     delay = retry_after_seconds(exc) if is_rate_limit_error(exc) else None

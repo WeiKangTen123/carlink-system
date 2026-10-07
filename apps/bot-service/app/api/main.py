@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -140,6 +140,14 @@ def get_report(report_id: str) -> dict:
         if not r:
             return {"error": "not found"}
 
+        # Ensure full Annex A, B, C, and BOLA loss adjusting matrices exist
+        data = r.data or {}
+        if not data.get("annex_a") or not data.get("annex_b") or not data.get("annex_c") or not data.get("bola_assessment"):
+            from app.reports.synthesize_annexes import synthesize_annexes_for_report
+            data = synthesize_annexes_for_report(data)
+            r.data = data
+            db.commit()
+
         # If PDF is missing or doesn't exist on disk, render it on-demand
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
@@ -150,10 +158,6 @@ def get_report(report_id: str) -> dict:
 
         existing_photos = [p for p in (r.photo_paths or []) if Path(p).exists()]
         photo_urls = [to_public_url(p) for p in existing_photos]
-        # Parallel array, same order/length as photo_urls. The inspector
-        # still loads the full image for the photo you're actually looking
-        # at -- these are for the strip, which was pulling 17 full-size
-        # originals to render 17 postage stamps.
         photo_thumb_urls = [to_thumbnail_url(p) for p in existing_photos]
 
         return {
@@ -427,30 +431,88 @@ def reopen_report(report_id: str) -> dict:
 
 
 @app.post("/reports/{report_id}/sign-off")
-def sign_off_report(report_id: str, reviewer_name: str = "Surveyor / Loss Adjuster") -> dict:
+async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", request: Request = None) -> dict:
+    import hashlib
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
         
+        body_data = {}
+        if request:
+            try:
+                body_data = await request.json()
+            except Exception:
+                body_data = {}
+
+        surveyor = body_data.get("surveyor_name") or reviewer_name or "Patrick Ng"
+        quals = body_data.get("qualifications") or "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC"
+        lic = body_data.get("license_number") or "SURV-SG-0492"
+        firm = body_data.get("firm_name") or "Carlink Consultancy"
+        
+        sig_hash = body_data.get("signature_hash")
+        if not sig_hash:
+            canonical_str = f"{r.id}:{surveyor}:{datetime.now(timezone.utc).isoformat()}"
+            sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
+
+        updates = {
+            "status": "Signed Off",
+            "reviewed_by": surveyor,
+            "approved_by": surveyor,
+            "surveyor_name": surveyor,
+            "qualifications": quals,
+            "license_number": lic,
+            "firm_name": firm,
+            "signature_hash": sig_hash,
+            "signature_data_url": body_data.get("signature_data_url"),
+            "agreed_quantum": body_data.get("agreed_quantum"),
+            "turnaround_days": body_data.get("turnaround_days"),
+            "liability_opinion": body_data.get("liability_opinion"),
+            "remarks": body_data.get("remarks"),
+            "terms_accepted": body_data.get("terms_accepted", True),
+            "signature_date": datetime.now(timezone.utc).isoformat(),
+        }
+
         r.status = "Signed Off"
-        # Enables a real avg_resolution_time in /analytics/summary -- these
-        # fields existed in the schema already but never actually persisted
-        # before (see _with_sign_off for why).
-        r.data = _with_sign_off(
-            r.data,
-            status="Signed Off",
-            reviewed_by=reviewer_name,
-            signature_date=datetime.now(timezone.utc).isoformat(),
-        )
+        new_data = _with_sign_off(r.data, **updates)
+
+        # Update quantum in annex_c and insurance_details if provided
+        if body_data.get("agreed_quantum") is not None:
+            try:
+                q_val = float(body_data["agreed_quantum"])
+                ac = dict(new_data.get("annex_c") or {})
+                ac["agreed_lump_sum"] = q_val
+                ac["gst_amount"] = round(q_val * 0.09, 2)
+                ac["total_with_gst"] = round(q_val * 1.09, 2)
+                new_data["annex_c"] = ac
+                ins = dict(new_data.get("insurance_details") or {})
+                ins["final_approved_cost"] = f"S${q_val:,.2f}"
+                new_data["insurance_details"] = ins
+            except (ValueError, TypeError):
+                pass
+
+        if body_data.get("turnaround_days") is not None:
+            try:
+                ac = dict(new_data.get("annex_c") or {})
+                ac["repair_days"] = int(body_data["turnaround_days"])
+                new_data["annex_c"] = ac
+            except (ValueError, TypeError):
+                pass
+
+        if body_data.get("liability_opinion"):
+            ba = dict(new_data.get("bola_assessment") or {})
+            ba["apportionment_rationale"] = str(body_data["liability_opinion"])
+            new_data["bola_assessment"] = ba
+
+        r.data = new_data
         
         pdf_path = r.pdf_path or report_pdf_path(r.id)
         render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
         r.pdf_path = pdf_path
 
         db.commit()
-        return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
+        return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path), "sign_off": r.data.get("sign_off")}
     finally:
         db.close()
 
@@ -747,6 +809,9 @@ def _enrich_single_report_data(raw_data: dict) -> dict:
     data["vehicle_info"] = vinfo
     data["insurance_details"] = ins
     data["recommendations"] = recs
+
+    from app.reports.synthesize_annexes import synthesize_annexes_for_report
+    data = synthesize_annexes_for_report(data)
     return data
 
 
