@@ -84,7 +84,7 @@ services:
       # Host-side port is configurable (NGINX_PORT) so this can run
       # alongside another app/nginx already on 80 on a shared host --
       # defaults to 80 for a box where Carlink owns the standard port.
-      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_PORT:-8080}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
