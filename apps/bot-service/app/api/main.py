@@ -176,6 +176,7 @@ def get_report(report_id: str) -> dict:
 
 
 @app.get("/reports/{report_id}/download")
+@app.head("/reports/{report_id}/download")
 def download_report_pdf(report_id: str):
     from fastapi.responses import FileResponse
     db = SessionLocal()

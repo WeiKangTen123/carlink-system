@@ -123,6 +123,60 @@ export function CaseEvidenceTab({
   const currentPhotoLabel = currentPhoto.photoRef;
   const currentPhotoDamage = currentPhoto.damageItems;
 
+  // Track high-res photo loaded status for instantaneous progressive rendering
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+
+  // When active photo changes, check if it's already in browser cache
+  useEffect(() => {
+    if (!currentPhotoUrl) return;
+    const testImg = new Image();
+    testImg.src = fileUrl(currentPhotoUrl);
+    if (testImg.complete && testImg.naturalWidth > 0) {
+      setLoadedUrl(currentPhotoUrl);
+    } else {
+      setLoadedUrl(null);
+      testImg.onload = () => setLoadedUrl(currentPhotoUrl);
+    }
+  }, [currentPhotoUrl]);
+
+  // Intelligent Predictive Preloader:
+  // Pre-caches adjacent photos (N-1, N+1, N+2, N+3) in the background
+  useEffect(() => {
+    if (!photos || photos.length === 0) return;
+    const targets = [
+      activePhotoIndex + 1,
+      activePhotoIndex + 2,
+      activePhotoIndex + 3,
+      activePhotoIndex - 1,
+    ].filter((i) => i >= 0 && i < photos.length);
+
+    targets.forEach((idx) => {
+      const preload = new Image();
+      preload.src = fileUrl(photos[idx]);
+      preload.decoding = "async";
+    });
+  }, [activePhotoIndex, photos]);
+
+  // Keyboard navigation: ArrowLeft / ArrowRight to rapidly flick through photos
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (["INPUT", "TEXTAREA", "SELECT"].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.key === "ArrowRight") {
+        if (activePhotoIndex < photos.length - 1) {
+          onSelectPhoto(activePhotoIndex + 1);
+          setZoomLevel(1);
+        }
+      } else if (e.key === "ArrowLeft") {
+        if (activePhotoIndex > 0) {
+          onSelectPhoto(activePhotoIndex - 1);
+          setZoomLevel(1);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activePhotoIndex, photos.length, onSelectPhoto]);
+
   const toggleZoom = () => {
     setZoomLevel((prev) => (prev === 1 ? 1.5 : prev === 1.5 ? 2 : prev === 2 ? 3 : 1));
   };
@@ -280,12 +334,109 @@ export function CaseEvidenceTab({
                 display: "flex",
                 justifyContent: "center",
                 alignItems: "center",
-                minHeight: 360,
+                minHeight: 380,
                 background: "#050811",
                 position: "relative",
                 borderRadius: 10,
               }}
             >
+              {/* Prev / Next Floating Navigation Arrows */}
+              <button
+                type="button"
+                className="inspector-nav-arrow left"
+                disabled={activePhotoIndex === 0}
+                onClick={() => {
+                  if (activePhotoIndex > 0) {
+                    onSelectPhoto(activePhotoIndex - 1);
+                    setZoomLevel(1);
+                  }
+                }}
+                style={{
+                  position: "absolute",
+                  left: 12,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  width: 36,
+                  height: 36,
+                  borderRadius: "50%",
+                  background: "rgba(10, 16, 32, 0.78)",
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: activePhotoIndex === 0 ? "not-allowed" : "pointer",
+                  opacity: activePhotoIndex === 0 ? 0.25 : 0.85,
+                  transition: "all 0.18s ease",
+                  zIndex: 20,
+                  backdropFilter: "blur(6px)",
+                }}
+                title="Previous Photo (Left Arrow Key)"
+              >
+                <ChevronLeft style={{ width: 18, height: 18 }} />
+              </button>
+
+              <button
+                type="button"
+                className="inspector-nav-arrow right"
+                disabled={activePhotoIndex >= photos.length - 1}
+                onClick={() => {
+                  if (activePhotoIndex < photos.length - 1) {
+                    onSelectPhoto(activePhotoIndex + 1);
+                    setZoomLevel(1);
+                  }
+                }}
+                style={{
+                  position: "absolute",
+                  right: 12,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  width: 36,
+                  height: 36,
+                  borderRadius: "50%",
+                  background: "rgba(10, 16, 32, 0.78)",
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: activePhotoIndex >= photos.length - 1 ? "not-allowed" : "pointer",
+                  opacity: activePhotoIndex >= photos.length - 1 ? 0.25 : 0.85,
+                  transition: "all 0.18s ease",
+                  zIndex: 20,
+                  backdropFilter: "blur(6px)",
+                }}
+                title="Next Photo (Right Arrow Key)"
+              >
+                <ChevronRight style={{ width: 18, height: 18 }} />
+              </button>
+
+              {/* Subtle HD Buffering indicator if high-res image is still downloading */}
+              {loadedUrl !== currentPhotoUrl && currentPhoto.thumbUrl && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 12,
+                    right: 12,
+                    background: "rgba(10, 16, 32, 0.8)",
+                    border: "1px solid rgba(56, 189, 248, 0.3)",
+                    color: "var(--accent-primary)",
+                    borderRadius: 6,
+                    padding: "3px 8px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    zIndex: 20,
+                    backdropFilter: "blur(4px)",
+                  }}
+                >
+                  <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent-primary)" }} />
+                  <span>Buffering HD&hellip;</span>
+                </div>
+              )}
+
               <div
                 style={{
                   position: "relative",
@@ -296,17 +447,40 @@ export function CaseEvidenceTab({
                   transition: "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
                 }}
               >
+                {/* 1. Instant Lightweight Placeholder (0ms latency from browser cache) */}
+                {currentPhoto.thumbUrl && loadedUrl !== currentPhotoUrl && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={fileUrl(currentPhoto.thumbUrl)}
+                    alt={currentPhotoLabel}
+                    className="inspector-thumb-placeholder"
+                    style={{
+                      maxHeight: 380,
+                      width: "auto",
+                      maxWidth: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                      filter: "blur(3px)",
+                      opacity: 0.9,
+                    }}
+                  />
+                )}
+
+                {/* 2. Full-Resolution Master Inspection Photo (decoding="async" off main thread) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={fileUrl(currentPhotoUrl)}
                   alt={currentPhotoLabel}
                   className="inspector-main-img"
+                  loading="eager"
+                  decoding="async"
+                  onLoad={() => setLoadedUrl(currentPhotoUrl)}
                   style={{
                     maxHeight: 380,
                     width: "auto",
                     maxWidth: "100%",
                     objectFit: "contain",
-                    display: "block",
+                    display: (loadedUrl === currentPhotoUrl || !currentPhoto.thumbUrl) ? "block" : "none",
                   }}
                 />
 
@@ -642,6 +816,8 @@ export function CaseEvidenceTab({
               <img
                 src={fileUrl(currentPhotoUrl)}
                 alt={currentPhotoLabel}
+                loading="eager"
+                decoding="async"
                 style={{
                   maxHeight: "82vh",
                   maxWidth: "92vw",

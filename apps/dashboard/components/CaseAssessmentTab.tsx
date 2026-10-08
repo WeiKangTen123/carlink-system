@@ -23,12 +23,13 @@ import {
   ArrowDownRight,
   ShieldAlert,
 } from "lucide-react";
-import type {
-  ReportDetail,
-  DamageSummaryItem,
-  AnnexAPartItem,
-  AnnexBLabourItem,
-  SignOffRequest,
+import {
+  type ReportDetail,
+  type DamageSummaryItem,
+  type AnnexAPartItem,
+  type AnnexBLabourItem,
+  type SignOffRequest,
+  pdfDownloadUrl,
 } from "@/lib/api";
 import { signOffReportAction } from "@/app/reports/actions";
 import { CaseAnalysisPanel } from "./CaseAnalysisPanel";
@@ -948,7 +949,7 @@ export function CaseAssessmentTab({
               {isSigningOff ? "Finalizing & Sealing Dossier..." : "Finalize Assessment & Endorse (Lock Dossier)"}
             </button>
           ) : (
-            <a href={`/reports/${report.id}/download`} className="btn-secondary-modern">
+            <a href={pdfDownloadUrl(report.id)} className="btn-secondary-modern">
               <Printer style={{ width: 14, height: 14 }} /> Download Certified PDF Dossier
             </a>
           )}

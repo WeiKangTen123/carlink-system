@@ -27,6 +27,15 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async rewrites() {
+    const apiInternal = process.env.API_INTERNAL_URL || process.env.INTERNAL_API_URL || "http://api:8000";
+    return [
+      {
+        source: "/reports/:id/download",
+        destination: `${apiInternal}/reports/:id/download`,
+      },
+    ];
+  },
 };
 
 export default nextConfig;
