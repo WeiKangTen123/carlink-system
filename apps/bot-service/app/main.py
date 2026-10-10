@@ -1,11 +1,12 @@
-"""Entry point: runs both the FastAPI backend API server (port 8000) and the Telegram bot in polling mode.
+"""Entry point: runs the FastAPI backend API server (port 8000) and optionally the Telegram bot.
 
     python -m app.main
 """
 import logging
+import sys
 import threading
 import uvicorn
-from app.channels.telegram import build_app
+from app.config import settings
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,14 +16,39 @@ def start_api_server() -> None:
 
 
 def main() -> None:
-    # 1. Start FastAPI backend API server on port 8000 in a background daemon thread
+    api_only = "--api-only" in sys.argv
+    bot_only = "--bot-only" in sys.argv
+
+    if bot_only:
+        if not settings.telegram_bot_token:
+            logging.error("TELEGRAM_BOT_TOKEN is not configured; cannot start bot worker.")
+            sys.exit(1)
+        from app.channels.telegram import build_app
+        application = build_app()
+        application.run_polling()
+        return
+
+    if api_only or not settings.telegram_bot_token:
+        if not settings.telegram_bot_token:
+            logging.info("TELEGRAM_BOT_TOKEN is not configured. Running FastAPI backend server on http://0.0.0.0:8000")
+        else:
+            logging.info("Starting API server in foreground (--api-only).")
+        start_api_server()
+        return
+
+    # Start FastAPI backend API server in background daemon thread
     api_thread = threading.Thread(target=start_api_server, daemon=True)
     api_thread.start()
     logging.info("FastAPI backend API server running on http://localhost:8000")
 
-    # 2. Start Telegram Bot Polling
-    application = build_app()
-    application.run_polling()
+    # Start Telegram Bot Polling in foreground
+    from app.channels.telegram import build_app
+    try:
+        application = build_app()
+        application.run_polling()
+    except Exception as exc:
+        logging.error("Telegram bot crashed or could not start: %s. Keeping API server alive.", exc)
+        api_thread.join()
 
 
 if __name__ == "__main__":

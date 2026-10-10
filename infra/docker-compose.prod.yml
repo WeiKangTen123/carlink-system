@@ -41,7 +41,7 @@ services:
   telegram-bot:
     <<: *bot-service
     container_name: carlink_telegram_bot
-    command: ["python", "-m", "app.main"]
+    command: ["python", "-m", "app.main", "--bot-only"]
 
   api:
     <<: *bot-service

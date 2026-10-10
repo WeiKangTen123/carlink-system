@@ -83,13 +83,37 @@ def to_thumbnail_url(abs_path: str) -> str:
     """Public URL of a photo's thumbnail, falling back to the full image
     when no thumbnail exists (an older report, or a file Pillow couldn't
     read). Callers always get something displayable."""
-    thumb = thumbnail_path_for(abs_path)
-    return to_public_url(str(thumb)) if thumb.exists() else to_public_url(abs_path)
+    if not abs_path:
+        return ""
+    if abs_path.startswith("http://") or abs_path.startswith("https://") or abs_path.startswith("/files/"):
+        return abs_path
+    try:
+        thumb = thumbnail_path_for(abs_path)
+        return to_public_url(str(thumb)) if thumb.exists() else to_public_url(abs_path)
+    except Exception as exc:
+        logger.warning("Could not determine thumbnail URL for %s: %s", abs_path, exc)
+        return to_public_url(abs_path)
 
 
 def to_public_url(abs_path: str) -> str:
     """Converts an absolute on-disk path into a URL servable via the /files
     static mount in app/api/main.py -- what the dashboard links/images use.
     """
-    rel = Path(abs_path).resolve().relative_to(Path(settings.storage_dir).resolve())
-    return "/files/" + str(rel).replace("\\", "/")
+    if not abs_path:
+        return ""
+    if abs_path.startswith("http://") or abs_path.startswith("https://") or abs_path.startswith("/files/"):
+        return abs_path
+
+    try:
+        rel = Path(abs_path).resolve().relative_to(Path(settings.storage_dir).resolve())
+        return "/files/" + str(rel).replace("\\", "/")
+    except ValueError:
+        logger.warning(
+            "Path %s is not relative to storage_dir %s; falling back to filename",
+            abs_path,
+            settings.storage_dir,
+        )
+        return "/files/" + Path(abs_path).name
+    except Exception as exc:
+        logger.warning("Failed to resolve public URL for %s: %s", abs_path, exc)
+        return "/files/" + Path(abs_path).name

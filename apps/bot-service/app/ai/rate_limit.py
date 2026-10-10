@@ -95,13 +95,13 @@ def _write_window(path: Path, stamps: list[float]) -> None:
 
 
 def _locked_window(path: Path, now: float):
-    """Opens the window file with an exclusive flock. Returns (handle, stamps).
+    """Opens a separate lock file with an exclusive flock. Returns (handle, stamps).
 
-    flock is advisory and Linux-only, which is fine: both processes are
-    Linux containers. If it isn't available the limiter still works
-    per-process, just without cross-process coordination.
+    Using a dedicated .lock file avoids locking the .json data file itself, which
+    would prevent atomic os.replace() updates on Windows (PermissionError: WinError 5/32).
     """
-    handle = open(path, "a+")
+    lock_path = path.with_suffix(".lock")
+    handle = open(lock_path, "a+")
     try:
         import fcntl
 
@@ -118,7 +118,10 @@ def _release(handle) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except (ImportError, OSError):
         pass
-    handle.close()
+    try:
+        handle.close()
+    except Exception:
+        pass
 
 
 def estimate_wait(api_key: str | None = None) -> float:

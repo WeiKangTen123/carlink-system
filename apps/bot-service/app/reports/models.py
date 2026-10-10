@@ -7,7 +7,7 @@ in docs/proposal.md section F. Normalize into those tables in Phase 1, once
 there's a dashboard and multi-report querying that actually needs it.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, JSON, String
@@ -20,6 +20,10 @@ class Base(DeclarativeBase):
 
 def gen_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AppSetting(Base):
@@ -36,7 +40,7 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(String, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 
 class ApiKey(Base):
@@ -60,7 +64,7 @@ class ApiKey(Base):
     provider: Mapped[str] = mapped_column(String, default="gemini")
     label: Mapped[str] = mapped_column(String, default="")
     key: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
 
 
 class Report(Base):
@@ -74,4 +78,4 @@ class Report(Base):
     data: Mapped[dict] = mapped_column(JSON)
     photo_paths: Mapped[list] = mapped_column(JSON, default=list)
     pdf_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

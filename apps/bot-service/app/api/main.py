@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import shutil
 import uuid
 from typing import Optional
@@ -7,8 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
 from app.channels.whatsapp import router as whatsapp_router
@@ -36,6 +40,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_origin_regex=r"https?://.*(carlink|sslip\.io|localhost|127\.0\.0\.1).*",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(whatsapp_router)
 class _ImmutableStaticFiles(StaticFiles):
     """Serves /files with long-lived caching.
@@ -52,6 +69,7 @@ class _ImmutableStaticFiles(StaticFiles):
         return resp
 
 
+Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/files", _ImmutableStaticFiles(directory=settings.storage_dir), name="files")
 
 
@@ -151,10 +169,14 @@ def get_report(report_id: str) -> dict:
         # If PDF is missing or doesn't exist on disk, render it on-demand
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
-            pdf_path = report_pdf_path(r.id)
-            render_pdf(r.data or {}, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-            db.commit()
+            target_pdf_path = report_pdf_path(r.id)
+            try:
+                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                r.pdf_path = target_pdf_path
+                db.commit()
+            except Exception as exc:
+                logger.warning("Failed to render PDF on-demand for report %s: %s", r.id, exc)
+                r.pdf_path = None
 
         existing_photos = [p for p in (r.photo_paths or []) if Path(p).exists()]
         photo_urls = [to_public_url(p) for p in existing_photos]
@@ -187,10 +209,17 @@ def download_report_pdf(report_id: str):
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
-            pdf_path = report_pdf_path(r.id)
-            render_pdf(r.data or {}, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-            db.commit()
+            target_pdf_path = report_pdf_path(r.id)
+            try:
+                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                r.pdf_path = target_pdf_path
+                db.commit()
+            except Exception as exc:
+                logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
+                raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+
+        if not r.pdf_path or not Path(r.pdf_path).exists():
+            raise HTTPException(status_code=503, detail="PDF generation currently unavailable.")
 
         filename = f"Car_Incident_Report_CIR-2026-{r.id[:4].upper()}.pdf"
         return FileResponse(
@@ -201,6 +230,35 @@ def download_report_pdf(report_id: str):
     finally:
         db.close()
 
+
+@app.post("/reports/{report_id}/render-pdf")
+def render_report_pdf_endpoint(report_id: str) -> dict:
+    """Explicitly triggers on-demand re-rendering of the official incident report PDF."""
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        target_pdf_path = report_pdf_path(r.id)
+        try:
+            render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+            r.pdf_path = target_pdf_path
+            db.commit()
+            return {
+                "id": r.id,
+                "status": "rendered",
+                "pdf_url": to_public_url(r.pdf_path),
+            }
+        except Exception as exc:
+            logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
+            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+    finally:
+        db.close()
+
+
+ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+MAX_PHOTO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 @app.post("/reports/analyze-photos")
@@ -219,20 +277,27 @@ async def analyze_report_photos(
     saved_paths: list[str] = []
     td = tmp_dir()
     for photo in photos:
-        ext = Path(photo.filename or "").suffix or ".jpg"
+        raw_ext = Path(photo.filename or "").suffix.lower()
+        if raw_ext and raw_ext not in ALLOWED_PHOTO_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
+            )
+        ext = raw_ext or ".jpg"
         dest = td / f"{uuid.uuid4().hex}{ext}"
         with open(dest, "wb") as f:
             shutil.copyfileobj(photo.file, f)
+        if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
+            dest.unlink(missing_ok=True)
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=413,
+                detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
+            )
         saved_paths.append(str(dest))
 
     try:
-        # draft_report() makes a blocking Gemini network call (up to 45s per
-        # model, x5 fallback models worst case). Called directly, it runs ON
-        # this FastAPI process's event loop -- freezing the entire dashboard
-        # (every /reports request, every user) for the full duration of one
-        # person's photo analysis. render_pdf() elsewhere in this service
-        # already gets this right via asyncio.to_thread; this call was
-        # missed, along with the same call in both channel adapters.
         draft = await asyncio.to_thread(draft_report, description, saved_paths)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
@@ -273,8 +338,12 @@ def create_report(body: CreateReportRequest) -> dict:
             Path(temp_path).unlink(missing_ok=True)
 
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, photo_paths, pdf_path, report_id=report.id)
-        report.pdf_path = pdf_path
+        try:
+            render_pdf(report.data, photo_paths, pdf_path, report_id=report.id)
+            report.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for created report %s: %s", report.id, exc)
+            report.pdf_path = None
 
         db.commit()
         return {"id": report.id}
@@ -313,11 +382,15 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
             Path(temp_path).unlink(missing_ok=True)
 
         pdf_path = r.pdf_path or report_pdf_path(r.id)
-        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-        r.pdf_path = pdf_path
+        try:
+            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+            r.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for updated report %s: %s", r.id, exc)
 
         db.commit()
-        return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path)}
+        pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
+        return {"id": r.id, "status": r.status, "pdf_url": pdf_url}
     finally:
         db.close()
 
@@ -422,8 +495,11 @@ def reopen_report(report_id: str) -> dict:
         r.data = _with_sign_off(r.data, status="Draft")
 
         pdf_path = r.pdf_path or report_pdf_path(r.id)
-        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-        r.pdf_path = pdf_path
+        try:
+            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+            r.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for reopened report %s: %s", r.id, exc)
 
         db.commit()
         return {"id": r.id, "status": r.status}
@@ -509,11 +585,15 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
         r.data = new_data
         
         pdf_path = r.pdf_path or report_pdf_path(r.id)
-        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-        r.pdf_path = pdf_path
+        try:
+            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+            r.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
 
         db.commit()
-        return {"id": r.id, "status": r.status, "pdf_url": to_public_url(r.pdf_path), "sign_off": r.data.get("sign_off")}
+        pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
+        return {"id": r.id, "status": r.status, "pdf_url": pdf_url, "sign_off": r.data.get("sign_off")}
     finally:
         db.close()
 

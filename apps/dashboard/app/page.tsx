@@ -1,13 +1,21 @@
 import Link from "next/link";
 import { ClipboardList, FilePlus2 } from "lucide-react";
-import { listReports, getAnalyticsSummary } from "@/lib/api";
+import { listReports, getAnalyticsSummary, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
 import { CommandCenterClient } from "@/components/CommandCenterClient";
 
 export default async function OverviewPage() {
-  // Parallel data fetching eliminates sequential waterfall latency
+  // Parallel resilient data fetching to prevent cascading downtime
   const [reports, analytics] = await Promise.all([
-    listReports(),
-    getAnalyticsSummary(),
+    listReports().catch((err) => {
+      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      console.warn("Failed to load reports for overview:", err);
+      return [];
+    }),
+    getAnalyticsSummary().catch((err) => {
+      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      console.warn("Failed to load analytics for overview:", err);
+      return EMPTY_ANALYTICS_SUMMARY;
+    }),
   ]);
 
   if (reports.length === 0) {

@@ -75,10 +75,14 @@ def _finalize(chat_id: str, session) -> str:
         ]
         report.photo_paths = stored_photos
         pdf_path = report_pdf_path(report.id)
-        render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
-        report.pdf_path = pdf_path
+        try:
+            render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
+            report.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for report %s in WhatsApp: %s", report.id, exc)
+            report.pdf_path = None
         db.commit()
-        return pdf_path
+        return report.id
     finally:
         db.close()
 
@@ -110,13 +114,14 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     if session.stage == Stage.AWAITING_CONFIRMATION:
         if body.lower() in CONFIRM_WORDS:
-            pdf_path = await asyncio.to_thread(_finalize, chat_id, session)
+            report_id = await asyncio.to_thread(_finalize, chat_id, session)
             reset_session(chat_id)
+            rep_code = report_id[:8].upper()
             return _twiml(
-                f"Report saved and rendered to {pdf_path}. "
-                "PDF delivery over WhatsApp needs a public file URL for Twilio to "
-                "fetch -- wire that up before this goes to real users; for now, "
-                "pull the file from the dashboard/API or the local storage folder."
+                f"✅ Report CIR-{rep_code} finalized and saved to Carlink System!\n\n"
+                f"🖥️ Loss Adjuster Studio:\n"
+                f"https://carlink.34-45-253-162.sslip.io/reports/{report_id}\n\n"
+                "Send /new or a photo to file another report."
             )
         session.pending_edits.append(body)
         description = combined_description(session)

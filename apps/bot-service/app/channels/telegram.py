@@ -291,17 +291,25 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
         report.photo_paths = stored_photos
 
         pdf_path = report_pdf_path(report.id)
-        await asyncio.to_thread(render_pdf, report.data, stored_photos, pdf_path, report_id=report.id)
-        report.pdf_path = pdf_path
+        try:
+            await asyncio.to_thread(render_pdf, report.data, stored_photos, pdf_path, report_id=report.id)
+            report.pdf_path = pdf_path
+        except Exception as exc:
+            logger.error("Failed to render PDF for report %s in Telegram: %s", report.id, exc)
+            report.pdf_path = None
 
         db.commit()
     finally:
         db.close()
 
     if msg_target:
-        with open(pdf_path, "rb") as f:
-            await msg_target.reply_document(document=f, filename="security_incident_report.pdf")
         rep_code = report.id[:8].upper()
+        if report.pdf_path and Path(report.pdf_path).exists():
+            try:
+                with open(report.pdf_path, "rb") as f:
+                    await msg_target.reply_document(document=f, filename=f"CIR_{rep_code}.pdf")
+            except Exception as send_err:
+                logger.warning("Could not send PDF document in Telegram: %s", send_err)
         await msg_target.reply_text(
             f"✅ Report *CIR-{rep_code}* finalized and saved to Carlink System!\n\n"
             f"🖥️ *Open in Loss Adjuster Studio:*\n"

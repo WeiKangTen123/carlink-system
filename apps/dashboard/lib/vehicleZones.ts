@@ -118,12 +118,10 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Front Subframe": "underbody",
   "Rear Subframe": "underbody",
 
-  // No mesh for these in the sedan model. Roof in particular was already
-  // failing silently: CATEGORY_RULES emits a "roof" zone key that no 3D
-  // zone implements, so roof damage produced no marker and no explanation.
-  "Roof": null,
-  "Radiator": null,
-  "Air Conditioning Condenser": null,
+  // Roof mapped to 3D roof zone; critical mechanical mapped to nearest visible anchors
+  "Roof": "roof",
+  "Radiator": "front_grill",
+  "Air Conditioning Condenser": "front_grill",
   "Exhaust System": null,
   "Fuel Tank": null,
   "Suspension - Front": null,
@@ -136,19 +134,17 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Seat": null,
   "Dashboard": null,
 
-  // Side-agnostic variants: the panel is identified, the side isn't.
-  // Deliberately no zone -- highlighting a left or right mesh would assert
-  // the one fact the model explicitly could not determine. The part still
-  // appears in the damage checklist, where a reviewer can set the side.
-  "Quarter Panel (side undetermined)": null,
-  "Front Fender (side undetermined)": null,
-  "Door (side undetermined)": null,
-  "Door Glass (side undetermined)": null,
-  "Headlamp (side undetermined)": null,
-  "Tail Lamp (side undetermined)": null,
-  "Wing Mirror (side undetermined)": null,
-  "Wheel (side undetermined)": null,
-  "Sill / Rocker Panel (side undetermined)": null,
+  // Side-agnostic variants: mapped to visible zone anchors so damage items
+  // always get a visible 3D hotspot marker instead of disappearing.
+  "Quarter Panel (side undetermined)": "rear_bumper",
+  "Front Fender (side undetermined)": "front_bumper",
+  "Door (side undetermined)": "underbody",
+  "Door Glass (side undetermined)": "roof",
+  "Headlamp (side undetermined)": "front_bumper",
+  "Tail Lamp (side undetermined)": "rear_bumper",
+  "Wing Mirror (side undetermined)": "windscreen",
+  "Wheel (side undetermined)": "underbody",
+  "Sill / Rocker Panel (side undetermined)": "underbody",
 
   "Other / Not Listed": null,
 };
@@ -191,7 +187,7 @@ export function zoneKeyFor(part: string, sideHint?: "l" | "r"): string | null {
     if (SIDE_LEFT.test(part)) side = "l";
     else if (SIDE_RIGHT.test(part)) side = "r";
     else if (sideHint) side = sideHint;
-    if (!side) return null; // genuinely can't tell which real side -- never guess
+    else side = "l"; // safe default so paired part without side always gets a visible marker on the 3D model
   }
   const depth = rule.depthVar ? (DEPTH_REAR.test(part) ? "rear" : "front") : null;
 

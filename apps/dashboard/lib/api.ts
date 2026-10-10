@@ -28,6 +28,55 @@ export function pdfDownloadUrl(reportId: string): string {
   return `${CLIENT_API_BASE_URL}/reports/${reportId}/download`;
 }
 
+/**
+ * Safe fetch wrapper that aborts after a timeout (default 8000ms) to prevent infinite hangs.
+ */
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs = 8000
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  if (init?.signal) {
+    if (init.signal.aborted) {
+      clearTimeout(timer);
+      controller.abort();
+    } else {
+      init.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        controller.abort();
+      });
+    }
+  }
+
+  try {
+    const res = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+    return res;
+  } catch (err: unknown) {
+    if (timedOut) {
+      const urlStr =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+          ? input.toString()
+          : (input as Request).url || "endpoint";
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${urlStr}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const CATEGORY_OPTIONS = [
   "Unauthorized Access",
   "Theft or Burglary",
@@ -384,15 +433,30 @@ export type AnalyticsSummary = {
   ai_confidence_avg: string | null;
 };
 
+export const EMPTY_ANALYTICS_SUMMARY: AnalyticsSummary = {
+  total_incidents: 0,
+  pending_review: 0,
+  signed_off: 0,
+  high_severity: 0,
+  category_counts: {},
+  severity_counts: {},
+  damaged_parts_frequency: {},
+  recent_activity: [],
+  avg_resolution_time: null,
+  ai_confidence_avg: null,
+};
+
 export async function listReports(): Promise<ReportSummary[]> {
-  const res = await fetch(`${API_BASE_URL}/reports`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load reports (${res.status})`);
+  const res = await fetchWithTimeout(`${API_BASE_URL}/reports`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load reports (${res.status}: ${res.statusText})`);
   return res.json();
 }
 
 export async function getReport(id: string): Promise<ReportDetail | null> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load report (${res.status})`);
+  const res = await fetchWithTimeout(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" });
+  // Resilient 404 handling: return null so Next.js notFound() renders the branded 404 page instead of a 500 error
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to load report ${id} (${res.status}: ${res.statusText})`);
   const body = await res.json();
   if (body && typeof body === "object" && "error" in body) return null;
   return body as ReportDetail;
@@ -536,14 +600,29 @@ export async function signOffReport(
   return res.json();
 }
 
+export async function renderReportPdf(id: string): Promise<{ id: string; status: string; pdf_url: string }> {
+  const res = await fetch(`${API_BASE_URL}/reports/${id}/render-pdf`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to render PDF (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const res = await fetch(`${API_BASE_URL}/analytics/summary`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load analytics (${res.status})`);
+  const res = await fetchWithTimeout(`${API_BASE_URL}/analytics/summary`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load analytics (${res.status}: ${res.statusText})`);
   return res.json();
 }
 
 export type AppSettings = {
   company_name: string;
+};
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  company_name: "Carlink Loss Adjuster",
 };
 
 /** Live read-only facts about the running deployment. Never contains the
@@ -565,10 +644,37 @@ export type SystemInfo = {
   auth: { configured: boolean };
 };
 
+export const DEFAULT_SYSTEM_INFO: SystemInfo = {
+  ai: {
+    model_chain: ["gemini-2.5-flash"],
+    min_call_interval_seconds: 4,
+    request_timeout_seconds: 30,
+    api_key_configured: false,
+  },
+  channels: {
+    telegram_configured: false,
+    whatsapp_configured: false,
+    reports_by_channel: {},
+  },
+  storage: { reports: 0, photos: 0, pdfs: 0, bytes_used: 0, storage_dir: "" },
+  database: { engine: "sqlite" },
+  auth: { configured: false },
+};
+
+function isDynamicServerError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { digest?: string }).digest === "DYNAMIC_SERVER_USAGE";
+}
+
 export async function getAppSettings(): Promise<AppSettings> {
-  const res = await fetch(`${API_BASE_URL}/settings`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load settings (${res.status})`);
-  return res.json();
+  try {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/settings`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load settings (${res.status}: ${res.statusText})`);
+    return await res.json();
+  } catch (err) {
+    if (isDynamicServerError(err)) throw err;
+    console.warn("Failed to load settings, using fallback default:", err);
+    return DEFAULT_APP_SETTINGS;
+  }
 }
 
 export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
@@ -588,9 +694,15 @@ export async function updateAppSettings(patch: Partial<AppSettings>): Promise<Ap
 export type LlmKey = { id: string; label: string; last4: string; created_at: string };
 
 export async function listLlmKeys(): Promise<{ keys: LlmKey[]; env_key_configured: boolean }> {
-  const res = await fetch(`${API_BASE_URL}/setup/llm-keys`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load API keys (${res.status})`);
-  return res.json();
+  try {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/setup/llm-keys`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load API keys (${res.status}: ${res.statusText})`);
+    return await res.json();
+  } catch (err) {
+    if (isDynamicServerError(err)) throw err;
+    console.warn("Failed to load API keys, using fallback default:", err);
+    return { keys: [], env_key_configured: false };
+  }
 }
 
 export async function addLlmKey(apiKey: string, label?: string): Promise<LlmKey> {
@@ -632,16 +744,42 @@ export type Taxonomy = {
   };
 };
 
+export const DEFAULT_TAXONOMY: Taxonomy = {
+  parts: [],
+  damage_types: [],
+  severities: [],
+  body_types: [],
+  model_body_types: {},
+  usage: {
+    parts: {},
+    damage_types: {},
+    legacy_terms: {},
+    reports_counted: 0,
+  },
+};
+
 export async function getTaxonomy(): Promise<Taxonomy> {
-  const res = await fetch(`${API_BASE_URL}/taxonomy`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load taxonomy (${res.status})`);
-  return res.json();
+  try {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/taxonomy`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load taxonomy (${res.status}: ${res.statusText})`);
+    return await res.json();
+  } catch (err) {
+    if (isDynamicServerError(err)) throw err;
+    console.warn("Failed to load taxonomy, using fallback default:", err);
+    return DEFAULT_TAXONOMY;
+  }
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
-  const res = await fetch(`${API_BASE_URL}/system/info`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load system info (${res.status})`);
-  return res.json();
+  try {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/system/info`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load system info (${res.status}: ${res.statusText})`);
+    return await res.json();
+  } catch (err) {
+    if (isDynamicServerError(err)) throw err;
+    console.warn("Failed to load system info, using fallback default:", err);
+    return DEFAULT_SYSTEM_INFO;
+  }
 }
 
 export async function deleteReport(id: string): Promise<void> {

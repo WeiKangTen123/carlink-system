@@ -42,3 +42,7 @@ Thumbs.db
 .claude/
 
 .superpowers/
+
+# Local sample case dumps & presentations
+*.pptx
+example_case/*/

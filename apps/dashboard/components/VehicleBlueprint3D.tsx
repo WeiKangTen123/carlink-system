@@ -59,6 +59,7 @@ const CAR_PARTS_REAL: { key: string; label: string; match: RegExp[] }[] = [
   { key: "rear_bumper", label: "Rear Bumper", match: [/^bumper-rear/i] },
   { key: "bonnet", label: "Bonnet/Hood", match: [/^hood_/i] },
   { key: "windscreen", label: "Windscreen", match: [/^windshield_/i, /^windshield-grill/i] },
+  { key: "roof", label: "Roof", match: [/^roof-pillars-interior/i, /^sedan-unibody/i] },
   { key: "rear_glass", label: "Rear Glass", match: [/^glass-rear/i] },
   { key: "tailgate", label: "Trunk", match: [/^trunk_/i] },
   { key: "l_headlamp", label: "Left Headlamp", match: [/^headlights?-.*-l[_.]/i] },
@@ -263,6 +264,9 @@ function CarModel({
       const partBox = new THREE.Box3();
       meshes.forEach((m) => partBox.expandByObject(m));
       const center = partBox.getCenter(new THREE.Vector3());
+      if (zoneKey === "roof") {
+        center.y = Math.max(center.y, partBox.max.y - 0.05);
+      }
       const size = partBox.getSize(new THREE.Vector3());
       // Fan radius scales with the part: a bumper can spread its markers
       // much wider than a tail lamp before they leave the panel.
@@ -333,7 +337,11 @@ function CarModel({
     if (!meshes.length) return;
     const partBox = new THREE.Box3();
     meshes.forEach((m) => partBox.expandByObject(m));
-    onFocusRequest(partBox.getCenter(new THREE.Vector3()), partBox.getSize(new THREE.Vector3()));
+    const center = partBox.getCenter(new THREE.Vector3());
+    if (zone.key === "roof") {
+      center.y = Math.max(center.y, partBox.max.y - 0.05);
+    }
+    onFocusRequest(center, partBox.getSize(new THREE.Vector3()));
   }, [highlightedIdx, zoneResolutions, root, onFocusRequest]);
 
   // Synchronize 3D camera when an automotive zone is selected from the evidence strip
@@ -349,7 +357,11 @@ function CarModel({
     if (!meshes.length) return;
     const partBox = new THREE.Box3();
     meshes.forEach((m) => partBox.expandByObject(m));
-    onFocusRequest(partBox.getCenter(new THREE.Vector3()), partBox.getSize(new THREE.Vector3()));
+    const center = partBox.getCenter(new THREE.Vector3());
+    if (zone.key === "roof") {
+      center.y = Math.max(center.y, partBox.max.y - 0.05);
+    }
+    onFocusRequest(center, partBox.getSize(new THREE.Vector3()));
   }, [selectedZone, root, onFocusRequest]);
 
   const zoneIdxLookup = useMemo(() => {
@@ -411,7 +423,57 @@ const VAN_PROFILE: [number, number][] = [
 ];
 const VAN_WIDTH = 1.9;
 
-function VanModel({ color }: { color: string }) {
+const VAN_ZONE_ANCHORS: Record<string, [number, number, number]> = {
+  front_bumper: [0, 0.3, -1.9],
+  bonnet: [0, 0.7, -1.4],
+  windscreen: [0, 1.25, -1.0],
+  roof: [0, 1.62, 0.0],
+  rear_glass: [0, 1.35, 1.6],
+  tailgate: [0, 0.7, 1.9],
+  rear_bumper: [0, 0.3, 1.95],
+  l_door_front: [-0.96, 0.8, -0.6],
+  r_door_front: [0.96, 0.8, -0.6],
+  l_door_rear: [-0.96, 0.8, 0.6],
+  r_door_rear: [0.96, 0.8, 0.6],
+  underbody: [0, 0.15, 0.0],
+  front_grill: [0, 0.5, -1.9],
+  l_headlamp: [-0.75, 0.55, -1.85],
+  r_headlamp: [0.75, 0.55, -1.85],
+  l_taillamp: [-0.75, 0.75, 1.9],
+  r_taillamp: [0.75, 0.75, 1.9],
+  l_wheel_front: [-0.95, 0.4, -1.3],
+  r_wheel_front: [0.95, 0.4, -1.3],
+  l_wheel_rear: [-0.95, 0.4, 1.3],
+  r_wheel_rear: [0.95, 0.4, 1.3],
+  l_fender: [-0.96, 0.65, -1.3],
+  r_fender: [0.96, 0.65, -1.3],
+  l_mirror: [-1.05, 1.1, -0.9],
+  r_mirror: [1.05, 1.1, -0.9],
+  l_door_glass_front: [-0.96, 1.2, -0.6],
+  r_door_glass_front: [0.96, 1.2, -0.6],
+  l_door_glass_rear: [-0.96, 1.2, 0.6],
+  r_door_glass_rear: [0.96, 1.2, 0.6],
+};
+
+function VanModel({
+  color,
+  damageEntries,
+  zoneResolutions,
+  highlightedIdx,
+  selectedZone,
+  onZoneClick,
+  onZoneSelect,
+  onFocusRequest,
+}: {
+  color: string;
+  damageEntries: DamageSummaryItem[];
+  zoneResolutions: (ZoneResolution | null)[];
+  highlightedIdx: number | null;
+  selectedZone?: string | null;
+  onZoneClick: (idx: number) => void;
+  onZoneSelect?: (zoneKey: string | null) => void;
+  onFocusRequest?: (center: THREE.Vector3, size: THREE.Vector3) => void;
+}) {
   const geo = useMemo(() => {
     const shape = new THREE.Shape();
     VAN_PROFILE.forEach(([z, y], i) => {
@@ -427,6 +489,65 @@ function VanModel({ color }: { color: string }) {
   }, []);
   const wheelZ = 1.3, wheelX = 0.95, wheelR = 0.4;
   const wheelGeo = useMemo(() => new THREE.CylinderGeometry(wheelR, wheelR, 0.26, 12), []);
+
+  const markers = useMemo(() => {
+    const byZone = groupByZone(zoneResolutions);
+    const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
+
+    byZone.forEach((itemIdxs, zoneKey) => {
+      const anchor = VAN_ZONE_ANCHORS[zoneKey] || (
+        zoneKey.includes("front") ? [0, 0.5, -1.5] :
+        zoneKey.includes("rear") ? [0, 0.5, 1.5] :
+        [0, 0.8, 0]
+      );
+      const center = new THREE.Vector3(...anchor);
+      const spread = 0.16;
+
+      itemIdxs.forEach((itemIdx, n) => {
+        const res = zoneResolutions[itemIdx]!;
+        const item = damageEntries[itemIdx];
+        const pos = center.clone();
+        if (itemIdxs.length > 1) {
+          const angle = (n * 137.5 * Math.PI) / 180;
+          const r = spread * Math.sqrt(n / itemIdxs.length + 0.15);
+          pos.x += Math.cos(angle) * r;
+          pos.z += Math.sin(angle) * r;
+          pos.y += (n % 3) * 0.045;
+        }
+        out.push({
+          idx: itemIdx,
+          label: item.part,
+          badge: res.badgeNumber,
+          severity: severityClass(item.severity),
+          pos,
+        });
+      });
+    });
+    return out;
+  }, [damageEntries, zoneResolutions]);
+
+  const lastHandledRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (highlightedIdx === null || highlightedIdx === lastHandledRef.current) return;
+    lastHandledRef.current = highlightedIdx;
+    const res = zoneResolutions[highlightedIdx];
+    if (!res || !onFocusRequest) return;
+    const anchor = VAN_ZONE_ANCHORS[res.key] || [0, 0.8, 0];
+    const center = new THREE.Vector3(...anchor);
+    onFocusRequest(center, new THREE.Vector3(0.6, 0.6, 0.6));
+  }, [highlightedIdx, zoneResolutions, onFocusRequest]);
+
+  useEffect(() => {
+    if (!selectedZone || !onFocusRequest) return;
+    let targetKey = selectedZone;
+    if (selectedZone === "skeleton") targetKey = "underbody";
+    if (selectedZone === "lighting") targetKey = "l_taillamp";
+    if (selectedZone === "boot_floor") targetKey = "tailgate";
+    const anchor = VAN_ZONE_ANCHORS[targetKey];
+    if (!anchor) return;
+    const center = new THREE.Vector3(...anchor);
+    onFocusRequest(center, new THREE.Vector3(0.6, 0.6, 0.6));
+  }, [selectedZone, onFocusRequest]);
 
   return (
     <group>
@@ -447,6 +568,18 @@ function VanModel({ color }: { color: string }) {
             <meshBasicMaterial color={color} transparent opacity={0.12} depthWrite={false} />
           </mesh>
         </group>
+      ))}
+      {markers.map((m) => (
+        <Html key={m.idx} position={[m.pos.x, m.pos.y + 0.12, m.pos.z]} center occlude={false} zIndexRange={[10, 0]}>
+          <button
+            type="button"
+            className={`hotspot-beacon-3d ${m.severity === "severe" ? "severe-spot" : ""} ${highlightedIdx === m.idx ? "active-spot" : ""}`}
+            title={m.label}
+            onClick={() => onZoneClick(m.idx)}
+          >
+            {String(m.badge).padStart(2, "0")}
+          </button>
+        </Html>
       ))}
       <Html position={[0, 0.06, -2.05]} center distanceFactor={8} occlude={false}>
         <span className="blueprint-3d-axis-label">FRONT</span>
@@ -530,7 +663,16 @@ export function VehicleBlueprint3D({
             onFocusRequest={handleFocusRequest}
           />
         ) : (
-          <VanModel color={accent} />
+          <VanModel
+            color={accent}
+            damageEntries={damageEntries}
+            zoneResolutions={zoneResolutions}
+            highlightedIdx={highlightedDamageIndex}
+            selectedZone={selectedZone}
+            onZoneClick={handleZoneClick}
+            onZoneSelect={onZoneSelect}
+            onFocusRequest={handleFocusRequest}
+          />
         )}
 
         <Grid

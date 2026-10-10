@@ -1,8 +1,16 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BOT_SERVICE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = (BOT_SERVICE_DIR / "carlink.db").resolve()
+DEFAULT_STORAGE_DIR = (BOT_SERVICE_DIR / "storage").resolve()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(str(BOT_SERVICE_DIR / ".env"), ".env"),
+        extra="ignore",
+    )
 
     telegram_bot_token: str = ""
     gemini_api_key: str = ""
@@ -18,8 +26,8 @@ class Settings(BaseSettings):
     # modality is not enabled") -- every report has photos, so it could
     # never have actually served a request here.
     gemini_model_chain: str = "gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
-    database_url: str = "sqlite:///./carlink.db"
-    storage_dir: str = "./storage"
+    database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
+    storage_dir: str = str(DEFAULT_STORAGE_DIR)
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     # Minimum spacing enforced between Gemini calls, per process (see

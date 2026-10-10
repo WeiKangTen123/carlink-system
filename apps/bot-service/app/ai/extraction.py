@@ -19,6 +19,7 @@ back to the reporter for confirmation before a PDF is generated.
 import base64
 import logging
 import mimetypes
+import re
 import time
 from pathlib import Path
 
@@ -344,7 +345,11 @@ def draft_report(description: str, photo_paths: list[str], known_facts: dict | N
                         # point of the chain is to keep trying other models.
                         timeout=45.0,
                     )
-                    draft = SecurityIncidentDraft.model_validate_json(interaction.output_text)
+                    raw_output = (interaction.output_text or "").strip()
+                    if raw_output.startswith("```"):
+                        raw_output = re.sub(r"^```(?:json)?\s*", "", raw_output)
+                        raw_output = re.sub(r"\s*```$", "", raw_output)
+                    draft = SecurityIncidentDraft.model_validate_json(raw_output)
                     # Which model actually answered. The fallbacks return
                     # visibly thinner analyses (no photo reference, bounding
                     # box or confidence), and without this line a thin draft

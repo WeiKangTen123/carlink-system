@@ -8,7 +8,7 @@ import {
   TrendingUp,
   ShieldAlert,
 } from "lucide-react";
-import { listReports, getAnalyticsSummary } from "@/lib/api";
+import { listReports, getAnalyticsSummary, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
 import { caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
 import { resolveRange, bucketReports, daysSinceMostRecent } from "@/lib/dateRange";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
@@ -26,8 +26,18 @@ export default async function AnalyticsPage({
   searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
   const params = await searchParams;
-  const reports = await listReports();
-  const analytics = await getAnalyticsSummary();
+  const [reports, analytics] = await Promise.all([
+    listReports().catch((err) => {
+      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      console.warn("Failed to load reports for analytics:", err);
+      return [];
+    }),
+    getAnalyticsSummary().catch((err) => {
+      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      console.warn("Failed to load analytics summary:", err);
+      return EMPTY_ANALYTICS_SUMMARY;
+    }),
+  ]);
 
   // Range comes from the URL so this stays a server component and a chosen
   // window is shareable. Buckets are real counts of created_at, daily up to

@@ -78,17 +78,6 @@ export function daysOpen(createdAt: string): number {
   return Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000));
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${units[i]}`;
-}
 
 export function formatCarlinkRef(id: string, plate?: string | null): string {
   if (plate && plate.replace(/\s+/g, "").toUpperCase().includes("SLK3063Z")) {

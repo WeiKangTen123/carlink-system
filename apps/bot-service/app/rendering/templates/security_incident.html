@@ -473,7 +473,7 @@
       </tr>
     </thead>
     <tbody>
-      {% set parts = ax_a.items or [] %}
+      {% set parts = ax_a['items'] if 'items' in ax_a else [] %}
       {% for p in parts %}
       <tr>
         <td class="center font-mono">{{ p.item_no or loop.index ~ '.0' }}</td>
@@ -527,7 +527,7 @@
       </tr>
     </thead>
     <tbody>
-      {% set labours = ax_b.items or [] %}
+      {% set labours = ax_b['items'] if 'items' in ax_b else [] %}
       {% for l in labours %}
       <tr>
         <td class="center font-mono">{{ l.item_no or loop.index ~ '.0' }}</td>
