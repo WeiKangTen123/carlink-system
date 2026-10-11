@@ -299,25 +299,55 @@ function CarModel({
     // Re-assert the base hidden/visible state first. Without this, a zone
     // revealed for a previous report would stay revealed after the damage
     // list changes.
+    //
+    // CRITICAL GPU FIX: Reuse shared materials rather than instantiating 124+
+    // individual materials per render cycle. This prevents WebGL shader program
+    // explosion and memory exhaustion that crashed the browser tab.
+    const baseMat = new THREE.MeshBasicMaterial({
+      color,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const severityMats = new Map<string, THREE.MeshBasicMaterial>();
+
     root.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.visible = !CAR_EXCLUDE.test(partName(mesh));
       if (mesh.visible) {
-        mesh.material = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.85 });
+        mesh.material = baseMat;
       }
     });
+
     CAR_PARTS_REAL.forEach((zone) => {
       const sev = zoneSeverity.get(zone.key);
       if (!sev) return;
       const hex = severityColor(sev);
       if (!hex) return;
+
+      let zoneMat = severityMats.get(hex);
+      if (!zoneMat) {
+        zoneMat = new THREE.MeshBasicMaterial({
+          color: hex,
+          transparent: true,
+          opacity: 0.7,
+          side: THREE.DoubleSide,
+        });
+        severityMats.set(hex, zoneMat);
+      }
+
       findCarMeshes(root, zone.match, true).forEach((m) => {
         // Reveal a normally-hidden structural mesh when it's the damaged part.
         m.visible = true;
-        m.material = new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
+        m.material = zoneMat!;
       });
     });
+
+    return () => {
+      baseMat.dispose();
+      severityMats.forEach((mat) => mat.dispose());
+    };
   }, [root, color, zoneSeverity]);
 
   // Reacts to highlightedIdx regardless of WHERE the selection came from --
@@ -651,43 +681,53 @@ export function VehicleBlueprint3D({
   return (
     <div className="blueprint-stage-3d">
       <Canvas camera={{ position: home.position.toArray(), fov: 40 }} dpr={[1, 2]}>
-        {bodyType === "car" ? (
-          <CarModel
-            color={accent}
-            damageEntries={damageEntries}
-            zoneResolutions={zoneResolutions}
-            highlightedIdx={highlightedDamageIndex}
-            selectedZone={selectedZone}
-            onZoneClick={handleZoneClick}
-            onZoneSelect={onZoneSelect}
-            onFocusRequest={handleFocusRequest}
-          />
-        ) : (
-          <VanModel
-            color={accent}
-            damageEntries={damageEntries}
-            zoneResolutions={zoneResolutions}
-            highlightedIdx={highlightedDamageIndex}
-            selectedZone={selectedZone}
-            onZoneClick={handleZoneClick}
-            onZoneSelect={onZoneSelect}
-            onFocusRequest={handleFocusRequest}
-          />
-        )}
+        <React.Suspense
+          fallback={
+            <Html center>
+              <div className="blueprint-3d-loading" style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+                Loading 3D asset&hellip;
+              </div>
+            </Html>
+          }
+        >
+          {bodyType === "car" ? (
+            <CarModel
+              color={accent}
+              damageEntries={damageEntries}
+              zoneResolutions={zoneResolutions}
+              highlightedIdx={highlightedDamageIndex}
+              selectedZone={selectedZone}
+              onZoneClick={handleZoneClick}
+              onZoneSelect={onZoneSelect}
+              onFocusRequest={handleFocusRequest}
+            />
+          ) : (
+            <VanModel
+              color={accent}
+              damageEntries={damageEntries}
+              zoneResolutions={zoneResolutions}
+              highlightedIdx={highlightedDamageIndex}
+              selectedZone={selectedZone}
+              onZoneClick={handleZoneClick}
+              onZoneSelect={onZoneSelect}
+              onFocusRequest={handleFocusRequest}
+            />
+          )}
 
-        <Grid
-          position={[0, 0, 0]}
-          args={[8, 8]}
-          cellSize={0.5}
-          cellThickness={0.4}
-          cellColor={accent}
-          sectionSize={2}
-          sectionThickness={0.6}
-          sectionColor={accent}
-          fadeDistance={9}
-          fadeStrength={1.5}
-          infiniteGrid={false}
-        />
+          <Grid
+            position={[0, 0, 0]}
+            args={[8, 8]}
+            cellSize={0.5}
+            cellThickness={0.4}
+            cellColor={accent}
+            sectionSize={2}
+            sectionThickness={0.6}
+            sectionColor={accent}
+            fadeDistance={9}
+            fadeStrength={1.5}
+            infiniteGrid={false}
+          />
+        </React.Suspense>
 
         <CameraRig focus={focus} home={home} controlsRef={controlsRef} />
         <OrbitControls

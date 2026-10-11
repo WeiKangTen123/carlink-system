@@ -97,7 +97,9 @@ export function CaseEvidenceTab({
 
   // Keep slide index bounded
   useEffect(() => {
-    if (currentSlideIndex >= presentationSlides.length) {
+    if (presentationSlides.length === 0) {
+      setCurrentSlideIndex(0);
+    } else if (currentSlideIndex >= presentationSlides.length) {
       setCurrentSlideIndex(Math.max(0, presentationSlides.length - 1));
     }
   }, [presentationSlides.length, currentSlideIndex]);
@@ -140,7 +142,8 @@ export function CaseEvidenceTab({
   }, [currentPhotoUrl]);
 
   // Intelligent Predictive Preloader:
-  // Pre-caches adjacent photos (N-1, N+1, N+2, N+3) in the background
+  // Pre-caches adjacent photos (N-1, N+1, N+2, N+3) in the background once per URL
+  const preloadedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!photos || photos.length === 0) return;
     const targets = [
@@ -151,9 +154,13 @@ export function CaseEvidenceTab({
     ].filter((i) => i >= 0 && i < photos.length);
 
     targets.forEach((idx) => {
-      const preload = new Image();
-      preload.src = fileUrl(photos[idx]);
-      preload.decoding = "async";
+      const url = fileUrl(photos[idx]);
+      if (!preloadedRef.current.has(url)) {
+        preloadedRef.current.add(url);
+        const preload = new Image();
+        preload.src = url;
+        preload.decoding = "async";
+      }
     });
   }, [activePhotoIndex, photos]);
 
@@ -204,7 +211,7 @@ export function CaseEvidenceTab({
     }
   };
 
-  const currentSlide = presentationSlides[currentSlideIndex] || presentationSlides[0];
+  const currentSlide = presentationSlides[currentSlideIndex] || presentationSlides[0] || null;
 
   return (
     <>
@@ -322,7 +329,39 @@ export function CaseEvidenceTab({
         </div>
 
         {/* 2. MAIN VIEWPORT: FORENSIC 1-UP HUD OR 2x2 PRESENTATION MATRIX */}
-        {viewMode === "hud" ? (
+        {filteredPhotos.length === 0 ? (
+          <div
+            style={{
+              padding: "48px 24px",
+              textAlign: "center",
+              background: "#050811",
+              borderRadius: 10,
+              border: "1px dashed var(--border-color)",
+              margin: "12px 0",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              minHeight: 320,
+            }}
+          >
+            <Camera style={{ width: 32, height: 32, color: "var(--accent-primary)", marginBottom: 12, opacity: 0.8 }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>
+              No Evidence Photos in this Vehicle Zone
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 380, lineHeight: 1.5, margin: "0 0 16px" }}>
+              None of the {photos.length} uploaded inspection photos are classified under the selected zone. You can inspect all photos across the vehicle.
+            </p>
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              onClick={() => handleZoneClick(null)}
+              style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              <span>View All Photos ({photos.length})</span>
+            </button>
+          </div>
+        ) : viewMode === "hud" ? (
           /* =========================================================================
              MODE A: FORENSIC 1-UP HUD
              ========================================================================= */
@@ -550,7 +589,7 @@ export function CaseEvidenceTab({
                   type="button"
                   className="btn-secondary-modern"
                   style={{ padding: "4px 8px", fontSize: 11 }}
-                  disabled={currentSlideIndex === 0}
+                  disabled={currentSlideIndex <= 0}
                   onClick={() => setCurrentSlideIndex((prev) => Math.max(0, prev - 1))}
                 >
                   <ChevronLeft style={{ width: 13, height: 13 }} />
@@ -587,8 +626,8 @@ export function CaseEvidenceTab({
                   type="button"
                   className="btn-secondary-modern"
                   style={{ padding: "4px 8px", fontSize: 11 }}
-                  disabled={currentSlideIndex >= presentationSlides.length - 1}
-                  onClick={() => setCurrentSlideIndex((prev) => Math.min(presentationSlides.length - 1, prev + 1))}
+                  disabled={presentationSlides.length === 0 || currentSlideIndex >= presentationSlides.length - 1}
+                  onClick={() => setCurrentSlideIndex((prev) => Math.min(Math.max(0, presentationSlides.length - 1), prev + 1))}
                 >
                   <span>Next Slide</span>
                   <ChevronRight style={{ width: 13, height: 13 }} />
