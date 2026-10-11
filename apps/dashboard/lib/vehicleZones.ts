@@ -135,15 +135,15 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Dashboard": null,
 
   // Side-agnostic variants: mapped to visible zone anchors so damage items
-  // always get a visible 3D hotspot marker instead of disappearing.
-  "Quarter Panel (side undetermined)": "rear_bumper",
-  "Front Fender (side undetermined)": "front_bumper",
-  "Door (side undetermined)": "underbody",
-  "Door Glass (side undetermined)": "roof",
-  "Headlamp (side undetermined)": "front_bumper",
-  "Tail Lamp (side undetermined)": "rear_bumper",
-  "Wing Mirror (side undetermined)": "windscreen",
-  "Wheel (side undetermined)": "underbody",
+  // always get a visible 3D hotspot marker instead of disappearing or mapping to the frame.
+  "Quarter Panel (side undetermined)": "l_fender",
+  "Front Fender (side undetermined)": "l_fender",
+  "Door (side undetermined)": "l_door_front",
+  "Door Glass (side undetermined)": "l_door_glass_front",
+  "Headlamp (side undetermined)": "l_headlamp",
+  "Tail Lamp (side undetermined)": "l_taillamp",
+  "Wing Mirror (side undetermined)": "l_mirror",
+  "Wheel (side undetermined)": "l_wheel_front",
   "Sill / Rocker Panel (side undetermined)": "underbody",
 
   "Other / Not Listed": null,

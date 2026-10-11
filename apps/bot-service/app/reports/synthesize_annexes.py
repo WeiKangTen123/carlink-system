@@ -128,15 +128,49 @@ def synthesize_annexes_for_report(data: Dict[str, Any]) -> Dict[str, Any]:
     items_b: List[Dict[str, Any]] = existing_annex_b.get("items") or []
 
     if is_slk or not items_b:
-        source_labour = list(SLK_3063_Z_ANNEX_B) if is_slk else [
-            {"item_no": "1.0", "description": "Towing charges from incident scene", "workshop_est": 100.0, "adjusted_cost": 60.0, "justification": "Benchmarked towing rate"},
-            {"item_no": "2.0", "description": "To check electrical wiring and sensor circuits", "workshop_est": 80.0, "adjusted_cost": 60.0, "justification": "Electrical continuity testing"},
-            {"item_no": "3.0", "description": "To tuff coat affected chassis areas", "workshop_est": 180.0, "adjusted_cost": 120.0, "justification": "Anti-corrosion underbody application"},
-            {"item_no": "4.0", "description": "To adjust chassis alignment on Car-O-Liner", "workshop_est": 380.0, "adjusted_cost": 280.0, "justification": "Frame alignment measuring jig"},
-            {"item_no": "5.0", "description": "To respray affected areas (2K Oven Baked)", "workshop_est": 1800.0, "adjusted_cost": 1250.0, "justification": "Panel respray and blending"},
-            {"item_no": "6.0", "description": "To renew damaged parts, straighten panels & align", "workshop_est": 1500.0, "adjusted_cost": 1200.0, "justification": "Panel beating and assembly"},
-            {"item_no": "7.0", "description": "To LTA remove/reseal vehicle registration plate", "workshop_est": 120.0, "adjusted_cost": 100.0, "justification": "Statutory inspection seal renewal"},
-        ]
+        if is_slk:
+            source_labour = list(SLK_3063_Z_ANNEX_B)
+        else:
+            # Check impact orientation: side, front, or rear
+            all_parts_str = " ".join([str(p) for p in damaged_parts] + [str(it.get("part", "")) for it in summary_items]).lower()
+            acc_type = str(data.get("accident_type") or "").lower()
+            poi = str((data.get("vehicle_info") or {}).get("point_of_impact") or "").lower()
+
+            is_chassis = any(k in all_parts_str for k in ["chassis", "underbody", "subframe", "cross member", "floor pan"]) or sev == "Severe"
+
+            source_labour = [
+                {"item_no": "1.0", "description": "Towing charges from incident scene to workshop", "workshop_est": 100.0, "adjusted_cost": 60.0, "justification": "Benchmarked standard towing tariff"},
+                {"item_no": "2.0", "description": "To check electrical wiring and sensor circuits", "workshop_est": 80.0, "adjusted_cost": 60.0, "justification": "Electrical diagnostic scan allowance"},
+            ]
+
+            if is_chassis:
+                source_labour.append({"item_no": f"{len(source_labour)+1}.0", "description": "To tuff coat affected chassis areas", "workshop_est": 180.0, "adjusted_cost": 120.0, "justification": "Anti-corrosion underbody application"})
+                source_labour.append({"item_no": f"{len(source_labour)+1}.0", "description": "To adjust chassis alignment on Car-O-Liner", "workshop_est": 380.0, "adjusted_cost": 280.0, "justification": "Frame alignment measuring jig"})
+
+            # Panel count for spray painting and panel beating
+            panel_count = max(1, len(summary_items) or len(damaged_parts) or 1)
+            spray_est = round(min(1800.0, 380.0 * panel_count), 2)
+            spray_adj = round(min(1250.0, 260.0 * panel_count), 2)
+            source_labour.append({
+                "item_no": f"{len(source_labour)+1}.0",
+                "description": f"To respray affected areas (2K Oven Baked - {panel_count} panel{'s' if panel_count > 1 else ''})",
+                "workshop_est": spray_est,
+                "adjusted_cost": spray_adj,
+                "justification": f"Panel surface preparation, 2K primer and oven-baked respray for {panel_count} section{'s' if panel_count > 1 else ''}"
+            })
+
+            beat_est = round(min(1500.0, 300.0 * panel_count), 2)
+            beat_adj = round(min(1200.0, 220.0 * panel_count), 2)
+            source_labour.append({
+                "item_no": f"{len(source_labour)+1}.0",
+                "description": "To renew damaged parts, straighten panels & align",
+                "workshop_est": beat_est,
+                "adjusted_cost": beat_adj,
+                "justification": "Panel beating, R&I refitting and panel gap alignment"
+            })
+
+            source_labour.append({"item_no": f"{len(source_labour)+1}.0", "description": "To LTA remove/reseal vehicle registration plate", "workshop_est": 120.0, "adjusted_cost": 100.0, "justification": "Statutory inspection seal renewal"})
+
         items_b = source_labour
 
     total_est_b = round(sum(it.get("workshop_est", 0.0) for it in items_b), 2)
@@ -178,15 +212,44 @@ def synthesize_annexes_for_report(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     # --- GIA BOLA ASSESSMENT ---
-    bola_data = data.get("bola_assessment") or {
-        "scenario_number": 14,
-        "scenario_name": "Chain / Direct Rear Collision into stationary vehicle",
-        "insured_liability_pct": 0.0,
-        "third_party_liability_pct": 100.0,
-        "dispute_status": "Agreed",
-        "apportionment_rationale": "Tortfeasor vehicle collided directly into the rear of stationary insured vehicle. Tortfeasor failed to maintain safe braking distance under GIA BOLA Scenario #14.",
-        "subrogation_prospect": "100% TPPD Recovery Recommended",
-    }
+    part_str = " ".join([str(p) for p in damaged_parts] + [str(it.get("part", "")) for it in summary_items]).lower()
+    acc_type_str = str(data.get("accident_type") or "").lower()
+    poi_str = str((data.get("vehicle_info") or {}).get("point_of_impact") or "").lower()
+    is_side = any(k in part_str for k in ["door", "mirror", "fender", "quarter"]) or "side" in acc_type_str or "side" in poi_str
+    is_front = any(k in part_str for k in ["front bumper", "bonnet", "grill", "headlamp"]) or "front" in acc_type_str or "front" in poi_str
+
+    if is_side:
+        default_bola = {
+            "scenario_number": 23,
+            "scenario_name": "Side-impact / Lateral collision during lane change or turn",
+            "insured_liability_pct": 0.0,
+            "third_party_liability_pct": 100.0,
+            "dispute_status": "Agreed",
+            "apportionment_rationale": "Third party vehicle failed to maintain safe lateral clearance, causing side impact / swipe along the insured vehicle's side door and mirror assembly.",
+            "subrogation_prospect": "100% TPPD Recovery Recommended",
+        }
+    elif is_front and not any(k in part_str for k in ["rear", "tail", "boot"]):
+        default_bola = {
+            "scenario_number": 1,
+            "scenario_name": "Frontal collision / impact into path of insured vehicle",
+            "insured_liability_pct": 0.0,
+            "third_party_liability_pct": 100.0,
+            "dispute_status": "Agreed",
+            "apportionment_rationale": "Third party vehicle emerged or turned into insured path of travel without giving way.",
+            "subrogation_prospect": "100% TPPD Recovery Recommended",
+        }
+    else:
+        default_bola = {
+            "scenario_number": 14,
+            "scenario_name": "Chain / Direct Rear Collision into stationary vehicle",
+            "insured_liability_pct": 0.0,
+            "third_party_liability_pct": 100.0,
+            "dispute_status": "Agreed",
+            "apportionment_rationale": "Tortfeasor vehicle collided directly into the rear of stationary insured vehicle. Tortfeasor failed to maintain safe braking distance under GIA BOLA Scenario #14.",
+            "subrogation_prospect": "100% TPPD Recovery Recommended",
+        }
+
+    bola_data = data.get("bola_assessment") or default_bola
 
     # --- ENHANCED SIGN-OFF BLOCK ---
     existing_signoff = data.get("sign_off") or {}
