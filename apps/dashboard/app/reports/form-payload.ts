@@ -35,6 +35,7 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
   const model = (formData.get("model") as string)?.trim() || null;
   const vin = (formData.get("vin") as string)?.trim() || null;
   const driverName = (formData.get("driver_name") as string)?.trim() || null;
+  const bodyType = (formData.get("body_type") as string)?.trim() || null;
   const vehicle_details = [plateNumber, [make, model].filter(Boolean).join(" ") || null].filter(Boolean).join(" - ") || null;
 
   const policeStation = (formData.get("police_station") as string)?.trim() || null;
@@ -100,6 +101,7 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
       model,
       vin,
       driver_name: driverName,
+      body_type: bodyType,
     },
     damaged_parts,
     damage_summary,

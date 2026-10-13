@@ -1,0 +1,20 @@
+3D Vehicle Assets Attribution (CC-BY 4.0 / Creative Commons)
+=============================================================
+
+1. Generic Sedan Car & Generic Small SUV Car
+   Creator: MMC Works (@mmcworks)
+   License: Creative Commons Attribution (CC-BY 4.0)
+   URL: https://sketchfab.com/mmcworks
+
+2. 2005 Toyota HiAce (Commercial Van)
+   Creator: ActsOfDoge
+   License: Creative Commons Attribution (CC-BY 4.0)
+   URL: https://sketchfab.com/3d-models/2005-toyota-hiace-c8a13f7fa53e45a2b151339d402f3392
+
+3. 2003 Toyota Alphard G MZ (MPV)
+   License: Creative Commons Attribution
+   URL: https://sketchfab.com/3d-models/2003-toyota-alphard-g-mz-e3bfc932fb7144f59b0838facab31365
+
+4. 2018 Honda Fit / Jazz (Hatchback)
+   License: Creative Commons Attribution
+   URL: https://sketchfab.com/3d-models/2018-honda-fit-jazz-2b1f535f185e4a6abf6b0a3222487704

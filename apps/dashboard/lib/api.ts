@@ -479,7 +479,7 @@ export async function createReport(payload: ReportData, tempPhotoPaths: string[]
  * matches what the Telegram bot flow already fills in from photos+text. */
 export type PhotoAnalysisDraft = Pick<
   ReportData,
-  "accident_type" | "severity_level" | "damaged_parts" | "category" | "description" | "damage_summary"
+  "accident_type" | "severity_level" | "damaged_parts" | "category" | "description" | "damage_summary" | "vehicle_info"
 >;
 
 export async function analyzeReportPhotos(

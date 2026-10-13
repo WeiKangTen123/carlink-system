@@ -66,6 +66,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
   // buildFinalDamageSummary, which reconciles the two on submit rather than
   // just discarding this the way the form used to).
   const [damageSummary, setDamageSummary] = useState<DamageSummaryItem[]>(initialData?.damage_summary ?? []);
+  const [bodyType, setBodyType] = useState(initialData?.vehicle_info?.body_type ?? "");
 
   function applyDraft(draft: PhotoAnalysisDraft, currentDescription: string) {
     if (draft.accident_type) setAccidentType(draft.accident_type);
@@ -73,6 +74,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
     if (draft.damaged_parts && draft.damaged_parts.length) setDamagedParts(draft.damaged_parts.join(", "));
     if (draft.damage_summary && draft.damage_summary.length) setDamageSummary(draft.damage_summary);
     if (draft.category && draft.category.length) setCategory(new Set(draft.category));
+    if (draft.vehicle_info?.body_type) setBodyType(draft.vehicle_info.body_type);
     // Never overwrites a description the reporter already wrote -- only
     // fills it in when they uploaded photos before typing anything.
     if (draft.description && !currentDescription.trim()) setDescription(draft.description);
@@ -303,6 +305,17 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
           <label>
             Driver Name
             <input name="driver_name" type="text" placeholder="Who was driving" defaultValue={initialData?.vehicle_info?.driver_name ?? ""} />
+          </label>
+          <label>
+            Body Type / Classification
+            <select name="body_type" value={bodyType} onChange={(e) => setBodyType(e.target.value)}>
+              <option value="">Auto-Detect from Make/Model...</option>
+              <option value="SUV">SUV / Crossover (e.g. Vezel, HR-V, Atto 3)</option>
+              <option value="Sedan">Sedan (e.g. Altis, Civic, C-Class)</option>
+              <option value="Van">Commercial Van / LGV (e.g. HiAce, NV200)</option>
+              <option value="MPV">MPV / People Mover (e.g. Alphard, Sienta)</option>
+              <option value="Hatchback">Hatchback (e.g. Jazz/Fit, Swift, Golf)</option>
+            </select>
           </label>
         </div>
       </section>

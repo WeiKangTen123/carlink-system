@@ -78,13 +78,16 @@ def _build_inline_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton("⬇️ Rear", callback_data="side_rear"),
         ])
 
-    # Insurer options if missing
-    if session.draft and session.draft.insurance_details and not session.draft.insurance_details.insurer_name:
+    # Body type selector if undetermined or to override
+    if session.draft and session.draft.vehicle_info and not getattr(session.draft.vehicle_info, "body_type", None):
         buttons.append([
-            InlineKeyboardButton("🏢 Tokio Marine", callback_data="ins_tokio"),
-            InlineKeyboardButton("🏢 NTUC Income", callback_data="ins_income"),
-            InlineKeyboardButton("🏢 AIG", callback_data="ins_aig"),
+            InlineKeyboardButton("🚙 SUV", callback_data="body_SUV"),
+            InlineKeyboardButton("🚗 Sedan", callback_data="body_Sedan"),
+            InlineKeyboardButton("🚐 Van", callback_data="body_Van"),
+            InlineKeyboardButton("🚐 MPV", callback_data="body_MPV"),
+            InlineKeyboardButton("🚗 Hatch", callback_data="body_Hatchback"),
         ])
+
     return InlineKeyboardMarkup(buttons)
 
 
@@ -269,6 +272,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ins_name = insurer_map.get(data, "Tokio Marine Singapore")
         session.insurer_name = ins_name
         session.pending_edits.append(f"insurer is {ins_name}")
+        await draft_and_reply(update, session, combined_description(session), redrafting=True)
+    elif data.startswith("body_"):
+        b_type = data.replace("body_", "")
+        session.vehicle_body_type = b_type
+        if session.draft and session.draft.vehicle_info:
+            session.draft.vehicle_info.body_type = b_type
+        session.pending_edits.append(f"vehicle body type is {b_type}")
         await draft_and_reply(update, session, combined_description(session), redrafting=True)
 
 

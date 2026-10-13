@@ -13,7 +13,7 @@ from typing import Optional
 
 from app.ai.extraction import draft_report
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo
-from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES
+from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
 
 
 @dataclass
@@ -176,6 +176,16 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
                 draft.insurance_details.insurer_name = session.insurer_name
             if getattr(session, "workshop_name", None) and (first_draft or not draft.insurance_details.workshop_assigned):
                 draft.insurance_details.workshop_assigned = session.workshop_name
+        if getattr(session, "vehicle_body_type", None):
+            if draft.vehicle_info:
+                draft.vehicle_info.body_type = session.vehicle_body_type
+
+    if draft.vehicle_info:
+        draft.vehicle_info.body_type = body_type_for(
+            draft.vehicle_info.make,
+            draft.vehicle_info.model,
+            draft.vehicle_info.body_type
+        )
 
     return DraftResult(draft=draft, summary_text=summarize(draft))
 
@@ -316,14 +326,17 @@ def summarize(draft: SecurityIncidentDraft) -> str:
     vehicle_name = " ".join(vehicle_bits) or draft.vehicle_details
     plate = draft.vehicle_info.plate_number if draft.vehicle_info else None
 
+    body = draft.vehicle_info.body_type if draft.vehicle_info else None
+    body_tag = f" ({body})" if body else ""
+
     # Only pair the plate with a real make/model. A generic "Vehicle" beside
     # a genuine plate number reads as though the make is unknown-but-stated.
     if plate and vehicle_name:
-        head = f"🚗 *{plate}* · {vehicle_name}"
+        head = f"🚗 *{plate}* · {vehicle_name}{body_tag}"
     elif plate:
-        head = f"🚗 *{plate}*"
+        head = f"🚗 *{plate}*{body_tag}"
     else:
-        head = f"🚗 *{vehicle_name or 'Vehicle'}*"
+        head = f"🚗 *{vehicle_name or 'Vehicle'}*{body_tag}"
     lines = [head]
 
     damage = _damage_lines(draft)

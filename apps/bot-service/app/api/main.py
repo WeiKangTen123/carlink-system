@@ -26,6 +26,7 @@ from app.reports.taxonomy import (
     CANONICAL_PARTS,
     CANONICAL_SEVERITIES,
     MODEL_BODY_TYPES,
+    body_type_for,
 )
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
@@ -299,6 +300,8 @@ async def analyze_report_photos(
 
     try:
         draft = await asyncio.to_thread(draft_report, description, saved_paths)
+        if draft.vehicle_info:
+            draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
 
@@ -319,6 +322,10 @@ def create_report(body: CreateReportRequest) -> dict:
     """
     db = SessionLocal()
     try:
+        if body.draft.vehicle_info:
+            v = body.draft.vehicle_info
+            v.body_type = body_type_for(v.make, v.model, v.body_type)
+
         report = Report(
             channel="manual",
             reporter_chat_id="dashboard",
@@ -363,6 +370,10 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
             )
+
+        if body.draft.vehicle_info:
+            v = body.draft.vehicle_info
+            v.body_type = body_type_for(v.make, v.model, v.body_type)
 
         r.data = body.draft.model_dump()
 

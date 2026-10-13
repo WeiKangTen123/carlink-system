@@ -40,6 +40,7 @@ class Session:
     damaged_side: Optional[str] = None
     insurer_name: Optional[str] = None
     workshop_name: Optional[str] = None
+    vehicle_body_type: Optional[str] = None
     claim_type: Optional[str] = None
     clarifying_field: Optional[str] = None
 

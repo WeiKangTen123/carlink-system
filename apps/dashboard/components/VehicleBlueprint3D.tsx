@@ -55,46 +55,69 @@ const SEVERITY_RANK: Record<string, number> = { minor: 1, moderate: 2, severe: 3
 const CAR_EXCLUDE = /interior|dashboard|seat|steering-wheel|column-wheel|center-console|engine|escape-pipes|radiator|brake-|shock-absorber|spring|suspension-|frame-front|frame-middle|frame-rear|roof-pillars-interior/i;
 
 const CAR_PARTS_REAL: { key: string; label: string; match: RegExp[] }[] = [
-  { key: "front_bumper", label: "Front Bumper", match: [/^bumper-front/i] },
-  { key: "rear_bumper", label: "Rear Bumper", match: [/^bumper-rear/i] },
-  { key: "bonnet", label: "Bonnet/Hood", match: [/^hood_/i] },
-  { key: "windscreen", label: "Windscreen", match: [/^windshield_/i, /^windshield-grill/i] },
-  { key: "roof", label: "Roof", match: [/^roof-pillars-interior/i, /^sedan-unibody/i] },
-  { key: "rear_glass", label: "Rear Glass", match: [/^glass-rear/i] },
-  { key: "tailgate", label: "Trunk", match: [/^trunk_/i] },
-  { key: "l_headlamp", label: "Left Headlamp", match: [/^headlights?-.*-l[_.]/i] },
-  { key: "r_headlamp", label: "Right Headlamp", match: [/^headlights?-.*-r[_.]/i] },
-  { key: "l_taillamp", label: "Left Taillamp", match: [/^taillight-.*-l[_.]/i] },
-  { key: "r_taillamp", label: "Right Taillamp", match: [/^taillight-.*-r[_.]/i] },
-  { key: "l_door_front", label: "Left Front Door", match: [/^door-front-l_/i] },
-  { key: "r_door_front", label: "Right Front Door", match: [/^door-front-r_/i] },
-  { key: "l_door_rear", label: "Left Rear Door", match: [/^door-rear-l_/i] },
-  { key: "r_door_rear", label: "Right Rear Door", match: [/^door-rear-r_/i] },
-  { key: "l_fender", label: "Left Fender", match: [/^fender-front-l_/i, /^wheel-fender-l_/i] },
-  { key: "r_fender", label: "Right Fender", match: [/^fender-front-r_/i, /^wheel-fender-r_/i] },
-  { key: "l_mirror", label: "Left Mirror", match: [/^side-mirror-l/i, /^side-mirror-trim-l/i] },
-  { key: "r_mirror", label: "Right Mirror", match: [/^side-mirror-r/i, /^side-mirror-trim-r/i] },
-  { key: "front_grill", label: "Front Grille", match: [/^front-grill/i, /^honeycomb-grill/i, /^bumper-front-grill-frame/i] },
-  // Door glass -- its own zone rather than being lumped into the door
-  // panel, since a smashed window and a dented door are different repairs.
-  { key: "l_door_glass_front", label: "Left Front Door Glass", match: [/^door-front-window-glass-l_/i] },
-  { key: "r_door_glass_front", label: "Right Front Door Glass", match: [/^door-front-window-glass-r_/i] },
-  { key: "l_door_glass_rear", label: "Left Rear Door Glass", match: [/^door-rear-window-glass-l_/i, /^door-rear-trim-glass-l_/i] },
-  { key: "r_door_glass_rear", label: "Right Rear Door Glass", match: [/^door-rear-trim-glass-r_/i, /^door-rear-window-glass-r_/i] },
-  // Wheels/tyres are named generically in this model ("generic-wheel",
-  // "generic-tire-low.001"...) with NOTHING in the mesh's own parent name
-  // saying which corner it is -- that only appears one level further up
-  // ("Name-Wheel.Ft.L"). Hence the grandparent matching in findCarMeshes.
-  // Structural underbody. These meshes are in CAR_EXCLUDE so the chassis
-  // doesn't clutter a normal view -- they're revealed only when damage
-  // actually maps here (see the recolour effect below), so the frame shows
-  // up exactly when it's the thing being reported on.
+  { key: "front_bumper", label: "Front Bumper", match: [/^bumper-front/i, /^bumper.*front/i, /bumpers?\.smd/i] },
+  { key: "rear_bumper", label: "Rear Bumper", match: [/^bumper-rear/i, /^bumper.*rear/i] },
+  { key: "bonnet", label: "Bonnet/Hood", match: [/^hood/i, /^bonnet/i] },
+  { key: "windscreen", label: "Windscreen", match: [/^windshield/i, /^windscreen/i, /^glass-windshield/i] },
+  { key: "roof", label: "Roof", match: [/^roof/i, /^sedan-unibody/i, /^chassis-sunroof/i] },
+  { key: "rear_glass", label: "Rear Glass", match: [/^glass-rear/i, /^rear.*glass/i] },
+  { key: "tailgate", label: "Trunk / Tailgate", match: [/^trunk/i, /^tailgate/i, /^boot/i] },
+  { key: "l_headlamp", label: "Left Headlamp", match: [/^headlights?-.*-l[_.]/i, /^headlight.*-(?:l_|left|l\b)/i, /^headlight.*left/i] },
+  { key: "r_headlamp", label: "Right Headlamp", match: [/^headlights?-.*-r[_.]/i, /^headlight.*-(?:r_|right|r\b)/i, /^headlight.*right/i] },
+  { key: "l_taillamp", label: "Left Taillamp", match: [/^taillight-.*-l[_.]/i, /^taillight.*-(?:l_|left|l\b)/i, /^taillight.*left/i] },
+  { key: "r_taillamp", label: "Right Taillamp", match: [/^taillight-.*-r[_.]/i, /^taillight.*-(?:r_|right|r\b)/i, /^taillight.*right/i] },
+  { key: "l_door_front", label: "Left Front Door", match: [/^door-front-(?:l_|left)/i, /^door.*front.*left/i] },
+  { key: "r_door_front", label: "Right Front Door", match: [/^door-front-(?:r_|right)/i, /^door.*front.*right/i] },
+  { key: "l_door_rear", label: "Left Rear Door", match: [/^door-rear-(?:l_|left)/i, /^door.*rear.*left/i] },
+  { key: "r_door_rear", label: "Right Rear Door", match: [/^door-rear-(?:r_|right)/i, /^door.*rear.*right/i] },
+  { key: "l_fender", label: "Left Fender", match: [/^fender-front-(?:l_|left)/i, /^wheel-fender-l_/i, /fender.*left/i, /SM_Fender.*F.*101/i] },
+  { key: "r_fender", label: "Right Fender", match: [/^fender-front-(?:r_|right)/i, /^wheel-fender-r_/i, /fender.*right/i] },
+  { key: "l_mirror", label: "Left Mirror", match: [/(?:side-)?mirror-(?:l|left)/i, /mirror.*left/i] },
+  { key: "r_mirror", label: "Right Mirror", match: [/(?:side-)?mirror-(?:r|right)/i, /mirror.*right/i] },
+  { key: "front_grill", label: "Front Grille", match: [/^front-grill/i, /^honeycomb-grill/i, /^bumper-front-grill-frame/i, /grill\.smd/i] },
+  { key: "l_door_glass_front", label: "Left Front Door Glass", match: [/^door-front-window-glass-l_/i, /^glass-door-front-left/i] },
+  { key: "r_door_glass_front", label: "Right Front Door Glass", match: [/^door-front-window-glass-r_/i, /^glass-door-front-right/i] },
+  { key: "l_door_glass_rear", label: "Left Rear Door Glass", match: [/^door-rear-window-glass-l_/i, /^door-rear-trim-glass-l_/i, /^glass-door-rear-left/i] },
+  { key: "r_door_glass_rear", label: "Right Rear Door Glass", match: [/^door-rear-trim-glass-r_/i, /^door-rear-window-glass-r_/i, /^glass-door-rear-right/i] },
   { key: "underbody", label: "Underbody / Chassis", match: [/^frame-front/i, /^frame-middle/i, /^frame-rear/i] },
-  { key: "l_wheel_front", label: "Left Front Wheel", match: [/^Name-Wheel\.Ft\.L/i] },
-  { key: "r_wheel_front", label: "Right Front Wheel", match: [/^Name-Wheel\.Ft\.R/i] },
-  { key: "l_wheel_rear", label: "Left Rear Wheel", match: [/^Name-Wheel\.Bk\.L/i] },
-  { key: "r_wheel_rear", label: "Right Rear Wheel", match: [/^Name-Wheel\.Bk\.R/i] },
+  { key: "l_wheel_front", label: "Left Front Wheel", match: [/^Name-Wheel\.Ft\.L/i, /wheel.*fl/i, /wheel.*front.*left/i, /wheel-fl/i, /tire-low-fl/i, /hiace_wheel\.smd$/i] },
+  { key: "r_wheel_front", label: "Right Front Wheel", match: [/^Name-Wheel\.Ft\.R/i, /wheel.*fr/i, /wheel.*front.*right/i, /wheel-fr/i, /tire-low-fr/i, /hiace_wheel\.smd\.001/i] },
+  { key: "l_wheel_rear", label: "Left Rear Wheel", match: [/^Name-Wheel\.Bk\.L/i, /wheel.*rl/i, /wheel.*rear.*left/i, /wheel-rl/i, /tire-low-rl/i, /hiace_wheel\.smd\.002/i] },
+  { key: "r_wheel_rear", label: "Right Rear Wheel", match: [/^Name-Wheel\.Bk\.R/i, /wheel.*rr/i, /wheel.*rear.*right/i, /wheel-rr/i, /tire-low-rr/i, /hiace_wheel\.smd\.003/i] },
 ];
+
+// Fallback normalized 3D anchors (-1 to 1) for models where some panel meshes are joined
+const ZONE_ANCHORS_NORMALIZED: Record<string, [number, number, number]> = {
+  front_bumper: [0, 0.28, -0.98],
+  bonnet: [0, 0.65, -0.65],
+  windscreen: [0, 0.88, -0.35],
+  roof: [0, 0.98, 0.05],
+  rear_glass: [0, 0.88, 0.45],
+  tailgate: [0, 0.65, 0.95],
+  rear_bumper: [0, 0.28, 0.98],
+  l_door_front: [-0.96, 0.55, -0.25],
+  r_door_front: [0.96, 0.55, -0.25],
+  l_door_rear: [-0.96, 0.55, 0.3],
+  r_door_rear: [0.96, 0.55, 0.3],
+  underbody: [0, 0.1, 0.0],
+  front_grill: [0, 0.42, -0.98],
+  l_headlamp: [-0.68, 0.52, -0.92],
+  r_headlamp: [0.68, 0.52, -0.92],
+  l_taillamp: [-0.68, 0.65, 0.92],
+  r_taillamp: [0.68, 0.65, 0.92],
+  l_wheel_front: [-0.95, 0.25, -0.65],
+  r_wheel_front: [0.95, 0.25, -0.65],
+  l_wheel_rear: [-0.95, 0.25, 0.65],
+  r_wheel_rear: [0.95, 0.25, 0.65],
+  l_fender: [-0.95, 0.55, -0.65],
+  r_fender: [0.95, 0.55, -0.65],
+  l_mirror: [-1.02, 0.75, -0.4],
+  r_mirror: [1.02, 0.75, -0.4],
+  l_door_glass_front: [-0.95, 0.8, -0.25],
+  r_door_glass_front: [0.95, 0.8, -0.25],
+  l_door_glass_rear: [-0.95, 0.8, 0.3],
+  r_door_glass_rear: [0.95, 0.8, 0.3],
+};
 
 function partName(mesh: THREE.Object3D): string {
   return mesh.parent ? mesh.parent.name : mesh.name;
@@ -113,8 +136,6 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden =
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
-    // Hidden meshes are skipped by default so excluded clutter can't be
-    // matched or clicked; the underbody zone opts in deliberately.
     if (!mesh.visible && !includeHidden) return;
     const name = partName(mesh);
     const group = partGroupName(mesh);
@@ -123,22 +144,30 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden =
   return found;
 }
 
-// Vehicle body types this app currently distinguishes: a real sedan model
-// for cars/SUVs (the SLK 3063 Z Vezel and the Civics in real data both fall
-// here), and a procedural van silhouette -- no free/realistic van model has
-// been sourced yet, so that stays an honest approximation, not a real model.
-// Only two real assets exist: the sedan GLB and a procedural van
-// silhouette, so the catalogue's finer body types collapse to those two.
-const VAN_BODY_TYPES = new Set(["Van", "MPV"]);
+export type VehicleArchetype = "suv" | "sedan" | "van" | "mpv" | "hatchback";
 
-// Legacy fallback only. Reports filed before the vehicle catalogue existed
-// carry no body_type, so their name is still pattern-matched -- which is
-// exactly the guesswork the catalogue replaces for everything new.
-const VAN_PATTERN = /\b(hiace|van|alphard|starex|caravelle|transporter|kombi|mpv)\b/i;
+export const MODEL_PATHS: Record<VehicleArchetype, string> = {
+  suv: "/assets/vehicles/suv.glb",
+  sedan: "/assets/vehicles/sedan.glb",
+  van: "/assets/vehicles/van.glb",
+  mpv: "/assets/vehicles/mpv.glb",
+  hatchback: "/assets/vehicles/hatchback.glb",
+};
 
-function detectBodyType(vehicleText: string, statedBodyType?: string | null): "car" | "van" {
-  if (statedBodyType) return VAN_BODY_TYPES.has(statedBodyType) ? "van" : "car";
-  return VAN_PATTERN.test(vehicleText) ? "van" : "car";
+export function detectBodyType(vehicleText: string, statedBodyType?: string | null): VehicleArchetype {
+  const norm = (statedBodyType || "").trim().toLowerCase();
+  if (norm === "suv") return "suv";
+  if (norm === "mpv") return "mpv";
+  if (norm === "van" || norm === "commercial van") return "van";
+  if (norm === "hatchback") return "hatchback";
+  if (norm === "sedan") return "sedan";
+
+  const lower = (vehicleText || "").toLowerCase();
+  if (/\b(vezel|hr-v|hrv|cr-v|crv|rav4|harrier|forester|qashqai|yaris cross|tucson|cx-3|cx-5|cx-30|suv|crossover)\b/i.test(lower)) return "suv";
+  if (/\b(alphard|vellfire|sienta|noah|voxy|serena|stepwgn|odyssey|spade|roomy|carnival|mpv|minivan)\b/i.test(lower)) return "mpv";
+  if (/\b(hiace|nv200|nv350|urvan|starex|transporter|caravelle|kombi|van|lorry)\b/i.test(lower)) return "van";
+  if (/\b(jazz|fit|swift|golf|polo|march|note|yaris|hatchback)\b/i.test(lower)) return "hatchback";
+  return "sedan";
 }
 
 interface FocusState {
@@ -190,7 +219,8 @@ function CameraRig({
   return null;
 }
 
-function CarModel({
+function VehicleModel({
+  modelUrl,
   color,
   damageEntries,
   zoneResolutions,
@@ -200,6 +230,7 @@ function CarModel({
   onZoneSelect,
   onFocusRequest,
 }: {
+  modelUrl: string;
   color: string;
   damageEntries: DamageSummaryItem[];
   zoneResolutions: (ZoneResolution | null)[];
@@ -209,12 +240,11 @@ function CarModel({
   onZoneSelect?: (zoneKey: string | null) => void;
   onFocusRequest: (center: THREE.Vector3, size: THREE.Vector3) => void;
 }) {
-  const gltf = useGLTF("/assets/generic-sedan/sedan.glb");
+  const gltf = useGLTF(modelUrl);
 
   // Filter interior/mechanical clutter, center on the ground plane, and
   // clone once per mount -- computed from the actual loaded geometry via
-  // Box3, never a hand-typed offset (the file's own accessor min/max
-  // metadata didn't hold up under scrutiny when checked directly).
+  // Box3, never a hand-typed offset.
   const { root, box } = useMemo(() => {
     const clone = gltf.scene.clone(true);
     clone.traverse((obj) => {
@@ -232,8 +262,7 @@ function CarModel({
 
   // Zone key -> worst severity among the real damage_summary items that
   // resolved to it. The mesh itself can only be one colour, so a zone
-  // holding both a Severe and a Minor item paints the worse of the two --
-  // per-item detail lives in the markers below, which are one-per-item.
+  // holding both a Severe and a Minor item paints the worse of the two.
   const zoneSeverity = useMemo(() => {
     const severity = new Map<string, string>();
     damageEntries.forEach((item, idx) => {
@@ -246,12 +275,6 @@ function CarModel({
     return severity;
   }, [damageEntries, zoneResolutions]);
 
-  // One marker per real damage item, not per zone. A real 18-line
-  // rear-collision report puts 9 separate items on the rear bumper alone;
-  // showing a single dot there hid 8 of them. Items sharing a zone are
-  // fanned around its centre on a golden-angle spiral (the same trick the
-  // old 2D blueprint used for exactly this) so they don't stack into one
-  // another.
   const markers = useMemo(() => {
     const byZone = groupByZone(zoneResolutions);
     const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
@@ -260,16 +283,30 @@ function CarModel({
       const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
       if (!zone) return;
       const meshes = findCarMeshes(root, zone.match, true);
-      if (!meshes.length) return;
-      const partBox = new THREE.Box3();
-      meshes.forEach((m) => partBox.expandByObject(m));
-      const center = partBox.getCenter(new THREE.Vector3());
-      if (zoneKey === "roof") {
-        center.y = Math.max(center.y, partBox.max.y - 0.05);
+      let center: THREE.Vector3;
+      let size: THREE.Vector3;
+
+      if (meshes.length) {
+        const partBox = new THREE.Box3();
+        meshes.forEach((m) => partBox.expandByObject(m));
+        center = partBox.getCenter(new THREE.Vector3());
+        if (zoneKey === "roof") {
+          center.y = Math.max(center.y, partBox.max.y - 0.05);
+        }
+        size = partBox.getSize(new THREE.Vector3());
+      } else {
+        // Fallback for models with joined meshes: use normalized anchor scaled to bounding box
+        const normAnchor = ZONE_ANCHORS_NORMALIZED[zoneKey] || [0, 0.5, 0];
+        const bCenter = box.getCenter(new THREE.Vector3());
+        const bSize = box.getSize(new THREE.Vector3());
+        center = new THREE.Vector3(
+          bCenter.x + (normAnchor[0] * bSize.x) * 0.46,
+          box.min.y + normAnchor[1] * bSize.y,
+          bCenter.z + (normAnchor[2] * bSize.z) * 0.46
+        );
+        size = new THREE.Vector3(0.4, 0.3, 0.4);
       }
-      const size = partBox.getSize(new THREE.Vector3());
-      // Fan radius scales with the part: a bumper can spread its markers
-      // much wider than a tail lamp before they leave the panel.
+
       const spread = Math.max(Math.min(size.x, size.z) * 0.32, 0.09);
 
       itemIdxs.forEach((itemIdx, n) => {
@@ -281,7 +318,7 @@ function CarModel({
           const r = spread * Math.sqrt(n / itemIdxs.length + 0.15);
           pos.x += Math.cos(angle) * r;
           pos.z += Math.sin(angle) * r;
-          pos.y += (n % 3) * 0.045; // slight stagger so overlaps stay readable head-on
+          pos.y += (n % 3) * 0.045; // slight stagger
         }
         out.push({
           idx: itemIdx,
@@ -293,7 +330,7 @@ function CarModel({
       });
     });
     return out;
-  }, [damageEntries, zoneResolutions, root]);
+  }, [damageEntries, zoneResolutions, root, box]);
 
   useEffect(() => {
     // Re-assert the base hidden/visible state first. Without this, a zone
@@ -437,6 +474,11 @@ function CarModel({
     </>
   );
 }
+useGLTF.preload(MODEL_PATHS.suv);
+useGLTF.preload(MODEL_PATHS.sedan);
+useGLTF.preload(MODEL_PATHS.van);
+useGLTF.preload(MODEL_PATHS.mpv);
+useGLTF.preload(MODEL_PATHS.hatchback);
 useGLTF.preload("/assets/generic-sedan/sedan.glb");
 
 // =============================================================================
@@ -644,10 +686,11 @@ export function VehicleBlueprint3D({
   onZoneSelect,
 }: Props) {
   const accent = useThemeColor("--border-glow", "#38bdf8");
-  const bodyType = detectBodyType(vehicleName, statedBodyType);
+  const archetype = detectBodyType(vehicleName, statedBodyType);
+  const modelUrl = MODEL_PATHS[archetype] || MODEL_PATHS.sedan;
   const controlsRef = useRef<any>(null);
   const [focus, setFocus] = useState<FocusState | null>(null);
-  const home = bodyType === "van" ? VAN_HOME : CAR_HOME;
+  const home = CAR_HOME;
 
   const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
 
@@ -690,29 +733,18 @@ export function VehicleBlueprint3D({
             </Html>
           }
         >
-          {bodyType === "car" ? (
-            <CarModel
-              color={accent}
-              damageEntries={damageEntries}
-              zoneResolutions={zoneResolutions}
-              highlightedIdx={highlightedDamageIndex}
-              selectedZone={selectedZone}
-              onZoneClick={handleZoneClick}
-              onZoneSelect={onZoneSelect}
-              onFocusRequest={handleFocusRequest}
-            />
-          ) : (
-            <VanModel
-              color={accent}
-              damageEntries={damageEntries}
-              zoneResolutions={zoneResolutions}
-              highlightedIdx={highlightedDamageIndex}
-              selectedZone={selectedZone}
-              onZoneClick={handleZoneClick}
-              onZoneSelect={onZoneSelect}
-              onFocusRequest={handleFocusRequest}
-            />
-          )}
+          <VehicleModel
+            key={archetype}
+            modelUrl={modelUrl}
+            color={accent}
+            damageEntries={damageEntries}
+            zoneResolutions={zoneResolutions}
+            highlightedIdx={highlightedDamageIndex}
+            selectedZone={selectedZone}
+            onZoneClick={handleZoneClick}
+            onZoneSelect={onZoneSelect}
+            onFocusRequest={handleFocusRequest}
+          />
 
           <Grid
             position={[0, 0, 0]}
