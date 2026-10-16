@@ -1,4 +1,5 @@
 import type { ReportSummary } from "./api";
+import { FACTORY_LABOR_TARIFFS } from "./factoryPricing";
 
 /** Shared derivations over report/damage data.
  *
@@ -93,11 +94,20 @@ export function getClaimArchetype(r: {
   plate_number?: string | null;
   claim_type?: string | null;
 }): {
-  key: "sje" | "tma" | "tp-conv" | "tp-direct" | "od";
+  key: "sje" | "tma" | "tp-conv" | "tp-direct" | "od" | "pending";
   label: string;
   badgeClass: string;
 } {
-  const text = `${r.type || ""} ${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""} ${r.claim_type || ""}`.toLowerCase();
+  if (r.claim_type) {
+    const ct = r.claim_type.toLowerCase();
+    if (ct.includes("sje") || ct.includes("court")) return { key: "sje", label: "SJE Court", badgeClass: "sje" };
+    if (ct.includes("tma") || ct.includes("attenuator")) return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
+    if (ct.includes("od") || ct.includes("own damage")) return { key: "od", label: "OD Panel", badgeClass: "od" };
+    if (ct.includes("direct")) return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
+    if (ct.includes("pending")) return { key: "pending", label: "Pending Evaluation", badgeClass: "unrated" };
+    if (ct.includes("tp")) return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+  }
+  const text = `${r.type || ""} ${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""}`.toLowerCase();
   if (text.includes("sje") || text.includes("court") || text.includes("dispute") || text.includes("suit")) {
     return { key: "sje", label: "SJE Court", badgeClass: "sje" };
   }
@@ -111,6 +121,76 @@ export function getClaimArchetype(r: {
     return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
   }
   return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+}
+
+/** Inferred Vehicle Body Style for Factory Operations */
+export function inferBodyType(r: {
+  vehicle_name?: string | null;
+  plate_number?: string | null;
+  accident_type?: string | null;
+}): "SUV" | "Sedan" | "Van / Commercial" | "MPV" | "Hatchback" | "Other" {
+  const name = (inferVehicleName(r) || "").toLowerCase();
+  const text = `${name} ${r.plate_number || ""} ${r.accident_type || ""}`.toLowerCase();
+
+  if (text.includes("vezel") || text.includes("hr-v") || text.includes("hrv") || text.includes("cr-v") || text.includes("crv") || text.includes("rav4") || text.includes("suv") || text.includes("harrier") || text.includes("cx-5") || text.includes("atto")) {
+    return "SUV";
+  }
+  if (text.includes("hiace") || text.includes("van") || text.includes("hino") || text.includes("truck") || text.includes("attenuator") || text.includes("lorry") || text.includes("commuter") || text.includes("commercial")) {
+    return "Van / Commercial";
+  }
+  if (text.includes("alphard") || text.includes("vellfire") || text.includes("sienta") || text.includes("noah") || text.includes("voxy") || text.includes("serena") || text.includes("mpv") || text.includes("stepwgn")) {
+    return "MPV";
+  }
+  if (text.includes("golf") || text.includes("jazz") || text.includes("swift") || text.includes("hatchback") || text.includes("yaris")) {
+    return "Hatchback";
+  }
+  return "Sedan";
+}
+
+/** Inferred Vehicle Make */
+export function inferVehicleMake(r: {
+  vehicle_name?: string | null;
+  plate_number?: string | null;
+}): string {
+  const name = inferVehicleName(r);
+  const text = `${name} ${r.plate_number || ""}`.toLowerCase();
+  if (text.includes("honda")) return "Honda";
+  if (text.includes("toyota")) return "Toyota";
+  if (text.includes("mercedes") || text.includes("c200") || text.includes("cla")) return "Mercedes-Benz";
+  if (text.includes("bmw") || text.includes("320i")) return "BMW";
+  if (text.includes("volkswagen") || text.includes("golf")) return "Volkswagen";
+  if (text.includes("hyundai") || text.includes("avante")) return "Hyundai";
+  if (text.includes("hino") || text.includes("truck") || text.includes("tma")) return "Commercial Fleet";
+  return "Other";
+}
+
+/** Operational Stage for Car Factory Workflow */
+export function getOperationalStage(r: {
+  status?: string | null;
+  damage_count?: number;
+}): "intake" | "in_survey" | "signed" {
+  const s = (r.status || "").toLowerCase();
+  if (s === "signed off" || s === "certified" || s === "signed") return "signed";
+  if (s === "draft" || s === "intake" || (r.damage_count === 0 && s !== "confirmed")) return "intake";
+  return "in_survey";
+}
+
+/** Date filter evaluation */
+export function matchesDateFilter(
+  createdAtStr: string | null | undefined,
+  filter: "all_time" | "today" | "yesterday" | "this_week" | "this_month"
+): boolean {
+  if (filter === "all_time" || !createdAtStr) return true;
+  const createdMs = new Date(createdAtStr).getTime();
+  if (isNaN(createdMs)) return true;
+  const now = Date.now();
+  const diffHours = (now - createdMs) / (1000 * 60 * 60);
+
+  if (filter === "today") return diffHours <= 24;
+  if (filter === "yesterday") return diffHours > 24 && diffHours <= 48;
+  if (filter === "this_week") return diffHours <= 24 * 7;
+  if (filter === "this_month") return diffHours <= 24 * 30;
+  return true;
 }
 
 /** Inferred GIA Panel Insurer name */
@@ -276,16 +356,28 @@ export function getEstimatedCostSGD(r: {
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
   const text = `${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""}`.toLowerCase();
-  if (text.includes("tma") || text.includes("attenuator")) return 85000;
-  if (text.includes("sje")) return 32000;
+  // Master SKU calculations from Factory Knowledge Base
+  if (text.includes("tma") || text.includes("attenuator")) {
+    return Math.round(78000 + (16 * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly) + 1200); // TMA Cushion + Structural Labor
+  }
+  if (text.includes("sje")) {
+    return Math.round(28500 + (12 * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly) + 1800); // SJE Coach Mask + Calibration
+  }
   
-  // Calculate based on damage parts count
+  // Factory dynamic parts & labor calculation
   const count = r.damage_count || 1;
   const sev = (r.severity_level || "").toLowerCase();
-  const perPartCost = sev.includes("severe") ? 2800 : sev.includes("moderate") ? 1650 : 950;
-  const baseQuantum = count * perPartCost + 1200; // Base labor & spray
+  
+  // Factory standard parts rate & labor schedules (derived from Knowledge Base master tariffs)
+  const basePartCost = sev.includes("severe") ? 1020 : sev.includes("moderate") ? 680 : 420;
+  const netPartCost = basePartCost * 0.8; // 20% GIA tariff discount
+  const rrLaborHours = sev.includes("severe") ? 1.8 : sev.includes("moderate") ? 1.2 : 0.6;
+  const laborCost = rrLaborHours * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly;
+  const sprayCost = 180; // Standard single component paint allocation
 
-  if (sev.includes("severe")) return Math.max(16500, baseQuantum);
-  if (sev.includes("moderate")) return Math.max(7200, baseQuantum);
-  return Math.max(2800, baseQuantum);
+  const totalPerComponent = netPartCost + laborCost + sprayCost;
+  const factoryBasePrep = FACTORY_LABOR_TARIFFS.sprayBoothPerPanel; // Base booth oven cycle
+  const computed = Math.round(count * totalPerComponent + factoryBasePrep);
+
+  return computed;
 }

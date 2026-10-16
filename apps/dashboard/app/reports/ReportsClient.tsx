@@ -41,6 +41,10 @@ import {
   inferVehicleName,
   inferInsurerName,
   inferWorkshopName,
+  inferBodyType,
+  inferVehicleMake,
+  getOperationalStage,
+  matchesDateFilter,
   formatSgtDateTime,
   formatIncidentTime,
   getGiaSla,
@@ -52,7 +56,11 @@ import {
 } from "./actions";
 
 type ViewMode = "split" | "matrix";
-type Swimlane = "all" | "sje" | "tma" | "tp" | "od" | "signed" | "drafts";
+type StageTab = "all" | "intake" | "in_survey" | "signed";
+type DateFilter = "all_time" | "today" | "yesterday" | "this_week" | "this_month";
+type BodyFilter = "all" | "SUV" | "Sedan" | "Van / Commercial" | "MPV" | "Hatchback";
+type MakeFilter = "all" | "Honda" | "Toyota" | "Mercedes-Benz" | "BMW" | "Volkswagen" | "Hyundai" | "Commercial Fleet";
+type ArchetypeFilter = "all" | "pending" | "tp-conv" | "od" | "sje" | "tma" | "tp-direct";
 type QuickFilter = "all" | "urgent_sla" | "strip_down" | "severe" | "high_quantum";
 
 interface Props {
@@ -93,7 +101,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedInsurer, setSelectedInsurer] = useState("all");
-  const [selectedSwimlane, setSelectedSwimlane] = useState<Swimlane>("all");
+  const [selectedStage, setSelectedStage] = useState<StageTab>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all_time");
+  const [bodyFilter, setBodyFilter] = useState<BodyFilter>("all");
+  const [makeFilter, setMakeFilter] = useState<MakeFilter>("all");
+  const [archetypeFilter, setArchetypeFilter] = useState<ArchetypeFilter>("all");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
@@ -171,18 +183,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     return Array.from(set);
   }, [reportsList]);
 
-  // Executive Metric Counters
+  // Executive Metric Counters & Operational Stage Counts
   const totalCount = reportsList.length;
+  const intakeCount = useMemo(() => reportsList.filter((r) => getOperationalStage(r) === "intake").length, [reportsList]);
+  const inSurveyCount = useMemo(() => reportsList.filter((r) => getOperationalStage(r) === "in_survey").length, [reportsList]);
+  const signedCount = useMemo(() => reportsList.filter((r) => getOperationalStage(r) === "signed").length, [reportsList]);
   const pendingCount = useMemo(() => reportsList.filter((r) => isAwaitingSignOff(r.status)).length, [reportsList]);
-  const signedCount = useMemo(() => reportsList.filter((r) => r.status === "Signed Off").length, [reportsList]);
-  const draftCount = useMemo(
-    () =>
-      reportsList.filter((r) => {
-        const s = (r.status || "").toLowerCase();
-        return s.includes("draft") || s.includes("intake") || s === "draft";
-      }).length,
-    [reportsList]
-  );
+  const draftCount = intakeCount;
   const totalReservesSGD = useMemo(
     () => reportsList.filter((r) => isAwaitingSignOff(r.status)).reduce((sum, r) => sum + getEstimatedCostSGD(r), 0),
     [reportsList]
@@ -206,7 +213,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   // Filtered reports logic
   const filteredReports = useMemo(() => {
     return reportsList.filter((r) => {
+      const stage = getOperationalStage(r);
       const arch = getClaimArchetype(r);
+      const body = inferBodyType(r);
+      const make = inferVehicleMake(r);
       const cost = getEstimatedCostSGD(r);
       const isSigned = r.status === "Signed Off";
       const sla = getGiaSla(r.created_at, isSigned);
@@ -214,39 +224,52 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       const insurer = inferInsurerName(r);
       const workshop = inferWorkshopName(r.workshop_assigned || r.location);
 
-      // 1. Swimlane
-      if (selectedSwimlane === "sje" && arch.key !== "sje") return false;
-      if (selectedSwimlane === "tma" && arch.key !== "tma") return false;
-      if (selectedSwimlane === "tp" && arch.key !== "tp-conv" && arch.key !== "tp-direct") return false;
-      if (selectedSwimlane === "od" && arch.key !== "od") return false;
-      if (selectedSwimlane === "signed" && !isSigned) return false;
-      if (selectedSwimlane === "drafts") {
-        const s = (r.status || "").toLowerCase();
-        if (!s.includes("draft") && !s.includes("intake") && s !== "draft") return false;
+      // 1. Operational Stage Tab
+      if (selectedStage === "intake" && stage !== "intake") return false;
+      if (selectedStage === "in_survey" && stage !== "in_survey") return false;
+      if (selectedStage === "signed" && stage !== "signed") return false;
+
+      // 2. Date Filter
+      if (!matchesDateFilter(r.created_at, dateFilter)) return false;
+
+      // 3. Body Style Filter
+      if (bodyFilter !== "all" && body !== bodyFilter) return false;
+
+      // 4. Vehicle Make Filter
+      if (makeFilter !== "all" && make !== makeFilter) return false;
+
+      // 5. Claim Archetype Filter
+      if (archetypeFilter !== "all") {
+        if (archetypeFilter === "pending" && arch.key !== "pending") return false;
+        if (archetypeFilter === "tp-conv" && arch.key !== "tp-conv") return false;
+        if (archetypeFilter === "od" && arch.key !== "od") return false;
+        if (archetypeFilter === "sje" && arch.key !== "sje") return false;
+        if (archetypeFilter === "tma" && arch.key !== "tma") return false;
+        if (archetypeFilter === "tp-direct" && arch.key !== "tp-direct") return false;
       }
 
-      // 2. Quick filter
+      // 6. Quick filter
       if (quickFilter === "urgent_sla" && sla.status !== "critical" && sla.status !== "expired") return false;
       if (quickFilter === "strip_down" && !r.disassembly_required) return false;
       if (quickFilter === "severe" && !(r.severity_level || "").toLowerCase().includes("severe")) return false;
       if (quickFilter === "high_quantum" && cost < 15000) return false;
 
-      // 3. Insurer
+      // 7. Insurer
       if (selectedInsurer !== "all") {
         if (!insurer.toLowerCase().includes(selectedInsurer.toLowerCase())) return false;
       }
 
-      // 4. Omni-Search
+      // 8. Omni-Search
       if (searchTerm.trim() !== "") {
         const q = searchTerm.toLowerCase();
         const refStr = formatCarlinkRef(r.id, r.plate_number).toLowerCase();
-        const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop}`.toLowerCase();
+        const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
 
       return true;
     });
-  }, [reportsList, selectedSwimlane, quickFilter, selectedInsurer, searchTerm]);
+  }, [reportsList, selectedStage, dateFilter, bodyFilter, makeFilter, archetypeFilter, quickFilter, selectedInsurer, searchTerm]);
 
   // Set default selected report if current is null or not in list
   useEffect(() => {
@@ -460,36 +483,145 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
         </div>
       </div>
 
-      {/* 2. Unified Navigation & Filter Toolbar (Single Continuous Row) */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
-        {/* Swimlane Tabs */}
-        <div className="swimlane-tab-bar" style={{ margin: 0, padding: 2, overflowX: "auto", flexShrink: 1, minWidth: 0 }}>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`} onClick={() => setSelectedSwimlane("all")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            All ({reportsList.length})
+      {/* 2. Unified Navigation & Operational Filter Toolbar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {/* Stage Tabs */}
+        <div className="swimlane-tab-bar" style={{ margin: 0, padding: 2, overflowX: "auto", flexShrink: 0 }}>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedStage === "all" ? "active" : ""}`}
+            onClick={() => setSelectedStage("all")}
+            style={{ padding: "4px 10px", fontSize: 11 }}
+          >
+            All Cases ({totalCount})
           </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`} onClick={() => setSelectedSwimlane("sje")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            SJE Court ({reportsList.filter((r) => getClaimArchetype(r).key === "sje").length})
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedStage === "intake" ? "active" : ""}`}
+            onClick={() => setSelectedStage("intake")}
+            style={{ padding: "4px 10px", fontSize: 11 }}
+            title="Fresh intakes and draft filings awaiting surveyor survey"
+          >
+            New Intake / Draft ({intakeCount})
           </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`} onClick={() => setSelectedSwimlane("tma")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            TMA Expressway ({reportsList.filter((r) => getClaimArchetype(r).key === "tma").length})
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedStage === "in_survey" ? "active" : ""}`}
+            onClick={() => setSelectedStage("in_survey")}
+            style={{ padding: "4px 10px", fontSize: 11 }}
+            title="Active survey, 3D zone mapping & quantum audit"
+          >
+            In Survey / Review ({inSurveyCount})
           </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`} onClick={() => setSelectedSwimlane("tp")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            TP Conv ({reportsList.filter((r) => { const k = getClaimArchetype(r).key; return k === "tp-conv" || k === "tp-direct"; }).length})
-          </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "od" ? "active" : ""}`} onClick={() => setSelectedSwimlane("od")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            OD Panel ({reportsList.filter((r) => getClaimArchetype(r).key === "od").length})
-          </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "signed" ? "active" : ""}`} onClick={() => setSelectedSwimlane("signed")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            Signed ({signedCount})
-          </button>
-          <button type="button" className={`swimlane-tab ${selectedSwimlane === "drafts" ? "active" : ""}`} onClick={() => setSelectedSwimlane("drafts")} style={{ padding: "4px 9px", fontSize: 11 }}>
-            Drafts ({draftCount})
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedStage === "signed" ? "active" : ""}`}
+            onClick={() => setSelectedStage("signed")}
+            style={{ padding: "4px 10px", fontSize: 11 }}
+            title="Certified by surveyor & legally locked"
+          >
+            Certified / Signed ({signedCount})
           </button>
         </div>
 
-        {/* Omni-Search & Insurer Filter */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <div style={{ position: "relative", width: 190 }}>
+        {/* Operational Filters Suite: Date, Car Body, Make, Claim Type, Search */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", flexShrink: 0 }}>
+          {/* Date Range Filter */}
+          <select
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value as DateFilter)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border-color)",
+              background: dateFilter !== "all_time" ? "var(--surface-elevated)" : "var(--surface-card)",
+              color: dateFilter !== "all_time" ? "var(--accent-cyan)" : "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+            }}
+            title="Filter by case intake filing date"
+          >
+            <option value="all_time">📅 All Time</option>
+            <option value="today">📅 Today (24h)</option>
+            <option value="yesterday">📅 Yesterday</option>
+            <option value="this_week">📅 This Week (7d)</option>
+            <option value="this_month">📅 This Month</option>
+          </select>
+
+          {/* Body Style Filter */}
+          <select
+            value={bodyFilter}
+            onChange={(e) => setBodyFilter(e.target.value as BodyFilter)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border-color)",
+              background: bodyFilter !== "all" ? "var(--surface-elevated)" : "var(--surface-card)",
+              color: bodyFilter !== "all" ? "var(--accent-cyan)" : "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+            }}
+            title="Filter by vehicle body style"
+          >
+            <option value="all">🚗 All Bodies</option>
+            <option value="Sedan">Sedan</option>
+            <option value="SUV">SUV / Crossover</option>
+            <option value="Van / Commercial">Van / Commercial</option>
+            <option value="MPV">MPV</option>
+            <option value="Hatchback">Hatchback</option>
+          </select>
+
+          {/* Vehicle Make Filter */}
+          <select
+            value={makeFilter}
+            onChange={(e) => setMakeFilter(e.target.value as MakeFilter)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border-color)",
+              background: makeFilter !== "all" ? "var(--surface-elevated)" : "var(--surface-card)",
+              color: makeFilter !== "all" ? "var(--accent-cyan)" : "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+            }}
+            title="Filter by vehicle manufacturer"
+          >
+            <option value="all">🏷️ All Makes</option>
+            <option value="Honda">Honda</option>
+            <option value="Toyota">Toyota</option>
+            <option value="Mercedes-Benz">Mercedes-Benz</option>
+            <option value="BMW">BMW</option>
+            <option value="Volkswagen">Volkswagen</option>
+            <option value="Hyundai">Hyundai</option>
+            <option value="Commercial Fleet">Commercial Fleet</option>
+          </select>
+
+          {/* Claim Archetype Filter */}
+          <select
+            value={archetypeFilter}
+            onChange={(e) => setArchetypeFilter(e.target.value as ArchetypeFilter)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border-color)",
+              background: archetypeFilter !== "all" ? "var(--surface-elevated)" : "var(--surface-card)",
+              color: archetypeFilter !== "all" ? "var(--accent-cyan)" : "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+            }}
+            title="Filter by legal claim archetype"
+          >
+            <option value="all">⚖️ All Claims</option>
+            <option value="pending">Pending Evaluation</option>
+            <option value="tp-conv">TP Conventional</option>
+            <option value="od">OD Panel</option>
+            <option value="sje">SJE Court</option>
+            <option value="tma">TMA Expressway</option>
+            <option value="tp-direct">TP Direct</option>
+          </select>
+
+          {/* Omni-Search */}
+          <div style={{ position: "relative", width: 160 }}>
             <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "var(--text-muted)" }} />
             <input
               type="text"
@@ -509,34 +641,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             />
           </div>
 
-          <select
-            value={selectedInsurer}
-            onChange={(e) => setSelectedInsurer(e.target.value)}
-            style={{
-              padding: "4px 8px",
-              borderRadius: 6,
-              border: "1px solid var(--border-color)",
-              background: "var(--surface-card)",
-              color: "var(--text-primary)",
-              fontSize: 11,
-              outline: "none",
-              maxWidth: 160,
-            }}
-          >
-            <option value="all">All Insurers</option>
-            {insurerOptions.map((ins) => (
-              <option key={ins} value={ins}>{ins.split(" ")[0]} ({ins.split(" ")[1] || ""})</option>
-            ))}
-          </select>
-
-          {(quickFilter !== "all" || selectedInsurer !== "all" || searchTerm || selectedSwimlane !== "all") && (
+          {(selectedStage !== "all" || dateFilter !== "all_time" || bodyFilter !== "all" || makeFilter !== "all" || archetypeFilter !== "all" || selectedInsurer !== "all" || searchTerm) && (
             <button
               type="button"
               onClick={() => {
-                setQuickFilter("all");
+                setSelectedStage("all");
+                setDateFilter("all_time");
+                setBodyFilter("all");
+                setMakeFilter("all");
+                setArchetypeFilter("all");
                 setSelectedInsurer("all");
                 setSearchTerm("");
-                setSelectedSwimlane("all");
               }}
               style={{
                 fontSize: 11,
@@ -635,10 +750,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
               {filteredReports.length === 0 && (
                 <div style={{ textAlign: "center", padding: 36, color: "var(--text-muted)", fontSize: 12 }}>
-                  {selectedSwimlane === "drafts" ? (
+                  {selectedStage === "intake" ? (
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
                       <FileText style={{ width: 28, height: 28, opacity: 0.4 }} />
-                      <div>No pending drafts in repository.</div>
+                      <div>No pending intakes or drafts in repository.</div>
                       <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}>
                         <Plus style={{ width: 13, height: 13 }} /> Start New Intake
                       </Link>
@@ -665,7 +780,18 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 700, color: "var(--accent-cyan)" }}>
                         {formatCarlinkRef(selectedSummary.id, selectedSummary.plate_number)}
                       </span>
-                      <span
+                      
+                      {/* Interactive Human Evaluator Claim Archetype Selector */}
+                      <select
+                        value={selectedSummary.claim_type || getClaimArchetype(selectedSummary).key}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setReportsList((prev) =>
+                            prev.map((item) =>
+                              item.id === selectedSummary.id ? { ...item, claim_type: val } : item
+                            )
+                          );
+                        }}
                         style={{
                           fontSize: 10,
                           fontWeight: 700,
@@ -673,12 +799,21 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           borderRadius: 4,
                           textTransform: "uppercase",
                           background: "var(--surface-hover)",
-                          color: "var(--text-primary)",
-                          border: "1px solid var(--border-color)",
+                          color: "var(--accent-cyan)",
+                          border: "1px solid var(--accent-cyan)",
+                          cursor: "pointer",
+                          outline: "none",
                         }}
+                        title="Human Evaluator: Assign or change claim archetype"
                       >
-                        {getClaimArchetype(selectedSummary).label}
-                      </span>
+                        <option value="tp-conv">⚖️ TP Conventional</option>
+                        <option value="od">⚖️ OD Panel</option>
+                        <option value="sje">⚖️ SJE Court</option>
+                        <option value="tma">⚖️ TMA Expressway</option>
+                        <option value="tp-direct">⚖️ TP Direct</option>
+                        <option value="pending">⏳ Pending Evaluation</option>
+                      </select>
+
                       {selectedSummary.status === "Signed Off" ? (
                         <span className="status-pill" style={{ background: "var(--badge-green-bg)", color: "var(--badge-green-text)", borderColor: "var(--badge-green-border)", fontSize: 10 }}>
                           Certified &amp; Signed Off
@@ -793,12 +928,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       {isLoadingDetail ? (
                         <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading high-resolution evidence...</div>
                       ) : activeDetail?.photo_urls?.length ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={fileUrl(activeDetail.photo_urls[activePhotoIdx] || activeDetail.photo_urls[0])}
-                          alt="Evidence"
-                          className="dossier-hero-img"
-                        />
+                        <>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={fileUrl(activeDetail.photo_urls[activePhotoIdx] || activeDetail.photo_urls[0])}
+                            alt="Evidence"
+                            className="dossier-hero-img"
+                          />
+                          <div className="dossier-photo-badge">
+                            #{activePhotoIdx + 1} / {activeDetail.photo_urls.length}
+                          </div>
+                        </>
                       ) : selectedSummary.thumbnail_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -1177,7 +1317,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 {filteredReports.length === 0 && (
                   <tr>
                     <td colSpan={8} style={{ textAlign: "center", padding: 36, color: "var(--text-muted)" }}>
-                      {selectedSwimlane === "drafts" ? (
+                      {selectedStage === "intake" ? (
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
                           <FileText style={{ width: 28, height: 28, opacity: 0.4 }} />
                           <div>No pending drafts in repository.</div>
