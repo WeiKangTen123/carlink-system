@@ -5,18 +5,15 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   FolderArchive,
-  FilePlus2,
   BarChart3,
   BookOpen,
   Settings,
   CarFront,
-  ShieldCheck,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "Command Center", icon: LayoutDashboard },
   { href: "/reports", label: "Cases Repository", icon: FolderArchive },
-  { href: "/reports/new", label: "New Intake", icon: FilePlus2 },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -25,7 +22,7 @@ const NAV_ITEMS = [
 function isActiveLink(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/reports") {
-    return pathname === "/reports" || (pathname.startsWith("/reports/") && !pathname.startsWith("/reports/new"));
+    return pathname === "/reports" || pathname.startsWith("/reports/");
   }
   return pathname === href || pathname.startsWith(href + "/");
 }

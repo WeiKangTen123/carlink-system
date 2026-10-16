@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { ShieldCheck, Plus } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sidebar } from "@/components/Sidebar";
 import "./globals.css";
@@ -27,6 +28,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="main-column">
             <header className="top-bar">
               <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
+                <Link
+                  href="/reports/new"
+                  className="btn-primary-modern"
+                  style={{
+                    fontSize: 12,
+                    padding: "5px 12px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    borderRadius: 8,
+                    fontWeight: 600,
+                    textDecoration: "none",
+                  }}
+                  title="Create New Case Intake (FNOL)"
+                >
+                  <Plus style={{ width: 13, height: 13 }} />
+                  <span>New Intake</span>
+                </Link>
+
                 <ThemeToggle />
 
                 <div

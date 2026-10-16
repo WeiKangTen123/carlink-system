@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Search,
   CheckCircle2,
@@ -51,7 +52,7 @@ import {
 } from "./actions";
 
 type ViewMode = "split" | "matrix";
-type Swimlane = "all" | "sje" | "tma" | "tp" | "od" | "signed";
+type Swimlane = "all" | "sje" | "tma" | "tp" | "od" | "signed" | "drafts";
 type QuickFilter = "all" | "urgent_sla" | "strip_down" | "severe" | "high_quantum";
 
 interface Props {
@@ -97,6 +98,8 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
 
+  const router = useRouter();
+
   // Detail cache & state for active selected report
   const detailCache = useRef<Map<string, ReportDetail>>(new Map());
   const [activeDetail, setActiveDetail] = useState<ReportDetail | null>(null);
@@ -107,6 +110,27 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [isEnrichingCurrent, setIsEnrichingCurrent] = useState(false);
   const [isEnrichingAll, setIsEnrichingAll] = useState(false);
   const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
+
+  // Global Hotkey: Pressing 'N' navigates directly to New Intake if not focused on an input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isInput =
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          (activeEl as HTMLElement).isContentEditable);
+      if (isInput) return;
+
+      if ((e.key === "n" || e.key === "N") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        router.push("/reports/new");
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [router]);
 
   // Sync initialReports if updated
   useEffect(() => {
@@ -151,6 +175,14 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const totalCount = reportsList.length;
   const pendingCount = useMemo(() => reportsList.filter((r) => isAwaitingSignOff(r.status)).length, [reportsList]);
   const signedCount = useMemo(() => reportsList.filter((r) => r.status === "Signed Off").length, [reportsList]);
+  const draftCount = useMemo(
+    () =>
+      reportsList.filter((r) => {
+        const s = (r.status || "").toLowerCase();
+        return s.includes("draft") || s.includes("intake") || s === "draft";
+      }).length,
+    [reportsList]
+  );
   const totalReservesSGD = useMemo(
     () => reportsList.filter((r) => isAwaitingSignOff(r.status)).reduce((sum, r) => sum + getEstimatedCostSGD(r), 0),
     [reportsList]
@@ -188,6 +220,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       if (selectedSwimlane === "tp" && arch.key !== "tp-conv" && arch.key !== "tp-direct") return false;
       if (selectedSwimlane === "od" && arch.key !== "od") return false;
       if (selectedSwimlane === "signed" && !isSigned) return false;
+      if (selectedSwimlane === "drafts") {
+        const s = (r.status || "").toLowerCase();
+        if (!s.includes("draft") && !s.includes("intake") && s !== "draft") return false;
+      }
 
       // 2. Quick filter
       if (quickFilter === "urgent_sla" && sla.status !== "critical" && sla.status !== "expired") return false;
@@ -388,8 +424,26 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             </button>
           </div>
 
-          <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "7px 14px" }}>
-            <Plus style={{ width: 14, height: 14 }} /> File Incident
+          <Link
+            href="/reports/new"
+            className="btn-primary-modern"
+            style={{ fontSize: 12, padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+            title="Create New Case Intake (Shortcut: N)"
+          >
+            <Plus style={{ width: 14, height: 14 }} />
+            <span>New Intake</span>
+            <kbd
+              style={{
+                fontSize: 10,
+                padding: "1px 5px",
+                background: "rgba(255,255,255,0.2)",
+                borderRadius: 4,
+                fontFamily: "monospace",
+                marginLeft: 2,
+              }}
+            >
+              N
+            </kbd>
           </Link>
         </div>
       </div>
@@ -480,6 +534,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             onClick={() => setSelectedSwimlane("signed")}
           >
             Signed Off ({signedCount})
+          </button>
+          <button
+            type="button"
+            className={`swimlane-tab ${selectedSwimlane === "drafts" ? "active" : ""}`}
+            onClick={() => setSelectedSwimlane("drafts")}
+          >
+            Drafts / Intakes ({draftCount})
           </button>
         </div>
 
@@ -629,7 +690,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
               {filteredReports.length === 0 && (
                 <div style={{ textAlign: "center", padding: 36, color: "var(--text-muted)", fontSize: 12 }}>
-                  No cases match current filter criteria.
+                  {selectedSwimlane === "drafts" ? (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                      <FileText style={{ width: 28, height: 28, opacity: 0.4 }} />
+                      <div>No pending drafts in repository.</div>
+                      <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <Plus style={{ width: 13, height: 13 }} /> Start New Intake
+                      </Link>
+                    </div>
+                  ) : (
+                    "No cases match current filter criteria."
+                  )}
                 </div>
               )}
             </div>
@@ -1088,7 +1159,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 {filteredReports.length === 0 && (
                   <tr>
                     <td colSpan={8} style={{ textAlign: "center", padding: 36, color: "var(--text-muted)" }}>
-                      No cases match current filter criteria.
+                      {selectedSwimlane === "drafts" ? (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                          <FileText style={{ width: 28, height: 28, opacity: 0.4 }} />
+                          <div>No pending drafts in repository.</div>
+                          <Link href="/reports/new" className="btn-primary-modern" style={{ fontSize: 12, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <Plus style={{ width: 13, height: 13 }} /> Start New Intake
+                          </Link>
+                        </div>
+                      ) : (
+                        "No cases match current filter criteria."
+                      )}
                     </td>
                   </tr>
                 )}

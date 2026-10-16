@@ -169,11 +169,11 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
 
   return (
     <form action={action} className="new-report-form">
-      <h1>{mode === "edit" ? "Edit Incident Report" : "File an Incident Report"}</h1>
+      <h1>{mode === "edit" ? "Edit Incident Report" : "New Case Intake (FNOL)"}</h1>
       <p className="form-hint">
         {mode === "edit"
           ? "Update any field below and save -- the PDF is regenerated automatically. Existing photos stay attached; anything you upload here is added alongside them."
-          : "Use this form to manually file or record an incident -- vehicle accident, security, or otherwise -- into the Carlink system."}
+          : "Fast-track First Notice of Loss (FNOL) intake docket for Singapore loss adjusters. Drop accident damage photos for Gemini AI vision extraction or enter preliminary survey findings."}
       </p>
 
       {/* Reporter Info */}
