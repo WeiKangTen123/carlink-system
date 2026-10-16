@@ -2653,9 +2653,9 @@ a:hover {
 /* Was carrying its layout as inline styles on <main> while the class itself
    didn't exist; moved here so the hook and the styling live together. */
 .main-content {
-  max-width: 1440px;
+  max-width: 1920px;
   margin: 0 auto;
-  padding: 20px 24px 60px;
+  padding: 12px 20px 24px;
   width: 100%;
 }
 
@@ -3171,17 +3171,23 @@ a:hover {
 
 .workstation-split-container {
   display: grid;
-  grid-template-columns: 400px 1fr;
-  gap: 16px;
-  height: calc(100vh - 200px);
-  min-height: 540px;
-  max-height: calc(100vh - 200px);
+  grid-template-columns: 360px 1fr;
+  gap: 12px;
+  height: calc(100vh - 128px);
+  min-height: 560px;
+  max-height: calc(100vh - 128px);
   overflow: hidden;
 }
 
-@media (max-width: 1380px) {
+@media (min-width: 1600px) {
   .workstation-split-container {
-    grid-template-columns: 360px 1fr;
+    grid-template-columns: 390px 1fr;
+  }
+}
+
+@media (max-width: 1280px) {
+  .workstation-split-container {
+    grid-template-columns: 320px 1fr;
   }
 }
 
@@ -3192,6 +3198,24 @@ a:hover {
     max-height: none;
     overflow: visible;
   }
+}
+
+.kpi-chip-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.kpi-chip-compact strong {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
 }
 
 /* Compact Executive Metric Strip (Replaces tall bulky cards) */
@@ -3299,8 +3323,8 @@ a:hover {
   background: var(--surface-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  padding: 18px 20px;
-  gap: 14px;
+  padding: 14px 16px;
+  gap: 12px;
   scrollbar-width: thin;
 }
 
@@ -3309,10 +3333,10 @@ a:hover {
   background: var(--surface-hover);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
 }
 
 .dossier-audit-item {
@@ -3337,11 +3361,36 @@ a:hover {
   color: var(--text-primary);
 }
 
+/* 2-Column Split Hero (Photo Viewer + Quantum/Assemblies) */
+.dossier-split-hero {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+@media (max-width: 1200px) {
+  .dossier-split-hero {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dossier-media-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.dossier-quantum-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .dossier-hero-frame {
   position: relative;
   width: 100%;
-  height: 300px;
-  border-radius: 10px;
+  height: 220px;
+  border-radius: 8px;
   overflow: hidden;
   background: #000000;
   border: 1px solid var(--border-color);

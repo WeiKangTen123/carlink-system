@@ -27,26 +27,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
           <div className="main-column">
             <header className="top-bar">
-              <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
-                <Link
-                  href="/reports/new"
-                  className="btn-primary-modern"
-                  style={{
-                    fontSize: 12,
-                    padding: "5px 12px",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    borderRadius: 8,
-                    fontWeight: 600,
-                    textDecoration: "none",
-                  }}
-                  title="Create New Case Intake (FNOL)"
-                >
-                  <Plus style={{ width: 13, height: 13 }} />
-                  <span>New Intake</span>
-                </Link>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", color: "var(--text-muted)", textTransform: "uppercase" }}>
+                  Autonomous Claims &amp; Loss Adjusting Workstation
+                </span>
+              </div>
 
+              <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
                 <ThemeToggle />
 
                 <div

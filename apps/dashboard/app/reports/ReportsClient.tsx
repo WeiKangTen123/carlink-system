@@ -369,198 +369,141 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* 1. Header with View Switcher & Action Strip */}
-      <div className="page-header" style={{ marginBottom: 0 }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-            <span className="command-header-badge">
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 6px var(--badge-green-text)" }} />
-              CASES WORKSTATION
-            </span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Principal Assessor: <strong style={{ color: "var(--text-primary)" }}>Patrick Ng</strong> (Forensic Loss Adjuster)
-            </span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              &bull; Framework: <strong style={{ color: "var(--accent-cyan)" }}>GIA / IDAC 48h Inspection SLA</strong>
-            </span>
-          </div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* 1. Header with Title, Inline Metrics Strip & Action Suite */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 36 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0, fontSize: 17, fontWeight: 800, letterSpacing: "-0.02em", whiteSpace: "nowrap" }}>
             Claims Dossier &amp; Workstation
           </h1>
+          <span className="command-header-badge" style={{ fontSize: 10, padding: "2px 8px" }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 5px var(--badge-green-text)" }} />
+            Patrick Ng &bull; GIA SLA 48h
+          </span>
+
+          {/* Inline Compact Metric Chips */}
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span className="kpi-chip-compact" title="Total incident files on record">
+              <Layers style={{ width: 11, height: 11, color: "var(--accent-cyan)" }} />
+              <strong>{totalCount}</strong> Cases
+            </span>
+            <span className="kpi-chip-compact" title="Files awaiting surveyor certification">
+              <Clock style={{ width: 11, height: 11, color: "var(--badge-amber-text)" }} />
+              <strong style={{ color: "var(--badge-amber-text)" }}>{pendingCount}</strong> Pending
+            </span>
+            <span className="kpi-chip-compact" title="Cases nearing or exceeding statutory 48h SLA">
+              <AlertTriangle style={{ width: 11, height: 11, color: "var(--badge-red-text)" }} />
+              <strong style={{ color: "var(--badge-red-text)" }}>{urgentCount}</strong> Urgent SLA
+            </span>
+            <span className="kpi-chip-compact" title="Total assessed repair indemnity reserves in SGD">
+              <DollarSign style={{ width: 11, height: 11, color: "var(--badge-green-text)" }} />
+              <strong style={{ color: "var(--badge-green-text)" }}>${totalReservesSGD.toLocaleString()}</strong> SGD
+            </span>
+            <span className="kpi-chip-compact" title="High-stakes State Court SJE dockets & TMA collisions">
+              <Flame style={{ width: 11, height: 11, color: "var(--accent-primary)" }} />
+              <strong style={{ color: "var(--accent-primary)" }}>{highStakesCount}</strong> SJE/TMA
+            </span>
+          </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {/* Batch Auto-Map All Button */}
+        {/* Right Actions */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+          {enrichNotice && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: 4 }}>
+              <Sparkles style={{ width: 12, height: 12 }} /> {enrichNotice}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={handleEnrichAll}
             disabled={isEnrichingAll}
             className="btn-secondary-modern"
-            style={{ fontSize: 12, padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
-            title="Auto-map vehicle models, repair quantum, and insurers across all cases"
+            style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
+            title="Auto-map vehicle models and reserves across all cases"
           >
-            <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />
-            <span>{isEnrichingAll ? "Enriching All..." : "Auto-Map All (Gemini)"}</span>
+            <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+            <span>{isEnrichingAll ? "Enriching..." : "Auto-Map"}</span>
           </button>
 
-          {/* View Mode Switcher Toggle */}
-          <div className="view-mode-toggle" title="Switch between Split Dossier Workstation and Dense Spreadsheet Matrix">
+          <div className="view-mode-toggle" style={{ padding: 2 }}>
             <button
               type="button"
               className={`view-mode-btn ${viewMode === "split" ? "active" : ""}`}
               onClick={() => handleSetViewMode("split")}
+              style={{ padding: "4px 8px", fontSize: 11 }}
             >
-              <Columns3 style={{ width: 13, height: 13 }} />
-              <span>Split Dossier</span>
+              <Columns3 style={{ width: 12, height: 12 }} />
+              <span>Split</span>
             </button>
             <button
               type="button"
               className={`view-mode-btn ${viewMode === "matrix" ? "active" : ""}`}
               onClick={() => handleSetViewMode("matrix")}
+              style={{ padding: "4px 8px", fontSize: 11 }}
             >
-              <LayoutGrid style={{ width: 13, height: 13 }} />
-              <span>Dense Matrix</span>
+              <LayoutGrid style={{ width: 12, height: 12 }} />
+              <span>Matrix</span>
             </button>
           </div>
 
           <Link
             href="/reports/new"
             className="btn-primary-modern"
-            style={{ fontSize: 12, padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+            style={{ fontSize: 11, padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
             title="Create New Case Intake (Shortcut: N)"
           >
-            <Plus style={{ width: 14, height: 14 }} />
+            <Plus style={{ width: 13, height: 13 }} />
             <span>New Intake</span>
-            <kbd
-              style={{
-                fontSize: 10,
-                padding: "1px 5px",
-                background: "rgba(255,255,255,0.2)",
-                borderRadius: 4,
-                fontFamily: "monospace",
-                marginLeft: 2,
-              }}
-            >
-              N
-            </kbd>
+            <kbd style={{ fontSize: 9, padding: "1px 4px", background: "rgba(255,255,255,0.2)", borderRadius: 3, fontFamily: "monospace" }}>N</kbd>
           </Link>
         </div>
       </div>
 
-      {/* 2. Compact Single-Line Executive Metric Strip (Saves ~180px vertical height) */}
-      <div className="kpi-strip-command">
-        <div className="kpi-chip-metric" title="Total incident files on record">
-          <Layers style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />
-          <span>Total Caseload:</span>
-          <span className="metric-val" style={{ color: "var(--text-primary)" }}>{totalCount}</span>
-        </div>
-
-        <div className="kpi-chip-metric" title="Files awaiting surveyor certification">
-          <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} />
-          <span>Pending Review:</span>
-          <span className="metric-val" style={{ color: "var(--badge-amber-text)" }}>{pendingCount}</span>
-        </div>
-
-        <div className="kpi-chip-metric" title="Cases nearing or exceeding statutory 48h SLA">
-          <AlertTriangle style={{ width: 13, height: 13, color: "var(--badge-red-text)" }} />
-          <span>Urgent GIA SLA:</span>
-          <span className="metric-val" style={{ color: "var(--badge-red-text)" }}>{urgentCount}</span>
-        </div>
-
-        <div className="kpi-chip-metric" title="Total assessed repair indemnity reserves in SGD">
-          <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} />
-          <span>Assessed Reserves:</span>
-          <span className="metric-val" style={{ color: "var(--badge-green-text)" }}>
-            ${totalReservesSGD.toLocaleString()} SGD
-          </span>
-        </div>
-
-        <div className="kpi-chip-metric" title="High-stakes State Court SJE dockets & TMA collisions">
-          <Flame style={{ width: 13, height: 13, color: "var(--accent-primary)" }} />
-          <span>High-Stakes:</span>
-          <span className="metric-val" style={{ color: "var(--accent-primary)" }}>{highStakesCount} SJE/TMA</span>
-        </div>
-
-        {enrichNotice && (
-          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-cyan)", marginLeft: "auto", display: "flex", alignItems: "center", gap: 5 }}>
-            <Sparkles style={{ width: 12, height: 12 }} /> {enrichNotice}
-          </div>
-        )}
-      </div>
-
-      {/* 3. Streamlined Toolbar: Search, Swimlanes, and Filter Controls */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+      {/* 2. Unified Navigation & Filter Toolbar (Single Continuous Row) */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
         {/* Swimlane Tabs */}
-        <div className="swimlane-tab-bar" style={{ margin: 0 }}>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("all")}
-          >
-            All Files ({reportsList.length})
+        <div className="swimlane-tab-bar" style={{ margin: 0, padding: 2, overflowX: "auto", flexShrink: 1, minWidth: 0 }}>
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "all" ? "active" : ""}`} onClick={() => setSelectedSwimlane("all")} style={{ padding: "4px 9px", fontSize: 11 }}>
+            All ({reportsList.length})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("sje")}
-          >
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "sje" ? "active" : ""}`} onClick={() => setSelectedSwimlane("sje")} style={{ padding: "4px 9px", fontSize: 11 }}>
             SJE Court ({reportsList.filter((r) => getClaimArchetype(r).key === "sje").length})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("tma")}
-          >
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "tma" ? "active" : ""}`} onClick={() => setSelectedSwimlane("tma")} style={{ padding: "4px 9px", fontSize: 11 }}>
             TMA Expressway ({reportsList.filter((r) => getClaimArchetype(r).key === "tma").length})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("tp")}
-          >
-            TP Conventional ({reportsList.filter((r) => { const k = getClaimArchetype(r).key; return k === "tp-conv" || k === "tp-direct"; }).length})
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "tp" ? "active" : ""}`} onClick={() => setSelectedSwimlane("tp")} style={{ padding: "4px 9px", fontSize: 11 }}>
+            TP Conv ({reportsList.filter((r) => { const k = getClaimArchetype(r).key; return k === "tp-conv" || k === "tp-direct"; }).length})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "od" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("od")}
-          >
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "od" ? "active" : ""}`} onClick={() => setSelectedSwimlane("od")} style={{ padding: "4px 9px", fontSize: 11 }}>
             OD Panel ({reportsList.filter((r) => getClaimArchetype(r).key === "od").length})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "signed" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("signed")}
-          >
-            Signed Off ({signedCount})
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "signed" ? "active" : ""}`} onClick={() => setSelectedSwimlane("signed")} style={{ padding: "4px 9px", fontSize: 11 }}>
+            Signed ({signedCount})
           </button>
-          <button
-            type="button"
-            className={`swimlane-tab ${selectedSwimlane === "drafts" ? "active" : ""}`}
-            onClick={() => setSelectedSwimlane("drafts")}
-          >
-            Drafts / Intakes ({draftCount})
+          <button type="button" className={`swimlane-tab ${selectedSwimlane === "drafts" ? "active" : ""}`} onClick={() => setSelectedSwimlane("drafts")} style={{ padding: "4px 9px", fontSize: 11 }}>
+            Drafts ({draftCount})
           </button>
         </div>
 
         {/* Omni-Search & Insurer Filter */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ position: "relative", minWidth: 240 }}>
-            <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, color: "var(--text-muted)" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <div style={{ position: "relative", width: 190 }}>
+            <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "var(--text-muted)" }} />
             <input
               type="text"
-              placeholder="Search plate, Ref, vehicle..."
+              placeholder="Filter plate, ref..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{
                 width: "100%",
-                padding: "6px 10px 6px 30px",
-                borderRadius: 8,
+                padding: "4px 8px 4px 26px",
+                borderRadius: 6,
                 border: "1px solid var(--border-color)",
                 background: "var(--surface-card)",
                 color: "var(--text-primary)",
-                fontSize: 12,
+                fontSize: 11,
                 outline: "none",
               }}
             />
@@ -570,18 +513,19 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             value={selectedInsurer}
             onChange={(e) => setSelectedInsurer(e.target.value)}
             style={{
-              background: "var(--surface-elevated)",
-              color: "var(--text-primary)",
+              padding: "4px 8px",
+              borderRadius: 6,
               border: "1px solid var(--border-color)",
-              borderRadius: 8,
-              padding: "5px 10px",
-              fontSize: 12,
+              background: "var(--surface-card)",
+              color: "var(--text-primary)",
+              fontSize: 11,
               outline: "none",
+              maxWidth: 160,
             }}
           >
             <option value="all">All Insurers</option>
             {insurerOptions.map((ins) => (
-              <option key={ins} value={ins}>{ins}</option>
+              <option key={ins} value={ins}>{ins.split(" ")[0]} ({ins.split(" ")[1] || ""})</option>
             ))}
           </select>
 
@@ -601,6 +545,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 color: "var(--accent-cyan)",
                 cursor: "pointer",
                 textDecoration: "underline",
+                whiteSpace: "nowrap",
               }}
             >
               Reset
@@ -831,80 +776,153 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                   </div>
                 </div>
 
-                {/* Evidence Photo HUD */}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                      Photographic Forensic Evidence
-                    </span>
-                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                      {activeDetail?.photo_urls?.length ? `${activeDetail.photo_urls.length} Evidence Photos on File` : "1 Thumbnail Available"}
-                    </span>
-                  </div>
+                {/* 2-Column Split Hero: Photo Viewer (Left) + Quantum Reserves & Damage Assemblies (Right) */}
+                <div className="dossier-split-hero">
+                  {/* Left: Evidence Photo Viewer */}
+                  <div className="dossier-media-card">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
+                        Photographic Forensic Evidence
+                      </span>
+                      <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {activeDetail?.photo_urls?.length ? `${activeDetail.photo_urls.length} Evidence Photos` : "1 Photo Available"}
+                      </span>
+                    </div>
 
-                  {/* Main Hero Viewer Frame */}
-                  <div className="dossier-hero-frame">
-                    {isLoadingDetail ? (
-                      <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading high-resolution evidence...</div>
-                    ) : activeDetail?.photo_urls?.length ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={fileUrl(activeDetail.photo_urls[activePhotoIdx] || activeDetail.photo_urls[0])}
-                        alt="Evidence"
-                        className="dossier-hero-img"
-                      />
-                    ) : selectedSummary.thumbnail_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={fileUrl(selectedSummary.thumbnail_url)}
-                        alt="Evidence"
-                        className="dossier-hero-img"
-                      />
-                    ) : (
-                      <div style={{ textAlign: "center", color: "var(--text-muted)" }}>
-                        <CarFront style={{ width: 32, height: 32, margin: "0 auto 6px", opacity: 0.5 }} />
-                        <div style={{ fontSize: 11 }}>No photographic evidence uploaded</div>
+                    <div className="dossier-hero-frame">
+                      {isLoadingDetail ? (
+                        <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading high-resolution evidence...</div>
+                      ) : activeDetail?.photo_urls?.length ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={fileUrl(activeDetail.photo_urls[activePhotoIdx] || activeDetail.photo_urls[0])}
+                          alt="Evidence"
+                          className="dossier-hero-img"
+                        />
+                      ) : selectedSummary.thumbnail_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={fileUrl(selectedSummary.thumbnail_url)}
+                          alt="Evidence"
+                          className="dossier-hero-img"
+                        />
+                      ) : (
+                        <div style={{ textAlign: "center", color: "var(--text-muted)" }}>
+                          <CarFront style={{ width: 28, height: 28, margin: "0 auto 4px", opacity: 0.5 }} />
+                          <div style={{ fontSize: 11 }}>No photographic evidence uploaded</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Thumbnail Strip */}
+                    {activeDetail?.photo_urls && activeDetail.photo_urls.length > 1 && (
+                      <div className="dossier-thumb-strip" style={{ marginTop: 6 }}>
+                        {activeDetail.photo_urls.map((url, idx) => (
+                          <button
+                            key={url}
+                            type="button"
+                            className={`dossier-thumb-btn ${idx === activePhotoIdx ? "active" : ""}`}
+                            onClick={() => setActivePhotoIdx(idx)}
+                            title={`Photo ${idx + 1}`}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={fileUrl(url)} alt="" className="dossier-thumb-img" />
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
 
-                  {/* Thumbnail Strip */}
-                  {activeDetail?.photo_urls && activeDetail.photo_urls.length > 1 && (
-                    <div className="dossier-thumb-strip" style={{ marginTop: 8 }}>
-                      {activeDetail.photo_urls.map((url, idx) => (
-                        <button
-                          key={url}
-                          type="button"
-                          className={`dossier-thumb-btn ${idx === activePhotoIdx ? "active" : ""}`}
-                          onClick={() => setActivePhotoIdx(idx)}
-                          title={`Photo ${idx + 1}`}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={fileUrl(url)} alt="" className="dossier-thumb-img" />
-                        </button>
-                      ))}
+                  {/* Right: Quantum Deck & Damage Assemblies */}
+                  <div className="dossier-quantum-card">
+                    {/* Financial Reserves Cards */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, background: "var(--surface-hover)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border-color)" }}>
+                      <div>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Assessed Reserve</div>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: "var(--accent-cyan)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
+                          ${getEstimatedCostSGD(selectedSummary).toLocaleString()} <span style={{ fontSize: 9 }}>SGD</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Negotiated Savings</div>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: "var(--badge-green-text)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
+                          ${Math.round(getEstimatedCostSGD(selectedSummary) * 0.21).toLocaleString()} <span style={{ fontSize: 9 }}>SGD (~21%)</span>
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
 
-                {/* Financial Reserves & Settlement Assessment Deck */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, background: "var(--surface-hover)", padding: 12, borderRadius: 8, border: "1px solid var(--border-color)" }}>
-                  <div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Assessed Reserve</div>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: "var(--accent-cyan)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                      ${getEstimatedCostSGD(selectedSummary).toLocaleString()} <span style={{ fontSize: 10 }}>SGD</span>
+                    {/* Cluster Workshop & SLA Countdown */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div style={{ padding: "8px 10px", background: "var(--surface-card)", border: "1px solid var(--border-color)", borderRadius: 6 }}>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Cluster Workshop</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}
+                        </div>
+                      </div>
+
+                      <div style={{ padding: "8px 10px", background: "var(--surface-card)", border: "1px solid var(--border-color)", borderRadius: 6 }}>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Statutory SLA</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: getGiaSla(selectedSummary.created_at, selectedSummary.status === "Signed Off").pillColor, marginTop: 2 }}>
+                          {getGiaSla(selectedSummary.created_at, selectedSummary.status === "Signed Off").remainingText}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Negotiated Savings</div>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: "var(--badge-green-text)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                      ${Math.round(getEstimatedCostSGD(selectedSummary) * 0.21).toLocaleString()} <span style={{ fontSize: 10 }}>SGD (~21%)</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Cluster Workshop</div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", marginTop: 4 }}>
-                      {inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}
+
+                    {/* Impacted Assemblies Tag Cloud */}
+                    <div style={{ padding: "8px 10px", background: "var(--surface-card)", border: "1px solid var(--border-color)", borderRadius: 6, flex: 1, display: "flex", flexDirection: "column" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
+                          Impacted Assemblies ({selectedSummary.damage_count} Parts)
+                        </span>
+                        <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                          AI Vision Audited
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, maxHeight: 110, overflowY: "auto", scrollbarWidth: "thin" }}>
+                        {activeDetail?.data?.damage_summary && activeDetail.data.damage_summary.length > 0 ? (
+                          activeDetail.data.damage_summary.map((d, i) => (
+                            <span
+                              key={i}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                fontSize: 10,
+                                background: "var(--surface-hover)",
+                                border: "1px solid var(--border-color)",
+                                color: "var(--text-primary)",
+                              }}
+                            >
+                              <span style={{ fontWeight: 600 }}>{d.part}</span>
+                              <span
+                                style={{
+                                  fontSize: 8,
+                                  fontWeight: 700,
+                                  padding: "1px 4px",
+                                  borderRadius: 3,
+                                  textTransform: "uppercase",
+                                  background:
+                                    d.severity?.toLowerCase() === "severe" ? "var(--badge-red-bg)" :
+                                    d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-bg)" :
+                                    "var(--badge-green-bg)",
+                                  color:
+                                    d.severity?.toLowerCase() === "severe" ? "var(--badge-red-text)" :
+                                    d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-text)" :
+                                    "var(--badge-green-text)",
+                                }}
+                              >
+                                {d.severity || "Minor"}
+                              </span>
+                            </span>
+                          ))
+                        ) : (
+                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            Front Bumper, Bonnet, Left Wing Mirror
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
