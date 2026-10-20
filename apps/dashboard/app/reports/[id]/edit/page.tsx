@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getReport } from "@/lib/api";
 import { ReportForm } from "../../ReportForm";
 import { updateReportAction } from "../../actions";
@@ -8,6 +8,7 @@ export default async function EditReportPage({ params }: { params: Promise<{ id:
   const { id } = await params;
   const report = await getReport(id);
   if (!report) notFound();
+  if (report.status === "intake") redirect(`/reports/new?draft=${id}`);
 
   if (report.status === "Signed Off") {
     return (

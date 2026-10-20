@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # modality is not enabled") -- every report has photos, so it could
     # never have actually served a request here.
     gemini_model_chain: str = "gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # Dashboard intake sorts every photo of a case (often 40-80) before the
+    # real drafting call. Sorting needs no bounding boxes -- the one thing
+    # only the stronger models do -- so it runs lite-first, keeping the
+    # stronger models' much smaller daily quota for the drafting call.
+    gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     storage_dir: str = str(DEFAULT_STORAGE_DIR)
     twilio_account_sid: str = ""
