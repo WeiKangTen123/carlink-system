@@ -16,7 +16,9 @@ the reporter drafting failed rather than fabricating a report.
 The draft is never final on its own: conversation/flow.py always shows it
 back to the reporter for confirmation before a PDF is generated.
 """
+import json
 import logging
+import re
 
 from app.ai.structured import call_structured, image_part
 from app.config import settings
@@ -97,6 +99,31 @@ _REQUIRED_OUTPUT_FIELDS = [
 ]
 
 
+# Sections of SecurityIncidentDraft the model never writes: Annex A/B/C and
+# the BOLA assessment are synthesized after drafting
+# (reports/synthesize_annexes.py), and the sign-off is the surveyor's. Since
+# they were added to the draft model (2ae2183), sending them as part of the
+# response schema made EVERY drafting call -- bot and dashboard alike --
+# fail on every model with 400 "Request contains an invalid argument".
+# Confirmed against the live API on 2026-10-20: the identical request with
+# these left out succeeds. They keep their defaults when parsed.
+_NOT_MODEL_OUTPUT = ("sign_off", "annex_a", "annex_b", "annex_c", "bola_assessment")
+
+
+def _prune_unreferenced_defs(schema: dict) -> None:
+    """Drops $defs no longer reachable from the remaining properties, so
+    removing a section also removes the nested models only it used."""
+    defs = schema.get("$defs", {})
+    keep: set[str] = set()
+    pending = [schema.get("properties", {})]
+    while pending:
+        for name in re.findall(r'"#/\$defs/([^"]+)"', json.dumps(pending.pop())):
+            if name in defs and name not in keep:
+                keep.add(name)
+                pending.append(defs[name])
+    schema["$defs"] = {name: node for name, node in defs.items() if name in keep}
+
+
 def _constrain(node: dict, values: list[str]) -> None:
     """Applies an enum to a field that may be `str` or `anyOf[str, null]`.
 
@@ -123,7 +150,10 @@ def _response_schema() -> dict:
     invalidating history.
     """
     schema = SecurityIncidentDraft.model_json_schema()
-    required = set(schema.get("required") or [])
+    for name in _NOT_MODEL_OUTPUT:
+        schema.get("properties", {}).pop(name, None)
+    _prune_unreferenced_defs(schema)
+    required = set(schema.get("required") or []) - set(_NOT_MODEL_OUTPUT)
     required.update(_REQUIRED_OUTPUT_FIELDS)
     schema["required"] = sorted(required)
 
