@@ -67,6 +67,15 @@ else
     docker compose -f infra/docker-compose.prod.yml up -d --build
 fi
 
+# nginx looks up the api/dashboard container addresses once, when it starts.
+# `up --build` recreates those two containers (new addresses) but leaves an
+# unchanged nginx running, which then proxies to addresses that no longer
+# exist: every /api/ and /files/ request returns 502 until nginx is reloaded.
+# Hit on the 2026-10-20 deploy (and evidently the one before it, judging by
+# nginx's uptime). A reload re-resolves them with no downtime.
+echo "🔁 Reloading nginx so it picks up the recreated containers..."
+docker exec carlink_nginx nginx -s reload || docker restart carlink_nginx
+
 # Only prune the *build cache* when disk is actually getting tight -- it bit
 # us hard on the old 10GB e2-micro, but wiping it unconditionally on every
 # deploy (as this used to do) means every single build starts ice-cold: full
