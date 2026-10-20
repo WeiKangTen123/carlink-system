@@ -15,7 +15,7 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
   return (
     <html lang="en" data-theme="dark">
       <head>
-        <title>Carlink Loss Adjuster &bull; System Recovery</title>
+        <title>Carlink Loss Adjuster • System Recovery</title>
       </head>
       <body
         style={{
@@ -73,7 +73,7 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
               marginBottom: 8,
             }}
           >
-            Carlink Core Recovery &bull; Root Fault Isolated
+            Carlink Core Recovery • Root Fault Isolated
           </div>
 
           <h1

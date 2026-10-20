@@ -78,7 +78,7 @@ export function CaseDamageTab({
         <div className="card-header">
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <ClipboardCheck style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Damage &amp; Parts Checklist
+              <ClipboardCheck style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Damage & Parts Checklist
             </div>
             <div className="card-subtitle">
               {isSignedOff

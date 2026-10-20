@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
@@ -29,7 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <header className="top-bar">
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", color: "var(--text-muted)", textTransform: "uppercase" }}>
-                  Autonomous Claims &amp; Loss Adjusting Workstation
+                  Autonomous Claims & Loss Adjusting Workstation
                 </span>
               </div>
 

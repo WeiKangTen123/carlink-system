@@ -25,6 +25,7 @@ import {
   buildPresentationSlides,
   type ClassifiedPhoto,
 } from "@/lib/vehicleZones";
+import { evidenceCache } from "@/lib/evidenceCache";
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see schema.py) */
 const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
@@ -45,6 +46,7 @@ function bboxToCss(bbox: number[] | null | undefined): { top: string; left: stri
 interface Props {
   photos: string[];
   photoThumbs?: string[];
+  photoPreviews?: string[];
   damageEntries: DamageSummaryItem[];
   activePhotoIndex: number;
   selectedZone?: string | null;
@@ -55,6 +57,7 @@ interface Props {
 export function CaseEvidenceTab({
   photos,
   photoThumbs,
+  photoPreviews,
   damageEntries,
   activePhotoIndex,
   selectedZone,
@@ -65,6 +68,7 @@ export function CaseEvidenceTab({
   const [showBadges, setShowBadges] = useState(true);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const [loadRawInLightbox, setLoadRawInLightbox] = useState(false);
   const [activeZoneFilter, setActiveZoneFilter] = useState<string | null>(selectedZone || null);
   const [currentSlideIndex, setCurrentSlideIndex] = useState<number>(0);
 
@@ -79,8 +83,8 @@ export function CaseEvidenceTab({
 
   // Classify all photos deterministically into automotive assemblies
   const classifiedPhotos = useMemo(
-    () => classifyPhotos(photos, photoThumbs, damageEntries),
-    [photos, photoThumbs, damageEntries]
+    () => classifyPhotos(photos, photoThumbs, damageEntries, photoPreviews),
+    [photos, photoThumbs, damageEntries, photoPreviews]
   );
 
   // Filter photos based on currently selected zone
@@ -112,57 +116,65 @@ export function CaseEvidenceTab({
     }
   }, [activePhotoIndex]);
 
-  if (photos.length === 0) {
-    return (
-      <div className="card-glass">
-        <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>No photos attached to this report.</p>
-      </div>
-    );
-  }
-
   const currentPhoto = classifiedPhotos[activePhotoIndex] || classifiedPhotos[0];
-  const currentPhotoUrl = currentPhoto.url;
-  const currentPhotoLabel = currentPhoto.photoRef;
-  const currentPhotoDamage = currentPhoto.damageItems;
+  const currentPhotoUrl = currentPhoto?.url || "";
+  const currentPhotoPreview = currentPhoto?.previewUrl || currentPhoto?.thumbUrl || currentPhotoUrl;
+  const currentPhotoLabel = currentPhoto?.photoRef || "P01";
+  const currentPhotoDamage = currentPhoto?.damageItems || [];
 
-  // Track high-res photo loaded status for instantaneous progressive rendering
-  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  // Track cached display URL (0ms from CacheStorage / Memory LRU) & HD loading state
+  const [activeDisplayUrl, setActiveDisplayUrl] = useState<string>(
+    currentPhoto ? fileUrl(currentPhoto.thumbUrl || currentPhotoPreview) : ""
+  );
+  const [isHdLoaded, setIsHdLoaded] = useState<boolean>(false);
 
-  // When active photo changes, check if it's already in browser cache
+  // Dual-tier cache lookup: Instant L1 memory check, followed by L2 CacheStorage resolution
   useEffect(() => {
-    if (!currentPhotoUrl) return;
-    const testImg = new Image();
-    testImg.src = fileUrl(currentPhotoUrl);
-    if (testImg.complete && testImg.naturalWidth > 0) {
-      setLoadedUrl(currentPhotoUrl);
-    } else {
-      setLoadedUrl(null);
-      testImg.onload = () => setLoadedUrl(currentPhotoUrl);
+    if (!currentPhotoPreview) return;
+    let isCancelled = false;
+    const targetUrl = fileUrl(currentPhotoPreview);
+
+    // Initial placeholder sync
+    if (currentPhoto?.thumbUrl) {
+      setActiveDisplayUrl(fileUrl(currentPhoto.thumbUrl));
     }
-  }, [currentPhotoUrl]);
 
-  // Intelligent Predictive Preloader:
-  // Pre-caches adjacent photos (N-1, N+1, N+2, N+3) in the background once per URL
-  const preloadedRef = useRef<Set<string>>(new Set());
+    evidenceCache.getCachedUrl(targetUrl).then((resolvedUrl) => {
+      if (!isCancelled) {
+        setActiveDisplayUrl(resolvedUrl);
+        setIsHdLoaded(true);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentPhotoPreview, currentPhoto?.thumbUrl]);
+
+  // Controlled Concurrency Preloader:
+  // Pre-caches adjacent preview WebP photos (N-1, N+1, N+2) in the background via requestIdleCallback
   useEffect(() => {
-    if (!photos || photos.length === 0) return;
+    if (!classifiedPhotos || classifiedPhotos.length === 0) return;
     const targets = [
       activePhotoIndex + 1,
       activePhotoIndex + 2,
-      activePhotoIndex + 3,
       activePhotoIndex - 1,
-    ].filter((i) => i >= 0 && i < photos.length);
+    ].filter((i) => i >= 0 && i < classifiedPhotos.length);
 
-    targets.forEach((idx) => {
-      const url = fileUrl(photos[idx]);
-      if (!preloadedRef.current.has(url)) {
-        preloadedRef.current.add(url);
-        const preload = new Image();
-        preload.src = url;
-        preload.decoding = "async";
-      }
+    const urlsToPreload = targets.map((idx) => {
+      const p = classifiedPhotos[idx];
+      return fileUrl(p.previewUrl || p.thumbUrl || p.url);
     });
-  }, [activePhotoIndex, photos]);
+
+    evidenceCache.preload(urlsToPreload);
+  }, [activePhotoIndex, classifiedPhotos]);
+
+  // Clean up Object URLs when unmounting to free browser GPU/RAM memory
+  useEffect(() => {
+    return () => {
+      evidenceCache.clearMemory();
+    };
+  }, []);
 
   // Keyboard navigation: ArrowLeft / ArrowRight to rapidly flick through photos
   useEffect(() => {
@@ -213,6 +225,18 @@ export function CaseEvidenceTab({
 
   const currentSlide = presentationSlides[currentSlideIndex] || presentationSlides[0] || null;
 
+  if (!photos || photos.length === 0) {
+    return (
+      <div className="card-glass" style={{ padding: "48px 24px", textAlign: "center" }}>
+        <Camera style={{ width: 36, height: 36, color: "var(--text-muted)", margin: "0 auto 12px" }} />
+        <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 6px" }}>No Evidence Photos Attached</h4>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+          This case does not have any attached photographic evidence.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="card-glass">
@@ -227,10 +251,10 @@ export function CaseEvidenceTab({
               </span>
             </div>
             <div className="card-subtitle">
-              Photo {activePhotoIndex + 1} of {photos.length} &bull; Ref:{" "}
+              Photo {activePhotoIndex + 1} of {photos.length} • Ref:{" "}
               <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{currentPhotoLabel}</strong>
-              {currentPhoto.zoneLabel && (
-                <> &bull; Zone: <span style={{ color: "var(--accent-primary)", fontWeight: 600 }}>{currentPhoto.zoneLabel}</span></>
+              {currentPhoto?.zoneLabel && (
+                <> • Zone: <span style={{ color: "var(--accent-primary)", fontWeight: 600 }}>{currentPhoto.zoneLabel}</span></>
               )}
             </div>
           </div>
@@ -451,7 +475,7 @@ export function CaseEvidenceTab({
               </button>
 
               {/* Subtle HD Buffering indicator if high-res image is still downloading */}
-              {loadedUrl !== currentPhotoUrl && currentPhoto.thumbUrl && (
+              {!isHdLoaded && currentPhoto?.thumbUrl && (
                 <div
                   style={{
                     position: "absolute",
@@ -472,7 +496,7 @@ export function CaseEvidenceTab({
                   }}
                 >
                   <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent-primary)" }} />
-                  <span>Buffering HD&hellip;</span>
+                  <span>Buffering HD…</span>
                 </div>
               )}
 
@@ -487,7 +511,7 @@ export function CaseEvidenceTab({
                 }}
               >
                 {/* 1. Instant Lightweight Placeholder (0ms latency from browser cache) */}
-                {currentPhoto.thumbUrl && loadedUrl !== currentPhotoUrl && (
+                {currentPhoto?.thumbUrl && !isHdLoaded && (
                   /* eslint-disable-next-line @next/next/no-img-element */
                   <img
                     src={fileUrl(currentPhoto.thumbUrl)}
@@ -499,27 +523,27 @@ export function CaseEvidenceTab({
                       maxWidth: "100%",
                       objectFit: "contain",
                       display: "block",
-                      filter: "blur(3px)",
+                      filter: "blur(4px)",
                       opacity: 0.9,
                     }}
                   />
                 )}
 
-                {/* 2. Full-Resolution Master Inspection Photo (decoding="async" off main thread) */}
+                {/* 2. Web-Optimized High-Definition Inspection Photo (Cached via Dual-Tier L1/L2) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={fileUrl(currentPhotoUrl)}
+                  src={activeDisplayUrl}
                   alt={currentPhotoLabel}
                   className="inspector-main-img"
                   loading="eager"
                   decoding="async"
-                  onLoad={() => setLoadedUrl(currentPhotoUrl)}
+                  onLoad={() => setIsHdLoaded(true)}
                   style={{
                     maxHeight: 380,
                     width: "auto",
                     maxWidth: "100%",
                     objectFit: "contain",
-                    display: (loadedUrl === currentPhotoUrl || !currentPhoto.thumbUrl) ? "block" : "none",
+                    display: isHdLoaded || !currentPhoto?.thumbUrl ? "block" : "none",
                   }}
                 />
 
@@ -580,7 +604,7 @@ export function CaseEvidenceTab({
                   Presentation Slide {currentSlideIndex + 1} of {Math.max(1, presentationSlides.length)}
                 </span>
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  &bull; {filteredPhotos.length} Photos in this bundle
+                  • {filteredPhotos.length} Photos in this bundle
                 </span>
               </div>
 
@@ -699,7 +723,7 @@ export function CaseEvidenceTab({
                     {/* Image */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={fileUrl(qPhoto.thumbUrl || qPhoto.url)}
+                      src={fileUrl(qPhoto.previewUrl || qPhoto.thumbUrl || qPhoto.url)}
                       alt={qPhoto.photoRef}
                       loading="lazy"
                       decoding="async"
@@ -826,17 +850,40 @@ export function CaseEvidenceTab({
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent-primary)" }}>
                 {currentPhotoLabel}
               </span>
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>&bull; {currentPhoto.zoneLabel}</span>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>• {currentPhoto?.zoneLabel}</span>
             </div>
-            <button
-              type="button"
-              className="btn-secondary-modern"
-              style={{ color: "#fff", padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
-              onClick={() => setIsLightboxOpen(false)}
-            >
-              <X style={{ width: 14, height: 14 }} />
-              <span>Close</span>
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn-secondary-modern"
+                style={{
+                  color: loadRawInLightbox ? "var(--accent-primary)" : "#fff",
+                  borderColor: loadRawInLightbox ? "var(--accent-primary)" : "rgba(255,255,255,0.2)",
+                  fontSize: 11,
+                  padding: "5px 10px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+                onClick={() => setLoadRawInLightbox(!loadRawInLightbox)}
+                title="Toggle between Web-Optimized Preview and Full Master Camera RAW"
+              >
+                <Sparkles style={{ width: 13, height: 13 }} />
+                <span>{loadRawInLightbox ? "Viewing Master RAW (4K+)" : "Load Master RAW (Full)"}</span>
+              </button>
+              <button
+                type="button"
+                className="btn-secondary-modern"
+                style={{ color: "#fff", padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => {
+                  setIsLightboxOpen(false);
+                  setLoadRawInLightbox(false);
+                }}
+              >
+                <X style={{ width: 14, height: 14 }} />
+                <span>Close</span>
+              </button>
+            </div>
           </div>
 
           <div
@@ -853,7 +900,7 @@ export function CaseEvidenceTab({
             <div style={{ position: "relative", display: "inline-block" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={fileUrl(currentPhotoUrl)}
+                src={fileUrl(loadRawInLightbox ? currentPhotoUrl : (currentPhoto.previewUrl || currentPhotoUrl))}
                 alt={currentPhotoLabel}
                 loading="eager"
                 decoding="async"

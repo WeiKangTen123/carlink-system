@@ -352,7 +352,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               Principal Assessor: <strong style={{ color: "var(--text-primary)" }}>Patrick Ng</strong> (Forensic Loss Adjuster)
             </span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              &bull; Framework: <strong style={{ color: "var(--accent-cyan)" }}>GIA / IDAC 48h Inspection SLA</strong>
+              • Framework: <strong style={{ color: "var(--accent-cyan)" }}>GIA / IDAC 48h Inspection SLA</strong>
             </span>
           </div>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" }}>
@@ -395,7 +395,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
       <div className="command-alert-box">
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, color: "var(--badge-amber-text)" }}>
           <AlertTriangle style={{ width: 16, height: 16 }} />
-          <span>CRITICAL SLA &amp; LEGAL COURT DOCKET ALERTS</span>
+          <span>CRITICAL SLA & LEGAL COURT DOCKET ALERTS</span>
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
             Automated statutory warning triggers
           </span>
@@ -405,7 +405,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-red-text)", flexShrink: 0 }} />
             <span>
-              <strong style={{ color: "var(--badge-red-text)" }}>SJE COURT DEADLINE:</strong> State Courts Suit No. DC-1042/2026 &mdash; Pre-Trial Conference Joint Report due in <strong style={{ color: "var(--text-primary)" }}>42 hours</strong>.
+              <strong style={{ color: "var(--badge-red-text)" }}>SJE COURT DEADLINE:</strong> State Courts Suit No. DC-1042/2026 — Pre-Trial Conference Joint Report due in <strong style={{ color: "var(--text-primary)" }}>42 hours</strong>.
             </span>
           </div>
           <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -417,7 +417,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-amber-text)", flexShrink: 0 }} />
             <span>
-              <strong style={{ color: "var(--badge-amber-text)" }}>GIA 48H INSPECTION SLA:</strong> SLK 3063 Z (Tokio Marine @ Toh Guan) &mdash; <strong style={{ color: "var(--text-primary)" }}>6 hours remaining</strong> before workshop commences repairs.
+              <strong style={{ color: "var(--badge-amber-text)" }}>GIA 48H INSPECTION SLA:</strong> SLK 3063 Z (Tokio Marine @ Toh Guan) — <strong style={{ color: "var(--text-primary)" }}>6 hours remaining</strong> before workshop commences repairs.
             </span>
           </div>
           <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -429,7 +429,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent-cyan)", flexShrink: 0 }} />
             <span>
-              <strong style={{ color: "var(--accent-cyan)" }}>HIGH-STAKES TMA IMPACT:</strong> Koh Kock Leong Attenuator Cushion impact &mdash; Chassis rail twist inspection required.
+              <strong style={{ color: "var(--accent-cyan)" }}>HIGH-STAKES TMA IMPACT:</strong> Koh Kock Leong Attenuator Cushion impact — Chassis rail twist inspection required.
             </span>
           </div>
           <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -449,7 +449,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             <div className="kpi-val" style={{ color: "var(--text-primary)", marginTop: 4 }}>{openCases.length} Cases</div>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            {analytics.pending_review} awaiting sign-off &bull; {analytics.signed_off} archived
+            {analytics.pending_review} awaiting sign-off • {analytics.signed_off} archived
           </div>
         </div>
 
@@ -494,7 +494,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             </div>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Court evidence &amp; crash cushions
+            Court evidence & crash cushions
           </div>
         </div>
 
@@ -552,7 +552,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               className={`swimlane-tab ${selectedSwimlane === "dv" ? "active" : ""}`}
               onClick={() => setSelectedSwimlane("dv")}
             >
-              DV &amp; Aging ({dvAgingCount})
+              DV & Aging ({dvAgingCount})
             </button>
           </div>
 
@@ -787,7 +787,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                               </span>
                             </div>
                             <div className="triage-cell-truncate" style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                              {r.vehicle_name || "Motor Vehicle"} &bull; {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
+                              {r.vehicle_name || "Motor Vehicle"} • {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
                             </div>
                           </div>
                         </div>
@@ -992,7 +992,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               <div>
                 <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <DollarSign style={{ width: 16, height: 16, color: "var(--badge-amber-text)" }} />
-                  <span>DV &amp; Fee Recovery Aging</span>
+                  <span>DV & Fee Recovery Aging</span>
                 </div>
                 <div className="card-subtitle">
                   Tracking delayed workshop remittance ($40k-$50k backlog)
@@ -1019,21 +1019,21 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-green-text)" }} />
-                  0 &ndash; 30 Days (Active Processing)
+                  0 – 30 Days (Active Processing)
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>$17,800 SGD</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-amber-text)" }} />
-                  30 &ndash; 60 Days (DV Signed, Pending Remit)
+                  30 – 60 Days (DV Signed, Pending Remit)
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>$18,400 SGD</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-red-text)" }} />
-                  60+ Days (OVERDUE &ndash; AutoWorld &amp; KKL)
+                  60+ Days (OVERDUE – AutoWorld & KKL)
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--badge-red-text)" }}>$10,000 SGD</span>
               </div>

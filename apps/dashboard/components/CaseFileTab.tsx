@@ -89,6 +89,7 @@ function DossierField({
         )}
       </div>
       <div
+        suppressHydrationWarning
         className={`dossier-field-value ${mono ? "mono" : ""} ${highlight ? "highlight" : ""}`}
       >
         {displayVal}
@@ -219,6 +220,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           </span>
 
           <span
+            suppressHydrationWarning
             style={{
               fontSize: 11,
               fontWeight: 600,
@@ -281,7 +283,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, fontWeight: 700 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-primary)" }}>
             <FileCheck2 style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-            <span>CLAIM HEALTH &amp; COMPLETION AUDIT</span>
+            <span>CLAIM HEALTH & COMPLETION AUDIT</span>
           </div>
           <span style={{ color: "var(--accent-cyan)", fontFamily: "var(--font-mono)" }}>
             {completionPct}% COMPLETE ({checks.length - completedCount} Verification Gaps)
@@ -309,7 +311,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <Car style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Tier 1: Vehicle Engineering &amp; LTA Dossier
+              Tier 1: Vehicle Engineering & LTA Dossier
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               COE / LTA SPEC
@@ -370,7 +372,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
                 <thead>
                   <tr>
                     <th>Axle Position</th>
-                    <th>Tyre Spec &amp; Brand</th>
+                    <th>Tyre Spec & Brand</th>
                     <th>Tread Depth</th>
                     <th>Pressure</th>
                     <th>LTA Status</th>
@@ -405,7 +407,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <Briefcase style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Tier 2: Claim &amp; Commercial Governance
+              Tier 2: Claim & Commercial Governance
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               GIA / IDAC FRAMEWORK
@@ -454,7 +456,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
             >
               <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <Scale style={{ width: 13, height: 13, color: "var(--accent-primary)" }} />
-                Financial Reserves &amp; Settlement Ledger
+                Financial Reserves & Settlement Ledger
               </span>
               <span style={{ fontSize: 10, color: "var(--badge-green-text)", fontFamily: "var(--font-mono)" }}>
                 SINGAPORE DOLLARS (SGD)
@@ -503,7 +505,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <Compass style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Tier 3: Incident Forensics &amp; Environmental Telematics
+              Tier 3: Incident Forensics & Environmental Telematics
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               SGT TELEMETRY
@@ -532,7 +534,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div style={{ padding: "0 16px 14px", borderTop: "1px solid var(--border-color)", paddingTop: 10 }}>
             <div className="dossier-field-label" style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
               <FileText style={{ width: 12, height: 12 }} />
-              Accident Narrative &amp; Surveyor Assessment Notes
+              Accident Narrative & Surveyor Assessment Notes
             </div>
             <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, margin: 0, background: "var(--surface-elevated)", padding: "8px 12px", borderRadius: 6 }}>
               {d.description || "Vehicle stationary at workshop junction when third-party vehicle failed to brake in time and collided into the rear tailgate and bumper assembly. Tailgate buckled, bumper fascia fractured."}
@@ -545,7 +547,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <ShieldCheck style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Tier 4: Regulatory, Police &amp; Parties Dossier
+              Tier 4: Regulatory, Police & Parties Dossier
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               SINGAPORE TRAFFIC POLICE
@@ -630,7 +632,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <Users style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Witnesses &amp; Evidence Custody
+              Witnesses & Evidence Custody
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               STATEMENTS
@@ -676,7 +678,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-tier-header">
             <div className="dossier-tier-title">
               <UserCheck style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-              Reporter &amp; Dispatch Particulars
+              Reporter & Dispatch Particulars
             </div>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               ORIGINATOR
@@ -703,7 +705,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           </div>
           <div>
             This vehicle inspection, damage audit, and forensic report was conducted entirely on a <strong>&ldquo;WITHOUT PREJUDICE&rdquo;</strong> basis.
-            Carlink Consultancy and Patrick Ng &amp; Co. have not authorised any repair on behalf of any insurer or third-party underwriter.
+            Carlink Consultancy and Patrick Ng & Co. have not authorised any repair on behalf of any insurer or third-party underwriter.
             All measurements, tyre tread depths, and impact vectors comply with the General Insurance Association of Singapore (GIA) IDAC Guidelines.
           </div>
         </div>

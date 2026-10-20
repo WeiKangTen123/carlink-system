@@ -406,6 +406,10 @@ export type ReportDetail = {
    * still shows the full image for the photo being examined; these are for
    * the thumbnail strip. Optional so an older API response still parses. */
   photo_thumb_urls?: string[];
+  /** High-efficiency 1600px WebP versions of photo_urls. Used for
+   * forensic inspection (1-Up HUD, matrix) to avoid loading multi-megabyte
+   * raw camera images that crash browser tabs. */
+  photo_preview_urls?: string[];
   pdf_url: string | null;
 };
 

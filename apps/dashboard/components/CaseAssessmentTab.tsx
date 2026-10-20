@@ -242,7 +242,7 @@ export function CaseAssessmentTab({
             S${grossClaimedTotal.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div className="quantum-kpi-sub">
-            {annexAItems.length} Parts &bull; {annexBItems.length} Labour Operations
+            {annexAItems.length} Parts • {annexBItems.length} Labour Operations
           </div>
         </div>
 
@@ -316,21 +316,21 @@ export function CaseAssessmentTab({
               className={`annex-tab-btn ${activeSubTab === "annexB" ? "active" : ""}`}
               onClick={() => setActiveSubTab("annexB")}
             >
-              <Wrench style={{ width: 14, height: 14 }} /> Annex B: Labour &amp; Refinishing ({annexBItems.length})
+              <Wrench style={{ width: 14, height: 14 }} /> Annex B: Labour & Refinishing ({annexBItems.length})
             </button>
             <button
               type="button"
               className={`annex-tab-btn ${activeSubTab === "annexC" ? "active" : ""}`}
               onClick={() => setActiveSubTab("annexC")}
             >
-              <Percent style={{ width: 14, height: 14 }} /> Annex C: Settlement &amp; Waterfall
+              <Percent style={{ width: 14, height: 14 }} /> Annex C: Settlement & Waterfall
             </button>
             <button
               type="button"
               className={`annex-tab-btn ${activeSubTab === "bola" ? "active" : ""}`}
               onClick={() => setActiveSubTab("bola")}
             >
-              <Scale style={{ width: 14, height: 14 }} /> Causation &amp; BOLA Liability
+              <Scale style={{ width: 14, height: 14 }} /> Causation & BOLA Liability
             </button>
           </div>
 
@@ -524,7 +524,7 @@ export function CaseAssessmentTab({
                 <tfoot>
                   <tr>
                     <td colSpan={2} style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                      Total For Labour &amp; Spray Painting (Annex B)
+                      Total For Labour & Spray Painting (Annex B)
                     </td>
                     <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
                       S${totalLabourClaimed.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -561,7 +561,7 @@ export function CaseAssessmentTab({
                 </div>
 
                 <div className="waterfall-row">
-                  <span className="waterfall-label">2. Annex B: Labour &amp; Spray Painting Total</span>
+                  <span className="waterfall-label">2. Annex B: Labour & Spray Painting Total</span>
                   <div style={{ display: "flex", gap: 20 }}>
                     <span style={{ color: "var(--text-muted)" }}>Claimed: S${totalLabourClaimed.toFixed(2)}</span>
                     <span className="waterfall-val">S${totalLabourAdjusted.toFixed(2)}</span>
@@ -594,7 +594,7 @@ export function CaseAssessmentTab({
                 <div className="waterfall-row grand">
                   <div>
                     <div>Grand Total Payable (Including 9% GST)</div>
-                    <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.8 }}>Full &amp; final discharge on contract lump sum basis</div>
+                    <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.8 }}>Full & final discharge on contract lump sum basis</div>
                   </div>
                   <div style={{ fontSize: 20, fontFamily: "var(--font-mono)" }}>
                     S${grandTotalWithGst.toFixed(2)}
@@ -658,7 +658,7 @@ export function CaseAssessmentTab({
                     <div style={{ fontWeight: 700, marginTop: 2 }}>{v?.point_of_impact || "Rear centre & rear bumper"}</div>
                   </div>
                   <div>
-                    <div className="detail-field-label">Impact Height &amp; Direction of Force</div>
+                    <div className="detail-field-label">Impact Height & Direction of Force</div>
                     <div style={{ marginTop: 2, color: "var(--text-secondary)" }}>
                       Contact zone: 380mm – 860mm from ground. Longitudinal forward compressive shockwave Crumpled rear end panel and corrugated boot floor panel.
                     </div>
@@ -720,7 +720,7 @@ export function CaseAssessmentTab({
                       100% Third-Party Property Damage (TPPD) Subrogation Recommended
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Target Insurer: {ins?.insurer_name || "Tokio Marine Singapore"} &bull; Counterpart Ref: {ins?.claim_number || "CL 11900"}
+                      Target Insurer: {ins?.insurer_name || "Tokio Marine Singapore"} • Counterpart Ref: {ins?.claim_number || "CL 11900"}
                     </div>
                   </div>
                 </div>
@@ -738,7 +738,7 @@ export function CaseAssessmentTab({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Stamp style={{ width: 18, height: 18, color: "var(--accent-cyan)" }} />
-              <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Loss Adjuster Statutory Endorsement &amp; Certification</h3>
+              <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Loss Adjuster Statutory Endorsement & Certification</h3>
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
               Independent Automotive Engineer Assessor Certification under Singapore GIA Framework.
@@ -760,7 +760,7 @@ export function CaseAssessmentTab({
                 fontSize: 12,
               }}
             >
-              <ShieldCheck style={{ width: 16, height: 16 }} /> CERTIFIED &amp; LOCKED DOSSIER
+              <ShieldCheck style={{ width: 16, height: 16 }} /> CERTIFIED & LOCKED DOSSIER
             </span>
           ) : (
             <span className="chip-severity moderate" style={{ fontSize: 11 }}>
@@ -887,10 +887,10 @@ export function CaseAssessmentTab({
                   {surveyorName}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
-                  Automotive Engineer Assessor &bull; Reg: {licenseNumber}
+                  Automotive Engineer Assessor • Reg: {licenseNumber}
                 </div>
                 {signOff?.signature_date && (
-                  <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
+                  <div suppressHydrationWarning style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
                     Endorsed on: {new Date(signOff.signature_date).toLocaleString("en-SG")}
                   </div>
                 )}
@@ -901,7 +901,7 @@ export function CaseAssessmentTab({
           {/* Official Company Seal Preview */}
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 6 }}>
-              Official Assessor Chop &amp; Seal
+              Official Assessor Chop & Seal
             </div>
             <div className="surveyor-chop-preview">
               <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-primary)" }}>
@@ -911,7 +911,7 @@ export function CaseAssessmentTab({
                 60 Hillside Drive, Singapore 549009
               </div>
               <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent-primary)", marginTop: 4 }}>
-                PATRICK NG &bull; AUTOMOTIVE ENGINEER ASSESSOR
+                PATRICK NG • AUTOMOTIVE ENGINEER ASSESSOR
               </div>
               <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
                 MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC

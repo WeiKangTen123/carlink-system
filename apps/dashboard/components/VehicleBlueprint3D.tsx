@@ -2,6 +2,18 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+
+// Filter out benign THREE.Clock deprecation notice triggered by @react-three/fiber v9 until upstream updates to THREE.Timer
+if (typeof window !== "undefined") {
+  const originalWarn = console.warn;
+  console.warn = (...args: any[]) => {
+    if (typeof args[0] === "string" && args[0].includes("THREE.Clock: This module has been deprecated")) {
+      return;
+    }
+    originalWarn.apply(console, args);
+  };
+}
+
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { ArrowLeft, RotateCcw } from "lucide-react";
@@ -728,7 +740,7 @@ export function VehicleBlueprint3D({
           fallback={
             <Html center>
               <div className="blueprint-3d-loading" style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-                Loading 3D asset&hellip;
+                Loading 3D asset…
               </div>
             </Html>
           }
@@ -787,7 +799,7 @@ export function VehicleBlueprint3D({
         </button>
       )}
       <div className="blueprint-3d-hint" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-        <RotateCcw style={{ width: 11, height: 11 }} /> Drag to rotate &bull; Scroll to zoom &bull; Click a part to inspect
+        <RotateCcw style={{ width: 11, height: 11 }} /> Drag to rotate • Scroll to zoom • Click a part to inspect
       </div>
     </div>
   );

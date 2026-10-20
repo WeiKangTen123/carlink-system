@@ -30,7 +30,16 @@ from app.reports.taxonomy import (
 )
 from app.reports.schema import SecurityIncidentDraft
 from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, save_photo, tmp_dir, to_public_url, to_thumbnail_url
+from app.storage.files import (
+    generate_preview,
+    generate_thumbnail,
+    report_pdf_path,
+    save_photo,
+    tmp_dir,
+    to_preview_url,
+    to_public_url,
+    to_thumbnail_url,
+)
 
 
 @asynccontextmanager
@@ -56,13 +65,33 @@ app.add_middleware(
 )
 app.include_router(whatsapp_router)
 class _ImmutableStaticFiles(StaticFiles):
-    """Serves /files with long-lived caching.
+    """Serves /files with long-lived caching and on-the-fly preview/thumbnail generation.
 
     Stored photos and generated PDFs are write-once at a given path -- a
     report's photo_00.jpg is never rewritten in place -- so they can be
-    cached hard. Previously these went out with NO Cache-Control at all,
-    so every photo was re-downloaded on every page view.
+    cached hard. Missing preview/thumbnail files are dynamically generated
+    on first request so existing cases get high-speed previews automatically.
     """
+
+    def lookup_path(self, path: str):
+        full_path, stat_result = super().lookup_path(path)
+        if stat_result is None and self.directory:
+            p = Path(self.directory) / path
+            if p.name.endswith("_preview.webp"):
+                stem = p.stem.replace("_preview", "")
+                for ext in (".jpg", ".jpeg", ".png", ".webp", ".JPG", ".JPEG", ".PNG"):
+                    orig = p.parent / f"{stem}{ext}"
+                    if orig.exists():
+                        generate_preview(str(orig))
+                        return super().lookup_path(path)
+            elif p.name.endswith("_thumb.jpg"):
+                stem = p.stem.replace("_thumb", "")
+                for ext in (".jpg", ".jpeg", ".png", ".webp", ".JPG", ".JPEG", ".PNG"):
+                    orig = p.parent / f"{stem}{ext}"
+                    if orig.exists():
+                        generate_thumbnail(str(orig))
+                        return super().lookup_path(path)
+        return full_path, stat_result
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
@@ -182,6 +211,7 @@ def get_report(report_id: str) -> dict:
         existing_photos = [p for p in (r.photo_paths or []) if Path(p).exists()]
         photo_urls = [to_public_url(p) for p in existing_photos]
         photo_thumb_urls = [to_thumbnail_url(p) for p in existing_photos]
+        photo_preview_urls = [to_preview_url(p) for p in existing_photos]
 
         return {
             "id": r.id,
@@ -191,6 +221,7 @@ def get_report(report_id: str) -> dict:
             "data": r.data,
             "photo_urls": photo_urls,
             "photo_thumb_urls": photo_thumb_urls,
+            "photo_preview_urls": photo_preview_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
             "created_at": r.created_at.isoformat(),
         }

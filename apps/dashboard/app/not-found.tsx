@@ -56,7 +56,7 @@ export default function NotFound() {
           }}
         >
           <Search style={{ width: 12, height: 12 }} />
-          Loss Adjuster Registry &bull; 404 Unlocated
+          Loss Adjuster Registry • 404 Unlocated
         </div>
 
         <h1

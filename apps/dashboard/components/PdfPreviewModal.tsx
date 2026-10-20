@@ -76,7 +76,7 @@ export function PdfPreviewModal({
             }}
           >
             <FileText style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-            <span>Preview &amp; Download PDF</span>
+            <span>Preview & Download PDF</span>
           </button>
         )
       )}

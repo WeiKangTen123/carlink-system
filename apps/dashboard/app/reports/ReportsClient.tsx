@@ -397,11 +397,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 36 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 800, letterSpacing: "-0.02em", whiteSpace: "nowrap" }}>
-            Claims Dossier &amp; Workstation
+            Claims Dossier & Workstation
           </h1>
           <span className="command-header-badge" style={{ fontSize: 10, padding: "2px 8px" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 5px var(--badge-green-text)" }} />
-            Patrick Ng &bull; GIA SLA 48h
+            Patrick Ng • GIA SLA 48h
           </span>
 
           {/* Inline Compact Metric Chips */}
@@ -728,7 +728,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
                     {/* Insurer & Workshop */}
                     <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {insurer} &bull; {workshop.split("(")[0].trim()}
+                      {insurer} • {workshop.split("(")[0].trim()}
                     </div>
 
                     {/* Bottom Row: Exact Filing Time & SLA Badge */}
@@ -816,7 +816,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
                       {selectedSummary.status === "Signed Off" ? (
                         <span className="status-pill" style={{ background: "var(--badge-green-bg)", color: "var(--badge-green-text)", borderColor: "var(--badge-green-border)", fontSize: 10 }}>
-                          Certified &amp; Signed Off
+                          Certified & Signed Off
                         </span>
                       ) : (
                         <span className="status-pill" style={{ background: "var(--badge-amber-bg)", color: "var(--badge-amber-text)", borderColor: "var(--badge-amber-border)", fontSize: 10 }}>
@@ -826,10 +826,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     </div>
 
                     <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)", marginTop: 6 }}>
-                      {inferVehicleName(selectedSummary)} &bull; {selectedSummary.damage_count} Damaged Components
+                      {inferVehicleName(selectedSummary)} • {selectedSummary.damage_count} Damaged Components
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> &bull; Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}</strong>
+                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> • Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}</strong>
                     </div>
                   </div>
 
@@ -1071,7 +1071,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                      Damage Anatomy &amp; Line-Item Estimations
+                      Damage Anatomy & Line-Item Estimations
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
                       AI Vision Audited
@@ -1153,7 +1153,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 <tr>
                   <th>Evidence</th>
                   <th>Vehicle Registration</th>
-                  <th>Case Ref &amp; Intake Time</th>
+                  <th>Case Ref & Intake Time</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
                   <th className="col-reserve">Reserve ($ SGD)</th>

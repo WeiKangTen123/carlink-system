@@ -80,7 +80,7 @@ export default function ErrorBoundary({ error, reset }: ErrorProps) {
           }}
         >
           <AlertTriangle style={{ width: 12, height: 12 }} />
-          Carlink Resilience Layer &bull; Session Interrupted
+          Carlink Resilience Layer • Session Interrupted
         </div>
 
         <h1

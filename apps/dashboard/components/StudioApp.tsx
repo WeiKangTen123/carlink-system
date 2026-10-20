@@ -159,12 +159,12 @@ export function StudioApp({ report }: { report: ReportDetail }) {
             </span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               CASE_ID: <code>{report.id}</code>
-              {d.location && <> &bull; Incident at {d.location}</>}
+              {d.location && <> • Incident at {d.location}</>}
             </span>
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
             {vehicleName}
-            {d.accident_type && <> &mdash; {d.accident_type}</>}
+            {d.accident_type && <> — {d.accident_type}</>}
           </h1>
         </div>
 
@@ -175,7 +175,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={reportCode} />
           {!isSignedOff && (
             <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
-              <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize &amp; Sign Off
+              <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize & Sign Off
             </button>
           )}
           <form
@@ -258,6 +258,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           vehicleName={vehicleName}
           photos={photos}
           photoThumbs={photoThumbs}
+          photoPreviews={report.photo_preview_urls}
           activePhotoIndex={activePhotoIndex}
           highlightedDamageIndex={highlightedDamageIndex}
           selectedZone={selectedZone}

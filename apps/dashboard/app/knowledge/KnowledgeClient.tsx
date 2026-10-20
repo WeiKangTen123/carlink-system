@@ -659,7 +659,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
                   <Wrench style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Parts
                 </div>
                 <div className="card-subtitle">
-                  {visibleParts.length} of {parts.length} shown &mdash; &ldquo;3D zone&rdquo; means damage there highlights on the blueprint
+                  {visibleParts.length} of {parts.length} shown — “3D zone” means damage there highlights on the blueprint
                 </div>
               </div>
               <input
@@ -751,7 +751,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
                   <Car style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Catalogue
                 </div>
                 <div className="card-subtitle">
-                  Decides which 3D model a case renders &mdash; matched on make and model text
+                  Decides which 3D model a case renders — matched on make and model text
                 </div>
               </div>
               <span className="chip-severity minor" style={{ fontSize: 10 }}>

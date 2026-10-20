@@ -346,6 +346,7 @@ export interface ClassifiedPhoto {
   photoRef: string; // "P01", "P02", ...
   url: string;
   thumbUrl?: string;
+  previewUrl?: string;
   zoneId: string;
   zoneLabel: string;
   damageItems: DamageSummaryItem[];
@@ -358,8 +359,9 @@ export interface ClassifiedPhoto {
  */
 export function classifyPhotos(
   photos: string[],
-  photoThumbs: string[] | undefined,
-  damageEntries: DamageSummaryItem[]
+  photoThumbs?: string[],
+  damageEntries: DamageSummaryItem[] = [],
+  photoPreviews?: string[]
 ): ClassifiedPhoto[] {
   if (!photos || photos.length === 0) return [];
 
@@ -435,6 +437,7 @@ export function classifyPhotos(
       photoRef,
       url,
       thumbUrl: photoThumbs?.[idx] || url,
+      previewUrl: photoPreviews?.[idx] || photoThumbs?.[idx] || url,
       zoneId,
       zoneLabel: group.label,
       damageItems: damageByPhoto.get(photoRef) || [],
