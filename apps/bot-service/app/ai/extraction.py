@@ -16,15 +16,9 @@ the reporter drafting failed rather than fabricating a report.
 The draft is never final on its own: conversation/flow.py always shows it
 back to the reporter for confirmation before a PDF is generated.
 """
-import base64
 import logging
-import mimetypes
-import re
-import time
-from pathlib import Path
 
-from app.ai.client import available_api_keys, get_client
-from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
+from app.ai.structured import call_structured, image_part
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
@@ -161,7 +155,12 @@ def _model_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()]
 
 
-def _build_input(description: str, photo_paths: list[str], known_facts: dict | None = None) -> list[dict]:
+def _build_input(
+    description: str,
+    photo_paths: list[str],
+    known_facts: dict | None = None,
+    photo_labels: list[str] | None = None,
+) -> list[dict]:
     parts: list[dict] = []
     if known_facts:
         # Facts the reporter already gave, passed so a PARTIAL correction can
@@ -184,15 +183,25 @@ def _build_input(description: str, photo_paths: list[str], known_facts: dict | N
                 ),
             })
     parts.append({"type": "text", "text": f"Reporter's description:\n{description}"})
+    if photo_labels:
+        # Dashboard intake only sends a selection of a large case (see
+        # intake/pipeline.py), so the labels skip numbers. Without saying so,
+        # "labeled P01, P02... in the order given" in the system prompt
+        # invites the model to renumber them from P01.
+        parts.append({
+            "type": "text",
+            "text": (
+                "Only a selection of this case's photos is shown below. Each is labelled with its "
+                "case photo number -- use exactly that label for 'photo_reference'."
+            ),
+        })
     for i, path in enumerate(photo_paths, start=1):
-        media_type, _ = mimetypes.guess_type(path)
-        media_type = media_type or "image/jpeg"
-        data_b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
         # Labeled so the model can honestly attribute a damage_summary item to
         # the specific photo it actually saw it in (photo_reference), matching
         # the P0x numbering the renderer uses in the gallery/PDF.
-        parts.append({"type": "text", "text": f"Photo P{i:02d}:"})
-        parts.append({"type": "image", "data": data_b64, "mime_type": media_type})
+        label = photo_labels[i - 1] if photo_labels else f"P{i:02d}"
+        parts.append({"type": "text", "text": f"Photo {label}:"})
+        parts.append(image_part(path))
     return parts
 
 
@@ -303,80 +312,32 @@ def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
 # processes that share one API key -- something module state never could.
 
 
-def draft_report(description: str, photo_paths: list[str], known_facts: dict | None = None) -> SecurityIncidentDraft:
-    input_parts = _build_input(description, photo_paths, known_facts)
-    schema = _response_schema()
+def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
+    draft = SecurityIncidentDraft.model_validate_json(raw_output)
+    draft = _strip_placeholder_people(draft)
+    draft = _backfill_damage_summary(draft)
+    from app.reports.synthesize_annexes import synthesize_annexes_for_report
+    enriched_dict = synthesize_annexes_for_report(draft.model_dump())
+    return SecurityIncidentDraft.model_validate(enriched_dict)
 
-    # Two nested fallbacks. Inner: each model in the chain, since they have
-    # independent per-model quotas. Outer: each configured API key, since
-    # every model shares one key's allowance -- once a key is exhausted
-    # across the whole chain, only a different key helps. Ordered so a
-    # single key's full chain is tried before moving on, rather than
-    # burning every key on the first model.
-    api_keys = available_api_keys() or [None]
-    last_error: Exception | None = None
 
-    for key_index, api_key in enumerate(api_keys):
-        client = get_client(api_key)
-        for model_id in _model_chain():
-            # Every attempt takes a slot, not just the first. Previously the
-            # gate ran once before these loops, so a draft that fell through
-            # the chain fired up to five requests back-to-back -- which is
-            # what tripped the quota during testing.
-            acquire(api_key)
-            # One retry per model on a 429, using the delay the server itself
-            # supplies. Falling straight through to the next model is
-            # pointless: it draws on the same per-key quota and 429s too.
-            for attempt in (1, 2):
-                try:
-                    interaction = client.interactions.create(
-                        model=model_id,
-                        system_instruction=SYSTEM_PROMPT,
-                        input=input_parts,
-                        response_format={
-                            "type": "text",
-                            "mime_type": "application/json",
-                            "schema": schema,
-                        },
-                        # Without this, a stalled call hangs indefinitely
-                        # (hit directly while testing model candidates --
-                        # one call sat for 100+s with no response and no
-                        # error), tying up a worker for no benefit since the
-                        # point of the chain is to keep trying other models.
-                        timeout=45.0,
-                    )
-                    raw_output = (interaction.output_text or "").strip()
-                    if raw_output.startswith("```"):
-                        raw_output = re.sub(r"^```(?:json)?\s*", "", raw_output)
-                        raw_output = re.sub(r"\s*```$", "", raw_output)
-                    draft = SecurityIncidentDraft.model_validate_json(raw_output)
-                    # Which model actually answered. The fallbacks return
-                    # visibly thinner analyses (no photo reference, bounding
-                    # box or confidence), and without this line a thin draft
-                    # in production is indistinguishable from a bug.
-                    logger.info("Gemini draft produced by %r on key #%d", model_id, key_index + 1)
-                    draft = _strip_placeholder_people(draft)
-                    draft = _backfill_damage_summary(draft)
-                    from app.reports.synthesize_annexes import synthesize_annexes_for_report
-                    enriched_dict = synthesize_annexes_for_report(draft.model_dump())
-                    return SecurityIncidentDraft.model_validate(enriched_dict)
-                except Exception as exc:
-                    last_error = exc
-                    delay = retry_after_seconds(exc) if is_rate_limit_error(exc) else None
-                    if delay is not None and attempt == 1:
-                        logger.warning(
-                            "Gemini model %r rate-limited on key #%d; waiting %.1fs as instructed",
-                            model_id, key_index + 1, delay,
-                        )
-                        time.sleep(delay)
-                        continue
-                    logger.warning(
-                        "Gemini model %r failed on key #%d, trying next: %s",
-                        model_id, key_index + 1, exc,
-                    )
-                    break
-
-    raise RuntimeError(
-        f"All Gemini fallback models ({', '.join(_model_chain())}) failed "
-        f"across {len(api_keys)} configured API key(s)."
-    ) from last_error
+def draft_report(
+    description: str,
+    photo_paths: list[str],
+    known_facts: dict | None = None,
+    photo_labels: list[str] | None = None,
+    timeout: float = 45.0,
+) -> SecurityIncidentDraft:
+    """photo_labels overrides the default P01, P02... numbering, for callers
+    sending a subset of a larger case (dashboard intake). timeout is per
+    model attempt; intake raises it because it sends up to ~24 photos in one
+    call, where the bot's few photos fit comfortably in 45s."""
+    return call_structured(
+        purpose="draft",
+        system_instruction=SYSTEM_PROMPT,
+        input_parts=_build_input(description, photo_paths, known_facts, photo_labels),
+        schema=_response_schema(),
+        parse=_parse_draft,
+        models=_model_chain(),
+        timeout=timeout,
+    )

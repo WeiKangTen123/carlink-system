@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, JSON, String
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -78,4 +78,59 @@ class Report(Base):
     data: Mapped[dict] = mapped_column(JSON)
     photo_paths: Mapped[list] = mapped_column(JSON, default=list)
     pdf_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class IntakeSession(Base):
+    """Progress of a dashboard intake that hasn't been turned into a case yet.
+
+    The draft itself is an ordinary Report row with status "intake" -- so it
+    shows in the Cases Repository's New Intake / Draft lane like any other
+    case -- and this holds only what the intake wizard needs on top: where
+    background AI processing has got to, and the reporter's own words, which
+    the AI rewrites into data["description"] and would otherwise be lost.
+    Deleted when the intake is finalized.
+    """
+    __tablename__ = "intake_sessions"
+
+    report_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # uploading -> sorting -> reading -> ready, or failed (retryable).
+    stage: Mapped[str] = mapped_column(String, default="uploading")
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    reporter_notes: Mapped[str] = mapped_column(String, default="")
+    # Which photos the reading step actually sent to the model, so the
+    # review screen can say what the facts were read from.
+    read_photo_ids: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
+
+
+class IntakePhoto(Base):
+    """One uploaded photo of an intake draft.
+
+    Its own row rather than an entry in Report.photo_paths because uploads
+    arrive several at a time in parallel: appending to one shared JSON list
+    from concurrent requests loses entries, while inserting rows doesn't.
+    Moved into Report.photo_paths, in `position` order, on finalize.
+    """
+    __tablename__ = "intake_photos"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
+    report_id: Mapped[str] = mapped_column(String, index=True)
+    # Order chosen by the browser (files sorted by name, i.e. camera order).
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    original_name: Mapped[str] = mapped_column(String, default="")
+    path: Mapped[str] = mapped_column(String)
+    sha256: Mapped[str] = mapped_column(String, index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # Set by AI sorting (ai/triage.py) or overridden by the surveyor.
+    kind: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    area: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quality: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    shows_damage: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    kind_source: Mapped[str] = mapped_column(String, default="ai")
+    # Kept in the case file but never sent to the AI.
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

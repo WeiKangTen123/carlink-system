@@ -818,6 +818,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         <span className="status-pill" style={{ background: "var(--badge-green-bg)", color: "var(--badge-green-text)", borderColor: "var(--badge-green-border)", fontSize: 10 }}>
                           Certified & Signed Off
                         </span>
+                      ) : selectedSummary.status === "intake" ? (
+                        <span className="status-pill" style={{ background: "var(--badge-blue-bg)", color: "var(--badge-blue-text)", borderColor: "var(--badge-blue-border)", fontSize: 10 }}>
+                          Intake Draft
+                        </span>
                       ) : (
                         <span className="status-pill" style={{ background: "var(--badge-amber-bg)", color: "var(--badge-amber-text)", borderColor: "var(--badge-amber-border)", fontSize: 10 }}>
                           Pending Review
@@ -835,38 +839,54 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
                   {/* Dossier Quick Action Buttons */}
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={handleEnrichCurrent}
-                      disabled={isEnrichingCurrent}
-                      className="btn-secondary-modern"
-                      style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                      title="Auto-enrich vehicle specifications, quantum and insurer details"
-                    >
-                      <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-                      <span>{isEnrichingCurrent ? "Enriching..." : "AI Auto-Map"}</span>
-                    </button>
+                    {/* An unfinished intake has no confirmed facts to enrich or
+                        print yet -- it can only be resumed in the wizard. */}
+                    {selectedSummary.status === "intake" ? (
+                      <Link
+                        href={`/reports/new?draft=${selectedSummary.id}`}
+                        className="btn-primary-modern"
+                        style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                        title="Continue this intake where it was left"
+                      >
+                        <span>Resume intake</span>
+                        <ArrowRight style={{ width: 12, height: 12 }} />
+                      </Link>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleEnrichCurrent}
+                          disabled={isEnrichingCurrent}
+                          className="btn-secondary-modern"
+                          style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                          title="Auto-enrich vehicle specifications, quantum and insurer details"
+                        >
+                          <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+                          <span>{isEnrichingCurrent ? "Enriching..." : "AI Auto-Map"}</span>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setPreviewReport(selectedSummary)}
-                      className="btn-secondary-modern"
-                      style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                      title="Preview generated loss adjuster report PDF"
-                    >
-                      <FileText style={{ width: 12, height: 12, color: "var(--accent-primary)" }} />
-                      <span>PDF</span>
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewReport(selectedSummary)}
+                          className="btn-secondary-modern"
+                          style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                          title="Preview generated loss adjuster report PDF"
+                        >
+                          <FileText style={{ width: 12, height: 12, color: "var(--accent-primary)" }} />
+                          <span>PDF</span>
+                        </button>
 
-                    <Link
-                      href={`/reports/${selectedSummary.id}`}
-                      className="btn-primary-modern"
-                      style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                      title="Open full Forensic Inspection Studio"
-                    >
-                      <span>Studio</span>
-                      <ArrowRight style={{ width: 12, height: 12 }} />
-                    </Link>
+                        <Link
+                          href={`/reports/${selectedSummary.id}`}
+                          className="btn-primary-modern"
+                          style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                          title="Open full Forensic Inspection Studio"
+                        >
+                          <span>Studio</span>
+                          <ArrowRight style={{ width: 12, height: 12 }} />
+                        </Link>
+                      </>
+                    )}
 
                     <DeleteButton id={selectedSummary.id} />
                   </div>

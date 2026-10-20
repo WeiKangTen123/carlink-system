@@ -15,11 +15,12 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
+from app.api.intake import delete_intake_files, router as intake_router
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, Report
+from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -64,6 +65,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(whatsapp_router)
+app.include_router(intake_router)
 class _ImmutableStaticFiles(StaticFiles):
     """Serves /files with long-lived caching and on-the-fly preview/thumbnail generation.
 
@@ -123,7 +125,20 @@ def list_reports() -> list[dict]:
             # Collision or Damage"), making every row look identical.
             vehicle_info = data.get("vehicle_info") or {}
             raw_vname = " ".join(filter(None, [vehicle_info.get("make"), vehicle_info.get("model")])) or data.get("vehicle_details")
-            if not raw_vname or raw_vname.strip() in ("", "None", "None None", "Motor Vehicle", "Black vehicle"):
+            thumbnail_url = to_thumbnail_url(r.photo_paths[0]) if r.photo_paths else None
+            if r.status == "intake":
+                # An unfinished intake: photos are still in storage/intake/
+                # (see api/intake.py), and the guesses below would label a
+                # draft nobody has described yet as some specific car.
+                raw_vname = raw_vname or "New intake (in progress)"
+                first_photo = (
+                    db.query(IntakePhoto)
+                    .filter(IntakePhoto.report_id == r.id)
+                    .order_by(IntakePhoto.position, IntakePhoto.created_at)
+                    .first()
+                )
+                thumbnail_url = to_thumbnail_url(first_photo.path) if first_photo else None
+            elif not raw_vname or raw_vname.strip() in ("", "None", "None None", "Motor Vehicle", "Black vehicle"):
                 desc = (data.get("description") or "").lower()
                 plate = (vehicle_info.get("plate_number") or "").upper()
                 if "bmw" in desc or "SLB3939" in plate:
@@ -160,7 +175,7 @@ def list_reports() -> list[dict]:
                 "created_at": r.created_at.isoformat(),
                 "location": data.get("location"),
                 "category": data.get("category"),
-                "thumbnail_url": to_thumbnail_url(r.photo_paths[0]) if r.photo_paths else None,
+                "thumbnail_url": thumbnail_url,
                 "plate_number": vehicle_info.get("plate_number"),
                 "vehicle_name": vehicle_name,
                 "severity_level": data.get("severity_level"),
@@ -187,6 +202,24 @@ def get_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             return {"error": "not found"}
+
+        if r.status == "intake":
+            # Unfinished intake -- the dashboard sends these to the intake
+            # wizard (GET /intake/{id}) instead. Returned bare: synthesizing
+            # annexes and rendering a PDF for a draft with no confirmed facts
+            # yet would be wasted work and persist made-up quantum on it.
+            return {
+                "id": r.id,
+                "type": r.type,
+                "status": r.status,
+                "channel": r.channel,
+                "data": r.data,
+                "photo_urls": [],
+                "photo_thumb_urls": [],
+                "photo_preview_urls": [],
+                "pdf_url": None,
+                "created_at": r.created_at.isoformat(),
+            }
 
         # Ensure full Annex A, B, C, and BOLA loss adjusting matrices exist
         data = r.data or {}
@@ -644,7 +677,9 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
 def get_analytics_summary() -> dict:
     db = SessionLocal()
     try:
-        reports = db.query(Report).order_by(Report.created_at.desc()).all()
+        # Unfinished intakes aren't incidents yet: counting them would add
+        # empty "Moderate, Vehicle Collision" rows to every chart.
+        reports = db.query(Report).filter(Report.status != "intake").order_by(Report.created_at.desc()).all()
         total_incidents = len(reports)
         pending_review = sum(1 for r in reports if r.status in ("confirmed", "draft", "pending", "Under Review"))
         signed_off = sum(1 for r in reports if r.status in ("Signed Off", "signed_off"))
@@ -738,6 +773,9 @@ def delete_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="not found")
+
+        if r.status == "intake":
+            delete_intake_files(db, report_id)
 
         folder = None
         if r.pdf_path:
@@ -959,7 +997,7 @@ def ai_enrich_all_reports() -> dict:
     """Batch enrich all reports missing loss adjusting quantum or insurer metadata."""
     db = SessionLocal()
     try:
-        reports = db.query(Report).all()
+        reports = db.query(Report).filter(Report.status != "intake").all()
         count = 0
         for r in reports:
             enriched_data = _enrich_single_report_data(r.data or {})

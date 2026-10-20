@@ -28,6 +28,7 @@ docs/*.txt
 *.db-wal
 *.sqlite3
 storage/incidents/
+storage/intake/
 storage/tmp/
 
 # Logs & OS clutter
