@@ -54,6 +54,16 @@ fi
 
 cd "$APP_DIR"
 
+# The site login (nginx basic auth, see infra/nginx.conf). Without this
+# file Docker would mount an empty directory in its place and every request
+# would fail, so stop here instead. Create it once on the server with:
+#   printf 'carlink:%s\n' "$(openssl passwd -apr1)" > infra/carlink.htpasswd
+#   chmod 644 infra/carlink.htpasswd
+if [ ! -s infra/carlink.htpasswd ]; then
+    echo "❌ infra/carlink.htpasswd is missing -- create the site login first (see the comment above this check in deploy.sh)."
+    exit 1
+fi
+
 # 3. Build and Launch Containers using Docker Compose.
 # TELEGRAM_BOT_TOKEN / GEMINI_API_KEY are passed straight through from this
 # shell's environment via docker-compose's ${VAR} substitution -- nothing

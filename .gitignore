@@ -16,6 +16,7 @@ dist/
 # Environment & Secret files
 .env
 .env.*
+*.htpasswd
 server.MD
 server.md
 docs/*.txt
