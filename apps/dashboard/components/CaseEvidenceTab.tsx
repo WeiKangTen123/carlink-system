@@ -21,6 +21,8 @@ import { type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { severityClass } from "@/lib/caseFields";
 import {
   VEHICLE_ZONE_GROUPS,
+  UNCLASSIFIED_ZONE_ID,
+  UNCLASSIFIED_ZONE_LABEL,
   classifyPhotos,
   buildPresentationSlides,
   type ClassifiedPhoto,
@@ -254,7 +256,7 @@ export function CaseEvidenceTab({
               Photo {activePhotoIndex + 1} of {photos.length} • Ref:{" "}
               <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{currentPhotoLabel}</strong>
               {currentPhoto?.zoneLabel && (
-                <> • Zone: <span style={{ color: "var(--accent-primary)", fontWeight: 600 }}>{currentPhoto.zoneLabel}</span></>
+                <> • Zone: <span style={{ color: currentPhoto.zoneId === UNCLASSIFIED_ZONE_ID ? "var(--text-muted)" : "var(--accent-primary)", fontWeight: 600 }}>{currentPhoto.zoneLabel}</span></>
               )}
             </div>
           </div>
@@ -350,6 +352,24 @@ export function CaseEvidenceTab({
               </button>
             );
           })}
+
+          {/* Photos no damage item links to -- not filed under a zone they
+              may not show (see classifyPhotos). */}
+          {(() => {
+            const count = classifiedPhotos.filter((p) => p.zoneId === UNCLASSIFIED_ZONE_ID).length;
+            if (count === 0) return null;
+            return (
+              <button
+                type="button"
+                className={`studio-zone-pill ${activeZoneFilter === UNCLASSIFIED_ZONE_ID ? "active" : ""}`}
+                onClick={() => handleZoneClick(UNCLASSIFIED_ZONE_ID)}
+                title="Photos not linked to a damage item"
+              >
+                <span>{UNCLASSIFIED_ZONE_LABEL}</span>
+                <span style={{ opacity: 0.8, fontSize: 10 }}>({count})</span>
+              </button>
+            );
+          })()}
         </div>
 
         {/* 2. MAIN VIEWPORT: FORENSIC 1-UP HUD OR 2x2 PRESENTATION MATRIX */}

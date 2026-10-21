@@ -266,8 +266,9 @@ export type AnnexCInfo = {
 export type BolaLiabilityAssessment = {
   scenario_number?: number | null;
   scenario_name?: string | null;
-  insured_liability_pct: number;
-  third_party_liability_pct: number;
+  /** Null until the surveyor records a liability finding. */
+  insured_liability_pct: number | null;
+  third_party_liability_pct: number | null;
   dispute_status: string;
   apportionment_rationale?: string | null;
   subrogation_prospect?: string | null;
