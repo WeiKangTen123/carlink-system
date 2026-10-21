@@ -7,6 +7,16 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# iPhones shoot HEIC. Without this Pillow can't open it, so HEIC uploads got
+# no thumbnail or preview and showed as broken images (browsers can't
+# display HEIC either), and went to the AI as full-size originals.
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:  # pragma: no cover -- requirements.txt installs it
+    logger.warning("pillow-heif not installed: HEIC photos can't be processed")
+
 # Wide enough to stay sharp on a retina display at the ~54px the cases
 # table and the ~110px the photo strip actually render, without carrying a
 # full-resolution phone photo across the wire.
@@ -19,6 +29,12 @@ THUMBNAIL_QUALITY = 78
 # compared to raw 12-48MP camera images.
 PREVIEW_MAX_EDGE = 1600
 PREVIEW_QUALITY = 82
+
+# What the PDF embeds. Not the WebP preview: Chromium can only pass JPEG
+# straight into a PDF and re-encodes anything else losslessly, which made a
+# 65-photo report 117MB (~1.8MB per photo). JPEG at the same size is ~250KB.
+PDF_IMAGE_MAX_EDGE = 1600
+PDF_IMAGE_QUALITY = 80
 
 
 def incident_dir(incident_id: str) -> Path:
@@ -44,6 +60,34 @@ def preview_path_for(photo_path: str) -> Path:
     """Web-optimized preview lives beside its original as <name>_preview.webp."""
     p = Path(photo_path)
     return p.parent / f"{p.stem}_preview.webp"
+
+
+def pdf_image_path_for(photo_path: str) -> Path:
+    """The PDF's copy of a photo lives beside its original as <name>_pdf.jpg."""
+    p = Path(photo_path)
+    return p.parent / f"{p.stem}_pdf.jpg"
+
+
+def generate_pdf_image(photo_path: str) -> str | None:
+    """Writes the 1600px JPEG the PDF embeds (see PDF_IMAGE_QUALITY). Returns
+    its path, or None if one couldn't be produced -- never raises, same as
+    generate_preview."""
+    try:
+        from PIL import Image, ImageOps
+
+        dest = pdf_image_path_for(photo_path)
+        if dest.exists() and dest.stat().st_size > 0:
+            return str(dest)
+        with Image.open(photo_path) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            im.thumbnail((PDF_IMAGE_MAX_EDGE, PDF_IMAGE_MAX_EDGE), Image.LANCZOS)
+            im.save(dest, "JPEG", quality=PDF_IMAGE_QUALITY, optimize=True, progressive=True)
+        return str(dest)
+    except Exception as exc:
+        logger.warning("Could not generate PDF image for %s: %s", photo_path, exc)
+        return None
 
 
 def generate_thumbnail(photo_path: str) -> str | None:

@@ -121,8 +121,13 @@ export const updateIntakePhoto = (id: string, photoId: string, patch: { kind?: P
 export const deleteIntakePhoto = (id: string, photoId: string) =>
   call<{ deleted: string }>(`/${id}/photos/${photoId}`, { method: "DELETE" });
 
-export const saveIntakeData = (id: string, data: ReportData, reporterNotes?: string) =>
-  call<{ ok: boolean }>(`/${id}/data`, jsonInit("PUT", { data: prepareForSave(data), reporter_notes: reporterNotes }));
+/** keepalive lets the save outlive the page -- used when the tab is being
+ * hidden or closed (the browser caps such bodies at 64KB, ample for a form). */
+export const saveIntakeData = (id: string, data: ReportData, reporterNotes?: string, opts: { keepalive?: boolean } = {}) =>
+  call<{ ok: boolean }>(`/${id}/data`, {
+    ...jsonInit("PUT", { data: prepareForSave(data), reporter_notes: reporterNotes }),
+    keepalive: opts.keepalive,
+  });
 
 export const processIntake = (id: string, mode: "all" | "read") =>
   call<IntakeState>(`/${id}/process`, jsonInit("POST", { mode }));

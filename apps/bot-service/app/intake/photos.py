@@ -8,6 +8,7 @@ from app.config import settings
 from app.reports.models import IntakePhoto
 from app.storage.files import (
     incident_dir,
+    pdf_image_path_for,
     preview_path_for,
     thumbnail_path_for,
     to_preview_url,
@@ -76,22 +77,26 @@ def serialize_photo(photo: IntakePhoto, label: str) -> dict:
     }
 
 
-def move_into_case(report_id: str, photos: list[IntakePhoto]) -> list[str]:
-    """Moves the draft's photos to the report's permanent photos/ folder as
-    photo_00, photo_01... (the same naming save_photo uses), carrying their
-    thumbnail/preview along instead of regenerating them. Returns the new
+def copy_into_case(report_id: str, photos: list[IntakePhoto]) -> list[str]:
+    """Copies the draft's photos to the report's permanent photos/ folder as
+    photo_00, photo_01... (the same naming save_photo uses), with their
+    thumbnail/preview/PDF image instead of regenerating them. Returns the new
     paths, in order, for Report.photo_paths -- one per photo passed, so the
     caller must pass only photos whose file exists, or the P-numbers it
-    assigned would point at the wrong photos."""
+    assigned would point at the wrong photos.
+
+    Copies rather than moves: the originals stay in the draft folder until
+    finalize has committed, so a failure in between leaves a draft that can
+    simply be finalized again (and a retry overwrites these same copies)."""
     dest_dir = incident_dir(report_id) / "photos"
     paths: list[str] = []
     for index, photo in enumerate(photos):
         src = Path(photo.path)
         dest = dest_dir / f"photo_{index:02d}{src.suffix or '.jpg'}"
-        shutil.move(str(src), str(dest))
-        for derived in (thumbnail_path_for, preview_path_for):
-            old = derived(str(src))
-            if old.exists():
-                shutil.move(str(old), str(derived(str(dest))))
+        shutil.copy2(src, dest)
+        for derived in (thumbnail_path_for, preview_path_for, pdf_image_path_for):
+            existing = derived(str(src))
+            if existing.exists():
+                shutil.copy2(existing, derived(str(dest)))
         paths.append(str(dest))
     return paths

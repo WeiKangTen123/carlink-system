@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # only the stronger models do -- so it runs lite-first, keeping the
     # stronger models' much smaller daily quota for the drafting call.
     gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
+    # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
+    # Off in tests and scripts that import the app; set in production.
+    run_background_cleanup: bool = False
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     storage_dir: str = str(DEFAULT_STORAGE_DIR)
     twilio_account_sid: str = ""

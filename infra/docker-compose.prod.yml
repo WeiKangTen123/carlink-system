@@ -33,6 +33,9 @@ x-bot-service: &bot-service
     - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite}
     - STORAGE_DIR=/app/storage
     - DATABASE_URL=sqlite:////app/storage/carlink.db
+    # Sweeps idle intake drafts / stale tmp uploads (app/intake/cleanup.py).
+    # Only the api process acts on it; the bot process has no lifespan.
+    - RUN_BACKGROUND_CLEANUP=true
   volumes:
     - bot_data:/app/storage
     - ../apps/bot-service/app:/app/app

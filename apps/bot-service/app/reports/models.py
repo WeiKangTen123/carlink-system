@@ -94,7 +94,8 @@ class IntakeSession(Base):
     __tablename__ = "intake_sessions"
 
     report_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # uploading -> sorting -> reading -> ready, or failed (retryable).
+    # uploading -> sorting -> reading -> ready, or failed (retryable);
+    # "finalizing" while POST /finalize turns it into a case.
     stage: Mapped[str] = mapped_column(String, default="uploading")
     progress_done: Mapped[int] = mapped_column(Integer, default=0)
     progress_total: Mapped[int] = mapped_column(Integer, default=0)
@@ -103,6 +104,11 @@ class IntakeSession(Base):
     # Which photos the reading step actually sent to the model, so the
     # review screen can say what the facts were read from.
     read_photo_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # The AI's last draft exactly as it came back, before merging into
+    # Report.data. A re-read compares the form against it to tell which
+    # fields the surveyor changed -- those are kept, not overwritten.
+    # (Added after the table shipped: see db._ADDED_COLUMNS.)
+    ai_draft: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 

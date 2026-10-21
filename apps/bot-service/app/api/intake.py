@@ -22,11 +22,13 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 
 from app.intake import pipeline
 from app.intake.photos import (
+    copy_into_case,
     intake_dir,
-    move_into_case,
     ordered_photos,
     photo_label,
     remove_intake_dir,
@@ -47,17 +49,43 @@ router = APIRouter(prefix="/intake", tags=["intake"])
 ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 MAX_PHOTO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB, same as /reports/analyze-photos
 MAX_PHOTOS_PER_CASE = 150
+# Real cases are 90-200MB; this leaves room for a big one while stopping a
+# single draft from taking 150 x 25MB = 3.75GB of a shared VM's disk.
+MAX_DRAFT_BYTES = 1536 * 1024 * 1024
+MAX_OPEN_DRAFTS = 30
 _CHUNK = 1024 * 1024
 
 
-def _load_draft(db, report_id: str) -> tuple[Report, IntakeSession]:
+def _load_draft(db, report_id: str, *, mutating: bool = False, block_while_running: bool = False) -> tuple[Report, IntakeSession]:
+    """mutating: refuse while finalize is turning the draft into a case --
+    an upload or autosave landing then would write into a folder finalize
+    is about to delete, or overwrite the finished case's data.
+    block_while_running: also refuse while the AI is working, whose result
+    is merged into the form when it finishes (pipeline.merge_redraft)."""
     report = db.get(Report, report_id)
     session = db.get(IntakeSession, report_id)
     if report is None or session is None:
         raise HTTPException(status_code=404, detail="Intake draft not found")
     if report.status != "intake":
         raise HTTPException(status_code=409, detail="This intake has already been turned into a case")
+    if mutating and session.stage == "finalizing":
+        raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
+    if block_while_running and session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
+        raise HTTPException(status_code=409, detail="Wait for the AI to finish reading this case.")
     return report, session
+
+
+def _claim_stage(db, report_id: str, new_stage: str) -> bool:
+    """Atomically moves the draft to new_stage unless finalize already holds
+    it. A plain read-then-write let two finalizes (two tabs, a client retry)
+    both proceed; the second then created the case with no photos."""
+    result = db.execute(
+        update(IntakeSession)
+        .where(IntakeSession.report_id == report_id, IntakeSession.stage != "finalizing")
+        .values(stage=new_stage, progress_done=0, progress_total=0, error=None)
+    )
+    db.commit()
+    return result.rowcount == 1
 
 
 def _state(db, report: Report, session: IntakeSession) -> dict:
@@ -90,6 +118,14 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
 def create_intake() -> dict:
     db = SessionLocal()
     try:
+        # Each draft can hold MAX_DRAFT_BYTES; an unbounded number of them is
+        # an unbounded amount of disk on a VM shared with other apps.
+        # Abandoned drafts are swept after a week (intake/cleanup.py).
+        if db.query(IntakeSession).count() >= MAX_OPEN_DRAFTS:
+            raise HTTPException(
+                status_code=409,
+                detail=f"There are already {MAX_OPEN_DRAFTS} unfinished intakes. Finish or delete some first.",
+            )
         report = Report(
             channel="manual",
             reporter_chat_id="dashboard",
@@ -140,9 +176,12 @@ def upload_intake_photo(
 
     db = SessionLocal()
     try:
-        _load_draft(db, report_id)
+        _load_draft(db, report_id, mutating=True)
         if db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).count() >= MAX_PHOTOS_PER_CASE:
             raise HTTPException(status_code=409, detail=f"A case can hold at most {MAX_PHOTOS_PER_CASE} photos.")
+        used = db.query(func.coalesce(func.sum(IntakePhoto.size_bytes), 0)).filter(IntakePhoto.report_id == report_id).scalar()
+        if used >= MAX_DRAFT_BYTES:
+            raise HTTPException(status_code=409, detail="This intake has reached its storage limit.")
 
         photo_id = gen_id()
         dest = intake_dir(report_id) / f"{photo_id}{ext}"
@@ -172,6 +211,13 @@ def upload_intake_photo(
             dest.unlink(missing_ok=True)
             return {"duplicate_of": duplicate.id}
 
+        # Extension checks alone let anything through under a .jpg name. Only
+        # files Pillow can actually decode as an image are kept (HEIC via
+        # pillow-heif, registered in storage/files.py).
+        if not _is_readable_image(dest):
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=f"'{file.filename}' isn't a readable photo.")
+
         generate_thumbnail(str(dest))
         generate_preview(str(dest))
         photo = IntakePhoto(
@@ -184,10 +230,41 @@ def upload_intake_photo(
             size_bytes=size,
         )
         db.add(photo)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # The same file uploaded twice concurrently (the browser sends a
+            # few at a time): both passed the query above, and the unique
+            # (report_id, sha256) index lets only the first in.
+            db.rollback()
+            _remove_photo_files(str(dest))
+            duplicate = (
+                db.query(IntakePhoto)
+                .filter(IntakePhoto.report_id == report_id, IntakePhoto.sha256 == sha)
+                .first()
+            )
+            return {"duplicate_of": duplicate.id if duplicate else None}
         return {"photo": serialize_photo(photo, "")}
     finally:
         db.close()
+
+
+def _is_readable_image(path: Path) -> bool:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
+def _remove_photo_files(photo_path: str) -> None:
+    from app.storage.files import pdf_image_path_for, preview_path_for, thumbnail_path_for
+
+    for path in (Path(photo_path), thumbnail_path_for(photo_path), preview_path_for(photo_path), pdf_image_path_for(photo_path)):
+        path.unlink(missing_ok=True)
 
 
 class PhotoUpdateRequest(BaseModel):
@@ -201,7 +278,7 @@ def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest)
 
     db = SessionLocal()
     try:
-        _load_draft(db, report_id)
+        _load_draft(db, report_id, mutating=True, block_while_running=True)
         photo = db.get(IntakePhoto, photo_id)
         if photo is None or photo.report_id != report_id:
             raise HTTPException(status_code=404, detail="Photo not found")
@@ -221,16 +298,13 @@ def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest)
 
 @router.delete("/{report_id}/photos/{photo_id}")
 def delete_intake_photo(report_id: str, photo_id: str) -> dict:
-    from app.storage.files import preview_path_for, thumbnail_path_for
-
     db = SessionLocal()
     try:
-        _load_draft(db, report_id)
+        _load_draft(db, report_id, mutating=True, block_while_running=True)
         photo = db.get(IntakePhoto, photo_id)
         if photo is None or photo.report_id != report_id:
             raise HTTPException(status_code=404, detail="Photo not found")
-        for path in (Path(photo.path), thumbnail_path_for(photo.path), preview_path_for(photo.path)):
-            path.unlink(missing_ok=True)
+        _remove_photo_files(photo.path)
         db.delete(photo)
         db.commit()
         return {"deleted": photo_id}
@@ -247,7 +321,7 @@ class IntakeDataRequest(BaseModel):
 def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
     db = SessionLocal()
     try:
-        report, session = _load_draft(db, report_id)
+        report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         # Validated so a draft always has the shape every other reader of
         # Report.data (list, analytics, PDF) expects.
         report.data = SecurityIncidentDraft.model_validate(body.data).model_dump()
@@ -267,21 +341,23 @@ class ProcessRequest(BaseModel):
 def process_intake(report_id: str, body: ProcessRequest) -> dict:
     db = SessionLocal()
     try:
-        report, session = _load_draft(db, report_id)
+        report, session = _load_draft(db, report_id, mutating=True)
         if db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).count() == 0 and not session.reporter_notes.strip():
             raise HTTPException(status_code=400, detail="Upload photos or describe what happened first.")
-        if pipeline.is_running(report_id):
+        # Reserved before the stage is committed (so a GET in between never
+        # sees a stage with no run behind it), and the stage committed
+        # before the thread starts (whose own progress writes would
+        # otherwise be overwritten with these zeros).
+        if not pipeline.reserve(report_id):
             raise HTTPException(status_code=409, detail="AI processing is already running for this draft.")
-        # Committed before the thread starts, never after: the thread writes
-        # its own progress straight away, and a later commit here would
-        # overwrite it with these zeros.
-        session.stage = "sorting" if body.mode == "all" else "reading"
-        session.progress_done = 0
-        session.progress_total = 0
-        session.error = None
-        db.commit()
-        if not pipeline.start(report_id, body.mode):
-            raise HTTPException(status_code=409, detail="AI processing is already running for this draft.")
+        try:
+            if not _claim_stage(db, report_id, "sorting" if body.mode == "all" else "reading"):
+                raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
+        except Exception:
+            pipeline.release(report_id)
+            raise
+        pipeline.start_reserved(report_id, body.mode)
+        db.refresh(session)
         return _state(db, report, session)
     finally:
         db.close()
@@ -293,57 +369,97 @@ class FinalizeRequest(BaseModel):
 
 @router.post("/{report_id}/finalize")
 def finalize_intake(report_id: str, body: FinalizeRequest) -> dict:
+    """Turns the draft into a case.
+
+    Ordered so a failure at any point leaves either the untouched draft (and
+    Retry works) or the finished case -- never a case missing its photos:
+      1. claim the draft (stage "finalizing"), so uploads, autosaves and a
+         second finalize are refused from here on;
+      2. COPY the photos into the case folder -- the originals stay put
+         until step 3 has committed;
+      3. one short transaction: case data, photo paths, status, intake rows;
+      4. only then delete the draft folder and render the PDF, with no
+         database write lock held (rendering 70+ photos takes seconds, and
+         holding the lock through it made the Telegram bot's writes fail).
+    """
     db = SessionLocal()
     try:
-        report, session = _load_draft(db, report_id)
+        report, session = _load_draft(db, report_id, mutating=True)
         if pipeline.is_running(report_id):
             raise HTTPException(status_code=409, detail="Wait for AI processing to finish first.")
-
-        photos = [p for p in ordered_photos(db, report_id) if Path(p.path).exists()]
-        index_of = {p.id: i for i, p in enumerate(photos)}
-
-        draft = body.data
-        if draft.vehicle_info:
-            v = draft.vehicle_info
-            v.body_type = body_type_for(v.make, v.model, v.body_type)
-        # "@<photo id>" -> its final P-number, now that the order is fixed.
-        for item in draft.damage_summary:
-            ref = item.photo_reference or ""
-            if ref.startswith("@"):
-                index = index_of.get(ref[1:])
-                item.photo_reference = photo_label(index) if index is not None else None
-                if index is None:
-                    item.bbox_2d = None
-        if draft.damage_summary:
-            draft.damaged_parts = [item.part for item in draft.damage_summary]
-
-        data = draft.model_dump()
-        # Annex A/B are only synthesized when empty, so the ones drafted from
-        # the AI's first damage list would otherwise survive the surveyor
-        # changing that list at review. Rebuild them from the confirmed one.
-        data["annex_a"] = {}
-        data["annex_b"] = {}
-        data = synthesize_annexes_for_report(data)
-
-        report.photo_paths = move_into_case(report_id, photos)
-        report.data = data
-        report.status = "confirmed"
-        db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
-        db.delete(session)
-
-        pdf_path = report_pdf_path(report.id)
+        prior_stage = session.stage
+        if not _claim_stage(db, report_id, "finalizing"):
+            raise HTTPException(status_code=409, detail="This intake is already being turned into a case.")
         try:
-            render_pdf(report.data, report.photo_paths, pdf_path, report_id=report.id)
-            report.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for finalized intake %s: %s", report.id, exc)
-            report.pdf_path = None
-
-        db.commit()
-        remove_intake_dir(report_id)
-        return {"id": report.id}
+            _finalize_claimed(db, report_id, body)
+        except Exception:
+            db.rollback()
+            db.execute(update(IntakeSession).where(IntakeSession.report_id == report_id).values(stage=prior_stage))
+            db.commit()
+            raise
     finally:
         db.close()
+
+    remove_intake_dir(report_id)
+    _render_case_pdf(report_id)
+    return {"id": report_id}
+
+
+def _render_case_pdf(report_id: str) -> None:
+    db = SessionLocal()
+    try:
+        report = db.get(Report, report_id)
+        pdf_path = report_pdf_path(report_id)
+        try:
+            render_pdf(report.data, report.photo_paths, pdf_path, report_id=report_id)
+        except Exception as exc:
+            # The case exists regardless; GET /reports/{id} and /download
+            # render a missing PDF on demand.
+            logger.error("Failed to render PDF for finalized intake %s: %s", report_id, exc)
+            return
+        report.pdf_path = pdf_path
+        db.commit()
+    finally:
+        db.close()
+
+
+def _finalize_claimed(db, report_id: str, body: "FinalizeRequest") -> None:
+    report = db.get(Report, report_id)
+    session = db.get(IntakeSession, report_id)
+    photos = [p for p in ordered_photos(db, report_id) if Path(p.path).exists()]
+    index_of = {p.id: i for i, p in enumerate(photos)}
+
+    draft = body.data
+    if draft.vehicle_info:
+        v = draft.vehicle_info
+        v.body_type = body_type_for(v.make, v.model, v.body_type)
+    # "@<photo id>" -> its final P-number, now that the order is fixed.
+    for item in draft.damage_summary:
+        ref = item.photo_reference or ""
+        if ref.startswith("@"):
+            index = index_of.get(ref[1:])
+            item.photo_reference = photo_label(index) if index is not None else None
+            if index is None:
+                item.bbox_2d = None
+    if draft.damage_summary:
+        draft.damaged_parts = [item.part for item in draft.damage_summary]
+
+    data = draft.model_dump()
+    # Annex A/B are only synthesized when empty, so the ones drafted from
+    # the AI's first damage list would otherwise survive the surveyor
+    # changing that list at review. Rebuild them from the confirmed one.
+    data["annex_a"] = {}
+    data["annex_b"] = {}
+    data = synthesize_annexes_for_report(data)
+
+    new_paths = copy_into_case(report_id, photos)
+    report.photo_paths = new_paths
+    report.data = data
+    report.status = "confirmed"
+    report.pdf_path = None
+    db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
+    db.delete(session)
+    db.commit()
 
 
 def delete_intake_files(db, report_id: str) -> None:

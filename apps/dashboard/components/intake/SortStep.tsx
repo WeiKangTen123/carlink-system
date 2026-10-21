@@ -117,7 +117,7 @@ export function SortStep({ state, regrouped, busy, onRegroup, onToggleExclude, o
         <div className="intake-alert info">
           <Sparkles style={{ width: 16, height: 16, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>
-            You changed the groups since the AI last read this case. Re-reading replaces the facts on the review screen.
+            You changed the groups since the AI last read this case. Re-reading updates the AI&apos;s facts; anything you edited or checked is kept.
           </div>
           <button type="button" className="btn-secondary-modern" onClick={onReread} disabled={busy}>
             <RotateCcw style={{ width: 13, height: 13 }} /> Re-read with my changes
@@ -167,7 +167,7 @@ export function SortStep({ state, regrouped, busy, onRegroup, onToggleExclude, o
                   key={p.id}
                   type="button"
                   className={`intake-tile ${p.excluded ? "excluded" : ""} ${readIds.has(p.id) ? "read" : ""}`}
-                  draggable
+                  draggable={!running}
                   onDragStart={(e) => e.dataTransfer.setData("text/photo-id", p.id)}
                   onClick={() => setOpenId(p.id)}
                   title={p.note || p.name}

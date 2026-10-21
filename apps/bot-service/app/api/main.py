@@ -20,7 +20,7 @@ from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report
+from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, gen_id
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -47,6 +47,10 @@ from app.storage.files import (
 async def lifespan(app: FastAPI):
     init_db()
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
+    if settings.run_background_cleanup:
+        from app.intake.cleanup import start_background_cleanup
+
+        start_background_cleanup()
     yield
 
 
@@ -123,6 +127,19 @@ class _ImmutableStaticFiles(StaticFiles):
 
 Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/files", _ImmutableStaticFiles(directory=settings.storage_dir), name="files")
+
+
+def _refuse_intake_draft(r: Report) -> None:
+    """Unfinished intakes (status "intake") are only handled through
+    /intake. Run through these older endpoints, a draft got signed off or
+    reopened with its photos still in storage/intake/ (never attached, and
+    leaked on delete), got a PDF showing raw "@<photo id>" references, or
+    had invented quantum written into it by AI Auto-Map."""
+    if r.status == "intake":
+        raise HTTPException(
+            status_code=409,
+            detail="This is an unfinished intake -- finish it in New Intake first.",
+        )
 
 
 @app.get("/health")
@@ -291,6 +308,7 @@ def download_report_pdf(report_id: str):
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
@@ -324,6 +342,7 @@ def render_report_pdf_endpoint(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         target_pdf_path = report_pdf_path(r.id)
         try:
@@ -422,42 +441,45 @@ def create_report(body: CreateReportRequest) -> dict:
     the reporter actually confirms and saves.
     """
     temp_paths = _checked_temp_paths(body.temp_photo_paths)
+    if body.draft.vehicle_info:
+        v = body.draft.vehicle_info
+        v.body_type = body_type_for(v.make, v.model, v.body_type)
+    data = body.draft.model_dump()
+
+    # Photos and PDF first, the database row last, so no SQLite write lock
+    # is held while Chromium renders (it used to flush the row first and
+    # hold the lock for the whole render, failing other writers -- the
+    # Telegram bot included -- with "database is locked").
+    report_id = gen_id()
+    photo_paths = [
+        save_photo(report_id, temp_path, i)
+        for i, temp_path in enumerate(temp_paths)
+        if Path(temp_path).exists()
+    ]
+    pdf_path: str | None = report_pdf_path(report_id)
+    try:
+        render_pdf(data, photo_paths, pdf_path, report_id=report_id)
+    except Exception as exc:
+        logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
+        pdf_path = None
+
     db = SessionLocal()
     try:
-        if body.draft.vehicle_info:
-            v = body.draft.vehicle_info
-            v.body_type = body_type_for(v.make, v.model, v.body_type)
-
-        report = Report(
+        db.add(Report(
+            id=report_id,
             channel="manual",
             reporter_chat_id="dashboard",
-            data=body.draft.model_dump(),
+            data=data,
             status="confirmed",
-        )
-        db.add(report)
-        db.flush()
-
-        photo_paths = [
-            save_photo(report.id, temp_path, i)
-            for i, temp_path in enumerate(temp_paths)
-            if Path(temp_path).exists()
-        ]
-        report.photo_paths = photo_paths
-        for temp_path in temp_paths:
-            Path(temp_path).unlink(missing_ok=True)
-
-        pdf_path = report_pdf_path(report.id)
-        try:
-            render_pdf(report.data, photo_paths, pdf_path, report_id=report.id)
-            report.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for created report %s: %s", report.id, exc)
-            report.pdf_path = None
-
+            photo_paths=photo_paths,
+            pdf_path=pdf_path,
+        ))
         db.commit()
-        return {"id": report.id}
     finally:
         db.close()
+    for temp_path in temp_paths:
+        Path(temp_path).unlink(missing_ok=True)
+    return {"id": report_id}
 
 
 @app.put("/reports/{report_id}")
@@ -468,6 +490,7 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
         if r.status == "Signed Off":
             raise HTTPException(
                 status_code=409,
@@ -604,6 +627,7 @@ def reopen_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
@@ -629,6 +653,7 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
         
         body_data = {}
         if request:
@@ -813,8 +838,9 @@ def delete_report(report_id: str) -> dict:
         if not r:
             raise HTTPException(status_code=404, detail="not found")
 
-        if r.status == "intake":
-            delete_intake_files(db, report_id)
+        # Unconditional (and a no-op for ordinary cases): a draft that was
+        # turned into a case some other way would otherwise leak its folder.
+        delete_intake_files(db, report_id)
 
         folder = None
         if r.pdf_path:
@@ -1023,6 +1049,7 @@ def ai_enrich_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
         enriched_data = _enrich_single_report_data(r.data or {})
         r.data = enriched_data
         db.commit()

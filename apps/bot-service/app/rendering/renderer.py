@@ -26,18 +26,15 @@ def _to_data_uri(path: str) -> str:
     if not path or not Path(path).exists():
         return BLANK_IMAGE_DATA_URI
     try:
-        from app.storage.files import preview_path_for, generate_preview
-        # Use preview WebP if available (or generate it), falling back to original.
-        # This reduces 15MB+ camera images to ~200KB WebP, slashing Playwright HTML
-        # payload from 300MB down to < 5MB and preventing Chromium OOM crashes.
-        p_path = preview_path_for(path)
-        if not p_path.exists():
-            generate_preview(path)
-
-        target_path = p_path if (p_path.exists() and p_path.stat().st_size > 0) else Path(path)
+        from app.storage.files import generate_pdf_image
+        # A 1600px JPEG made for the PDF (or generated now), falling back to
+        # the original. Downscaled because 15MB+ camera images made the
+        # Playwright HTML payload ~300MB; JPEG rather than the WebP preview
+        # because Chromium re-encodes WebP losslessly into the PDF, which
+        # made a 65-photo report 117MB.
+        pdf_image = generate_pdf_image(path)
+        target_path = Path(pdf_image) if pdf_image else Path(path)
         media_type, _ = mimetypes.guess_type(str(target_path))
-        if target_path.suffix.lower() == ".webp":
-            media_type = "image/webp"
         media_type = media_type or "image/jpeg"
         data = base64.standard_b64encode(target_path.read_bytes()).decode("utf-8")
         return f"data:{media_type};base64,{data}"
