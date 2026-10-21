@@ -55,8 +55,12 @@ class EvidenceCacheManager {
           return objectUrl;
         }
 
-        // Fetch and put into L2 cache
-        const res = await fetch(remoteUrl, { mode: "cors", credentials: "omit" });
+        // Fetch and put into L2 cache. "same-origin", not "omit": in
+        // production /files/ sits behind the site login (infra/nginx.conf),
+        // and omitting credentials made every preview fetch a 401 that fell
+        // through to the uncached direct URL below. Local dev serves files
+        // from another origin with no login, where this sends nothing.
+        const res = await fetch(remoteUrl, { mode: "cors", credentials: "same-origin" });
         if (res.ok) {
           await cache.put(remoteUrl, res.clone());
           const blob = await res.blob();
@@ -130,7 +134,7 @@ class EvidenceCacheManager {
         const cache = await caches.open(CACHE_NAME);
         const match = await cache.match(nextUrl);
         if (!match) {
-          const res = await fetch(nextUrl, { mode: "cors", credentials: "omit" });
+          const res = await fetch(nextUrl, { mode: "cors", credentials: "same-origin" });
           if (res.ok) {
             await cache.put(nextUrl, res);
           }
