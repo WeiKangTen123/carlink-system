@@ -8,7 +8,6 @@ rendering and confirming.
 """
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 from app.ai.extraction import draft_report
@@ -159,7 +158,7 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
         # A bool has no empty state to fall back on, so it is pinned on the
         # first draft only. Later changes still reach the model, because
         # combined_description() feeds every edit back in on each redraft.
-        if first_draft:
+        if first_draft and session.reported_to_authorities is not None:
             draft.reported_to_authorities = session.reported_to_authorities
 
         if session.vehicle_plate:
@@ -202,19 +201,22 @@ TEMPLATE_PROMPT = (
     "Vehicle Plate: \n"
     "Damaged Side (Left / Right / Front / Rear): \n"
     "Location: \n"
-    "Date/Time: {now}\n"
+    "Date/Time: \n"
     "Description: \n\n"
     "🏢 *Insurance & Repairer*\n"
     "Insurer (e.g. Tokio Marine, Income, AIG): \n"
     "Workshop (e.g. Precise Auto Service): \n\n"
     "🚓 *Authority Report*\n"
-    "Reported to Authorities (Yes/No): No"
+    "Reported to Authorities (Yes/No): "
 )
 
 
 def build_template_prompt() -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return TEMPLATE_PROMPT.format(now=now)
+    # Date/Time and "Reported to Authorities" used to be pre-filled with the
+    # moment the template was sent and "No". Reporters who left them as-is
+    # recorded the wrong accident date (pinned over the date the AI read
+    # from their description) and a police answer they never gave.
+    return TEMPLATE_PROMPT
 
 
 _FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -270,7 +272,8 @@ def parse_template_reply(text: str) -> Optional[dict]:
         "location": get("location") or None,
         "incident_datetime": get("datetime") or None,
         "description": get("description") or text,
-        "reported_to_authorities": reported_raw in {"yes", "y", "true"},
+        # None when the line was left blank: "not stated" isn't "No".
+        "reported_to_authorities": (reported_raw in {"yes", "y", "true"}) if reported_raw else None,
     }
 
 

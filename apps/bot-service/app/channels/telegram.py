@@ -269,7 +269,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "ins_income": "NTUC Income Insurance Co-operative",
             "ins_aig": "AIG Asia Pacific Insurance",
         }
-        ins_name = insurer_map.get(data, "Tokio Marine Singapore")
+        ins_name = insurer_map.get(data)
+        if not ins_name:
+            return  # unknown button: don't record an insurer nobody chose
         session.insurer_name = ins_name
         session.pending_edits.append(f"insurer is {ins_name}")
         await draft_and_reply(update, session, combined_description(session), redrafting=True)

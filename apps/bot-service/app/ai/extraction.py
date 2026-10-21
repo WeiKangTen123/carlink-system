@@ -343,12 +343,12 @@ def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
 
 
 def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
+    # No annex synthesis here any more: it used to fill every AI draft --
+    # bot, dashboard and intake -- with priced annexes, a liability finding
+    # and a workshop before any human had seen the case.
     draft = SecurityIncidentDraft.model_validate_json(raw_output)
     draft = _strip_placeholder_people(draft)
-    draft = _backfill_damage_summary(draft)
-    from app.reports.synthesize_annexes import synthesize_annexes_for_report
-    enriched_dict = synthesize_annexes_for_report(draft.model_dump())
-    return SecurityIncidentDraft.model_validate(enriched_dict)
+    return _backfill_damage_summary(draft)
 
 
 def draft_report(

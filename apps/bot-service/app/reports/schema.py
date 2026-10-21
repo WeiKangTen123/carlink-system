@@ -154,8 +154,10 @@ class RecommendationsInfo(BaseModel):
 class AnnexAPartItem(BaseModel):
     item_no: str = Field(default="1.0", description="Item number e.g. '1.0'")
     part_name: str = Field(description="Part description e.g. 'Rear bumper fascia'")
-    condition: str = Field(default="Deformed/cut", description="Observed condition e.g. 'Deformed/cut', 'Grazed/cracked', 'Necessary', 'Serviceable'")
-    action: str = Field(default="Replace", description="Action e.g. 'Replace', 'Repair', 'Straighten', 'Disallow'")
+    # Empty, not "Deformed/cut" / "Replace": a row listed from the damage
+    # found (synthesize_annexes) has no surveyor finding yet.
+    condition: str = Field(default="", description="Observed condition e.g. 'Deformed/cut', 'Grazed/cracked', 'Necessary', 'Serviceable'")
+    action: str = Field(default="", description="Action e.g. 'Replace', 'Repair', 'Straighten', 'Disallow'")
     qty: float = Field(default=1.0, description="Quantity")
     workshop_est: float = Field(default=0.0, description="Workshop claimed estimate in SGD")
     discount_pct: float = Field(default=0.20, description="Depreciation/trade discount (0.20 = 20%, 1.0 = 100% disallowed)")
@@ -191,7 +193,7 @@ class AnnexCInfo(BaseModel):
     gst_rate: float = Field(default=0.09, description="Singapore GST rate (9%)")
     gst_amount: Optional[float] = Field(default=None, description="GST on lump sum or adjusted total")
     total_with_gst: Optional[float] = Field(default=None, description="Total including GST")
-    repair_days: Optional[int] = Field(default=11, description="Reasonable repair turnaround in working days")
+    repair_days: Optional[int] = Field(default=None, description="Reasonable repair turnaround in working days -- set by the surveyor")
     terms: Optional[str] = Field(
         default="Repairs undertaken on contract lump sum basis according to acceptable quality and standard (Repairer discretion to repair parts, replace with reconditioned/used parts, or OEM/genuine parts).",
         description="Settlement terms"
@@ -200,23 +202,26 @@ class AnnexCInfo(BaseModel):
 
 
 class BolaLiabilityAssessment(BaseModel):
-    scenario_number: Optional[int] = Field(default=14, description="GIA BOLA Matrix scenario index e.g. 14")
-    scenario_name: Optional[str] = Field(default="Chain / Direct Rear Collision", description="Scenario title")
-    insured_liability_pct: float = Field(default=0.0, description="Insured fault percentage (0% to 100%)")
-    third_party_liability_pct: float = Field(default=100.0, description="Third-party fault percentage (0% to 100%)")
-    dispute_status: str = Field(default="Agreed", description="'Agreed', 'Disputed', 'Pending Police Findings'")
-    apportionment_rationale: Optional[str] = Field(
-        default="Rear-end impact into stationary lead vehicle. Tortfeasor failed to maintain safe braking distance under BOLA Rule 14.",
-        description="Surveyor liability analysis"
-    )
-    subrogation_prospect: Optional[str] = Field(default="100% TPPD Recovery Recommended", description="Subrogation advice")
+    """The surveyor's liability finding. Empty until the surveyor records
+    one: these defaults used to be a complete finding (scenario 14, rear-end,
+    insured 0% / third party 100%, "Agreed", subrogation recommended), which
+    every new case carried -- side and front impacts included."""
+    scenario_number: Optional[int] = Field(default=None, description="GIA BOLA Matrix scenario index e.g. 14")
+    scenario_name: Optional[str] = Field(default=None, description="Scenario title")
+    insured_liability_pct: Optional[float] = Field(default=None, description="Insured fault percentage (0% to 100%)")
+    third_party_liability_pct: Optional[float] = Field(default=None, description="Third-party fault percentage (0% to 100%)")
+    dispute_status: str = Field(default="Pending surveyor assessment", description="'Agreed', 'Disputed', 'Pending Police Findings'")
+    apportionment_rationale: Optional[str] = Field(default=None, description="Surveyor liability analysis")
+    subrogation_prospect: Optional[str] = Field(default=None, description="Subrogation advice")
 
 
 class SignOffInfo(BaseModel):
     prepared_by: Optional[str] = None
-    reviewed_by: Optional[str] = "Patrick Ng"
-    approved_by: Optional[str] = "Patrick Ng"
-    surveyor_name: Optional[str] = "Patrick Ng"
+    # Set by the sign-off endpoint, not defaulted: a draft that names a
+    # reviewer claims a review that hasn't happened.
+    reviewed_by: Optional[str] = None
+    approved_by: Optional[str] = None
+    surveyor_name: Optional[str] = None
     qualifications: Optional[str] = "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC"
     license_number: Optional[str] = "SURV-SG-0492"
     firm_name: Optional[str] = "Carlink Consultancy"
