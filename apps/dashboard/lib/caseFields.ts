@@ -246,8 +246,12 @@ export function formatSgtDate(isoString?: string | null): string {
 /** Formats incident datetime description */
 export function formatIncidentTime(incidentDt?: string | null, createdAt?: string | null): string {
   if (incidentDt && incidentDt.trim()) {
-    // If it's already an ISO or formatted string
-    if (incidentDt.includes("UTC") || incidentDt.includes("T") || incidentDt.includes("-")) {
+    // Only a timestamp that states its own offset ("...Z", "+08:00") is
+    // converted. A typed wall-clock time like "2026-10-18 08:40" is already
+    // Singapore time: run through new Date() it was read as the server's
+    // local time (UTC) and shown 8 hours late, and differently in the
+    // browser (a hydration mismatch, React #418).
+    if (/T\d{2}:\d{2}.*(Z|[+-]\d{2}:?\d{2})$/.test(incidentDt.trim())) {
       return formatSgtDateTime(incidentDt);
     }
     return incidentDt;

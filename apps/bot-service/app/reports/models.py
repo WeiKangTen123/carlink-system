@@ -26,6 +26,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def iso_utc(value: datetime) -> str:
+    """ISO 8601 with an explicit UTC offset.
+
+    SQLite hands DateTime columns back naive (no tzinfo) even though they're
+    written in UTC, and a naive ISO string is read as LOCAL time by
+    JavaScript: Node on the server (UTC) and a browser in Singapore (UTC+8)
+    then disagreed by 8 hours -- every case time and SLA countdown shown in
+    the browser was 8 hours off, and React reported hydration error #418.
+    """
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
+
+
 class AppSetting(Base):
     """Key/value store for the handful of settings a user can actually
     change at runtime.

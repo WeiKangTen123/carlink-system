@@ -35,7 +35,7 @@ from app.intake.photos import (
     serialize_photo,
 )
 from app.reports.db import SessionLocal
-from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id
+from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
@@ -102,7 +102,7 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
     return {
         "id": report.id,
         "status": report.status,
-        "created_at": report.created_at.isoformat(),
+        "created_at": iso_utc(report.created_at),
         "stage": stage,
         "progress": {"done": session.progress_done, "total": session.progress_total},
         "error": error,

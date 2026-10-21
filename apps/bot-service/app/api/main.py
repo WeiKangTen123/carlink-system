@@ -20,7 +20,7 @@ from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, gen_id
+from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -196,7 +196,7 @@ def list_reports() -> list[dict]:
                 "type": r.type,
                 "status": r.status,
                 "channel": r.channel,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
                 "location": data.get("location"),
                 "category": data.get("category"),
                 "thumbnail_url": thumbnail_url,
@@ -242,7 +242,7 @@ def get_report(report_id: str) -> dict:
                 "photo_thumb_urls": [],
                 "photo_preview_urls": [],
                 "pdf_url": None,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
             }
 
         # Opening a case used to "ensure" annexes by synthesizing and saving
@@ -277,7 +277,7 @@ def get_report(report_id: str) -> dict:
             "photo_thumb_urls": photo_thumb_urls,
             "photo_preview_urls": photo_preview_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
-            "created_at": r.created_at.isoformat(),
+            "created_at": iso_utc(r.created_at),
         }
     finally:
         db.close()
@@ -792,7 +792,7 @@ def get_analytics_summary() -> dict:
         recent_activity = [
             {
                 "id": r.id,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
                 "channel": r.channel,
                 "status": r.status,
                 "location": (r.data or {}).get("location"),
@@ -1060,7 +1060,7 @@ def list_llm_keys() -> dict:
         rows = db.query(ApiKey).filter(ApiKey.provider == "gemini").order_by(ApiKey.created_at).all()
         return {
             "keys": [
-                {"id": r.id, "label": r.label or "", "last4": _mask(r.key), "created_at": r.created_at.isoformat()}
+                {"id": r.id, "label": r.label or "", "last4": _mask(r.key), "created_at": iso_utc(r.created_at)}
                 for r in rows
             ],
             # Surfaces that drafting still works off the deploy-time env var
