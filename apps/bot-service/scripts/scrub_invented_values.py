@@ -38,6 +38,7 @@ INVENTED_POLICE_OFFICER = "Insp. Marcus Tan"
 INVENTED_POLICE_STATION = "Traffic Police HQ (Ubi Ave 3)"
 INVENTED_BOLA_RATIONALES = (
     "Rear-end impact into stationary lead vehicle. Tortfeasor failed to maintain safe braking distance under BOLA Rule 14.",
+    "Tortfeasor vehicle collided directly into the rear of stationary insured vehicle.",
     "Third party vehicle failed to maintain safe lateral clearance",
     "Third party vehicle emerged or turned into insured path of travel",
 )
