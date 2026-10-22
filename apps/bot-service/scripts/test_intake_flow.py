@@ -220,6 +220,17 @@ def main() -> int:
     assert {p.area for p in chosen if p.kind == "damage"} == {"rear", "left"}
     ok(f"78-photo case reads {MAX_READ_PHOTOS} photos: log card in, both damage areas covered")
 
+    # One rear area, four damaged parts: every part is read, and the boot lid's
+    # photos are taken from across the camera roll, not just the first ones.
+    parts = ["Rear Bumper"] * 20 + ["Left Tail Lamp"] * 2 + ["Boot Lid Lock"] + ["Boot Lid"] * 20
+    case = [IntakePhoto(id=f"y{i}", report_id="r", position=i, path="", sha256="", kind="damage", area="rear",
+                        part=part, quality="good", shows_damage=True, excluded=False) for i, part in enumerate(parts)]
+    picked = select_for_reading(case)
+    lid = [p.position for p in picked if p.part == "Boot Lid"]
+    assert len(picked) == MAX_READ_PHOTOS and {p.part for p in picked} == set(parts)
+    assert min(lid) == 23 and max(lid) == 42
+    ok("photos spread across damaged parts and across the camera roll")
+
     print("\nALL INTAKE CHECKS PASSED")
     return 0
 
