@@ -217,12 +217,18 @@ def run_case(case: dict, cases_dir: Path) -> dict:
         out["damage_photos_read"] = f"{len([p for p in damage_photos if p.id in read_ids])}/{len(damage_photos)}"
         out["sorted_photos"] = [
             {"n": i + 1, "file": p.original_name, "kind": p.kind, "area": p.area, "quality": p.quality,
-             "damage": p.shows_damage, "read": p.id in read_ids, "note": p.note}
+             "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note}
             for i, p in enumerate(photos)
         ]
         drafted = [item.get("part") for item in data.get("damage_summary") or []]
         out["drafted_parts"] = drafted
         out["parts"] = score_parts(case["parts"], drafted)
+        # What a "parts to check" list would add: every part the sorter named
+        # on a photo of the insured vehicle, damage visible or not -- surveyors
+        # photograph close up the parts they go on to claim.
+        hinted = sorted({p.part for p in photos if p.part} - set(drafted))
+        out["checklist"] = hinted
+        out["parts_with_checklist"] = score_parts(case["parts"], drafted + hinted)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
     finally:
         db.close()
@@ -262,6 +268,10 @@ def main() -> None:
             print(f"   missed (visible): {r['parts']['missed_visible']}")
             print(f"   wrong side: {r['parts']['wrong_side']}  extra: {r['parts']['extra']}")
             print(f"   facts: { {k: (x['verdict'], x['got']) for k, x in r['vehicle'].items()} }", flush=True)
+            pc = r["parts_with_checklist"]
+            print(f"   + checklist {r['checklist']}")
+            print(f"   with checklist: parts {pc['found']}/{pc['expected']} (visible {pc['visible_found']}/{pc['visible_expected']}) "
+                  f"wrong-side {len(pc['wrong_side'])} extra {len(pc['extra'])} {pc['extra']}", flush=True)
 
     totals = Counter()
     for r in results:
