@@ -16,7 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import type { AppSettings, LlmKey, UserAccount } from "@/lib/api";
+import type { AccessRequestRow, AccountLinkRow, AppSettings, LlmKey, UserAccount } from "@/lib/api";
 import { UsersCard } from "./UsersCard";
 import {
   updateSettingsAction,
@@ -278,11 +278,16 @@ export function SettingsClient({
   settings,
   setup,
   users,
+  accessRequests,
+  accountLinks,
   currentUserId,
 }: {
   settings: AppSettings;
   setup: SetupStatus;
   users: UserAccount[];
+  /** Null when they couldn't be loaded; the Users card offers a retry. */
+  accessRequests: AccessRequestRow[] | null;
+  accountLinks: AccountLinkRow[] | null;
   currentUserId: string;
 }) {
   const [companyName, setCompanyName] = useState(settings.company_name);
@@ -322,7 +327,12 @@ export function SettingsClient({
         </div>
       </div>
 
-      <UsersCard initialUsers={users} currentUserId={currentUserId} />
+      <UsersCard
+        initialUsers={users}
+        initialRequests={accessRequests}
+        initialLinks={accountLinks}
+        currentUserId={currentUserId}
+      />
 
       <GeminiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 

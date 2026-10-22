@@ -1,6 +1,7 @@
 /** Thin client over the bot-service FastAPI backend (apps/bot-service/app/api/main.py). */
 
 import { redirect, unstable_rethrow } from "next/navigation";
+import { isPublicPage } from "./publicPages";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -120,7 +121,8 @@ async function loginPath(): Promise<string> {
   // Set by proxy.ts on every page request.
   const { headers } = await import("next/headers");
   const here = (await headers()).get("x-carlink-path");
-  return here && here.startsWith("/") && !here.startsWith("//") && !here.startsWith("/login")
+  // Never back to a public page (the sign-in or sign-up pages themselves).
+  return here && here.startsWith("/") && !here.startsWith("//") && !isPublicPage(here)
     ? `/login?next=${encodeURIComponent(here)}`
     : "/login";
 }
@@ -160,15 +162,20 @@ async function handleSignInProblem(res: Response, opts: ApiFetchOptions): Promis
   redirect(reason === "password_change_required" ? "/account" : await loginPath());
 }
 
+export type UserRole = "admin" | "surveyor";
+
 export type CurrentUser = {
   id: string;
   email: string;
   name: string;
-  role: "admin" | "surveyor";
+  role: UserRole;
   must_change_password: boolean;
   qualifications: string;
   license_number: string;
   firm_name: string;
+  /** Requests from the public /signup page waiting for a decision. Sent
+   * to admins only (GET /auth/me); drives the badge on Settings. */
+  pending_access_requests?: number;
 };
 
 export type UserAccount = CurrentUser & {
@@ -255,9 +262,131 @@ export async function updateUser(
   return res.json();
 }
 
-export async function resetUserPassword(id: string): Promise<{ user: UserAccount; temporary_password: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/users/${id}/reset-password`, { method: "POST" });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to reset the password"));
+// ---------------------------------------------------------------------------
+// Access requests and one-time links (admin only). Someone asks for an
+// account on the public /signup page; an admin approves it, which makes an
+// invite link to send them by WhatsApp. A "reset" link sets a new password
+// on an existing account. The public half (sending a request, opening a
+// link) runs straight from the browser: app/signup, app/invite.
+
+export type AccessRequestRow = {
+  id: string;
+  reference: string;
+  name: string;
+  email: string;
+  phone: string;
+  organisation: string;
+  requested_role: UserRole;
+  note: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  decided_at: string | null;
+  decided_by_name: string;
+  decision_note: string;
+  /** The email already belongs to an account. */
+  has_account: boolean;
+  /** Other pending requests with the same email. */
+  same_email_pending: number;
+  /** Other requests from the same IP address in the last 24 hours. */
+  same_ip_24h: number;
+};
+
+export type AccountLinkRow = {
+  id: string;
+  purpose: "invite" | "reset";
+  email: string;
+  role: UserRole;
+  name: string;
+  created_by_name: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+  revoked_at: string | null;
+  status: "open" | "used" | "expired" | "revoked";
+};
+
+/** A link just made. The token is returned this once only; the API keeps
+ * just its hash. */
+export type IssuedLink = { link: AccountLinkRow; token: string };
+
+/** Hours a new link stays usable. */
+export type LinkLifetime = 24 | 72 | 168;
+
+export async function listAccessRequests(status: "pending" | "all" = "pending"): Promise<AccessRequestRow[]> {
+  const res = await apiFetch(`${API_BASE_URL}/access-requests?status=${status}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load access requests"));
+  return res.json();
+}
+
+export async function approveAccessRequest(
+  id: string,
+  role: UserRole,
+  expiresHours: LinkLifetime
+): Promise<IssuedLink & { request: AccessRequestRow }> {
+  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, expires_hours: expiresHours }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to approve the request"));
+  return res.json();
+}
+
+export async function rejectAccessRequest(id: string, note: string): Promise<AccessRequestRow> {
+  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(note ? { note } : {}),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to reject the request"));
+  return res.json();
+}
+
+/** Erases the request for good (someone asking for their details to be
+ * removed, under the PDPA). */
+export async function deleteAccessRequest(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to delete the request"));
+}
+
+/** Newest first. */
+export async function listAccountLinks(): Promise<AccountLinkRow[]> {
+  const res = await apiFetch(`${API_BASE_URL}/account-links`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load links"));
+  return res.json();
+}
+
+/** An invite link made directly, without a request. */
+export async function createAccountLink(fields: {
+  email: string;
+  role: UserRole;
+  name?: string;
+  expires_hours?: LinkLifetime;
+}): Promise<IssuedLink> {
+  const res = await apiFetch(`${API_BASE_URL}/account-links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to create the link"));
+  return res.json();
+}
+
+export async function revokeAccountLink(id: string): Promise<AccountLinkRow> {
+  const res = await apiFetch(`${API_BASE_URL}/account-links/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to cancel the link"));
+  return res.json();
+}
+
+/** A one-time link for the user to choose a new password ("Reset
+ * password" in Settings). */
+export async function createResetLink(userId: string, expiresHours: LinkLifetime = 24): Promise<IssuedLink> {
+  const res = await apiFetch(`${API_BASE_URL}/users/${userId}/reset-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expires_hours: expiresHours }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to create the reset link"));
   return res.json();
 }
 

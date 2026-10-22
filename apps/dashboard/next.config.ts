@@ -25,6 +25,27 @@ const nextConfig: NextConfig = {
           { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
         ],
       },
+      // Invite and password-reset links (/invite#<token>). The token is in
+      // the fragment, which browsers never send, and the page takes it out
+      // of the address bar at once; these headers keep the page itself out
+      // of caches, search engines and other sites' Referer logs too.
+      {
+        source: "/invite",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "no-store" },
+          { key: "X-Robots-Tag", value: "noindex" },
+        ],
+      },
+      // Public, but nothing a search engine needs to list.
+      {
+        source: "/signup",
+        headers: [{ key: "X-Robots-Tag", value: "noindex" }],
+      },
+      {
+        source: "/privacy",
+        headers: [{ key: "X-Robots-Tag", value: "noindex" }],
+      },
     ];
   },
   async rewrites() {

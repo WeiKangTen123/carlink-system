@@ -28,7 +28,9 @@ function isActiveLink(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
-export function Sidebar({ showSettings }: { showSettings: boolean }) {
+/** pendingRequests: access requests waiting for an admin (GET /auth/me),
+ * shown as a count on Settings. */
+export function Sidebar({ showSettings, pendingRequests = 0 }: { showSettings: boolean; pendingRequests?: number }) {
   const pathname = usePathname();
   const items = showSettings ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.href !== "/settings");
 
@@ -56,6 +58,15 @@ export function Sidebar({ showSettings }: { showSettings: boolean }) {
             >
               <Icon style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span>{item.label}</span>
+              {item.href === "/settings" && pendingRequests > 0 && (
+                <span
+                  className="sidebar-badge"
+                  title={`${pendingRequests} access ${pendingRequests === 1 ? "request" : "requests"} waiting`}
+                  aria-label={`${pendingRequests} access ${pendingRequests === 1 ? "request" : "requests"} waiting`}
+                >
+                  {pendingRequests > 99 ? "99+" : pendingRequests}
+                </span>
+              )}
             </Link>
           );
         })}

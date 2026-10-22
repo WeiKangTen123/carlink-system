@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { CarFront, Eye, EyeOff } from "lucide-react";
+import Link from "next/link";
+import { Eye, EyeOff } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api";
+import { LoginBrand } from "@/components/LoginBrand";
 
 export function LoginForm({ next }: { next: string }) {
   const [email, setEmail] = useState("");
@@ -40,15 +42,7 @@ export function LoginForm({ next }: { next: string }) {
   return (
     <div className="login-screen">
       <form className="login-card card-glass" onSubmit={submit}>
-        <div className="login-brand">
-          <div className="brand-icon">
-            <CarFront style={{ width: 18, height: 18 }} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-            <span style={{ fontWeight: 800, letterSpacing: "0.04em", fontSize: "14px" }}>CARLINK</span>
-            <span style={{ fontSize: "10px", color: "var(--accent-primary)", fontWeight: 700, letterSpacing: "0.08em" }}>STUDIO 2.0</span>
-          </div>
-        </div>
+        <LoginBrand />
 
         <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>Sign in</h1>
         <p className="setup-note" style={{ marginBottom: 18 }}>Use the email and password your admin set up for you.</p>
@@ -103,6 +97,14 @@ export function LoginForm({ next }: { next: string }) {
 
         <p className="setup-note" style={{ margin: "16px 0 0", textAlign: "center" }}>
           Forgot your password? Ask your admin to reset it.
+        </p>
+
+        <div className="login-divider" />
+        <p className="setup-note" style={{ margin: 0, textAlign: "center" }}>
+          New to Carlink Studio?{" "}
+          <Link href="/signup" className="setup-help-link">
+            Request access →
+          </Link>
         </p>
       </form>
     </div>

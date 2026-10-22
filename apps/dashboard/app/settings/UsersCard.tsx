@@ -2,11 +2,22 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, KeyRound, Pencil, Plus, UserCheck, UserX, Users } from "lucide-react";
-import type { UserAccount } from "@/lib/api";
-import { createUserAction, listUsersAction, resetUserPasswordAction, updateUserAction } from "./actions";
+import { Check, Copy, KeyRound, Pencil, Plus, UserCheck, UserPlus, UserX, Users } from "lucide-react";
+import type { AccessRequestRow, AccountLinkRow, UserAccount } from "@/lib/api";
+import {
+  createResetLinkAction,
+  createUserAction,
+  listAccessRequestsAction,
+  listAccountLinksAction,
+  listUsersAction,
+  updateUserAction,
+} from "./actions";
+import { AccessRequestsTab } from "./AccessRequestsTab";
+import { AccountLinksTab } from "./AccountLinksTab";
+import { CreateInviteDialog, LinkReadyDialog, type ReadyLink } from "./LinkDialogs";
 
 type Role = "admin" | "surveyor";
+type Tab = "users" | "requests" | "links";
 type Draft = { email: string; name: string; role: Role; qualifications: string; license_number: string; firm_name: string };
 
 const EMPTY_DRAFT: Draft = { email: "", name: "", role: "surveyor", qualifications: "", license_number: "", firm_name: "" };
@@ -23,8 +34,7 @@ function statusOf(u: UserAccount): { label: string; tone: "ok" | "warn" | "off" 
   return { label: "Active", tone: "ok" };
 }
 
-/** Shown once after adding a user or resetting a password -- the API never
- * returns it again. */
+/** Shown once after adding a user -- the API never returns it again. */
 function TemporaryPassword({ name, password, onClose }: { name: string; password: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -128,7 +138,8 @@ function UserForm({
         </div>
         {!editing && (
           <p className="setup-note" style={{ marginTop: 12 }}>
-            A temporary password is made for them; you&apos;ll see it once, after saving.
+            A temporary password is made for them; you&apos;ll see it once, after saving. To let them choose their own
+            password instead, use Create invite link.
           </p>
         )}
         {error && <div className="setup-error" style={{ marginTop: 12 }}>{error}</div>}
@@ -145,90 +156,25 @@ function UserForm({
   );
 }
 
-export function UsersCard({ initialUsers, currentUserId }: { initialUsers: UserAccount[]; currentUserId: string }) {
-  const router = useRouter();
-  const [users, setUsers] = useState(initialUsers);
-  const [form, setForm] = useState<{ user: UserAccount | null } | null>(null);
-  const [temp, setTemp] = useState<{ name: string; password: string } | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = async () => {
-    const result = await listUsersAction();
-    if ("users" in result) setUsers(result.users);
-  };
-
-  const submitForm = async (draft: Draft): Promise<string | null> => {
-    if (form?.user) {
-      const result = await updateUserAction(form.user.id, draft);
-      if ("error" in result) return result.error;
-      // Your own name is in the top bar.
-      if (form.user.id === currentUserId) router.refresh();
-    } else {
-      const result = await createUserAction(draft);
-      if ("error" in result) return result.error;
-      setTemp({ name: result.user.name, password: result.temporaryPassword });
-    }
-    setForm(null);
-    await refresh();
-    return null;
-  };
-
-  const resetPassword = async (u: UserAccount) => {
-    if (!confirm(`Reset ${u.name}'s password? They are signed out everywhere and get a new temporary password.`)) return;
-    setBusyId(u.id);
-    setError(null);
-    const result = await resetUserPasswordAction(u.id);
-    setBusyId(null);
-    if ("error" in result) {
-      setError(result.error);
-      return;
-    }
-    setTemp({ name: u.name, password: result.temporaryPassword });
-    await refresh();
-  };
-
-  const setActive = async (u: UserAccount, active: boolean) => {
-    if (!active && !confirm(`Disable ${u.name}? They are signed out at once and can't sign in until enabled again.`)) return;
-    setBusyId(u.id);
-    setError(null);
-    const result = await updateUserAction(u.id, { active });
-    setBusyId(null);
-    if ("error" in result) setError(result.error);
-    else await refresh();
-  };
-
-  const activeCount = users.filter((u) => u.active).length;
-
+function UsersTable({
+  users,
+  currentUserId,
+  busyId,
+  error,
+  onEdit,
+  onResetPassword,
+  onSetActive,
+}: {
+  users: UserAccount[];
+  currentUserId: string;
+  busyId: string | null;
+  error: string | null;
+  onEdit: (u: UserAccount) => void;
+  onResetPassword: (u: UserAccount) => void;
+  onSetActive: (u: UserAccount, active: boolean) => void;
+}) {
   return (
-    <div className="card-glass setup-card">
-      <div className="setup-card-head">
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
-          <div className="setup-card-icon" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Users style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div className="card-title" style={{ marginBottom: 2 }}>Users</div>
-            <div className="card-subtitle" style={{ marginBottom: 0 }}>Who can sign in, and what they can do</div>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <span className="setup-status">
-            <span style={{ color: "var(--badge-green-text)" }}>●</span> {activeCount} active
-          </span>
-          <button
-            type="button"
-            className="btn-primary-modern"
-            style={{ fontSize: 12, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 4 }}
-            onClick={() => setForm({ user: null })}
-          >
-            <Plus style={{ width: 13, height: 13 }} /> Add user
-          </button>
-        </div>
-      </div>
-      <div className="setup-card-divider" />
-
-      {temp && <TemporaryPassword name={temp.name} password={temp.password} onClose={() => setTemp(null)} />}
+    <>
       {error && <div className="setup-error">{error}</div>}
 
       <div style={{ overflowX: "auto" }}>
@@ -269,21 +215,21 @@ export function UsersCard({ initialUsers, currentUserId }: { initialUsers: UserA
                   </td>
                   <td>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                      <button type="button" className="btn-secondary-modern users-action" onClick={() => setForm({ user: u })} disabled={busy}>
+                      <button type="button" className="btn-secondary-modern users-action" onClick={() => onEdit(u)} disabled={busy}>
                         <Pencil style={{ width: 11, height: 11 }} /> Edit
                       </button>
                       {!isSelf && (
-                        <button type="button" className="btn-secondary-modern users-action" onClick={() => resetPassword(u)} disabled={busy}>
+                        <button type="button" className="btn-secondary-modern users-action" onClick={() => onResetPassword(u)} disabled={busy}>
                           <KeyRound style={{ width: 11, height: 11 }} /> Reset password
                         </button>
                       )}
                       {!isSelf &&
                         (u.active ? (
-                          <button type="button" className="btn-secondary-modern users-action danger" onClick={() => setActive(u, false)} disabled={busy}>
+                          <button type="button" className="btn-secondary-modern users-action danger" onClick={() => onSetActive(u, false)} disabled={busy}>
                             <UserX style={{ width: 11, height: 11 }} /> Disable
                           </button>
                         ) : (
-                          <button type="button" className="btn-secondary-modern users-action" onClick={() => setActive(u, true)} disabled={busy}>
+                          <button type="button" className="btn-secondary-modern users-action" onClick={() => onSetActive(u, true)} disabled={busy}>
                             <UserCheck style={{ width: 11, height: 11 }} /> Enable
                           </button>
                         ))}
@@ -296,9 +242,206 @@ export function UsersCard({ initialUsers, currentUserId }: { initialUsers: UserA
         </table>
       </div>
       <p className="setup-note" style={{ marginTop: 12, marginBottom: 0 }}>
-        Forgot password? Use Reset password and pass the temporary one on. Users are disabled rather than deleted, so
-        the history on their cases still shows who did what.
+        Forgot password? Use Reset password and send them the link. Users are disabled rather than deleted, so the
+        history on their cases still shows who did what.
       </p>
+    </>
+  );
+}
+
+/** Users, plus the ways in: access requests from the public /signup page,
+ * and the one-time invite and password reset links an admin sends. */
+export function UsersCard({
+  initialUsers,
+  initialRequests,
+  initialLinks,
+  currentUserId,
+}: {
+  initialUsers: UserAccount[];
+  /** Pending only. Null when they couldn't be loaded. */
+  initialRequests: AccessRequestRow[] | null;
+  initialLinks: AccountLinkRow[] | null;
+  currentUserId: string;
+}) {
+  const router = useRouter();
+  const [tab, setTab] = useState<Tab>("users");
+  const [users, setUsers] = useState(initialUsers);
+  const [requests, setRequests] = useState(initialRequests);
+  const [showDecided, setShowDecided] = useState(false);
+  const [links, setLinks] = useState(initialLinks);
+  const [form, setForm] = useState<{ user: UserAccount | null } | null>(null);
+  const [inviting, setInviting] = useState(false);
+  const [temp, setTemp] = useState<{ name: string; password: string } | null>(null);
+  const [ready, setReady] = useState<ReadyLink | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const result = await listUsersAction();
+    if ("users" in result) setUsers(result.users);
+  };
+
+  const refreshRequests = async (decided = showDecided) => {
+    const result = await listAccessRequestsAction(decided ? "all" : "pending");
+    setRequests("requests" in result ? result.requests : null);
+  };
+
+  const refreshLinks = async () => {
+    const result = await listAccountLinksAction();
+    setLinks("links" in result ? result.links : null);
+  };
+
+  /** A new link to show once. It also appears in Invites & links. */
+  const issued = (link: ReadyLink) => {
+    setReady(link);
+    refreshLinks();
+  };
+
+  const submitForm = async (draft: Draft): Promise<string | null> => {
+    if (form?.user) {
+      const result = await updateUserAction(form.user.id, draft);
+      if ("error" in result) return result.error;
+      // Your own name is in the top bar.
+      if (form.user.id === currentUserId) router.refresh();
+    } else {
+      const result = await createUserAction(draft);
+      if ("error" in result) return result.error;
+      setTemp({ name: result.user.name, password: result.temporaryPassword });
+    }
+    setForm(null);
+    await refresh();
+    return null;
+  };
+
+  const resetPassword = async (u: UserAccount) => {
+    if (!confirm(`Create a password reset link for ${u.name}? You send it to them, and they choose a new password with it.`)) return;
+    setBusyId(u.id);
+    setError(null);
+    const result = await createResetLinkAction(u.id);
+    setBusyId(null);
+    if ("error" in result) {
+      setError(result.error);
+      return;
+    }
+    issued({
+      purpose: "reset",
+      token: result.token,
+      name: u.name,
+      email: u.email,
+      expiresAt: result.link.expires_at,
+      phone: null,
+    });
+    await refresh();
+  };
+
+  const setActive = async (u: UserAccount, active: boolean) => {
+    if (!active && !confirm(`Disable ${u.name}? They are signed out at once and can't sign in until enabled again.`)) return;
+    setBusyId(u.id);
+    setError(null);
+    const result = await updateUserAction(u.id, { active });
+    setBusyId(null);
+    if ("error" in result) setError(result.error);
+    else await refresh();
+  };
+
+  const activeCount = users.filter((u) => u.active).length;
+  const pendingCount = requests?.filter((r) => r.status === "pending").length;
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "users", label: "Active users" },
+    { id: "requests", label: pendingCount ? `Pending requests (${pendingCount})` : "Pending requests" },
+    { id: "links", label: "Invites & links" },
+  ];
+
+  return (
+    <div className="card-glass setup-card">
+      <div className="setup-card-head">
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          <div className="setup-card-icon" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Users style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div className="card-title" style={{ marginBottom: 2 }}>Users</div>
+            <div className="card-subtitle" style={{ marginBottom: 0 }}>Who can sign in, and what they can do</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <span className="setup-status">
+            <span style={{ color: "var(--badge-green-text)" }}>●</span> {activeCount} active
+          </span>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            style={{ fontSize: 12, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 4 }}
+            onClick={() => setForm({ user: null })}
+            title="Make the account now, with a temporary password you pass on"
+          >
+            <UserPlus style={{ width: 13, height: 13 }} /> Add user
+          </button>
+          <button
+            type="button"
+            className="btn-primary-modern"
+            style={{ fontSize: 12, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 4 }}
+            onClick={() => setInviting(true)}
+          >
+            <Plus style={{ width: 13, height: 13 }} /> Create invite link
+          </button>
+        </div>
+      </div>
+
+      <div className="case-tab-bar" role="tablist" aria-label="Users" style={{ marginBottom: 16 }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`case-tab ${tab === t.id ? "active" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {temp && <TemporaryPassword name={temp.name} password={temp.password} onClose={() => setTemp(null)} />}
+
+      {tab === "requests" && (
+        <AccessRequestsTab
+          requests={requests}
+          showDecided={showDecided}
+          onShowDecided={(show) => {
+            setShowDecided(show);
+            refreshRequests(show);
+          }}
+          onRetry={() => refreshRequests()}
+          onIssued={issued}
+          onChanged={() => {
+            refreshRequests();
+            // The pending count on the Settings link comes from the layout.
+            router.refresh();
+          }}
+        />
+      )}
+
+      {tab === "links" && (
+        <AccountLinksTab
+          links={links}
+          onRetry={refreshLinks}
+          onChanged={(changed) => setLinks((all) => all?.map((l) => (l.id === changed.id ? changed : l)) ?? all)}
+        />
+      )}
+
+      {tab === "users" && (
+        <UsersTable
+          users={users}
+          currentUserId={currentUserId}
+          busyId={busyId}
+          error={error}
+          onEdit={(u) => setForm({ user: u })}
+          onResetPassword={resetPassword}
+          onSetActive={setActive}
+        />
+      )}
 
       {form && (
         <UserForm
@@ -320,6 +463,18 @@ export function UsersCard({ initialUsers, currentUserId }: { initialUsers: UserA
           onSubmit={submitForm}
         />
       )}
+
+      {inviting && (
+        <CreateInviteDialog
+          onCancel={() => setInviting(false)}
+          onCreated={(link) => {
+            setInviting(false);
+            issued(link);
+          }}
+        />
+      )}
+
+      {ready && <LinkReadyDialog link={ready} onClose={() => setReady(null)} />}
     </div>
   );
 }
