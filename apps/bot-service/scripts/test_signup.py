@@ -82,7 +82,7 @@ def main() -> int:
 
     print("password rules")
     assert password_problem("short-password") == "Use at least 15 characters."
-    for weak in ("passwordpassword", "Password12345678!", "123456789012345678", "qwertyuiopasdfgh", "correct horse battery staple"):
+    for weak in ("passwordpassword", "passwordpassword1", "!!iloveyouiloveyou2026", "Password12345678!", "123456789012345678", "qwertyuiopasdfgh", "correct horse battery staple"):
         assert password_problem(weak) == TOO_COMMON, weak
     assert password_problem("tan-wei-ming-2026!", ("Tan Wei Ming", "weiming@example.com")) == TOO_PERSONAL
     assert password_problem(GOOD_PASSWORD, ("Tan Wei Ming", "weiming@example.com")) is None

@@ -112,11 +112,15 @@ def _is_predictable(password: str) -> bool:
     squashed = _SEPARATORS.sub("", low)
     if low in _common() or squashed in _common():
         return True
-    # One short piece repeated: "passwordpassword", "abcabcabcabcabc".
-    if re.fullmatch(r"(.{1,8}?)\1+", squashed):
-        return True
-    # A common word padded with digits or symbols: "Password12345678!".
-    core = re.sub(r"^[\d\W_]+|[\d\W_]+$", "", low)
+    # What's left once digits and symbols are trimmed from both ends:
+    # "Password12345678!" -> "password".
+    core = _SEPARATORS.sub("", re.sub(r"^[\d\W_]+|[\d\W_]+$", "", low))
+    # One short piece repeated, padded or not: "passwordpassword",
+    # "abcabcabcabcabc", "passwordpassword1".
+    for text in (squashed, core):
+        if text and re.fullmatch(r"(.{1,8}?)\1+", text):
+            return True
+    # A common word padded with digits or symbols.
     if core and (core in _common() or len(core) < 4):
         return True
     for run in _SEQUENCES:
