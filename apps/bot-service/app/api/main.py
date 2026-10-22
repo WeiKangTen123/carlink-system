@@ -51,21 +51,34 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
+# CORS is only needed in local development, where the dashboard (:3000) and
+# this API (:8000) are different origins. In production the browser reaches
+# the API same-origin through nginx (/api/), so no other origin is allowed:
+# the previous pattern matched any host merely containing "carlink" or
+# "sslip.io", which with credentials allowed would let such a site read the
+# API as a signed-in user once a login exists.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_origin_regex=r"https?://.*(carlink|sslip\.io|localhost|127\.0\.0\.1).*",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(whatsapp_router)
+# The WhatsApp webhook is unauthenticated (no Twilio signature check) and
+# fetches a caller-supplied media URL server-side, so it is only exposed on
+# a deployment that actually uses WhatsApp.
+if settings.twilio_account_sid and settings.twilio_auth_token:
+    app.include_router(whatsapp_router)
 app.include_router(intake_router)
+
+# The only parts of storage_dir that are meant to be downloadable: case
+# photos/PDFs and in-progress intake photos. storage_dir also holds the
+# SQLite database (carlink.db, -wal, -shm), tmp uploads and any backups, and
+# the mount used to publish all of it -- the live database was downloadable
+# at /files/carlink.db until 2026-10-21. nginx enforces the same allowlist.
+_PUBLIC_FILE_PREFIXES = ("incidents/", "intake/")
+
+
 class _ImmutableStaticFiles(StaticFiles):
     """Serves /files with long-lived caching and on-the-fly preview/thumbnail generation.
 
@@ -74,6 +87,13 @@ class _ImmutableStaticFiles(StaticFiles):
     cached hard. Missing preview/thumbnail files are dynamically generated
     on first request so existing cases get high-speed previews automatically.
     """
+
+    async def get_response(self, path: str, scope):
+        # get_path() has already normalized the path, so ".." segments are
+        # resolved before this check rather than slipping past it.
+        if not path.replace("\\", "/").startswith(_PUBLIC_FILE_PREFIXES):
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
 
     def lookup_path(self, path: str):
         full_path, stat_result = super().lookup_path(path)
@@ -377,6 +397,23 @@ class CreateReportRequest(BaseModel):
     temp_photo_paths: list[str] = []
 
 
+def _checked_temp_paths(paths: list[str]) -> list[str]:
+    """temp_photo_paths arrive from the browser, which only ever got them
+    from /reports/analyze-photos -- so anything not directly inside
+    storage/tmp is refused. Each path is copied into the public case folder
+    and then deleted, so before this check one request could publish and
+    delete any file the API can read: the SQLite database, the source code.
+    """
+    root = tmp_dir().resolve()
+    checked: list[str] = []
+    for raw in paths:
+        resolved = Path(raw).resolve()
+        if resolved.parent != root:
+            raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
+        checked.append(str(resolved))
+    return checked
+
+
 @app.post("/reports")
 def create_report(body: CreateReportRequest) -> dict:
     """Manual entry from the dashboard -- optionally with photos that were
@@ -384,6 +421,7 @@ def create_report(body: CreateReportRequest) -> dict:
     temp dir, which get moved into the report's permanent storage here once
     the reporter actually confirms and saves.
     """
+    temp_paths = _checked_temp_paths(body.temp_photo_paths)
     db = SessionLocal()
     try:
         if body.draft.vehicle_info:
@@ -401,11 +439,11 @@ def create_report(body: CreateReportRequest) -> dict:
 
         photo_paths = [
             save_photo(report.id, temp_path, i)
-            for i, temp_path in enumerate(body.temp_photo_paths)
+            for i, temp_path in enumerate(temp_paths)
             if Path(temp_path).exists()
         ]
         report.photo_paths = photo_paths
-        for temp_path in body.temp_photo_paths:
+        for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
 
         pdf_path = report_pdf_path(report.id)
@@ -424,6 +462,7 @@ def create_report(body: CreateReportRequest) -> dict:
 
 @app.put("/reports/{report_id}")
 def update_report(report_id: str, body: CreateReportRequest) -> dict:
+    temp_paths = _checked_temp_paths(body.temp_photo_paths)
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
@@ -448,12 +487,12 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
         existing_photos = r.photo_paths or []
         new_photos = [
             save_photo(r.id, temp_path, len(existing_photos) + i)
-            for i, temp_path in enumerate(body.temp_photo_paths)
+            for i, temp_path in enumerate(temp_paths)
             if Path(temp_path).exists()
         ]
         if new_photos:
             r.photo_paths = existing_photos + new_photos
-        for temp_path in body.temp_photo_paths:
+        for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
 
         pdf_path = r.pdf_path or report_pdf_path(r.id)

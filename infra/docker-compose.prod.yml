@@ -82,11 +82,17 @@ services:
     logging: *default-logging
     ports:
       # Host-side port is configurable (NGINX_PORT) so this can run
-      # alongside another app/nginx already on 80 on a shared host --
-      # defaults to 80 for a box where Carlink owns the standard port.
-      - "${NGINX_PORT:-8080}:80"
+      # alongside another app/nginx already on 80 on a shared host.
+      # Bound to localhost by default: the host's own nginx terminates
+      # HTTPS (carlink.<ip>.sslip.io, see infra/host-nginx/) and proxies
+      # here, so publishing it on every interface only added an unencrypted
+      # second way in. Set NGINX_BIND=0.0.0.0 on a box with no host proxy.
+      - "${NGINX_BIND:-127.0.0.1}:${NGINX_PORT:-8080}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Login credentials for the whole site (see nginx.conf). Created on
+      # the server, never committed; deploy.sh refuses to run without it.
+      - ./carlink.htpasswd:/etc/nginx/carlink.htpasswd:ro
     depends_on:
       - api
       - dashboard
