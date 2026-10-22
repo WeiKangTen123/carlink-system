@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.main import app  # noqa: E402
 from app.auth.core import utc_now  # noqa: E402
-from app.auth.links import sweep_signups  # noqa: E402
+from app.auth.links import claim, sweep_signups  # noqa: E402
 from app.auth.passwords import TOO_COMMON, TOO_PERSONAL, password_problem  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
 from app.reports.models import AccessRequest, AccountLink, AuditEntry, User  # noqa: E402
@@ -247,6 +247,10 @@ def main() -> int:
     ok("a new link for the same email cancels the old one")
 
     set_link(second["link"]["id"], expires_at=utc_now() - timedelta(minutes=1))
+    db = SessionLocal()
+    assert not claim(db, db.get(AccountLink, second["link"]["id"]))  # expiry is part of the claim itself
+    db.rollback()
+    db.close()
     r = anon.post("/auth/links/lookup", json={"token": second["token"]}, headers=fresh_ip())
     assert r.status_code == 410 and r.json()["code"] == "expired"
     third = admin.post("/account-links", json={"email": "late@example.com", "role": "surveyor"}).json()

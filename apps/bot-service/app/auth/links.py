@@ -100,12 +100,24 @@ def creator_still_admin(db: Session, link: AccountLink) -> bool:
 
 
 def claim(db: Session, link: AccountLink) -> bool:
-    """Marks the link used, in one statement, if nobody else has. Two
-    browsers submitting the same link at once: exactly one gets True."""
+    """Marks the link used, in one statement, if it is still unused,
+    unrevoked and unexpired. Two browsers submitting the same link at once:
+    exactly one gets True. Expiry is checked here too, not only before the
+    password is hashed, so a link can't be used in the moment it expires."""
+    now = utc_now()
     result = db.execute(
         update(AccountLink)
-        .where(AccountLink.id == link.id, AccountLink.used_at.is_(None), AccountLink.revoked_at.is_(None))
-        .values(used_at=utc_now())
+        .where(
+            AccountLink.id == link.id,
+            AccountLink.used_at.is_(None),
+            AccountLink.revoked_at.is_(None),
+            AccountLink.expires_at > now,
+        )
+        .values(used_at=now)
+        # Decided by the database alone. SQLAlchemy would otherwise re-run
+        # the WHERE in Python on loaded rows, whose times come back from
+        # SQLite without a timezone.
+        .execution_options(synchronize_session=False)
     )
     return result.rowcount == 1
 
