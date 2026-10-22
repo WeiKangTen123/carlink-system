@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
-import { useCurrentUser } from "@/components/CurrentUser";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
   caseTitle,
@@ -480,17 +480,20 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={handleEnrichAll}
-            disabled={isEnrichingAll}
-            className="btn-secondary-modern"
-            style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
-            title="On every case: vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
-          >
-            <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-            <span>{isEnrichingAll ? "Filling..." : "Fill Derived (All)"}</span>
-          </button>
+          {/* Every case at once: admins only (the API refuses others). */}
+          {isAdmin(user) && (
+            <button
+              type="button"
+              onClick={handleEnrichAll}
+              disabled={isEnrichingAll}
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
+              title="On every case: vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
+            >
+              <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+              <span>{isEnrichingAll ? "Filling..." : "Fill Derived (All)"}</span>
+            </button>
+          )}
 
           <div className="view-mode-toggle" style={{ padding: 2 }}>
             <button

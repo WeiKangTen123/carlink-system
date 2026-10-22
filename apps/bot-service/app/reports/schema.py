@@ -222,9 +222,12 @@ class SignOffInfo(BaseModel):
     reviewed_by: Optional[str] = None
     approved_by: Optional[str] = None
     surveyor_name: Optional[str] = None
-    qualifications: Optional[str] = "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC"
-    license_number: Optional[str] = "SURV-SG-0492"
-    firm_name: Optional[str] = "Carlink Consultancy"
+    # Filled from the signer's own account at sign-off (app/api/main.py).
+    # These defaulted to one fixed surveyor's qualifications, licence and
+    # firm, carried by every case.
+    qualifications: Optional[str] = None
+    license_number: Optional[str] = None
+    firm_name: Optional[str] = None
     signature_hash: Optional[str] = None
     signature_data_url: Optional[str] = None
     agreed_quantum: Optional[float] = None

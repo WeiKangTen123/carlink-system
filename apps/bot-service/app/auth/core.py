@@ -11,6 +11,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -19,7 +20,12 @@ from app.reports.models import AuditEntry, AuthSession, Report, User, iso_utc
 
 logger = logging.getLogger(__name__)
 
-SESSION_COOKIE = "carlink_session"
+# "__Host-": the browser only accepts this cookie from this exact host, over
+# HTTPS, for the whole site -- so a page on some other *.sslip.io host (they
+# can count as one "site") can't plant its own session cookie over ours.
+# The prefix needs Secure, so plain-HTTP setups (AUTH_COOKIE_SECURE=false)
+# use the bare name. The dashboard forwards either (lib/api.ts).
+SESSION_COOKIE = "__Host-carlink_session" if settings.auth_cookie_secure else "carlink_session"
 ROLES = ("admin", "surveyor")
 
 MAX_FAILED_LOGINS = 5
@@ -118,13 +124,19 @@ def resolve_session(db: Session, token: str | None) -> CurrentUser | None:
     user = db.get(User, session.user_id)
     expired = as_utc(session.expires_at) <= now or as_utc(session.last_seen_at) + idle_limit() <= now
     if expired or user is None or not user.active:
-        db.delete(session)
-        db.commit()
+        try:
+            db.execute(delete(AuthSession).where(AuthSession.token_hash == session.token_hash))
+            db.commit()
+        except OperationalError:
+            db.rollback()  # busy database; the sweep removes it later
         return None
     current = _current(user, session.token_hash)
     if now - as_utc(session.last_seen_at) >= _TOUCH_EVERY:
-        session.last_seen_at = now
+        # A plain UPDATE, not via the loaded row: if the session was ended
+        # meanwhile (sign-out in another tab), this matches nothing instead
+        # of failing the request.
         try:
+            db.execute(update(AuthSession).where(AuthSession.token_hash == session.token_hash).values(last_seen_at=now))
             db.commit()
         except OperationalError:
             # Busy database (a long write elsewhere): the request still

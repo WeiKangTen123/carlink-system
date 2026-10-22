@@ -9,11 +9,32 @@ import base64
 import hashlib
 import hmac
 import secrets
+import threading
 
 # OWASP's 32 MiB scrypt setting (N=2^15, r=8, p=3): ~0.1-0.2s per check.
 _N, _R, _P = 2**15, 8, 3
 _MAXMEM = 64 * 1024 * 1024
 _DKLEN = 32
+
+# At most this many hashes at once: each takes 32 MiB and a worker thread
+# from the pool every request (photos included) shares, so a flood of
+# sign-in attempts must not be able to take them all.
+_SLOTS = threading.BoundedSemaphore(4)
+_SLOT_WAIT_SECONDS = 10
+
+
+class HashingBusy(Exception):
+    """Too many password checks already running; ask the caller to retry."""
+
+
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    if not _SLOTS.acquire(timeout=_SLOT_WAIT_SECONDS):
+        raise HashingBusy()
+    try:
+        return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM, dklen=dklen)
+    finally:
+        _SLOTS.release()
+
 
 MIN_PASSWORD_LENGTH = 10
 # scrypt copes with any length; this only stops a request making the server
@@ -27,7 +48,7 @@ def _b64(raw: bytes) -> str:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_N, r=_R, p=_P, maxmem=_MAXMEM, dklen=_DKLEN)
+    digest = _scrypt(password, salt, _N, _R, _P, _DKLEN)
     return f"scrypt${_N}${_R}${_P}${_b64(salt)}${_b64(digest)}"
 
 
@@ -37,15 +58,7 @@ def verify_password(password: str, stored: str) -> bool:
         if scheme != "scrypt":
             return False
         expected = base64.b64decode(digest)
-        actual = hashlib.scrypt(
-            password.encode("utf-8"),
-            salt=base64.b64decode(salt),
-            n=int(n),
-            r=int(r),
-            p=int(p),
-            maxmem=_MAXMEM,
-            dklen=len(expected),
-        )
+        actual = _scrypt(password, base64.b64decode(salt), int(n), int(r), int(p), len(expected))
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(actual, expected)

@@ -38,7 +38,7 @@ from app.intake.photos import (
 )
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id, iso_utc
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import render_pdf
@@ -326,8 +326,11 @@ def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
     try:
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         # Validated so a draft always has the shape every other reader of
-        # Report.data (list, analytics, PDF) expects.
-        report.data = SecurityIncidentDraft.model_validate(body.data).model_dump()
+        # Report.data (list, analytics, PDF) expects. sign_off is never
+        # taken from the browser (see main.blank_sign_off).
+        data = SecurityIncidentDraft.model_validate(body.data).model_dump()
+        data["sign_off"] = SignOffInfo().model_dump()
+        report.data = data
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
@@ -448,6 +451,8 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         draft.damaged_parts = [item.part for item in draft.damage_summary]
 
     data = draft.model_dump()
+    # A new case is unsigned, whatever the request carried (main.blank_sign_off).
+    data["sign_off"] = SignOffInfo().model_dump()
     # Annex A/B are only synthesized when empty, so the ones drafted from
     # the AI's first damage list would otherwise survive the surveyor
     # changing that list at review. Rebuild them from the confirmed one.

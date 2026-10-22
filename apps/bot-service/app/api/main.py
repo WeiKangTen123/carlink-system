@@ -20,6 +20,7 @@ from app.api.intake import delete_intake_files, router as intake_router
 from app.auth.core import CurrentUser, audit, report_history
 from app.auth.deps import current_user, require_admin
 from app.auth.middleware import LOCAL_DEV_ORIGIN, AuthMiddleware
+from app.auth.passwords import HashingBusy
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
@@ -33,7 +34,7 @@ from app.reports.taxonomy import (
     MODEL_BODY_TYPES,
     body_type_for,
 )
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.rendering.renderer import render_pdf
 from app.storage.files import (
     generate_preview,
@@ -87,6 +88,21 @@ if settings.twilio_account_sid and settings.twilio_auth_token:
 app.include_router(auth_router)
 app.include_router(intake_router)
 
+
+@app.exception_handler(HashingBusy)
+async def _hashing_busy(request: Request, exc: HashingBusy):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse({"detail": "The server is busy. Try again in a moment."}, status_code=503)
+
+
+def blank_sign_off() -> dict:
+    """data["sign_off"] for a case nobody has signed. Only /sign-off and
+    /reopen write sign_off: every other save keeps the stored one (or this),
+    whatever the request carries -- otherwise a case could be saved as
+    "Signed Off" by anyone, under any name."""
+    return SignOffInfo().model_dump()
+
 # The only parts of storage_dir that are meant to be downloadable: case
 # photos/PDFs and in-progress intake photos. storage_dir also holds the
 # SQLite database (carlink.db, -wal, -shm), tmp uploads and any backups, and
@@ -133,7 +149,9 @@ class _ImmutableStaticFiles(StaticFiles):
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
-        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        # "private": case photos need a sign-in, so shared caches must not
+        # keep copies (nginx sets the same on /files/; /api/files/ gets this).
+        resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
         return resp
 
 
@@ -443,6 +461,7 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         v = body.draft.vehicle_info
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = body.draft.model_dump()
+    data["sign_off"] = blank_sign_off()
 
     # Photos and PDF first, the database row last, so no SQLite write lock
     # is held while Chromium renders (it used to flush the row first and
@@ -490,7 +509,7 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
         _refuse_intake_draft(r)
-        if r.status == "Signed Off":
+        if _is_signed_off(r):
             raise HTTPException(
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
@@ -500,7 +519,9 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             v = body.draft.vehicle_info
             v.body_type = body_type_for(v.make, v.model, v.body_type)
 
-        r.data = body.draft.model_dump()
+        data = body.draft.model_dump()
+        data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
+        r.data = data
 
         # New photos from this edit get appended after whatever's already
         # attached -- indexed starting from the current count, never from 0,
@@ -565,7 +586,7 @@ def review_damage_item(
             raise HTTPException(status_code=404, detail="Report not found")
         # Same lock rule update_report enforces -- a signed-off report is
         # a finalized record; reopen it first.
-        if r.status == "Signed Off":
+        if _is_signed_off(r):
             raise HTTPException(
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
@@ -599,6 +620,18 @@ def review_damage_item(
         return {"id": r.id, "item_index": item_index, "item": item}
     finally:
         db.close()
+
+
+_MAX_SIGNATURE_CHARS = 700_000  # a drawn PNG is ~10-60 KB as base64
+
+
+def _drawn_signature(value) -> str | None:
+    """Only the PNG the sign-off pad produces. The value is placed in an
+    <img src> in the PDF template, so anything else -- a URL -- would make
+    the PDF renderer fetch it from the server's own network."""
+    if isinstance(value, str) and value.startswith("data:image/png;base64,") and len(value) <= _MAX_SIGNATURE_CHARS:
+        return value
+    return None
 
 
 def _with_sign_off(report_data: dict, **updates) -> dict:
@@ -696,8 +729,9 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             "license_number": user.license_number or None,
             "firm_name": user.firm_name or None,
             "signed_by_user_id": user.id,
+            "signed_by_email": user.email,
             "signature_hash": sig_hash,
-            "signature_data_url": body_data.get("signature_data_url"),
+            "signature_data_url": _drawn_signature(body_data.get("signature_data_url")),
             "agreed_quantum": body_data.get("agreed_quantum"),
             "turnaround_days": body_data.get("turnaround_days"),
             "liability_opinion": body_data.get("liability_opinion"),
@@ -748,7 +782,8 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         except Exception as exc:
             logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
 
-        audit(db, user, "signed_off", r.id)
+        # The account's email too: the name on a profile can be edited.
+        audit(db, user, "signed_off", r.id, detail=user.email)
         db.commit()
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url, "sign_off": r.data.get("sign_off")}

@@ -85,8 +85,10 @@ export async function fetchWithTimeout(
 // actions call the API directly over the Docker network, so they forward the
 // cookie of the request they are handling.
 
-/** Set by POST /auth/login (apps/bot-service/app/auth/core.py). */
-export const SESSION_COOKIE = "carlink_session";
+/** Set by POST /auth/login (apps/bot-service/app/auth/core.py): the
+ * "__Host-" name over HTTPS, the bare one where AUTH_COOKIE_SECURE=false.
+ * The API reads only the one it sets; both are passed on. */
+export const SESSION_COOKIES = ["__Host-carlink_session", "carlink_session"] as const;
 
 /** Fired in the browser when the API says the session has ended, so the
  * page can offer to sign in again without losing what is on screen
@@ -106,8 +108,12 @@ async function forwardedCookie(): Promise<string | null> {
   // Imported lazily: this module is bundled for the browser too, where
   // next/headers doesn't exist and is never reached.
   const { cookies } = await import("next/headers");
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  return token ? `${SESSION_COOKIE}=${token}` : null;
+  const jar = await cookies();
+  const pairs = SESSION_COOKIES.flatMap((name) => {
+    const value = jar.get(name)?.value;
+    return value ? [`${name}=${value}`] : [];
+  });
+  return pairs.length ? pairs.join("; ") : null;
 }
 
 async function loginPath(): Promise<string> {

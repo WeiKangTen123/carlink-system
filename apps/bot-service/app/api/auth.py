@@ -24,6 +24,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.auth.core import (
+    LOCKOUT,
+    MAX_FAILED_LOGINS,
     SESSION_COOKIE,
     CurrentUser,
     active_admin_count,
@@ -87,6 +89,47 @@ def _note_ip_failure(ip: str) -> None:
         _ip_failures.setdefault(ip, deque()).append(time.monotonic())
 
 
+# Emails with no account get the same lockout as real ones (5 wrong, then
+# 15 minutes of 429), or the lockout itself would tell which emails exist.
+_unknown_failures: dict[str, list] = {}  # email -> [failures, locked_until]
+
+
+def _unknown_locked_for(email: str) -> float | None:
+    with _ip_lock:
+        entry = _unknown_failures.get(email)
+        if entry and entry[1] > time.monotonic():
+            return entry[1] - time.monotonic()
+        return None
+
+
+def _note_unknown_failure(email: str) -> float | None:
+    """Returns seconds locked if this failure locks the email."""
+    with _ip_lock:
+        if len(_unknown_failures) > 5000:
+            _unknown_failures.clear()
+        entry = _unknown_failures.setdefault(email, [0, 0.0])
+        entry[0] += 1
+        if entry[0] >= MAX_FAILED_LOGINS:
+            entry[0] = 0
+            entry[1] = time.monotonic() + LOCKOUT.total_seconds()
+            return LOCKOUT.total_seconds()
+        return None
+
+
+def _profile_changes(row: User, fields: tuple[str, ...]) -> dict:
+    return {f: getattr(row, f) for f in fields}
+
+
+def _describe_changes(before: dict, row: User) -> str:
+    """'role: surveyor -> admin; license_number: '' -> 'LIC-9'' for the
+    history, so a profile or role change can be traced afterwards."""
+    parts = [f"{f}: {before[f]!r} -> {getattr(row, f)!r}" for f in before if before[f] != getattr(row, f)]
+    return "; ".join(parts)
+
+
+_PROFILE_FIELDS = ("name", "qualifications", "license_number", "firm_name")
+
+
 def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         SESSION_COOKIE,
@@ -117,10 +160,17 @@ def login(body: LoginRequest, request: Request, response: Response) -> dict:
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == normalize_email(body.email)).first()
+        email = normalize_email(body.email)
+        user = db.query(User).filter(User.email == email).first()
         if user is None:
+            wait_s = _unknown_locked_for(email)
+            if wait_s:
+                raise HTTPException(status_code=429, detail=f"Too many wrong passwords. Try again in {_minutes(wait_s)}.")
             burn_time(body.password)
             _note_ip_failure(ip)
+            locked_s = _note_unknown_failure(email)
+            if locked_s:
+                raise HTTPException(status_code=429, detail=f"Too many wrong passwords. Try again in {_minutes(locked_s)}.")
             raise HTTPException(status_code=401, detail=WRONG_CREDENTIALS)
 
         # Checked before the password, so a locked account says nothing
@@ -140,8 +190,10 @@ def login(body: LoginRequest, request: Request, response: Response) -> dict:
                 raise HTTPException(status_code=429, detail=f"Too many wrong passwords. Try again in {_minutes(locked.total_seconds())}.")
             raise HTTPException(status_code=401, detail=WRONG_CREDENTIALS)
 
+        # Same answer as a wrong password: a disabled account mustn't
+        # confirm that a guessed password is right.
         if not user.active:
-            raise HTTPException(status_code=403, detail="This account is disabled. Ask your admin.")
+            raise HTTPException(status_code=401, detail=WRONG_CREDENTIALS)
 
         record_login(user)
         token = create_session(db, user, ip, request.headers.get("user-agent", ""))
@@ -196,7 +248,13 @@ def update_me(body: ProfileFields, user: CurrentUser = Depends(current_user)) ->
     db = SessionLocal()
     try:
         row = db.get(User, user.id)
+        before = _profile_changes(row, _PROFILE_FIELDS)
         _apply_profile(row, body)
+        changes = _describe_changes(before, row)
+        if changes:
+            # Name and licence are printed on sign-offs; keep a record of
+            # every change to them.
+            audit(db, user, "profile_updated", detail=f"{row.email}: {changes}")
         db.commit()
         db.refresh(row)
         return me_dict(row)
@@ -215,6 +273,18 @@ def change_password(body: PasswordChange, user: CurrentUser = Depends(current_us
     try:
         row = db.get(User, user.id)
         if not verify_password(body.current_password, row.password_hash):
+            # Counts toward the lockout, so a borrowed session can't be used
+            # to guess the password; locking also ends every session.
+            record_failed_login(row)
+            if locked_for(row):
+                end_user_sessions(db, row.id)
+                audit(db, None, "account_locked", detail=row.email)
+                db.commit()
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many wrong passwords. You've been signed out; try again in 15 minutes.",
+                )
+            db.commit()
             raise HTTPException(status_code=400, detail="Your current password is wrong.")
         problem = password_problem(body.new_password)
         if problem:
@@ -223,6 +293,7 @@ def change_password(body: PasswordChange, user: CurrentUser = Depends(current_us
             raise HTTPException(status_code=400, detail="Choose a password different from the current one.")
         row.password_hash = hash_password(body.new_password)
         row.must_change_password = False
+        row.failed_logins = 0
         # Signs out every other browser, e.g. one that has the old password.
         end_user_sessions(db, row.id, keep_hash=user.session_hash)
         audit(db, user, "password_changed", detail=row.email)
@@ -303,18 +374,20 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
         if losing_admin and active_admin_count(db) <= 1:
             raise HTTPException(status_code=409, detail="Keep at least one active admin.")
 
+        before = _profile_changes(row, ("email", "role") + _PROFILE_FIELDS)
         if body.email is not None:
             row.email = _checked_email(db, body.email, exclude_id=row.id)
         if body.role is not None:
             row.role = body.role
         _apply_profile(row, body)
+        changes = _describe_changes(before, row)
+        if changes:
+            audit(db, admin, "user_updated", detail=f"{row.email}: {changes}")
         if body.active is not None and body.active != row.active:
             row.active = body.active
             if not body.active:
                 end_user_sessions(db, row.id)
             audit(db, admin, "user_enabled" if body.active else "user_disabled", detail=row.email)
-        else:
-            audit(db, admin, "user_updated", detail=row.email)
         db.commit()
         db.refresh(row)
         return user_dict(row)

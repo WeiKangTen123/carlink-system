@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-// Kept in step with SESSION_COOKIE in lib/api.ts (not imported: this file
+// Kept in step with SESSION_COOKIES in lib/api.ts (not imported: this file
 // stays free of that module's server/browser branches).
-const SESSION_COOKIE = "carlink_session";
+const SESSION_COOKIES = ["__Host-carlink_session", "carlink_session"];
 
 /**
  * A quick check, not the real one: with no session cookie at all, go to
@@ -17,7 +17,7 @@ const SESSION_COOKIE = "carlink_session";
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  if (pathname !== "/login" && !request.cookies.has(SESSION_COOKIE)) {
+  if (pathname !== "/login" && !SESSION_COOKIES.some((name) => request.cookies.has(name))) {
     const login = request.nextUrl.clone();
     login.pathname = "/login";
     login.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + search)}`;

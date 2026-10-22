@@ -7,12 +7,21 @@ export const metadata: Metadata = {
   title: "Sign in // Carlink Studio",
 };
 
-/** Only same-site paths, so ?next= can't send anyone to another website. */
+/** Only a path on this site, so ?next= can't send anyone to another
+ * website. Checked by resolving it the way the browser will: URL parsing
+ * drops tabs and newlines, so "/<TAB>/evil.com" would otherwise become
+ * "//evil.com". */
 function safeNext(next: string | undefined): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\") || next.startsWith("/login")) {
+  if (!next || !next.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(next)) return "/";
+  const base = "http://carlink.invalid";
+  let url: URL;
+  try {
+    url = new URL(next, base);
+  } catch {
     return "/";
   }
-  return next;
+  if (url.origin !== base || url.pathname.startsWith("/login")) return "/";
+  return url.pathname + url.search + url.hash;
 }
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {

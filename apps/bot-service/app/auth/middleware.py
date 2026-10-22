@@ -22,7 +22,7 @@ from app.reports.db import SessionLocal
 
 PUBLIC_PATHS = {"/health", "/auth/login", "/auth/logout"}
 # What a user who must change their password can still do.
-PASSWORD_CHANGE_PATHS = {"/auth/me", "/auth/password", "/auth/logout"}
+PASSWORD_CHANGE_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # Same as the CORS rule in app/api/main.py: the dashboard's dev server.
 LOCAL_DEV_ORIGIN = re.compile(r"https?://(localhost|127\.0\.0\.1)(:\d+)?")
@@ -36,8 +36,10 @@ def origin_allowed(request: Request) -> bool:
         return True
     if LOCAL_DEV_ORIGIN.fullmatch(origin):
         return True
-    host = request.headers.get("host", "")
-    return bool(host) and urlsplit(origin).netloc == host
+    # Host names only: nginx passes Host without the port ($host), while the
+    # browser's Origin carries it when it isn't 80/443 (e.g. :8080).
+    host = request.headers.get("host", "").rsplit(":", 1)[0].lower()
+    return bool(host) and (urlsplit(origin).hostname or "") == host
 
 
 def _lookup(token: str | None):
@@ -71,7 +73,7 @@ class AuthMiddleware:
         if user is None:
             await JSONResponse({"detail": "Not signed in.", "code": "signed_out"}, status_code=401)(scope, receive, send)
             return
-        if user.must_change_password and scope["path"] not in PASSWORD_CHANGE_PATHS:
+        if user.must_change_password and (scope["method"], scope["path"]) not in PASSWORD_CHANGE_ALLOWED:
             await JSONResponse(
                 {"detail": "Change your temporary password first.", "code": "password_change_required"},
                 status_code=403,

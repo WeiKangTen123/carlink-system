@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.auth.core import SESSION_COOKIE, sweep_sessions, token_hash, utc_now  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
-from app.reports.models import AuthSession, User  # noqa: E402
+from app.reports.models import AuditEntry, AuthSession, User  # noqa: E402
 
 BASE = "https://carlink.test"
 ADMIN_EMAIL = "owner@example.com"
@@ -109,7 +109,8 @@ def main() -> int:
         assert admin.post("/intake", headers={"Origin": "http://localhost:3000"}).status_code == 200
         r = login(browser(), ADMIN_EMAIL, ADMIN_PASSWORD, headers={"Origin": "https://evil.example"})
         assert r.status_code == 403 and "set-cookie" not in r.headers
-        ok("a POST carrying another site's Origin is refused (sign-in too); same-site and local dev pass")
+        assert admin.post("/intake", headers={"Origin": "http://carlink.test:8080"}).status_code == 200
+        ok("a POST carrying another site's Origin is refused (sign-in too); same host on another port, and local dev, pass")
 
         print("adding a surveyor")
         r = admin.post("/users", json={"email": "Pat@Example.com", "name": "Pat Surveyor", "role": "surveyor",
@@ -127,6 +128,7 @@ def main() -> int:
         r = pat.get("/reports")
         assert r.status_code == 403 and r.json()["code"] == "password_change_required"
         assert pat.get("/auth/me").status_code == 200
+        assert pat.put("/auth/me", json={"name": "Someone Else"}).status_code == 403
         assert pat.post("/auth/password", json={"current_password": "nope", "new_password": "pat-new-password"}).status_code == 400
         assert pat.post("/auth/password", json={"current_password": temp, "new_password": "short"}).status_code == 400
         assert pat.post("/auth/password", json={"current_password": temp, "new_password": "pat-new-password"}).status_code == 200
@@ -147,14 +149,32 @@ def main() -> int:
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 2"}}).status_code == 200
         r = pat.post(f"/reports/{case_id}/sign-off", json={
             "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True,
+            "signature_data_url": "http://169.254.169.254/latest/meta-data/",
         })
         assert r.status_code == 200, r.text
         sign = r.json()["sign_off"]
         assert sign["surveyor_name"] == "Pat Surveyor" and sign["license_number"] == "LIC-123"
         assert sign["qualifications"] == "MIMI" and sign["firm_name"] == "Pat & Co."
         assert sign["signed_by_user_id"] == pat_id and sign["signature_hash"] != "FORGED"
+        assert sign["signature_data_url"] is None
         assert pat.post(f"/reports/{case_id}/sign-off", json={}).status_code == 409
-        ok("sign-off uses the signer's own profile; typed names and hashes are ignored; no double sign-off")
+        ok("sign-off uses the signer's own profile; typed names, hashes and non-image signatures are ignored; no double sign-off")
+
+        forged = {"status": "Signed Off", "surveyor_name": "Real Admin", "license_number": "LIC-ADMIN", "signature_hash": "DEADBEEF"}
+        r = pat.post("/reports", json={"draft": {"category": ["Other"], "description": "forged", "sign_off": forged}})
+        forged_id = r.json()["id"]
+        assert pat.get(f"/reports/{forged_id}").json()["data"]["sign_off"]["status"] == "Draft"
+        r = pat.put(f"/reports/{forged_id}", json={"draft": {"category": ["Other"], "description": "forged 2", "sign_off": forged}})
+        assert r.status_code == 200
+        stored = pat.get(f"/reports/{forged_id}").json()["data"]["sign_off"]
+        assert stored["status"] == "Draft" and stored["surveyor_name"] is None and stored["license_number"] is None
+        forged_draft = pat.post("/intake").json()["id"]
+        assert pat.put(f"/intake/{forged_draft}/data", json={"data": {"description": "", "sign_off": forged}}).status_code == 200
+        assert pat.get(f"/intake/{forged_draft}").json()["data"]["sign_off"]["status"] == "Draft"
+        r = pat.post(f"/intake/{forged_draft}/finalize", json={"data": {"category": ["Other"], "description": "x", "sign_off": forged}})
+        assert r.status_code == 200, r.text
+        assert pat.get(f"/reports/{forged_draft}").json()["data"]["sign_off"]["status"] == "Draft"
+        ok("a sign-off sent inside a case save, autosave or finalize is ignored -- only /sign-off signs")
 
         print("reopening and deleting")
         r = admin.post("/users", json={"email": "sam@example.com", "name": "Sam Surveyor"})
@@ -172,8 +192,11 @@ def main() -> int:
         history = pat.get(f"/reports/{case_id}").json()["history"]
         actions = [(h["action"], h["user_name"]) for h in history]
         assert actions == [("created", "Pat Surveyor"), ("edited", "Pat Surveyor"), ("signed_off", "Pat Surveyor"), ("reopened", "Pat Surveyor")], actions
-        ok("history: created, edited (two saves = one entry), signed off, reopened -- with names")
+        assert history[2]["detail"] == "pat@example.com"
+        ok("history: created, edited (two saves = one entry), signed off (with the account email), reopened")
 
+        for rid in (forged_id, forged_draft):
+            assert admin.delete(f"/reports/{rid}").status_code == 200
         assert admin.delete(f"/reports/{case_id}").status_code == 200
         assert admin.delete(f"/reports/{draft_by_admin}").status_code == 200
         ok("admin deletes a case")
@@ -191,6 +214,24 @@ def main() -> int:
         assert login(browser(), "sam@example.com", "sam-new-password").status_code == 200
         ok("the lock lifts after its time")
 
+        other = {"X-Real-IP": "198.51.100.7"}
+        codes = [login(browser(), "ghost@example.com", "wrong-password", headers=other).status_code for _ in range(6)]
+        assert codes == [401, 401, 401, 401, 429, 429], codes
+        ok("an email with no account locks the same way, so the lockout doesn't reveal which emails exist")
+
+        guess = browser()
+        login(guess, "sam@example.com", "sam-new-password")
+        codes = [guess.post("/auth/password", json={"current_password": f"guess-{i}", "new_password": "whatever-1234"}).status_code for i in range(5)]
+        assert codes == [400, 400, 400, 400, 429], codes
+        assert guess.get("/auth/me").status_code == 401 and sam.get("/auth/me").status_code == 401
+        db = SessionLocal()
+        db.query(User).filter(User.email == "sam@example.com").update({"locked_until": None})
+        db.commit()
+        db.close()
+        sam = browser()
+        assert login(sam, "sam@example.com", "sam-new-password").status_code == 200
+        ok("guessing the current password on a signed-in session locks the account and signs it out")
+
         print("admin account controls")
         users = admin.get("/users").json()
         assert any(u["email"] == "sam@example.com" for u in users)
@@ -200,9 +241,11 @@ def main() -> int:
         ok("an admin can't disable themselves or demote the last admin")
         assert admin.patch(f"/users/{pat_id}", json={"active": False}).status_code == 200
         assert pat.get("/reports").status_code == 401
-        assert login(browser(), "pat@example.com", "pat-new-password").status_code == 403
+        assert login(browser(), "pat@example.com", "pat-new-password").status_code == 401
         assert admin.patch(f"/users/{pat_id}", json={"active": True}).status_code == 200
-        ok("disabling a user signs them out at once and stops them signing in")
+        ok("disabling a user signs them out at once and stops them signing in (same answer as a wrong password)")
+        assert admin.patch(f"/users/{pat_id}", json={"role": "admin"}).status_code == 200
+        assert admin.patch(f"/users/{pat_id}", json={"role": "surveyor"}).status_code == 200
         r = admin.post(f"/users/{pat_id}/reset-password")
         assert r.status_code == 200
         assert login(browser(), "pat@example.com", "pat-new-password").status_code == 401
@@ -215,7 +258,12 @@ def main() -> int:
         assert r.status_code == 200 and r.json()["name"] == "Sam S." and r.json()["license_number"] == "LIC-9"
         assert sam.put("/auth/me", json={"name": "  "}).status_code == 400
         assert sam.put("/auth/me", json={"role": "admin"}).json()["role"] == "surveyor"
-        ok("users edit their own name and profile, never their role")
+        db = SessionLocal()
+        details = [e.detail for e in db.query(AuditEntry).filter(AuditEntry.action.in_(["profile_updated", "user_updated"])).all()]
+        db.close()
+        assert any("Sam S." in d and "LIC-9" in d for d in details), details
+        assert any("role: 'surveyor' -> 'admin'" in d for d in details), details
+        ok("users edit their own name and profile, never their role; profile and role changes are in the history")
 
         print("session end")
         token = sam.cookies.get(SESSION_COOKIE)
@@ -252,8 +300,8 @@ def main() -> int:
 
         print("per-network limit")
         far = {"X-Real-IP": "203.0.113.9"}
-        for _ in range(20):
-            login(browser(), "nobody@example.com", "whatever-pw", headers=far)
+        for i in range(20):
+            login(browser(), f"nobody{i}@example.com", "whatever-pw", headers=far)
         assert login(browser(), ADMIN_EMAIL, ADMIN_PASSWORD, headers=far).status_code == 429
         assert login(browser(), ADMIN_EMAIL, ADMIN_PASSWORD).status_code == 200
         ok("20 failures from one address block it, not everyone")
