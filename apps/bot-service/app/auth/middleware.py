@@ -20,7 +20,15 @@ from starlette.responses import JSONResponse
 from app.auth.core import SESSION_COOKIE, resolve_session
 from app.reports.db import SessionLocal
 
-PUBLIC_PATHS = {"/health", "/auth/login", "/auth/logout"}
+PUBLIC_PATHS = {
+    "/health",
+    "/auth/login",
+    "/auth/logout",
+    # Signing up and using a one-time link (app/api/signup.py).
+    "/auth/access-requests",
+    "/auth/links/lookup",
+    "/auth/links/accept",
+}
 # What a user who must change their password can still do.
 PASSWORD_CHANGE_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}

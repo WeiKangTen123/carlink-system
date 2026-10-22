@@ -30,7 +30,7 @@ from app.reports.models import AuditEntry, AuthSession, User  # noqa: E402
 
 BASE = "https://carlink.test"
 ADMIN_EMAIL = "owner@example.com"
-ADMIN_PASSWORD = "first-admin-pw"
+ADMIN_PASSWORD = "first admin violet harbour"
 
 
 def ok(label: str) -> None:
@@ -129,9 +129,9 @@ def main() -> int:
         assert r.status_code == 403 and r.json()["code"] == "password_change_required"
         assert pat.get("/auth/me").status_code == 200
         assert pat.put("/auth/me", json={"name": "Someone Else"}).status_code == 403
-        assert pat.post("/auth/password", json={"current_password": "nope", "new_password": "pat-new-password"}).status_code == 400
+        assert pat.post("/auth/password", json={"current_password": "nope", "new_password": "amber lantern quiet harbour"}).status_code == 400
         assert pat.post("/auth/password", json={"current_password": temp, "new_password": "short"}).status_code == 400
-        assert pat.post("/auth/password", json={"current_password": temp, "new_password": "pat-new-password"}).status_code == 200
+        assert pat.post("/auth/password", json={"current_password": temp, "new_password": "amber lantern quiet harbour"}).status_code == 200
         assert pat.get("/reports").status_code == 200
         ok("temporary password: nothing but changing it works until it is changed")
 
@@ -180,7 +180,7 @@ def main() -> int:
         r = admin.post("/users", json={"email": "sam@example.com", "name": "Sam Surveyor"})
         sam = browser()
         login(sam, "sam@example.com", r.json()["temporary_password"])
-        sam.post("/auth/password", json={"current_password": r.json()["temporary_password"], "new_password": "sam-new-password"})
+        sam.post("/auth/password", json={"current_password": r.json()["temporary_password"], "new_password": "silver kettle rainy morning"})
         assert sam.post(f"/reports/{case_id}/reopen").status_code == 403
         assert pat.post(f"/reports/{case_id}/reopen").status_code == 200
         ok("only the signer or an admin may reopen")
@@ -205,13 +205,13 @@ def main() -> int:
         for _ in range(4):
             assert login(browser(), "sam@example.com", "wrong-password").status_code == 401
         assert login(browser(), "sam@example.com", "wrong-password").status_code == 429
-        assert login(browser(), "sam@example.com", "sam-new-password").status_code == 429
+        assert login(browser(), "sam@example.com", "silver kettle rainy morning").status_code == 429
         ok("5 wrong passwords lock the account; even the right one is refused while locked")
         db = SessionLocal()
         db.query(User).filter(User.email == "sam@example.com").update({"locked_until": utc_now() - timedelta(seconds=1)})
         db.commit()
         db.close()
-        assert login(browser(), "sam@example.com", "sam-new-password").status_code == 200
+        assert login(browser(), "sam@example.com", "silver kettle rainy morning").status_code == 200
         ok("the lock lifts after its time")
 
         other = {"X-Real-IP": "198.51.100.7"}
@@ -220,7 +220,7 @@ def main() -> int:
         ok("an email with no account locks the same way, so the lockout doesn't reveal which emails exist")
 
         guess = browser()
-        login(guess, "sam@example.com", "sam-new-password")
+        login(guess, "sam@example.com", "silver kettle rainy morning")
         codes = [guess.post("/auth/password", json={"current_password": f"guess-{i}", "new_password": "whatever-1234"}).status_code for i in range(5)]
         assert codes == [400, 400, 400, 400, 429], codes
         assert guess.get("/auth/me").status_code == 401 and sam.get("/auth/me").status_code == 401
@@ -229,7 +229,7 @@ def main() -> int:
         db.commit()
         db.close()
         sam = browser()
-        assert login(sam, "sam@example.com", "sam-new-password").status_code == 200
+        assert login(sam, "sam@example.com", "silver kettle rainy morning").status_code == 200
         ok("guessing the current password on a signed-in session locks the account and signs it out")
 
         print("admin account controls")
@@ -241,14 +241,14 @@ def main() -> int:
         ok("an admin can't disable themselves or demote the last admin")
         assert admin.patch(f"/users/{pat_id}", json={"active": False}).status_code == 200
         assert pat.get("/reports").status_code == 401
-        assert login(browser(), "pat@example.com", "pat-new-password").status_code == 401
+        assert login(browser(), "pat@example.com", "amber lantern quiet harbour").status_code == 401
         assert admin.patch(f"/users/{pat_id}", json={"active": True}).status_code == 200
         ok("disabling a user signs them out at once and stops them signing in (same answer as a wrong password)")
         assert admin.patch(f"/users/{pat_id}", json={"role": "admin"}).status_code == 200
         assert admin.patch(f"/users/{pat_id}", json={"role": "surveyor"}).status_code == 200
         r = admin.post(f"/users/{pat_id}/reset-password")
         assert r.status_code == 200
-        assert login(browser(), "pat@example.com", "pat-new-password").status_code == 401
+        assert login(browser(), "pat@example.com", "amber lantern quiet harbour").status_code == 401
         assert login(browser(), "pat@example.com", r.json()["temporary_password"]).json()["must_change_password"] is True
         assert admin.post(f"/users/{admin_id}/reset-password").status_code == 409
         ok("password reset: old password stops working, the temporary one must be changed")
@@ -277,21 +277,21 @@ def main() -> int:
         ok("signing out ends the session server-side; a dead cookie can still be cleared")
 
         sam2 = browser()
-        login(sam2, "sam@example.com", "sam-new-password")
+        login(sam2, "sam@example.com", "silver kettle rainy morning")
         db = SessionLocal()
         row = db.get(AuthSession, token_hash(sam2.cookies.get(SESSION_COOKIE)))
         row.last_seen_at = utc_now() - timedelta(hours=13)
         db.commit()
         assert sam2.get("/reports").status_code == 401
         sam3 = browser()
-        login(sam3, "sam@example.com", "sam-new-password")
+        login(sam3, "sam@example.com", "silver kettle rainy morning")
         row = db.get(AuthSession, token_hash(sam3.cookies.get(SESSION_COOKIE)))
         row.expires_at = utc_now() - timedelta(seconds=1)
         db.commit()
         assert sam3.get("/reports").status_code == 401
         ok("a session ends after 12 idle hours and at its hard limit")
 
-        login(browser(), "sam@example.com", "sam-new-password")
+        login(browser(), "sam@example.com", "silver kettle rainy morning")
         db.query(AuthSession).update({"last_seen_at": utc_now() - timedelta(days=2)})
         db.commit()
         assert sweep_sessions(db) >= 1 and db.query(AuthSession).count() == 0
