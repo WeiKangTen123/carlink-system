@@ -32,7 +32,8 @@ class Session:
     template_sent: bool = False
     location: Optional[str] = None
     incident_datetime: Optional[str] = None
-    reported_to_authorities: bool = False
+    # None until the reporter actually answers (see flow.parse_template_reply).
+    reported_to_authorities: bool | None = None
     reporter_name: Optional[str] = None
     reporter_role: Optional[str] = None
     reporter_contact: Optional[str] = None

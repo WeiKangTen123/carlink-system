@@ -20,7 +20,7 @@ from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report
+from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -47,6 +47,10 @@ from app.storage.files import (
 async def lifespan(app: FastAPI):
     init_db()
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
+    if settings.run_background_cleanup:
+        from app.intake.cleanup import start_background_cleanup
+
+        start_background_cleanup()
     yield
 
 
@@ -125,6 +129,19 @@ Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/files", _ImmutableStaticFiles(directory=settings.storage_dir), name="files")
 
 
+def _refuse_intake_draft(r: Report) -> None:
+    """Unfinished intakes (status "intake") are only handled through
+    /intake. Run through these older endpoints, a draft got signed off or
+    reopened with its photos still in storage/intake/ (never attached, and
+    leaked on delete), got a PDF showing raw "@<photo id>" references, or
+    had invented quantum written into it by AI Auto-Map."""
+    if r.status == "intake":
+        raise HTTPException(
+            status_code=409,
+            detail="This is an unfinished intake -- finish it in New Intake first.",
+        )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -158,25 +175,12 @@ def list_reports() -> list[dict]:
                     .first()
                 )
                 thumbnail_url = to_thumbnail_url(first_photo.path) if first_photo else None
-            elif not raw_vname or raw_vname.strip() in ("", "None", "None None", "Motor Vehicle", "Black vehicle"):
-                desc = (data.get("description") or "").lower()
-                plate = (vehicle_info.get("plate_number") or "").upper()
-                if "bmw" in desc or "SLB3939" in plate:
-                    raw_vname = "BMW 3 Series"
-                elif "honda" in desc or "vezel" in desc or "SLK3063" in plate:
-                    raw_vname = "Honda Vezel 1.5A"
-                elif "civic" in desc or "SLJ" in plate or "SMM" in plate or "SGP" in plate:
-                    raw_vname = "Honda Civic 1.6"
-                elif "hiace" in desc or "toyota" in desc or "SDX" in plate or "SLG" in plate:
-                    raw_vname = "Toyota Corolla Altis"
-                elif "golf" in desc or "volkswagen" in desc or "SGX" in plate:
-                    raw_vname = "Volkswagen Golf"
-                elif "mercedes" in desc or "SBA" in plate:
-                    raw_vname = "Mercedes-Benz C200"
-                elif vehicle_info.get("body_type"):
-                    raw_vname = f"Passenger {vehicle_info.get('body_type')}"
-                else:
-                    raw_vname = "Passenger Sedan"
+            elif not raw_vname or raw_vname.strip() in ("", "None", "None None"):
+                # Unrecorded stays unrecorded (the dashboard shows "Vehicle
+                # not recorded"). This used to guess from description words
+                # and plate prefixes ("SLJ..." -> Honda Civic 1.6), falling
+                # back to "Passenger Sedan".
+                raw_vname = None
             vehicle_name = raw_vname
 
             # Same damage_summary-else-damaged_parts fallback used in the
@@ -192,7 +196,7 @@ def list_reports() -> list[dict]:
                 "type": r.type,
                 "status": r.status,
                 "channel": r.channel,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
                 "location": data.get("location"),
                 "category": data.get("category"),
                 "thumbnail_url": thumbnail_url,
@@ -238,16 +242,13 @@ def get_report(report_id: str) -> dict:
                 "photo_thumb_urls": [],
                 "photo_preview_urls": [],
                 "pdf_url": None,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
             }
 
-        # Ensure full Annex A, B, C, and BOLA loss adjusting matrices exist
-        data = r.data or {}
-        if not data.get("annex_a") or not data.get("annex_b") or not data.get("annex_c") or not data.get("bola_assessment"):
-            from app.reports.synthesize_annexes import synthesize_annexes_for_report
-            data = synthesize_annexes_for_report(data)
-            r.data = data
-            db.commit()
+        # Opening a case used to "ensure" annexes by synthesizing and saving
+        # them -- a plain GET wrote invented quantum into the case. Annexes
+        # now only change through the surveyor's own edits or the explicit
+        # "fill derived fields" action (POST /reports/{id}/ai-enrich).
 
         # If PDF is missing or doesn't exist on disk, render it on-demand
         pdf_path = r.pdf_path
@@ -276,7 +277,7 @@ def get_report(report_id: str) -> dict:
             "photo_thumb_urls": photo_thumb_urls,
             "photo_preview_urls": photo_preview_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
-            "created_at": r.created_at.isoformat(),
+            "created_at": iso_utc(r.created_at),
         }
     finally:
         db.close()
@@ -291,6 +292,7 @@ def download_report_pdf(report_id: str):
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
@@ -324,6 +326,7 @@ def render_report_pdf_endpoint(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         target_pdf_path = report_pdf_path(r.id)
         try:
@@ -422,42 +425,45 @@ def create_report(body: CreateReportRequest) -> dict:
     the reporter actually confirms and saves.
     """
     temp_paths = _checked_temp_paths(body.temp_photo_paths)
+    if body.draft.vehicle_info:
+        v = body.draft.vehicle_info
+        v.body_type = body_type_for(v.make, v.model, v.body_type)
+    data = body.draft.model_dump()
+
+    # Photos and PDF first, the database row last, so no SQLite write lock
+    # is held while Chromium renders (it used to flush the row first and
+    # hold the lock for the whole render, failing other writers -- the
+    # Telegram bot included -- with "database is locked").
+    report_id = gen_id()
+    photo_paths = [
+        save_photo(report_id, temp_path, i)
+        for i, temp_path in enumerate(temp_paths)
+        if Path(temp_path).exists()
+    ]
+    pdf_path: str | None = report_pdf_path(report_id)
+    try:
+        render_pdf(data, photo_paths, pdf_path, report_id=report_id)
+    except Exception as exc:
+        logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
+        pdf_path = None
+
     db = SessionLocal()
     try:
-        if body.draft.vehicle_info:
-            v = body.draft.vehicle_info
-            v.body_type = body_type_for(v.make, v.model, v.body_type)
-
-        report = Report(
+        db.add(Report(
+            id=report_id,
             channel="manual",
             reporter_chat_id="dashboard",
-            data=body.draft.model_dump(),
+            data=data,
             status="confirmed",
-        )
-        db.add(report)
-        db.flush()
-
-        photo_paths = [
-            save_photo(report.id, temp_path, i)
-            for i, temp_path in enumerate(temp_paths)
-            if Path(temp_path).exists()
-        ]
-        report.photo_paths = photo_paths
-        for temp_path in temp_paths:
-            Path(temp_path).unlink(missing_ok=True)
-
-        pdf_path = report_pdf_path(report.id)
-        try:
-            render_pdf(report.data, photo_paths, pdf_path, report_id=report.id)
-            report.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for created report %s: %s", report.id, exc)
-            report.pdf_path = None
-
+            photo_paths=photo_paths,
+            pdf_path=pdf_path,
+        ))
         db.commit()
-        return {"id": report.id}
     finally:
         db.close()
+    for temp_path in temp_paths:
+        Path(temp_path).unlink(missing_ok=True)
+    return {"id": report_id}
 
 
 @app.put("/reports/{report_id}")
@@ -468,6 +474,7 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
         if r.status == "Signed Off":
             raise HTTPException(
                 status_code=409,
@@ -604,6 +611,7 @@ def reopen_report(report_id: str) -> dict:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
@@ -629,6 +637,7 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
+        _refuse_intake_draft(r)
         
         body_data = {}
         if request:
@@ -661,7 +670,9 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
             "turnaround_days": body_data.get("turnaround_days"),
             "liability_opinion": body_data.get("liability_opinion"),
             "remarks": body_data.get("remarks"),
-            "terms_accepted": body_data.get("terms_accepted", True),
+            # Only what the surveyor actually ticked -- this defaulted to
+            # True, recording declarations nobody had accepted.
+            "terms_accepted": bool(body_data.get("terms_accepted", False)),
             "signature_date": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -725,7 +736,9 @@ def get_analytics_summary() -> dict:
         high_severity = sum(1 for r in reports if (r.data or {}).get("severity_level") == "Severe")
         
         category_counts: dict[str, int] = {}
-        severity_counts: dict[str, int] = {"Minor": 0, "Moderate": 0, "Severe": 0}
+        # "Unrated" is its own bucket: counting an unassessed case as
+        # Moderate (as this did) inflated the severity chart.
+        severity_counts: dict[str, int] = {"Minor": 0, "Moderate": 0, "Severe": 0, "Unrated": 0}
         damaged_parts_frequency: dict[str, int] = {}
         confidence_counts: dict[str, int] = {}
         resolution_hours: list[float] = []
@@ -736,7 +749,7 @@ def get_analytics_summary() -> dict:
             for c in cats:
                 category_counts[c] = category_counts.get(c, 0) + 1
 
-            sev = data.get("severity_level") or "Moderate"
+            sev = data.get("severity_level") or "Unrated"
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
             # Same damage_summary-else-damaged_parts fallback used everywhere
@@ -779,11 +792,11 @@ def get_analytics_summary() -> dict:
         recent_activity = [
             {
                 "id": r.id,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
                 "channel": r.channel,
                 "status": r.status,
-                "location": (r.data or {}).get("location") or "Site Location",
-                "reporter": (r.data or {}).get("reporter_name") or "Reporter",
+                "location": (r.data or {}).get("location"),
+                "reporter": (r.data or {}).get("reporter_name"),
                 "category": (r.data or {}).get("category") or ["Vehicle Collision or Damage"],
             }
             for r in reports[:5]
@@ -813,8 +826,9 @@ def delete_report(report_id: str) -> dict:
         if not r:
             raise HTTPException(status_code=404, detail="not found")
 
-        if r.status == "intake":
-            delete_intake_files(db, report_id)
+        # Unconditional (and a no-op for ordinary cases): a draft that was
+        # turned into a case some other way would otherwise leak its folder.
+        delete_intake_files(db, report_id)
 
         folder = None
         if r.pdf_path:
@@ -831,200 +845,53 @@ def delete_report(report_id: str) -> dict:
         db.close()
 
 
-PART_RATES_SGD = {
-    "Front Bumper": 1250,
-    "Rear Bumper": 1150,
-    "Bonnet": 1850,
-    "Boot Lid": 1650,
-    "Front Grille": 650,
-    "Radiator": 1400,
-    "Front Subframe": 3800,
-    "Left Headlamp": 1450,
-    "Right Headlamp": 1450,
-    "Left Tail Lamp": 950,
-    "Right Tail Lamp": 950,
-    "Front Windscreen": 1600,
-    "Rear Windscreen": 1400,
-    "Left Front Fender": 1350,
-    "Right Front Fender": 1350,
-    "Left Rear Quarter Panel": 2200,
-    "Right Rear Quarter Panel": 2200,
-    "Left Front Door": 1950,
-    "Right Front Door": 1950,
-    "Left Rear Door": 1950,
-    "Right Rear Door": 1950,
-    "Left Wing Mirror": 850,
-    "Right Wing Mirror": 850,
-    "Roof Panel": 2600,
-    "Underbody Shield": 750,
-}
-
-
 def _enrich_single_report_data(raw_data: dict) -> dict:
-    """Enriches a report's data with loss adjuster quantum, vehicle specs, and insurer assignment."""
+    """"Fill derived fields" (the dashboard's former "AI Auto-Map"): only
+    what follows from facts already recorded on the case --
+      - the vehicle summary string from plate + make + model,
+      - the body type from the vehicle catalogue, when make/model are known,
+      - Annex A rows listed (unpriced) from the damage found, and the annex
+        arithmetic (synthesize_annexes).
+
+    Until 2026-10-21 this guessed make and model from the plate prefix,
+    invented an estimated repair cost, insurer, claim type, workshop, claim
+    number (reusing the real CL 11900), odometer, transmission, tyres,
+    steering/brake checks and a police report with a named officer, and
+    saved them all as case data. It is not, and never was, a Gemini call.
+    """
     import copy
+
     data = copy.deepcopy(raw_data or {})
-    
-    raw_vinfo = data.get("vehicle_info")
-    vinfo = copy.deepcopy(raw_vinfo) if isinstance(raw_vinfo, dict) else {}
-
-    raw_ins = data.get("insurance_details")
-    ins = copy.deepcopy(raw_ins) if isinstance(raw_ins, dict) else {}
-
-    raw_recs = data.get("recommendations")
-    recs = copy.deepcopy(raw_recs) if isinstance(raw_recs, dict) else {}
-
-    raw_parts = data.get("damaged_parts")
-    parts = [str(p) for p in raw_parts if p] if isinstance(raw_parts, list) else []
-    if not parts and isinstance(data.get("damage_summary"), list):
-        for d in data["damage_summary"]:
-            if isinstance(d, dict) and d.get("part"):
-                parts.append(str(d.get("part")))
-
-    # 1. Infer make and model
-    desc = str(data.get("description") or "").lower()
-    plate = str(vinfo.get("plate_number") or "").upper()
-    current_make = str(vinfo.get("make") or "")
-    if not current_make or current_make in ("None", "Motor Vehicle", "Unknown"):
-        if "bmw" in desc or "SLB3939" in plate:
-            vinfo["make"] = "BMW"
-            vinfo["model"] = "320i Sedan"
-        elif "honda" in desc or "vezel" in desc or "SLK3063" in plate:
-            vinfo["make"] = "Honda"
-            vinfo["model"] = "Vezel 1.5A"
-        elif "civic" in desc or "SLJ" in plate or "SMM" in plate or "SGP" in plate:
-            vinfo["make"] = "Honda"
-            vinfo["model"] = "Civic 1.6 VTi"
-        elif "hiace" in desc or "SDX" in plate:
-            vinfo["make"] = "Toyota"
-            vinfo["model"] = "Hiace Commuter"
-        elif "corolla" in desc or "SLG" in plate or "toyota" in desc:
-            vinfo["make"] = "Toyota"
-            vinfo["model"] = "Corolla Altis"
-        elif "golf" in desc or "SGX" in plate:
-            vinfo["make"] = "Volkswagen"
-            vinfo["model"] = "Golf 1.4 TSI"
-        elif "mercedes" in desc or "SBA" in plate:
-            vinfo["make"] = "Mercedes-Benz"
-            vinfo["model"] = "C200 Avantgarde"
-        elif "avante" in desc or "SDD" in plate:
-            vinfo["make"] = "Hyundai"
-            vinfo["model"] = "Avante 1.6"
-        else:
-            vinfo["make"] = "Passenger"
-            vinfo["model"] = "Sedan"
-
-    # 2. Compute Singapore Loss Adjuster Quantum ($ SGD)
-    cost = ins.get("estimated_repair_cost")
-    if not cost or cost in ("$0", "S$0", "S$0.00", "0"):
-        base_parts_sum = sum(PART_RATES_SGD.get(p, 1200) for p in parts)
-        labor_and_paint = len(parts) * 450
-        total_sgd = max(2400, base_parts_sum + labor_and_paint)
-        sev = str(data.get("severity_level") or "").lower()
-        if "severe" in sev:
-            total_sgd = int(total_sgd * 1.35)
-        elif "moderate" in sev:
-            total_sgd = int(total_sgd * 1.15)
-        ins["estimated_repair_cost"] = f"S${total_sgd:,.2f}"
-
-    # 3. GIA Panel Insurer assignment
-    if not ins.get("insurer_name"):
-        if "sje" in desc or "court" in desc or "dispute" in desc:
-            ins["insurer_name"] = "Tokio Marine Insurance Singapore"
-            ins["claim_type"] = "Special case (SJE Court)"
-        elif "tma" in desc or "attenuator" in desc or "truck" in desc:
-            ins["insurer_name"] = "Great American Insurance Company"
-            ins["claim_type"] = "Third party (TMA Impact)"
-        elif "income" in desc or "direct" in desc or "SGX" in plate:
-            ins["insurer_name"] = "NTUC Income Insurance Co-operative"
-            ins["claim_type"] = "Third party conventional"
-        elif "aig" in desc or "SLB" in plate:
-            ins["insurer_name"] = "AIG Asia Pacific Insurance"
-            ins["claim_type"] = "Comprehensive Own Damage"
-        else:
-            ins["insurer_name"] = "Tokio Marine Singapore"
-            ins["claim_type"] = "Third party conventional"
-
-    # 4. Authorized Workshop Assignment
-    if not ins.get("workshop_assigned"):
-        loc = str(data.get("location") or "").lower()
-        if "kaki bukit" in loc or "eunos" in loc or "bedok" in loc or "east" in loc:
-            ins["workshop_assigned"] = "Precise Auto Service (Kaki Bukit Autobay)"
-        elif "sin ming" in loc or "amk" in loc or "bishan" in loc or "north" in loc:
-            ins["workshop_assigned"] = "Sin Ming Autocare (Cluster A)"
-        elif "ubi" in loc or "defu" in loc:
-            ins["workshop_assigned"] = "V-Kool Automotive (Ubi Techpark)"
-        else:
-            ins["workshop_assigned"] = "ComfortDelGro Engineering (Toh Guan Hub)"
-
-    if not ins.get("claim_number"):
-        rep_num = str(data.get("report_id") or "11900").replace("CIR-", "").replace("CL-", "")
-        ins["claim_number"] = f"CL-{rep_num}-{plate or 'SG'}"
-
-    # 5. Vehicle engineering particulars & static inspection
-    if not vinfo.get("odometer_reading"):
-        if "3063" in plate:
-            vinfo["odometer_reading"] = "015,287 km"
-        elif "7948" in plate:
-            vinfo["odometer_reading"] = "185,742 km"
-        else:
-            vinfo["odometer_reading"] = "074,820 km"
-
-    if not vinfo.get("transmission"):
-        vinfo["transmission"] = "Automatic (CVT)" if "vezel" in str(vinfo.get("model", "")).lower() else "Automatic"
-
-    if not vinfo.get("paintwork_condition"):
-        vinfo["paintwork_condition"] = "Good / Original"
-
-    if not vinfo.get("steering_condition"):
-        vinfo["steering_condition"] = "Operable"
-
-    if not vinfo.get("brakes_condition"):
-        vinfo["brakes_condition"] = "Operable"
-
-    if not vinfo.get("tyres"):
-        vinfo["tyres"] = {
-            "front_nearside": {"brand": "Dunlop Enasave", "size": "215/60 R16", "tread_depth_mm": 6.0, "condition": "Good"},
-            "front_offside": {"brand": "Dunlop Enasave", "size": "215/60 R16", "tread_depth_mm": 6.0, "condition": "Good"},
-            "rear_nearside": {"brand": "Dunlop Enasave", "size": "215/60 R16", "tread_depth_mm": 6.0, "condition": "Good"},
-            "rear_offside": {"brand": "Dunlop Enasave", "size": "215/60 R16", "tread_depth_mm": 6.0, "condition": "Good"},
-        }
-
-    # 6. Police report enrichment
-    raw_pol = data.get("police_report")
-    pol = copy.deepcopy(raw_pol) if isinstance(raw_pol, dict) else {}
-    if data.get("reported_to_authorities") or pol.get("reported_to_police"):
-        pol["reported_to_police"] = True
-        if not pol.get("police_station"):
-            pol["police_station"] = "Traffic Police HQ (Ubi Ave 3)"
-        if not pol.get("report_number"):
-            pol["report_number"] = f"TP/2026/08/{plate or '08492'}"
-        if not pol.get("officer_name"):
-            pol["officer_name"] = "Insp. Marcus Tan"
-        data["police_report"] = pol
-
-    if len(parts) >= 5 or "severe" in str(data.get("severity_level") or "").lower():
-        recs["disassembly_required"] = True
-
+    vinfo = dict(data.get("vehicle_info") or {})
+    if vinfo.get("make") or vinfo.get("model"):
+        if not vinfo.get("body_type"):
+            vinfo["body_type"] = body_type_for(vinfo.get("make"), vinfo.get("model"), None)
+        if not data.get("vehicle_details"):
+            name = " ".join(filter(None, [vinfo.get("make"), vinfo.get("model")]))
+            data["vehicle_details"] = " - ".join(filter(None, [vinfo.get("plate_number"), name]))
     data["vehicle_info"] = vinfo
-    data["insurance_details"] = ins
-    data["recommendations"] = recs
 
     from app.reports.synthesize_annexes import synthesize_annexes_for_report
-    data = synthesize_annexes_for_report(data)
-    return data
+
+    return synthesize_annexes_for_report(data)
+
+
+def _is_signed_off(r: Report) -> bool:
+    return r.status == "Signed Off" or ((r.data or {}).get("sign_off") or {}).get("status") == "Signed Off"
 
 
 @app.post("/reports/{report_id}/ai-enrich")
 def ai_enrich_report(report_id: str) -> dict:
-    """Enrich an existing report with loss adjuster quantum, vehicle specs, and insurer assignment."""
+    """Fill derived fields on one report (see _enrich_single_report_data)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
-        enriched_data = _enrich_single_report_data(r.data or {})
-        r.data = enriched_data
+        _refuse_intake_draft(r)
+        if _is_signed_off(r):
+            raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+        r.data = _enrich_single_report_data(r.data or {})
         db.commit()
         return {"id": r.id, "status": "enriched", "data": r.data}
     finally:
@@ -1033,21 +900,20 @@ def ai_enrich_report(report_id: str) -> dict:
 
 @app.post("/reports/ai-enrich-all")
 def ai_enrich_all_reports() -> dict:
-    """Batch enrich all reports missing loss adjusting quantum or insurer metadata."""
+    """Fill derived fields on every open report. Signed-off reports are
+    skipped -- this used to rewrite them too, past the sign-off lock."""
     db = SessionLocal()
     try:
-        reports = db.query(Report).filter(Report.status != "intake").all()
         count = 0
-        for r in reports:
-            enriched_data = _enrich_single_report_data(r.data or {})
-            r.data = enriched_data
+        for r in db.query(Report).filter(Report.status != "intake").all():
+            if _is_signed_off(r):
+                continue
+            r.data = _enrich_single_report_data(r.data or {})
             count += 1
         db.commit()
         return {"status": "success", "enriched_count": count}
     finally:
         db.close()
-
-
 
 
 # =============================================================================
@@ -1194,7 +1060,7 @@ def list_llm_keys() -> dict:
         rows = db.query(ApiKey).filter(ApiKey.provider == "gemini").order_by(ApiKey.created_at).all()
         return {
             "keys": [
-                {"id": r.id, "label": r.label or "", "last4": _mask(r.key), "created_at": r.created_at.isoformat()}
+                {"id": r.id, "label": r.label or "", "last4": _mask(r.key), "created_at": iso_utc(r.created_at)}
                 for r in rows
             ],
             # Surfaces that drafting still works off the deploy-time env var

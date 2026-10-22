@@ -66,7 +66,10 @@ export function StudioApp({ report }: { report: ReportDetail }) {
 
   const plate = v?.plate_number || d.vehicle_details || null;
   const vehicleName = [v?.make, v?.model].filter(Boolean).join(" ") || d.vehicle_details || "Vehicle";
-  const reportCode = d.report_id || `CIR-2026-${report.id.slice(0, 4).toUpperCase()}`;
+  // The case's own filing year (this was a hard-coded 2026).
+  const filedYear = new Date(report.created_at).getFullYear();
+  const reportCode =
+    d.report_id || `CIR-${Number.isNaN(filedYear) ? "" : `${filedYear}-`}${report.id.slice(0, 4).toUpperCase()}`;
 
   const conditionChips = [d.weather_condition, d.road_condition, d.traffic_condition].filter(Boolean) as string[];
 

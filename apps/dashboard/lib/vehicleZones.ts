@@ -352,10 +352,17 @@ export interface ClassifiedPhoto {
   damageItems: DamageSummaryItem[];
 }
 
+/** Zone for a photo no damage item links to. Not one of the 7 groups on
+ * purpose: claiming a zone needs a linked damage item. */
+export const UNCLASSIFIED_ZONE_ID = "unclassified";
+export const UNCLASSIFIED_ZONE_LABEL = "Unclassified";
+
 /** Classifies photos into the 7 primary functional automotive zones.
- * Uses exact damage_summary.photo_reference bindings first, followed by
- * sequential assessor shooting clusters (as proven in Presentation1.pptx
- * and SLK 3063 Z), ensuring all 50-70 photos are cleanly segmented.
+ * Only from damage_summary.photo_reference bindings: a photo no damage item
+ * links to is UNCLASSIFIED_ZONE_ID. It used to inherit a neighbouring
+ * photo's zone or one picked from its position in the gallery (bands fitted
+ * to the SLK 3063 Z survey), so other cases' VIN or odometer shots read as
+ * "Zone: Rear Bumper & Sensors".
  */
 export function classifyPhotos(
   photos: string[],
@@ -386,7 +393,8 @@ export function classifyPhotos(
     return null;
   };
 
-  // First pass: direct zone match from linked damage items
+  // Direct zone match from linked damage items -- the only evidence of
+  // what a photo shows.
   const directZones: (string | null)[] = photos.map((_, idx) => {
     const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
     const linked = damageByPhoto.get(photoRef);
@@ -399,39 +407,10 @@ export function classifyPhotos(
     return null;
   });
 
-  // Second pass: sequential cluster propagation & loss-adjuster photo workflow heuristics
-  // In real Singapore insurance surveys (SLK 3063 Z & SMW 7530X):
-  // 1. Initial 10% are overview & impact entry (rear_bumper / survey)
-  // 2. Middle 60% are exterior panels -> disassembly -> boot floor -> underbody
-  // 3. Final 15% are static compliance (VIN plate, odometer, tyres) -> survey
-  const n = photos.length;
-  const classifiedZones: string[] = directZones.map((direct, idx) => {
-    if (direct) return direct;
-
-    // Check adjacent neighbors (within 2 photos) with direct matches
-    for (let offset = 1; offset <= 3; offset++) {
-      if (idx - offset >= 0 && directZones[idx - offset]) return directZones[idx - offset]!;
-      if (idx + offset < n && directZones[idx + offset]) return directZones[idx + offset]!;
-    }
-
-    // Survey heuristic for standard 50-70 photo cases
-    if (n >= 30) {
-      const ratio = idx / n;
-      if (ratio > 0.82) return "survey"; // VIN, odometer, tread depths at end of survey
-      if (ratio < 0.12) return "survey"; // initial 4-corner overview
-      if (ratio > 0.55 && ratio <= 0.72) return "skeleton"; // teardown & chassis jig
-      if (ratio > 0.40 && ratio <= 0.55) return "boot_floor"; // interior floor pan
-      if (ratio > 0.22 && ratio <= 0.40) return "tailgate"; // tailgate latch & trim
-      return "rear_bumper"; // primary impact zone
-    }
-
-    return "rear_bumper";
-  });
-
   return photos.map((url, idx) => {
     const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
-    const zoneId = classifiedZones[idx] || "rear_bumper";
-    const group = VEHICLE_ZONE_GROUPS.find((g) => g.id === zoneId) || VEHICLE_ZONE_GROUPS[1];
+    const zoneId = directZones[idx] || UNCLASSIFIED_ZONE_ID;
+    const group = VEHICLE_ZONE_GROUPS.find((g) => g.id === zoneId);
     return {
       index: idx,
       photoRef,
@@ -439,7 +418,7 @@ export function classifyPhotos(
       thumbUrl: photoThumbs?.[idx] || url,
       previewUrl: photoPreviews?.[idx] || photoThumbs?.[idx] || url,
       zoneId,
-      zoneLabel: group.label,
+      zoneLabel: group ? group.label : UNCLASSIFIED_ZONE_LABEL,
       damageItems: damageByPhoto.get(photoRef) || [],
     };
   });

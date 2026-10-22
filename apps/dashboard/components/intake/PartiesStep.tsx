@@ -15,11 +15,13 @@ type Props = {
   data: ReportData;
   onChange: (update: (d: ReportData) => ReportData) => void;
   finalizing: boolean;
+  /** Photos still uploading: creating the case now would leave them out. */
+  uploading: boolean;
   onBack: () => void;
   onFinalize: () => void;
 };
 
-export function PartiesStep({ data, onChange, finalizing, onBack, onFinalize }: Props) {
+export function PartiesStep({ data, onChange, finalizing, uploading, onBack, onFinalize }: Props) {
   const people = data.people_involved || [];
   const witnesses = data.witnesses || [];
   const police: PoliceReportDetails = data.police_report || {};
@@ -163,7 +165,8 @@ export function PartiesStep({ data, onChange, finalizing, onBack, onFinalize }: 
         <button type="button" className="btn-secondary-modern" onClick={onBack} disabled={finalizing}>
           <ArrowLeft style={{ width: 14, height: 14 }} /> Back
         </button>
-        <button type="button" className="btn-primary-modern" onClick={onFinalize} disabled={finalizing}>
+        {uploading && <span className="intake-muted">Waiting for photos to finish uploading…</span>}
+        <button type="button" className="btn-primary-modern" onClick={onFinalize} disabled={finalizing || uploading}>
           {finalizing ? <Loader2 className="spin" style={{ width: 15, height: 15 }} /> : <CheckCircle2 style={{ width: 15, height: 15 }} />}
           {finalizing ? "Creating case & PDF…" : "Create case & open dossier"}
         </button>

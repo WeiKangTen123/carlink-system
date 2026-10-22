@@ -54,7 +54,7 @@ calls = {"sort": 0, "draft": 0, "fail": False}
 class FakeInteractions:
     def create(self, *, model, system_instruction, input, response_format, timeout):
         if calls["fail"]:
-            raise RuntimeError("simulated outage")
+            raise RuntimeError(calls["fail"])
         labels = [m.group(1) for part in input if part.get("type") == "text"
                   for m in [re.match(r"Photo (P\d+):", part["text"])] if m]
         assert len(labels) == len([p for p in input if p.get("type") == "image"])
@@ -163,15 +163,19 @@ def main() -> int:
         assert all(a["id"] != rid for a in client.get("/analytics/summary").json()["recent_activity"])
         ok("draft listed with thumbnail, detail bare, excluded from analytics")
 
-        calls["fail"] = True
+        calls["fail"] = "503 service_unavailable: high demand"
         client.post(f"/intake/{rid}/process", json={"mode": "read"})
         state = wait_done(client, rid)
-        assert state["stage"] == "failed" and "unavailable" in state["error"]
+        assert state["stage"] == "failed" and "busy" in state["error"], state["error"]
+        calls["fail"] = "400 invalid_request: Request contains an invalid argument."
+        client.post(f"/intake/{rid}/process", json={"mode": "read"})
+        state = wait_done(client, rid)
+        assert state["stage"] == "failed" and "rejected" in state["error"], state["error"]
         calls["fail"] = False
         client.post(f"/intake/{rid}/process", json={"mode": "read"})
         state = wait_done(client, rid)
         assert state["stage"] == "ready"
-        ok("AI outage gives a readable error; retry recovers")
+        ok("busy vs rejected AI errors are told apart; retry recovers")
 
         db = SessionLocal()
         db.get(IntakeSession, rid).stage = "sorting"

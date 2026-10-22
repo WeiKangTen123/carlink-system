@@ -22,12 +22,11 @@ import {
   Calendar,
   Building2,
   Plus,
-  Sparkles,
   RefreshCw,
   Send,
   SlidersHorizontal,
 } from "lucide-react";
-import { type ReportSummary, type ReportDetail, type AnalyticsSummary, fileUrl } from "@/lib/api";
+import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
@@ -48,6 +47,7 @@ import {
   formatSgtDateTime,
   formatIncidentTime,
   getGiaSla,
+  NOT_RECORDED,
 } from "@/lib/caseFields";
 import {
   getReportDetailAction,
@@ -96,6 +96,36 @@ const PART_PRICES_MAP: Record<string, number> = {
   "Underbody Shield": 750,
 };
 
+// Inline chip colours per severity. A part nobody rated stays neutral grey
+// and reads "Unrated" -- it used to fall back to a green "Minor" chip.
+const SEVERITY_CHIP: Record<ReturnType<typeof severityClass>, { bg: string; fg: string }> = {
+  severe: { bg: "var(--badge-red-bg)", fg: "var(--badge-red-text)" },
+  moderate: { bg: "var(--badge-amber-bg)", fg: "var(--badge-amber-text)" },
+  minor: { bg: "var(--badge-green-bg)", fg: "var(--badge-green-text)" },
+  unrated: { bg: "var(--surface-hover)", fg: "var(--text-muted)" },
+};
+
+/** Where the case came in from (ReportSummary.channel). */
+function channelLabel(channel?: string | null): string {
+  if (channel === "telegram") return "Telegram Bot (@carlink_bot)";
+  if (channel === "whatsapp") return "WhatsApp";
+  if (channel === "manual") return "Surveyor Console";
+  return channel || NOT_RECORDED;
+}
+
+/** A recorded SGD amount for display, or null when none is recorded. */
+function formatRecordedSGD(value?: string | null): string | null {
+  if (!value || !value.trim()) return null;
+  const n = parseFloat(value.replace(/[^0-9.]/g, ""));
+  return Number.isNaN(n) ? value : `$${n.toLocaleString()}`;
+}
+
+/** Damage items that came from the AI's photo analysis (they carry its
+ * confidence / photo link / box); hand-typed parts carry none of these. */
+function isAiDetected(d: DamageSummaryItem): boolean {
+  return !!(d.ai_confidence || d.photo_reference || (d.bbox_2d && d.bbox_2d.length));
+}
+
 export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [reportsList, setReportsList] = useState<ReportSummary[]>(initialReports || []);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
@@ -118,7 +148,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
-  // AI Enrichment state
+  // "Fill derived fields" state (the /ai-enrich endpoints; not an AI call)
   const [isEnrichingCurrent, setIsEnrichingCurrent] = useState(false);
   const [isEnrichingAll, setIsEnrichingAll] = useState(false);
   const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
@@ -222,7 +252,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       const sla = getGiaSla(r.created_at, isSigned);
       const vehicle = inferVehicleName(r);
       const insurer = inferInsurerName(r);
-      const workshop = inferWorkshopName(r.workshop_assigned || r.location);
+      const workshop = inferWorkshopName(r.workshop_assigned);
 
       // 1. Operational Stage Tab
       if (selectedStage === "intake" && stage !== "intake") return false;
@@ -262,7 +292,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       // 8. Omni-Search
       if (searchTerm.trim() !== "") {
         const q = searchTerm.toLowerCase();
-        const refStr = formatCarlinkRef(r.id, r.plate_number).toLowerCase();
+        const refStr = formatCarlinkRef(r.id, r.plate_number, r.created_at).toLowerCase();
         const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
@@ -296,6 +326,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     }
 
     let isMounted = true;
+    // Drop the previous case's detail first, so its photos and damage rows
+    // are never shown under this case while loading (or if the fetch fails).
+    setActiveDetail(null);
     setIsLoadingDetail(true);
     getReportDetailAction(selectedReportId).then((res) => {
       if (!isMounted) return;
@@ -340,17 +373,20 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     return filteredReports.find((r) => r.id === selectedReportId) || filteredReports[0] || null;
   }, [filteredReports, selectedReportId]);
 
-  // Handle 1-Click AI Enrich for currently selected report
+  // "Fill derived fields" (POST /reports/{id}/ai-enrich). Despite the
+  // endpoint name it is not an AI call and invents nothing: it only derives
+  // the vehicle summary from make/model, the body type from the vehicle
+  // catalogue, and unpriced Annex A rows from the recorded damage list.
   const handleEnrichCurrent = async () => {
     if (!selectedSummary) return;
     setIsEnrichingCurrent(true);
-    setEnrichNotice("Running Gemini Loss Adjuster Auto-Enrichment...");
+    setEnrichNotice("Filling derived fields...");
     try {
       const res = await aiEnrichReportAction(selectedSummary.id);
       if ("error" in res) {
-        setEnrichNotice(`Enrichment failed: ${res.error}`);
+        setEnrichNotice(`Fill derived fields failed: ${res.error}`);
       } else {
-        setEnrichNotice("Case successfully enriched with vehicle specs & quantum reserves!");
+        setEnrichNotice("Derived fields filled from this case's recorded data.");
         detailCache.current.delete(selectedSummary.id);
         // Refresh detail
         const updated = await getReportDetailAction(selectedSummary.id);
@@ -360,23 +396,23 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
         }
       }
     } catch (e) {
-      setEnrichNotice("Enrichment error encountered.");
+      setEnrichNotice("Fill derived fields failed.");
     } finally {
       setIsEnrichingCurrent(false);
       setTimeout(() => setEnrichNotice(null), 4000);
     }
   };
 
-  // Handle Batch AI Enrich for all reports
+  // Same derivation for every case (POST /reports/ai-enrich-all)
   const handleEnrichAll = async () => {
     setIsEnrichingAll(true);
-    setEnrichNotice("Enriching all incident files across Singapore GIA panel...");
+    setEnrichNotice("Filling derived fields on all cases...");
     try {
       const res = await aiEnrichAllReportsAction();
       if ("error" in res) {
-        setEnrichNotice(`Batch enrich failed: ${res.error}`);
+        setEnrichNotice(`Fill derived fields failed: ${res.error}`);
       } else {
-        setEnrichNotice(`Successfully enriched ${res.count || "all"} cases in database!`);
+        setEnrichNotice(`Derived fields filled on ${res.count ?? 0} case${res.count === 1 ? "" : "s"}.`);
         detailCache.current.clear();
         if (selectedSummary) {
           const updated = await getReportDetailAction(selectedSummary.id);
@@ -384,12 +420,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
         }
       }
     } catch {
-      setEnrichNotice("Batch enrich request completed.");
+      setEnrichNotice("Fill derived fields failed.");
     } finally {
       setIsEnrichingAll(false);
       setTimeout(() => setEnrichNotice(null), 4000);
     }
   };
+
+  // Selected case's recorded damage, and how much of it came from the AI
+  const damageItems = activeDetail?.data?.damage_summary ?? [];
+  const aiDetectedCount = damageItems.filter(isAiDetected).length;
+  const recordedParts = activeDetail?.data?.damaged_parts ?? [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -418,9 +459,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
               <AlertTriangle style={{ width: 11, height: 11, color: "var(--badge-red-text)" }} />
               <strong style={{ color: "var(--badge-red-text)" }}>{urgentCount}</strong> Urgent SLA
             </span>
-            <span className="kpi-chip-compact" title="Total assessed repair indemnity reserves in SGD">
+            <span className="kpi-chip-compact" title="Indicative estimated reserves for open cases in SGD -- not an assessed quantum">
               <DollarSign style={{ width: 11, height: 11, color: "var(--badge-green-text)" }} />
-              <strong style={{ color: "var(--badge-green-text)" }}>${totalReservesSGD.toLocaleString()}</strong> SGD
+              <strong style={{ color: "var(--badge-green-text)" }}>${totalReservesSGD.toLocaleString()}</strong> SGD Est.
             </span>
             <span className="kpi-chip-compact" title="High-stakes State Court SJE dockets & TMA collisions">
               <Flame style={{ width: 11, height: 11, color: "var(--accent-primary)" }} />
@@ -433,7 +474,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
           {enrichNotice && (
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: 4 }}>
-              <Sparkles style={{ width: 12, height: 12 }} /> {enrichNotice}
+              <RefreshCw style={{ width: 12, height: 12 }} /> {enrichNotice}
             </div>
           )}
 
@@ -443,10 +484,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             disabled={isEnrichingAll}
             className="btn-secondary-modern"
             style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
-            title="Auto-map vehicle models and reserves across all cases"
+            title="On every case: vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
           >
-            <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-            <span>{isEnrichingAll ? "Enriching..." : "Auto-Map"}</span>
+            <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+            <span>{isEnrichingAll ? "Filling..." : "Fill Derived (All)"}</span>
           </button>
 
           <div className="view-mode-toggle" style={{ padding: 2 }}>
@@ -688,10 +729,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 const isSelected = r.id === selectedReportId;
                 const arch = getClaimArchetype(r);
                 const cost = getEstimatedCostSGD(r);
-                const ref = formatCarlinkRef(r.id, r.plate_number);
+                const ref = formatCarlinkRef(r.id, r.plate_number, r.created_at);
                 const vehicle = inferVehicleName(r);
                 const insurer = inferInsurerName(r);
-                const workshop = inferWorkshopName(r.workshop_assigned || r.location);
+                const workshop = inferWorkshopName(r.workshop_assigned);
                 const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                 return (
@@ -711,8 +752,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         </span>
                       </div>
 
-                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 800, fontSize: 12, color: "var(--accent-cyan)" }}>
-                        ${cost.toLocaleString()}
+                      <span
+                        style={{ fontFamily: "var(--font-mono)", fontWeight: 800, fontSize: 12, color: cost > 0 ? "var(--accent-cyan)" : "var(--text-muted)" }}
+                        title="Indicative estimate, not an assessment"
+                      >
+                        {cost > 0 ? `Est. $${cost.toLocaleString()}` : "—"}
                       </span>
                     </div>
 
@@ -778,20 +822,14 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         {selectedSummary.plate_number || selectedSummary.id.slice(0, 8).toUpperCase()}
                       </span>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 700, color: "var(--accent-cyan)" }}>
-                        {formatCarlinkRef(selectedSummary.id, selectedSummary.plate_number)}
+                        {formatCarlinkRef(selectedSummary.id, selectedSummary.plate_number, selectedSummary.created_at)}
                       </span>
-                      
-                      {/* Interactive Human Evaluator Claim Archetype Selector */}
-                      <select
-                        value={selectedSummary.claim_type || getClaimArchetype(selectedSummary).key}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setReportsList((prev) =>
-                            prev.map((item) =>
-                              item.id === selectedSummary.id ? { ...item, claim_type: val } : item
-                            )
-                          );
-                        }}
+
+                      {/* Recorded claim type, read-only. This used to be a
+                          dropdown whose change was never saved (and whose
+                          options didn't match the recorded values), so it
+                          showed a guess as if it had been set. */}
+                      <span
                         style={{
                           fontSize: 10,
                           fontWeight: 700,
@@ -799,20 +837,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           borderRadius: 4,
                           textTransform: "uppercase",
                           background: "var(--surface-hover)",
-                          color: "var(--accent-cyan)",
-                          border: "1px solid var(--accent-cyan)",
-                          cursor: "pointer",
-                          outline: "none",
+                          color: selectedSummary.claim_type ? "var(--accent-cyan)" : "var(--text-muted)",
+                          border: `1px solid ${selectedSummary.claim_type ? "var(--accent-cyan)" : "var(--border-color)"}`,
                         }}
-                        title="Human Evaluator: Assign or change claim archetype"
+                        title="Claim type as recorded on the case (read-only here -- change it by editing the case)"
                       >
-                        <option value="tp-conv">⚖️ TP Conventional</option>
-                        <option value="od">⚖️ OD Panel</option>
-                        <option value="sje">⚖️ SJE Court</option>
-                        <option value="tma">⚖️ TMA Expressway</option>
-                        <option value="tp-direct">⚖️ TP Direct</option>
-                        <option value="pending">⏳ Pending Evaluation</option>
-                      </select>
+                        {selectedSummary.claim_type?.trim() ? `⚖️ ${selectedSummary.claim_type}` : "⏳ Pending evaluation"}
+                      </span>
 
                       {selectedSummary.status === "Signed Off" ? (
                         <span className="status-pill" style={{ background: "var(--badge-green-bg)", color: "var(--badge-green-text)", borderColor: "var(--badge-green-border)", fontSize: 10 }}>
@@ -833,7 +864,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       {inferVehicleName(selectedSummary)} • {selectedSummary.damage_count} Damaged Components
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> • Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}</strong>
+                      Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> • Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned)}</strong>
                     </div>
                   </div>
 
@@ -859,10 +890,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           disabled={isEnrichingCurrent}
                           className="btn-secondary-modern"
                           style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                          title="Auto-enrich vehicle specifications, quantum and insurer details"
+                          title="Vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
                         >
-                          <Sparkles style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-                          <span>{isEnrichingCurrent ? "Enriching..." : "AI Auto-Map"}</span>
+                          <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+                          <span>{isEnrichingCurrent ? "Filling..." : "Fill derived fields"}</span>
                         </button>
 
                         <button
@@ -902,7 +933,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       {formatSgtDateTime(selectedSummary.created_at)}
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                      Origin: {selectedSummary.channel === "telegram" ? "Telegram Bot (@carlink_bot)" : "Surveyor Console"}
+                      Origin: {channelLabel(selectedSummary.channel)}
                     </span>
                   </div>
 
@@ -914,7 +945,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       {formatIncidentTime(selectedSummary.incident_datetime, selectedSummary.created_at)}
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                      Location: {selectedSummary.location || "Singapore Island-Wide"}
+                      Location: {selectedSummary.location || NOT_RECORDED}
                     </span>
                   </div>
 
@@ -940,7 +971,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         Photographic Forensic Evidence
                       </span>
                       <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                        {activeDetail?.photo_urls?.length ? `${activeDetail.photo_urls.length} Evidence Photos` : "1 Photo Available"}
+                        {isLoadingDetail
+                          ? ""
+                          : activeDetail?.photo_urls?.length
+                            ? `${activeDetail.photo_urls.length} Evidence Photo${activeDetail.photo_urls.length === 1 ? "" : "s"}`
+                            : selectedSummary.thumbnail_url
+                              ? "Thumbnail only"
+                              : "No photos"}
                       </span>
                     </div>
 
@@ -997,16 +1034,28 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                   <div className="dossier-quantum-card">
                     {/* Financial Reserves Cards */}
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, background: "var(--surface-hover)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border-color)" }}>
-                      <div>
-                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Assessed Reserve</div>
+                      <div title="The recorded repair estimate if there is one, otherwise indicative from the damaged parts and labour tariffs -- not an assessment">
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
+                          Est. Reserve{selectedSummary.estimated_repair_cost ? "" : " (Indicative)"}
+                        </div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "var(--accent-cyan)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                          ${getEstimatedCostSGD(selectedSummary).toLocaleString()} <span style={{ fontSize: 9 }}>SGD</span>
+                          {getEstimatedCostSGD(selectedSummary) > 0 ? (
+                            <>${getEstimatedCostSGD(selectedSummary).toLocaleString()} <span style={{ fontSize: 9 }}>SGD</span></>
+                          ) : (
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>—</span>
+                          )}
                         </div>
                       </div>
+                      {/* Recorded approved cost. Replaces "Negotiated Savings",
+                          which was a flat 21% of the estimate. */}
                       <div>
-                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Negotiated Savings</div>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Approved Cost</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "var(--badge-green-text)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                          ${Math.round(getEstimatedCostSGD(selectedSummary) * 0.21).toLocaleString()} <span style={{ fontSize: 9 }}>SGD (~21%)</span>
+                          {formatRecordedSGD(selectedSummary.final_approved_cost) ? (
+                            <>{formatRecordedSGD(selectedSummary.final_approved_cost)} <span style={{ fontSize: 9 }}>SGD</span></>
+                          ) : (
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{NOT_RECORDED}</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1016,7 +1065,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       <div style={{ padding: "8px 10px", background: "var(--surface-card)", border: "1px solid var(--border-color)", borderRadius: 6 }}>
                         <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Cluster Workshop</div>
                         <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {inferWorkshopName(selectedSummary.workshop_assigned || selectedSummary.location)}
+                          {inferWorkshopName(selectedSummary.workshop_assigned)}
                         </div>
                       </div>
 
@@ -1034,13 +1083,15 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         <span style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
                           Impacted Assemblies ({selectedSummary.damage_count} Parts)
                         </span>
-                        <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
-                          AI Vision Audited
-                        </span>
+                        {aiDetectedCount > 0 && (
+                          <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                            {aiDetectedCount} of {damageItems.length} AI-detected
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 5, maxHeight: 110, overflowY: "auto", scrollbarWidth: "thin" }}>
-                        {activeDetail?.data?.damage_summary && activeDetail.data.damage_summary.length > 0 ? (
-                          activeDetail.data.damage_summary.map((d, i) => (
+                        {damageItems.length > 0 ? (
+                          damageItems.map((d, i) => (
                             <span
                               key={i}
                               style={{
@@ -1063,23 +1114,23 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                                   padding: "1px 4px",
                                   borderRadius: 3,
                                   textTransform: "uppercase",
-                                  background:
-                                    d.severity?.toLowerCase() === "severe" ? "var(--badge-red-bg)" :
-                                    d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-bg)" :
-                                    "var(--badge-green-bg)",
-                                  color:
-                                    d.severity?.toLowerCase() === "severe" ? "var(--badge-red-text)" :
-                                    d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-text)" :
-                                    "var(--badge-green-text)",
+                                  background: SEVERITY_CHIP[severityClass(d.severity)].bg,
+                                  color: SEVERITY_CHIP[severityClass(d.severity)].fg,
                                 }}
                               >
-                                {d.severity || "Minor"}
+                                {d.severity || "Unrated"}
                               </span>
                             </span>
                           ))
                         ) : (
                           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                            Front Bumper, Bonnet, Left Wing Mirror
+                            {isLoadingDetail
+                              ? "Loading..."
+                              : recordedParts.length > 0
+                                ? recordedParts.join(", ")
+                                : !activeDetail && selectedSummary.damage_count > 0
+                                  ? "Damage detail unavailable"
+                                  : "No damage recorded"}
                           </span>
                         )}
                       </div>
@@ -1093,12 +1144,14 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
                       Damage Anatomy & Line-Item Estimations
                     </span>
-                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                      AI Vision Audited
-                    </span>
+                    {aiDetectedCount > 0 && (
+                      <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {aiDetectedCount} of {damageItems.length} AI-detected
+                      </span>
+                    )}
                   </div>
 
-                  {activeDetail?.data?.damage_summary && activeDetail.data.damage_summary.length > 0 ? (
+                  {damageItems.length > 0 ? (
                     <div style={{ border: "1px solid var(--border-color)", borderRadius: 8, overflow: "hidden" }}>
                       <table className="triage-table">
                         <thead>
@@ -1106,17 +1159,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <th>Identified Component</th>
                             <th>Damage Classification</th>
                             <th>Severity</th>
-                            <th>Est. Quantum</th>
+                            <th title="Indicative list price per part, not an assessment">Est. Quantum (Indicative)</th>
                             <th>Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {activeDetail.data.damage_summary.map((d, i) => {
+                          {damageItems.map((d, i) => {
                             const partPrice = PART_PRICES_MAP[d.part] || 1200;
                             return (
                               <tr key={i}>
                                 <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{d.part}</td>
-                                <td style={{ color: "var(--text-secondary)" }}>{d.damage_type || "Impact Damage"}</td>
+                                <td style={{ color: "var(--text-secondary)" }}>{d.damage_type || "—"}</td>
                                 <td>
                                   <span
                                     style={{
@@ -1125,24 +1178,20 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                                       padding: "2px 6px",
                                       borderRadius: 4,
                                       textTransform: "uppercase",
-                                      background:
-                                        d.severity?.toLowerCase() === "severe" ? "var(--badge-red-bg)" :
-                                        d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-bg)" :
-                                        "var(--badge-green-bg)",
-                                      color:
-                                        d.severity?.toLowerCase() === "severe" ? "var(--badge-red-text)" :
-                                        d.severity?.toLowerCase() === "moderate" ? "var(--badge-amber-text)" :
-                                        "var(--badge-green-text)",
+                                      background: SEVERITY_CHIP[severityClass(d.severity)].bg,
+                                      color: SEVERITY_CHIP[severityClass(d.severity)].fg,
                                     }}
                                   >
-                                    {d.severity || "Assessed"}
+                                    {d.severity || "Unrated"}
                                   </span>
                                 </td>
                                 <td style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 11, color: "var(--accent-cyan)" }}>
-                                  ${partPrice.toLocaleString()} SGD
+                                  Est. ${partPrice.toLocaleString()} SGD
                                 </td>
+                                {/* repair_required defaults to false server-side, so
+                                    false means "not decided", not "replace". */}
                                 <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                                  {d.repair_required ? "Repair / Rectify" : "Replace Component"}
+                                  {d.repair_required ? "Repair / Rectify" : "—"}
                                 </td>
                               </tr>
                             );
@@ -1152,7 +1201,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     </div>
                   ) : (
                     <div style={{ padding: 12, borderRadius: 8, background: "var(--surface-hover)", border: "1px solid var(--border-color)", fontSize: 11, color: "var(--text-muted)" }}>
-                      Damage summary: {selectedSummary.damage_count} component{selectedSummary.damage_count === 1 ? "" : "s"} detected. Severity: <strong>{selectedSummary.severity_level || "Assessed"}</strong>.
+                      {selectedSummary.damage_count > 0 ? (
+                        <>
+                          Damage summary: {selectedSummary.damage_count} component{selectedSummary.damage_count === 1 ? "" : "s"} recorded. Severity: <strong>{selectedSummary.severity_level || "Unrated"}</strong>.
+                        </>
+                      ) : (
+                        "No damage recorded."
+                      )}
                     </div>
                   )}
                 </div>
@@ -1176,7 +1231,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                   <th>Case Ref & Intake Time</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
-                  <th className="col-reserve">Reserve ($ SGD)</th>
+                  <th className="col-reserve">Est. Reserve ($ SGD)</th>
                   <th>SLA Window</th>
                   <th className="col-actions">Actions</th>
                 </tr>
@@ -1185,10 +1240,10 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                 {filteredReports.map((r) => {
                   const arch = getClaimArchetype(r);
                   const cost = getEstimatedCostSGD(r);
-                  const ref = formatCarlinkRef(r.id, r.plate_number);
+                  const ref = formatCarlinkRef(r.id, r.plate_number, r.created_at);
                   const vehicle = inferVehicleName(r);
                   const insurer = inferInsurerName(r);
-                  const workshop = inferWorkshopName(r.workshop_assigned || r.location);
+                  const workshop = inferWorkshopName(r.workshop_assigned);
                   const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                   return (
@@ -1278,11 +1333,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         </div>
                       </td>
 
-                      <td className="col-reserve">
-                        <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: "var(--accent-cyan)" }}>
-                          ${cost.toLocaleString()}
+                      <td className="col-reserve" title="Indicative estimate, not an assessment">
+                        <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: cost > 0 ? "var(--accent-cyan)" : "var(--text-muted)" }}>
+                          {cost > 0 ? `$${cost.toLocaleString()}` : "—"}
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>SGD Assessed</div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{cost > 0 ? "SGD Est." : "No damage recorded"}</div>
                       </td>
 
                       <td>

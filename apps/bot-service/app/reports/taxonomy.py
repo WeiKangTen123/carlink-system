@@ -227,13 +227,14 @@ MODEL_BODY_TYPES: dict[str, str] = {
 }
 
 
-def body_type_for(make: str | None, model: str | None, stated: str | None = None) -> str:
-    """Resolves a vehicle to one of BODY_TYPES.
+def body_type_for(make: str | None, model: str | None, stated: str | None = None) -> str | None:
+    """Resolves a vehicle to one of BODY_TYPES, or None when unknown.
 
     The catalogue wins over the model's own guess, because a make/model is a
-    matter of fact while the guess is inference. Falls back to Sedan, which
-    is the only real 3D asset available -- an honest default rather than a
-    claim about the vehicle.
+    matter of fact while the guess is inference. Unknown stays unknown: this
+    used to return "Sedan", which was then saved on the case and printed in
+    the PDF as the vehicle's body type. The 3D viewer picks its own model
+    when none is recorded (dashboard detectBodyType).
     """
     text = f"{make or ''} {model or ''}".lower()
     for fragment, body in MODEL_BODY_TYPES.items():
@@ -241,4 +242,4 @@ def body_type_for(make: str | None, model: str | None, stated: str | None = None
             return body
     if stated and stated in BODY_TYPES:
         return stated
-    return "Sedan"
+    return None

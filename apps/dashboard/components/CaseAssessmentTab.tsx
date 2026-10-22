@@ -51,48 +51,30 @@ export function CaseAssessmentTab({
   type SubTab = "annexA" | "annexB" | "annexC" | "bola";
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("annexA");
 
-  // Annex A: Spare Parts Items State
-  const initialAnnexA: AnnexAPartItem[] =
-    d.annex_a?.items && d.annex_a.items.length > 0
-      ? d.annex_a.items
-      : (damageEntries || []).map((dm, idx) => ({
-          item_no: `${idx + 1}.0`,
-          part_name: dm.part,
-          condition: dm.damage_type || "Deformed/cut",
-          action: "Replace",
-          qty: 1.0,
-          workshop_est: 850.0,
-          discount_pct: 0.20,
-          adjusted_cost: 680.0,
-          is_net_item: false,
-          oem_part_number: dm.oem_part_number || `71501-T7A-${idx + 1}00`,
-        }));
+  // Annex A: Spare Parts Items State. The recorded rows only -- with none,
+  // this used to invent a row per damaged part (S$850 workshop estimate, 20%
+  // off to S$680, condition "Deformed/cut", OEM no. "71501-T7A-n00") that
+  // fed every total on this tab.
+  //
+  // Edits to Annex A rows on this tab (action / discount; Annex B has no
+  // edit controls) are LOCAL ONLY: SignOffRequest carries no line items and
+  // nothing else saves them, so they are a working preview that is lost on
+  // reload. The UI says so.
+  const initialAnnexA: AnnexAPartItem[] = d.annex_a?.items || [];
 
   const [annexAItems, setAnnexAItems] = useState<AnnexAPartItem[]>(initialAnnexA);
 
-  // Annex B: Labour Items State
-  const initialAnnexB: AnnexBLabourItem[] =
-    d.annex_b?.items && d.annex_b.items.length > 0
-      ? d.annex_b.items
-      : [
-          { item_no: "1.0", description: "Towing charges from incident scene to workshop", workshop_est: 100.0, adjusted_cost: 60.0, justification: "Standard baseline towing tariff" },
-          { item_no: "2.0", description: "To check electrical wiring system and lighting circuits", workshop_est: 80.0, adjusted_cost: 60.0, justification: "Benchmarked circuit testing rate" },
-          { item_no: "3.0", description: "To tuff coat affected underbody chassis areas", workshop_est: 180.0, adjusted_cost: 120.0, justification: "Anti-corrosion chemical treatment" },
-          { item_no: "4.0", description: "To remove & refix rear windscreen glass", workshop_est: 180.0, adjusted_cost: 120.0, justification: "Glass specialist tariff" },
-          { item_no: "5.0", description: "To remove & replace reverse sensor unit", workshop_est: 120.0, adjusted_cost: 80.0, justification: "Sensor replacement labour" },
-          { item_no: "6.0", description: "To adjust chassis alignment on Car-O-Liner frame jig", workshop_est: 380.0, adjusted_cost: 280.0, justification: "Structural measuring bench rate" },
-          { item_no: "7.0", description: "To respray affected areas (2K Oven Baked - 5 panels)", workshop_est: 1800.0, adjusted_cost: 1250.0, justification: "5 Panels @ $250/panel benchmark" },
-          { item_no: "8.0", description: "To renew damaged parts, straighten rear chassis members & align", workshop_est: 1800.0, adjusted_cost: 1500.0, justification: "Panel beating and assembly" },
-          { item_no: "9.0", description: "To LTA remove and reseal vehicle registration number plate", workshop_est: 120.0, adjusted_cost: 100.0, justification: "Statutory inspection seal fee" },
-        ];
+  // Annex B: Labour Items State. Recorded rows only (with none, this used to
+  // fall back to nine labour lines copied from the SLK case).
+  const initialAnnexB: AnnexBLabourItem[] = d.annex_b?.items || [];
 
   const [annexBItems, setAnnexBItems] = useState<AnnexBLabourItem[]>(initialAnnexB);
 
-  // Annex C: Contract Lump Sum & SLA
-  const initialLumpSum = d.annex_c?.agreed_lump_sum || 8700.0;
-  const initialDays = d.annex_c?.repair_days || 11;
-  const [contractLumpSum, setContractLumpSum] = useState<number>(initialLumpSum);
-  const [repairTurnaroundDays, setRepairTurnaroundDays] = useState<number>(initialDays);
+  // Annex C: Contract Lump Sum & SLA -- empty until recorded or entered in
+  // the sign-off console. They used to default to S$8,700 and 11 days,
+  // which sign-off then saved as the case's agreed quantum.
+  const [contractLumpSum, setContractLumpSum] = useState<number | null>(d.annex_c?.agreed_lump_sum ?? null);
+  const [repairTurnaroundDays, setRepairTurnaroundDays] = useState<number | null>(d.annex_c?.repair_days ?? null);
 
   // Financial Calculations
   const totalPartsClaimed = annexAItems.reduce((acc, it) => acc + (it.workshop_est * (it.qty || 1)), 0);
@@ -104,12 +86,29 @@ export function CaseAssessmentTab({
   const grossClaimedTotal = totalPartsClaimed + totalLabourClaimed;
   const grossAdjustedTotal = totalPartsAdjusted + totalLabourAdjusted;
 
-  const currentLumpSum = contractLumpSum || Math.round(grossAdjustedTotal * 0.85);
-  const gstAmount = Math.round(currentLumpSum * 0.09 * 100) / 100;
-  const grandTotalWithGst = Math.round((currentLumpSum + gstAmount) * 100) / 100;
+  // Unpriced placeholder rows carry 0 -- a total over them is "—", not S$0.00.
+  const hasPricedParts = annexAItems.some((it) => it.workshop_est > 0);
+  const hasPricedLabour = annexBItems.some((it) => it.workshop_est > 0);
+  const hasPricedItems = hasPricedParts || hasPricedLabour;
 
-  const totalSavingsAchieved = grossClaimedTotal - currentLumpSum;
-  const savingsPct = grossClaimedTotal > 0 ? ((totalSavingsAchieved / grossClaimedTotal) * 100).toFixed(1) : "0.0";
+  const currentLumpSum = contractLumpSum;
+  const gstAmount = currentLumpSum != null ? Math.round(currentLumpSum * 0.09 * 100) / 100 : null;
+  const grandTotalWithGst = currentLumpSum != null && gstAmount != null ? Math.round((currentLumpSum + gstAmount) * 100) / 100 : null;
+
+  // Reduction against the workshop's priced claim, only when both exist (it
+  // was "Insurer Savings Achieved" off the invented figures above).
+  const claimReduction = hasPricedItems && currentLumpSum != null ? grossClaimedTotal - currentLumpSum : null;
+  const reductionPct = claimReduction != null && grossClaimedTotal > 0 ? ((claimReduction / grossClaimedTotal) * 100).toFixed(1) : null;
+
+  const sgd = (n: number | null | undefined) =>
+    n == null ? "—" : `S$${n.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // GIA BOLA apportionment as recorded; null fields mean the surveyor hasn't
+  // assessed it yet.
+  const bola = d.bola_assessment;
+  const bolaScenario = bola?.scenario_number ?? null;
+  const insuredPct = bola?.insured_liability_pct ?? null;
+  const tpPct = bola?.third_party_liability_pct ?? null;
 
   // Handlers for Annex A Editing
   const handlePartDiscountChange = (index: number, newDiscount: number) => {
@@ -164,12 +163,42 @@ export function CaseAssessmentTab({
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
 
+  // The four attestations start unticked -- the surveyor makes them (they
+  // used to start ticked). A signed-off case shows what was accepted.
+  const attested = isSignedOff && signOff?.terms_accepted === true;
   const [declarations, setDeclarations] = useState({
-    mcf_inspection: true,
-    damage_scope: true,
-    market_pricing: true,
-    without_prejudice: true,
+    mcf_inspection: attested,
+    damage_scope: attested,
+    market_pricing: attested,
+    without_prejudice: attested,
   });
+  const allDeclared =
+    declarations.mcf_inspection && declarations.damage_scope && declarations.market_pricing && declarations.without_prejudice;
+
+  // From the recorded BOLA assessment or the surveyor's own entry; this used
+  // to send "100% Third Party Liability under GIA BOLA Scenario #14" on
+  // every sign-off.
+  const [liabilityOpinion, setLiabilityOpinion] = useState<string>(
+    isSignedOff && signOff?.liability_opinion
+      ? signOff.liability_opinion
+      : bolaScenario != null && tpPct != null
+        ? `${tpPct}% Third Party Liability under GIA BOLA Scenario #${bolaScenario}`
+        : bola?.apportionment_rationale || ""
+  );
+
+  // Placeholder the old annex synthesizer stored as a "signature hash";
+  // never shown as a real seal.
+  const PLACEHOLDER_SEAL_HASH = "9F8A3B12D04C5E76F891A234BCDE0921";
+  const sealHash = signOff?.signature_hash && signOff.signature_hash !== PLACEHOLDER_SEAL_HASH ? signOff.signature_hash : null;
+
+  const fieldInputStyle: React.CSSProperties = {
+    background: "var(--surface-base)",
+    color: "var(--text-primary)",
+    border: "1px solid var(--border-color)",
+    borderRadius: 4,
+    padding: "6px 8px",
+    fontSize: 12,
+  };
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -193,7 +222,7 @@ export function CaseAssessmentTab({
   };
 
   const handleSignOffSubmit = async () => {
-    if (!declarations.mcf_inspection || !declarations.damage_scope || !declarations.market_pricing || !declarations.without_prejudice) {
+    if (!allDeclared) {
       alert("Please confirm all 4 statutory declarations before signing off.");
       return;
     }
@@ -211,11 +240,13 @@ export function CaseAssessmentTab({
       qualifications,
       license_number: licenseNumber,
       firm_name: "Carlink Consultancy",
-      agreed_quantum: currentLumpSum,
-      turnaround_days: repairTurnaroundDays,
-      liability_opinion: "100% Third Party Liability under GIA BOLA Scenario #14",
+      // Only what's recorded or entered; anything left empty stays empty.
+      agreed_quantum: currentLumpSum ?? undefined,
+      turnaround_days: repairTurnaroundDays ?? undefined,
+      liability_opinion: liabilityOpinion.trim() || undefined,
       signature_data_url: sigDataUrl || undefined,
-      terms_accepted: true,
+      // True only because the surveyor ticked all four (checked above).
+      terms_accepted: allDeclared,
     };
 
     const res = await signOffReportAction(report.id, payload);
@@ -239,7 +270,7 @@ export function CaseAssessmentTab({
             <DollarSign style={{ width: 14, height: 14, color: "var(--text-muted)" }} /> Workshop Claimed (Gross)
           </div>
           <div className="quantum-kpi-value" style={{ color: "var(--text-secondary)" }}>
-            S${grossClaimedTotal.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {hasPricedItems ? sgd(grossClaimedTotal) : "—"}
           </div>
           <div className="quantum-kpi-sub">
             {annexAItems.length} Parts • {annexBItems.length} Labour Operations
@@ -248,37 +279,37 @@ export function CaseAssessmentTab({
 
         <div className="quantum-kpi-card">
           <div className="quantum-kpi-title">
-            <Scale style={{ width: 14, height: 14, color: "var(--accent-primary)" }} /> Adjuster Assessed Quantum
+            <Scale style={{ width: 14, height: 14, color: "var(--accent-primary)" }} /> Adjusted Quantum (Annex A + B)
           </div>
           <div className="quantum-kpi-value" style={{ color: "var(--accent-cyan)" }}>
-            S${grossAdjustedTotal.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {hasPricedItems ? sgd(grossAdjustedTotal) : "—"}
           </div>
           <div className="quantum-kpi-sub">
-            Part-by-Part Technical Audit Sum
+            {hasPricedItems ? "Sum of adjusted line items" : "No priced line items yet"}
           </div>
         </div>
 
         <div className="quantum-kpi-card" style={{ borderColor: "var(--accent-cyan)", background: "rgba(56, 189, 248, 0.05)" }}>
           <div className="quantum-kpi-title">
-            <Sparkles style={{ width: 14, height: 14, color: "var(--accent-cyan)" }} /> Agreed Contract Lump Sum
+            <Sparkles style={{ width: 14, height: 14, color: "var(--accent-cyan)" }} /> {isSignedOff ? "Agreed Contract Lump Sum" : "Contract Lump Sum"}
           </div>
           <div className="quantum-kpi-value" style={{ color: "#ffffff" }}>
-            S${currentLumpSum.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {sgd(currentLumpSum)}
           </div>
-          <div className="quantum-kpi-sub" style={{ color: "var(--accent-cyan)", fontWeight: 700 }}>
-            +9% GST: S${grandTotalWithGst.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <div className="quantum-kpi-sub" style={{ color: grandTotalWithGst != null ? "var(--accent-cyan)" : "var(--text-muted)", fontWeight: 700 }}>
+            {grandTotalWithGst != null ? `+9% GST: ${sgd(grandTotalWithGst)}` : "Pending surveyor"}
           </div>
         </div>
 
         <div className="quantum-kpi-card" style={{ borderColor: "rgba(16, 185, 129, 0.3)", background: "rgba(16, 185, 129, 0.05)" }}>
           <div className="quantum-kpi-title">
-            <ArrowDownRight style={{ width: 14, height: 14, color: "#10b981" }} /> Insurer Savings Achieved
+            <ArrowDownRight style={{ width: 14, height: 14, color: "#10b981" }} /> Reduction vs Workshop Claim
           </div>
           <div className="quantum-kpi-value" style={{ color: "#10b981" }}>
-            -S${totalSavingsAchieved.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {claimReduction != null ? `-${sgd(claimReduction)}` : "—"}
           </div>
-          <div className="quantum-kpi-sub" style={{ color: "#10b981", fontWeight: 700 }}>
-            {savingsPct}% Net Reduction for Insurer
+          <div className="quantum-kpi-sub" style={{ color: reductionPct != null ? "#10b981" : "var(--text-muted)", fontWeight: 700 }}>
+            {reductionPct != null ? `${reductionPct}% below workshop claim` : "Needs priced items and a lump sum"}
           </div>
         </div>
 
@@ -287,10 +318,10 @@ export function CaseAssessmentTab({
             <Clock style={{ width: 14, height: 14, color: "#f59e0b" }} /> Repair Cycle Time SLA
           </div>
           <div className="quantum-kpi-value" style={{ color: "#f59e0b" }}>
-            {repairTurnaroundDays} Working Days
+            {repairTurnaroundDays != null ? `${repairTurnaroundDays} Working Days` : "—"}
           </div>
           <div className="quantum-kpi-sub">
-            ATP: <span style={{ color: "#10b981", fontWeight: 700 }}>{isSignedOff ? "GRANTED & SEALED" : "PENDING ENDORSEMENT"}</span>
+            ATP: <span style={{ color: isSignedOff ? "#10b981" : "var(--text-muted)", fontWeight: 700 }}>{isSignedOff ? "GRANTED & SEALED" : "PENDING ENDORSEMENT"}</span>
           </div>
         </div>
       </div>
@@ -355,6 +386,11 @@ export function CaseAssessmentTab({
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                   Standard GIA 20% trade discount applied to List Items. Serviceable components 100% disallowed.
                 </div>
+                {!isSignedOff && (
+                  <div style={{ fontSize: 11, color: "var(--badge-amber-text)", marginTop: 2 }}>
+                    Changes made here are a working preview only and are not saved.
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <span className="chip-severity minor" style={{ fontSize: 11 }}>
@@ -382,16 +418,29 @@ export function CaseAssessmentTab({
                   </tr>
                 </thead>
                 <tbody>
+                  {annexAItems.length === 0 && (
+                    <tr>
+                      <td colSpan={9} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
+                        No parts recorded yet
+                      </td>
+                    </tr>
+                  )}
                   {annexAItems.map((item, idx) => {
                     const isDisallowed = item.action === "Disallow" || item.discount_pct >= 0.99;
+                    // Placeholder rows carry 0 until a surveyor prices them.
+                    const isUnpriced = !item.workshop_est;
                     return (
                       <tr key={idx} style={{ opacity: isDisallowed ? 0.65 : 1 }}>
                         <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{item.item_no || `${idx + 1}.0`}</td>
                         <td style={{ fontWeight: 600 }}>{item.part_name}</td>
                         <td>
-                          <span className={`annex-action-badge ${item.condition === "Serviceable" ? "disallow" : item.condition.includes("Deformed") ? "replace" : "repair"}`}>
-                            {item.condition}
-                          </span>
+                          {item.condition ? (
+                            <span className={`annex-action-badge ${item.condition === "Serviceable" ? "disallow" : item.condition.includes("Deformed") ? "replace" : "repair"}`}>
+                              {item.condition}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td>
                           {isSignedOff ? (
@@ -420,7 +469,7 @@ export function CaseAssessmentTab({
                         </td>
                         <td style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{item.qty || 1}</td>
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                          S${(item.workshop_est * (item.qty || 1)).toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {isUnpriced ? "—" : sgd(item.workshop_est * (item.qty || 1))}
                         </td>
                         <td style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>
                           {item.is_net_item ? (
@@ -450,7 +499,7 @@ export function CaseAssessmentTab({
                           )}
                         </td>
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: isDisallowed ? "var(--text-muted)" : "var(--accent-cyan)" }}>
-                          S${item.adjusted_cost.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {isUnpriced ? "—" : sgd(item.adjusted_cost)}
                         </td>
                         <td style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)" }}>
                           {item.oem_part_number || "—"}
@@ -465,13 +514,13 @@ export function CaseAssessmentTab({
                       Total For Spare Parts (Annex A)
                     </td>
                     <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-                      S${totalPartsClaimed.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {hasPricedParts ? sgd(totalPartsClaimed) : "—"}
                     </td>
                     <td style={{ textAlign: "center", color: "#10b981", fontSize: 11 }}>
-                      -S${(totalPartsClaimed - totalPartsAdjusted).toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {hasPricedParts ? `-${sgd(totalPartsClaimed - totalPartsAdjusted)}` : "—"}
                     </td>
                     <td style={{ textAlign: "right", color: "var(--accent-cyan)", fontSize: 13 }}>
-                      S${totalPartsAdjusted.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {hasPricedParts ? sgd(totalPartsAdjusted) : "—"}
                     </td>
                     <td></td>
                   </tr>
@@ -505,18 +554,25 @@ export function CaseAssessmentTab({
                   </tr>
                 </thead>
                 <tbody>
+                  {annexBItems.length === 0 && (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
+                        No labour recorded yet
+                      </td>
+                    </tr>
+                  )}
                   {annexBItems.map((lab, idx) => (
                     <tr key={idx}>
                       <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{lab.item_no || `${idx + 1}.0`}</td>
                       <td style={{ fontWeight: 600 }}>{lab.description}</td>
                       <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
-                        S${lab.workshop_est.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {lab.workshop_est ? sgd(lab.workshop_est) : "—"}
                       </td>
                       <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)" }}>
-                        S${lab.adjusted_cost.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {lab.workshop_est ? sgd(lab.adjusted_cost) : "—"}
                       </td>
                       <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                        {lab.justification || "Benchmarked tariff applied"}
+                        {lab.justification || "—"}
                       </td>
                     </tr>
                   ))}
@@ -527,13 +583,13 @@ export function CaseAssessmentTab({
                       Total For Labour & Spray Painting (Annex B)
                     </td>
                     <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-                      S${totalLabourClaimed.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {hasPricedLabour ? sgd(totalLabourClaimed) : "—"}
                     </td>
                     <td style={{ textAlign: "right", color: "var(--accent-cyan)", fontSize: 13 }}>
-                      S${totalLabourAdjusted.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {hasPricedLabour ? sgd(totalLabourAdjusted) : "—"}
                     </td>
                     <td style={{ color: "#10b981", fontSize: 11 }}>
-                      Variance: -S${(totalLabourClaimed - totalLabourAdjusted).toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      Variance: {hasPricedLabour ? `-${sgd(totalLabourClaimed - totalLabourAdjusted)}` : "—"}
                     </td>
                   </tr>
                 </tfoot>
@@ -555,40 +611,42 @@ export function CaseAssessmentTab({
                 <div className="waterfall-row">
                   <span className="waterfall-label">1. Annex A: Spare Parts Total</span>
                   <div style={{ display: "flex", gap: 20 }}>
-                    <span style={{ color: "var(--text-muted)" }}>Claimed: S${totalPartsClaimed.toFixed(2)}</span>
-                    <span className="waterfall-val">S${totalPartsAdjusted.toFixed(2)}</span>
+                    <span style={{ color: "var(--text-muted)" }}>Claimed: {hasPricedParts ? sgd(totalPartsClaimed) : "—"}</span>
+                    <span className="waterfall-val">{hasPricedParts ? sgd(totalPartsAdjusted) : "—"}</span>
                   </div>
                 </div>
 
                 <div className="waterfall-row">
                   <span className="waterfall-label">2. Annex B: Labour & Spray Painting Total</span>
                   <div style={{ display: "flex", gap: 20 }}>
-                    <span style={{ color: "var(--text-muted)" }}>Claimed: S${totalLabourClaimed.toFixed(2)}</span>
-                    <span className="waterfall-val">S${totalLabourAdjusted.toFixed(2)}</span>
+                    <span style={{ color: "var(--text-muted)" }}>Claimed: {hasPricedLabour ? sgd(totalLabourClaimed) : "—"}</span>
+                    <span className="waterfall-val">{hasPricedLabour ? sgd(totalLabourAdjusted) : "—"}</span>
                   </div>
                 </div>
 
                 <div className="waterfall-row subtotal">
                   <span>3. Total Repair Costs (Part-by-Part Adjusted)</span>
                   <div style={{ display: "flex", gap: 20 }}>
-                    <span style={{ color: "var(--text-muted)", textDecoration: "line-through" }}>S${grossClaimedTotal.toFixed(2)}</span>
-                    <span style={{ color: "var(--accent-cyan)", fontFamily: "var(--font-mono)" }}>S${grossAdjustedTotal.toFixed(2)}</span>
+                    <span style={{ color: "var(--text-muted)", textDecoration: hasPricedItems ? "line-through" : "none" }}>{hasPricedItems ? sgd(grossClaimedTotal) : "—"}</span>
+                    <span style={{ color: "var(--accent-cyan)", fontFamily: "var(--font-mono)" }}>{hasPricedItems ? sgd(grossAdjustedTotal) : "—"}</span>
                   </div>
                 </div>
 
                 <div className="waterfall-row" style={{ background: "rgba(56, 189, 248, 0.05)", padding: "10px 14px", borderRadius: 6 }}>
                   <div>
                     <div style={{ fontWeight: 700, color: "var(--text-primary)" }}>4. Recommended Contract Lump Sum Settlement</div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Negotiated commercial concession with repairer discretion</div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      {currentLumpSum != null ? "Negotiated commercial concession with repairer discretion" : "Pending surveyor"}
+                    </div>
                   </div>
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 16, fontWeight: 800, color: "var(--accent-cyan)" }}>
-                    S${currentLumpSum.toFixed(2)}
+                    {sgd(currentLumpSum)}
                   </div>
                 </div>
 
                 <div className="waterfall-row">
                   <span className="waterfall-label">5. Prevailing Singapore GST (9%)</span>
-                  <span className="waterfall-val">S${gstAmount.toFixed(2)}</span>
+                  <span className="waterfall-val">{sgd(gstAmount)}</span>
                 </div>
 
                 <div className="waterfall-row grand">
@@ -597,14 +655,14 @@ export function CaseAssessmentTab({
                     <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.8 }}>Full & final discharge on contract lump sum basis</div>
                   </div>
                   <div style={{ fontSize: 20, fontFamily: "var(--font-mono)" }}>
-                    S${grandTotalWithGst.toFixed(2)}
+                    {sgd(grandTotalWithGst)}
                   </div>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, fontSize: 11 }}>
-                  <span style={{ color: "#10b981", fontWeight: 700 }}>Total Claim Reduction Achieved:</span>
+                  <span style={{ color: "#10b981", fontWeight: 700 }}>Reduction vs Workshop Claim:</span>
                   <span style={{ fontFamily: "var(--font-mono)", color: "#10b981", fontWeight: 800 }}>
-                    S${totalSavingsAchieved.toFixed(2)} ({savingsPct}%)
+                    {claimReduction != null ? `${sgd(claimReduction)} (${reductionPct}%)` : "—"}
                   </span>
                 </div>
               </div>
@@ -618,13 +676,30 @@ export function CaseAssessmentTab({
                   </div>
 
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    {/* Terms state an agreed figure only once one exists. */}
                     <p style={{ margin: 0 }}>
-                      <strong>Repairer Discretion:</strong> The repairer has agreed to undertake the repairs on a contract lump sum of{" "}
-                      <strong style={{ color: "var(--text-primary)" }}>S${currentLumpSum.toFixed(2)}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, replace with reconditioned/used parts, or replace with OEM/genuine parts).
+                      {currentLumpSum != null ? (
+                        <>
+                          <strong>Repairer Discretion:</strong> The repairer has agreed to undertake the repairs on a contract lump sum of{" "}
+                          <strong style={{ color: "var(--text-primary)" }}>{sgd(currentLumpSum)}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, replace with reconditioned/used parts, or replace with OEM/genuine parts).
+                        </>
+                      ) : (
+                        <>
+                          <strong>Repairer Discretion:</strong> No contract lump sum agreed yet. <strong style={{ color: "var(--text-muted)" }}>Pending surveyor.</strong>
+                        </>
+                      )}
                     </p>
                     <p style={{ margin: 0 }}>
-                      <strong>Repair Turnaround Period:</strong> The entire repair of the damaged vehicle should be completed within a reasonable period of{" "}
-                      <strong style={{ color: "#f59e0b" }}>{repairTurnaroundDays} working days</strong> to mitigate consequential loss of use claims.
+                      {repairTurnaroundDays != null ? (
+                        <>
+                          <strong>Repair Turnaround Period:</strong> The entire repair of the damaged vehicle should be completed within a reasonable period of{" "}
+                          <strong style={{ color: "#f59e0b" }}>{repairTurnaroundDays} working days</strong> to mitigate consequential loss of use claims.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Repair Turnaround Period:</strong> Not set yet. <strong style={{ color: "var(--text-muted)" }}>Pending surveyor.</strong>
+                        </>
+                      )}
                     </p>
                   </div>
 
@@ -655,24 +730,27 @@ export function CaseAssessmentTab({
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12 }}>
                   <div>
                     <div className="detail-field-label">Point of Impact</div>
-                    <div style={{ fontWeight: 700, marginTop: 2 }}>{v?.point_of_impact || "Rear centre & rear bumper"}</div>
+                    <div style={{ fontWeight: 700, marginTop: 2, color: v?.point_of_impact ? undefined : "var(--text-muted)" }}>{v?.point_of_impact || "Pending surveyor"}</div>
                   </div>
+                  {/* The three findings below aren't recorded fields. They were
+                      fixed text on every case (a 380-860 mm contact zone,
+                      "100% CONSISTENT", serviceable tailgate hinges). */}
                   <div>
                     <div className="detail-field-label">Impact Height & Direction of Force</div>
-                    <div style={{ marginTop: 2, color: "var(--text-secondary)" }}>
-                      Contact zone: 380mm – 860mm from ground. Longitudinal forward compressive shockwave Crumpled rear end panel and corrugated boot floor panel.
+                    <div style={{ marginTop: 2, color: "var(--text-muted)" }}>
+                      Pending surveyor
                     </div>
                   </div>
                   <div>
                     <div className="detail-field-label">Narrative Consistency Finding</div>
-                    <div style={{ marginTop: 2, color: "#10b981", fontWeight: 700 }}>
-                      ✓ 100% CONSISTENT with reported collision events
+                    <div style={{ marginTop: 2, color: "var(--text-muted)" }}>
+                      Pending surveyor
                     </div>
                   </div>
                   <div>
                     <div className="detail-field-label">Pre-Existing / Wear Exclusions</div>
-                    <div style={{ marginTop: 2, color: "var(--text-secondary)" }}>
-                      Tailgate hinges noted as serviceable (excluded from claim). No prior unrectified structural crumple detected.
+                    <div style={{ marginTop: 2, color: "var(--text-muted)" }}>
+                      Pending surveyor
                     </div>
                   </div>
                 </div>
@@ -685,42 +763,53 @@ export function CaseAssessmentTab({
                     <Scale style={{ width: 16, height: 16, color: "var(--accent-cyan)" }} />
                     <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>GIA BOLA Liability Apportionment</h4>
                   </div>
+                  {/* Everything in this card is d.bola_assessment as recorded
+                      (it was a fixed Scenario #14, 0% / 100%, on every case). */}
                   <span className="badge-plate-glow" style={{ fontSize: 10, padding: "2px 8px" }}>
-                    RULE #14
+                    {bolaScenario != null ? `RULE #${bolaScenario}` : "PENDING"}
                   </span>
                 </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
-                      BOLA Scenario #14: Direct Rear-End Collision
+                    <div style={{ fontSize: 13, fontWeight: 700, color: bolaScenario != null ? "var(--text-primary)" : "var(--text-muted)" }}>
+                      {bolaScenario != null
+                        ? `BOLA Scenario #${bolaScenario}${bola?.scenario_name ? `: ${bola.scenario_name}` : ""}`
+                        : "Pending surveyor assessment"}
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Leading vehicle stationary or slowing down; following vehicle fails to maintain safe stopping clearance.
+                      {bola?.apportionment_rationale || "No apportionment rationale recorded."}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+                      Status: {bola?.dispute_status || "Pending surveyor assessment"}
                     </div>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     <div style={{ background: "rgba(16, 185, 129, 0.1)", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(16, 185, 129, 0.3)" }}>
                       <div style={{ fontSize: 10, fontWeight: 700, color: "#10b981", textTransform: "uppercase" }}>Insured Liability</div>
-                      <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "var(--font-mono)", color: "#10b981" }}>0%</div>
-                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Zero contributory fault</div>
+                      <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "var(--font-mono)", color: "#10b981" }}>{insuredPct != null ? `${insuredPct}%` : "—"}</div>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {insuredPct == null ? "Pending surveyor" : insuredPct === 0 ? "Zero contributory fault" : insuredPct === 100 ? "Sole fault" : "Contributory fault"}
+                      </div>
                     </div>
 
                     <div style={{ background: "rgba(239, 68, 68, 0.1)", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(239, 68, 68, 0.3)" }}>
                       <div style={{ fontSize: 10, fontWeight: 700, color: "#ef4444", textTransform: "uppercase" }}>Third Party Liability</div>
-                      <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "var(--font-mono)", color: "#ef4444" }}>100%</div>
-                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Sole tortfeasor fault</div>
+                      <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "var(--font-mono)", color: "#ef4444" }}>{tpPct != null ? `${tpPct}%` : "—"}</div>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {tpPct == null ? "Pending surveyor" : tpPct === 100 ? "Sole tortfeasor fault" : tpPct === 0 ? "No fault" : "Shared fault"}
+                      </div>
                     </div>
                   </div>
 
                   <div>
                     <div className="detail-field-label">Subrogation Recovery Prospect</div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-cyan)", marginTop: 2 }}>
-                      100% Third-Party Property Damage (TPPD) Subrogation Recommended
+                    <div style={{ fontSize: 12, fontWeight: 700, color: bola?.subrogation_prospect ? "var(--accent-cyan)" : "var(--text-muted)", marginTop: 2 }}>
+                      {bola?.subrogation_prospect || "Pending surveyor assessment"}
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      Target Insurer: {ins?.insurer_name || "Tokio Marine Singapore"} • Counterpart Ref: {ins?.claim_number || "CL 11900"}
+                      Target Insurer: {ins?.insurer_name || "—"} • Counterpart Ref: {ins?.claim_number || "—"}
                     </div>
                   </div>
                 </div>
@@ -785,6 +874,53 @@ export function CaseAssessmentTab({
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>Firm Registry</div>
             <div style={{ fontSize: 12, fontWeight: 700 }}>60 Hillside Drive, S549009</div>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Tel: 6285 6178 / Fax: 6287 4788</div>
+          </div>
+        </div>
+
+        {/* What sign-off records into Annex C / the BOLA assessment. Empty
+            unless already recorded on the case; sent only if filled in. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
+            Settlement & Liability Findings
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
+              Agreed lump sum (S$, before GST)
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={contractLumpSum ?? ""}
+                placeholder="Not recorded"
+                disabled={isSignedOff}
+                onChange={(e) => setContractLumpSum(e.target.value === "" ? null : Number(e.target.value))}
+                style={fieldInputStyle}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
+              Repair turnaround (working days)
+              <input
+                type="number"
+                min={0}
+                step="1"
+                value={repairTurnaroundDays ?? ""}
+                placeholder="Not recorded"
+                disabled={isSignedOff}
+                onChange={(e) => setRepairTurnaroundDays(e.target.value === "" ? null : Number(e.target.value))}
+                style={fieldInputStyle}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
+              Liability opinion
+              <input
+                type="text"
+                value={liabilityOpinion}
+                placeholder="Pending surveyor assessment"
+                disabled={isSignedOff}
+                onChange={(e) => setLiabilityOpinion(e.target.value)}
+                style={fieldInputStyle}
+              />
+            </label>
           </div>
         </div>
 
@@ -883,15 +1019,25 @@ export function CaseAssessmentTab({
               />
             ) : (
               <div className="signature-canvas-pad" style={{ background: "rgba(56, 189, 248, 0.02)" }}>
-                <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic", fontSize: 24, color: "var(--accent-cyan)", letterSpacing: "0.05em" }}>
-                  {surveyorName}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
-                  Automotive Engineer Assessor • Reg: {licenseNumber}
-                </div>
-                {signOff?.signature_date && (
-                  <div suppressHydrationWarning style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
-                    Endorsed on: {new Date(signOff.signature_date).toLocaleString("en-SG")}
+                {/* A signature only once signed off -- this used to render the
+                    surveyor's name as a cursive signature on unsigned cases. */}
+                {isSignedOff ? (
+                  <>
+                    <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic", fontSize: 24, color: "var(--accent-cyan)", letterSpacing: "0.05em" }}>
+                      {signOff?.surveyor_name || surveyorName}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                      Automotive Engineer Assessor • Reg: {signOff?.license_number || licenseNumber}
+                    </div>
+                    {signOff?.signature_date && (
+                      <div suppressHydrationWarning style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
+                        Endorsed on: {new Date(signOff.signature_date).toLocaleString("en-SG")}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    Not signed. The digital seal is applied on sign-off.
                   </div>
                 )}
               </div>
@@ -904,21 +1050,34 @@ export function CaseAssessmentTab({
               Official Assessor Chop & Seal
             </div>
             <div className="surveyor-chop-preview">
-              <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-primary)" }}>
-                CARLINK CONSULTANCY
-              </div>
-              <div style={{ fontSize: 9, color: "var(--text-muted)" }}>
-                60 Hillside Drive, Singapore 549009
-              </div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent-primary)", marginTop: 4 }}>
-                PATRICK NG • AUTOMOTIVE ENGINEER ASSESSOR
-              </div>
-              <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
-                MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC
-              </div>
-              <div style={{ fontSize: 8, fontFamily: "var(--font-mono)", color: "var(--accent-cyan)", marginTop: 4 }}>
-                SHA-256 SEAL: {signOff?.signature_hash || "9F8A3B12D04C5E76F891A234BCDE0921"}
-              </div>
+              {/* The seal only once signed off, naming who signed and the real
+                  hash. It used to show on every case with a fixed name and a
+                  placeholder hash. */}
+              {isSignedOff ? (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-primary)" }}>
+                    CARLINK CONSULTANCY
+                  </div>
+                  <div style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                    60 Hillside Drive, Singapore 549009
+                  </div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent-primary)", marginTop: 4, textTransform: "uppercase" }}>
+                    {signOff?.surveyor_name || surveyorName} • AUTOMOTIVE ENGINEER ASSESSOR
+                  </div>
+                  <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
+                    {signOff?.qualifications || qualifications}
+                  </div>
+                  {sealHash && (
+                    <div style={{ fontSize: 8, fontFamily: "var(--font-mono)", color: "var(--accent-cyan)", marginTop: 4 }}>
+                      SHA-256 SEAL: {sealHash}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Seal not applied. Case not signed off.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -928,7 +1087,7 @@ export function CaseAssessmentTab({
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             {isSignedOff
               ? "This case is locked. To modify line items, reopen the report from the edit tab."
-              : "Signing off finalizes Annex A, B, and C, embeds the digital seal into the PDF, and locks the case."}
+              : "Signing off records the lump sum, repair days and liability opinion entered above, embeds the digital seal into the PDF, and locks the case. Annex A edits on this tab are not saved."}
           </div>
 
           {signOffError && (

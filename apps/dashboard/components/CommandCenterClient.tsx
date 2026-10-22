@@ -3,7 +3,6 @@
 import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import {
-  ShieldCheck,
   AlertTriangle,
   Clock,
   Flame,
@@ -21,7 +20,6 @@ import {
   CarFront,
   AlertOctagon,
   Download,
-  Send,
   ClipboardCheck,
   Navigation,
   X,
@@ -29,7 +27,19 @@ import {
 } from "lucide-react";
 import type { ReportSummary, AnalyticsSummary } from "@/lib/api";
 import { fileUrl } from "@/lib/api";
-import { severityClass, caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
+import {
+  severityClass,
+  caseTitle,
+  daysOpen,
+  isAwaitingSignOff,
+  getClaimArchetype,
+  getEstimatedCostSGD,
+  getGiaSla,
+  inferVehicleName,
+  inferInsurerName,
+  inferWorkshopName,
+  formatCarlinkRef,
+} from "@/lib/caseFields";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 
 type Swimlane = "all" | "sje" | "tma" | "tp" | "dv";
@@ -72,41 +82,19 @@ const SG_CLUSTERS = [
   },
 ];
 
-// Helper to determine Archetype
-function getClaimArchetype(r: ReportSummary): {
-  key: "sje" | "tma" | "tp-conv" | "tp-direct" | "od";
-  label: string;
-  badgeClass: string;
-} {
-  const text = `${r.type} ${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""} ${r.claim_type || ""}`.toLowerCase();
-  if (text.includes("sje") || text.includes("court") || text.includes("dispute") || text.includes("suit")) {
-    return { key: "sje", label: "SJE Court", badgeClass: "sje" };
-  }
-  if (text.includes("tma") || text.includes("attenuator") || text.includes("hino") || text.includes("truck")) {
-    return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
-  }
-  if (text.includes("own damage") || text.includes("od")) {
-    return { key: "od", label: "OD Panel", badgeClass: "od" };
-  }
-  if (text.includes("direct") || text.includes("settlement")) {
-    return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
-  }
-  return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+// Claim archetype and the indicative cost come from the shared caseFields
+// helpers. This file used to carry its own copies that defaulted every case
+// to "TP Conventional" and priced it from keywords (TMA = $85,000).
+
+/** The real GIA 48h window, computed from intake time. */
+function slaOf(r: ReportSummary) {
+  return getGiaSla(r.created_at, r.status === "Signed Off");
 }
 
-// Estimate realistic SGD repair quantum if not explicitly stored in DB
-function getEstimatedCostSGD(r: ReportSummary): number {
-  if (r.estimated_repair_cost) {
-    const parsed = parseFloat(r.estimated_repair_cost.replace(/[^0-9.]/g, ""));
-    if (!isNaN(parsed) && parsed > 0) return parsed;
-  }
-  const text = `${r.accident_type || ""} ${r.vehicle_name || ""}`.toLowerCase();
-  if (text.includes("tma") || text.includes("attenuator")) return 85000;
-  if (text.includes("sje")) return 32000;
-  const sev = (r.severity_level || "").toLowerCase();
-  if (sev.includes("severe")) return 18400;
-  if (sev.includes("moderate")) return 6800;
-  return 2400;
+/** 6h or less left in the GIA 48h window, or already past it. */
+function isSlaUrgent(r: ReportSummary): boolean {
+  const s = slaOf(r).status;
+  return s === "critical" || s === "expired";
 }
 
 export function CommandCenterClient({ initialReports, analytics }: Props) {
@@ -116,7 +104,6 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
   const [selectedInsurer, setSelectedInsurer] = useState<string>("all");
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
-  const [chaserNotice, setChaserNotice] = useState<string | null>(null);
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [sgtTime, setSgtTime] = useState<string>("");
 
@@ -148,15 +135,21 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
   const reports = initialReports;
   const openCases = useMemo(() => reports.filter((r) => isAwaitingSignOff(r.status)), [reports]);
 
-  // Total assessed repair reserves
-  const totalAssessedReservesSGD = useMemo(() => {
+  // Total indicative (estimated, not assessed) repair reserves
+  const totalEstReservesSGD = useMemo(() => {
     return openCases.reduce((sum, r) => sum + getEstimatedCostSGD(r), 0);
   }, [openCases]);
 
-  // Estimated savings negotiated (avg ~21% in loss adjuster pre-repair assessment)
-  const estimatedSavingsSGD = useMemo(() => {
-    return Math.round(totalAssessedReservesSGD * 0.21);
-  }, [totalAssessedReservesSGD]);
+  // Alerts come only from real data: open cases at <=6h or past their GIA
+  // 48h window, most overdue first. (This banner used to show three
+  // hard-coded alerts naming a made-up court suit, plate and company.)
+  const slaAlerts = useMemo(
+    () =>
+      openCases
+        .filter(isSlaUrgent)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [openCases]
+  );
 
   // High-stakes cases (SJE or TMA)
   const highStakesCases = useMemo(() => {
@@ -178,19 +171,19 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
   // Quick filter counts
   const quickFilterCounts = useMemo(() => {
     return {
-      urgent_sla: openCases.filter((r) => daysOpen(r.created_at) >= 2 || getClaimArchetype(r).key === "sje").length,
+      urgent_sla: slaAlerts.length,
       strip_down: openCases.filter((r) => !!r.disassembly_required).length,
       sje_court: sjeCount,
       severe: openCases.filter((r) => (r.severity_level || "").toLowerCase().includes("severe")).length,
       high_quantum: openCases.filter((r) => getEstimatedCostSGD(r) >= 15000).length,
     };
-  }, [openCases, sjeCount]);
+  }, [openCases, sjeCount, slaAlerts]);
 
   // Insurer Exposure distribution and visual share bar
   const insurerExposure = useMemo(() => {
     const map = new Map<string, { count: number; totalCost: number }>();
     openCases.forEach((r) => {
-      const ins = r.insurer_name || "Tokio Marine Singapore";
+      const ins = inferInsurerName(r);
       const cost = getEstimatedCostSGD(r);
       const curr = map.get(ins) || { count: 0, totalCost: 0 };
       map.set(ins, { count: curr.count + 1, totalCost: curr.totalCost + cost });
@@ -243,7 +236,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
       if (selectedSwimlane === "dv" && age < 2) return false;
 
       // 2. Quick filter chip
-      if (quickFilter === "urgent_sla" && age < 2 && arch.key !== "sje") return false;
+      if (quickFilter === "urgent_sla" && !isSlaUrgent(r)) return false;
       if (quickFilter === "strip_down" && !r.disassembly_required) return false;
       if (quickFilter === "sje_court" && arch.key !== "sje") return false;
       if (quickFilter === "severe" && !(r.severity_level || "").toLowerCase().includes("severe")) return false;
@@ -259,9 +252,9 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         }
       }
 
-      // 4. Insurer
+      // 4. Insurer ("Insurer not recorded" is selectable from the exposure bar)
       if (selectedInsurer !== "all") {
-        const ins = (r.insurer_name || "").toLowerCase();
+        const ins = inferInsurerName(r).toLowerCase();
         if (!ins.includes(selectedInsurer.toLowerCase())) return false;
       }
 
@@ -279,9 +272,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
   // Unique insurers list for filter dropdown
   const insurerOptions = useMemo(() => {
     const set = new Set<string>();
-    reports.forEach((r) => {
-      if (r.insurer_name) set.add(r.insurer_name);
-    });
+    reports.forEach((r) => set.add(inferInsurerName(r)));
     ["NTUC Income", "Tokio Marine", "AIG Singapore", "Great American", "MSIG"].forEach((i) => set.add(i));
     return Array.from(set);
   }, [reports]);
@@ -298,23 +289,25 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
     return counts;
   }, [openCases]);
 
-  const handleExportChasers = () => {
-    setChaserNotice("Generated automated payment chaser statements for 4 overdue workshop accounts ($27,800 SGD). Ready for dispatch.");
-    setTimeout(() => setChaserNotice(null), 6000);
-  };
-
   const handleExportDispatchSheet = () => {
-    const header = ["Case ID", "Plate Number", "Vehicle Model", "Archetype", "Insurer", "Location / Workshop", "Est Reserve (SGD)", "Days Open"];
-    const rows = filteredCases.map((r) => [
-      `"${r.id}"`,
-      `"${r.plate_number || "UNASSIGNED"}"`,
-      `"${(r.vehicle_name || "Motor Vehicle").replace(/"/g, '""')}"`,
-      `"${getClaimArchetype(r).label}"`,
-      `"${(r.insurer_name || "Tokio Marine Singapore").replace(/"/g, '""')}"`,
-      `"${(r.workshop_assigned || r.location || "ComfortDelGro Toh Guan").replace(/"/g, '""')}"`,
-      getEstimatedCostSGD(r),
-      daysOpen(r.created_at),
-    ]);
+    // Recorded values only: a blank cell means "not recorded" (this file used
+    // to fill gaps with "Motor Vehicle", Tokio Marine and ComfortDelGro).
+    const csvText = (v?: string | null) => `"${(v || "").replace(/"/g, '""')}"`;
+    const header = ["Case ID", "Plate Number", "Vehicle Model", "Archetype", "Insurer", "Incident Location", "Workshop", "Est Reserve (SGD, indicative)", "Days Open"];
+    const rows = filteredCases.map((r) => {
+      const est = getEstimatedCostSGD(r);
+      return [
+        csvText(r.id),
+        csvText(r.plate_number),
+        csvText(r.vehicle_name),
+        csvText(getClaimArchetype(r).label),
+        csvText(r.insurer_name),
+        csvText(r.location),
+        csvText(r.workshop_assigned),
+        est > 0 ? est : "",
+        daysOpen(r.created_at),
+      ];
+    });
 
     const csvContent = "data:text/csv;charset=utf-8," + [header.join(","), ...rows.map((e) => e.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);
@@ -391,55 +384,50 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         </div>
       )}
 
-      {/* 2. Critical SLA & Court Litigation Alerts Banner */}
-      <div className="command-alert-box">
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, color: "var(--badge-amber-text)" }}>
-          <AlertTriangle style={{ width: 16, height: 16 }} />
-          <span>CRITICAL SLA & LEGAL COURT DOCKET ALERTS</span>
-          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
-            Automated statutory warning triggers
-          </span>
-        </div>
-
-        <div className="command-alert-item">
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-red-text)", flexShrink: 0 }} />
-            <span>
-              <strong style={{ color: "var(--badge-red-text)" }}>SJE COURT DEADLINE:</strong> State Courts Suit No. DC-1042/2026 — Pre-Trial Conference Joint Report due in <strong style={{ color: "var(--text-primary)" }}>42 hours</strong>.
+      {/* 2. GIA 48h SLA Alerts Banner -- real cases only, hidden when none */}
+      {slaAlerts.length > 0 && (
+        <div className="command-alert-box">
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, color: "var(--badge-amber-text)" }}>
+            <AlertTriangle style={{ width: 16, height: 16 }} />
+            <span>GIA 48H INSPECTION SLA ALERTS</span>
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
+              {slaAlerts.length} open case{slaAlerts.length === 1 ? "" : "s"} at &le;6h or overdue • from intake time
             </span>
           </div>
-          <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Open SJE Studio <ArrowRight style={{ width: 12, height: 12 }} />
-          </Link>
-        </div>
 
-        <div className="command-alert-item">
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-amber-text)", flexShrink: 0 }} />
-            <span>
-              <strong style={{ color: "var(--badge-amber-text)" }}>GIA 48H INSPECTION SLA:</strong> SLK 3063 Z (Tokio Marine @ Toh Guan) — <strong style={{ color: "var(--text-primary)" }}>6 hours remaining</strong> before workshop commences repairs.
-            </span>
-          </div>
-          <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Review Survey <ArrowRight style={{ width: 12, height: 12 }} />
-          </Link>
-        </div>
+          {slaAlerts.slice(0, 3).map((r) => {
+            const sla = slaOf(r);
+            const overdue = sla.status === "expired";
+            return (
+              <div key={r.id} className="command-alert-item">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: sla.pillColor, flexShrink: 0 }} />
+                  <span>
+                    <strong style={{ color: sla.pillColor }}>{overdue ? "GIA 48H SLA OVERDUE:" : "GIA 48H SLA CRITICAL:"}</strong>{" "}
+                    {r.plate_number || formatCarlinkRef(r.id, null, r.created_at)}
+                    {r.insurer_name ? ` (${r.insurer_name})` : ""} —{" "}
+                    <strong style={{ color: "var(--text-primary)" }}>{overdue ? sla.remainingText : sla.badgeText}</strong>
+                  </span>
+                </div>
+                <Link href={`/reports/${r.id}`} style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  Review Case <ArrowRight style={{ width: 12, height: 12 }} />
+                </Link>
+              </div>
+            );
+          })}
 
-        <div className="command-alert-item">
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent-cyan)", flexShrink: 0 }} />
-            <span>
-              <strong style={{ color: "var(--accent-cyan)" }}>HIGH-STAKES TMA IMPACT:</strong> Koh Kock Leong Attenuator Cushion impact — Chassis rail twist inspection required.
-            </span>
-          </div>
-          <Link href="/reports" style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Inspect Chassis <ArrowRight style={{ width: 12, height: 12 }} />
-          </Link>
+          {slaAlerts.length > 3 && (
+            <div className="command-alert-item" style={{ color: "var(--text-muted)", fontSize: 11 }}>
+              +{slaAlerts.length - 3} more — use the &quot;Urgent SLA&quot; quick filter below.
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
-      {/* 3. 5-Tier Operational & Financial KPI Cards (Strict Equal Height Grid) */}
-      <div className="kpi-grid-command">
+      {/* 3. KPI Cards. Auto-fit columns: "Quantum Savings" (a flat 21% of
+          reserves) and "Fee Aging Backlog" (a hard-coded $46,200) were
+          removed, so the 5-column grid would leave empty slots. */}
+      <div className="kpi-grid-command" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
         {/* KPI 1 */}
         <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-cyan)" } as React.CSSProperties}>
           <div>
@@ -457,33 +445,18 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
         <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-green-text)" } as React.CSSProperties}>
           <div>
             <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Assessed Reserves
+              <DollarSign style={{ width: 13, height: 13, color: "var(--badge-green-text)" }} /> Est. Reserves
             </div>
             <div className="kpi-val" style={{ color: "var(--badge-green-text)", marginTop: 4 }}>
-              ${(totalAssessedReservesSGD).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
+              ${(totalEstReservesSGD).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
             </div>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Cumulative open claims quantum
+            Indicative, open cases — not an assessed quantum
           </div>
         </div>
 
         {/* KPI 3 */}
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--accent-primary)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <ShieldCheck style={{ width: 13, height: 13, color: "var(--accent-primary)" }} /> Quantum Savings
-            </div>
-            <div className="kpi-val" style={{ color: "var(--accent-primary)", marginTop: 4 }}>
-              ${(estimatedSavingsSGD).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            ~21% negotiated indemnity delta
-          </div>
-        </div>
-
-        {/* KPI 4 */}
         <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-red-text)" } as React.CSSProperties}>
           <div>
             <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -495,21 +468,6 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             Court evidence & crash cushions
-          </div>
-        </div>
-
-        {/* KPI 5 */}
-        <div className="kpi-card-command" style={{ "--kpi-border": "var(--badge-amber-text)" } as React.CSSProperties}>
-          <div>
-            <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Clock style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Fee Aging Backlog
-            </div>
-            <div className="kpi-val" style={{ color: "var(--badge-amber-text)", marginTop: 4 }}>
-              $46,200 <span style={{ fontSize: 13, fontWeight: 600 }}>SGD</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-            Workshop discharge voucher recovery
           </div>
         </div>
       </div>
@@ -552,7 +510,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
               className={`swimlane-tab ${selectedSwimlane === "dv" ? "active" : ""}`}
               onClick={() => setSelectedSwimlane("dv")}
             >
-              DV & Aging ({dvAgingCount})
+              Aging 2d+ ({dvAgingCount})
             </button>
           </div>
 
@@ -598,7 +556,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             onClick={() => setQuickFilter(quickFilter === "urgent_sla" ? "all" : "urgent_sla")}
           >
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-red-text)" }} />
-            Urgent SLA &le;6h ({quickFilterCounts.urgent_sla})
+            Urgent SLA &le;6h / Overdue ({quickFilterCounts.urgent_sla})
           </button>
 
           <button
@@ -631,7 +589,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             className={`quick-filter-chip ${quickFilter === "high_quantum" ? "active" : ""}`}
             onClick={() => setQuickFilter(quickFilter === "high_quantum" ? "all" : "high_quantum")}
           >
-            High Quantum &gt;$15k ({quickFilterCounts.high_quantum})
+            High Est. &gt;$15k ({quickFilterCounts.high_quantum})
           </button>
 
           {(quickFilter !== "all" || selectedCluster || selectedInsurer !== "all" || searchTerm) && (
@@ -673,7 +631,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                 </span>
               </div>
               <div className="card-subtitle">
-                Prioritized by court deadlines, GIA 48h SLA window, and structural severity
+                Open cases awaiting sign-off • SLA is the GIA 48h window from intake time
               </div>
             </div>
 
@@ -717,7 +675,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                     background: item.color,
                     opacity: selectedInsurer === "all" || selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? 1 : 0.35,
                   }}
-                  title={`${item.name}: ${item.count} cases (${item.pct}%) - $${item.totalCost.toLocaleString()} SGD`}
+                  title={`${item.name}: ${item.count} cases (${item.pct}%) - Est. $${item.totalCost.toLocaleString()} SGD (indicative)`}
                   onClick={() => setSelectedInsurer(selectedInsurer.toLowerCase().includes(item.name.toLowerCase()) ? "all" : item.name)}
                 />
               ))}
@@ -751,7 +709,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   <th>Vehicle Registration</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
-                  <th className="col-reserve">Reserve ($ SGD)</th>
+                  <th className="col-reserve">Est. Reserve ($ SGD)</th>
                   <th>SLA Window</th>
                   <th className="col-actions">Actions</th>
                 </tr>
@@ -761,7 +719,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   const arch = getClaimArchetype(r);
                   const cost = getEstimatedCostSGD(r);
                   const age = daysOpen(r.created_at);
-                  const isCritical = age >= 2 || arch.key === "sje";
+                  const sla = slaOf(r);
 
                   return (
                     <tr key={r.id}>
@@ -787,7 +745,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                               </span>
                             </div>
                             <div className="triage-cell-truncate" style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                              {r.vehicle_name || "Motor Vehicle"} • {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
+                              {inferVehicleName(r)} • {r.damage_count} part{r.damage_count === 1 ? "" : "s"}
                             </div>
                           </div>
                         </div>
@@ -809,16 +767,19 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                                 arch.key === "sje" ? "rgba(168, 85, 247, 0.15)" :
                                 arch.key === "tma" ? "var(--badge-red-bg)" :
                                 arch.key === "tp-direct" ? "rgba(56, 189, 248, 0.15)" :
+                                arch.key === "pending" ? "var(--surface-hover)" :
                                 "var(--badge-amber-bg)",
                               color:
                                 arch.key === "sje" ? "#c084fc" :
                                 arch.key === "tma" ? "var(--badge-red-text)" :
                                 arch.key === "tp-direct" ? "var(--accent-cyan)" :
+                                arch.key === "pending" ? "var(--text-muted)" :
                                 "var(--badge-amber-text)",
                               border: `1px solid ${
                                 arch.key === "sje" ? "rgba(168, 85, 247, 0.3)" :
                                 arch.key === "tma" ? "var(--badge-red-border)" :
                                 arch.key === "tp-direct" ? "rgba(56, 189, 248, 0.3)" :
+                                arch.key === "pending" ? "var(--border-color)" :
                                 "var(--badge-amber-border)"
                               }`,
                             }}
@@ -836,19 +797,19 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                       <td>
                         <div style={{ fontSize: 11 }}>
                           <div className="triage-cell-truncate" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
-                            {r.insurer_name || "Tokio Marine Singapore"}
+                            {inferInsurerName(r)}
                           </div>
                           <div className="triage-cell-truncate" style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 1 }}>
-                            {r.workshop_assigned || r.location || "ComfortDelGro Toh Guan"}
+                            {inferWorkshopName(r.workshop_assigned)}
                           </div>
                         </div>
                       </td>
 
-                      <td className="col-reserve">
-                        <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: "var(--accent-cyan)" }}>
-                          ${cost.toLocaleString()}
+                      <td className="col-reserve" title="Indicative estimate, not an assessment">
+                        <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: cost > 0 ? "var(--accent-cyan)" : "var(--text-muted)" }}>
+                          {cost > 0 ? `$${cost.toLocaleString()}` : "—"}
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>SGD Assessed</div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{cost > 0 ? "SGD Est." : "No damage recorded"}</div>
                       </td>
 
                       <td>
@@ -858,11 +819,11 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                               width: 7,
                               height: 7,
                               borderRadius: "50%",
-                              background: isCritical ? "var(--badge-red-text)" : "var(--badge-green-text)",
+                              background: sla.pillColor,
                             }}
                           />
-                          <span style={{ fontSize: 11, fontWeight: 600, color: isCritical ? "var(--badge-red-text)" : "var(--text-primary)" }}>
-                            {arch.key === "sje" ? "42h (Court)" : isCritical ? "< 6h (GIA Exp)" : "28h remaining"}
+                          <span style={{ fontSize: 11, fontWeight: 600, color: sla.pillColor }}>
+                            {sla.badgeText}
                           </span>
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
@@ -910,7 +871,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
           </div>
         </div>
 
-        {/* Right Column: Singapore Workshop Cluster Route Logistics & DV Fee Recovery */}
+        {/* Right Column: Singapore Workshop Cluster Route Logistics & Velocity */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           {/* Card A: Singapore Workshop Cluster Logistics & Route Circuit */}
           <div className="card-glass">
@@ -986,76 +947,11 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             </div>
           </div>
 
-          {/* Card B: Discharge Voucher (DV) & Fee Recovery Aging */}
-          <div className="card-glass">
-            <div className="card-header" style={{ marginBottom: 12 }}>
-              <div>
-                <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <DollarSign style={{ width: 16, height: 16, color: "var(--badge-amber-text)" }} />
-                  <span>DV & Fee Recovery Aging</span>
-                </div>
-                <div className="card-subtitle">
-                  Tracking delayed workshop remittance ($40k-$50k backlog)
-                </div>
-              </div>
-            </div>
+          {/* The "DV & Fee Recovery Aging" card was removed: every figure in
+              it ($46,200 outstanding, named overdue workshops, the payment
+              chaser toast) was hard-coded -- no fee or DV data is recorded. */}
 
-            {/* Visual Aging Meter */}
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                <span style={{ fontWeight: 600 }}>Total Outstanding:</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--badge-amber-text)" }}>
-                  $46,200 SGD
-                </span>
-              </div>
-              <div className="aging-meter-track">
-                <div className="aging-meter-bar" style={{ width: "38%", background: "var(--badge-green-text)" }} title="0-30 Days: $17,800" />
-                <div className="aging-meter-bar" style={{ width: "40%", background: "var(--badge-amber-text)" }} title="30-60 Days: $18,400" />
-                <div className="aging-meter-bar" style={{ width: "22%", background: "var(--badge-red-text)" }} title="60+ Days Overdue: $10,000" />
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 11 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-green-text)" }} />
-                  0 – 30 Days (Active Processing)
-                </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>$17,800 SGD</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-amber-text)" }} />
-                  30 – 60 Days (DV Signed, Pending Remit)
-                </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>$18,400 SGD</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--badge-red-text)" }} />
-                  60+ Days (OVERDUE – AutoWorld & KKL)
-                </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--badge-red-text)" }}>$10,000 SGD</span>
-              </div>
-            </div>
-
-            {chaserNotice && (
-              <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 6, background: "var(--badge-green-bg)", color: "var(--badge-green-text)", fontSize: 11, fontWeight: 600 }}>
-                {chaserNotice}
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="btn-secondary-modern"
-              onClick={handleExportChasers}
-              style={{ width: "100%", marginTop: 14, fontSize: 11, padding: "7px 12px", justifyContent: "center" }}
-            >
-              <Send style={{ width: 13, height: 13 }} /> Batch Export Payment Chasers
-            </button>
-          </div>
-
-          {/* Card C: AI Vision Extraction & Surveyor Velocity */}
+          {/* Card C: AI Confidence & Surveyor Velocity */}
           <div className="card-glass">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
@@ -1063,16 +959,19 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                   Surveyor Velocity SLA
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2, color: "var(--accent-cyan)" }}>
-                  {analytics.avg_resolution_time || "2.1d"} <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>(Target &le; 3d)</span>
+                  {analytics.avg_resolution_time || "—"} <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>(Target &le; 3d)</span>
                 </div>
               </div>
 
               <div style={{ textAlign: "right" }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                  AI Vision Accuracy
+                  AI Confidence (self-reported)
                 </div>
-                <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2, color: "var(--badge-green-text)" }}>
-                  {analytics.ai_confidence_avg || "92% High"}
+                <div
+                  style={{ fontSize: 18, fontWeight: 800, marginTop: 2, color: analytics.ai_confidence_avg ? "var(--badge-green-text)" : "var(--text-muted)" }}
+                  title="Share of AI damage findings the model itself rated High confidence -- not a measured accuracy"
+                >
+                  {analytics.ai_confidence_avg || "—"}
                 </div>
               </div>
             </div>

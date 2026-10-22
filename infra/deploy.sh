@@ -64,6 +64,16 @@ if [ ! -s infra/carlink.htpasswd ]; then
     exit 1
 fi
 
+# Back up the database and case files before changing anything (see
+# infra/backup.sh; the nightly cron runs the same script). A deploy that
+# adds tables or columns can't be undone without one.
+if sudo test -f /root/.carlink-backup/hmac.env; then
+    echo "💾 Backing up before deploy..."
+    sudo bash infra/backup.sh || { echo "❌ Backup failed -- not deploying."; exit 1; }
+else
+    echo "⚠️  Backups not configured on this server (see infra/backup.sh) -- deploying without one."
+fi
+
 # 3. Build and Launch Containers using Docker Compose.
 # TELEGRAM_BOT_TOKEN / GEMINI_API_KEY are passed straight through from this
 # shell's environment via docker-compose's ${VAR} substitution -- nothing

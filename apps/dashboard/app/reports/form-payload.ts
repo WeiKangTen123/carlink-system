@@ -13,7 +13,9 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
   const people_involved = personNames
     .map((name, i) => ({
       name: name.trim(),
-      role: (personRoles[i] || "Driver").trim(),
+      // A blank role stays blank (it used to become "Driver"). "" rather
+      // than null: the API's PersonInvolved.role is a required str.
+      role: (personRoles[i] || "").trim(),
       department: personDepartments[i]?.trim() || null,
       contact: personContacts[i]?.trim() || null,
     }))

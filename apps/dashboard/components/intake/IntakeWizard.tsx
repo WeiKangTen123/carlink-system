@@ -38,6 +38,7 @@ const STEPS: { n: Step; label: string }[] = [
 // connection starving the rest; the server does thumbnail work per upload.
 const UPLOAD_CONCURRENCY = 3;
 const POLL_MS = 2000;
+const AUTOSAVE_MS = 1500;
 const DEFAULT_MAX_PHOTOS = 150;
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 const FALLBACK_SEVERITIES = ["Minor", "Moderate", "Severe"];
@@ -73,9 +74,18 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const [notes, setNotes] = useState("");
   const [step, setStep] = useState<Step>(1);
   const [loading, setLoading] = useState(Boolean(initialDraftId));
+  // Set when an existing draft couldn't be loaded. Nothing may be saved
+  // then: the form is empty, and saving it would wipe the draft on the
+  // server (the "Save & exit" button used to do exactly that).
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [busy, setBusy] = useState<null | "saving" | "starting" | "finalizing">(null);
+  // Edits not yet on the server. Saved automatically shortly after the
+  // last change (previously only on a step change, so leaving the page
+  // from step 3 silently lost everything typed there).
+  const [dirty, setDirty] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   // Photos regrouped/excluded since the AI last read the case.
   const [regrouped, setRegrouped] = useState(false);
@@ -89,6 +99,30 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const draftIdRef = useRef<string | null>(initialDraftId);
   const creatingRef = useRef<Promise<string> | null>(null);
   const stageRef = useRef<IntakeStage | null>(null);
+  // Latest values for the save paths that run outside React's render cycle
+  // (tab hidden/closed), where state would be a stale snapshot.
+  const loadedRef = useRef(!initialDraftId);
+  const dataRef = useRef<ReportData>(EMPTY_DATA);
+  const notesRef = useRef("");
+  const dirtyRef = useRef(false);
+  // Bumped on every edit, so a save that finishes after further typing
+  // doesn't mark those newer edits as saved.
+  const editVersionRef = useRef(0);
+  dataRef.current = data;
+  notesRef.current = notes;
+  dirtyRef.current = dirty;
+
+  function editData(update: (d: ReportData) => ReportData) {
+    setData(update);
+    editVersionRef.current += 1;
+    setDirty(true);
+  }
+
+  function editNotes(value: string) {
+    setNotes(value);
+    editVersionRef.current += 1;
+    setDirty(true);
+  }
 
   const reviewTaxonomy: Taxonomy = {
     ...taxonomy,
@@ -100,12 +134,19 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     stageRef.current = s.stage;
     setState(s);
     if (initial || finishedReading) {
-      // The AI's draft replaces the form -- only ever at these two moments,
-      // never on routine polls, so typing isn't overwritten mid-edit.
+      // The server's form replaces the local one -- only ever at these two
+      // moments, never on routine polls, so typing isn't overwritten. After
+      // a read the server has already merged the AI's facts with
+      // everything the surveyor had saved (pipeline.merge_redraft), and
+      // editing is locked while the AI runs, so nothing local is lost.
       setData({ ...EMPTY_DATA, ...s.data });
       setRegrouped(false);
+      setDirty(false);
     }
-    if (initial) setNotes(s.reporter_notes || "");
+    if (initial) {
+      setNotes(s.reporter_notes || "");
+      loadedRef.current = true;
+    }
   }, []);
 
   const refresh = useCallback(async () => {
@@ -119,9 +160,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   }, [applyState]);
 
   // Resume an existing draft (?draft=<id>).
+  const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
     if (!initialDraftId) return;
     let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
     getIntake(initialDraftId)
       .then((s) => {
         if (cancelled) return;
@@ -134,13 +178,13 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           router.replace(`/reports/${initialDraftId}`);
           return;
         }
-        setError(e.message);
+        setLoadError(e.message);
       })
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [initialDraftId, applyState, router]);
+  }, [initialDraftId, applyState, router, loadAttempt]);
 
   // Poll while the AI works in the background.
   const running = isRunning(state?.stage);
@@ -156,18 +200,53 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     return () => clearInterval(timer);
   }, [running, draftId, applyState]);
 
-  // Closing the tab mid-upload loses the rest of the queue (the File
-  // objects only exist in this page), so warn first.
+  // Leaving mid-upload loses the rest of the queue (the File objects only
+  // exist in this page), and leaving with unsaved edits loses those. The
+  // browser's own prompt covers closing the tab and reloading; in-app links
+  // (sidebar, breadcrumbs, "Back to Cases Repository") never fire
+  // beforeunload, so those clicks are caught here too.
   const uploading = uploads.some((u) => u.status === "queued" || u.status === "uploading");
+  const unsafeToLeave = uploading || dirty;
   useEffect(() => {
-    if (!uploading) return;
-    const handler = (e: BeforeUnloadEvent) => {
+    if (!unsafeToLeave) return;
+    const beforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [uploading]);
+    const linkClick = (e: MouseEvent) => {
+      const link = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.getAttribute("href")?.startsWith("#")) return;
+      if (new URL(link.href, window.location.href).origin !== window.location.origin) return;
+      const why = uploading ? "Photos are still uploading" : "You have unsaved changes";
+      if (!window.confirm(`${why}. Leave this page anyway?`)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", linkClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", linkClick, true);
+    };
+  }, [unsafeToLeave, uploading]);
+
+  // A hidden tab may be discarded or closed without warning; push unsaved
+  // edits out first. keepalive lets the request finish after the page goes.
+  useEffect(() => {
+    const flush = () => {
+      const id = draftIdRef.current;
+      if (document.visibilityState !== "hidden" || !id || !dirtyRef.current || !loadedRef.current) return;
+      if (isRunning(stageRef.current)) return;
+      saveIntakeData(id, dataRef.current, notesRef.current, { keepalive: true })
+        .then(() => setDirty(false))
+        .catch(() => {
+          // stays dirty; the next autosave retries
+        });
+    };
+    document.addEventListener("visibilitychange", flush);
+    return () => document.removeEventListener("visibilitychange", flush);
+  }, []);
 
   async function ensureDraft(): Promise<string> {
     if (draftIdRef.current) return draftIdRef.current;
@@ -209,7 +288,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         .then((res) => {
           patchUpload(next.key, { status: res.duplicate_of ? "duplicate" : "done" });
           const photo = res.photo;
-          if (photo) setState((prev) => (prev ? { ...prev, photos: [...prev.photos, photo].sort(byPosition) } : prev));
+          // A poll or refresh may already have brought this photo in; adding
+          // it again gave a duplicate tile (and a duplicate React key).
+          if (photo)
+            setState((prev) =>
+              prev && !prev.photos.some((p) => p.id === photo.id) ? { ...prev, photos: [...prev.photos, photo].sort(byPosition) } : prev
+            );
         })
         .catch((e: Error) => patchUpload(next.key, { status: "failed", error: e.message }))
         .finally(() => {
@@ -271,28 +355,55 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   }
 
   function retryFailed() {
-    uploadsRef.current = uploadsRef.current.map((u) => (u.status === "failed" ? { ...u, status: "queued", error: undefined } : u));
+    const retried = new Set(uploadsRef.current.filter((u) => u.status === "failed").map((u) => u.key));
+    uploadsRef.current = uploadsRef.current.map((u) => (retried.has(u.key) ? { ...u, status: "queued", error: undefined } : u));
     syncUploads();
     ensureDraft()
       .then(() => pump())
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        // Put them back to failed: left "queued" with no draft to upload
+        // into, they would spin forever and keep Save & exit disabled.
+        setError(e.message);
+        uploadsRef.current = uploadsRef.current.map((u) => (retried.has(u.key) ? { ...u, status: "failed", error: e.message } : u));
+        syncUploads();
+      });
   }
 
-  async function save(): Promise<boolean> {
+  /** quiet: an autosave -- no busy state, no error banner (it retries). */
+  async function save(opts: { quiet?: boolean } = {}): Promise<boolean> {
     const id = draftIdRef.current;
     if (!id) return true;
-    setBusy("saving");
+    // Never save a form that didn't load from the server: it is empty, and
+    // saving it would wipe the draft.
+    if (!loadedRef.current) return false;
+    if (!dirtyRef.current) return true;
+    const version = editVersionRef.current;
+    if (!opts.quiet) setBusy("saving");
     try {
-      await saveIntakeData(id, data, notes);
+      await saveIntakeData(id, dataRef.current, notesRef.current);
       setSavedAt(new Date());
+      setSaveFailed(false);
+      if (editVersionRef.current === version) setDirty(false);
       return true;
     } catch (e) {
-      setError(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
+      setSaveFailed(true);
+      if (!opts.quiet) setError(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     } finally {
-      setBusy(null);
+      if (!opts.quiet) setBusy(null);
     }
   }
+
+  // Autosave shortly after the last change. Paused while the AI runs (the
+  // server refuses edits then, and the form is locked anyway).
+  useEffect(() => {
+    if (!dirty || !draftId || running || busy || loading || loadError) return;
+    const timer = setTimeout(() => {
+      void save({ quiet: true });
+    }, AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, data, notes, draftId, running, busy, loading, loadError]);
 
   async function goTo(next: Step) {
     if (next === step) return;
@@ -307,8 +418,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setBusy("starting");
     setError(null);
     try {
-      await saveIntakeData(id, data, notes);
+      await saveIntakeData(id, dataRef.current, notesRef.current);
       setSavedAt(new Date());
+      setDirty(false);
       applyState(await processIntake(id, mode), false);
       setAiSkipped(false);
       setStep(2);
@@ -367,6 +479,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setError(null);
     try {
       await finalizeIntake(id, data);
+      setDirty(false);
       router.push(`/reports/${id}`);
       router.refresh();
     } catch (e) {
@@ -391,6 +504,33 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     return <div className="intake-shell"><div className="card intake-panel intake-muted">Loading draft…</div></div>;
   }
 
+  if (loadError) {
+    return (
+      <div className="intake-shell">
+        <div className="intake-alert danger" role="alert">
+          <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            Couldn&apos;t load this draft: {loadError}. Nothing has been changed -- try again in a moment.
+          </div>
+          <button type="button" className="btn-secondary-modern" onClick={() => setLoadAttempt((n) => n + 1)}>
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  let saveStatus: React.ReactNode = null;
+  if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
+  else if (saveFailed && dirty) saveStatus = <span className="intake-chip warn">Not saved -- retrying</span>;
+  else if (dirty) saveStatus = <span className="intake-muted">Unsaved changes…</span>;
+  else if (savedAt)
+    saveStatus = (
+      <span className="intake-muted">
+        <Check style={{ width: 12, height: 12, verticalAlign: "-2px" }} /> Saved {savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      </span>
+    );
+
   return (
     <div className="intake-shell new-report-form">
       <header className="intake-header">
@@ -400,11 +540,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         </div>
         <div className="intake-header-actions">
           {draftId && <span className="intake-chip">Draft {draftId.slice(0, 6).toUpperCase()}</span>}
-          {savedAt && (
-            <span className="intake-muted">
-              <Check style={{ width: 12, height: 12, verticalAlign: "-2px" }} /> Saved {savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </span>
-          )}
+          <span role="status">{saveStatus}</span>
           {draftId && (
             <button type="button" className="btn-secondary-modern" onClick={saveAndExit} disabled={Boolean(busy) || uploading}>
               <Save style={{ width: 14, height: 14 }} /> Save &amp; exit
@@ -430,7 +566,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       </ol>
 
       {error && (
-        <div className="intake-alert danger">
+        <div className="intake-alert danger" role="alert">
           <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>{error}</div>
           <button type="button" className="intake-icon-btn" onClick={() => setError(null)} aria-label="Dismiss">
@@ -445,9 +581,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           uploads={uploads}
           stage={stage}
           data={data}
-          onDataChange={(patch) => setData((d) => ({ ...d, ...patch }))}
+          onDataChange={(patch) => editData((d) => ({ ...d, ...patch }))}
           notes={notes}
-          onNotesChange={setNotes}
+          onNotesChange={editNotes}
+          locked={running}
           maxPhotos={state?.limits.max_photos ?? DEFAULT_MAX_PHOTOS}
           maxPhotoBytes={state?.limits.max_photo_bytes ?? DEFAULT_MAX_BYTES}
           busy={Boolean(busy)}
@@ -481,7 +618,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       {step === 3 && state && (
         <ReviewStep
           data={data}
-          onChange={(update) => setData(update)}
+          onChange={editData}
           photos={state.photos}
           readPhotoIds={state.read_photo_ids}
           taxonomy={reviewTaxonomy}
@@ -494,8 +631,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       {step === 4 && state && (
         <PartiesStep
           data={data}
-          onChange={(update) => setData(update)}
+          onChange={editData}
           finalizing={busy === "finalizing"}
+          uploading={uploading}
           onBack={() => goTo(3)}
           onFinalize={finalize}
         />

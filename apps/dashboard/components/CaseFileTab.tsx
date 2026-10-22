@@ -30,7 +30,7 @@ import {
   Eye,
   Check,
 } from "lucide-react";
-import type { ReportDetail } from "@/lib/api";
+import type { ReportDetail, TyreItem } from "@/lib/api";
 import {
   formatCarlinkRef,
   inferVehicleName,
@@ -118,8 +118,13 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const caseIdDisplay = formatCarlinkRef(report.id, v?.plate_number);
-  const plateDisplay = v?.plate_number || "UNASSIGNED";
+  // Every value below is the recorded one or "—". This dossier is printed
+  // for insurers and courts; until 2026-10-21 empty fields were filled with
+  // fixed sample values (VIN, engine no., odometer, police report, driver,
+  // witness, third party, GPS, quantum figures), so every case read as
+  // fully surveyed.
+  const caseIdDisplay = formatCarlinkRef(report.id, v?.plate_number, report.created_at);
+  const plateDisplay = v?.plate_number || "Plate not recorded";
   const vehicleName = inferVehicleName({
     vehicle_name: v ? `${v.make || ""} ${v.model || ""}`.trim() : null,
     plate_number: v?.plate_number,
@@ -127,64 +132,65 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
     category: d.category,
   });
 
-  const insurerName = ins?.insurer_name || inferInsurerName(report);
-  const workshopName = ins?.workshop_assigned || inferWorkshopName(d.location);
-  const claimTypeLabel = ins?.claim_type || getClaimArchetype({ ...report, ...d }).label;
-  const claimArchetype = getClaimArchetype({ ...report, ...d });
+  const isSignedOff = report.status === "Signed Off" || signOff?.status === "Signed Off";
+  const insurerName = inferInsurerName({ insurer_name: ins?.insurer_name });
+  // The workshop field only -- this used to be handed the incident
+  // location, which then showed as the appointed workshop.
+  const workshopName = inferWorkshopName(ins?.workshop_assigned);
+  const claimArchetype = getClaimArchetype({ claim_type: ins?.claim_type });
+  const claimTypeLabel = ins?.claim_type || claimArchetype.label;
   const giaSla = getGiaSla(report.created_at, Boolean(signOff?.signature_date));
+  const bola = d.bola_assessment;
+  const annexC = d.annex_c;
 
-  // Completeness Audit calculation
+  // Tyres as surveyed. These used to default to "Dunlop Enasave 215/60 R16",
+  // 6.0 mm and 32/33 PSI, so every case showed four LTA-compliant tyres;
+  // pressure isn't a recorded field at all, so that column is now the
+  // recorded condition.
+  const tyres = v?.tyres || {};
+  const tyreRow = (pos: string, t?: TyreItem | null) => {
+    const depth = t?.tread_depth_mm ?? null;
+    return {
+      pos,
+      spec: [t?.brand, t?.size].filter(Boolean).join(" "),
+      depth,
+      condition: t?.condition || "",
+      status: depth == null ? "unrecorded" : depth >= 3.0 ? "pass" : depth >= 1.6 ? "warn" : "fail",
+    };
+  };
+  const tyreRows = [
+    tyreRow("[FL] Front-Left", tyres.front_nearside),
+    tyreRow("[FR] Front-Right", tyres.front_offside),
+    tyreRow("[RL] Rear-Left", tyres.rear_nearside),
+    tyreRow("[RR] Rear-Right", tyres.rear_offside),
+  ];
+
+  // Completeness Audit calculation -- each check passes only on recorded
+  // data (they used to pass on the guessed insurer/workshop and on any
+  // odometer reading).
   const checks = [
-    { label: "Vehicle LTA Matched", done: Boolean(v?.plate_number && (v?.make || v?.model)) },
-    { label: "Police Report Verified", done: Boolean(d.reported_to_authorities || pol?.reported_to_police || pol?.report_number) },
-    { label: "Underwriting Linked", done: Boolean(ins?.insurer_name || insurerName) },
-    { label: "Workshop Cluster Assigned", done: Boolean(ins?.workshop_assigned || workshopName) },
-    { label: "Tyre Matrix Surveyed", done: Boolean(v?.tyres?.front_nearside?.tread_depth_mm || v?.odometer_reading) },
-    { label: "Evidence & Photos Secured", done: Boolean(d.damage_summary && d.damage_summary.length > 0) },
+    { label: "Vehicle Particulars Recorded", done: Boolean(v?.plate_number && (v?.make || v?.model)) },
+    { label: "Reported to Police", done: Boolean(d.reported_to_authorities || pol?.reported_to_police || pol?.report_number) },
+    { label: "Underwriting Linked", done: Boolean(ins?.insurer_name?.trim()) },
+    { label: "Workshop Assigned", done: Boolean(ins?.workshop_assigned?.trim()) },
+    { label: "Tyre Matrix Surveyed", done: tyreRows.some((t) => t.depth != null) },
+    { label: "Evidence & Photos Secured", done: (report.photo_urls?.length ?? 0) > 0 },
   ];
   const completedCount = checks.filter((c) => c.done).length;
   const completionPct = Math.round((completedCount / checks.length) * 100);
 
-  // Default / Enriched Tyres Data
-  const tyres = v?.tyres || {};
-  const tyreRows = [
-    {
-      pos: "[FL] Front-Left",
-      spec: tyres.front_nearside?.brand || "Dunlop Enasave",
-      size: tyres.front_nearside?.size || "215/60 R16",
-      depth: tyres.front_nearside?.tread_depth_mm ?? 6.0,
-      pressure: "32 PSI",
-      status: (tyres.front_nearside?.tread_depth_mm ?? 6.0) >= 3.0 ? "pass" : (tyres.front_nearside?.tread_depth_mm ?? 6.0) >= 1.6 ? "warn" : "fail",
-      wear: "NORMAL / EVEN",
-    },
-    {
-      pos: "[FR] Front-Right",
-      spec: tyres.front_offside?.brand || "Dunlop Enasave",
-      size: tyres.front_offside?.size || "215/60 R16",
-      depth: tyres.front_offside?.tread_depth_mm ?? 6.0,
-      pressure: "32 PSI",
-      status: (tyres.front_offside?.tread_depth_mm ?? 6.0) >= 3.0 ? "pass" : (tyres.front_offside?.tread_depth_mm ?? 6.0) >= 1.6 ? "warn" : "fail",
-      wear: "NORMAL / EVEN",
-    },
-    {
-      pos: "[RL] Rear-Left",
-      spec: tyres.rear_nearside?.brand || "Dunlop Enasave",
-      size: tyres.rear_nearside?.size || "215/60 R16",
-      depth: tyres.rear_nearside?.tread_depth_mm ?? 6.0,
-      pressure: "33 PSI",
-      status: (tyres.rear_nearside?.tread_depth_mm ?? 6.0) >= 3.0 ? "pass" : (tyres.rear_nearside?.tread_depth_mm ?? 6.0) >= 1.6 ? "warn" : "fail",
-      wear: "NORMAL / EVEN",
-    },
-    {
-      pos: "[RR] Rear-Right",
-      spec: tyres.rear_offside?.brand || "Dunlop Enasave",
-      size: tyres.rear_offside?.size || "215/60 R16",
-      depth: tyres.rear_offside?.tread_depth_mm ?? 6.0,
-      pressure: "33 PSI",
-      status: (tyres.rear_offside?.tread_depth_mm ?? 6.0) >= 3.0 ? "pass" : (tyres.rear_offside?.tread_depth_mm ?? 6.0) >= 1.6 ? "warn" : "fail",
-      wear: "NORMAL / EVEN",
-    },
-  ];
+  const formatSgd = (n?: number | null) =>
+    n != null && !Number.isNaN(n)
+      ? `SGD ${n.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : "—";
+  const gstAmount =
+    annexC?.gst_amount ??
+    (annexC?.agreed_lump_sum != null ? Math.round(annexC.agreed_lump_sum * (annexC.gst_rate || 0.09) * 100) / 100 : null);
+
+  const integrityParts = [
+    v?.steering_condition && `Steering: ${v.steering_condition}`,
+    v?.brakes_condition && `Brakes: ${v.brakes_condition}`,
+  ].filter(Boolean);
 
   return (
     <div className="dossier-workstation">
@@ -194,19 +200,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-plate-badge">
             <Car style={{ width: 16, height: 16, color: "var(--accent-primary)" }} />
             <span>{plateDisplay}</span>
-            <span
-              style={{
-                fontSize: 10,
-                padding: "2px 6px",
-                borderRadius: 4,
-                background: "rgba(34, 197, 94, 0.15)",
-                color: "var(--badge-green-text)",
-                fontWeight: 700,
-                letterSpacing: "0.04em",
-              }}
-            >
-              LTA VALIDATED
-            </span>
+            {/* No "LTA VALIDATED" badge: nothing here checks the plate with LTA. */}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
@@ -242,7 +236,9 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <button
             type="button"
             className="dossier-action-btn"
-            onClick={() => handleCopy(v?.vin || "RU1-11205877", "vin")}
+            disabled={!v?.vin}
+            title={v?.vin ? undefined : "No VIN recorded"}
+            onClick={() => handleCopy(v?.vin || "", "vin")}
           >
             <Copy style={{ width: 12, height: 12 }} />
             {copiedKey === "vin" ? "VIN Copied!" : "Copy VIN"}
@@ -251,7 +247,9 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <button
             type="button"
             className="dossier-action-btn"
-            onClick={() => handleCopy(ins?.claim_number || `CL-${report.id.slice(0, 5).toUpperCase()}`, "claim")}
+            disabled={!ins?.claim_number}
+            title={ins?.claim_number ? undefined : "No claim number recorded"}
+            onClick={() => handleCopy(ins?.claim_number || "", "claim")}
           >
             <Copy style={{ width: 12, height: 12 }} />
             {copiedKey === "claim" ? "Claim # Copied!" : "Copy Claim #"}
@@ -320,27 +318,28 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
 
           <div className="dossier-field-grid">
             <DossierField label="Registration Plate" value={v?.plate_number} mono />
-            <DossierField label="LTA Reg Status" value="ACTIVE / COE VALID" />
-            <DossierField label="Body / Classification" value={v?.body_type || "5-Door Compact Crossover"} />
+            {/* Not checked against LTA anywhere, so not asserted. */}
+            <DossierField label="LTA Reg Status" value={null} />
+            <DossierField label="Body / Classification" value={v?.body_type} />
 
             <DossierField label="Make & Model" value={vehicleName} />
-            <DossierField label="Model Year / Origin" value={v?.year ? `${v.year} / Japan (CBU)` : "2021 / Japan"} />
-            <DossierField label="Powertrain & Gearbox" value={v?.transmission || "1.5L i-VTEC / Automatic (CVT)"} />
+            <DossierField label="Model Year" value={v?.year} />
+            <DossierField label="Transmission" value={v?.transmission} />
 
             <DossierField
               label="Chassis Number (VIN)"
-              value={v?.vin || "RU1-11205877"}
+              value={v?.vin}
               mono
-              onCopy={() => handleCopy(v?.vin || "RU1-11205877", "vin_cell")}
+              onCopy={() => handleCopy(v?.vin || "", "vin_cell")}
               copyLabel="VIN"
               isCopied={copiedKey === "vin_cell"}
             />
-            <DossierField label="Engine Serial No." value={v?.engine_number || "L15B-4405878"} mono />
-            <DossierField label="Ownership Type" value={v?.ownership_type || "Private Passenger"} />
+            <DossierField label="Engine Serial No." value={v?.engine_number} mono />
+            <DossierField label="Ownership Type" value={v?.ownership_type} />
 
-            <DossierField label="Odometer Reading" value={v?.odometer_reading || "015,287 km"} mono highlight />
-            <DossierField label="Factory Paint System" value={v?.paintwork_condition || "Crystal Black (NH-731P)"} />
-            <DossierField label="Static Integrity Check" value="Steering: Operable | Brakes: OK" />
+            <DossierField label="Odometer Reading" value={v?.odometer_reading} mono highlight />
+            <DossierField label="Colour / Paintwork" value={[v?.color, v?.paintwork_condition].filter(Boolean).join(" / ")} />
+            <DossierField label="Static Integrity Check" value={integrityParts.join(" | ")} />
           </div>
 
           {/* 4-WHEEL FORENSIC TYRE MATRIX */}
@@ -374,7 +373,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
                     <th>Axle Position</th>
                     <th>Tyre Spec & Brand</th>
                     <th>Tread Depth</th>
-                    <th>Pressure</th>
+                    <th>Condition</th>
                     <th>LTA Status</th>
                   </tr>
                 </thead>
@@ -382,17 +381,25 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
                   {tyreRows.map((tr, idx) => (
                     <tr key={idx}>
                       <td style={{ fontWeight: 700, fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{tr.pos}</td>
-                      <td>{tr.spec} {tr.size}</td>
+                      <td>{tr.spec || "—"}</td>
                       <td>
-                        <span className={`tyre-gauge-pill ${tr.status}`}>
-                          {tr.depth.toFixed(1)} mm
-                        </span>
+                        {tr.depth != null ? (
+                          <span className={`tyre-gauge-pill ${tr.status}`}>
+                            {tr.depth.toFixed(1)} mm
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
-                      <td style={{ fontFamily: "var(--font-mono)" }}>{tr.pressure}</td>
+                      <td>{tr.condition || "—"}</td>
                       <td>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: tr.status === "pass" ? "var(--badge-green-text)" : tr.status === "warn" ? "var(--badge-amber-text)" : "var(--badge-red-text)" }}>
-                          {tr.status === "pass" ? "PASS / LTA COMPLIANT" : tr.status === "warn" ? "WARN / NEAR LIMIT" : "FAIL / LTA VIOLATION"}
-                        </span>
+                        {tr.status === "unrecorded" ? (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>PENDING SURVEYOR</span>
+                        ) : (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: tr.status === "pass" ? "var(--badge-green-text)" : tr.status === "warn" ? "var(--badge-amber-text)" : "var(--badge-red-text)" }}>
+                            {tr.status === "pass" ? "PASS / LTA COMPLIANT" : tr.status === "warn" ? "WARN / NEAR LIMIT" : "FAIL / LTA VIOLATION"}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -416,27 +423,33 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
 
           <div className="dossier-field-grid">
             <DossierField label="Underwriting Insurer" value={insurerName} highlight />
-            <DossierField label="Policy Number" value={ins?.policy_number || "TM-POL-2024-883921"} mono />
+            <DossierField label="Policy Number" value={ins?.policy_number} mono />
+            {/* The insurer's claim number only -- not our generated REF, which
+                must not pass for one. */}
             <DossierField
               label="Master Claim Number"
-              value={ins?.claim_number || caseIdDisplay}
+              value={ins?.claim_number}
               mono
-              onCopy={() => handleCopy(ins?.claim_number || caseIdDisplay, "claim_cell")}
+              onCopy={() => handleCopy(ins?.claim_number || "", "claim_cell")}
               copyLabel="Claim #"
               isCopied={copiedKey === "claim_cell"}
             />
 
             <DossierField label="Claim Archetype" value={claimTypeLabel} />
-            <DossierField label="Policy Coverage" value="Comprehensive (Motor)" />
-            <DossierField label="Excess / Deductible" value="SGD 1,000.00 (Standard OD)" mono />
+            {/* Coverage and excess aren't recorded fields. */}
+            <DossierField label="Policy Coverage" value={null} />
+            <DossierField label="Excess / Deductible" value={null} mono />
 
             <DossierField label="Appointed Loss Adjuster" value="Patrick Ng & Co. Chartered Surveyors" />
             <DossierField label="Surveyor License #" value="SURV-SG-0492" mono />
             <DossierField label="GIA Survey SLA" value={`${giaSla.badgeText} · ${giaSla.remainingText}`} />
 
             <DossierField label="Appointed Workshop" value={workshopName} />
-            <DossierField label="Workshop Cluster" value="Kaki Bukit Autobay Cluster" />
-            <DossierField label="Disassembly Authorization" value="Authorized by Surveyor" />
+            <DossierField label="Workshop Cluster" value={null} />
+            {/* No authorization is recorded anywhere; this used to read
+                "Authorized by Surveyor" on every case. Shows the recorded
+                recommendation instead. */}
+            <DossierField label="Disassembly Status" value={d.recommendations?.disassembly_required ? "Required" : null} />
           </div>
 
           {/* FINANCIAL RESERVES & QUANTUM LEDGER */}
@@ -464,35 +477,48 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, background: "var(--surface-elevated)", padding: 10, borderRadius: 8 }}>
+              {/* Recorded figures only (these were fixed 13,734 / 10,209.20 /
+                  8,700 / 783 on every case). */}
               <div>
-                <div className="dossier-field-label">Initial Reserve</div>
+                <div className="dossier-field-label">Est. Repair Cost</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--text-primary)", fontSize: 13 }}>
-                  {ins?.estimated_repair_cost || "SGD 13,734.00"}
+                  {ins?.estimated_repair_cost || "—"}
                 </div>
               </div>
               <div>
-                <div className="dossier-field-label">Assessed Total</div>
+                <div className="dossier-field-label">Final Approved</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)", fontSize: 13 }}>
-                  {ins?.final_approved_cost || "SGD 10,209.20"}
+                  {ins?.final_approved_cost || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">Lump Sum Agt.</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--badge-green-text)", fontSize: 13 }}>
-                  SGD 8,700.00
+                  {formatSgd(annexC?.agreed_lump_sum)}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">GST (9%)</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-secondary)", fontSize: 13 }}>
-                  SGD 783.00
+                  {formatSgd(gstAmount)}
                 </div>
               </div>
             </div>
 
             <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, color: "var(--text-secondary)", background: "rgba(59, 130, 246, 0.05)", padding: "6px 10px", borderRadius: 6 }}>
-              <span><strong>GIA BOLA Matrix:</strong> Scenario #14 (Chain / Direct Rear Collision)</span>
-              <span style={{ fontWeight: 700, color: "var(--badge-green-text)" }}>Insured Liability: 0% | TP: 100%</span>
+              <span>
+                <strong>GIA BOLA Matrix:</strong>{" "}
+                {bola?.scenario_number != null
+                  ? `Scenario #${bola.scenario_number}${bola.scenario_name ? ` (${bola.scenario_name})` : ""}`
+                  : "Pending surveyor assessment"}
+              </span>
+              {bola?.insured_liability_pct != null && bola?.third_party_liability_pct != null ? (
+                <span style={{ fontWeight: 700, color: "var(--badge-green-text)" }}>
+                  Insured Liability: {bola.insured_liability_pct}% | TP: {bola.third_party_liability_pct}%
+                </span>
+              ) : (
+                <span style={{ fontWeight: 700, color: "var(--text-muted)" }}>Liability: Pending surveyor</span>
+              )}
             </div>
           </div>
         </div>
@@ -514,19 +540,20 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
 
           <div className="dossier-field-grid">
             <DossierField label="Incident Date / Time" value={formatSgtDateTime(d.incident_datetime)} mono highlight />
-            <DossierField label="Lighting / Solar Phase" value="Day / Clear Visibility" />
-            <DossierField label="Intake Channel" value={`${report.channel.toUpperCase()} (Encrypted)`} mono />
+            {/* Lighting, coordinates and drivability aren't recorded fields. */}
+            <DossierField label="Lighting / Solar Phase" value={null} />
+            <DossierField label="Intake Channel" value={report.channel.toUpperCase()} mono />
 
-            <DossierField label="Roadway Location" value={d.location || "Kaki Bukit Ave 6, Bay 2"} />
-            <DossierField label="Decimal Coordinates" value="1.334101° N, 103.904129° E" mono />
-            <DossierField label="Collision Severity" value={d.severity_level || "Moderate Panel Repair"} highlight />
+            <DossierField label="Roadway Location" value={d.location} />
+            <DossierField label="Decimal Coordinates" value={null} mono />
+            <DossierField label="Collision Severity" value={d.severity_level} highlight />
 
-            <DossierField label="Weather Condition" value={`Weather: ${d.weather_condition || "Clear"}`} />
-            <DossierField label="Roadway Surface" value={`Road: ${d.road_condition || "Dry Bitumen"}`} />
-            <DossierField label="Traffic Flow" value={`Traffic: ${d.traffic_condition || "Moderate"}`} />
+            <DossierField label="Weather Condition" value={d.weather_condition} />
+            <DossierField label="Roadway Surface" value={d.road_condition} />
+            <DossierField label="Traffic Flow" value={d.traffic_condition} />
 
-            <DossierField label="Impact Vector" value={v?.point_of_impact || "06:00 Direct Rear Impact"} highlight />
-            <DossierField label="Drivability Status" value="Drivable / Self-Driven" />
+            <DossierField label="Impact Vector" value={v?.point_of_impact} highlight />
+            <DossierField label="Drivability Status" value={null} />
             <DossierField label="Dispatched Facility" value={workshopName} />
           </div>
 
@@ -537,7 +564,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
               Accident Narrative & Surveyor Assessment Notes
             </div>
             <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, margin: 0, background: "var(--surface-elevated)", padding: "8px 12px", borderRadius: 6 }}>
-              {d.description || "Vehicle stationary at workshop junction when third-party vehicle failed to brake in time and collided into the rear tailgate and bumper assembly. Tailgate buckled, bumper fascia fractured."}
+              {d.description || "No description recorded"}
             </p>
           </div>
         </div>
@@ -557,23 +584,26 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div className="dossier-field-grid">
             <DossierField
               label="Traffic Police Report #"
-              value={pol?.report_number || "TP/2018/01/04912"}
+              value={pol?.report_number}
               mono
               highlight
-              onCopy={() => handleCopy(pol?.report_number || "TP/2018/01/04912", "tp_report")}
+              onCopy={() => handleCopy(pol?.report_number || "", "tp_report")}
               copyLabel="Police Report #"
               isCopied={copiedKey === "tp_report"}
             />
-            <DossierField label="Investigating Station" value={pol?.police_station || "Traffic Police HQ (Ubi Ave 3)"} />
-            <DossierField label="Investigating Officer" value={pol?.officer_name || "Sgt. Kelvin Tan"} />
+            <DossierField label="Investigating Station" value={pol?.police_station} />
+            <DossierField label="Investigating Officer" value={pol?.officer_name} />
 
-            <DossierField label="Insured Driver Name" value={v?.driver_name || "Mohd Noor Bin P Mohamed"} />
-            <DossierField label="Driver NRIC Mask" value="S****491A" mono />
-            <DossierField label="Driver Contact" value={v?.driver_contact || "+65 9123 4567"} mono />
+            <DossierField label="Insured Driver Name" value={v?.driver_name} />
+            {/* NRIC, trigger, licence class and sobriety result aren't
+                recorded fields; these used to show a made-up NRIC fragment,
+                "Class 3 (Valid)" and a negative 0.0 mg/L breath test. */}
+            <DossierField label="Driver NRIC Mask" value={null} mono />
+            <DossierField label="Driver Contact" value={v?.driver_contact} mono />
 
-            <DossierField label="Statutory Trigger" value="Property Damage > $1,000" />
-            <DossierField label="Driving License Class" value="Class 3 (Valid)" />
-            <DossierField label="Field Sobriety Test" value="0.0 mg/L (Negative)" mono />
+            <DossierField label="Statutory Trigger" value={null} />
+            <DossierField label="Driving License Class" value={null} />
+            <DossierField label="Field Sobriety Test" value={null} mono />
           </div>
 
           {/* THIRD PARTY COUNTERPARTY DOSSIER */}
@@ -587,37 +617,37 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
               <div>
                 <div className="dossier-field-label">TP Plate Number</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--text-primary)", fontSize: 13 }}>
-                  {tp?.plate_number || "SBA 8821 X"}
+                  {tp?.plate_number || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">TP Vehicle Model</div>
                 <div style={{ fontWeight: 600, color: "var(--text-secondary)", fontSize: 12 }}>
-                  {tp?.make_model || "Toyota Hiace Van"}
+                  {tp?.make_model || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">TP Insurer</div>
                 <div style={{ fontWeight: 600, color: "var(--accent-primary)", fontSize: 12 }}>
-                  {tp?.insurer_name || "NTUC Income"}
+                  {tp?.insurer_name || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">TP Driver</div>
                 <div style={{ fontWeight: 600, color: "var(--text-secondary)", fontSize: 12 }}>
-                  {tp?.driver_name || "Eric Low (S****781B)"}
+                  {tp?.driver_name || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">TP Contact</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-secondary)", fontSize: 12 }}>
-                  {tp?.driver_contact || "+65 9876 5432"}
+                  {tp?.driver_contact || "—"}
                 </div>
               </div>
               <div>
                 <div className="dossier-field-label">Observed TP Damage</div>
                 <div style={{ fontWeight: 600, color: "var(--badge-amber-text)", fontSize: 12 }}>
-                  {tp?.damage_description || "Front Bumper Crushed"}
+                  {tp?.damage_description || "—"}
                 </div>
               </div>
             </div>
@@ -655,21 +685,13 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
                 </div>
               ))
             ) : (
-              <div style={{ padding: 8, background: "var(--surface-elevated)", borderRadius: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}>
-                  <span>Ah Seng (Workshop Lead Technician)</span>
-                  <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>+65 9234 5678</span>
-                </div>
-                <p style={{ fontSize: 12, color: "var(--text-secondary)", fontStyle: "italic", margin: "4px 0 0" }}>
-                  &ldquo;Heard collision sound at Bay 2; observed third-party van stationary against Honda rear tailgate.&rdquo;
-                </p>
+              // Empty state, not a sample witness: this used to show an
+              // invented witness with a phone number and a quoted statement.
+              <div style={{ padding: 8, background: "var(--surface-elevated)", borderRadius: 6, fontSize: 12, color: "var(--text-muted)" }}>
+                No witnesses recorded
               </div>
             )}
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, color: "var(--text-secondary)", paddingTop: 6, borderTop: "1px solid var(--border-color)" }}>
-              <span><strong>Dashcam Digital Hash:</strong> SHA-256 Verified</span>
-              <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent-cyan)" }}>E89A...44C1</span>
-            </div>
+            {/* No dashcam hash line: no footage is hashed or verified here. */}
           </div>
         </div>
 
@@ -686,12 +708,19 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           </div>
 
           <div className="dossier-field-grid grid-2col">
-            <DossierField label="Reporting Assessor / Lead" value={d.reporter_name || "Patrick Ng"} />
-            <DossierField label="Professional Role" value={d.reporter_role || "Senior Loss Adjuster (Motor)"} />
-            <DossierField label="Organisation / Firm" value={d.company_name || d.reporter_department || "Carlink Consultancy Pte Ltd"} />
-            <DossierField label="Contact Telephony / Email" value={d.reporter_contact || d.reporter_email || "+65 6285 6178"} mono />
+            {/* The case's reporter as recorded -- not the firm's surveyor. */}
+            <DossierField label="Reporting Assessor / Lead" value={d.reporter_name} />
+            <DossierField label="Professional Role" value={d.reporter_role} />
+            <DossierField label="Organisation / Firm" value={d.company_name || d.reporter_department} />
+            <DossierField label="Contact Telephony / Email" value={d.reporter_contact || d.reporter_email} mono />
             <DossierField label="Filing Date & Time" value={formatSgtDateTime(report.created_at)} mono />
-            <DossierField label="Audit Status" value="Surveyor Certified" highlight />
+            {/* From the case status; this read "Surveyor Certified" on
+                unsigned cases too. */}
+            <DossierField
+              label="Audit Status"
+              value={isSignedOff ? `Signed off${signOff?.surveyor_name ? ` by ${signOff.surveyor_name}` : ""}` : "Pending surveyor sign-off"}
+              highlight={isSignedOff}
+            />
           </div>
         </div>
       </div>
@@ -706,7 +735,8 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           <div>
             This vehicle inspection, damage audit, and forensic report was conducted entirely on a <strong>&ldquo;WITHOUT PREJUDICE&rdquo;</strong> basis.
             Carlink Consultancy and Patrick Ng & Co. have not authorised any repair on behalf of any insurer or third-party underwriter.
-            All measurements, tyre tread depths, and impact vectors comply with the General Insurance Association of Singapore (GIA) IDAC Guidelines.
+            {/* No blanket "all measurements comply with GIA IDAC Guidelines"
+                line: it was printed whether or not anything was measured. */}
           </div>
         </div>
       </div>

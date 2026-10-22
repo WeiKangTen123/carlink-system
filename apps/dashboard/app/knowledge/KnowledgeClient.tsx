@@ -32,7 +32,7 @@ export interface PartRow {
 type Tab = "factory_pricing" | "parts" | "damage" | "vehicles";
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }> }[] = [
-  { id: "factory_pricing", label: "Factory Price List (DB)", icon: Database },
+  { id: "factory_pricing", label: "Indicative Price List", icon: Database },
   { id: "parts", label: "Vehicle Parts & 3D", icon: Wrench },
   { id: "damage", label: "Damage Types", icon: Zap },
   { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
@@ -89,7 +89,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
   const handleSaveCatalog = () => {
     try {
       localStorage.setItem("carlink_factory_price_list", JSON.stringify(catalog));
-      setSaveMessage("Factory Price List saved & active across Case Repo!");
+      setSaveMessage("Saved in this browser only (not used by case estimates).");
       setTimeout(() => setSaveMessage(null), 3500);
     } catch {
       // Ignore write errors
@@ -139,7 +139,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
       paintCost: 200,
       insurerDiscountPct: 20,
     });
-    setSaveMessage("New SKU added successfully!");
+    setSaveMessage("SKU added (saved in this browser only).");
     setTimeout(() => setSaveMessage(null), 3000);
   };
 
@@ -201,12 +201,12 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
         <div>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Factory Master Knowledge Base</h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-muted)", fontSize: 13 }}>
-            Living database of factory parts pricing, labor tariffs, paint rates, and AI classification vocabulary
+            Indicative parts pricing and labor tariffs (built-in list; edits are kept in this browser only), plus the AI classification vocabulary
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span className="status-pill" style={{ background: "var(--badge-green-bg)", color: "var(--badge-green-text)", borderColor: "var(--badge-green-border)", fontSize: 11 }}>
-            Living Factory Master Database
+            Indicative prices — not a database
           </span>
         </div>
       </div>
@@ -214,9 +214,9 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
       {/* KPI Ribbon */}
       <div className="kpi-grid-modern" style={{ marginBottom: 20 }}>
         <div className="kpi-card-glow">
-          <div className="kpi-label">Factory Catalog SKUs</div>
+          <div className="kpi-label">Price List SKUs</div>
           <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>{catalog.length}</div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Master OEM Part Database</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Indicative list (this browser)</div>
         </div>
         <div className="kpi-card-glow">
           <div className="kpi-label">Body Labor Rate</div>
@@ -247,7 +247,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
         })}
       </div>
 
-      {/* TAB 1: FACTORY MASTER PRICE LIST (DATABASE) */}
+      {/* TAB 1: INDICATIVE PRICE LIST (code constant + this browser's localStorage) */}
       {tab === "factory_pricing" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Banner & Controls Toolbar */}
@@ -330,7 +330,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
                   onClick={handleExportCSV}
                   className="btn-secondary-modern"
                   style={{ fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  title="Export complete factory price list to CSV"
+                  title="Export the indicative price list to CSV"
                 >
                   <Download style={{ width: 13, height: 13 }} />
                   <span>Export CSV</span>
@@ -341,7 +341,7 @@ export function KnowledgeClient({ taxonomy, parts }: { taxonomy: Taxonomy; parts
                   onClick={handleSaveCatalog}
                   className="btn-primary-modern"
                   style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  title="Persist changes to factory master catalog"
+                  title="Save edits in this browser only -- not shared, and not used by case estimates"
                 >
                   <Save style={{ width: 13, height: 13 }} />
                   <span>Save Changes</span>

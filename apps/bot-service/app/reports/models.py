@@ -26,6 +26,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def iso_utc(value: datetime) -> str:
+    """ISO 8601 with an explicit UTC offset.
+
+    SQLite hands DateTime columns back naive (no tzinfo) even though they're
+    written in UTC, and a naive ISO string is read as LOCAL time by
+    JavaScript: Node on the server (UTC) and a browser in Singapore (UTC+8)
+    then disagreed by 8 hours -- every case time and SLA countdown shown in
+    the browser was 8 hours off, and React reported hydration error #418.
+    """
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
+
+
 class AppSetting(Base):
     """Key/value store for the handful of settings a user can actually
     change at runtime.
@@ -94,7 +106,8 @@ class IntakeSession(Base):
     __tablename__ = "intake_sessions"
 
     report_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # uploading -> sorting -> reading -> ready, or failed (retryable).
+    # uploading -> sorting -> reading -> ready, or failed (retryable);
+    # "finalizing" while POST /finalize turns it into a case.
     stage: Mapped[str] = mapped_column(String, default="uploading")
     progress_done: Mapped[int] = mapped_column(Integer, default=0)
     progress_total: Mapped[int] = mapped_column(Integer, default=0)
@@ -103,6 +116,11 @@ class IntakeSession(Base):
     # Which photos the reading step actually sent to the model, so the
     # review screen can say what the facts were read from.
     read_photo_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # The AI's last draft exactly as it came back, before merging into
+    # Report.data. A re-read compares the form against it to tell which
+    # fields the surveyor changed -- those are kept, not overwritten.
+    # (Added after the table shipped: see db._ADDED_COLUMNS.)
+    ai_draft: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 

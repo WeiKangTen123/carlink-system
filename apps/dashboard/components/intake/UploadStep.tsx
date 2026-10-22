@@ -54,6 +54,9 @@ type Props = {
   onDataChange: (patch: Partial<ReportData>) => void;
   notes: string;
   onNotesChange: (notes: string) => void;
+  /** The AI is reading the case: its result is merged into this form when
+   * it finishes, so the form can't change meanwhile. */
+  locked: boolean;
   maxPhotos: number;
   maxPhotoBytes: number;
   busy: boolean;
@@ -72,6 +75,7 @@ export function UploadStep({
   onDataChange,
   notes,
   onNotesChange,
+  locked,
   maxPhotos,
   maxPhotoBytes,
   busy,
@@ -233,6 +237,7 @@ export function UploadStep({
           placeholder="e.g. Rear-ended at PIE exit 12 while stationary in traffic..."
           value={notes}
           onChange={(e) => onNotesChange(e.target.value)}
+          disabled={locked}
         />
       </label>
 
@@ -243,6 +248,7 @@ export function UploadStep({
             type="text"
             placeholder="Reporter name"
             value={data.reporter_name ?? ""}
+            disabled={locked}
             onChange={(e) => onDataChange({ reporter_name: e.target.value })}
           />
         </label>
@@ -252,6 +258,7 @@ export function UploadStep({
             type="text"
             placeholder="e.g. +65 9123 4567"
             value={data.reporter_contact ?? ""}
+            disabled={locked}
             onChange={(e) => onDataChange({ reporter_contact: e.target.value })}
           />
         </label>
@@ -261,6 +268,7 @@ export function UploadStep({
             type="text"
             placeholder="e.g. Fleet Operations"
             value={data.reporter_department ?? ""}
+            disabled={locked}
             onChange={(e) => onDataChange({ reporter_department: e.target.value })}
           />
         </label>
@@ -271,7 +279,7 @@ export function UploadStep({
           {inFlight.length > 0
             ? "Waiting for uploads to finish…"
             : photos.length === 0
-              ? "Add photos to start. Everything is saved as you go."
+              ? "Add photos to start. Your draft saves automatically."
               : "The AI sorts every photo, then reads the vehicle facts and damage."}
         </span>
         <button type="button" className="btn-primary-modern" onClick={primary.action} disabled={!running && !canStart}>

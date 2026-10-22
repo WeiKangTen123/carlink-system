@@ -57,7 +57,9 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
     new Set(initialData?.category ?? (mode === "create" ? ["Vehicle Collision or Damage"] : []))
   );
   const [accidentType, setAccidentType] = useState(initialData?.accident_type ?? "");
-  const [severityLevel, setSeverityLevel] = useState(initialData?.severity_level || "Minor");
+  // Empty = not assessed. It used to default to "Minor", so saving an edit
+  // on an unrated report silently recorded a Minor assessment.
+  const [severityLevel, setSeverityLevel] = useState(initialData?.severity_level || "");
   const [damagedParts, setDamagedParts] = useState(initialData?.damaged_parts?.join(", ") ?? "");
   // The AI's per-part damage_type/photo_reference/ai_confidence -- kept
   // separately from the plain damagedParts text above because that field
@@ -92,7 +94,9 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
     return currentParts.map((part) => {
       const aiItem = byPart.get(part.toLowerCase());
       if (aiItem) return aiItem;
-      return { part, severity: severityLevel, human_verified: true };
+      // No per-part severity for a hand-typed part: the overall rating
+      // isn't an assessment of this particular part.
+      return { part, severity: null, human_verified: true };
     });
   }
 
@@ -351,6 +355,12 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
           <label>
             Overall Damage Severity
             <select name="severity_level" value={severityLevel} onChange={(e) => setSeverityLevel(e.target.value)}>
+              <option value="">Not assessed</option>
+              {/* Keep a recorded value outside this list visible rather than
+                  showing it as blank (same as Accident Type above). */}
+              {severityLevel && !["Minor", "Moderate", "Severe"].includes(severityLevel) && (
+                <option value={severityLevel}>{severityLevel}</option>
+              )}
               <option value="Minor">Minor (Cosmetic / Scrape)</option>
               <option value="Moderate">Moderate (Panel Dent / Repaint)</option>
               <option value="Severe">Severe (Structural / Non-drivable)</option>
@@ -435,7 +445,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
           className="add-row-button"
           style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
           onClick={() =>
-            setPeople([...people, { id: nextRowId++, name: "", role: "Driver", department: "", contact: "" }])
+            setPeople([...people, { id: nextRowId++, name: "", role: "", department: "", contact: "" }])
           }
         >
           <Plus style={{ width: 14, height: 14 }} /> Add Person

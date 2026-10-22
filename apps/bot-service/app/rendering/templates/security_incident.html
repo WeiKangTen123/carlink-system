@@ -313,6 +313,13 @@
 {% set ax_c = report.annex_c or {} %}
 {% set bola = report.bola_assessment or {} %}
 {% set sign = report.sign_off or {} %}
+{#- This report goes to insurers and courts, so a missing fact prints as
+    missing. Until 2026-10-21 empty fields fell back to a real past case's
+    values (SLK 3063 Z's chassis/engine numbers, odometer, workshop, insurer,
+    totals) and to a signature and seal on unsigned drafts. -#}
+{% set NR = 'Not recorded' %}
+{% set PENDING = 'Pending surveyor' %}
+{% set signed = sign.status == 'Signed Off' %}
 
 <!-- =====================================================================
      PAGE 1: COVER PAGE (ACCIDENT VEHICLE INSPECTION REPORT)
@@ -327,27 +334,28 @@
     <div class="firm-contact">
       <div><strong>Tel:</strong> 6285 6178</div>
       <div><strong>Fax:</strong> 6287 4788</div>
-      <div><strong>Date:</strong> {{ generated_at }}</div>
+      <div><strong>Generated:</strong> {{ generated_at }}</div>
     </div>
   </div>
 
   <div class="report-title-banner">
     <div class="report-title-text">Accident Vehicle Inspection / Assessment Report</div>
-    <div class="report-ref-line">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+    {#- A recorded file reference if there is one; otherwise the system's own
+        reference, labelled as such so it can't pass for an issued CL number. -#}
+    <div class="report-ref-line">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
   </div>
 
   <!-- 1.0 REFERENCE -->
   <div class="section-block">
     <div class="section-heading">1.0 Reference &amp; Instructions</div>
     <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Date of Request:</span><span class="spec-value">{{ generated_at }}</span></div>
-      <div class="spec-row"><span class="spec-label">Type of Claim:</span><span class="spec-value">{{ ins.claim_type or 'Third party' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Requested by:</span><span class="spec-value">{{ report.reporter_name or 'Owner / Insured' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Care of (C/o):</span><span class="spec-value">{{ ins.workshop_assigned or '1 Kaki Bukit Ave 6, #02-34 Singapore 417883' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Appointed Workshop:</span><span class="spec-value">{{ ins.workshop_assigned or 'M/S Precise Auto Service' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Date of Survey:</span><span class="spec-value">{{ generated_at }}</span></div>
-      <div class="spec-row"><span class="spec-label">Accident Date:</span><span class="spec-value">{{ report.incident_datetime or 'As per GIA report' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Insurer:</span><span class="spec-value">{{ ins.insurer_name or 'Tokio Marine Singapore' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Date of Request:</span><span class="spec-value">{{ NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Type of Claim:</span><span class="spec-value">{{ ins.claim_type or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Requested by:</span><span class="spec-value">{{ report.reporter_name or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Appointed Workshop:</span><span class="spec-value">{{ ins.workshop_assigned or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Date of Survey:</span><span class="spec-value">{{ PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">Accident Date:</span><span class="spec-value">{{ report.incident_datetime or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Insurer:</span><span class="spec-value">{{ ins.insurer_name or NR }}</span></div>
     </div>
   </div>
 
@@ -355,16 +363,16 @@
   <div class="section-block">
     <div class="section-heading">2.0 Details of Vehicle</div>
     <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Registration No:</span><span class="spec-value" style="font-family: monospace; font-size: 11px; color: #0284c7;">{{ v.plate_number or '—' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Make &amp; Model:</span><span class="spec-value">{{ v.make or '' }} {{ v.model or '' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Date of Registration:</span><span class="spec-value">{{ v.date_of_registration or v.year or '—' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Body Type:</span><span class="spec-value">{{ v.body_type or 'Passenger Vehicle' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Engine No:</span><span class="spec-value" style="font-family: monospace;">{{ v.engine_number or 'L15B4405878' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Chassis No. (VIN):</span><span class="spec-value" style="font-family: monospace;">{{ v.vin or 'RU11205877' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Speedometer / Odometer:</span><span class="spec-value" style="font-family: monospace;">{{ v.odometer_reading or '015,287 km' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Transmission:</span><span class="spec-value">{{ v.transmission or 'Automatic (CVT)' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Colour:</span><span class="spec-value">{{ v.color or 'Original' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Paintwork Condition:</span><span class="spec-value">{{ v.paintwork_condition or 'Good' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Registration No:</span><span class="spec-value" style="font-family: monospace; font-size: 11px; color: #0284c7;">{{ v.plate_number or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Make &amp; Model:</span><span class="spec-value">{{ [v.make, v.model] | select | join(' ') or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Date of Registration:</span><span class="spec-value">{{ v.date_of_registration or v.year or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Body Type:</span><span class="spec-value">{{ v.body_type or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Engine No:</span><span class="spec-value" style="font-family: monospace;">{{ v.engine_number or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Chassis No. (VIN):</span><span class="spec-value" style="font-family: monospace;">{{ v.vin or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Speedometer / Odometer:</span><span class="spec-value" style="font-family: monospace;">{{ v.odometer_reading or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Transmission:</span><span class="spec-value">{{ v.transmission or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Colour:</span><span class="spec-value">{{ v.color or NR }}</span></div>
+      <div class="spec-row"><span class="spec-label">Paintwork Condition:</span><span class="spec-value">{{ v.paintwork_condition or NR }}</span></div>
     </div>
   </div>
 
@@ -372,12 +380,12 @@
   <div class="section-block">
     <div class="section-heading">3.0 Static Inspection Checks</div>
     <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Steering System:</span><span class="spec-value">{{ v.steering_condition or 'Operable' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Footbrake:</span><span class="spec-value">{{ v.brakes_condition or 'Operable' }}</span></div>
-      <div class="spec-row"><span class="spec-label">Handbrake:</span><span class="spec-value">Operable / Holds securely</span></div>
-      <div class="spec-row"><span class="spec-label">Aftermarket Modifications:</span><span class="spec-value">Nil (Standard LTA Specification)</span></div>
-      <div class="spec-row"><span class="spec-label">General Condition:</span><span class="spec-value">Good pre-accident state</span></div>
-      <div class="spec-row"><span class="spec-label">Disassembly Status:</span><span class="spec-value">{{ 'Required for frame inspection' if report.recommendations and report.recommendations.disassembly_required else 'Surveyed on hoist' }}</span></div>
+      <div class="spec-row"><span class="spec-label">Steering System:</span><span class="spec-value">{{ v.steering_condition or PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">Footbrake:</span><span class="spec-value">{{ v.brakes_condition or PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">Handbrake:</span><span class="spec-value">{{ PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">Aftermarket Modifications:</span><span class="spec-value">{{ PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">General Condition:</span><span class="spec-value">{{ PENDING }}</span></div>
+      <div class="spec-row"><span class="spec-label">Disassembly Status:</span><span class="spec-value">{{ 'Required for frame inspection' if report.recommendations and report.recommendations.disassembly_required else NR }}</span></div>
     </div>
   </div>
 
@@ -395,34 +403,26 @@
         </tr>
       </thead>
       <tbody>
+        {#- The recorded tyres. This table used to be fixed text -- four
+            "Dunlop Enasave 215/60 R16, 6.0 mm, Legal" rows on every report. -#}
+        {% set tyres = v.tyres or {} %}
+        {% for key, label in [('front_nearside', 'Front Nearside (LH)'), ('front_offside', 'Front Offside (RH)'), ('rear_nearside', 'Rear Nearside (LH)'), ('rear_offside', 'Rear Offside (RH)')] %}
+        {% set t = tyres[key] or {} %}
+        {% set depth = t.get('tread_depth_mm') %}
         <tr>
-          <td>Front Nearside (LH)</td>
-          <td class="center font-mono">6.0 mm</td>
-          <td>Dunlop Enasave</td>
-          <td class="center">215/60 R16</td>
-          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
+          <td>{{ label }}</td>
+          <td class="center font-mono">{{ ('%.1f mm' % depth) if depth is number else '—' }}</td>
+          <td>{{ t.get('brand') or '—' }}</td>
+          <td class="center">{{ t.get('size') or '—' }}</td>
+          {% if t.get('condition') %}
+          <td class="center">{{ t.get('condition') }}</td>
+          {% elif depth is number %}
+          <td class="center" style="color: {{ '#dc2626' if depth < 1.6 else '#16a34a' }}; font-weight: 700;">{{ 'Below 1.6mm legal minimum' if depth < 1.6 else 'Legal (above 1.6mm)' }}</td>
+          {% else %}
+          <td class="center">{{ NR }}</td>
+          {% endif %}
         </tr>
-        <tr>
-          <td>Front Offside (RH)</td>
-          <td class="center font-mono">6.0 mm</td>
-          <td>Dunlop Enasave</td>
-          <td class="center">215/60 R16</td>
-          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
-        </tr>
-        <tr>
-          <td>Rear Nearside (LH)</td>
-          <td class="center font-mono">6.0 mm</td>
-          <td>Dunlop Enasave</td>
-          <td class="center">215/60 R16</td>
-          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
-        </tr>
-        <tr>
-          <td>Rear Offside (RH)</td>
-          <td class="center font-mono">6.0 mm</td>
-          <td>Dunlop Enasave</td>
-          <td class="center">215/60 R16</td>
-          <td class="center" style="color: #16a34a; font-weight: 700;">Legal (&gt;1.6mm)</td>
-        </tr>
+        {% endfor %}
       </tbody>
     </table>
   </div>
@@ -432,7 +432,7 @@
     <div class="spec-grid" style="grid-template-columns: 1fr;">
       <div class="spec-row">
         <span class="spec-label" style="width: 160px;">5.0 Point of Primary Impact:</span>
-        <span class="spec-value">{{ v.point_of_impact or 'Rear centre / Rear bumper and tailgate assembly' }}</span>
+        <span class="spec-value">{{ v.point_of_impact or NR }}</span>
       </div>
     </div>
   </div>
@@ -450,11 +450,11 @@
   <div class="carlink-letterhead">
     <div>
       <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
     </div>
     <div class="firm-contact">
       <div><strong>Annex A:</strong> Spare Parts Adjustment Schedule</div>
-      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} ({{ v.make }} {{ v.model }})</div>
+      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} {% if v.make or v.model %}({{ [v.make, v.model] | select | join(' ') }}){% endif %}</div>
     </div>
   </div>
 
@@ -478,23 +478,27 @@
       <tr>
         <td class="center font-mono">{{ p.item_no or loop.index ~ '.0' }}</td>
         <td><strong>{{ p.part_name }}</strong></td>
-        <td>{{ p.condition }}</td>
-        <td>{{ p.action }}</td>
+        <td>{{ p.condition or '—' }}</td>
+        <td>{{ p.action or PENDING }}</td>
         <td class="center font-mono">{{ p.qty or 1 }}</td>
-        <td class="num">S${{ '%.2f' % ((p.workshop_est or 0) * (p.qty or 1)) }}</td>
+        {#- Unpriced rows (listed from the damage found, awaiting the workshop
+            quote) print as "—", not S$0.00. -#}
+        <td class="num">{{ ('S$%.2f' % ((p.workshop_est or 0) * (p.qty or 1))) if p.workshop_est else '—' }}</td>
         <td class="center font-mono">
-          {% if p.is_net_item %}Nett{% else %}{{ '%.0f' % ((p.discount_pct or 0.20) * 100) }}%{% endif %}
+          {% if p.is_net_item %}Nett{% elif p.discount_pct is not none %}{{ '%.0f' % (p.discount_pct * 100) }}%{% else %}—{% endif %}
         </td>
-        <td class="num" style="font-weight: 700;">S${{ '%.2f' % (p.adjusted_cost or 0) }}</td>
+        <td class="num" style="font-weight: 700;">{{ ('S$%.2f' % p.adjusted_cost) if p.adjusted_cost else '—' }}</td>
       </tr>
+      {% else %}
+      <tr><td colspan="8" class="center" style="color: #64748b;">No parts recorded yet &mdash; pending surveyor assessment.</td></tr>
       {% endfor %}
     </tbody>
     <tfoot>
       <tr>
         <td colspan="5" style="text-transform: uppercase;">Total For Spare Parts (Annex A)</td>
-        <td class="num">S${{ '%.2f' % (ax_a.total_workshop_est or 8614.0) }}</td>
-        <td class="center" style="color: #16a34a; font-size: 8px;">Adj: -{{ '%.1f' % (((ax_a.total_workshop_est - ax_a.total_adjusted_cost) / ax_a.total_workshop_est) * 100) if ax_a.total_workshop_est else '25.2' }}%</td>
-        <td class="num" style="color: #0369a1;">S${{ '%.2f' % (ax_a.total_adjusted_cost or 6439.20) }}</td>
+        <td class="num">{{ ('S$%.2f' % ax_a.total_workshop_est) if ax_a.total_workshop_est else '—' }}</td>
+        <td class="center" style="color: #16a34a; font-size: 8px;">{% if ax_a.total_workshop_est and ax_a.total_adjusted_cost %}Adj: -{{ '%.1f' % (((ax_a.total_workshop_est - ax_a.total_adjusted_cost) / ax_a.total_workshop_est) * 100) }}%{% endif %}</td>
+        <td class="num" style="color: #0369a1;">{{ ('S$%.2f' % ax_a.total_adjusted_cost) if ax_a.total_adjusted_cost else '—' }}</td>
       </tr>
     </tfoot>
   </table>
@@ -507,11 +511,11 @@
   <div class="carlink-letterhead">
     <div>
       <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
     </div>
     <div class="firm-contact">
       <div><strong>Annex B:</strong> Labour &amp; Refinishing Adjustment</div>
-      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} ({{ v.make }} {{ v.model }})</div>
+      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} {% if v.make or v.model %}({{ [v.make, v.model] | select | join(' ') }}){% endif %}</div>
     </div>
   </div>
 
@@ -534,16 +538,18 @@
         <td><strong>{{ l.description }}</strong></td>
         <td class="num">S${{ '%.2f' % (l.workshop_est or 0) }}</td>
         <td class="num" style="font-weight: 700; color: #0369a1;">S${{ '%.2f' % (l.adjusted_cost or 0) }}</td>
-        <td style="font-size: 8.5px; color: #475569;">{{ l.justification or 'Standard benchmarked rate' }}</td>
+        <td style="font-size: 8.5px; color: #475569;">{{ l.justification or '' }}</td>
       </tr>
+      {% else %}
+      <tr><td colspan="5" class="center" style="color: #64748b;">No labour recorded yet &mdash; pending surveyor assessment.</td></tr>
       {% endfor %}
     </tbody>
     <tfoot>
       <tr>
         <td colspan="2" style="text-transform: uppercase;">Total For Labour &amp; Spray Painting (Annex B)</td>
-        <td class="num">S${{ '%.2f' % (ax_b.total_workshop_est or 5120.0) }}</td>
-        <td class="num" style="color: #0369a1;">S${{ '%.2f' % (ax_b.total_adjusted_cost or 3770.0) }}</td>
-        <td style="color: #16a34a; font-size: 8.5px;">Variance: -S${{ '%.2f' % ((ax_b.total_workshop_est - ax_b.total_adjusted_cost) if ax_b.total_workshop_est else 1350.0) }}</td>
+        <td class="num">{{ ('S$%.2f' % ax_b.total_workshop_est) if ax_b.total_workshop_est else '—' }}</td>
+        <td class="num" style="color: #0369a1;">{{ ('S$%.2f' % ax_b.total_adjusted_cost) if ax_b.total_adjusted_cost else '—' }}</td>
+        <td style="color: #16a34a; font-size: 8.5px;">{% if ax_b.total_workshop_est and ax_b.total_adjusted_cost %}Variance: -S${{ '%.2f' % (ax_b.total_workshop_est - ax_b.total_adjusted_cost) }}{% endif %}</td>
       </tr>
     </tfoot>
   </table>
@@ -553,25 +559,25 @@
   <div class="summary-waterfall">
     <div class="waterfall-line">
       <span>1. Total for Spare Parts (Annex A)</span>
-      <span><strong>S${{ '%.2f' % (ax_a.total_adjusted_cost or 6439.20) }}</strong></span>
+      <span><strong>{{ ('S$%.2f' % ax_a.total_adjusted_cost) if ax_a.total_adjusted_cost else '—' }}</strong></span>
     </div>
     <div class="waterfall-line">
       <span>2. Total for Labour and Spray Painting (Annex B)</span>
-      <span><strong>S${{ '%.2f' % (ax_b.total_adjusted_cost or 3770.00) }}</strong></span>
+      <span><strong>{{ ('S$%.2f' % ax_b.total_adjusted_cost) if ax_b.total_adjusted_cost else '—' }}</strong></span>
     </div>
     <div class="waterfall-line total">
       <span>TOTAL REPAIR COSTS (Part-by-Part Adjusted)</span>
       <span style="font-family: monospace; font-size: 12px; color: #0369a1;">
-        S${{ '%.2f' % (ax_c.adjusted_total or 10209.20) }}
+        {{ ('S$%.2f' % ax_c.adjusted_total) if ax_c.adjusted_total else '—' }}
       </span>
     </div>
     <div class="waterfall-line">
       <span>Initial Workshop Claimed Amount</span>
-      <span style="color: #64748b; text-decoration: line-through;">S${{ '%.2f' % (ax_c.workshop_total or 13734.00) }}</span>
+      <span style="color: #64748b; text-decoration: line-through;">{{ ('S$%.2f' % ax_c.workshop_total) if ax_c.workshop_total else '—' }}</span>
     </div>
     <div class="waterfall-line">
       <span>Achieved Technical Variance (Line-by-Line Savings)</span>
-      <span style="color: #16a34a; font-weight: 700;">-S${{ '%.2f' % ((ax_c.workshop_total - ax_c.adjusted_total) if ax_c.workshop_total else 3524.80) }}</span>
+      <span style="color: #16a34a; font-weight: 700;">{% if ax_c.workshop_total and ax_c.adjusted_total %}-S${{ '%.2f' % (ax_c.workshop_total - ax_c.adjusted_total) }}{% else %}—{% endif %}</span>
     </div>
   </div>
 </div>
@@ -583,67 +589,88 @@
   <div class="carlink-letterhead">
     <div>
       <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
     </div>
     <div class="firm-contact">
       <div><strong>Annex C:</strong> Recommendation &amp; Quantum Endorsement</div>
-      <div><strong>Assessor:</strong> PATRICK NG (Automotive Engineer Assessor)</div>
+      <div><strong>Assessor:</strong> {{ (sign.surveyor_name or sign.reviewed_by) if signed and (sign.surveyor_name or sign.reviewed_by) else PENDING }}</div>
     </div>
   </div>
 
   <div class="section-heading">Annex C : Assessor Recommendations &amp; Settlement Quantum</div>
+  {#- The recommendation, lump sum and signature are the surveyor's: printed
+      only once the case is signed off and only from recorded values. This
+      page used to print a full recommendation, a S$8,700 "agreed" lump sum,
+      11 working days, Patrick Ng's signature and a seal on every draft. -#}
   <div style="font-size: 10.5px; line-height: 1.6; color: #1e293b; margin-bottom: 14px;">
+    {% if signed %}
     <p style="margin-top: 0;">
       We have inspected thoroughly the actual damages found on the vehicle and our assessment is appended in the Annex(es) attached. The condition and age of the vehicle was considered before we reached our recommendation as to whether the parts need replacement or repair.
     </p>
+    {% if ax_c.workshop_total and ax_c.adjusted_total %}
     <p>
-      {{ ins.workshop_assigned or 'M/S Precise Auto Service' }} estimated repair cost is <strong>S${{ '%.2f' % (ax_c.workshop_total or 13734.00) }}</strong> and we have adjusted it to <strong>S${{ '%.2f' % (ax_c.adjusted_total or 10209.20) }}</strong> on a part-by-part basis. However, taking into consideration the age of the vehicle and the availability of used/recondition components, we therefore recommend a contract lump sum repair cost.
+      {{ ins.workshop_assigned or 'The workshop' }} estimated repair cost is <strong>S${{ '%.2f' % ax_c.workshop_total }}</strong> and we have adjusted it to <strong>S${{ '%.2f' % ax_c.adjusted_total }}</strong> on a part-by-part basis.
     </p>
+    {% endif %}
+    {% if ax_c.agreed_lump_sum %}
     <p>
-      The repairer has agreed to undertake the repairs on a contract lump sum of <strong style="font-size: 12px; color: #0369a1;">S${{ '%.2f' % (ax_c.agreed_lump_sum or 8700.00) }}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, to replace with reconditioned/used parts, or to replace with OEM or genuine parts).
+      The repairer has agreed to undertake the repairs on a contract lump sum of <strong style="font-size: 12px; color: #0369a1;">S${{ '%.2f' % ax_c.agreed_lump_sum }}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, to replace with reconditioned/used parts, or to replace with OEM or genuine parts).
     </p>
+    {% endif %}
+    {% if ax_c.repair_days %}
     <p>
-      The entire repair of the damaged vehicle should be completed within a reasonable period of <strong style="color: #b45309;">{{ ax_c.repair_days or 11 }} working days</strong>.
+      The entire repair of the damaged vehicle should be completed within a reasonable period of <strong style="color: #b45309;">{{ ax_c.repair_days }} working days</strong>.
     </p>
+    {% endif %}
+    {% else %}
+    <p style="margin-top: 0; color: #64748b;">
+      Recommendation and settlement quantum pending surveyor assessment. This report has not been signed off.
+    </p>
+    {% endif %}
   </div>
 
   <!-- FINAL SETTLEMENT WATERFALL -->
   <div class="summary-waterfall">
     <div class="waterfall-line highlight">
       <span>RECOMMENDED CONTRACT LUMP SUM QUANTUM:</span>
-      <span style="font-size: 13px; font-family: monospace;">S${{ '%.2f' % (ax_c.agreed_lump_sum or 8700.00) }}</span>
+      <span style="font-size: 13px; font-family: monospace;">{{ ('S$%.2f' % ax_c.agreed_lump_sum) if ax_c.agreed_lump_sum else PENDING }}</span>
     </div>
     <div class="waterfall-line">
       <span>Prevailing Singapore GST (9%):</span>
-      <span>S${{ '%.2f' % (ax_c.gst_amount or 783.00) }}</span>
+      <span>{{ ('S$%.2f' % ax_c.gst_amount) if ax_c.agreed_lump_sum and ax_c.gst_amount else '—' }}</span>
     </div>
     <div class="waterfall-line total">
       <span>GRAND TOTAL PAYABLE (Including 9% GST):</span>
-      <span style="font-size: 13px; font-family: monospace; color: #0369a1;">S${{ '%.2f' % (ax_c.total_with_gst or 9483.00) }}</span>
+      <span style="font-size: 13px; font-family: monospace; color: #0369a1;">{{ ('S$%.2f' % ax_c.total_with_gst) if ax_c.agreed_lump_sum and ax_c.total_with_gst else '—' }}</span>
     </div>
   </div>
 
+  {% if signed %}
   <!-- STATUTORY WITHOUT PREJUDICE CLAUSE -->
   <div class="wp-badge">
     <strong>WITHOUT PREJUDICE STATUTORY DECLARATION:</strong><br>
     We have advised the repairer that the inspection was conducted strictly on a <strong>WITHOUT PREJUDICE</strong> basis and we have not given any instruction and authorisation to proceed with the repair of the vehicle.<br>
-    We are reverting the matter to you for your discretion and enclosed is our invoice for service rendered.
+    We are reverting the matter to you for your discretion.
   </div>
 
   <!-- OFFICIAL SIGN-OFF BLOCK -->
+  {% set signer = sign.surveyor_name or sign.reviewed_by or sign.approved_by %}
   <div class="endorsement-block avoid-break">
     <div class="assessor-sign-box">
       <div style="font-size: 10px; color: #64748b; margin-bottom: 4px;">Yours faithfully,</div>
       <div style="font-size: 12px; font-weight: 800; text-transform: uppercase;">CARLINK CONSULTANCY</div>
-      
+
       <div class="sign-line">
-        <span style="font-family: Georgia, serif; font-style: italic; font-size: 16px; color: #0284c7;">Patrick Ng</span>
+        {% if sign.signature_data_url %}
+        <img src="{{ sign.signature_data_url }}" alt="Signature" style="max-height: 40px;">
+        {% else %}
+        <span style="font-family: Georgia, serif; font-style: italic; font-size: 16px; color: #0284c7;">{{ signer or '' }}</span>
+        {% endif %}
       </div>
-      <div class="assessor-name">PATRICK NG</div>
+      <div class="assessor-name">{{ (signer or PENDING) | upper }}</div>
       <div class="assessor-creds">
-        Automotive Engineer Assessor<br>
-        MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.<br>
-        Surveyor License: {{ sign.license_number or 'SURV-SG-0492' }}
+        {% if sign.qualifications %}{{ sign.qualifications }}<br>{% endif %}
+        Surveyor License: {{ sign.license_number or '—' }}{% if sign.signature_date %}<br>Signed: {{ sign.signature_date }}{% endif %}
       </div>
     </div>
 
@@ -655,12 +682,18 @@
       <div style="font-size: 9px; font-weight: 700; color: #0284c7; margin: 4px 0;">
         OFFICIAL LOSS ADJUSTER &amp; SURVEYOR SEAL
       </div>
-      <div class="chop-sub">Reg No: 53123456X</div>
+      {% if sign.signature_hash %}
       <div class="chop-hash">
-        SHA-256: {{ sign.signature_hash or '9F8A3B12D04C5E76F891A234BCDE0921' }}
+        SHA-256: {{ sign.signature_hash }}
       </div>
+      {% endif %}
     </div>
   </div>
+  {% else %}
+  <div class="wp-badge" style="border-color: #f59e0b; background: #fffbeb;">
+    <strong>DRAFT &mdash; NOT SIGNED OFF.</strong> This report has not been reviewed or signed by a surveyor and carries no endorsement.
+  </div>
+  {% endif %}
 </div>
 
 <!-- =====================================================================
@@ -671,7 +704,7 @@
   <div class="carlink-letterhead">
     <div>
       <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
     </div>
     <div class="firm-contact">
       <div><strong>Annex D:</strong> Photographic Evidence Dossier</div>
@@ -696,7 +729,7 @@
   <div class="carlink-letterhead">
     <div>
       <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Our Ref: {{ report.report_id or ('CL ' + report_id[:5].upper() + ' ' + (v.plate_number or '')) }}</div>
+      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
     </div>
     <div class="firm-contact">
       <div><strong>Annex D:</strong> Photographic Evidence Dossier (Cont'd)</div>

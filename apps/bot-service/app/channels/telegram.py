@@ -15,7 +15,7 @@ from app.ai.rate_limit import estimate_wait
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
-from app.reports.models import Report
+from app.reports.models import Report, gen_id
 from app.rendering.renderer import render_pdf
 from app.storage.files import report_pdf_path, save_photo, tmp_dir
 
@@ -269,7 +269,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "ins_income": "NTUC Income Insurance Co-operative",
             "ins_aig": "AIG Asia Pacific Insurance",
         }
-        ins_name = insurer_map.get(data, "Tokio Marine Singapore")
+        ins_name = insurer_map.get(data)
+        if not ins_name:
+            return  # unknown button: don't record an insurer nobody chose
         session.insurer_name = ins_name
         session.pending_edits.append(f"insurer is {ins_name}")
         await draft_and_reply(update, session, combined_description(session), redrafting=True)
@@ -284,31 +286,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def finalize_report(update: Update, session, chat_id: str) -> None:
     msg_target = update.message or (update.callback_query.message if update.callback_query else None)
+    # Photos and PDF before the database row, so no SQLite write lock is held
+    # while Chromium renders: flushing the row first held it for the whole
+    # render, and every other writer (dashboard uploads, autosaves) failed
+    # with "database is locked" meanwhile.
+    data = session.draft.model_dump()
+    report_id = gen_id()
+    stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
+    pdf_path: str | None = report_pdf_path(report_id)
+    try:
+        await asyncio.to_thread(render_pdf, data, stored_photos, pdf_path, report_id=report_id)
+    except Exception as exc:
+        logger.error("Failed to render PDF for report %s in Telegram: %s", report_id, exc)
+        pdf_path = None
+
     db = SessionLocal()
     try:
         report = Report(
+            id=report_id,
             channel="telegram",
             reporter_chat_id=chat_id,
-            data=session.draft.model_dump(),
+            data=data,
             status="confirmed",
+            photo_paths=stored_photos,
+            pdf_path=pdf_path,
         )
         db.add(report)
-        db.flush()
-
-        stored_photos = [
-            save_photo(report.id, p, i) for i, p in enumerate(session.photo_paths, start=1)
-        ]
-        report.photo_paths = stored_photos
-
-        pdf_path = report_pdf_path(report.id)
-        try:
-            await asyncio.to_thread(render_pdf, report.data, stored_photos, pdf_path, report_id=report.id)
-            report.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for report %s in Telegram: %s", report.id, exc)
-            report.pdf_path = None
-
         db.commit()
+        db.refresh(report)
+        db.expunge(report)
     finally:
         db.close()
 

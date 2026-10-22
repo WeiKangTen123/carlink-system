@@ -42,7 +42,15 @@ export function severityClass(severity?: string | null): "severe" | "moderate" |
  * it never outranks a real assessment. */
 export const SEVERITY_RANK: Record<string, number> = { unrated: 0, minor: 1, moderate: 2, severe: 3 };
 
-/** High-fidelity vehicle name inference for Singapore loss adjusting. */
+// Shown wherever a fact simply wasn't recorded. These screens and the PDF
+// can reach insurers and courts, so a gap must read as a gap: until
+// 2026-10-21 the helpers below filled gaps with guesses made from plate
+// prefixes and keywords ("SLK..." -> Honda Vezel, default insurer Tokio
+// Marine, default workshop ComfortDelGro), which read as recorded facts.
+export const NOT_RECORDED = "Not recorded";
+
+/** The vehicle as recorded (make + model, from the API's vehicle_name), or
+ * "Vehicle not recorded". Never guessed from the plate. */
 export function inferVehicleName(r: {
   vehicle_name?: string | null;
   plate_number?: string | null;
@@ -50,21 +58,10 @@ export function inferVehicleName(r: {
   category?: string[];
 }): string {
   const current = (r.vehicle_name || "").trim();
-  if (current && !["Motor Vehicle", "Vehicle", "None", "None None", "Black vehicle"].includes(current)) {
+  if (current && !["Motor Vehicle", "Vehicle", "None", "None None"].includes(current)) {
     return current;
   }
-  const plate = (r.plate_number || "").toUpperCase().replace(/\s+/g, "");
-  if (plate.includes("SLK3063") || plate.includes("SLK")) return "Honda Vezel 1.5A";
-  if (plate.includes("SLB3939") || plate.includes("SLB")) return "BMW 320i Sedan";
-  if (plate.includes("SGX8888") || plate.includes("SGX")) return "Volkswagen Golf 1.4 TSI";
-  if (plate.includes("SLJ7948") || plate.includes("SLJ") || plate.includes("SMM") || plate.includes("SGP")) return "Honda Civic 1.6 VTi";
-  if (plate.includes("SDX1234") || plate.includes("SDX")) return "Toyota Hiace Commuter";
-  if (plate.includes("SBA1122") || plate.includes("SBA")) return "Mercedes-Benz C200";
-  if (plate.includes("SDD5566") || plate.includes("SDD7788") || plate.includes("SDD")) return "Hyundai Avante 1.6";
-  if (plate.includes("SLG7889") || plate.includes("SLG")) return "Toyota Corolla Altis";
-  if (plate.includes("SLC2502") || plate.includes("SLC")) return "Mercedes-Benz CLA180";
-  if (plate.includes("SMW7530") || plate.includes("SMW")) return "Toyota Vios 1.5E";
-  return current || "Passenger Sedan";
+  return "Vehicle not recorded";
 }
 
 /** How a case is labelled in lists.
@@ -80,13 +77,20 @@ export function daysOpen(createdAt: string): number {
 }
 
 
-export function formatCarlinkRef(id: string, plate?: string | null): string {
-  if (plate && plate.replace(/\s+/g, "").toUpperCase().includes("SLK3063Z")) {
-    return "CL-11900-SLK3063Z";
-  }
-  return `CL-2026-${id.slice(0, 4).toUpperCase()}`;
+/** The system's own reference for a case, from its id and filing year.
+ * "REF-", not "CL ...": Carlink's real file numbers are "CL 11900" style,
+ * and a generated one must not pass for an issued file number (this used to
+ * hand SLK 3063 Z the real CL 11900 and everything else "CL-2026-xxxx"). */
+export function formatCarlinkRef(id: string, _plate?: string | null, createdAt?: string | null): string {
+  const year = createdAt ? new Date(createdAt).getFullYear() : NaN;
+  const short = id.slice(0, 6).toUpperCase();
+  return Number.isNaN(year) ? `REF-${short}` : `REF-${year}-${short}`;
 }
 
+/** The claim archetype from the recorded claim type only; "Pending
+ * evaluation" when none is recorded. It used to be guessed from the
+ * accident type, vehicle and plate (and "od" matched any word containing
+ * those letters, e.g. "Model"), defaulting everything to TP Conventional. */
 export function getClaimArchetype(r: {
   type?: string;
   accident_type?: string | null;
@@ -98,29 +102,13 @@ export function getClaimArchetype(r: {
   label: string;
   badgeClass: string;
 } {
-  if (r.claim_type) {
-    const ct = r.claim_type.toLowerCase();
-    if (ct.includes("sje") || ct.includes("court")) return { key: "sje", label: "SJE Court", badgeClass: "sje" };
-    if (ct.includes("tma") || ct.includes("attenuator")) return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
-    if (ct.includes("od") || ct.includes("own damage")) return { key: "od", label: "OD Panel", badgeClass: "od" };
-    if (ct.includes("direct")) return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
-    if (ct.includes("pending")) return { key: "pending", label: "Pending Evaluation", badgeClass: "unrated" };
-    if (ct.includes("tp")) return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
-  }
-  const text = `${r.type || ""} ${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""}`.toLowerCase();
-  if (text.includes("sje") || text.includes("court") || text.includes("dispute") || text.includes("suit")) {
-    return { key: "sje", label: "SJE Court", badgeClass: "sje" };
-  }
-  if (text.includes("tma") || text.includes("attenuator") || text.includes("hino") || text.includes("truck")) {
-    return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
-  }
-  if (text.includes("own damage") || text.includes("od")) {
-    return { key: "od", label: "OD Panel", badgeClass: "od" };
-  }
-  if (text.includes("direct") || text.includes("settlement")) {
-    return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
-  }
-  return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+  const ct = (r.claim_type || "").toLowerCase();
+  if (ct.includes("sje") || ct.includes("court")) return { key: "sje", label: "SJE Court", badgeClass: "sje" };
+  if (ct.includes("tma") || ct.includes("attenuator")) return { key: "tma", label: "TMA Expressway", badgeClass: "tma" };
+  if (ct.includes("own damage") || /\bod\b/.test(ct) || ct.includes("comprehensive")) return { key: "od", label: "OD Panel", badgeClass: "od" };
+  if (ct.includes("direct")) return { key: "tp-direct", label: "TP Direct", badgeClass: "tp-direct" };
+  if (ct.includes("third party") || /\btp\b/.test(ct)) return { key: "tp-conv", label: "TP Conventional", badgeClass: "tp-conv" };
+  return { key: "pending", label: "Pending Evaluation", badgeClass: "unrated" };
 }
 
 /** Inferred Vehicle Body Style for Factory Operations */
@@ -144,7 +132,10 @@ export function inferBodyType(r: {
   if (text.includes("golf") || text.includes("jazz") || text.includes("swift") || text.includes("hatchback") || text.includes("yaris")) {
     return "Hatchback";
   }
-  return "Sedan";
+  if (text.includes("sedan") || text.includes("altis") || text.includes("civic") || text.includes("camry")) {
+    return "Sedan";
+  }
+  return "Other";
 }
 
 /** Inferred Vehicle Make */
@@ -193,7 +184,8 @@ export function matchesDateFilter(
   return true;
 }
 
-/** Inferred GIA Panel Insurer name */
+/** The recorded insurer, or "Insurer not recorded". Never guessed (it used
+ * to default to Tokio Marine and pick others from the plate prefix). */
 export function inferInsurerName(r: {
   insurer_name?: string | null;
   type?: string;
@@ -202,32 +194,16 @@ export function inferInsurerName(r: {
   claim_type?: string | null;
 }): string {
   if (r.insurer_name && r.insurer_name.trim()) return r.insurer_name;
-  const arch = getClaimArchetype(r).key;
-  if (arch === "sje") return "Tokio Marine Insurance Singapore";
-  if (arch === "tma") return "Great American Insurance Company";
-  if (arch === "od") return "AIG Asia Pacific Insurance";
-  const plate = (r.plate_number || "").toUpperCase();
-  if (plate.includes("SGX") || plate.includes("SLB")) return "NTUC Income Insurance Co-operative";
-  if (plate.includes("SLK") || plate.includes("SLJ")) return "Tokio Marine Singapore";
-  return "Tokio Marine Singapore";
+  return "Insurer not recorded";
 }
 
-/** Inferred Workshop Cluster name */
-export function inferWorkshopName(workshopOrLocation?: string | null): string {
-  if (workshopOrLocation && workshopOrLocation.trim() && !workshopOrLocation.includes("Central District")) {
-    return workshopOrLocation;
-  }
-  const text = (workshopOrLocation || "").toLowerCase();
-  if (text.includes("kaki bukit") || text.includes("eunos") || text.includes("bedok") || text.includes("east")) {
-    return "Precise Auto Service (Kaki Bukit Autobay)";
-  }
-  if (text.includes("sin ming") || text.includes("amk") || text.includes("bishan") || text.includes("north")) {
-    return "Sin Ming Autocare (Cluster A)";
-  }
-  if (text.includes("ubi") || text.includes("defu") || text.includes("paya lebar")) {
-    return "V-Kool Automotive (Ubi Techpark)";
-  }
-  return "ComfortDelGro Engineering (Toh Guan Hub)";
+/** The recorded workshop, or "Workshop not recorded". Pass the case's
+ * workshop_assigned only -- callers used to pass the incident location,
+ * which then displayed as the workshop, and an empty value was filled with a
+ * guessed workshop picked from location keywords. */
+export function inferWorkshopName(workshop?: string | null): string {
+  if (workshop && workshop.trim()) return workshop;
+  return "Workshop not recorded";
 }
 
 /** Formats an ISO timestamp to exact Singapore Time (SGT / UTC+8) */
@@ -270,16 +246,20 @@ export function formatSgtDate(isoString?: string | null): string {
 /** Formats incident datetime description */
 export function formatIncidentTime(incidentDt?: string | null, createdAt?: string | null): string {
   if (incidentDt && incidentDt.trim()) {
-    // If it's already an ISO or formatted string
-    if (incidentDt.includes("UTC") || incidentDt.includes("T") || incidentDt.includes("-")) {
+    // Only a timestamp that states its own offset ("...Z", "+08:00") is
+    // converted. A typed wall-clock time like "2026-10-18 08:40" is already
+    // Singapore time: run through new Date() it was read as the server's
+    // local time (UTC) and shown 8 hours late, and differently in the
+    // browser (a hydration mismatch, React #418).
+    if (/T\d{2}:\d{2}.*(Z|[+-]\d{2}:?\d{2})$/.test(incidentDt.trim())) {
       return formatSgtDateTime(incidentDt);
     }
     return incidentDt;
   }
-  if (createdAt) {
-    return `${formatSgtDate(createdAt)} (Same Day)`;
-  }
-  return "Pending Timeline";
+  // Not the filing date: a case filed days after the accident would show
+  // the wrong date as if recorded.
+  void createdAt;
+  return NOT_RECORDED;
 }
 
 /** Real calculated GIA 48-Hour Inspection SLA */
@@ -302,9 +282,9 @@ export function getGiaSla(createdAt: string, isSignedOff: boolean): {
   if (isNaN(createdMs)) {
     return {
       status: "active",
-      badgeText: "28h left",
-      remainingText: "GIA 48h Window",
-      pillColor: "var(--accent-cyan)",
+      badgeText: "—",
+      remainingText: "SLA unknown",
+      pillColor: "var(--text-muted)",
     };
   }
 
@@ -343,6 +323,11 @@ export function getGiaSla(createdAt: string, isSignedOff: boolean): {
   };
 }
 
+/** An INDICATIVE repair cost in SGD: the recorded estimate when there is
+ * one, otherwise a rough figure from the number of damaged parts, severity
+ * and the factory labour tariffs. It is a planning estimate, not an
+ * assessment -- wherever it is displayed it must be labelled "Est." (it used
+ * to appear as "Assessed" totals). Returns 0 when no damage is recorded. */
 export function getEstimatedCostSGD(r: {
   estimated_repair_cost?: string | null;
   accident_type?: string | null;
@@ -355,15 +340,8 @@ export function getEstimatedCostSGD(r: {
     const parsed = parseFloat(r.estimated_repair_cost.replace(/[^0-9.]/g, ""));
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
-  const text = `${r.accident_type || ""} ${r.vehicle_name || ""} ${r.plate_number || ""}`.toLowerCase();
-  // Master SKU calculations from Factory Knowledge Base
-  if (text.includes("tma") || text.includes("attenuator")) {
-    return Math.round(78000 + (16 * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly) + 1200); // TMA Cushion + Structural Labor
-  }
-  if (text.includes("sje")) {
-    return Math.round(28500 + (12 * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly) + 1800); // SJE Coach Mask + Calibration
-  }
-  
+  if (!r.damage_count) return 0;
+
   // Factory dynamic parts & labor calculation
   const count = r.damage_count || 1;
   const sev = (r.severity_level || "").toLowerCase();
