@@ -40,14 +40,17 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.auth import _EMAIL, _checked_email, _ip_blocked, _note_ip_failure, _set_session_cookie, client_ip
 from app.auth.core import (
+    SESSION_COOKIE,
     CurrentUser,
     as_utc,
     audit,
     create_session,
+    end_session,
     end_user_sessions,
     me_dict,
     normalize_email,
     record_login,
+    token_hash,
     utc_now,
 )
 from app.auth.deps import require_admin
@@ -275,6 +278,11 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
             end_user_sessions(db, user.id)
             audit(db, user, "password_reset_by_link", detail=user.email)
         link.used_by_user_id = user.id
+        # Someone else signed in on this browser: their session ends here,
+        # not merely loses its cookie, so a copy of that cookie is useless.
+        previous = request.cookies.get(SESSION_COOKIE)
+        if previous:
+            end_session(db, token_hash(previous))
         record_login(user)
         token = create_session(db, user, ip, request.headers.get("user-agent", ""))
         try:

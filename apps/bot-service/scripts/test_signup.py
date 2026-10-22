@@ -23,7 +23,7 @@ os.environ.setdefault("GEMINI_API_KEY", "fake")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.main import app  # noqa: E402
-from app.auth.core import utc_now  # noqa: E402
+from app.auth.core import SESSION_COOKIE, utc_now  # noqa: E402
 from app.auth.links import claim, sweep_signups  # noqa: E402
 from app.auth.passwords import TOO_COMMON, TOO_PERSONAL, password_problem  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
@@ -220,6 +220,17 @@ def main() -> int:
     assert count(User, email="weiming@example.com") == 1
     assert browser().post("/auth/login", json={"email": "weiming@example.com", "password": GOOD_PASSWORD}).status_code == 200
     ok("the link then answers 410 used, and the new password signs in normally")
+
+    switcher = browser()
+    sign_in(switcher, role="surveyor", name="Someone Else")
+    before_cookie = switcher.cookies.get(SESSION_COOKIE)
+    swap = admin.post("/account-links", json={"email": "switch@example.com", "role": "surveyor"}).json()["token"]
+    r = switcher.post("/auth/links/accept", json={"token": swap, "name": "Switch Person", "password": GOOD_PASSWORD}, headers=fresh_ip())
+    assert r.status_code == 200 and switcher.get("/auth/me").json()["email"] == "switch@example.com"
+    stale = browser()
+    stale.cookies.set(SESSION_COOKIE, before_cookie)
+    assert stale.get("/auth/me").status_code == 401
+    ok("accepting a link while signed in as someone else ends that other session")
 
     race = admin.post("/account-links", json={"email": "race@example.com", "role": "surveyor"}).json()["token"]
     results = []
