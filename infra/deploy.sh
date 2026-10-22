@@ -54,16 +54,6 @@ fi
 
 cd "$APP_DIR"
 
-# The site login (nginx basic auth, see infra/nginx.conf). Without this
-# file Docker would mount an empty directory in its place and every request
-# would fail, so stop here instead. Create it once on the server with:
-#   printf 'carlink:%s\n' "$(openssl passwd -apr1)" > infra/carlink.htpasswd
-#   chmod 644 infra/carlink.htpasswd
-if [ ! -s infra/carlink.htpasswd ]; then
-    echo "❌ infra/carlink.htpasswd is missing -- create the site login first (see the comment above this check in deploy.sh)."
-    exit 1
-fi
-
 # Back up the database and case files before changing anything (see
 # infra/backup.sh; the nightly cron runs the same script). A deploy that
 # adds tables or columns can't be undone without one.
