@@ -32,6 +32,7 @@ import {
   pdfDownloadUrl,
 } from "@/lib/api";
 import { signOffReportAction } from "@/app/reports/actions";
+import { useCurrentUser } from "@/components/CurrentUser";
 import { CaseAnalysisPanel } from "./CaseAnalysisPanel";
 
 export function CaseAssessmentTab({
@@ -155,10 +156,19 @@ export function CaseAssessmentTab({
     );
   };
 
-  // Sign-Off & Endorsement State
-  const [surveyorName, setSurveyorName] = useState(signOff?.surveyor_name || "Patrick Ng");
-  const [qualifications, setQualifications] = useState(signOff?.qualifications || "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC");
-  const [licenseNumber, setLicenseNumber] = useState(signOff?.license_number || "SURV-SG-0492");
+  // Sign-Off & Endorsement State. Who signs is the signed-in user, with
+  // their own profile (My account) -- the API takes it from the account.
+  // This defaulted to one fixed surveyor's name, qualifications and
+  // licence, so every case read as signed by them.
+  const user = useCurrentUser();
+  const signer = isSignedOff
+    ? { name: signOff?.surveyor_name, qualifications: signOff?.qualifications, license: signOff?.license_number, firm: signOff?.firm_name }
+    : { name: user?.name, qualifications: user?.qualifications, license: user?.license_number, firm: user?.firm_name };
+  const surveyorName = signer.name || "—";
+  const qualifications = signer.qualifications || "";
+  const licenseNumber = signer.license || "—";
+  const firmName = signer.firm || "";
+  const profileIncomplete = !isSignedOff && Boolean(user) && !user?.license_number;
   const [signatureMode, setSignatureMode] = useState<"seal" | "canvas">("seal");
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
@@ -236,10 +246,6 @@ export function CaseAssessmentTab({
     }
 
     const payload: SignOffRequest = {
-      surveyor_name: surveyorName,
-      qualifications,
-      license_number: licenseNumber,
-      firm_name: "Carlink Consultancy",
       // Only what's recorded or entered; anything left empty stays empty.
       agreed_quantum: currentLumpSum ?? undefined,
       turnaround_days: repairTurnaroundDays ?? undefined,
@@ -868,7 +874,7 @@ export function CaseAssessmentTab({
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>License Registration</div>
             <div style={{ fontSize: 12, fontWeight: 700, fontFamily: "var(--font-mono)" }}>{licenseNumber}</div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Carlink Survey Services Pte Ltd</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{firmName || "Firm not set"}</div>
           </div>
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>Firm Registry</div>
@@ -1056,7 +1062,7 @@ export function CaseAssessmentTab({
               {isSignedOff ? (
                 <>
                   <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-primary)" }}>
-                    CARLINK CONSULTANCY
+                    {signOff?.firm_name || "Carlink Consultancy"}
                   </div>
                   <div style={{ fontSize: 9, color: "var(--text-muted)" }}>
                     60 Hillside Drive, Singapore 549009
@@ -1093,6 +1099,13 @@ export function CaseAssessmentTab({
           {signOffError && (
             <div style={{ color: "var(--danger, #ef4444)", fontSize: 12 }}>
               {signOffError}
+            </div>
+          )}
+
+          {profileIncomplete && (
+            <div style={{ color: "var(--badge-amber-text)", fontSize: 12 }}>
+              Your profile has no licence number, so the report will print without one.{" "}
+              <a href="/account" className="setup-help-link">Add it on My account</a>
             </div>
           )}
 

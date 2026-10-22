@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # tier's 20/min for gemini-3-flash, because one draft can spend several
     # requests walking the fallback chain.
     gemini_max_requests_per_minute: int = 12
+    # Dashboard sign-in (app/auth). A session ends after this long without
+    # use, and in any case this many days after signing in.
+    auth_session_idle_hours: float = 12
+    auth_session_max_days: float = 7
+    # The session cookie is only sent over HTTPS. Production is HTTPS (host
+    # nginx, infra/host-nginx/); browsers also accept it on http://localhost.
+    # Set false only for plain-HTTP access from another machine.
+    auth_cookie_secure: bool = True
 
 
 settings = Settings()

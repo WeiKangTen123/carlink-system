@@ -2,8 +2,14 @@
 
 import { Trash2 } from "lucide-react";
 import { deleteReportAction } from "@/app/reports/actions";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 
-export function DeleteButton({ id }: { id: string }) {
+/** Only admins delete cases; anyone may throw away an unfinished intake
+ * (status "intake"). The API enforces the same rule. */
+export function DeleteButton({ id, status }: { id: string; status: string }) {
+  const user = useCurrentUser();
+  if (!isAdmin(user) && status !== "intake") return null;
+
   return (
     <form
       action={deleteReportAction}

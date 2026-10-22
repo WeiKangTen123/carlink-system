@@ -98,6 +98,14 @@ function DossierField({
   );
 }
 
+const HISTORY_LABELS: Record<string, string> = {
+  created: "Created",
+  edited: "Edited",
+  finalized: "Filed as a case",
+  signed_off: "Signed off",
+  reopened: "Reopened",
+};
+
 export function CaseFileTab({ report }: { report: ReportDetail }) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -440,8 +448,10 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
             <DossierField label="Policy Coverage" value={null} />
             <DossierField label="Excess / Deductible" value={null} mono />
 
-            <DossierField label="Appointed Loss Adjuster" value="Patrick Ng & Co. Chartered Surveyors" />
-            <DossierField label="Surveyor License #" value="SURV-SG-0492" mono />
+            {/* The signer's own, once signed off (from their account). These
+                were one fixed firm and licence on every case. */}
+            <DossierField label="Appointed Loss Adjuster" value={isSignedOff ? signOff?.firm_name || signOff?.surveyor_name : null} />
+            <DossierField label="Surveyor License #" value={isSignedOff ? signOff?.license_number : null} mono />
             <DossierField label="GIA Survey SLA" value={`${giaSla.badgeText} · ${giaSla.remainingText}`} />
 
             <DossierField label="Appointed Workshop" value={workshopName} />
@@ -725,6 +735,37 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
         </div>
       </div>
 
+      {/* CASE HISTORY -- who created, edited, signed off and reopened it
+          (recorded by the API since sign-in was added). */}
+      {(report.history?.length ?? 0) > 0 && (
+        <div className="dossier-tier-card">
+          <div className="dossier-tier-header">
+            <div className="dossier-tier-title">
+              <Clock style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
+              Case History
+            </div>
+            <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              AUDIT TRAIL
+            </span>
+          </div>
+          <ul className="case-history">
+            {report.history!.map((h, i) => (
+              <li key={`${h.action}-${h.at}-${i}`}>
+                <span className={`case-history-dot ${h.action}`} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <strong>{HISTORY_LABELS[h.action] || h.action}</strong>
+                  {h.user_name ? <> by {h.user_name}</> : null}
+                  {h.detail ? <span style={{ color: "var(--text-muted)" }}> — {h.detail}</span> : null}
+                </div>
+                <span suppressHydrationWarning style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                  {formatSgtDateTime(h.at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* 6. STATUTORY WITHOUT PREJUDICE LEGAL DECLARATION */}
       <div className="legal-without-prejudice-banner">
         <Scale style={{ width: 20, height: 20, color: "var(--accent-primary)", flexShrink: 0, marginTop: 2 }} />
@@ -734,7 +775,7 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           </div>
           <div>
             This vehicle inspection, damage audit, and forensic report was conducted entirely on a <strong>&ldquo;WITHOUT PREJUDICE&rdquo;</strong> basis.
-            Carlink Consultancy and Patrick Ng & Co. have not authorised any repair on behalf of any insurer or third-party underwriter.
+            The appointed loss adjuster has not authorised any repair on behalf of any insurer or third-party underwriter.
             {/* No blanket "all measurements comply with GIA IDAC Guidelines"
                 line: it was printed whether or not anything was measured. */}
           </div>

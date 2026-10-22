@@ -26,6 +26,7 @@ import {
   Filter,
 } from "lucide-react";
 import type { ReportSummary, AnalyticsSummary } from "@/lib/api";
+import { useCurrentUser } from "@/components/CurrentUser";
 import { fileUrl } from "@/lib/api";
 import {
   severityClass,
@@ -98,6 +99,7 @@ function isSlaUrgent(r: ReportSummary): boolean {
 }
 
 export function CommandCenterClient({ initialReports, analytics }: Props) {
+  const user = useCurrentUser();
   const [selectedSwimlane, setSelectedSwimlane] = useState<Swimlane>("all");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
@@ -342,7 +344,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             </span>
 
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Principal Assessor: <strong style={{ color: "var(--text-primary)" }}>Patrick Ng</strong> (Forensic Loss Adjuster)
+              Signed in: <strong style={{ color: "var(--text-primary)" }}>{user?.name ?? "—"}</strong>
             </span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               • Framework: <strong style={{ color: "var(--accent-cyan)" }}>GIA / IDAC 48h Inspection SLA</strong>

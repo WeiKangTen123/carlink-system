@@ -96,6 +96,8 @@ structured.acquire = lambda key=None: 0.0
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from auth_helpers import sign_in  # noqa: E402
+
 from app.api.main import app  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake.pipeline import MAX_READ_PHOTOS, select_for_reading  # noqa: E402
@@ -120,6 +122,7 @@ def ok(msg: str) -> None:
 def main() -> int:
     files = photo_files()
     with TestClient(app) as client:
+        sign_in(client)
         rid = client.post("/intake").json()["id"]
 
         for i, f in enumerate(files):

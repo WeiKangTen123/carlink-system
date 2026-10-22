@@ -20,6 +20,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 
@@ -36,6 +37,7 @@ const TABS: { id: CaseTab; label: string; icon: React.ComponentType<{ style?: Re
 export function StudioApp({ report }: { report: ReportDetail }) {
   const d = report.data;
   const v = d.vehicle_info;
+  const user = useCurrentUser();
 
   const [activeTab, setActiveTab] = useState<CaseTab>("inspection");
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
@@ -102,13 +104,9 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const handleSignOff = async () => {
     setIsSigningOff(true);
     setSignOffError(null);
-    const result = await signOffReportAction(report.id, {
-      surveyor_name: "Patrick Ng",
-      qualifications: "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC",
-      license_number: "SURV-SG-0492",
-      firm_name: "Carlink Consultancy",
-      terms_accepted: true,
-    });
+    // Signed as the signed-in user, with their own profile (the API takes
+    // the name, licence and firm from the account, not from here).
+    const result = await signOffReportAction(report.id, { terms_accepted: true });
     if ("error" in result) {
       setSignOffError(result.error);
       setIsSigningOff(false);
@@ -181,19 +179,22 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize & Sign Off
             </button>
           )}
-          <form
-            action={deleteReportAction}
-            onSubmit={(e) => {
-              if (!confirm("Delete this report? This deletes its photos and PDF too, and can't be undone.")) {
-                e.preventDefault();
-              }
-            }}
-          >
-            <input type="hidden" name="id" value={report.id} />
-            <button type="submit" className="btn-secondary-modern" style={{ color: "var(--danger, #ef4444)" }}>
-              <Trash2 style={{ width: 13, height: 13 }} /> Delete
-            </button>
-          </form>
+          {/* Admins only; the API refuses anyone else. */}
+          {isAdmin(user) && (
+            <form
+              action={deleteReportAction}
+              onSubmit={(e) => {
+                if (!confirm("Delete this report? This deletes its photos and PDF too, and can't be undone.")) {
+                  e.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="id" value={report.id} />
+              <button type="submit" className="btn-secondary-modern" style={{ color: "var(--danger, #ef4444)" }}>
+                <Trash2 style={{ width: 13, height: 13 }} /> Delete
+              </button>
+            </form>
+          )}
         </div>
       </div>
 
@@ -311,6 +312,18 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               {plate && <> ({plate})</>} have been verified. This locks the report against further edits until
               reopened.
             </p>
+            {user && (
+              <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
+                Signing as <strong>{user.name}</strong>
+                {user.license_number ? <> · Licence {user.license_number}</> : null}
+                {user.firm_name ? <> · {user.firm_name}</> : null}
+                {!user.license_number && (
+                  <span style={{ display: "block", fontSize: 12, color: "var(--badge-amber-text)", marginTop: 4 }}>
+                    Your profile has no licence number, so the report will print without one. Add it on My account.
+                  </span>
+                )}
+              </p>
+            )}
 
             {signOffError && (
               <p style={{ fontSize: 12, color: "var(--danger, #ef4444)", marginBottom: 12 }}>{signOffError}</p>

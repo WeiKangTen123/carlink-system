@@ -6,6 +6,7 @@
   a VM shared with other apps.
 - storage/tmp files older than TMP_MAX_AGE: /reports/analyze-photos leaves
   its uploads there until the report is saved, which it may never be.
+- Expired and idle sign-in sessions (app/auth/core.py).
 
 Runs in the api process (started from main.py's lifespan), every
 SWEEP_EVERY. The telegram-bot process doesn't run it.
@@ -17,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
+from app.auth.core import sweep_sessions
 from app.intake.photos import remove_intake_dir
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
@@ -77,9 +79,19 @@ def sweep(now: datetime | None = None) -> dict:
         except OSError:
             continue
 
-    if removed_drafts or removed_tmp:
-        logger.info("Cleanup removed %d idle intake draft(s) %s and %d tmp file(s)", len(removed_drafts), removed_drafts, removed_tmp)
-    return {"drafts": removed_drafts, "tmp_files": removed_tmp}
+    # Sign-in sessions that have expired or gone idle (app/auth/core.py).
+    db = SessionLocal()
+    try:
+        removed_sessions = sweep_sessions(db, now)
+    finally:
+        db.close()
+
+    if removed_drafts or removed_tmp or removed_sessions:
+        logger.info(
+            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s) and %d expired session(s)",
+            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions,
+        )
+    return {"drafts": removed_drafts, "tmp_files": removed_tmp, "sessions": removed_sessions}
 
 
 def _loop() -> None:

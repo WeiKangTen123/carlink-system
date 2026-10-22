@@ -14,7 +14,7 @@ roadmap this fits into.
 - **Storage** — SQLite (`app/reports/`) for report records, local disk (`app/storage/files.py`) for photos/PDFs, laid out as `storage/incidents/{year}/{month}/{incident_id}/`.
 - **Minimal REST API** (`app/api/main.py`) — `/health`, `/reports`, `/reports/{id}`, plus the WhatsApp webhook route. Seed of the Phase 1 dashboard API.
 
-Deliberately **not** built yet (see `docs/proposal.md` section J for when): Postgres/Redis/S3 (SQLite + local disk are enough for Phase 0 volume), the Next.js dashboard, auth, vehicle-claim fields, part-price lookup.
+Deliberately **not** built yet (see `docs/proposal.md` section J for when): Postgres/Redis/S3 (SQLite + local disk are enough for Phase 0 volume), the Next.js dashboard, vehicle-claim fields, part-price lookup.
 
 ## Setup
 
@@ -34,6 +34,24 @@ copy .env.example .env          # then fill in TELEGRAM_BOT_TOKEN and GEMINI_API
 **Gemini API key**: from aistudio.google.com/apikey. If calls fail with an auth error, check the key hasn't expired — a key copied from an OAuth flow (starts with something other than `AIzaSy`) is typically short-lived; get a stable one from the link above instead.
 
 **Model fallback chain**: `GEMINI_MODEL_CHAIN` in `.env` is a comma-separated list, tried in order until one succeeds. Each model draws from its own separate RPM/TPM/RPD quota, so this is what lets the bot keep working after any single model's free-tier quota is exhausted. Edit it to match whatever's actually available in your Google AI Studio account.
+
+## Dashboard sign-in
+
+Every API route needs a signed-in user (`app/auth/`), except `/health` and
+`/auth/login`. There is no sign-up: create the first admin from the command
+line, then add everyone else in the dashboard (Settings → Users).
+
+```bash
+python -m app.auth.manage create-user --email you@example.com --name "Your Name" --role admin
+python -m app.auth.manage reset-password --email you@example.com   # locked out / forgot it
+python -m app.auth.manage list-users
+```
+
+In production run these with `docker exec -it carlink_api ...`. Sessions end
+after 12 idle hours or 7 days (`AUTH_SESSION_IDLE_HOURS`,
+`AUTH_SESSION_MAX_DAYS`). The cookie is HTTPS-only; browsers accept that on
+`http://localhost`, but set `AUTH_COOKIE_SECURE=false` to use plain HTTP from
+another machine.
 
 ## Verify the rendering pipeline (no credentials needed)
 

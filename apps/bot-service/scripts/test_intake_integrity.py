@@ -55,6 +55,7 @@ from PIL import Image  # noqa: E402
 
 import app.api.intake as intake_api  # noqa: E402
 from app.api.main import app  # noqa: E402
+from auth_helpers import sign_in  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake import cleanup  # noqa: E402
 from app.intake.pipeline import merge_redraft  # noqa: E402
@@ -129,6 +130,7 @@ def main() -> int:
     ok("merge_redraft keeps surveyor edits/sections/checked damage, takes new readings elsewhere")
 
     with TestClient(app) as client:
+        sign_in(client)
         # Re-read through the API keeps step-3/4 work.
         rid = new_draft(client)
         draft_answers.append(ai_draft())
@@ -178,7 +180,7 @@ def main() -> int:
         final = client.get(f"/intake/{rid}").json()["data"]
         original_commit_step = intake_api._finalize_claimed
 
-        def failing(db, report_id, body):
+        def failing(db, report_id, body, user):
             intake_api.copy_into_case(report_id, [p for p in intake_api.ordered_photos(db, report_id)])
             raise RuntimeError("simulated crash after copying")
 

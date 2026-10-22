@@ -1,6 +1,6 @@
 "use server";
 
-import { redirect } from "next/navigation";
+import { redirect, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
   deleteReport,
@@ -28,7 +28,8 @@ export async function deleteReportAction(formData: FormData) {
 export async function getReportDetailAction(id: string) {
   try {
     return await getReport(id);
-  } catch {
+  } catch (err) {
+    unstable_rethrow(err);
     return null;
   }
 }
@@ -46,6 +47,8 @@ export async function analyzePhotosAction(
     const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
     return await analyzeReportPhotos(description, photos);
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "AI analysis failed" };
   }
 }
@@ -65,6 +68,8 @@ export async function reanalyzeExistingPhotosAction(
     if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze" };
     return await analyzeExistingReportPhotos(report.photo_urls, description);
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "AI analysis failed" };
   }
 }
@@ -95,7 +100,7 @@ export async function updateReportAction(id: string, formData: FormData) {
  * had been missed. */
 export async function signOffReportAction(
   id: string,
-  payload?: SignOffRequest | string
+  payload: SignOffRequest = {}
 ): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo } | { error: string }> {
   try {
     const result = await signOffReport(id, payload);
@@ -104,6 +109,8 @@ export async function signOffReportAction(
     revalidatePath("/reports");
     return result;
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Sign-off failed" };
   }
 }
@@ -124,12 +131,21 @@ export async function reviewDamageItemAction(
     revalidatePath("/reports");
     return { ok: true };
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to update damage item" };
   }
 }
 
-export async function reopenReportAction(id: string) {
-  await reopenReport(id);
+/** Returns the error (e.g. 403: only the signer or an admin may reopen)
+ * instead of throwing, so ReopenButton can show it. */
+export async function reopenReportAction(id: string): Promise<{ ok: true } | { error: string }> {
+  try {
+    await reopenReport(id);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to reopen the report" };
+  }
   // Deliberately no redirect() here: the caller is already sitting on
   // /reports/{id}/edit (that's the only place this button renders), and
   // Next.js's client Router Cache does not reliably re-render a redirect
@@ -141,6 +157,7 @@ export async function reopenReportAction(id: string) {
   revalidatePath(`/reports/${id}/edit`);
   revalidatePath(`/reports/${id}`);
   revalidatePath("/reports");
+  return { ok: true };
 }
 
 export async function aiEnrichReportAction(id: string) {
@@ -151,6 +168,8 @@ export async function aiEnrichReportAction(id: string) {
     revalidatePath(`/reports/${id}`);
     return { ok: true, report: res };
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to enrich report" };
   }
 }
@@ -163,6 +182,8 @@ export async function aiEnrichAllReportsAction() {
     revalidatePath("/");
     return { ok: true, count: res.enriched_count };
   } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to batch enrich reports" };
   }
 }

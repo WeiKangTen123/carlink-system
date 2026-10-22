@@ -4,8 +4,11 @@
  * not through Server Actions: a real case is 40-80 photos uploaded a few at a
  * time in parallel, and Server Actions run one at a time with a 25MB body cap.
  * In prod API_BASE_URL is the same-origin /api path nginx proxies to FastAPI
- * (100MB body limit); in local dev it's the API port, which CORS allows. */
-import { API_BASE_URL, type DamageSummaryItem, type ReportData } from "./api";
+ * (100MB body limit); in local dev it's the API port, which CORS allows.
+ * apiFetch sends the sign-in cookie, and if the session has ended mid-intake
+ * it tells SessionGuard, which offers to sign in again without leaving the
+ * page -- everything on screen is kept and the failed step can be retried. */
+import { API_BASE_URL, apiFetch, type DamageSummaryItem, type ReportData } from "./api";
 
 export type IntakeStage = "uploading" | "sorting" | "reading" | "ready" | "failed";
 
@@ -81,7 +84,7 @@ export type IntakeState = {
 export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic"];
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}/intake${path}`, { cache: "no-store", ...init });
+  const res = await apiFetch(`${API_BASE_URL}/intake${path}`, { cache: "no-store", ...init });
   if (!res.ok) {
     let detail: string | undefined;
     try {

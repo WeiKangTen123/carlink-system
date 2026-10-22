@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
+import { useCurrentUser } from "@/components/CurrentUser";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
   caseTitle,
@@ -127,6 +128,7 @@ function isAiDetected(d: DamageSummaryItem): boolean {
 }
 
 export function ReportsClient({ initialReports, initialAnalytics }: Props) {
+  const user = useCurrentUser();
   const [reportsList, setReportsList] = useState<ReportSummary[]>(initialReports || []);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [searchTerm, setSearchTerm] = useState("");
@@ -442,7 +444,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
           </h1>
           <span className="command-header-badge" style={{ fontSize: 10, padding: "2px 8px" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 5px var(--badge-green-text)" }} />
-            Patrick Ng • GIA SLA 48h
+            {user?.name ?? "Surveyor"} • GIA SLA 48h
           </span>
 
           {/* Inline Compact Metric Chips */}
@@ -919,7 +921,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       </>
                     )}
 
-                    <DeleteButton id={selectedSummary.id} />
+                    <DeleteButton id={selectedSummary.id} status={selectedSummary.status} />
                   </div>
                 </div>
 
@@ -1382,7 +1384,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <ArrowRight style={{ width: 12, height: 12 }} />
                           </Link>
 
-                          <DeleteButton id={r.id} />
+                          <DeleteButton id={r.id} status={r.status} />
                         </div>
                       </td>
                     </tr>

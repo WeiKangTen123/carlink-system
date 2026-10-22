@@ -96,6 +96,14 @@ fi
 echo "🔁 Reloading nginx so it picks up the recreated containers..."
 docker exec carlink_nginx nginx -s reload || docker restart carlink_nginx
 
+# Dashboard sign-in (bot-service app/auth): nobody can use the dashboard
+# until the first admin account exists. Admins add everyone else from
+# Settings -> Users.
+if ! docker exec carlink_api python -m app.auth.manage list-users | grep -q " admin "; then
+    echo "⚠️  No admin account yet -- create one (it asks for a password):"
+    echo "   docker exec -it carlink_api python -m app.auth.manage create-user --email you@example.com --name \"Your Name\" --role admin"
+fi
+
 # Only prune the *build cache* when disk is actually getting tight -- it bit
 # us hard on the old 10GB e2-micro, but wiping it unconditionally on every
 # deploy (as this used to do) means every single build starts ice-cold: full

@@ -7,7 +7,6 @@ import {
   Lock,
   Eye,
   EyeOff,
-  AlertTriangle,
   Send,
   MessageCircle,
   Building2,
@@ -17,7 +16,8 @@ import {
   Check,
   X,
 } from "lucide-react";
-import type { AppSettings, LlmKey } from "@/lib/api";
+import type { AppSettings, LlmKey, UserAccount } from "@/lib/api";
+import { UsersCard } from "./UsersCard";
 import {
   updateSettingsAction,
   listLlmKeysAction,
@@ -267,7 +267,6 @@ function GeminiKeysCard({ envKeyConfigured }: { envKeyConfigured: boolean }) {
  * SystemInfo -- see the note in page.tsx about not shipping deployment
  * internals into the page payload. */
 export interface SetupStatus {
-  authConfigured: boolean;
   geminiEnvKeyConfigured: boolean;
   telegramConfigured: boolean;
   whatsappConfigured: boolean;
@@ -278,9 +277,13 @@ export interface SetupStatus {
 export function SettingsClient({
   settings,
   setup,
+  users,
+  currentUserId,
 }: {
   settings: AppSettings;
   setup: SetupStatus;
+  users: UserAccount[];
+  currentUserId: string;
 }) {
   const [companyName, setCompanyName] = useState(settings.company_name);
   const [saving, setSaving] = useState(false);
@@ -319,16 +322,7 @@ export function SettingsClient({
         </div>
       </div>
 
-      {!setup.authConfigured && (
-        <div className="setup-warning-banner" style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-          <AlertTriangle style={{ width: 18, height: 18, color: "var(--badge-amber-text)", flexShrink: 0, marginTop: 2 }} />
-          <div>
-            <strong>This dashboard has no login.</strong> Anyone who can reach its URL can view and change
-            everything here, including adding or removing API keys. Keys themselves are never displayed back —
-            only their last 4 characters — but treat this address as sensitive until access control is added.
-          </div>
-        </div>
-      )}
+      <UsersCard initialUsers={users} currentUserId={currentUserId} />
 
       <GeminiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 

@@ -152,3 +152,74 @@ class IntakePhoto(Base):
     # Kept in the case file but never sent to the AI.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class User(Base):
+    """A person who can sign in to the dashboard (app/auth).
+
+    No public sign-up: the first admin is created on the server with
+    `python -m app.auth.manage create-user`, and admins add everyone else
+    from Settings. Users are disabled rather than deleted, so the case
+    history keeps pointing at real accounts.
+
+    The surveyor profile (qualifications, licence, firm) is what sign-off
+    prints -- it used to be typed in, or defaulted to one fixed surveyor, so
+    anyone could sign a case as anyone.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
+    # Always stored lower-cased (app/auth/core.normalize_email).
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    # "admin": users, API keys, settings, deleting cases. "surveyor": cases.
+    role: Mapped[str] = mapped_column(String, default="surveyor")
+    password_hash: Mapped[str] = mapped_column(String)
+    # Set when an admin hands out a temporary password; the API refuses
+    # everything but changing it until it is changed.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    qualifications: Mapped[str] = mapped_column(String, default="")
+    license_number: Mapped[str] = mapped_column(String, default="")
+    firm_name: Mapped[str] = mapped_column(String, default="")
+    # Wrong passwords in a row; reaching the limit sets locked_until.
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
+
+
+class AuthSession(Base):
+    """One signed-in browser. The cookie holds a random token; only its
+    SHA-256 is stored, so a copy of the database (or a backup) can't be used
+    to sign in as anyone."""
+    __tablename__ = "auth_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+    # Hard limit regardless of activity; the idle limit is checked against
+    # last_seen_at (see app/auth/core.py).
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    ip: Mapped[str] = mapped_column(String, default="")
+    user_agent: Mapped[str] = mapped_column(String, default="")
+
+
+class AuditEntry(Base):
+    """Who did what to a case (or to a user account), and when.
+
+    user_name is copied at the time, so the history still reads right after
+    a user is renamed or disabled. report_id is kept after a case is deleted
+    -- the record that it was deleted, and by whom, is the point.
+    """
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    user_name: Mapped[str] = mapped_column(String, default="")
+    action: Mapped[str] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
