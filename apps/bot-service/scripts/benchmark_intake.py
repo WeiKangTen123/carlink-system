@@ -278,7 +278,13 @@ def main() -> None:
         if "parts" in r:
             for k in ("found", "expected", "visible_found", "visible_expected"):
                 totals[k] += r["parts"][k]
-    print(f"\nTOTAL parts {totals['found']}/{totals['expected']}, visible {totals['visible_found']}/{totals['visible_expected']}")
+                totals[f"checklist_{k}"] += r["parts_with_checklist"][k]
+            totals["extra"] += len(r["parts"]["extra"])
+            totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
+    print(f"\nTOTAL parts {totals['found']}/{totals['expected']}, visible {totals['visible_found']}/{totals['visible_expected']}, "
+          f"extra {totals['extra']}")
+    print(f"WITH CHECKLIST parts {totals['checklist_found']}/{totals['checklist_expected']}, "
+          f"visible {totals['checklist_visible_found']}/{totals['checklist_visible_expected']}, extra {totals['checklist_extra']}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps({"results": results, "totals": totals}, indent=1, default=str), encoding="utf-8")
     print("written", args.out)
