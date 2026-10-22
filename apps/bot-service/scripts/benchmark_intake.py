@@ -18,6 +18,7 @@ with both pointing at scratch locations, never against the live database:
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -59,6 +60,22 @@ def _counting(fn):
 
 triage.call_structured = _counting(triage.call_structured)
 extraction.call_structured = _counting(extraction.call_structured)
+
+answered_by: list[str] = []
+
+
+class _ModelLog(logging.Handler):
+    """Notes which model answered each call (call_structured logs it), since
+    a quiet fallback to a weaker model changes the score."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if "produced by" in record.msg and len(record.args) >= 2:
+            answered_by.append(f"{record.args[0]}: {record.args[1]}")
+
+
+_structured_log = logging.getLogger("app.ai.structured")
+_structured_log.setLevel(logging.INFO)
+_structured_log.addHandler(_ModelLog())
 
 
 def load_case(folder: Path) -> str:
@@ -190,6 +207,7 @@ def score_vehicle(expected: dict, drafted: dict) -> dict:
 def run_case(case: dict, cases_dir: Path) -> dict:
     rid = load_case(cases_dir / case["folder"])
     calls.clear()
+    answered_by.clear()
     out: dict = {"case": case["name"], "report_id": rid}
     started = time.monotonic()
     try:
@@ -201,6 +219,7 @@ def run_case(case: dict, cases_dir: Path) -> dict:
     except Exception as exc:  # recorded, and the next case still runs
         out["error"] = f"{type(exc).__name__}: {exc}"[:500]
     out["calls"] = Counter(c["purpose"] for c in calls)
+    out["answered_by"] = Counter(answered_by)
 
     db = SessionLocal()
     try:
@@ -243,7 +262,7 @@ def summary_line(r: dict) -> str:
     return (f"{r['case']:<11} parts {p['found']:>2}/{p['expected']:<2} (visible {p['visible_found']:>2}/{p['visible_expected']:<2}) "
             f"wrong-side {len(p['wrong_side'])} extra {len(p['extra'])} | facts {facts}/{len(v)} | "
             f"read {r['read']}/{r['photos']} (damage {r['damage_photos_read']}) | "
-            f"sort {r.get('sort_seconds', '-')}s read {r.get('read_seconds', '-')}s | calls {dict(r['calls'])}"
+            f"sort {r.get('sort_seconds', '-')}s read {r.get('read_seconds', '-')}s | models {dict(r['answered_by'])}"
             + (f" | ERROR {r['error']}" if r.get("error") else ""))
 
 
