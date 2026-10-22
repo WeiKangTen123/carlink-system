@@ -84,6 +84,12 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Front Windscreen": "windscreen",
   "Left Front Fender": "l_fender",
   "Right Front Fender": "r_fender",
+  "Front Bumper Beam": "front_bumper",
+  "Left Fog Lamp": "front_bumper",
+  "Right Fog Lamp": "front_bumper",
+  "Front Number Plate": "front_bumper",
+  "Left Front Wheel Arch Liner": "l_fender",
+  "Right Front Wheel Arch Liner": "r_fender",
 
   "Left Front Door": "l_door_front",
   "Right Front Door": "r_door_front",
@@ -105,6 +111,23 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Left Rear Quarter Panel": "l_fender",
   "Right Rear Quarter Panel": "r_fender",
   "Rear Number Plate": "rear_bumper",
+  "Rear Bumper Beam": "rear_bumper",
+  "Left Rear Bumper Reflector": "rear_bumper",
+  "Right Rear Bumper Reflector": "rear_bumper",
+  "Rear End Panel": "rear_bumper",
+  // Mounted on the boot lid / tailgate, so they mark the tailgate mesh.
+  "Boot Lid Lock": "tailgate",
+  "Boot Lid Hinge": "tailgate",
+  "Boot Lid Weatherstrip": "tailgate",
+  "Boot Lid Inner Trim": "tailgate",
+  "Left Boot Lid Lamp": "tailgate",
+  "Right Boot Lid Lamp": "tailgate",
+  // Inside the boot: no mesh of their own.
+  "Boot Floor Board": "underbody",
+  "Left Boot Side Trim": null,
+  "Right Boot Side Trim": null,
+  "Left Rear Wheel Arch Liner": "l_fender",
+  "Right Rear Wheel Arch Liner": "r_fender",
 
   "Left Front Wheel": "l_wheel_front",
   "Right Front Wheel": "r_wheel_front",
@@ -117,6 +140,7 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Rear Floor Panel": "underbody",
   "Front Subframe": "underbody",
   "Rear Subframe": "underbody",
+  "Engine Undercover": "underbody",
 
   // Roof mapped to 3D roof zone; critical mechanical mapped to nearest visible anchors
   "Roof": "roof",
@@ -145,6 +169,11 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Wing Mirror (side undetermined)": "l_mirror",
   "Wheel (side undetermined)": "l_wheel_front",
   "Sill / Rocker Panel (side undetermined)": "underbody",
+  "Fog Lamp (side undetermined)": "front_bumper",
+  "Rear Bumper Reflector (side undetermined)": "rear_bumper",
+  "Boot Lid Lamp (side undetermined)": "tailgate",
+  "Wheel Arch Liner (side undetermined)": "l_fender",
+  "Boot Side Trim (side undetermined)": null,
 
   "Other / Not Listed": null,
 };

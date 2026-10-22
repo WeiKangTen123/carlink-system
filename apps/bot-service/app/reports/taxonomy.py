@@ -34,6 +34,15 @@ CANONICAL_PARTS: list[str] = [
     "Front Windscreen",
     "Left Front Fender",
     "Right Front Fender",
+    # Behind and inside the front bumper / fenders. Real reports price these
+    # separately; without names for them the model folded them into "Front
+    # Bumper" or "Other / Not Listed".
+    "Front Bumper Beam",
+    "Left Fog Lamp",
+    "Right Fog Lamp",
+    "Front Number Plate",
+    "Left Front Wheel Arch Liner",
+    "Right Front Wheel Arch Liner",
     # Doors
     "Left Front Door",
     "Right Front Door",
@@ -54,6 +63,26 @@ CANONICAL_PARTS: list[str] = [
     "Left Rear Quarter Panel",
     "Right Rear Quarter Panel",
     "Rear Number Plate",
+    # A rear-end hit is rarely just "Rear Bumper" and "Boot Lid": the four
+    # example surveyor reports (2018-2023) list the bumper beam, reflectors,
+    # rear end panel, the boot lid's lock, hinges, weatherstrip, inner trim
+    # and lamps, and the boot floor and side trims as separate priced lines.
+    # "Boot Lid" also means a tailgate or hatch door.
+    "Rear Bumper Beam",
+    "Left Rear Bumper Reflector",
+    "Right Rear Bumper Reflector",
+    "Rear End Panel",
+    "Boot Lid Lock",
+    "Boot Lid Hinge",
+    "Boot Lid Weatherstrip",
+    "Boot Lid Inner Trim",
+    "Left Boot Lid Lamp",
+    "Right Boot Lid Lamp",
+    "Boot Floor Board",
+    "Left Boot Side Trim",
+    "Right Boot Side Trim",
+    "Left Rear Wheel Arch Liner",
+    "Right Rear Wheel Arch Liner",
     # Wheels
     "Left Front Wheel",
     "Right Front Wheel",
@@ -67,6 +96,7 @@ CANONICAL_PARTS: list[str] = [
     "Rear Floor Panel",
     "Front Subframe",
     "Rear Subframe",
+    "Engine Undercover",
     # Mechanical / systems a damage assessment legitimately records
     "Radiator",
     "Air Conditioning Condenser",
@@ -106,6 +136,11 @@ CANONICAL_PARTS: list[str] = [
     "Wing Mirror (side undetermined)",
     "Wheel (side undetermined)",
     "Sill / Rocker Panel (side undetermined)",
+    "Fog Lamp (side undetermined)",
+    "Rear Bumper Reflector (side undetermined)",
+    "Boot Lid Lamp (side undetermined)",
+    "Wheel Arch Liner (side undetermined)",
+    "Boot Side Trim (side undetermined)",
     # Escape hatch. Without this the model is forced to mislabel anything
     # genuinely outside the list; with it, unusual damage stays honest and
     # the free-text detail survives in damage_type and the description.
