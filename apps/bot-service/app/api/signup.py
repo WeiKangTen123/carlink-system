@@ -10,6 +10,7 @@ Admin:
     POST   /access-requests/{id}/approve  choose the role -> invite link
     POST   /access-requests/{id}/reject
     DELETE /access-requests/{id}          erase it (PDPA)
+    POST   /access-requests/bulk          reject or erase many (spam floods)
     GET    /account-links                 invites and reset links, never tokens
     POST   /account-links                 invite someone directly
     DELETE /account-links/{id}            revoke
@@ -25,6 +26,7 @@ stays out of access logs, Referer headers and link previews.
 Every public answer is the same whether or not the email has an account,
 like sign-in's.
 """
+import hashlib
 import re
 import secrets
 import threading
@@ -55,6 +57,7 @@ from app.auth.core import (
 )
 from app.auth.deps import require_admin
 from app.auth.links import (
+    MAX_PENDING_REQUESTS,
     DEFAULT_INVITE_HOURS,
     DEFAULT_RESET_HOURS,
     claim,
@@ -76,9 +79,8 @@ Role = Literal["surveyor", "admin"]
 # Per network: a person sends one request; a script sends hundreds.
 _REQUESTS_PER_IP = 5
 _REQUEST_WINDOW_SECONDS = 60 * 60
-# Beyond these, new requests are refused (all) or quietly dropped (one
-# email), so a flood can neither fill the database nor bury a real request.
-MAX_PENDING = 200
+# Beyond this one email's requests are quietly dropped, so a flood can't
+# bury a real request (the overall cap is links.MAX_PENDING_REQUESTS).
 MAX_PENDING_PER_EMAIL = 3
 
 _request_times: dict[str, deque] = {}
@@ -155,7 +157,7 @@ def request_access(body: AccessRequestIn, request: Request) -> dict:
 
     db = SessionLocal()
     try:
-        if db.query(AccessRequest).filter(AccessRequest.status == "pending").count() >= MAX_PENDING:
+        if db.query(AccessRequest).filter(AccessRequest.status == "pending").count() >= MAX_PENDING_REQUESTS:
             raise HTTPException(status_code=503, detail="We've received a lot of requests. Try again tomorrow.")
         same_email = db.query(AccessRequest).filter(AccessRequest.status == "pending", AccessRequest.email == email).count()
         if same_email >= MAX_PENDING_PER_EMAIL:
@@ -302,6 +304,12 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
 # ------------------------------------------------------------- admin
 
 
+def _network_tag(ip: str) -> str:
+    """Groups requests from one network for the admin's "select all from
+    this network" without putting the address itself on screen."""
+    return hashlib.sha256(f"carlink-network:{ip}".encode()).hexdigest()[:8] if ip else ""
+
+
 def _request_dict(row: AccessRequest, *, has_account: bool, same_email_pending: int, same_ip_24h: int) -> dict:
     return {
         "id": row.id,
@@ -320,6 +328,7 @@ def _request_dict(row: AccessRequest, *, has_account: bool, same_email_pending: 
         "has_account": has_account,
         "same_email_pending": same_email_pending,
         "same_ip_24h": same_ip_24h,
+        "network": _network_tag(row.ip),
     }
 
 
@@ -427,6 +436,46 @@ def delete_access_request(request_id: str, admin: CurrentUser = Depends(require_
         db.delete(row)
         db.commit()
         return {"ok": True}
+    finally:
+        db.close()
+
+
+class BulkDecision(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=MAX_PENDING_REQUESTS * 2)
+    action: Literal["reject", "delete"]
+    note: str = Field(default="", max_length=300)
+
+
+@router.post("/access-requests/bulk")
+def bulk_access_requests(body: BulkDecision, admin: CurrentUser = Depends(require_admin)) -> dict:
+    """Reject or erase many requests at once -- a spam flood is cleared in
+    one go rather than row by row. Reject only touches pending requests;
+    anything else (already decided, or deleted meanwhile) is counted as
+    skipped. One history entry for the whole batch."""
+    db = SessionLocal()
+    try:
+        wanted = set(body.ids)
+        rows = db.query(AccessRequest).filter(AccessRequest.id.in_(wanted)).all()
+        now = utc_now()
+        done: list[AccessRequest] = []
+        for row in rows:
+            if body.action == "reject":
+                if row.status != "pending":
+                    continue
+                row.status = "rejected"
+                row.decided_at = now
+                row.decided_by = admin.id
+                row.decided_by_name = admin.name
+                row.decision_note = body.note.strip()
+            else:
+                db.delete(row)
+            done.append(row)
+        if done:
+            emails = ", ".join(sorted({r.email for r in done}))
+            verb = "rejected" if body.action == "reject" else "deleted"
+            audit(db, admin, f"access_requests_{verb}", detail=f"{len(done)} request(s): {emails}")
+        db.commit()
+        return {"done": len(done), "skipped": len(wanted) - len(done)}
     finally:
         db.close()
 

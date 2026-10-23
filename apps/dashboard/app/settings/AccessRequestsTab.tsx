@@ -3,8 +3,14 @@
 import { useState } from "react";
 import { AlertTriangle, Check, Trash2, X } from "lucide-react";
 import type { AccessRequestRow, LinkLifetime, UserRole } from "@/lib/api";
+import { useCurrentUser } from "@/components/CurrentUser";
 import { ROLE_LABEL, formatSgt, formatSgtDay } from "@/lib/signup";
-import { approveAccessRequestAction, deleteAccessRequestAction, rejectAccessRequestAction } from "./actions";
+import {
+  approveAccessRequestAction,
+  bulkAccessRequestsAction,
+  deleteAccessRequestAction,
+  rejectAccessRequestAction,
+} from "./actions";
 import { LifetimeChoice, RoleChoice, type ReadyLink } from "./LinkDialogs";
 
 /** "just now", "5 min ago", "3 h ago", "2 d ago", then the date. */
@@ -28,7 +34,7 @@ function plural(n: number, one: string, many: string): string {
 /** Warnings that help an admin spot a request that isn't what it seems:
  * the same email asked before (only one of them may be the real person),
  * or many requests from one network. */
-function Flags({ r }: { r: AccessRequestRow }) {
+function Flags({ r, onSelectNetwork }: { r: AccessRequestRow; onSelectNetwork?: () => void }) {
   const flags: { text: string; strong?: boolean }[] = [];
   if (r.has_account) flags.push({ text: "Already has an account", strong: true });
   if (r.same_email_pending > 0) flags.push({ text: `Asked ${plural(r.same_email_pending, "more time", "more times")}` });
@@ -43,6 +49,11 @@ function Flags({ r }: { r: AccessRequestRow }) {
           <AlertTriangle style={{ width: 11, height: 11 }} aria-label="Warning" /> {f.text}
         </span>
       ))}
+      {r.same_ip_24h > 0 && r.network && onSelectNetwork && (
+        <button type="button" className="setup-help-link request-select-network" onClick={onSelectNetwork}>
+          Select all from this network
+        </button>
+      )}
     </div>
   );
 }
@@ -250,6 +261,59 @@ export function AccessRequestsTab({
   const [rejecting, setRejecting] = useState<AccessRequestRow | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Ticked rows, for clearing a spam flood in one go. Ids no longer in the
+  // list (decided or deleted meanwhile) simply stop counting.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const me = useCurrentUser();
+
+  const rows = requests ?? [];
+  const selected = rows.filter((r) => picked.has(r.id));
+  const selectedPending = selected.filter((r) => r.status === "pending");
+  const allPicked = rows.length > 0 && selected.length === rows.length;
+  const waiting = me?.pending_access_requests ?? 0;
+  const limit = me?.pending_access_limit ?? 0;
+
+  const toggle = (id: string, on: boolean) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const pickNetwork = (network: string) =>
+    setPicked((prev) => new Set([...prev, ...rows.filter((r) => r.network === network).map((r) => r.id)]));
+
+  const bulk = async (action: "reject" | "delete") => {
+    const targets = action === "reject" ? selectedPending : selected;
+    if (!targets.length) return;
+    const question =
+      action === "reject"
+        ? `Reject ${plural(targets.length, "request", "requests")}? They won't be told automatically.`
+        : `Delete ${plural(targets.length, "request", "requests")}? They're erased for good.`;
+    if (!confirm(question)) return;
+    setBulkBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await bulkAccessRequestsAction(
+      targets.map((r) => r.id),
+      action
+    );
+    setBulkBusy(false);
+    if ("error" in result) {
+      setError(result.error);
+      return;
+    }
+    const verb = action === "reject" ? "Rejected" : "Deleted";
+    setNotice(
+      `${verb} ${plural(result.done, "request", "requests")}.` +
+        (result.skipped ? ` ${result.skipped} already handled, so skipped.` : "")
+    );
+    setPicked(new Set());
+    onChanged();
+  };
 
   const remove = async (r: AccessRequestRow) => {
     if (!confirm(`Delete ${r.name}'s request? It's erased for good. Use this when someone asks for their details to be removed.`)) return;
@@ -270,7 +334,56 @@ export function AccessRequestsTab({
         </label>
       </div>
 
+      {limit > 0 && waiting >= limit * 0.8 && (
+        <div className="setup-error" role="status">
+          {waiting >= limit
+            ? `${waiting} requests are waiting, the most allowed, so new requests are being refused. `
+            : `${waiting} of at most ${limit} requests are waiting; at ${limit}, new requests are refused. `}
+          If these are spam, tick them (or use &ldquo;Select all from this network&rdquo;) and reject or delete them together.
+        </div>
+      )}
+
       {error && <div className="setup-error">{error}</div>}
+      {notice && (
+        <p className="setup-note" role="status" style={{ margin: "0 0 10px" }}>
+          {notice}
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <div className="request-bulk-bar">
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={allPicked}
+              onChange={(e) => setPicked(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())}
+              aria-label="Select all requests"
+            />
+            {selected.length ? `${selected.length} selected` : "Select all"}
+          </label>
+          {selected.length > 0 && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                type="button"
+                className="btn-secondary-modern users-action"
+                onClick={() => bulk("reject")}
+                disabled={bulkBusy || selectedPending.length === 0}
+                title={selectedPending.length === 0 ? "Only waiting requests can be rejected" : undefined}
+              >
+                <X style={{ width: 11, height: 11 }} /> {bulkBusy ? "Working…" : `Reject ${selectedPending.length}`}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary-modern users-action danger"
+                onClick={() => bulk("delete")}
+                disabled={bulkBusy}
+              >
+                <Trash2 style={{ width: 11, height: 11 }} /> {bulkBusy ? "Working…" : `Delete ${selected.length}`}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {requests === null ? (
         <div className="setup-error" style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
@@ -290,7 +403,14 @@ export function AccessRequestsTab({
             const pending = r.status === "pending";
             const busy = busyId === r.id;
             return (
-              <li key={r.id} className="request-row" style={{ opacity: pending ? 1 : 0.7 }}>
+              <li key={r.id} className={`request-row ${picked.has(r.id) ? "picked" : ""}`} style={{ opacity: pending ? 1 : 0.7 }}>
+                <input
+                  type="checkbox"
+                  className="request-pick"
+                  checked={picked.has(r.id)}
+                  onChange={(e) => toggle(r.id, e.target.checked)}
+                  aria-label={`Select ${r.name}'s request`}
+                />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 700 }}>{r.name}</span>
@@ -303,7 +423,7 @@ export function AccessRequestsTab({
                   </div>
                   <RequestDetails r={r} />
                   {pending ? (
-                    <Flags r={r} />
+                    <Flags r={r} onSelectNetwork={() => pickNetwork(r.network)} />
                   ) : (
                     <div className="request-meta" style={{ marginTop: 4 }} suppressHydrationWarning>
                       {decision(r)}

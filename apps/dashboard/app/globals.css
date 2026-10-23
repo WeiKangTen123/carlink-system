@@ -5112,6 +5112,40 @@ button.intake-tile:hover {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+/* Bulk reject/delete: the tick box on each request and the bar above them. */
+.request-pick {
+  margin-top: 3px;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+.request-row.picked {
+  background: var(--accent-soft, rgba(56, 189, 248, 0.06));
+  margin: 0 -8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: 8px;
+}
+.request-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 34px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.request-select-network {
+  font-size: 11px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+}
 .request-summary {
   font-size: 13px;
   border: 1px solid var(--border-color);

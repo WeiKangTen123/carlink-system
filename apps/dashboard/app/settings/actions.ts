@@ -14,6 +14,7 @@ import {
   listAccessRequests,
   approveAccessRequest,
   rejectAccessRequest,
+  bulkDecideAccessRequests,
   deleteAccessRequest,
   listAccountLinks,
   createAccountLink,
@@ -183,6 +184,18 @@ export async function rejectAccessRequestAction(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to reject the request" };
+  }
+}
+
+export async function bulkAccessRequestsAction(
+  ids: string[],
+  action: "reject" | "delete"
+): Promise<{ done: number; skipped: number } | { error: string }> {
+  try {
+    return await bulkDecideAccessRequests(ids, action);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to update the requests" };
   }
 }
 

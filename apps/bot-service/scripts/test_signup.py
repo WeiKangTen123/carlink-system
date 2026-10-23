@@ -301,6 +301,25 @@ def main() -> int:
     assert count(AuditEntry, action="password_reset_by_link") == 1
     ok("a reset link sets a new password, signs out old sessions, and the old password stops working")
 
+    print("bulk decisions")
+    spam_ip = fresh_ip()
+    for i in range(4):
+        assert anon.post("/auth/access-requests", json=request_body(email=f"spam{i}@example.com"), headers=spam_ip).status_code == 202
+    spam = [p for p in admin.get("/access-requests").json() if p["email"].startswith("spam")]
+    assert len(spam) == 4 and spam[0]["network"] and len({p["network"] for p in spam}) == 1
+    assert "ip" not in spam[0]
+    assert surveyor.post("/access-requests/bulk", json={"ids": [spam[0]["id"]], "action": "reject"}).status_code == 403
+    assert admin.post("/access-requests/bulk", json={"ids": [], "action": "reject"}).status_code == 422
+    decided = next(p for p in admin.get("/access-requests?status=all").json() if p["status"] != "pending")
+    r = admin.post("/access-requests/bulk", json={"ids": [s["id"] for s in spam[:2]] + [decided["id"], "no-such-id"], "action": "reject", "note": "spam"})
+    assert r.json() == {"done": 2, "skipped": 2}, r.text
+    r = admin.post("/access-requests/bulk", json={"ids": [s["id"] for s in spam], "action": "delete"})
+    assert r.json() == {"done": 4, "skipped": 0}, r.text
+    assert not [p for p in admin.get("/access-requests?status=all").json() if p["email"].startswith("spam")]
+    assert count(AuditEntry, action="access_requests_rejected") == 1 and count(AuditEntry, action="access_requests_deleted") == 1
+    assert admin.get("/auth/me").json()["pending_access_limit"] == 200
+    ok("bulk reject (pending only) and bulk delete, one history entry each; requests from one network share a tag, not the IP")
+
     print("cleanup")
     removed = sweep_signups(SessionLocal(), utc_now() + timedelta(days=61))
     assert removed["links"] >= 5 and removed["requests"] >= 5, removed

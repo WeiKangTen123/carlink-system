@@ -176,6 +176,8 @@ export type CurrentUser = {
   /** Requests from the public /signup page waiting for a decision. Sent
    * to admins only (GET /auth/me); drives the badge on Settings. */
   pending_access_requests?: number;
+  /** How many may wait before new requests are refused (admins only). */
+  pending_access_limit?: number;
 };
 
 export type UserAccount = CurrentUser & {
@@ -289,6 +291,9 @@ export type AccessRequestRow = {
   same_email_pending: number;
   /** Other requests from the same IP address in the last 24 hours. */
   same_ip_24h: number;
+  /** Same value for every request from one network; not the address
+   * itself. "" when the network wasn't recorded. */
+  network: string;
 };
 
 export type AccountLinkRow = {
@@ -339,6 +344,24 @@ export async function rejectAccessRequest(id: string, note: string): Promise<Acc
     body: JSON.stringify(note ? { note } : {}),
   });
   if (!res.ok) throw new Error(await errorDetail(res, "Failed to reject the request"));
+  return res.json();
+}
+
+/** Rejects (pending ones only) or erases many requests at once, e.g. a
+ * spam flood. Returns how many were changed and how many were skipped. */
+export async function bulkDecideAccessRequests(
+  ids: string[],
+  action: "reject" | "delete",
+  note = ""
+): Promise<{ done: number; skipped: number }> {
+  const res = await apiFetch(`${API_BASE_URL}/access-requests/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, action, note }),
+  });
+  if (!res.ok) {
+    throw new Error(await errorDetail(res, action === "reject" ? "Failed to reject the requests" : "Failed to delete the requests"));
+  }
   return res.json();
 }
 

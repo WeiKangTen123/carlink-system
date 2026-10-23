@@ -44,6 +44,7 @@ from app.auth.core import (
     user_dict,
 )
 from app.auth.deps import current_user, require_admin
+from app.auth.links import MAX_PENDING_REQUESTS
 from app.auth.passwords import (
     MAX_PASSWORD_LENGTH,
     burn_time,
@@ -229,6 +230,8 @@ def me(user: CurrentUser = Depends(current_user)) -> dict:
         db = SessionLocal()
         try:
             data["pending_access_requests"] = db.query(AccessRequest).filter(AccessRequest.status == "pending").count()
+            # So Settings can warn before new requests start being refused.
+            data["pending_access_limit"] = MAX_PENDING_REQUESTS
         finally:
             db.close()
     return data

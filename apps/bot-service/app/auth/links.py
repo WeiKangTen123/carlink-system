@@ -16,6 +16,11 @@ from sqlalchemy.orm import Session
 from app.auth.core import as_utc, token_hash, utc_now
 from app.reports.models import AccessRequest, AccountLink, User, iso_utc
 
+# Requests waiting for a decision. Beyond this, new ones are refused, so a
+# flood from many networks can't fill the database; admins clear it with
+# the bulk reject/delete in Settings.
+MAX_PENDING_REQUESTS = 200
+
 # Choices offered to the admin, in hours (1, 3 and 7 days).
 EXPIRY_CHOICES = (24, 72, 168)
 DEFAULT_INVITE_HOURS = 72
