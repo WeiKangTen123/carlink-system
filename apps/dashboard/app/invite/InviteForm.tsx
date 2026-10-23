@@ -306,10 +306,14 @@ function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string;
             {longEnough ? <Check aria-hidden /> : <Circle aria-hidden />}
             {MIN_PASSWORD_LENGTH} or more characters
           </li>
-          <li className={guessable ? "bad" : ""}>
-            {guessable ? <X aria-hidden /> : <Circle aria-hidden />}
-            Not a common or easily guessed password
-          </li>
+          {/* Only when the server refused one: the common-password check is
+              off unless STRICT_PASSWORD_RULES is set (passwords.py). */}
+          {guessable && (
+            <li className="bad">
+              <X aria-hidden />
+              Not a common or easily guessed password
+            </li>
+          )}
         </ul>
         <span className="field-hint">Tip: 3 or 4 random words are easy to remember.</span>
       </div>

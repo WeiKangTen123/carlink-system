@@ -15,6 +15,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
+from app.config import settings
+
 # OWASP's 32 MiB scrypt setting (N=2^15, r=8, p=3): ~0.1-0.2s per check.
 _N, _R, _P = 2**15, 8, 3
 _MAXMEM = 64 * 1024 * 1024
@@ -40,10 +42,18 @@ def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> b
         _SLOTS.release()
 
 
-# NIST SP 800-63B-4: 15 characters when the password is the only factor, no
-# composition rules, and a check against common and predictable passwords.
-# Applies to new passwords only; existing ones keep working.
-MIN_PASSWORD_LENGTH = 15
+# The basic rule the login system shipped with. On 2026-10-23 the owner chose
+# to keep it while the system settles, rather than the stricter rules below.
+MIN_PASSWORD_LENGTH = 10
+# NIST SP 800-63B-4: 15 characters when the password is the only factor, plus
+# checks against common, predictable and personal passwords. Switched on with
+# STRICT_PASSWORD_RULES=true (config.strict_password_rules). Either way the
+# rules apply to new passwords only; existing ones keep working.
+STRICT_MIN_PASSWORD_LENGTH = 15
+
+
+def min_password_length() -> int:
+    return STRICT_MIN_PASSWORD_LENGTH if settings.strict_password_rules else MIN_PASSWORD_LENGTH
 # scrypt copes with any length; this only stops a request making the server
 # hash megabytes.
 MAX_PASSWORD_LENGTH = 256
@@ -151,8 +161,10 @@ def password_problem(password: str, personal: Iterable[str] = ()) -> str | None:
         return f"Use at most {MAX_PASSWORD_LENGTH} characters."
     if not password.strip():
         return "The password can't be only spaces."
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return f"Use at least {MIN_PASSWORD_LENGTH} characters."
+    if len(password) < min_password_length():
+        return f"Use at least {min_password_length()} characters."
+    if not settings.strict_password_rules:
+        return None
     if _is_predictable(password):
         return TOO_COMMON
     # What's left once the personal words are taken out must still be long

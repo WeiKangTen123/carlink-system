@@ -81,6 +81,13 @@ def main() -> int:
     init_db()  # a second start-up on an existing database is harmless
 
     print("password rules")
+    from app.config import settings
+    assert settings.strict_password_rules is False
+    assert password_problem("weikang12") == "Use at least 10 characters."
+    assert password_problem("weikang123") is None and password_problem("passwordpassword") is None
+    ok("by default: at least 10 characters, no other checks (the owner's choice for now)")
+    # The rest of this test runs with the strict rules on.
+    settings.strict_password_rules = True
     assert password_problem("short-password") == "Use at least 15 characters."
     for weak in ("passwordpassword", "passwordpassword1", "!!iloveyouiloveyou2026", "Password12345678!", "123456789012345678", "qwertyuiopasdfgh", "correct horse battery staple"):
         assert password_problem(weak) == TOO_COMMON, weak
