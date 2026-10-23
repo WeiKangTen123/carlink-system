@@ -1,5 +1,4 @@
 import type { ReportSummary } from "./api";
-import { FACTORY_LABOR_TARIFFS } from "./factoryPricing";
 
 /** Shared derivations over report/damage data.
  *
@@ -326,9 +325,16 @@ export function getGiaSla(createdAt: string, isSignedOff: boolean): {
   };
 }
 
+/** INDICATIVE rates for getEstimatedCostSGD's rough "Est." figure only --
+ * round planning numbers, not a published tariff, and never shown as one.
+ * They used to live in lib/factoryPricing.ts beside a made-up price list
+ * (removed; the Knowledge page now shows prices from past reports). */
+const INDICATIVE_BODY_LABOUR_PER_HOUR = 95.0;
+const INDICATIVE_SPRAY_BOOTH_PER_PANEL = 250.0;
+
 /** An INDICATIVE repair cost in SGD: the recorded estimate when there is
  * one, otherwise a rough figure from the number of damaged parts, severity
- * and the factory labour tariffs. It is a planning estimate, not an
+ * and the indicative labour rates above. It is a planning estimate, not an
  * assessment -- wherever it is displayed it must be labelled "Est." (it used
  * to appear as "Assessed" totals). Returns 0 when no damage is recorded. */
 export function getEstimatedCostSGD(r: {
@@ -349,15 +355,15 @@ export function getEstimatedCostSGD(r: {
   const count = r.damage_count || 1;
   const sev = (r.severity_level || "").toLowerCase();
   
-  // Factory standard parts rate & labor schedules (derived from Knowledge Base master tariffs)
+  // Indicative part cost and labour hours by severity (rough planning figures)
   const basePartCost = sev.includes("severe") ? 1020 : sev.includes("moderate") ? 680 : 420;
   const netPartCost = basePartCost * 0.8; // 20% GIA tariff discount
   const rrLaborHours = sev.includes("severe") ? 1.8 : sev.includes("moderate") ? 1.2 : 0.6;
-  const laborCost = rrLaborHours * FACTORY_LABOR_TARIFFS.bodyLaborRateHourly;
+  const laborCost = rrLaborHours * INDICATIVE_BODY_LABOUR_PER_HOUR;
   const sprayCost = 180; // Standard single component paint allocation
 
   const totalPerComponent = netPartCost + laborCost + sprayCost;
-  const factoryBasePrep = FACTORY_LABOR_TARIFFS.sprayBoothPerPanel; // Base booth oven cycle
+  const factoryBasePrep = INDICATIVE_SPRAY_BOOTH_PER_PANEL; // Base booth oven cycle
   const computed = Math.round(count * totalPerComponent + factoryBasePrep);
 
   return computed;

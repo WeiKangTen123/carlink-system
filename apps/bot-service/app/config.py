@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     # nginx, infra/host-nginx/); browsers also accept it on http://localhost.
     # Set false only for plain-HTTP access from another machine.
     auth_cookie_secure: bool = True
+    # New passwords: off = at least 10 characters (the owner's choice for
+    # now); on = at least 15 plus the common/predictable/personal checks in
+    # app/auth/passwords.py. The dashboard's hints say 10 -- update
+    # MIN_PASSWORD_LENGTH in apps/dashboard/lib/signup.ts when switching.
+    strict_password_rules: bool = False
 
 
 settings = Settings()

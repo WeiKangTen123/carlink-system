@@ -6,9 +6,11 @@ import type { UserRole } from "./api";
 
 export const ROLE_LABEL: Record<UserRole, string> = { surveyor: "Surveyor", admin: "Admin" };
 
-/** Same rule as MIN_PASSWORD_LENGTH in apps/bot-service/app/auth/passwords.py.
- * The common-password and personal-word checks only run on the server. */
-export const MIN_PASSWORD_LENGTH = 15;
+/** Same rule as MIN_PASSWORD_LENGTH in apps/bot-service/app/auth/passwords.py
+ * (10; 15 when the server runs with STRICT_PASSWORD_RULES=true -- change it
+ * here too then). The common-password and personal-word checks, when on,
+ * only run on the server. */
+export const MIN_PASSWORD_LENGTH = 10;
 
 /** Characters as the server counts them (Python's len), so an emoji counts
  * once rather than as two UTF-16 halves. */

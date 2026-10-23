@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, JSON, String
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -298,3 +298,34 @@ class AccountLink(Base):
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     used_by_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PastAnnexLine(Base):
+    """One Annex A line from a past report spreadsheet (app/parts/history.py)
+    -- the firm's own record of what was replaced with what, and what it
+    was adjusted to. Re-importing a report replaces its lines."""
+    __tablename__ = "past_annex_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    source_file: Mapped[str] = mapped_column(String, default="")
+    plate: Mapped[str] = mapped_column(String, default="")
+    make: Mapped[str] = mapped_column(String, default="", index=True)
+    model: Mapped[str] = mapped_column(String, default="", index=True)
+    make_model_raw: Mapped[str] = mapped_column(String, default="")
+    registered: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ISO date
+    surveyed: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ISO date
+    line_no: Mapped[int] = mapped_column(Integer, default=0)
+    section: Mapped[str] = mapped_column(String, default="list")  # list | nett
+    item: Mapped[str] = mapped_column(String)
+    # Wording-level key ("tail lamp" for "Tail lamp LH") and the canonical
+    # part family the line belongs to ("Tail Lamp"), or None.
+    item_key: Mapped[str] = mapped_column(String, index=True)
+    family: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    condition: Mapped[str] = mapped_column(String, default="")
+    qty: Mapped[float] = mapped_column(Float, default=1.0)
+    workshop_est: Mapped[float] = mapped_column(Float, default=0.0)
+    discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    adjusted_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

@@ -3693,6 +3693,131 @@ a:hover {
   border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
+/* Annex A: "Suggested lines" from past reports (AnnexSuggestionsPanel) */
+.annex-suggest-panel {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card);
+  margin-bottom: 14px;
+}
+
+.annex-suggest-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.annex-suggest-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.annex-suggest-line:hover {
+  background: var(--surface-hover);
+}
+
+.annex-suggest-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  vertical-align: 1px;
+}
+
+.annex-suggest-gap {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+}
+
+.annex-suggest-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Annex A table cells while editing */
+.annex-cell-input {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.annex-cell-input:focus {
+  outline: none;
+  border-color: var(--border-glow);
+}
+.annex-cell-input[aria-invalid="true"] {
+  border-color: var(--badge-red-border);
+}
+
+.annex-row-remove {
+  display: inline-flex;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+}
+.annex-row-remove:hover:not(:disabled) {
+  color: var(--badge-red-text);
+  background: var(--badge-red-bg);
+}
+.annex-row-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Knowledge page: per-file results of "Import past reports" */
+.parts-import-results {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-hover);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+/* Disabled buttons in the Annex A editor and on the parts price history
+   look disabled (as in the intake wizard). */
+.annex-edit-bar :is(.btn-primary-modern, .btn-secondary-modern):disabled,
+.annex-suggest-panel :is(.btn-primary-modern, .btn-secondary-modern):disabled,
+.parts-history-tab :is(.btn-primary-modern, .btn-secondary-modern):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 /* Tier 3: Settlement Waterfall */
 .waterfall-card {
   background: var(--surface-card);

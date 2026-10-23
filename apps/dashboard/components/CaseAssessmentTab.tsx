@@ -1,7 +1,12 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
+  Plus,
+  Trash2,
+  Save,
+  RotateCcw,
   Wrench,
   DollarSign,
   ShieldCheck,
@@ -31,9 +36,100 @@ import {
   type SignOffRequest,
   pdfDownloadUrl,
 } from "@/lib/api";
-import { signOffReportAction } from "@/app/reports/actions";
+import { saveAnnexAAction, signOffReportAction } from "@/app/reports/actions";
 import { useCurrentUser } from "@/components/CurrentUser";
 import { CaseAnalysisPanel } from "./CaseAnalysisPanel";
+import { sameLineKey } from "@/lib/pastReports";
+import { AnnexSuggestionsPanel } from "./AnnexSuggestionsPanel";
+
+/** An Annex A row while it is being edited: the item, a stable key for
+ * React, and qty / estimate as typed (so "0." or "12.5" survive typing). */
+type AnnexRow = AnnexAPartItem & { _key: string; _qty: string; _est: string };
+
+let annexRowSeq = 0;
+
+function toAnnexRow(item: AnnexAPartItem): AnnexRow {
+  annexRowSeq += 1;
+  return {
+    ...item,
+    _key: `annex-row-${annexRowSeq}`,
+    _qty: item.qty ? String(item.qty) : "",
+    _est: item.workshop_est ? String(item.workshop_est) : "",
+  };
+}
+
+/** The same sum the API does on save (PUT /reports/{id}/annex-a): qty x
+ * estimate x (1 - discount), no discount on nett lines, 0 with no estimate. */
+function annexAdjustedCost(it: Pick<AnnexAPartItem, "qty" | "workshop_est" | "discount_pct" | "is_net_item">): number {
+  const est = it.workshop_est || 0;
+  if (!est) return 0;
+  const discount = it.is_net_item ? 0 : it.discount_pct || 0;
+  return Math.round((it.qty || 1) * est * (1 - discount) * 100) / 100;
+}
+
+/** The row as saved: editing-only fields dropped, a blank qty read as 1
+ * (as the API does). */
+function fromAnnexRow(row: AnnexRow): AnnexAPartItem {
+  const { _key, _qty, _est, ...item } = row;
+  const qty = item.qty > 0 ? item.qty : 1;
+  return { ...item, qty, adjusted_cost: annexAdjustedCost({ ...item, qty }) };
+}
+
+/** What a save would change -- to tell whether anything is unsaved. */
+function annexSignature(items: AnnexAPartItem[]): string {
+  return JSON.stringify(
+    items.map((it) => [
+      (it.part_name || "").trim(),
+      (it.condition || "").trim(),
+      it.action || "",
+      it.qty > 0 ? it.qty : 1,
+      it.workshop_est || 0,
+      it.is_net_item ? 0 : it.discount_pct,
+      Boolean(it.is_net_item),
+      it.oem_part_number || null,
+      it.suggested_from || null,
+      it.usual_unit_price ?? null,
+    ])
+  );
+}
+
+/** "1,250.50", "S$80" or "12" as typed; anything else counts as 0. */
+function parseAmount(text: string): number {
+  const n = parseFloat(text.replace(/[,\s]/g, "").replace(/^s?\$/i, ""));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function isBadAmount(text: string): boolean {
+  const t = text.replace(/[,\s]/g, "").replace(/^s?\$/i, "");
+  return t !== "" && !(Number.isFinite(Number(t)) && Number(t) >= 0);
+}
+
+const BLANK_ANNEX_LINE: AnnexAPartItem = {
+  item_no: "",
+  part_name: "",
+  condition: "",
+  action: "Replace",
+  qty: 1,
+  workshop_est: 0,
+  discount_pct: 0.2,
+  adjusted_cost: 0,
+  is_net_item: false,
+  oem_part_number: null,
+};
+
+const ACTION_OPTIONS = ["Replace", "Repair", "Straighten", "Disallow"];
+
+const DISCOUNT_OPTIONS: [number, string][] = [
+  [0.0, "0% (Nett)"],
+  [0.1, "10%"],
+  [0.15, "15%"],
+  [0.2, "20% (GIA)"],
+  [0.3, "30%"],
+  [1.0, "100% (Disallow)"],
+];
+
+/** Conditions surveyors write most; any other wording can be typed. */
+const CONDITION_SUGGESTIONS = ["Deformed/cut", "Grazed/cracked", "Necessary", "Serviceable"];
 
 export function CaseAssessmentTab({
   report,
@@ -52,18 +148,33 @@ export function CaseAssessmentTab({
   type SubTab = "annexA" | "annexB" | "annexC" | "bola";
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("annexA");
 
-  // Annex A: Spare Parts Items State. The recorded rows only -- with none,
-  // this used to invent a row per damaged part (S$850 workshop estimate, 20%
-  // off to S$680, condition "Deformed/cut", OEM no. "71501-T7A-n00") that
-  // fed every total on this tab.
-  //
-  // Edits to Annex A rows on this tab (action / discount; Annex B has no
-  // edit controls) are LOCAL ONLY: SignOffRequest carries no line items and
-  // nothing else saves them, so they are a working preview that is lost on
-  // reload. The UI says so.
+  // Annex A: the case's spare parts table, edited here and saved with "Save
+  // Annex A" (PUT /reports/{id}/annex-a). The recorded rows only -- with
+  // none, this used to invent a row per damaged part (S$850 workshop
+  // estimate, 20% off to S$680, condition "Deformed/cut", OEM no.
+  // "71501-T7A-n00") that fed every total on this tab.
+  const router = useRouter();
   const initialAnnexA: AnnexAPartItem[] = d.annex_a?.items || [];
 
-  const [annexAItems, setAnnexAItems] = useState<AnnexAPartItem[]>(initialAnnexA);
+  // The table as last loaded or saved: what "Discard changes" goes back to,
+  // and what tells whether anything is unsaved.
+  const [annexABaseline, setAnnexABaseline] = useState<AnnexAPartItem[]>(initialAnnexA);
+  const [annexAItems, setAnnexAItems] = useState<AnnexRow[]>(() => initialAnnexA.map(toAnnexRow));
+  const [annexASave, setAnnexASave] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [annexASaveError, setAnnexASaveError] = useState<string | null>(null);
+  const annexADirty = !isSignedOff && annexSignature(annexAItems.map(fromAnnexRow)) !== annexSignature(annexABaseline);
+  const annexALocked = isSignedOff || annexASave === "saving";
+
+  // Leaving the page (reload, another URL) with unsaved Annex A changes asks first.
+  useEffect(() => {
+    if (!annexADirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [annexADirty]);
 
   // Annex B: Labour Items State. Recorded rows only (with none, this used to
   // fall back to nine labour lines copied from the SLK case).
@@ -77,9 +188,12 @@ export function CaseAssessmentTab({
   const [contractLumpSum, setContractLumpSum] = useState<number | null>(d.annex_c?.agreed_lump_sum ?? null);
   const [repairTurnaroundDays, setRepairTurnaroundDays] = useState<number | null>(d.annex_c?.repair_days ?? null);
 
-  // Financial Calculations
+  // Financial Calculations. A row's adjusted cost is worked out live while
+  // the table can be edited (the API's own sum, so it matches what saving
+  // stores); once signed off it is the recorded figure.
+  const rowAdjusted = (it: AnnexAPartItem) => (isSignedOff ? it.adjusted_cost : annexAdjustedCost(it));
   const totalPartsClaimed = annexAItems.reduce((acc, it) => acc + (it.workshop_est * (it.qty || 1)), 0);
-  const totalPartsAdjusted = annexAItems.reduce((acc, it) => acc + it.adjusted_cost, 0);
+  const totalPartsAdjusted = annexAItems.reduce((acc, it) => acc + rowAdjusted(it), 0);
 
   const totalLabourClaimed = annexBItems.reduce((acc, it) => acc + it.workshop_est, 0);
   const totalLabourAdjusted = annexBItems.reduce((acc, it) => acc + it.adjusted_cost, 0);
@@ -111,49 +225,91 @@ export function CaseAssessmentTab({
   const insuredPct = bola?.insured_liability_pct ?? null;
   const tpPct = bola?.third_party_liability_pct ?? null;
 
-  // Handlers for Annex A Editing
+  // Handlers for Annex A Editing. Every change goes into annexAItems and
+  // nothing is saved until "Save Annex A"; adjusted costs follow from the
+  // row (annexAdjustedCost), so the handlers only set what was changed.
+  const updateAnnexRow = (index: number, patch: Partial<AnnexRow>) => {
+    if (annexALocked) return;
+    setAnnexAItems((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+
   const handlePartDiscountChange = (index: number, newDiscount: number) => {
-    if (isSignedOff) return;
-    setAnnexAItems((prev) => {
-      const copy = [...prev];
-      const item = { ...copy[index] };
-      item.discount_pct = newDiscount;
-      item.adjusted_cost = Math.round(item.qty * item.workshop_est * (1.0 - newDiscount) * 100) / 100;
-      copy[index] = item;
-      return copy;
-    });
+    updateAnnexRow(index, { discount_pct: newDiscount });
   };
 
   const handlePartActionChange = (index: number, newAction: string) => {
-    if (isSignedOff) return;
-    setAnnexAItems((prev) => {
-      const copy = [...prev];
-      const item = { ...copy[index] };
-      item.action = newAction;
-      if (newAction === "Disallow") {
-        item.discount_pct = 1.0;
-        item.adjusted_cost = 0.0;
-      } else if (item.discount_pct === 1.0) {
-        item.discount_pct = 0.20;
-        item.adjusted_cost = Math.round(item.qty * item.workshop_est * 0.80 * 100) / 100;
-      }
-      copy[index] = item;
-      return copy;
-    });
+    if (annexALocked) return;
+    setAnnexAItems((prev) =>
+      prev.map((row, i) => {
+        if (i !== index) return row;
+        const item = { ...row, action: newAction };
+        if (newAction === "Disallow") {
+          // Not nett as well: a nett line takes no discount, so it would
+          // still be paid in full.
+          item.discount_pct = 1.0;
+          item.is_net_item = false;
+        } else if (item.discount_pct === 1.0) {
+          item.discount_pct = 0.20;
+        }
+        return item;
+      })
+    );
   };
 
   const handleApplyTradeDiscountToAll = () => {
-    if (isSignedOff) return;
+    if (annexALocked) return;
     setAnnexAItems((prev) =>
-      prev.map((it) => {
-        if (it.is_net_item || it.action === "Disallow") return it;
-        return {
-          ...it,
-          discount_pct: 0.20,
-          adjusted_cost: Math.round(it.qty * it.workshop_est * 0.80 * 100) / 100,
-        };
-      })
+      prev.map((it) => (it.is_net_item || it.action === "Disallow" ? it : { ...it, discount_pct: 0.20 }))
     );
+  };
+
+  const handleNetChange = (index: number, isNet: boolean) => {
+    updateAnnexRow(index, isNet ? { is_net_item: true, discount_pct: 0 } : { is_net_item: false, discount_pct: 0.20 });
+  };
+
+  const handleAddAnnexLine = () => {
+    if (annexALocked) return;
+    setAnnexAItems((prev) => [...prev, toAnnexRow(BLANK_ANNEX_LINE)]);
+  };
+
+  const handleRemoveAnnexLine = (index: number) => {
+    if (annexALocked) return;
+    setAnnexAItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // From the "Suggested lines" panel: appended, not saved.
+  const handleAddSuggestedLines = (items: AnnexAPartItem[]) => {
+    if (annexALocked) return;
+    setAnnexAItems((prev) => {
+      const have = new Set(prev.map((r) => sameLineKey(r.part_name)));
+      return [...prev, ...items.filter((it) => !have.has(sameLineKey(it.part_name))).map(toAnnexRow)];
+    });
+  };
+
+  const handleDiscardAnnexA = () => {
+    if (annexALocked || !confirm("Discard your unsaved changes to Annex A?")) return;
+    setAnnexAItems(annexABaseline.map(toAnnexRow));
+    setAnnexASave("idle");
+    setAnnexASaveError(null);
+  };
+
+  const handleSaveAnnexA = async () => {
+    if (annexALocked) return;
+    setAnnexASave("saving");
+    setAnnexASaveError(null);
+    const res = await saveAnnexAAction(report.id, annexAItems.map(fromAnnexRow));
+    if ("error" in res) {
+      setAnnexASave("error");
+      setAnnexASaveError(res.error);
+      return;
+    }
+    // The API's answer replaces the table: its numbering, adjusted costs,
+    // and without the lines that had no part description.
+    const saved = res.annex_a?.items || [];
+    setAnnexABaseline(saved);
+    setAnnexAItems(saved.map(toAnnexRow));
+    setAnnexASave("saved");
+    router.refresh();
   };
 
   // Sign-Off & Endorsement State. Who signs is the signed-in user, with
@@ -234,6 +390,11 @@ export function CaseAssessmentTab({
   const handleSignOffSubmit = async () => {
     if (!allDeclared) {
       alert("Please confirm all 4 statutory declarations before signing off.");
+      return;
+    }
+    // Sign-off locks the case with Annex A as saved; unsaved rows would be lost.
+    if (annexADirty || annexASave === "saving") {
+      setSignOffError("Save or discard your Annex A changes before signing off.");
       return;
     }
 
@@ -376,6 +537,7 @@ export function CaseAssessmentTab({
               type="button"
               className="btn-secondary-modern"
               style={{ fontSize: 11, padding: "5px 12px" }}
+              disabled={annexALocked}
               onClick={handleApplyTradeDiscountToAll}
             >
               <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> Apply Standard 20% Trade Discount
@@ -383,60 +545,78 @@ export function CaseAssessmentTab({
           )}
         </div>
 
-        {/* SUB-TAB 1: ANNEX A (SPARE PARTS LEDGER) */}
-        {activeSubTab === "annexA" && (
-          <div style={{ padding: 20 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-              <div>
-                <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Annex A : Assessment / Adjustment on Spare Parts</h4>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                  Standard GIA 20% trade discount applied to List Items. Serviceable components 100% disallowed.
+        {/* SUB-TAB 1: ANNEX A (SPARE PARTS LEDGER). Kept mounted while another
+            sub-tab is shown, so the suggested lines already fetched (and any
+            asked of the AI) are still there on coming back. */}
+        <div style={{ padding: 20, display: activeSubTab === "annexA" ? undefined : "none" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Annex A : Assessment / Adjustment on Spare Parts</h4>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                Standard GIA 20% trade discount applied to List Items. Serviceable components 100% disallowed.
+              </div>
+              {isSignedOff && (
+                <div style={{ fontSize: 11, color: "var(--badge-amber-text)", marginTop: 2 }}>
+                  Signed off — reopen the case to change Annex A.
                 </div>
-                {!isSignedOff && (
-                  <div style={{ fontSize: 11, color: "var(--badge-amber-text)", marginTop: 2 }}>
-                    Changes made here are a working preview only and are not saved.
-                  </div>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <span className="chip-severity minor" style={{ fontSize: 11 }}>
-                  List Items: {annexAItems.filter((i) => !i.is_net_item).length}
-                </span>
-                <span className="chip-severity minor" style={{ fontSize: 11 }}>
-                  S/Nett Items: {annexAItems.filter((i) => i.is_net_item).length}
-                </span>
-              </div>
+              )}
             </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span className="chip-severity minor" style={{ fontSize: 11 }}>
+                List Items: {annexAItems.filter((i) => !i.is_net_item).length}
+              </span>
+              <span className="chip-severity minor" style={{ fontSize: 11 }}>
+                S/Nett Items: {annexAItems.filter((i) => i.is_net_item).length}
+              </span>
+            </div>
+          </div>
 
-            <div className="annex-table-wrapper">
-              <table className="annex-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 45 }}>Item</th>
-                    <th>Vehicle Parts Description</th>
-                    <th>Condition</th>
-                    <th>Action</th>
-                    <th style={{ textAlign: "center", width: 50 }}>Qty</th>
-                    <th style={{ textAlign: "right", width: 110 }}>W/Shop Est. ($)</th>
-                    <th style={{ textAlign: "center", width: 90 }}>Disc (%)</th>
-                    <th style={{ textAlign: "right", width: 110 }}>Adjusted ($)</th>
-                    <th>OEM Part #</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {annexAItems.length === 0 && (
-                    <tr>
-                      <td colSpan={9} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
-                        No parts recorded yet
-                      </td>
-                    </tr>
+          {!isSignedOff && (
+            <AnnexSuggestionsPanel
+              reportId={report.id}
+              existingNames={annexAItems.map((r) => r.part_name)}
+              onAdd={handleAddSuggestedLines}
+            />
+          )}
+
+          <div className="annex-table-wrapper">
+            <table className="annex-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 45 }}>Item</th>
+                  <th>Vehicle Parts Description</th>
+                  <th>Condition</th>
+                  <th>Action</th>
+                  <th style={{ textAlign: "center", width: 60 }}>Qty</th>
+                  <th style={{ textAlign: "right", width: 110 }}>{isSignedOff ? "W/Shop Est. ($)" : "W/Shop Est. / Unit ($)"}</th>
+                  <th style={{ textAlign: "center", width: 90 }}>Disc (%)</th>
+                  {!isSignedOff && (
+                    <th style={{ textAlign: "center", width: 50 }} title="Nett items (clips, sealants, plate) take no discount">
+                      Nett
+                    </th>
                   )}
-                  {annexAItems.map((item, idx) => {
-                    const isDisallowed = item.action === "Disallow" || item.discount_pct >= 0.99;
-                    // Placeholder rows carry 0 until a surveyor prices them.
-                    const isUnpriced = !item.workshop_est;
+                  <th style={{ textAlign: "right", width: 110 }}>Adjusted ($)</th>
+                  <th>OEM Part #</th>
+                  {!isSignedOff && <th style={{ width: 36 }} aria-label="Remove line" />}
+                </tr>
+              </thead>
+              <tbody>
+                {annexAItems.length === 0 && (
+                  <tr>
+                    <td colSpan={isSignedOff ? 9 : 11} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
+                      {isSignedOff ? "No parts recorded yet" : "No parts recorded yet. Add suggested lines above, or add a line below."}
+                    </td>
+                  </tr>
+                )}
+                {annexAItems.map((item, idx) => {
+                  const isDisallowed = item.action === "Disallow" || item.discount_pct >= 0.99;
+                  // Placeholder rows carry 0 until a surveyor prices them.
+                  const isUnpriced = !item.workshop_est;
+
+                  // Signed off: the table as recorded, read-only.
+                  if (isSignedOff) {
                     return (
-                      <tr key={idx} style={{ opacity: isDisallowed ? 0.65 : 1 }}>
+                      <tr key={item._key} style={{ opacity: isDisallowed ? 0.65 : 1 }}>
                         <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{item.item_no || `${idx + 1}.0`}</td>
                         <td style={{ fontWeight: 600 }}>{item.part_name}</td>
                         <td>
@@ -449,28 +629,12 @@ export function CaseAssessmentTab({
                           )}
                         </td>
                         <td>
-                          {isSignedOff ? (
+                          {item.action ? (
                             <span className={`annex-action-badge ${item.action === "Disallow" ? "disallow" : item.action === "Replace" ? "replace" : "repair"}`}>
                               {item.action}
                             </span>
                           ) : (
-                            <select
-                              value={item.action}
-                              onChange={(e) => handlePartActionChange(idx, e.target.value)}
-                              style={{
-                                background: "var(--surface-base)",
-                                color: "var(--text-primary)",
-                                border: "1px solid var(--border-color)",
-                                borderRadius: 4,
-                                padding: "2px 6px",
-                                fontSize: 11,
-                              }}
-                            >
-                              <option value="Replace">Replace</option>
-                              <option value="Repair">Repair</option>
-                              <option value="Straighten">Straighten</option>
-                              <option value="Disallow">Disallow</option>
-                            </select>
+                            "—"
                           )}
                         </td>
                         <td style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{item.qty || 1}</td>
@@ -480,28 +644,8 @@ export function CaseAssessmentTab({
                         <td style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>
                           {item.is_net_item ? (
                             <span style={{ color: "var(--text-muted)", fontSize: 10 }}>S/Nett (0%)</span>
-                          ) : isSignedOff ? (
-                            <span>{Math.round(item.discount_pct * 100)}%</span>
                           ) : (
-                            <select
-                              value={item.discount_pct}
-                              onChange={(e) => handlePartDiscountChange(idx, parseFloat(e.target.value))}
-                              style={{
-                                background: "var(--surface-base)",
-                                color: "var(--text-primary)",
-                                border: "1px solid var(--border-color)",
-                                borderRadius: 4,
-                                padding: "2px 4px",
-                                fontSize: 11,
-                              }}
-                            >
-                              <option value={0.0}>0% (Nett)</option>
-                              <option value={0.10}>10%</option>
-                              <option value={0.15}>15%</option>
-                              <option value={0.20}>20% (GIA)</option>
-                              <option value={0.30}>30%</option>
-                              <option value={1.0}>100% (Disallow)</option>
-                            </select>
+                            <span>{Math.round(item.discount_pct * 100)}%</span>
                           )}
                         </td>
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: isDisallowed ? "var(--text-muted)" : "var(--accent-cyan)" }}>
@@ -512,29 +656,238 @@ export function CaseAssessmentTab({
                         </td>
                       </tr>
                     );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={5} style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                      Total For Spare Parts (Annex A)
-                    </td>
-                    <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-                      {hasPricedParts ? sgd(totalPartsClaimed) : "—"}
-                    </td>
-                    <td style={{ textAlign: "center", color: "#10b981", fontSize: 11 }}>
-                      {hasPricedParts ? `-${sgd(totalPartsClaimed - totalPartsAdjusted)}` : "—"}
-                    </td>
-                    <td style={{ textAlign: "right", color: "var(--accent-cyan)", fontSize: 13 }}>
-                      {hasPricedParts ? sgd(totalPartsAdjusted) : "—"}
-                    </td>
-                    <td></td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+                  }
+
+                  const line = `Line ${idx + 1}`;
+                  const knownDiscount = DISCOUNT_OPTIONS.some(([v]) => Math.abs(v - item.discount_pct) < 1e-9);
+                  return (
+                    <tr key={item._key} style={{ opacity: isDisallowed ? 0.65 : 1 }}>
+                      <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{`${idx + 1}.0`}</td>
+                      <td style={{ minWidth: 200 }}>
+                        <input
+                          type="text"
+                          className="annex-cell-input"
+                          style={{ fontWeight: 600 }}
+                          value={item.part_name}
+                          placeholder="Part description"
+                          aria-label={`${line}: part description`}
+                          disabled={annexALocked}
+                          onChange={(e) => updateAnnexRow(idx, { part_name: e.target.value })}
+                        />
+                        {item.suggested_from && (
+                          <div style={{ fontSize: 10, color: item.suggested_from === "AI suggestion" ? "var(--badge-amber-text)" : "var(--text-muted)", marginTop: 2 }}>
+                            {item.suggested_from === "AI suggestion" ? "AI suggestion — check it" : `From ${item.suggested_from}`}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ minWidth: 120 }}>
+                        <input
+                          type="text"
+                          className="annex-cell-input"
+                          list="annex-a-conditions"
+                          value={item.condition}
+                          placeholder="—"
+                          aria-label={`${line}: condition`}
+                          disabled={annexALocked}
+                          onChange={(e) => updateAnnexRow(idx, { condition: e.target.value })}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          value={item.action}
+                          onChange={(e) => handlePartActionChange(idx, e.target.value)}
+                          aria-label={`${line}: action`}
+                          disabled={annexALocked}
+                          style={{
+                            background: "var(--surface-base)",
+                            color: "var(--text-primary)",
+                            border: "1px solid var(--border-color)",
+                            borderRadius: 4,
+                            padding: "2px 6px",
+                            fontSize: 11,
+                          }}
+                        >
+                          {!item.action && <option value="">—</option>}
+                          {item.action && !ACTION_OPTIONS.includes(item.action) && <option value={item.action}>{item.action}</option>}
+                          {ACTION_OPTIONS.map((a) => (
+                            <option key={a} value={a}>{a}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="annex-cell-input"
+                          style={{ width: 52, textAlign: "center", fontFamily: "var(--font-mono)" }}
+                          value={item._qty}
+                          placeholder="1"
+                          aria-label={`${line}: quantity`}
+                          aria-invalid={isBadAmount(item._qty) ? true : undefined}
+                          disabled={annexALocked}
+                          onChange={(e) => updateAnnexRow(idx, { _qty: e.target.value, qty: parseAmount(e.target.value) })}
+                        />
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="annex-cell-input"
+                          style={{ width: 96, textAlign: "right", fontFamily: "var(--font-mono)" }}
+                          value={item._est}
+                          placeholder="0.00"
+                          aria-label={`${line}: workshop estimate per unit`}
+                          aria-invalid={isBadAmount(item._est) ? true : undefined}
+                          disabled={annexALocked}
+                          onChange={(e) => updateAnnexRow(idx, { _est: e.target.value, workshop_est: parseAmount(e.target.value) })}
+                        />
+                        {item.usual_unit_price != null && (
+                          <div
+                            title={`What past cases' lines were adjusted to per unit (median), from ${item.suggested_from || "past reports"}. A reference only: enter the workshop's own estimate.`}
+                            style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2, cursor: "help", whiteSpace: "nowrap" }}
+                          >
+                            usual {sgd(item.usual_unit_price)}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>
+                        {item.is_net_item ? (
+                          <span style={{ color: "var(--text-muted)", fontSize: 10 }}>S/Nett (0%)</span>
+                        ) : (
+                          <select
+                            value={item.discount_pct}
+                            onChange={(e) => handlePartDiscountChange(idx, parseFloat(e.target.value))}
+                            aria-label={`${line}: discount`}
+                            disabled={annexALocked}
+                            style={{
+                              background: "var(--surface-base)",
+                              color: "var(--text-primary)",
+                              border: "1px solid var(--border-color)",
+                              borderRadius: 4,
+                              padding: "2px 4px",
+                              fontSize: 11,
+                            }}
+                          >
+                            {!knownDiscount && <option value={item.discount_pct}>{Math.round(item.discount_pct * 100)}%</option>}
+                            {DISCOUNT_OPTIONS.map(([v, label]) => (
+                              <option key={v} value={v}>{label}</option>
+                            ))}
+                          </select>
+                        )}
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={item.is_net_item}
+                          aria-label={`${line}: nett item`}
+                          title={item.action === "Disallow" ? "A disallowed line can't be nett" : "Nett item: no discount"}
+                          disabled={annexALocked || item.action === "Disallow"}
+                          onChange={(e) => handleNetChange(idx, e.target.checked)}
+                        />
+                      </td>
+                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: isDisallowed ? "var(--text-muted)" : "var(--accent-cyan)" }}>
+                        {isUnpriced ? "—" : sgd(rowAdjusted(item))}
+                      </td>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)" }}>
+                        {item.oem_part_number || "—"}
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <button
+                          type="button"
+                          className="annex-row-remove"
+                          title="Remove this line"
+                          aria-label={`Remove line ${idx + 1}`}
+                          disabled={annexALocked}
+                          onClick={() => handleRemoveAnnexLine(idx)}
+                        >
+                          <Trash2 style={{ width: 13, height: 13 }} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={5} style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Total For Spare Parts (Annex A)
+                  </td>
+                  <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
+                    {hasPricedParts ? sgd(totalPartsClaimed) : "—"}
+                  </td>
+                  <td style={{ textAlign: "center", color: "#10b981", fontSize: 11 }}>
+                    {hasPricedParts ? `-${sgd(totalPartsClaimed - totalPartsAdjusted)}` : "—"}
+                  </td>
+                  {!isSignedOff && <td></td>}
+                  <td style={{ textAlign: "right", color: "var(--accent-cyan)", fontSize: 13 }}>
+                    {hasPricedParts ? sgd(totalPartsAdjusted) : "—"}
+                  </td>
+                  <td></td>
+                  {!isSignedOff && <td></td>}
+                </tr>
+              </tfoot>
+            </table>
           </div>
-        )}
+
+          {!isSignedOff && (
+            <div className="annex-edit-bar">
+              <datalist id="annex-a-conditions">
+                {CONDITION_SUGGESTIONS.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn-secondary-modern"
+                  style={{ fontSize: 11, padding: "6px 12px" }}
+                  disabled={annexALocked}
+                  onClick={handleAddAnnexLine}
+                >
+                  <Plus style={{ width: 13, height: 13 }} /> Add line
+                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  {annexASave !== "saving" && annexADirty && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "var(--badge-amber-text)" }}>Unsaved changes</span>
+                  )}
+                  {annexASave === "saved" && !annexADirty && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "var(--badge-green-text)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <CheckCircle2 style={{ width: 13, height: 13 }} /> Saved. The PDF picks it up on its next download.
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-secondary-modern"
+                    style={{ fontSize: 11, padding: "6px 12px" }}
+                    disabled={!annexADirty || annexALocked}
+                    onClick={handleDiscardAnnexA}
+                  >
+                    <RotateCcw style={{ width: 13, height: 13 }} /> Discard changes
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary-modern"
+                    style={{ fontSize: 11, padding: "6px 14px" }}
+                    disabled={!annexADirty || annexALocked}
+                    onClick={() => void handleSaveAnnexA()}
+                  >
+                    <Save style={{ width: 13, height: 13 }} /> {annexASave === "saving" ? "Saving…" : "Save Annex A"}
+                  </button>
+                </div>
+              </div>
+              {annexAItems.some((r) => !r.part_name.trim()) && (
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+                  Lines with no part description are left out when you save.
+                </div>
+              )}
+              {annexASave === "error" && annexASaveError && (
+                <div className="setup-error" style={{ marginTop: 10, marginBottom: 0 }}>
+                  {annexASaveError}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* SUB-TAB 2: ANNEX B (LABOUR & REFINISHING LEDGER) */}
         {activeSubTab === "annexB" && (
@@ -1093,7 +1446,7 @@ export function CaseAssessmentTab({
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             {isSignedOff
               ? "This case is locked. To modify line items, reopen the report from the edit tab."
-              : "Signing off records the lump sum, repair days and liability opinion entered above, embeds the digital seal into the PDF, and locks the case. Annex A edits on this tab are not saved."}
+              : "Signing off records the lump sum, repair days and liability opinion entered above, embeds the digital seal into the PDF, and locks the case with Annex A as last saved."}
           </div>
 
           {signOffError && (

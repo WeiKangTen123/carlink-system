@@ -40,6 +40,9 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const user = useCurrentUser();
 
   const [activeTab, setActiveTab] = useState<CaseTab>("inspection");
+  // Once opened, the Assessment tab stays mounted (hidden) while another tab
+  // is shown, so unsaved Annex A edits and its suggested lines survive.
+  const [assessmentOpened, setAssessmentOpened] = useState(false);
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
@@ -245,7 +248,10 @@ export function StudioApp({ report }: { report: ReportDetail }) {
               key={tab.id}
               type="button"
               className={`case-tab ${activeTab === tab.id ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id);
+                if (tab.id === "assessment") setAssessmentOpened(true);
+              }}
             >
               <Icon style={{ width: 15, height: 15 }} /> {tab.label}
             </button>
@@ -272,7 +278,11 @@ export function StudioApp({ report }: { report: ReportDetail }) {
         />
       )}
       {activeTab === "file" && <CaseFileTab report={report} />}
-      {activeTab === "assessment" && <CaseAssessmentTab report={report} damageEntries={damageEntries} />}
+      {(activeTab === "assessment" || assessmentOpened) && (
+        <div style={{ display: activeTab === "assessment" ? undefined : "none" }}>
+          <CaseAssessmentTab report={report} damageEntries={damageEntries} />
+        </div>
+      )}
 
       {/* Sign-Off Confirmation Modal */}
       {isSignOffModalOpen && (
