@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
 from app.api.auth import router as auth_router
+from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
 from app.api.intake import delete_intake_files, router as intake_router
 from app.auth.core import CurrentUser, audit, report_history
@@ -88,6 +89,7 @@ if settings.twilio_account_sid and settings.twilio_auth_token:
     app.include_router(whatsapp_router)
 app.include_router(auth_router)
 app.include_router(signup_router)
+app.include_router(parts_router)
 app.include_router(intake_router)
 
 

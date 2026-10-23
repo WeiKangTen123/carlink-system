@@ -164,6 +164,11 @@ class AnnexAPartItem(BaseModel):
     adjusted_cost: float = Field(default=0.0, description="Adjusted cost in SGD")
     is_net_item: bool = Field(default=False, description="True for net items (clips, sealants, plate) with 0% discount")
     oem_part_number: Optional[str] = Field(default=None, description="OEM part number")
+    # Set when the line was added from a suggestion (app/parts/history.py):
+    # where it came from, and what past cases paid per unit -- a reference
+    # for the surveyor, never the workshop's estimate. Not printed.
+    suggested_from: Optional[str] = None
+    usual_unit_price: Optional[float] = None
 
 
 class AnnexAInfo(BaseModel):
