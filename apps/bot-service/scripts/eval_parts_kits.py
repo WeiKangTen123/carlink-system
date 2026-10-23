@@ -72,8 +72,7 @@ def ai_lines(make: str, model: str, parts: list[str]) -> list[dict]:
 
     out = call_structured(
         purpose="annex suggestions eval", system_instruction=_AI_SYSTEM,
-        input_parts=[{"type": "text", "text": f"Vehicle: {make} {model}, Singapore.
-Damaged parts: {json.dumps(parts)}"}],
+        input_parts=[{"type": "text", "text": f"Vehicle: {make} {model}, Singapore.\nDamaged parts: {json.dumps(parts)}"}],
         schema=_AI_SCHEMA, parse=json.loads,
         models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"], timeout=60.0,
     )
