@@ -5403,3 +5403,888 @@ button.intake-tile:hover {
 .case-history-dot.reopened {
   background: var(--badge-amber-text);
 }
+
+/* ---- P3: review step ---- */
+/* components/intake/ReviewStep.tsx, PhotosByPart.tsx, PhotoPicker.tsx and
+   DamagePhotoViewer.tsx. The picker and viewer render into <body> (outside
+   .intake-shell), so their rules don't lean on the wizard's scoped styles. */
+
+/* Incident type heading, above the category checkboxes */
+.rv-subhead {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+/* Damage list: photo button, attach button, change/remove, flash */
+.rv-photo-btn {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  overflow: hidden;
+  background: none;
+  cursor: zoom-in;
+}
+
+.rv-photo-btn:focus-visible,
+.rv-attach-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.rv-attach-btn {
+  width: 100%;
+  background: none;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.rv-attach-btn:hover {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.rv-photo-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.rv-photo-actions .intake-link {
+  padding: 0;
+  font-size: 11px;
+}
+
+.intake-damage-item.rv-flash {
+  border-color: var(--accent-primary);
+  animation: rv-flash 2s ease-out;
+}
+
+@keyframes rv-flash {
+  0%,
+  70% {
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* Photos by part */
+.rv-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rv-parts-intro,
+.rv-parts-legend {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.rv-parts-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rv-part-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rv-part-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+}
+
+.rv-part-group.attention {
+  border-color: var(--badge-amber-border);
+}
+
+.rv-part-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rv-part-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.rv-part-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.btn-primary-modern.rv-small-btn,
+.btn-secondary-modern.rv-small-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.rv-part-thumbs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.rv-thumb {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-card);
+  cursor: zoom-in;
+}
+
+.rv-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.rv-thumb.read {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
+.rv-thumb:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.rv-thumb-label,
+.rv-tile-label {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+}
+
+.rv-thumb-label {
+  left: 3px;
+  bottom: 3px;
+  font-size: 9px;
+  padding: 0 4px;
+}
+
+.rv-thumb .rv-damage-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.rv-thumb-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.rv-thumb-more:hover {
+  border-color: var(--border-hover);
+}
+
+.rv-damage-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f43f5e;
+  box-shadow: 0 0 0 1.5px #ffffff;
+  flex-shrink: 0;
+}
+
+.rv-read-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 2px solid var(--accent-primary);
+  flex-shrink: 0;
+}
+
+/* Picker and viewer overlay */
+.rv-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  font-family: var(--font-sans);
+}
+
+/* Photo picker */
+.rv-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(980px, 100%);
+  max-height: 100%;
+  padding: 16px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.rv-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rv-picker-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.rv-picker-hint {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.rv-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rv-segmented button {
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.rv-segmented button + button {
+  border-left: 1px solid var(--border-color);
+}
+
+.rv-segmented button[aria-pressed="true"] {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.rv-segmented button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rv-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 3px;
+}
+
+.rv-pick {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-elevated);
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rv-pick:hover,
+.rv-pick:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.rv-pick.current {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.rv-pick-img {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  background: #000000;
+}
+
+.rv-pick-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.rv-pick-img.read {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
+.rv-pick.excluded .rv-pick-img img {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.rv-tile-label {
+  top: 4px;
+  left: 4px;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
+.rv-tile-flags {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 3px;
+}
+
+.rv-tile-flag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+}
+
+.rv-tile-flag.damage {
+  background: #be123c;
+}
+
+.rv-tile-flag.warn {
+  background: #b45309;
+}
+
+.rv-tile-flag.current {
+  background: var(--accent-primary);
+}
+
+.rv-pick-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: calc(2 * 1.35em + 12px);
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* Damage photo viewer */
+.rv-viewer-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  width: min(1200px, 100%);
+  max-height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.rv-viewer-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  padding: 12px;
+  overflow: hidden;
+  background: #000000;
+}
+
+/* Shrink-wraps the image so the 0-1000 box percentages line up with what is
+   shown. The image is capped in viewport units rather than %, which a
+   shrink-wrapped parent can't resolve; the caps mirror the body's width
+   (min(1200px, viewport - 48px)) less the 300px side panel, with slack for
+   padding and a scrollbar. */
+.rv-viewer-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.rv-viewer-frame img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: calc(min(1200px, 100vw - 48px) - 300px - 64px);
+  max-height: calc(100vh - 72px);
+}
+
+.rv-viewer-box {
+  position: absolute;
+  border: 2px solid #f43f5e;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.rv-viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.rv-viewer-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.rv-viewer-nav.prev {
+  left: 10px;
+}
+
+.rv-viewer-nav.next {
+  right: 10px;
+}
+
+.rv-viewer-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.rv-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rv-viewer-label {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.rv-viewer-heading {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.rv-viewer-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.rv-viewer-facts dt,
+.rv-viewer-caption {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.rv-viewer-facts dd {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.rv-viewer-note {
+  margin: 4px 0 0;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.rv-viewer-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+.rv-viewer-open:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-damage-item.rv-flash {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+}
+
+@media (max-width: 760px) {
+  .rv-part-thumbs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .rv-modal {
+    padding: 0;
+  }
+
+  .rv-picker {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .rv-picker-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+
+  .rv-viewer-body {
+    grid-template-columns: minmax(0, 1fr);
+    height: 100%;
+    border-radius: 0;
+    overflow-y: auto;
+  }
+
+  .rv-viewer-frame img {
+    max-width: calc(100vw - 24px);
+    max-height: 60vh;
+  }
+}
+/* ---- end P3: review step ---- */
+
+/* ---- P3: upload, sort, viewer ---- */
+
+/* Sticky step footers and group list. A card's overflow: hidden makes it a
+   scroll container, so anything sticky inside it stuck to the card (which
+   never scrolls) instead of the window. clip still rounds off the corners
+   without that. Intake panels only; other cards keep hidden. */
+.intake-shell .card.intake-panel {
+  overflow: clip;
+}
+
+/* Keyboard focus and scrollIntoView keep fields clear of the sticky footer. */
+html:has(.intake-footer) {
+  scroll-padding-bottom: 96px;
+}
+
+.intake-footer {
+  position: sticky;
+  bottom: 0;
+  /* Over the page content, under the top bar (100). */
+  z-index: 20;
+  background: var(--surface-card-solid);
+  border-top: 1px solid var(--border-color);
+  padding: 12px 0;
+}
+
+/* Inside a panel the footer runs edge to edge (cards are padded 20px 24px). */
+.intake-panel > .intake-footer {
+  margin: 0 -24px -20px;
+  padding: 12px 24px;
+}
+
+/* The Review step's footer sits under its two columns, outside any card. */
+.intake-review-layout > .intake-footer {
+  padding: 12px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Below the sticky top bar, and scrolls on its own when the window is too
+   short for every group. Static on narrow screens (see the 760px rule). */
+.intake-group-list {
+  top: 76px;
+  max-height: calc(100vh - 76px - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 760px) {
+  .intake-group-list {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* AI progress: elapsed time and estimate beside the bar. */
+.intake-progress-row.compact {
+  flex-wrap: wrap;
+}
+
+.intake-progress-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reading has no steps to count: a sweeping bar instead of a fixed fill. */
+.intake-progress.indeterminate .intake-progress-fill {
+  width: 40%;
+  animation: intake-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes intake-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-progress.indeterminate .intake-progress-fill {
+    animation-duration: 4s;
+  }
+}
+
+/* Failed and retrying uploads say why on the tile, with Retry / Remove. */
+.intake-tile.pending.failed,
+.intake-tile.pending.retrying {
+  /* Grows past 4:3 rather than clip the reason and buttons. */
+  overflow: visible;
+  gap: 2px;
+  padding: 6px 4px;
+}
+
+.intake-tile.pending.failed.permanent {
+  background: var(--badge-red-bg);
+}
+
+.intake-tile-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--badge-red-text);
+}
+
+.intake-tile.retrying .intake-tile-reason {
+  color: var(--text-secondary);
+}
+
+.intake-tile-reason > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intake-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.intake-tile-actions .intake-link,
+.intake-tile-actions .intake-muted {
+  padding: 0;
+  font-size: 10px;
+}
+
+/* Files never queued (wrong type, too big, over the case limit). */
+.intake-rejected {
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  border-radius: 10px;
+  padding: 8px 8px 10px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.intake-rejected-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--badge-amber-text);
+}
+
+.intake-rejected-head .intake-icon-btn {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+}
+
+.intake-rejected ul {
+  list-style: none;
+  margin: 6px 6px 0 0;
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.intake-rejected li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.intake-rejected-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.intake-rejected-why {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Photo viewer: portalled to <body>. The wrapper only carries the intake
+   form styles (select, label, buttons); it draws no box of its own. */
+.intake-shell.new-report-form.intake-portal {
+  display: contents;
+}
+
+.intake-read-badge {
+  align-self: flex-start;
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* "Photo deleted · Undo" */
+.intake-toast {
+  position: fixed;
+  left: 50%;
+  /* Clear of the sticky step footer. */
+  bottom: 92px;
+  transform: translateX(-50%);
+  /* Over the photo viewer (1000), so Undo is reachable from it. */
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 8px 8px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.intake-toast-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.intake-toast-undo:hover {
+  border-color: var(--border-hover);
+}
+
+.intake-toast-close {
+  width: 28px;
+  height: 28px;
+}
+
+.intake-toast-timer {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--accent-primary);
+  transform-origin: left;
+  animation: intake-toast-timer linear forwards;
+}
+
+@keyframes intake-toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+/* ---- end P3: upload, sort, viewer ---- */

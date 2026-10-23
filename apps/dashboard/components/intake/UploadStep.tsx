@@ -3,9 +3,10 @@
 import { useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Loader2, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
 import { fileUrl, type ReportData } from "@/lib/api";
-import { formatBytes, type IntakePhoto, type IntakeStage } from "@/lib/intake";
+import { formatBytes, UPLOAD_RETRY_DELAYS_MS, type IntakePhoto, type IntakeStage } from "@/lib/intake";
 
-export type UploadStatus = "queued" | "uploading" | "done" | "duplicate" | "failed" | "rejected";
+/** retrying: a transient failure, waiting out its backoff before the next try. */
+export type UploadStatus = "queued" | "uploading" | "retrying" | "done" | "duplicate" | "failed" | "rejected";
 
 export type UploadItem = {
   key: string;
@@ -14,7 +15,15 @@ export type UploadItem = {
   size: number;
   position: number;
   status: UploadStatus;
+  /** Automatic retries used so far (transient failures only). */
+  attempts: number;
+  /** The full message, shown in the tile's tooltip. */
   error?: string;
+  /** A few words shown on the tile itself. */
+  reason?: string;
+  /** The server refused the file itself (unreadable, too big, case full):
+   * no Retry, only Remove. */
+  permanent?: boolean;
 };
 
 /** Every file in a drop, including the contents of dropped folders.
@@ -61,7 +70,12 @@ type Props = {
   maxPhotoBytes: number;
   busy: boolean;
   onFiles: (files: File[]) => void;
+  /** Retries every failed upload that may still work (not the refused ones). */
   onRetryFailed: () => void;
+  onRetryUpload: (key: string) => void;
+  /** Drops a failed or waiting upload from the queue. */
+  onRemoveUpload: (key: string) => void;
+  onDismissRejected: () => void;
   onRemovePhoto: (photoId: string) => void;
   onStart: () => void;
   onContinue: () => void;
@@ -81,6 +95,9 @@ export function UploadStep({
   busy,
   onFiles,
   onRetryFailed,
+  onRetryUpload,
+  onRemoveUpload,
+  onDismissRejected,
   onRemovePhoto,
   onStart,
   onContinue,
@@ -91,8 +108,10 @@ export function UploadStep({
 
   const counted = uploads.filter((u) => u.status !== "rejected");
   const finished = counted.filter((u) => u.status === "done" || u.status === "duplicate").length;
-  const inFlight = uploads.filter((u) => u.status === "queued" || u.status === "uploading");
+  const inFlight = uploads.filter((u) => u.status === "queued" || u.status === "uploading" || u.status === "retrying");
   const failed = uploads.filter((u) => u.status === "failed");
+  const retryable = failed.filter((u) => !u.permanent);
+  const refused = failed.length - retryable.length;
   const duplicates = uploads.filter((u) => u.status === "duplicate").length;
   const rejected = uploads.filter((u) => u.status === "rejected");
   const pct = counted.length ? Math.round((100 * finished) / counted.length) : 0;
@@ -142,7 +161,11 @@ export function UploadStep({
           e.preventDefault();
           setDragging(true);
         }}
-        onDragLeave={() => setDragging(false)}
+        onDragLeave={(e) => {
+          // Moving onto the buttons or text inside still counts as over the zone.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
         onDrop={handleDrop}
       >
         <UploadCloud style={{ width: 30, height: 30, color: "var(--accent-primary)" }} />
@@ -181,21 +204,45 @@ export function UploadStep({
             <span className="intake-muted">{pct}%</span>
           </div>
           <div className="intake-upload-notes">
-            {failed.length > 0 && (
+            {retryable.length > 0 && (
               <span className="intake-chip danger">
-                {failed.length} failed
+                {retryable.length} failed ·
                 <button type="button" className="intake-link" onClick={onRetryFailed}>
-                  Retry
+                  Retry all
                 </button>
               </span>
             )}
-            {duplicates > 0 && <span className="intake-chip">{duplicates} duplicate{duplicates === 1 ? "" : "s"} skipped</span>}
-            {rejected.length > 0 && (
-              <span className="intake-chip warn" title={rejected.map((r) => `${r.name}: ${r.error}`).join("\n")}>
-                {rejected.length} file{rejected.length === 1 ? "" : "s"} not added
+            {refused > 0 && (
+              <span className="intake-chip danger">
+                {refused} refused by the server
               </span>
             )}
+            {duplicates > 0 && <span className="intake-chip">{duplicates} duplicate{duplicates === 1 ? "" : "s"} skipped</span>}
           </div>
+        </div>
+      )}
+
+      {rejected.length > 0 && (
+        <div className="intake-rejected" role="status">
+          <div className="intake-rejected-head">
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} />
+            <span>
+              {rejected.length} file{rejected.length === 1 ? " was" : "s were"} not added
+            </span>
+            <button type="button" className="intake-icon-btn" onClick={onDismissRejected} aria-label="Dismiss the list of files not added">
+              <X style={{ width: 13, height: 13 }} />
+            </button>
+          </div>
+          <ul>
+            {rejected.map((r) => (
+              <li key={r.key}>
+                <span className="intake-rejected-name" title={r.name}>
+                  {r.name}
+                </span>
+                <span className="intake-rejected-why">{r.error}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -218,13 +265,45 @@ export function UploadStep({
             </div>
           ))}
           {[...inFlight, ...failed].map((u) => (
-            <div key={u.key} className={`intake-tile pending ${u.status}`} title={u.error || u.name}>
-              {u.status === "failed" ? (
-                <AlertTriangle style={{ width: 18, height: 18, color: "var(--badge-red-text)" }} />
+            <div
+              key={u.key}
+              className={`intake-tile pending ${u.status} ${u.permanent ? "permanent" : ""}`}
+              title={u.error ? `${u.name}: ${u.error}` : u.name}
+            >
+              {u.status === "failed" || u.status === "retrying" ? (
+                <>
+                  <span className="intake-tile-reason">
+                    {u.status === "failed" ? (
+                      <AlertTriangle style={{ width: 11, height: 11, flexShrink: 0 }} />
+                    ) : (
+                      <RotateCcw style={{ width: 11, height: 11, flexShrink: 0 }} />
+                    )}
+                    <span>{u.reason || "Upload failed"}</span>
+                  </span>
+                  <span className="intake-tile-name">{u.name}</span>
+                  <span className="intake-tile-actions">
+                    {u.status === "retrying" ? (
+                      <span className="intake-muted">
+                        Retry {u.attempts} of {UPLOAD_RETRY_DELAYS_MS.length}…
+                      </span>
+                    ) : (
+                      !u.permanent && (
+                        <button type="button" className="intake-link" onClick={() => onRetryUpload(u.key)} aria-label={`Retry ${u.name}`}>
+                          Retry
+                        </button>
+                      )
+                    )}
+                    <button type="button" className="intake-link" onClick={() => onRemoveUpload(u.key)} aria-label={`Remove ${u.name} from the upload queue`}>
+                      Remove
+                    </button>
+                  </span>
+                </>
               ) : (
-                <Loader2 className={u.status === "uploading" ? "spin" : ""} style={{ width: 18, height: 18, color: "var(--text-muted)" }} />
+                <>
+                  <Loader2 className={u.status === "uploading" ? "spin" : ""} style={{ width: 18, height: 18, color: "var(--text-muted)" }} />
+                  <span className="intake-tile-name">{u.name}</span>
+                </>
               )}
-              <span className="intake-tile-name">{u.name}</span>
             </div>
           ))}
         </div>
