@@ -359,6 +359,13 @@ def _same(a: str | None, b: str | None) -> bool:
     return bool(a and b) and a.strip().lower() == b.strip().lower()
 
 
+def _same_model(a: str | None, b: str | None) -> bool:
+    """By the model name's first word: a case can say "Vezel 1.5X CVT"
+    where the history says "Vezel"."""
+    first = lambda s: (s or "").strip().split()[0].lower() if (s or "").strip() else ""  # noqa: E731
+    return bool(first(a)) and first(a) == first(b)
+
+
 def _unit_price(line: PastAnnexLine) -> float | None:
     """What one unit was adjusted to. None for a line not paid for -- kept
     (Serviceable, 100% disallowed) or never priced."""
@@ -389,10 +396,10 @@ def suggest(
     if exclude_ref:
         lines = [ln for ln in lines if ln.case_ref != exclude_ref]
     scope_label, pool = "all imported cases", lines
-    by_model = [ln for ln in lines if _same(ln.make, make) and _same(ln.model, model)]
+    by_model = [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)]
     by_make = [ln for ln in lines if _same(ln.make, make)]
     if by_model:
-        scope_label, pool = f"past {make} {model} cases", by_model
+        scope_label, pool = f"past {make} {by_model[0].model} cases", by_model
     elif by_make:
         scope_label, pool = f"past {make} cases", by_make
 

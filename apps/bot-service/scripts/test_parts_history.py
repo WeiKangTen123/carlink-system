@@ -147,6 +147,13 @@ def main() -> int:
     assert lock["lines"][0]["usual_unit_price"] == 76.0 and lock["lines"][0]["cases"] == 2
     ok("suggestions per damaged part, same make and model, mirrored to the case's side, with usual prices")
     ok("parts often replaced together (rear windscreen trims with a tailgate) come as companions")
+    from app.parts.history import suggest
+    from app.reports.db import SessionLocal as _S
+    db = _S()
+    long_model = suggest(db, make="honda", model="Vezel 1.5X CVT", damaged_parts=["Boot Lid"], existing_items=[])
+    db.close()
+    assert long_model["scope"] == "past honda Vezel cases" and long_model["cases_used"] == 2, long_model["scope"]
+    ok("a case's longer model name (\"Vezel 1.5X CVT\") still matches the history's \"Vezel\"")
 
     print("saving Annex A")
     items = [
