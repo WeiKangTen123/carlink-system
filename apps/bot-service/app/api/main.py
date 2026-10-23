@@ -502,6 +502,17 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
     return {"id": report_id}
 
 
+def _merge_into(base: dict, patch: dict) -> dict:
+    """Recursively applies `patch` onto `base`: nested objects merge field
+    by field, anything else (values, lists) is replaced."""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _merge_into(dict(base[key]), value)
+        else:
+            base[key] = value
+    return base
+
+
 @app.put("/reports/{report_id}")
 def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser = Depends(current_user)) -> dict:
     temp_paths = _checked_temp_paths(body.temp_photo_paths)
@@ -521,7 +532,11 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             v = body.draft.vehicle_info
             v.body_type = body_type_for(v.make, v.model, v.body_type)
 
-        data = body.draft.model_dump()
+        # Only what the client actually sent replaces what's stored. The
+        # dashboard's Edit form sends a partial draft (no annexes, liability
+        # assessment, vehicle year...), and replacing the whole case with
+        # it -- defaults filling every gap -- silently erased those.
+        data = _merge_into(dict(r.data or {}), body.draft.model_dump(exclude_unset=True))
         data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
         r.data = data
 
