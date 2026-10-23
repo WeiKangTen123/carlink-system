@@ -18,7 +18,7 @@ export default async function EditReportPage({ params }: { params: Promise<{ id:
           This report has been signed off and is locked against further edits. Reopen it to make
           changes -- this resets its status to Draft until it's signed off again.
         </p>
-        <ReopenButton id={id} />
+        <ReopenButton id={id} signedByUserId={report.data.sign_off?.signed_by_user_id ?? null} />
       </div>
     );
   }

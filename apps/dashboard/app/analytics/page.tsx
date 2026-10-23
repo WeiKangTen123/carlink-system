@@ -1,3 +1,4 @@
+import { unstable_rethrow } from "next/navigation";
 import Link from "next/link";
 import {
   FileText,
@@ -28,12 +29,12 @@ export default async function AnalyticsPage({
   const params = await searchParams;
   const [reports, analytics] = await Promise.all([
     listReports().catch((err) => {
-      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      unstable_rethrow(err);
       console.warn("Failed to load reports for analytics:", err);
       return [];
     }),
     getAnalyticsSummary().catch((err) => {
-      if (err?.digest === "DYNAMIC_SERVER_USAGE") throw err;
+      unstable_rethrow(err);
       console.warn("Failed to load analytics summary:", err);
       return EMPTY_ANALYTICS_SUMMARY;
     }),

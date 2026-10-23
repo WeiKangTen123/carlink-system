@@ -55,12 +55,12 @@ class EvidenceCacheManager {
           return objectUrl;
         }
 
-        // Fetch and put into L2 cache. "same-origin", not "omit": in
-        // production /files/ sits behind the site login (infra/nginx.conf),
-        // and omitting credentials made every preview fetch a 401 that fell
-        // through to the uncached direct URL below. Local dev serves files
-        // from another origin with no login, where this sends nothing.
-        const res = await fetch(remoteUrl, { mode: "cors", credentials: "same-origin" });
+        // Fetch and put into L2 cache. Credentials included: /files/ needs
+        // the sign-in cookie (the API checks it on every photo), and
+        // omitting it made every preview fetch a 401 that fell through to
+        // the uncached direct URL below. "include" rather than
+        // "same-origin" because local dev serves files from another port.
+        const res = await fetch(remoteUrl, { mode: "cors", credentials: "include" });
         if (res.ok) {
           await cache.put(remoteUrl, res.clone());
           const blob = await res.blob();
@@ -134,7 +134,7 @@ class EvidenceCacheManager {
         const cache = await caches.open(CACHE_NAME);
         const match = await cache.match(nextUrl);
         if (!match) {
-          const res = await fetch(nextUrl, { mode: "cors", credentials: "same-origin" });
+          const res = await fetch(nextUrl, { mode: "cors", credentials: "include" });
           if (res.ok) {
             await cache.put(nextUrl, res);
           }
@@ -166,3 +166,13 @@ class EvidenceCacheManager {
 }
 
 export const evidenceCache = new EvidenceCacheManager();
+
+/** Case photos kept on this device. Cleared on sign-out, so the next person
+ * on a shared computer doesn't inherit them. */
+export async function clearEvidenceCache(): Promise<void> {
+  try {
+    if (typeof caches !== "undefined") await caches.delete(CACHE_NAME);
+  } catch {
+    // Cache Storage unavailable (private window): nothing was kept.
+  }
+}

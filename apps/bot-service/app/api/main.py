@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,7 +15,12 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
+from app.api.auth import router as auth_router
 from app.api.intake import delete_intake_files, router as intake_router
+from app.auth.core import CurrentUser, audit, report_history
+from app.auth.deps import current_user, require_admin
+from app.auth.middleware import LOCAL_DEV_ORIGIN, AuthMiddleware
+from app.auth.passwords import HashingBusy
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports.db import SessionLocal, init_db
@@ -29,7 +34,7 @@ from app.reports.taxonomy import (
     MODEL_BODY_TYPES,
     body_type_for,
 )
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.rendering.renderer import render_pdf
 from app.storage.files import (
     generate_preview,
@@ -55,25 +60,48 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
+# Every request needs a signed-in user (app/auth/middleware.py), except
+# /health and signing in itself. Added before CORS so CORS wraps it: a 401
+# still carries CORS headers in local dev instead of looking like a network
+# error.
+app.add_middleware(AuthMiddleware)
 # CORS is only needed in local development, where the dashboard (:3000) and
 # this API (:8000) are different origins. In production the browser reaches
 # the API same-origin through nginx (/api/), so no other origin is allowed:
 # the previous pattern matched any host merely containing "carlink" or
 # "sslip.io", which with credentials allowed would let such a site read the
-# API as a signed-in user once a login exists.
+# API as the signed-in user.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=LOCAL_DEV_ORIGIN.pattern,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 # The WhatsApp webhook is unauthenticated (no Twilio signature check) and
 # fetches a caller-supplied media URL server-side, so it is only exposed on
-# a deployment that actually uses WhatsApp.
+# a deployment that actually uses WhatsApp. (Behind AuthMiddleware it would
+# now refuse Twilio anyway; it needs a signature check before it can be
+# made public again.)
 if settings.twilio_account_sid and settings.twilio_auth_token:
     app.include_router(whatsapp_router)
+app.include_router(auth_router)
 app.include_router(intake_router)
+
+
+@app.exception_handler(HashingBusy)
+async def _hashing_busy(request: Request, exc: HashingBusy):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse({"detail": "The server is busy. Try again in a moment."}, status_code=503)
+
+
+def blank_sign_off() -> dict:
+    """data["sign_off"] for a case nobody has signed. Only /sign-off and
+    /reopen write sign_off: every other save keeps the stored one (or this),
+    whatever the request carries -- otherwise a case could be saved as
+    "Signed Off" by anyone, under any name."""
+    return SignOffInfo().model_dump()
 
 # The only parts of storage_dir that are meant to be downloadable: case
 # photos/PDFs and in-progress intake photos. storage_dir also holds the
@@ -121,7 +149,9 @@ class _ImmutableStaticFiles(StaticFiles):
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
-        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        # "private": case photos need a sign-in, so shared caches must not
+        # keep copies (nginx sets the same on /files/; /api/files/ gets this).
+        resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
         return resp
 
 
@@ -278,6 +308,8 @@ def get_report(report_id: str) -> dict:
             "photo_preview_urls": photo_preview_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
             "created_at": iso_utc(r.created_at),
+            # Who created, edited, signed off and reopened it (app/auth).
+            "history": report_history(db, r),
         }
     finally:
         db.close()
@@ -418,7 +450,7 @@ def _checked_temp_paths(paths: list[str]) -> list[str]:
 
 
 @app.post("/reports")
-def create_report(body: CreateReportRequest) -> dict:
+def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current_user)) -> dict:
     """Manual entry from the dashboard -- optionally with photos that were
     already analyzed via POST /reports/analyze-photos and are sitting in the
     temp dir, which get moved into the report's permanent storage here once
@@ -429,6 +461,7 @@ def create_report(body: CreateReportRequest) -> dict:
         v = body.draft.vehicle_info
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = body.draft.model_dump()
+    data["sign_off"] = blank_sign_off()
 
     # Photos and PDF first, the database row last, so no SQLite write lock
     # is held while Chromium renders (it used to flush the row first and
@@ -458,6 +491,7 @@ def create_report(body: CreateReportRequest) -> dict:
             photo_paths=photo_paths,
             pdf_path=pdf_path,
         ))
+        audit(db, user, "created", report_id)
         db.commit()
     finally:
         db.close()
@@ -467,7 +501,7 @@ def create_report(body: CreateReportRequest) -> dict:
 
 
 @app.put("/reports/{report_id}")
-def update_report(report_id: str, body: CreateReportRequest) -> dict:
+def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser = Depends(current_user)) -> dict:
     temp_paths = _checked_temp_paths(body.temp_photo_paths)
     db = SessionLocal()
     try:
@@ -475,7 +509,7 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
         _refuse_intake_draft(r)
-        if r.status == "Signed Off":
+        if _is_signed_off(r):
             raise HTTPException(
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
@@ -485,7 +519,9 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
             v = body.draft.vehicle_info
             v.body_type = body_type_for(v.make, v.model, v.body_type)
 
-        r.data = body.draft.model_dump()
+        data = body.draft.model_dump()
+        data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
+        r.data = data
 
         # New photos from this edit get appended after whatever's already
         # attached -- indexed starting from the current count, never from 0,
@@ -509,6 +545,7 @@ def update_report(report_id: str, body: CreateReportRequest) -> dict:
         except Exception as exc:
             logger.error("Failed to render PDF for updated report %s: %s", r.id, exc)
 
+        audit(db, user, "edited", r.id)
         db.commit()
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url}
@@ -525,7 +562,9 @@ class DamageItemReviewRequest(BaseModel):
 
 
 @app.patch("/reports/{report_id}/damage-items/{item_index}")
-def review_damage_item(report_id: str, item_index: int, body: DamageItemReviewRequest) -> dict:
+def review_damage_item(
+    report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(current_user)
+) -> dict:
     """Marks one damage line item verified and/or records its OEM part
     number -- the two things a surveyor is meant to do while reviewing the
     checklist, which the schema always had fields for (oem_part_number's
@@ -547,7 +586,7 @@ def review_damage_item(report_id: str, item_index: int, body: DamageItemReviewRe
             raise HTTPException(status_code=404, detail="Report not found")
         # Same lock rule update_report enforces -- a signed-off report is
         # a finalized record; reopen it first.
-        if r.status == "Signed Off":
+        if _is_signed_off(r):
             raise HTTPException(
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
@@ -576,10 +615,23 @@ def review_damage_item(report_id: str, item_index: int, body: DamageItemReviewRe
         data["damage_summary"] = damage_summary
         r.data = data
 
+        audit(db, user, "edited", r.id)
         db.commit()
         return {"id": r.id, "item_index": item_index, "item": item}
     finally:
         db.close()
+
+
+_MAX_SIGNATURE_CHARS = 700_000  # a drawn PNG is ~10-60 KB as base64
+
+
+def _drawn_signature(value) -> str | None:
+    """Only the PNG the sign-off pad produces. The value is placed in an
+    <img src> in the PDF template, so anything else -- a URL -- would make
+    the PDF renderer fetch it from the server's own network."""
+    if isinstance(value, str) and value.startswith("data:image/png;base64,") and len(value) <= _MAX_SIGNATURE_CHARS:
+        return value
+    return None
 
 
 def _with_sign_off(report_data: dict, **updates) -> dict:
@@ -602,16 +654,26 @@ def _with_sign_off(report_data: dict, **updates) -> dict:
 
 
 @app.post("/reports/{report_id}/reopen")
-def reopen_report(report_id: str) -> dict:
+def reopen_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
     """Explicitly unlocks a Signed Off report for editing -- a deliberate
     action rather than update_report silently allowing edits underneath an
-    already-signed-off record."""
+    already-signed-off record.
+
+    Reopening withdraws someone's signature, so only the surveyor who signed
+    it or an admin may. Sign-offs from before sign-in existed record no
+    account, so those need an admin."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
         _refuse_intake_draft(r)
+        signer_id = ((r.data or {}).get("sign_off") or {}).get("signed_by_user_id")
+        if _is_signed_off(r) and not user.is_admin and signer_id != user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the surveyor who signed this report, or an admin, can reopen it.",
+            )
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
@@ -623,6 +685,7 @@ def reopen_report(report_id: str) -> dict:
         except Exception as exc:
             logger.error("Failed to render PDF for reopened report %s: %s", r.id, exc)
 
+        audit(db, user, "reopened", r.id)
         db.commit()
         return {"id": r.id, "status": r.status}
     finally:
@@ -630,7 +693,11 @@ def reopen_report(report_id: str) -> dict:
 
 
 @app.post("/reports/{report_id}/sign-off")
-async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", request: Request = None) -> dict:
+async def sign_off_report(report_id: str, request: Request, user: CurrentUser = Depends(current_user)) -> dict:
+    """Signs the case as the signed-in user, with their own profile
+    (Account page). The name, qualifications, licence and firm used to come
+    from the request -- defaulting to one fixed surveyor -- so anyone could
+    sign as anyone; any such fields in the body are now ignored."""
     import hashlib
     db = SessionLocal()
     try:
@@ -638,34 +705,33 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
         if not r:
             raise HTTPException(status_code=404, detail="Report not found")
         _refuse_intake_draft(r)
-        
-        body_data = {}
-        if request:
-            try:
-                body_data = await request.json()
-            except Exception:
-                body_data = {}
+        if _is_signed_off(r):
+            raise HTTPException(status_code=409, detail="This report is already signed off.")
 
-        surveyor = body_data.get("surveyor_name") or reviewer_name or "Patrick Ng"
-        quals = body_data.get("qualifications") or "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC"
-        lic = body_data.get("license_number") or "SURV-SG-0492"
-        firm = body_data.get("firm_name") or "Carlink Consultancy"
-        
-        sig_hash = body_data.get("signature_hash")
-        if not sig_hash:
-            canonical_str = f"{r.id}:{surveyor}:{datetime.now(timezone.utc).isoformat()}"
-            sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
+        try:
+            body_data = await request.json()
+        except Exception:
+            body_data = {}
+        if not isinstance(body_data, dict):
+            body_data = {}
+
+        signed_at = datetime.now(timezone.utc).isoformat()
+        # Always computed here, never taken from the request.
+        canonical_str = f"{r.id}:{user.id}:{user.name}:{signed_at}"
+        sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
 
         updates = {
             "status": "Signed Off",
-            "reviewed_by": surveyor,
-            "approved_by": surveyor,
-            "surveyor_name": surveyor,
-            "qualifications": quals,
-            "license_number": lic,
-            "firm_name": firm,
+            "reviewed_by": user.name,
+            "approved_by": user.name,
+            "surveyor_name": user.name,
+            "qualifications": user.qualifications or None,
+            "license_number": user.license_number or None,
+            "firm_name": user.firm_name or None,
+            "signed_by_user_id": user.id,
+            "signed_by_email": user.email,
             "signature_hash": sig_hash,
-            "signature_data_url": body_data.get("signature_data_url"),
+            "signature_data_url": _drawn_signature(body_data.get("signature_data_url")),
             "agreed_quantum": body_data.get("agreed_quantum"),
             "turnaround_days": body_data.get("turnaround_days"),
             "liability_opinion": body_data.get("liability_opinion"),
@@ -673,7 +739,7 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
             # Only what the surveyor actually ticked -- this defaulted to
             # True, recording declarations nobody had accepted.
             "terms_accepted": bool(body_data.get("terms_accepted", False)),
-            "signature_date": datetime.now(timezone.utc).isoformat(),
+            "signature_date": signed_at,
         }
 
         r.status = "Signed Off"
@@ -716,6 +782,8 @@ async def sign_off_report(report_id: str, reviewer_name: str = "Patrick Ng", req
         except Exception as exc:
             logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
 
+        # The account's email too: the name on a profile can be edited.
+        audit(db, user, "signed_off", r.id, detail=user.email)
         db.commit()
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url, "sign_off": r.data.get("sign_off")}
@@ -819,12 +887,16 @@ def get_analytics_summary() -> dict:
 
 
 @app.delete("/reports/{report_id}")
-def delete_report(report_id: str) -> dict:
+def delete_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """Admins only, except an unfinished intake draft (status "intake"),
+    which whoever is filing it may throw away."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail="not found")
+        if r.status != "intake" and not user.is_admin:
+            raise HTTPException(status_code=403, detail="Only an admin can delete a case.")
 
         # Unconditional (and a no-op for ordinary cases): a draft that was
         # turned into a case some other way would otherwise leak its folder.
@@ -838,6 +910,8 @@ def delete_report(report_id: str) -> dict:
         if folder and folder.exists() and folder.is_relative_to(Path(settings.storage_dir).resolve()):
             shutil.rmtree(folder, ignore_errors=True)
 
+        plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
+        audit(db, user, "deleted", report_id, detail="Unfinished intake" if r.status == "intake" else (plate or ""))
         db.delete(r)
         db.commit()
         return {"deleted": report_id}
@@ -881,7 +955,7 @@ def _is_signed_off(r: Report) -> bool:
 
 
 @app.post("/reports/{report_id}/ai-enrich")
-def ai_enrich_report(report_id: str) -> dict:
+def ai_enrich_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
     """Fill derived fields on one report (see _enrich_single_report_data)."""
     db = SessionLocal()
     try:
@@ -892,6 +966,7 @@ def ai_enrich_report(report_id: str) -> dict:
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
         r.data = _enrich_single_report_data(r.data or {})
+        audit(db, user, "edited", r.id)
         db.commit()
         return {"id": r.id, "status": "enriched", "data": r.data}
     finally:
@@ -899,7 +974,7 @@ def ai_enrich_report(report_id: str) -> dict:
 
 
 @app.post("/reports/ai-enrich-all")
-def ai_enrich_all_reports() -> dict:
+def ai_enrich_all_reports(admin: CurrentUser = Depends(require_admin)) -> dict:
     """Fill derived fields on every open report. Signed-off reports are
     skipped -- this used to rewrite them too, past the sign-off lock."""
     db = SessionLocal()
@@ -909,6 +984,7 @@ def ai_enrich_all_reports() -> dict:
             if _is_signed_off(r):
                 continue
             r.data = _enrich_single_report_data(r.data or {})
+            audit(db, admin, "edited", r.id)
             count += 1
         db.commit()
         return {"status": "success", "enriched_count": count}
@@ -950,7 +1026,7 @@ def get_settings() -> dict:
 
 
 @app.put("/settings")
-def update_settings(body: SettingsUpdateRequest) -> dict:
+def update_settings(body: SettingsUpdateRequest, admin: CurrentUser = Depends(require_admin)) -> dict:
     db = SessionLocal()
     try:
         for key, value in body.model_dump(exclude_none=True).items():
@@ -970,7 +1046,7 @@ def update_settings(body: SettingsUpdateRequest) -> dict:
 
 
 @app.get("/system/info")
-def get_system_info() -> dict:
+def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
     """Live read-only facts about this deployment. Everything here is
     measured or read from real config at request time -- nothing is a
     hardcoded display value."""
@@ -1018,9 +1094,8 @@ def get_system_info() -> dict:
                 "engine": settings.database_url.split("://", 1)[0],
             },
             "auth": {
-                # Stated as a fact so the UI doesn't have to hardcode a
-                # claim that could drift if auth is ever added.
-                "configured": False,
+                # Every request needs a signed-in user (app/auth).
+                "configured": True,
             },
         }
     finally:
@@ -1039,8 +1114,8 @@ def get_system_info() -> dict:
 # SECURITY: no endpoint here ever returns key material. /setup/llm-keys
 # returns only an id, label, created_at and the last 4 characters -- enough
 # to tell two keys apart in a list, useless to steal. Note this does NOT
-# protect against tampering: with no authentication on this deployment,
-# anyone who can reach the URL can add or delete keys.
+# protect against tampering on its own; only admins can add or delete keys
+# (require_admin on each endpoint).
 # =============================================================================
 
 
@@ -1054,7 +1129,7 @@ def _mask(key: str) -> str:
 
 
 @app.get("/setup/llm-keys")
-def list_llm_keys() -> dict:
+def list_llm_keys(admin: CurrentUser = Depends(require_admin)) -> dict:
     db = SessionLocal()
     try:
         rows = db.query(ApiKey).filter(ApiKey.provider == "gemini").order_by(ApiKey.created_at).all()
@@ -1073,7 +1148,7 @@ def list_llm_keys() -> dict:
 
 
 @app.post("/setup/llm-keys")
-def add_llm_key(body: AddApiKeyRequest) -> dict:
+def add_llm_key(body: AddApiKeyRequest, admin: CurrentUser = Depends(require_admin)) -> dict:
     key = body.apiKey.strip()
     if not key:
         raise HTTPException(status_code=400, detail="API key cannot be empty")
@@ -1093,7 +1168,7 @@ def add_llm_key(body: AddApiKeyRequest) -> dict:
 
 
 @app.delete("/setup/llm-keys/{key_id}")
-def delete_llm_key(key_id: str) -> dict:
+def delete_llm_key(key_id: str, admin: CurrentUser = Depends(require_admin)) -> dict:
     db = SessionLocal()
     try:
         row = db.get(ApiKey, key_id)
@@ -1108,7 +1183,7 @@ def delete_llm_key(key_id: str) -> dict:
 
 
 @app.post("/setup/test/{service}")
-async def test_service(service: str) -> dict:
+async def test_service(service: str, admin: CurrentUser = Depends(require_admin)) -> dict:
     """Proves a credential actually works, rather than only checking that
     a non-empty string is present. Returns ok/false plus a short message
     for display -- never raises for a failed credential, since 'your key

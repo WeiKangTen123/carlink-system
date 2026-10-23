@@ -54,16 +54,6 @@ fi
 
 cd "$APP_DIR"
 
-# The site login (nginx basic auth, see infra/nginx.conf). Without this
-# file Docker would mount an empty directory in its place and every request
-# would fail, so stop here instead. Create it once on the server with:
-#   printf 'carlink:%s\n' "$(openssl passwd -apr1)" > infra/carlink.htpasswd
-#   chmod 644 infra/carlink.htpasswd
-if [ ! -s infra/carlink.htpasswd ]; then
-    echo "❌ infra/carlink.htpasswd is missing -- create the site login first (see the comment above this check in deploy.sh)."
-    exit 1
-fi
-
 # Back up the database and case files before changing anything (see
 # infra/backup.sh; the nightly cron runs the same script). A deploy that
 # adds tables or columns can't be undone without one.
@@ -95,6 +85,14 @@ fi
 # nginx's uptime). A reload re-resolves them with no downtime.
 echo "🔁 Reloading nginx so it picks up the recreated containers..."
 docker exec carlink_nginx nginx -s reload || docker restart carlink_nginx
+
+# Dashboard sign-in (bot-service app/auth): nobody can use the dashboard
+# until the first admin account exists. Admins add everyone else from
+# Settings -> Users.
+if ! docker exec carlink_api python -m app.auth.manage list-users | grep -q " admin "; then
+    echo "⚠️  No admin account yet -- create one (it asks for a password):"
+    echo "   docker exec -it carlink_api python -m app.auth.manage create-user --email you@example.com --name \"Your Name\" --role admin"
+fi
 
 # Only prune the *build cache* when disk is actually getting tight -- it bit
 # us hard on the old 10GB e2-micro, but wiping it unconditionally on every

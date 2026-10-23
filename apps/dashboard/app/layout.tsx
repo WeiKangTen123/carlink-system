@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import { ShieldCheck, Plus } from "lucide-react";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell } from "@/components/AppShell";
+import { getCurrentUser } from "@/lib/api";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,7 +9,11 @@ export const metadata: Metadata = {
     "Intelligent loss adjuster studio with AI vision extraction, interactive vehicle blueprint, and official PDF sign-off workflow.",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Null on /login (and whenever the session has ended -- the page's own
+  // API calls then redirect to /login, see lib/api.ts).
+  const user = await getCurrentUser();
+
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
@@ -22,57 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
-        <div className="app-shell">
-          <Sidebar />
-
-          <div className="main-column">
-            <header className="top-bar">
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", color: "var(--text-muted)", textTransform: "uppercase" }}>
-                  Autonomous Claims & Loss Adjusting Workstation
-                </span>
-              </div>
-
-              <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
-                <ThemeToggle />
-
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "4px 12px 4px 6px",
-                    background: "var(--surface-elevated)",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "20px",
-                    fontSize: "12px",
-                    fontWeight: 600,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      background: "var(--accent-primary)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "white",
-                    }}
-                  >
-                    <ShieldCheck style={{ width: 13, height: 13 }} />
-                  </div>
-                  <span>Surveyor / Loss Adjuster</span>
-                </div>
-              </div>
-            </header>
-
-            <main className="main-content">
-              {children}
-            </main>
-          </div>
-        </div>
+        <AppShell user={user}>{children}</AppShell>
       </body>
     </html>
   );

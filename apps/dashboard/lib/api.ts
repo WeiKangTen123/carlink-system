@@ -1,5 +1,7 @@
 /** Thin client over the bot-service FastAPI backend (apps/bot-service/app/api/main.py). */
 
+import { redirect, unstable_rethrow } from "next/navigation";
+
 const isBrowser = typeof window !== "undefined";
 
 // Server-side (Server Components / Server Actions) reach the API directly
@@ -75,6 +77,188 @@ export async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sign-in. Every API route needs a signed-in user (bot-service app/auth).
+// The browser sends the session cookie itself; server components and server
+// actions call the API directly over the Docker network, so they forward the
+// cookie of the request they are handling.
+
+/** Set by POST /auth/login (apps/bot-service/app/auth/core.py): the
+ * "__Host-" name over HTTPS, the bare one where AUTH_COOKIE_SECURE=false.
+ * The API reads only the one it sets; both are passed on. */
+export const SESSION_COOKIES = ["__Host-carlink_session", "carlink_session"] as const;
+
+/** Fired in the browser when the API says the session has ended, so the
+ * page can offer to sign in again without losing what is on screen
+ * (components/SessionGuard.tsx). */
+export const SIGNED_OUT_EVENT = "carlink:signed-out";
+
+type ApiFetchOptions = {
+  /** Abort after this long (see fetchWithTimeout); no limit if unset. */
+  timeoutMs?: number;
+  /** Server side, a signed-out response normally redirects to /login. With
+   * "return" the response is handed back instead (used by getCurrentUser,
+   * which also runs on the login page itself). */
+  onSignedOut?: "redirect" | "return";
+};
+
+async function forwardedCookie(): Promise<string | null> {
+  // Imported lazily: this module is bundled for the browser too, where
+  // next/headers doesn't exist and is never reached.
+  const { cookies } = await import("next/headers");
+  const jar = await cookies();
+  const pairs = SESSION_COOKIES.flatMap((name) => {
+    const value = jar.get(name)?.value;
+    return value ? [`${name}=${value}`] : [];
+  });
+  return pairs.length ? pairs.join("; ") : null;
+}
+
+async function loginPath(): Promise<string> {
+  // Set by proxy.ts on every page request.
+  const { headers } = await import("next/headers");
+  const here = (await headers()).get("x-carlink-path");
+  return here && here.startsWith("/") && !here.startsWith("//") && !here.startsWith("/login")
+    ? `/login?next=${encodeURIComponent(here)}`
+    : "/login";
+}
+
+/** fetch() for API calls: carries the sign-in, and handles it ending. */
+export async function apiFetch(input: string, init: RequestInit = {}, opts: ApiFetchOptions = {}): Promise<Response> {
+  let finalInit: RequestInit;
+  if (isBrowser) {
+    // "include", not the default "same-origin": local dev serves the API
+    // from another port. In production it is same-origin either way.
+    finalInit = { credentials: "include", ...init };
+  } else {
+    const headers = new Headers(init.headers);
+    const cookie = await forwardedCookie();
+    if (cookie) headers.set("Cookie", cookie);
+    finalInit = { ...init, headers };
+  }
+  const res = opts.timeoutMs ? await fetchWithTimeout(input, finalInit, opts.timeoutMs) : await fetch(input, finalInit);
+  if (res.status === 401 || res.status === 403) await handleSignInProblem(res, opts);
+  return res;
+}
+
+async function handleSignInProblem(res: Response, opts: ApiFetchOptions): Promise<void> {
+  let reason: "signed_out" | "password_change_required" | null = null;
+  if (res.status === 401) {
+    reason = "signed_out";
+  } else {
+    const body = await res.clone().json().catch(() => null);
+    if (body?.code === "password_change_required") reason = "password_change_required";
+  }
+  if (!reason) return;
+  if (isBrowser) {
+    window.dispatchEvent(new CustomEvent(SIGNED_OUT_EVENT, { detail: reason }));
+    return;
+  }
+  if (opts.onSignedOut === "return") return;
+  redirect(reason === "password_change_required" ? "/account" : await loginPath());
+}
+
+export type CurrentUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "surveyor";
+  must_change_password: boolean;
+  qualifications: string;
+  license_number: string;
+  firm_name: string;
+};
+
+export type UserAccount = CurrentUser & {
+  active: boolean;
+  locked: boolean;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+/** Profile fields a user edits on their own Account page, and an admin on
+ * anyone's. Printed on the PDF at sign-off. */
+export type ProfileFields = {
+  name?: string;
+  qualifications?: string;
+  license_number?: string;
+  firm_name?: string;
+};
+
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  const body = await res.json().catch(() => null);
+  return typeof body?.detail === "string" ? body.detail : `${fallback} (${res.status})`;
+}
+
+/** The signed-in user, or null when there is none. Never redirects. */
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/auth/me`, { cache: "no-store" }, { timeoutMs: 8000, onSignedOut: "return" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    unstable_rethrow(err);
+    console.warn("Failed to load the signed-in user:", err);
+    return null;
+  }
+}
+
+export async function updateMyProfile(patch: ProfileFields): Promise<CurrentUser> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save your profile"));
+  return res.json();
+}
+
+export async function changeMyPassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to change your password"));
+}
+
+export async function listUsers(): Promise<UserAccount[]> {
+  const res = await apiFetch(`${API_BASE_URL}/users`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load users"));
+  return res.json();
+}
+
+export async function createUser(
+  fields: ProfileFields & { email: string; name: string; role: "admin" | "surveyor" }
+): Promise<{ user: UserAccount; temporary_password: string }> {
+  const res = await apiFetch(`${API_BASE_URL}/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to add the user"));
+  return res.json();
+}
+
+export async function updateUser(
+  id: string,
+  patch: ProfileFields & { email?: string; role?: "admin" | "surveyor"; active?: boolean }
+): Promise<UserAccount> {
+  const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save the user"));
+  return res.json();
+}
+
+export async function resetUserPassword(id: string): Promise<{ user: UserAccount; temporary_password: string }> {
+  const res = await apiFetch(`${API_BASE_URL}/users/${id}/reset-password`, { method: "POST" });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to reset the password"));
+  return res.json();
 }
 
 export const CATEGORY_OPTIONS = [
@@ -274,12 +458,9 @@ export type BolaLiabilityAssessment = {
   subrogation_prospect?: string | null;
 };
 
+/** The signer's name, qualifications, licence and firm aren't here: the API
+ * takes them from the signed-in user's profile. */
 export type SignOffRequest = {
-  surveyor_name?: string;
-  qualifications?: string;
-  license_number?: string;
-  firm_name?: string;
-  signature_hash?: string;
   signature_data_url?: string;
   agreed_quantum?: number;
   turnaround_days?: number;
@@ -305,6 +486,8 @@ export type SignOffInfo = {
   status?: string;
   signature_date?: string | null;
   terms_accepted?: boolean;
+  /** The account that signed (absent on sign-offs from before sign-in). */
+  signed_by_user_id?: string | null;
 };
 
 export type AIAnalysisInfo = {
@@ -412,6 +595,17 @@ export type ReportDetail = {
    * raw camera images that crash browser tabs. */
   photo_preview_urls?: string[];
   pdf_url: string | null;
+  /** Who created, edited, signed off and reopened it, oldest first.
+   * Optional so an older API response still parses. */
+  history?: HistoryEntry[];
+};
+
+export type HistoryEntry = {
+  action: "created" | "edited" | "finalized" | "signed_off" | "reopened" | string;
+  /** Null for entries with no account behind them (Telegram, or before sign-in). */
+  user_name: string | null;
+  detail: string | null;
+  at: string;
 };
 
 export type AnalyticsSummary = {
@@ -452,13 +646,13 @@ export const EMPTY_ANALYTICS_SUMMARY: AnalyticsSummary = {
 };
 
 export async function listReports(): Promise<ReportSummary[]> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/reports`, { cache: "no-store" });
+  const res = await apiFetch(`${API_BASE_URL}/reports`, { cache: "no-store" }, { timeoutMs: 8000 });
   if (!res.ok) throw new Error(`Failed to load reports (${res.status}: ${res.statusText})`);
   return res.json();
 }
 
 export async function getReport(id: string): Promise<ReportDetail | null> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" }, { timeoutMs: 8000 });
   // Resilient 404 handling: return null so Next.js notFound() renders the branded 404 page instead of a 500 error
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load report ${id} (${res.status}: ${res.statusText})`);
@@ -468,7 +662,7 @@ export async function getReport(id: string): Promise<ReportDetail | null> {
 }
 
 export async function createReport(payload: ReportData, tempPhotoPaths: string[] = []): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE_URL}/reports`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
@@ -495,7 +689,7 @@ export async function analyzeReportPhotos(
   formData.set("description", description);
   for (const photo of photos) formData.append("photos", photo);
 
-  const res = await fetch(`${API_BASE_URL}/reports/analyze-photos`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
     method: "POST",
     body: formData,
   });
@@ -520,13 +714,13 @@ export async function analyzeExistingReportPhotos(
   for (let i = 0; i < photoPaths.length; i++) {
     const path = photoPaths[i];
     const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     if (!res.ok) throw new Error(`Failed to fetch existing photo ${path} (${res.status})`);
     const blob = await res.blob();
     formData.append("photos", blob, `existing_${i}.jpg`);
   }
 
-  const res = await fetch(`${API_BASE_URL}/reports/analyze-photos`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
     method: "POST",
     body: formData,
   });
@@ -543,7 +737,7 @@ export async function updateReport(
   payload: ReportData,
   tempPhotoPaths: string[] = []
 ): Promise<{ id: string; status: string; pdf_url: string }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
@@ -563,7 +757,7 @@ export async function reviewDamageItem(
   itemIndex: number,
   patch: { human_verified?: boolean; oem_part_number?: string }
 ): Promise<{ id: string; item_index: number; item: DamageSummaryItem }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -576,7 +770,7 @@ export async function reviewDamageItem(
 }
 
 export async function reopenReport(id: string): Promise<{ id: string; status: string }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to reopen report (${res.status}): ${text}`);
@@ -584,19 +778,16 @@ export async function reopenReport(id: string): Promise<{ id: string; status: st
   return res.json();
 }
 
+/** Signs as the signed-in user, with their own profile (Account page) --
+ * the API ignores any name, licence or firm in the request. */
 export async function signOffReport(
   id: string,
-  payload?: SignOffRequest | string
+  payload: SignOffRequest = {}
 ): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo }> {
-  const isString = typeof payload === "string";
-  const requestBody = isString
-    ? { surveyor_name: payload, reviewed_by: payload }
-    : (payload || {});
-  const reviewerParam = isString ? payload : (payload?.surveyor_name || "Patrick Ng");
-  const res = await fetch(`${API_BASE_URL}/reports/${id}/sign-off?reviewer_name=${encodeURIComponent(reviewerParam)}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/sign-off`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(requestBody),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -606,7 +797,7 @@ export async function signOffReport(
 }
 
 export async function renderReportPdf(id: string): Promise<{ id: string; status: string; pdf_url: string }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}/render-pdf`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/render-pdf`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -617,7 +808,7 @@ export async function renderReportPdf(id: string): Promise<{ id: string; status:
 }
 
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/analytics/summary`, { cache: "no-store" });
+  const res = await apiFetch(`${API_BASE_URL}/analytics/summary`, { cache: "no-store" }, { timeoutMs: 8000 });
   if (!res.ok) throw new Error(`Failed to load analytics (${res.status}: ${res.statusText})`);
   return res.json();
 }
@@ -666,24 +857,20 @@ export const DEFAULT_SYSTEM_INFO: SystemInfo = {
   auth: { configured: false },
 };
 
-function isDynamicServerError(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { digest?: string }).digest === "DYNAMIC_SERVER_USAGE";
-}
-
 export async function getAppSettings(): Promise<AppSettings> {
   try {
-    const res = await fetchWithTimeout(`${API_BASE_URL}/settings`, { cache: "no-store" });
+    const res = await apiFetch(`${API_BASE_URL}/settings`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load settings (${res.status}: ${res.statusText})`);
     return await res.json();
   } catch (err) {
-    if (isDynamicServerError(err)) throw err;
+    unstable_rethrow(err);
     console.warn("Failed to load settings, using fallback default:", err);
     return DEFAULT_APP_SETTINGS;
   }
 }
 
 export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
-  const res = await fetch(`${API_BASE_URL}/settings`, {
+  const res = await apiFetch(`${API_BASE_URL}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -700,18 +887,18 @@ export type LlmKey = { id: string; label: string; last4: string; created_at: str
 
 export async function listLlmKeys(): Promise<{ keys: LlmKey[]; env_key_configured: boolean }> {
   try {
-    const res = await fetchWithTimeout(`${API_BASE_URL}/setup/llm-keys`, { cache: "no-store" });
+    const res = await apiFetch(`${API_BASE_URL}/setup/llm-keys`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load API keys (${res.status}: ${res.statusText})`);
     return await res.json();
   } catch (err) {
-    if (isDynamicServerError(err)) throw err;
+    unstable_rethrow(err);
     console.warn("Failed to load API keys, using fallback default:", err);
     return { keys: [], env_key_configured: false };
   }
 }
 
 export async function addLlmKey(apiKey: string, label?: string): Promise<LlmKey> {
-  const res = await fetch(`${API_BASE_URL}/setup/llm-keys`, {
+  const res = await apiFetch(`${API_BASE_URL}/setup/llm-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ apiKey, label }),
@@ -724,12 +911,12 @@ export async function addLlmKey(apiKey: string, label?: string): Promise<LlmKey>
 }
 
 export async function deleteLlmKey(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/setup/llm-keys/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/setup/llm-keys/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to remove key (${res.status})`);
 }
 
 export async function testService(service: string): Promise<{ ok: boolean; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/setup/test/${service}`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE_URL}/setup/test/${service}`, { method: "POST" });
   if (!res.ok) throw new Error(`Test failed (${res.status})`);
   return res.json();
 }
@@ -765,11 +952,11 @@ export const DEFAULT_TAXONOMY: Taxonomy = {
 
 export async function getTaxonomy(): Promise<Taxonomy> {
   try {
-    const res = await fetchWithTimeout(`${API_BASE_URL}/taxonomy`, { cache: "no-store" });
+    const res = await apiFetch(`${API_BASE_URL}/taxonomy`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load taxonomy (${res.status}: ${res.statusText})`);
     return await res.json();
   } catch (err) {
-    if (isDynamicServerError(err)) throw err;
+    unstable_rethrow(err);
     console.warn("Failed to load taxonomy, using fallback default:", err);
     return DEFAULT_TAXONOMY;
   }
@@ -777,18 +964,18 @@ export async function getTaxonomy(): Promise<Taxonomy> {
 
 export async function getSystemInfo(): Promise<SystemInfo> {
   try {
-    const res = await fetchWithTimeout(`${API_BASE_URL}/system/info`, { cache: "no-store" });
+    const res = await apiFetch(`${API_BASE_URL}/system/info`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load system info (${res.status}: ${res.statusText})`);
     return await res.json();
   } catch (err) {
-    if (isDynamicServerError(err)) throw err;
+    unstable_rethrow(err);
     console.warn("Failed to load system info, using fallback default:", err);
     return DEFAULT_SYSTEM_INFO;
   }
 }
 
 export async function deleteReport(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { method: "DELETE" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to delete report (${res.status}): ${text}`);
@@ -803,7 +990,7 @@ export function fileUrl(path: string): string {
 }
 
 export async function aiEnrichReport(id: string): Promise<{ id: string; status: string; data: ReportData }> {
-  const res = await fetch(`${API_BASE_URL}/reports/${id}/ai-enrich`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/ai-enrich`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(`AI enrich failed: ${res.statusText}`);
@@ -811,7 +998,7 @@ export async function aiEnrichReport(id: string): Promise<{ id: string; status: 
 }
 
 export async function aiEnrichAllReports(): Promise<{ status: string; enriched_count: number }> {
-  const res = await fetch(`${API_BASE_URL}/reports/ai-enrich-all`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/ai-enrich-all`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(`Batch AI enrich failed: ${res.statusText}`);

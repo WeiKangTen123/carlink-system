@@ -16,6 +16,14 @@ from unittest.mock import patch
 bot_service_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(bot_service_dir))
 
+# Its own temp database and storage, like the other API tests -- this used
+# to write test rows (and now test users) into the real local carlink.db.
+import tempfile
+
+_tmp = tempfile.mkdtemp(prefix="reliability-test-")
+os.environ.setdefault("STORAGE_DIR", _tmp)
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_tmp, 'test.db').as_posix()}")
+
 from app.config import settings, BOT_SERVICE_DIR
 from app.rendering.renderer import _to_data_uri, BLANK_IMAGE_DATA_URI, render_pdf
 from app.storage.files import to_public_url, to_thumbnail_url
@@ -107,8 +115,10 @@ def test_api_endpoints_pdf_fault_tolerance():
     print("[TEST] Running test_api_endpoints_pdf_fault_tolerance...")
     from fastapi.testclient import TestClient
     from app.api.main import app
+    from auth_helpers import sign_in
 
     client = TestClient(app)
+    sign_in(client)
 
     # Insert a dummy report into db
     db = SessionLocal()

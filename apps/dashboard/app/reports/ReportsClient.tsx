@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
   caseTitle,
@@ -127,6 +128,7 @@ function isAiDetected(d: DamageSummaryItem): boolean {
 }
 
 export function ReportsClient({ initialReports, initialAnalytics }: Props) {
+  const user = useCurrentUser();
   const [reportsList, setReportsList] = useState<ReportSummary[]>(initialReports || []);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [searchTerm, setSearchTerm] = useState("");
@@ -442,7 +444,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
           </h1>
           <span className="command-header-badge" style={{ fontSize: 10, padding: "2px 8px" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 5px var(--badge-green-text)" }} />
-            Patrick Ng • GIA SLA 48h
+            {user?.name ?? "Surveyor"} • GIA SLA 48h
           </span>
 
           {/* Inline Compact Metric Chips */}
@@ -478,17 +480,20 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={handleEnrichAll}
-            disabled={isEnrichingAll}
-            className="btn-secondary-modern"
-            style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
-            title="On every case: vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
-          >
-            <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-            <span>{isEnrichingAll ? "Filling..." : "Fill Derived (All)"}</span>
-          </button>
+          {/* Every case at once: admins only (the API refuses others). */}
+          {isAdmin(user) && (
+            <button
+              type="button"
+              onClick={handleEnrichAll}
+              disabled={isEnrichingAll}
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
+              title="On every case: vehicle summary from the recorded make/model, body type from the vehicle catalogue, and unpriced Annex A rows from the recorded damage list. Not AI; adds no new facts."
+            >
+              <RefreshCw style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+              <span>{isEnrichingAll ? "Filling..." : "Fill Derived (All)"}</span>
+            </button>
+          )}
 
           <div className="view-mode-toggle" style={{ padding: 2 }}>
             <button
@@ -919,7 +924,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       </>
                     )}
 
-                    <DeleteButton id={selectedSummary.id} />
+                    <DeleteButton id={selectedSummary.id} status={selectedSummary.status} />
                   </div>
                 </div>
 
@@ -1382,7 +1387,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <ArrowRight style={{ width: 12, height: 12 }} />
                           </Link>
 
-                          <DeleteButton id={r.id} />
+                          <DeleteButton id={r.id} status={r.status} />
                         </div>
                       </td>
                     </tr>

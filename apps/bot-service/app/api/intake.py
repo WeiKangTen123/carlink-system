@@ -20,11 +20,13 @@ import logging
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 
+from app.auth.core import CurrentUser, audit
+from app.auth.deps import current_user
 from app.intake import pipeline
 from app.intake.photos import (
     copy_into_case,
@@ -36,7 +38,7 @@ from app.intake.photos import (
 )
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id, iso_utc
-from app.reports.schema import SecurityIncidentDraft
+from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import render_pdf
@@ -115,7 +117,7 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
 
 
 @router.post("")
-def create_intake() -> dict:
+def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
     db = SessionLocal()
     try:
         # Each draft can hold MAX_DRAFT_BYTES; an unbounded number of them is
@@ -138,6 +140,7 @@ def create_intake() -> dict:
         db.add(report)
         db.flush()
         db.add(IntakeSession(report_id=report.id))
+        audit(db, user, "created", report.id)
         db.commit()
         return {"id": report.id}
     finally:
@@ -323,8 +326,11 @@ def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
     try:
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         # Validated so a draft always has the shape every other reader of
-        # Report.data (list, analytics, PDF) expects.
-        report.data = SecurityIncidentDraft.model_validate(body.data).model_dump()
+        # Report.data (list, analytics, PDF) expects. sign_off is never
+        # taken from the browser (see main.blank_sign_off).
+        data = SecurityIncidentDraft.model_validate(body.data).model_dump()
+        data["sign_off"] = SignOffInfo().model_dump()
+        report.data = data
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
@@ -368,7 +374,7 @@ class FinalizeRequest(BaseModel):
 
 
 @router.post("/{report_id}/finalize")
-def finalize_intake(report_id: str, body: FinalizeRequest) -> dict:
+def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = Depends(current_user)) -> dict:
     """Turns the draft into a case.
 
     Ordered so a failure at any point leaves either the untouched draft (and
@@ -391,7 +397,7 @@ def finalize_intake(report_id: str, body: FinalizeRequest) -> dict:
         if not _claim_stage(db, report_id, "finalizing"):
             raise HTTPException(status_code=409, detail="This intake is already being turned into a case.")
         try:
-            _finalize_claimed(db, report_id, body)
+            _finalize_claimed(db, report_id, body, user)
         except Exception:
             db.rollback()
             db.execute(update(IntakeSession).where(IntakeSession.report_id == report_id).values(stage=prior_stage))
@@ -423,7 +429,7 @@ def _render_case_pdf(report_id: str) -> None:
         db.close()
 
 
-def _finalize_claimed(db, report_id: str, body: "FinalizeRequest") -> None:
+def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: CurrentUser) -> None:
     report = db.get(Report, report_id)
     session = db.get(IntakeSession, report_id)
     photos = [p for p in ordered_photos(db, report_id) if Path(p.path).exists()]
@@ -445,6 +451,8 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest") -> None:
         draft.damaged_parts = [item.part for item in draft.damage_summary]
 
     data = draft.model_dump()
+    # A new case is unsigned, whatever the request carried (main.blank_sign_off).
+    data["sign_off"] = SignOffInfo().model_dump()
     # Annex A/B are only synthesized when empty, so the ones drafted from
     # the AI's first damage list would otherwise survive the surveyor
     # changing that list at review. Rebuild them from the confirmed one.
@@ -459,6 +467,7 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest") -> None:
     report.pdf_path = None
     db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
     db.delete(session)
+    audit(db, user, "finalized", report_id)
     db.commit()
 
 
