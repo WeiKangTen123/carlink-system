@@ -278,6 +278,22 @@ def family_of(item: str) -> str | None:
     return None
 
 
+def canonical_part(text: str) -> str | None:
+    """A damaged part as a canonical name: as is when it already is one,
+    otherwise read with the same rules as past-report lines -- cases filed
+    before the taxonomy hold free text like "Tail gate lock striker" or
+    "Tail lamp LH"."""
+    from app.reports.taxonomy import CANONICAL_PARTS
+
+    if text in CANONICAL_PARTS:
+        return text
+    family = family_of(text)
+    if not family:
+        return None
+    side = side_of(text)
+    return f"{side} {family}" if side and family in _SIDED else family
+
+
 def family_and_side(part: str) -> tuple[str, str | None]:
     """Canonical part name -> (family, side): "Left Tail Lamp" ->
     ("Tail Lamp", "Left"); "Wheel (side undetermined)" -> ("Wheel", None)."""

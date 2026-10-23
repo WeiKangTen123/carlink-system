@@ -153,6 +153,10 @@ def main() -> int:
     long_model = suggest(db, make="honda", model="Vezel 1.5X CVT", damaged_parts=["Boot Lid"], existing_items=[])
     db.close()
     assert long_model["scope"] == "past honda Vezel cases" and long_model["cases_used"] == 2, long_model["scope"]
+    from app.parts.history import canonical_part
+    assert canonical_part("Tail gate lock striker") == "Boot Lid Lock" and canonical_part("Tail lamp LH") == "Left Tail Lamp"
+    assert canonical_part("Right Tail Lamp") == "Right Tail Lamp" and canonical_part("Mystery bit") is None
+    ok("free-text damaged parts on older cases are read as canonical parts")
     ok("a case's longer model name (\"Vezel 1.5X CVT\") still matches the history's \"Vezel\"")
 
     print("saving Annex A")

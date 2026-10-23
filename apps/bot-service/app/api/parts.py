@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from app.ai.structured import call_structured
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import current_user, require_admin
-from app.parts.history import FITTING_CONDITIONS, import_case, parse_report, suggest
+from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, Report
 from app.reports.schema import AnnexAPartItem
@@ -169,7 +169,11 @@ def annex_suggestions(report_id: str, user: CurrentUser = Depends(current_user))
         data = r.data or {}
         vehicle = data.get("vehicle_info") or {}
         existing = [it.get("part_name", "") for it in ((data.get("annex_a") or {}).get("items") or [])]
-        parts = [p for p in _damaged_parts(data) if p != "Other / Not Listed"]
+        parts = []
+        for p in _damaged_parts(data):
+            name = canonical_part(p)
+            if name and name != "Other / Not Listed" and name not in parts:
+                parts.append(name)
         result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
         result["vehicle"] = " ".join(x for x in (vehicle.get("make"), vehicle.get("model")) if x) or None
         result["damaged_parts"] = parts
