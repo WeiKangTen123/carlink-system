@@ -76,7 +76,7 @@ def ai_lines(make: str, model: str, parts: list[str]) -> list[dict]:
         schema=_AI_SCHEMA, parse=json.loads,
         models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"], timeout=60.0,
     )
-    return [{"name": ln["name"], "usual_unit_price": None} for p in out.get("parts") or [] for ln in p.get("lines") or []]
+    return [{"name": ln["name"], "qty": ln.get("qty", 1), "usual_unit_price": None, "cases": 0} for p in out.get("parts") or [] for ln in p.get("lines") or []]
 
 
 def main() -> int:
