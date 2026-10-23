@@ -5,7 +5,11 @@ out in turn, kits are learned from the rest, and suggestions for the held-
 out case's damaged parts (taken from its own Annex A) are compared with what
 its surveyor actually wrote. Offline, no Gemini.
 
-    python scripts/eval_parts_kits.py <folder with CL-xxxxx .xls/.xlsx>
+    python scripts/eval_parts_kits.py <folder with CL-xxxxx .xls/.xlsx> [--ai]
+
+--ai also asks Gemini (as POST /reports/{id}/annex-suggestions/ai does) for
+the parts no other case covers -- what the dashboard offers next -- and
+needs a Gemini key.
 """
 import os
 import sys
@@ -60,7 +64,24 @@ def damaged_parts(case) -> list[str]:
     return out
 
 
+def ai_lines(make: str, model: str, parts: list[str]) -> list[dict]:
+    import json
+
+    from app.ai.structured import call_structured
+    from app.api.parts import _AI_SCHEMA, _AI_SYSTEM
+
+    out = call_structured(
+        purpose="annex suggestions eval", system_instruction=_AI_SYSTEM,
+        input_parts=[{"type": "text", "text": f"Vehicle: {make} {model}, Singapore.
+Damaged parts: {json.dumps(parts)}"}],
+        schema=_AI_SCHEMA, parse=json.loads,
+        models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"], timeout=60.0,
+    )
+    return [{"name": ln["name"], "usual_unit_price": None} for p in out.get("parts") or [] for ln in p.get("lines") or []]
+
+
 def main() -> int:
+    use_ai = "--ai" in sys.argv
     files = sorted(p for p in Path(sys.argv[1]).rglob("*") if p.suffix.lower() in (".xls", ".xlsx") and not p.name.startswith("~$"))
     init_db()
     db = SessionLocal()
@@ -77,6 +98,8 @@ def main() -> int:
         parts = damaged_parts(case)
         result = suggest(db, make=case.make, model=case.model, damaged_parts=parts, existing_items=[], exclude_ref=case.ref)
         suggested = [ln for g in result["groups"] for ln in g["lines"]]
+        if use_ai and result["without_history"]:
+            suggested += ai_lines(case.make, case.model, result["without_history"])
         sugg_keys = {normalise_item(s["name"]) for s in suggested}
         actual = {normalise_item(l.item) for l in case.lines}
         hit = _matched(actual, sugg_keys)
