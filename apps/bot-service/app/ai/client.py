@@ -1,6 +1,13 @@
 from google import genai
+from google.genai import types
 
 from app.config import settings
+
+# No retries inside the SDK: call_structured does its own (one wait of at most
+# 30s on a 429, then the next model). The SDK's loop sleeps for whatever
+# Retry-After the server sends. On 2026-10-22 a model whose daily quota was
+# spent sent ~70,000s, and the call slept ~19 hours instead of failing over.
+_HTTP_OPTIONS = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=0))
 
 # One cached client per API key. Keys change rarely (an operator adding or
 # removing one in Settings), but building a client per request would be
@@ -58,11 +65,11 @@ def get_client(api_key: str | None = None) -> genai.Client:
     if not api_key:
         # No key anywhere -- let the SDK raise its own clear error rather
         # than inventing one here.
-        return genai.Client()
+        return genai.Client(http_options=_HTTP_OPTIONS)
 
     client = _clients.get(api_key)
     if client is None:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options=_HTTP_OPTIONS)
         _clients[api_key] = client
     return client
 

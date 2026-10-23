@@ -40,6 +40,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 # (table, column, SQL type) and added on startup if absent. Nullable only.
 _ADDED_COLUMNS = [
     ("intake_sessions", "ai_draft", "JSON"),
+    ("intake_photos", "part", "VARCHAR"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

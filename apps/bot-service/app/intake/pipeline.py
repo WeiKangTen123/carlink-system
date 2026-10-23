@@ -3,7 +3,8 @@
 Two steps, run in a background thread so the browser can poll progress (and
 leave and come back) instead of holding one request open for minutes:
 
-  1. sorting  -- every unsorted photo, BATCH_SIZE per call (ai/triage.py)
+  1. sorting  -- every unsorted photo, BATCH_SIZE per call, SORT_WORKERS
+                 calls at a time (ai/triage.py)
   2. reading  -- one drafting call (ai/extraction.draft_report) on the photos
                  that matter most, picked by select_for_reading()
 
@@ -13,6 +14,7 @@ set is enough to stop the same draft being processed twice at once.
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.ai.extraction import draft_report
@@ -26,28 +28,39 @@ logger = logging.getLogger(__name__)
 
 RUNNING_STAGES = {"sorting", "reading"}
 
-# How the drafting call's photo budget is spent, in priority order. Documents
-# come first because they're the only reliable source of plate, VIN and make
-# -- the facts parts lookup will depend on -- and there are rarely more than
-# a few. Damage gets the bulk. Whatever budget is left after this pass goes
-# to further damage and overview photos (see select_for_reading).
-READ_BUDGET: list[tuple[str, int]] = [
+# Photos that carry facts rather than damage, taken first. Documents are the
+# only reliable source of plate, VIN and make -- the facts parts lookup will
+# depend on -- and there are rarely more than a few. One VIN plate, odometer
+# or tyre photo says what a second one would: the old budget spent 2 VIN
+# plates, 2 tyres and 4 near-identical rear overviews on SLK 3063 Z while 22
+# of its 37 damage photos -- the tailgate's worst buckling, the cracked tail
+# lamp -- were never read.
+FACT_BUDGET: list[tuple[str, int]] = [
     ("log_card", 3),
-    ("vin_plate", 2),
+    ("vin_plate", 1),
     ("police_report", 3),
     ("odometer", 1),
-    ("damage", 14),
-    ("overview", 4),
-    ("third_party", 2),
-    ("tyre", 2),
     ("document", 2),
-    # Photos sorting skipped (a partial batch answer). Better a few of them
-    # than none, if a sorting call came back thin.
-    ("unsorted", 4),
+    ("third_party", 2),
+    ("tyre", 1),
 ]
-# ~24 x 200KB previews is ~6.5MB of base64 -- comfortably one request, and
-# few enough that the strongest model still answers within the timeout.
-MAX_READ_PHOTOS = 24
+OVERVIEW_BUDGET = 3
+# Photos sorting skipped (a partial batch answer). Better a few of them than
+# none, if a sorting call came back thin.
+UNSORTED_BUDGET = 4
+# Everything else goes to damage. ~32 x 200KB previews is ~8.5MB of base64 --
+# still one request, and the strongest model answers well inside the
+# 120-second reading timeout.
+MAX_READ_PHOTOS = 32
+# Kinds whose photo still counts as damage evidence when it shows damage and
+# names the damaged part (e.g. a boot photo the sorter called interior).
+_DAMAGE_EVIDENCE_KINDS = {"interior", "other"}
+
+# Sorting batches in flight at once. Each is one lite-model call of about a
+# minute, so one after another a 65-photo case took ~7 minutes. Three at a
+# time stays well inside the lite models' per-minute limits, and
+# call_structured backs off on a 429 anyway.
+SORT_WORKERS = 3
 
 # Typed by the reporter at step 1; the drafting call can't know them better.
 REPORTER_FIELDS = ("reporter_name", "reporter_role", "reporter_contact", "reporter_department", "reporter_email")
@@ -146,14 +159,16 @@ def _sort(report_id: str) -> None:
 
     total = len(todo)
     _set_stage(report_id, "sorting", 0, total)
-    for offset in range(0, total, BATCH_SIZE):
+    done = 0
+    done_lock = threading.Lock()
+
+    def sort_batch(batch: list[tuple[str, str, str]]) -> None:
+        nonlocal done
         # Paths were captured at the start of the run; a photo deleted since
         # is skipped rather than failing the whole run on a missing file.
-        batch = [item for item in todo[offset:offset + BATCH_SIZE] if Path(item[2]).exists()]
+        batch = [item for item in batch if Path(item[2]).exists()]
         if not batch:
-            continue
-        # A failure here fails the run, but every batch already written
-        # stays sorted, so Retry only sorts what's left.
+            return
         result = triage_photos([(label, path) for label, _, path in batch])
         db = SessionLocal()
         try:
@@ -167,48 +182,110 @@ def _sort(report_id: str) -> None:
                 photo.area = found["area"]
                 photo.quality = found["quality"]
                 photo.shows_damage = found["shows_damage"]
+                photo.part = found["part"]
                 photo.note = found["note"]
+            with done_lock:
+                done += len(batch)
+                progress = done
             session = db.get(IntakeSession, report_id)
             if session:
-                session.progress_done = min(total, offset + len(batch))
+                session.progress_done = min(total, progress)
             db.commit()
         finally:
             db.close()
 
+    batches = [todo[offset:offset + BATCH_SIZE] for offset in range(0, total, BATCH_SIZE)]
+    with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
+        futures = [pool.submit(sort_batch, batch) for batch in batches]
+    # A failed batch fails the run, but every batch that finished stays
+    # sorted -- the others are left to complete rather than cancelled -- so
+    # Retry only sorts what's left.
+    for future in futures:
+        if future.exception():
+            raise future.exception()
 
-def _spread_by_area(photos: list[IntakePhoto]) -> list[IntakePhoto]:
-    """Round-robin across vehicle areas, so a rear-end case with 30 bumper
-    close-ups still sends the one photo of the scraped left door."""
-    groups: dict[str | None, list[IntakePhoto]] = {}
+
+def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
+    """Reorders photos that are in camera order so that the first k of them
+    are spread over the whole sequence: first, last, middle, then the
+    quarters... Taking a group's earliest photos read only what was shot
+    first -- on SLK 3063 Z the tailgate photos taken with the boot open,
+    later in the walk-around, were never sent."""
+    n = len(photos)
+    if n <= 2:
+        return list(photos)
+    picked = [0, n - 1]
+    seen = {0, n - 1}
+    gaps = [(0, n - 1)]
+    while gaps:
+        next_gaps = []
+        for lo, hi in gaps:
+            if hi - lo < 2:
+                continue
+            mid = (lo + hi) // 2
+            if mid not in seen:
+                seen.add(mid)
+                picked.append(mid)
+            next_gaps += [(lo, mid), (mid, hi)]
+        gaps = next_gaps
+    return [photos[i] for i in picked]
+
+
+def _round_robin(groups: list[list[IntakePhoto]]) -> list[IntakePhoto]:
+    queues = [list(g) for g in groups]
+    out: list[IntakePhoto] = []
+    while any(queues):
+        for q in queues:
+            if q:
+                out.append(q.pop(0))
+    return out
+
+
+def _by_tiers(photos: list[IntakePhoto]) -> list[IntakePhoto]:
+    """Sharp photos showing damage first, blurry or damage-free ones after;
+    each tier spread over the camera sequence."""
+    tiers: dict[tuple[bool, bool], list[IntakePhoto]] = {}
     for p in photos:
-        groups.setdefault(p.area, []).append(p)
-    spread: list[IntakePhoto] = []
-    while any(groups.values()):
-        for area in list(groups):
-            if groups[area]:
-                spread.append(groups[area].pop(0))
-    return spread
+        tiers.setdefault((not p.shows_damage, p.quality == "blurry"), []).append(p)
+    return [p for key in sorted(tiers) for p in _spread_order(tiers[key])]
+
+
+def _damage_order(pool: list[IntakePhoto]) -> list[IntakePhoto]:
+    """Every damaged part gets a photo before any part gets a second one.
+    Photos are grouped by the part the sorter named, falling back to the
+    area when it named none; groups whose photos show damage come first."""
+    groups: dict[str, list[IntakePhoto]] = {}
+    for p in pool:
+        groups.setdefault(p.part or f"area:{p.area}", []).append(p)
+    ordered = sorted(groups.values(), key=lambda g: (not any(p.shows_damage for p in g), g[0].position))
+    showing = _round_robin([_by_tiers([p for p in g if p.shows_damage]) for g in ordered])
+    rest = _round_robin([_by_tiers([p for p in g if not p.shows_damage]) for g in ordered])
+    return showing + rest
 
 
 def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     """The photos the drafting call sees, in case order. Excluded and
     unusable photos never go; blurry ones only after sharp ones of the same
     kind."""
+    usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
-    for p in photos:
-        if p.excluded or p.quality == "unusable":
-            continue
+    for p in usable:
         by_kind.setdefault(p.kind or "unsorted", []).append(p)
-    for kind, group in by_kind.items():
-        group.sort(key=lambda p: (p.quality == "blurry", not p.shows_damage, p.position))
-        if kind == "damage":
-            by_kind[kind] = _spread_by_area(group)
+
+    damage_pool = [
+        p for p in usable
+        if p.kind == "damage" or (p.kind in _DAMAGE_EVIDENCE_KINDS and p.shows_damage and p.part)
+    ]
+    overviews = by_kind.get("overview", [])
+    areas: dict[str | None, list[IntakePhoto]] = {}
+    for p in overviews:
+        areas.setdefault(p.area, []).append(p)
 
     chosen: list[IntakePhoto] = []
     chosen_ids: set[str] = set()
 
-    def take(kind: str, limit: int) -> None:
-        for p in by_kind.get(kind, []):
+    def take(candidates: list[IntakePhoto], limit: int) -> None:
+        for p in candidates:
             if limit <= 0 or len(chosen) >= MAX_READ_PHOTOS:
                 return
             if p.id not in chosen_ids:
@@ -216,10 +293,14 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
                 chosen_ids.add(p.id)
                 limit -= 1
 
-    for kind, limit in READ_BUDGET:
-        take(kind, limit)
-    for kind in ("damage", "overview", "unsorted"):
-        take(kind, MAX_READ_PHOTOS)
+    for kind, limit in FACT_BUDGET:
+        take(_by_tiers(by_kind.get(kind, [])), limit)
+    take(_round_robin([_by_tiers(g) for g in areas.values()]), OVERVIEW_BUDGET)
+    unsorted = _spread_order(by_kind.get("unsorted", []))
+    take(_damage_order(damage_pool), MAX_READ_PHOTOS - len(chosen) - min(UNSORTED_BUDGET, len(unsorted)))
+    take(unsorted, UNSORTED_BUDGET)
+    # Room left over (a case with few damage photos): more of the rest.
+    take(_damage_order(damage_pool) + _spread_order(overviews) + unsorted, MAX_READ_PHOTOS)
 
     order = {p.id: i for i, p in enumerate(photos)}
     return sorted(chosen, key=lambda p: order[p.id])

@@ -9,6 +9,7 @@ import base64
 import logging
 import mimetypes
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -19,6 +20,39 @@ from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Extra time allowed on top of a call's own timeout before giving up on it.
+# The SDK's per-request timeout doesn't always bound a call -- a test call
+# to a preview model ran for minutes past timeout=60 -- so the limit is
+# enforced here, on the wall clock.
+DEADLINE_MARGIN = 15.0
+
+
+def _create_within(deadline: float, create: Callable[..., T], **kwargs) -> T:
+    """Runs one SDK call, giving up after `deadline` seconds.
+
+    A thread can't be killed, so a call that overruns is left to finish on
+    its own (daemon thread, result discarded) while the chain moves on to
+    the next model. A fresh thread per call rather than a pool, so a few
+    stuck calls can never queue up the ones behind them.
+    """
+    box: dict = {}
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            box["result"] = create(**kwargs)
+        except BaseException as exc:  # handed to the caller below
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="gemini-call", daemon=True).start()
+    if not done.wait(deadline):
+        raise TimeoutError(f"no answer within {deadline:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 # Dashboard intake sends the 1600px WebP previews (storage/files.py) rather
 # than full camera originals, and HEIC straight from iPhones. Neither is in
@@ -77,7 +111,9 @@ def call_structured(
             # pointless: it draws on the same per-key quota and 429s too.
             for attempt in (1, 2):
                 try:
-                    interaction = client.interactions.create(
+                    interaction = _create_within(
+                        timeout + DEADLINE_MARGIN,
+                        client.interactions.create,
                         model=model_id,
                         system_instruction=system_instruction,
                         input=input_parts,

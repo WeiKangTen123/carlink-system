@@ -219,7 +219,10 @@ export function formatSgtDateTime(isoString?: string | null): string {
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
-      hour12: false,
+      // h23, not hour12:false -- Node's ICU renders midnight as "24:56"
+      // under hour12:false while browsers render "00:56", which made the
+      // server and browser text differ (React hydration error #418).
+      hourCycle: "h23",
     }) + " SGT";
   } catch {
     return isoString;

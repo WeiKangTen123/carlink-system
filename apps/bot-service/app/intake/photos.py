@@ -71,6 +71,7 @@ def serialize_photo(photo: IntakePhoto, label: str) -> dict:
         "area": photo.area,
         "quality": photo.quality,
         "shows_damage": photo.shows_damage,
+        "part": photo.part,
         "note": photo.note,
         "kind_source": photo.kind_source,
         "excluded": photo.excluded,

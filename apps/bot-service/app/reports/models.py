@@ -147,6 +147,11 @@ class IntakePhoto(Base):
     area: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     quality: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     shows_damage: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The one damaged part the photo shows best (a taxonomy.CANONICAL_PARTS
+    # name), so the reading step can spread its photo budget across parts
+    # instead of across the coarse areas -- on a rear-end case every damage
+    # photo is "rear". (Added after the table shipped: see db._ADDED_COLUMNS.)
+    part: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     kind_source: Mapped[str] = mapped_column(String, default="ai")
     # Kept in the case file but never sent to the AI.
