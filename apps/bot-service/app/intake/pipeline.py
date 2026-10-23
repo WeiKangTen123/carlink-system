@@ -15,6 +15,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.ai.extraction import draft_report
@@ -104,6 +105,8 @@ def _set_stage(report_id: str, stage: str, done: int = 0, total: int = 0, error:
     try:
         session = db.get(IntakeSession, report_id)
         if session:
+            if session.stage != stage:
+                session.stage_started_at = datetime.now(timezone.utc)
             session.stage = stage
             session.progress_done = done
             session.progress_total = total

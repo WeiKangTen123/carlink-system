@@ -121,6 +121,9 @@ class IntakeSession(Base):
     # fields the surveyor changed -- those are kept, not overwritten.
     # (Added after the table shipped: see db._ADDED_COLUMNS.)
     ai_draft: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # When the current stage began, so the wizard can show elapsed time and
+    # an estimate of what's left. (Added later: see db._ADDED_COLUMNS.)
+    stage_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 

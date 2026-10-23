@@ -62,6 +62,10 @@ export type IntakePhoto = {
   area: string | null;
   quality: "good" | "blurry" | "unusable" | null;
   shows_damage: boolean;
+  /** The one damaged part the sorter says this photo shows best (a
+   * canonical part name), or null. Set by sorting only; regrouping a photo
+   * doesn't change it. */
+  part: string | null;
   note: string | null;
   kind_source: "ai" | "surveyor";
   excluded: boolean;
@@ -73,6 +77,9 @@ export type IntakeState = {
   created_at: string;
   stage: IntakeStage;
   progress: { done: number; total: number };
+  /** When the current stage began (ISO with offset), for elapsed time and
+   * the estimate of time left. Null on drafts from before it was recorded. */
+  stage_started_at: string | null;
   error: string | null;
   reporter_notes: string;
   read_photo_ids: string[];

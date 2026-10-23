@@ -107,6 +107,7 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
         "created_at": iso_utc(report.created_at),
         "stage": stage,
         "progress": {"done": session.progress_done, "total": session.progress_total},
+        "stage_started_at": iso_utc(session.stage_started_at) if session.stage_started_at else None,
         "error": error,
         "reporter_notes": session.reporter_notes,
         "read_photo_ids": session.read_photo_ids or [],

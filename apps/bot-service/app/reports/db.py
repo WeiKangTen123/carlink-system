@@ -41,6 +41,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 _ADDED_COLUMNS = [
     ("intake_sessions", "ai_draft", "JSON"),
     ("intake_photos", "part", "VARCHAR"),
+    ("intake_sessions", "stage_started_at", "DATETIME"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing
