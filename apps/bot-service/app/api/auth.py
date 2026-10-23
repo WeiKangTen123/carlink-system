@@ -10,9 +10,10 @@
     PATCH /users/{id}                  admin: edit, change role, disable/enable
     POST  /users/{id}/reset-password   admin: new temporary password
 
-There is no sign-up and no emailed reset: the first admin is created on the
-server (python -m app.auth.manage), and a forgotten password is reset by an
-admin, who passes the temporary password on.
+The first admin is created on the server (python -m app.auth.manage).
+Everyone else requests access or is invited, and a forgotten password is
+reset with a one-time link -- see app/api/signup.py. There is no email
+service: admins send links themselves.
 """
 import re
 import threading
@@ -43,6 +44,7 @@ from app.auth.core import (
     user_dict,
 )
 from app.auth.deps import current_user, require_admin
+from app.auth.links import MAX_PENDING_REQUESTS
 from app.auth.passwords import (
     MAX_PASSWORD_LENGTH,
     burn_time,
@@ -53,7 +55,7 @@ from app.auth.passwords import (
 )
 from app.config import settings
 from app.reports.db import SessionLocal
-from app.reports.models import User
+from app.reports.models import AccessRequest, User
 
 router = APIRouter(tags=["auth"])
 
@@ -222,7 +224,17 @@ def logout(request: Request, response: Response) -> dict:
 
 @router.get("/auth/me")
 def me(user: CurrentUser = Depends(current_user)) -> dict:
-    return me_dict(user)
+    data = me_dict(user)
+    if user.is_admin:
+        # For the badge on Settings: requests waiting for a decision.
+        db = SessionLocal()
+        try:
+            data["pending_access_requests"] = db.query(AccessRequest).filter(AccessRequest.status == "pending").count()
+            # So Settings can warn before new requests start being refused.
+            data["pending_access_limit"] = MAX_PENDING_REQUESTS
+        finally:
+            db.close()
+    return data
 
 
 class ProfileFields(BaseModel):
@@ -286,7 +298,7 @@ def change_password(body: PasswordChange, user: CurrentUser = Depends(current_us
                 )
             db.commit()
             raise HTTPException(status_code=400, detail="Your current password is wrong.")
-        problem = password_problem(body.new_password)
+        problem = password_problem(body.new_password, (row.name, row.email))
         if problem:
             raise HTTPException(status_code=400, detail=problem)
         if body.new_password == body.current_password:

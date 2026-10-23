@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { isPublicPage } from "@/lib/publicPages";
 
 // Kept in step with SESSION_COOKIES in lib/api.ts (not imported: this file
 // stays free of that module's server/browser branches).
@@ -6,7 +7,9 @@ const SESSION_COOKIES = ["__Host-carlink_session", "carlink_session"];
 
 /**
  * A quick check, not the real one: with no session cookie at all, go to
- * /login instead of rendering a page whose every API call would fail. The
+ * /login instead of rendering a page whose every API call would fail
+ * (except the public pages in lib/publicPages.ts: sign-in, request access,
+ * invite links, the privacy notice). The
  * API checks the session itself on every request (bot-service app/auth);
  * a cookie whose session has ended is caught there, and lib/api.ts then
  * redirects to /login the same way.
@@ -17,7 +20,7 @@ const SESSION_COOKIES = ["__Host-carlink_session", "carlink_session"];
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  if (pathname !== "/login" && !SESSION_COOKIES.some((name) => request.cookies.has(name))) {
+  if (!isPublicPage(pathname) && !SESSION_COOKIES.some((name) => request.cookies.has(name))) {
     const login = request.nextUrl.clone();
     login.pathname = "/login";
     login.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + search)}`;

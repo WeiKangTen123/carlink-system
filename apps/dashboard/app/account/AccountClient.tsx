@@ -4,9 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, KeyRound, Save, UserCog } from "lucide-react";
 import type { CurrentUser } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/signup";
 import { changeMyPasswordAction, updateMyProfileAction } from "./actions";
-
-const MIN_PASSWORD_LENGTH = 10; // apps/bot-service/app/auth/passwords.py
 
 function ProfileCard({ user }: { user: CurrentUser }) {
   const router = useRouter();
@@ -149,7 +148,8 @@ function PasswordCard({ forced }: { forced: boolean }) {
           <div>
             <div className="card-title" style={{ marginBottom: 2 }}>{forced ? "Choose your password" : "Change password"}</div>
             <div className="card-subtitle" style={{ marginBottom: 0 }}>
-              At least {MIN_PASSWORD_LENGTH} characters. Changing it signs out your other devices.
+              At least {MIN_PASSWORD_LENGTH} characters; 3 or 4 random words are easy to remember. Changing it signs
+              out your other devices.
             </div>
           </div>
         </div>

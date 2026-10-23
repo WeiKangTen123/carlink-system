@@ -1,7 +1,28 @@
 import Link from "next/link";
+import { unstable_rethrow } from "next/navigation";
 import { Lock } from "lucide-react";
-import { getAppSettings, getCurrentUser, getSystemInfo, listUsers } from "@/lib/api";
+import {
+  getAppSettings,
+  getCurrentUser,
+  getSystemInfo,
+  listAccessRequests,
+  listAccountLinks,
+  listUsers,
+} from "@/lib/api";
 import { SettingsClient } from "./SettingsClient";
+
+/** Null instead of an error page when one card's data can't be loaded; the
+ * card says so and offers to retry. */
+async function orNull<T>(load: Promise<T>): Promise<T | null> {
+  try {
+    return await load;
+  } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next.
+    unstable_rethrow(err);
+    console.warn("Settings: couldn't load part of the page:", err);
+    return null;
+  }
+}
 
 export default async function SettingsPage() {
   // Settings is admin-only (the API refuses everyone else); the sidebar
@@ -27,7 +48,13 @@ export default async function SettingsPage() {
   // table. The previous version of this page displayed hardcoded values
   // (including a model chain that didn't match the real one) and three
   // invented users.
-  const [settings, system, users] = await Promise.all([getAppSettings(), getSystemInfo(), listUsers()]);
+  const [settings, system, users, accessRequests, accountLinks] = await Promise.all([
+    getAppSettings(),
+    getSystemInfo(),
+    listUsers(),
+    orNull(listAccessRequests("pending")),
+    orNull(listAccountLinks()),
+  ]);
 
   // Narrowed deliberately: passing the whole system object would serialize
   // the model chain, rate-limit interval and storage paths into the page
@@ -43,5 +70,14 @@ export default async function SettingsPage() {
     whatsappReports: system.channels.reports_by_channel.whatsapp ?? 0,
   };
 
-  return <SettingsClient settings={settings} setup={setup} users={users} currentUserId={me.id} />;
+  return (
+    <SettingsClient
+      settings={settings}
+      setup={setup}
+      users={users}
+      accessRequests={accessRequests}
+      accountLinks={accountLinks}
+      currentUserId={me.id}
+    />
+  );
 }

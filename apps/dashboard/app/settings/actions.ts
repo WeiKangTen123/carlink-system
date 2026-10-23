@@ -11,11 +11,24 @@ import {
   listUsers,
   createUser,
   updateUser,
-  resetUserPassword,
+  listAccessRequests,
+  approveAccessRequest,
+  rejectAccessRequest,
+  bulkDecideAccessRequests,
+  deleteAccessRequest,
+  listAccountLinks,
+  createAccountLink,
+  revokeAccountLink,
+  createResetLink,
+  type AccessRequestRow,
+  type AccountLinkRow,
   type AppSettings,
+  type IssuedLink,
+  type LinkLifetime,
   type LlmKey,
   type ProfileFields,
   type UserAccount,
+  type UserRole,
 } from "@/lib/api";
 
 /** All of these are server actions so the browser never talks to the API
@@ -123,14 +136,107 @@ export async function updateUserAction(
   }
 }
 
-export async function resetUserPasswordAction(
-  id: string
-): Promise<{ user: UserAccount; temporaryPassword: string } | { error: string }> {
+/** A one-time link for the user to set a new password, instead of a
+ * temporary password the admin reads out. */
+export async function createResetLinkAction(id: string): Promise<IssuedLink | { error: string }> {
   try {
-    const result = await resetUserPassword(id);
-    return { user: result.user, temporaryPassword: result.temporary_password };
+    return await createResetLink(id);
   } catch (err) {
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to reset the password" };
+    return { error: err instanceof Error ? err.message : "Failed to create the reset link" };
+  }
+}
+
+// Access requests from the public /signup page, and the one-time links
+// that turn them into accounts. The link's token comes back once, in the
+// result, for the admin to copy; the API keeps only its hash.
+
+export async function listAccessRequestsAction(
+  status: "pending" | "all"
+): Promise<{ requests: AccessRequestRow[] } | { error: string }> {
+  try {
+    return { requests: await listAccessRequests(status) };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load access requests" };
+  }
+}
+
+export async function approveAccessRequestAction(
+  id: string,
+  role: UserRole,
+  expiresHours: LinkLifetime
+): Promise<(IssuedLink & { request: AccessRequestRow }) | { error: string }> {
+  try {
+    return await approveAccessRequest(id, role, expiresHours);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to approve the request" };
+  }
+}
+
+export async function rejectAccessRequestAction(
+  id: string,
+  note: string
+): Promise<{ request: AccessRequestRow } | { error: string }> {
+  try {
+    return { request: await rejectAccessRequest(id, note) };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to reject the request" };
+  }
+}
+
+export async function bulkAccessRequestsAction(
+  ids: string[],
+  action: "reject" | "delete"
+): Promise<{ done: number; skipped: number } | { error: string }> {
+  try {
+    return await bulkDecideAccessRequests(ids, action);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to update the requests" };
+  }
+}
+
+export async function deleteAccessRequestAction(id: string): Promise<{ ok: true } | { error: string }> {
+  try {
+    await deleteAccessRequest(id);
+    return { ok: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to delete the request" };
+  }
+}
+
+export async function listAccountLinksAction(): Promise<{ links: AccountLinkRow[] } | { error: string }> {
+  try {
+    return { links: await listAccountLinks() };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load links" };
+  }
+}
+
+export async function createAccountLinkAction(fields: {
+  email: string;
+  role: UserRole;
+  name?: string;
+  expires_hours?: LinkLifetime;
+}): Promise<IssuedLink | { error: string }> {
+  try {
+    return await createAccountLink(fields);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to create the link" };
+  }
+}
+
+export async function revokeAccountLinkAction(id: string): Promise<{ link: AccountLinkRow } | { error: string }> {
+  try {
+    return { link: await revokeAccountLink(id) };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to cancel the link" };
   }
 }

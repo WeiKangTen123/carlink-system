@@ -195,7 +195,7 @@ def record_login(user: User, now: datetime | None = None) -> None:
 
 def audit(
     db: Session,
-    actor: CurrentUser | None,
+    actor: CurrentUser | User | None,
     action: str,
     report_id: str | None = None,
     detail: str = "",

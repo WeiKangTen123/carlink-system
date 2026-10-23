@@ -19,14 +19,14 @@ from app.reports.db import SessionLocal, init_db
 from app.reports.models import User
 
 
-def _read_password(from_stdin: bool) -> str:
+def _read_password(from_stdin: bool, personal: tuple[str, ...] = ()) -> str:
     if from_stdin:
         password = sys.stdin.readline().rstrip("\r\n")
     else:
         password = getpass.getpass("Password: ")
         if getpass.getpass("Again: ") != password:
             sys.exit("Passwords don't match.")
-    problem = password_problem(password)
+    problem = password_problem(password, personal)
     if problem:
         sys.exit(problem)
     return password
@@ -42,7 +42,7 @@ def create_user(args) -> None:
             email=email,
             name=args.name.strip(),
             role=args.role,
-            password_hash=hash_password(_read_password(args.password_stdin)),
+            password_hash=hash_password(_read_password(args.password_stdin, (args.name, email))),
         )
         db.add(user)
         audit(db, None, "user_created", detail=f"{email} ({args.role}) from the server command line")
@@ -59,7 +59,7 @@ def reset_password(args) -> None:
         user = db.query(User).filter(User.email == email).first()
         if user is None:
             sys.exit(f"No account for {email}.")
-        user.password_hash = hash_password(_read_password(args.password_stdin))
+        user.password_hash = hash_password(_read_password(args.password_stdin, (user.name, user.email)))
         user.must_change_password = False
         user.failed_logins = 0
         user.locked_until = None

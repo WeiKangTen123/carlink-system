@@ -8,13 +8,16 @@ import { UserMenu } from "@/components/UserMenu";
 import { SessionGuard } from "@/components/SessionGuard";
 import { CurrentUserProvider, isAdmin } from "@/components/CurrentUser";
 import type { CurrentUser } from "@/lib/api";
+import { isPublicPage } from "@/lib/publicPages";
 
-/** Sidebar + top bar around every page except /login, which is drawn on its
- * own. A client component because it depends on the current path. */
+/** Sidebar + top bar around every page except the public ones (sign-in,
+ * request access, invite links, privacy notice; lib/publicPages.ts), which
+ * are drawn on their own. A client component because it depends on the
+ * current path. */
 export function AppShell({ user, children }: { user: CurrentUser | null; children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const bare = pathname === "/login";
+  const bare = isPublicPage(pathname);
 
   // A temporary password has to be replaced before anything else; the API
   // refuses everything else meanwhile (app/auth/middleware.py).
@@ -27,7 +30,7 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   return (
     <CurrentUserProvider value={user}>
       <div className="app-shell">
-        <Sidebar showSettings={isAdmin(user)} />
+        <Sidebar showSettings={isAdmin(user)} pendingRequests={isAdmin(user) ? (user?.pending_access_requests ?? 0) : 0} />
 
         <div className="main-column">
           <header className="top-bar">
