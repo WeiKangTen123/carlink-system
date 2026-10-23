@@ -565,6 +565,12 @@ export type AnnexAPartItem = {
   adjusted_cost: number;
   is_net_item: boolean;
   oem_part_number?: string | null;
+  /** Set on lines added from a suggestion: where it came from ("2 past
+   * Honda Vezel cases", "AI suggestion"). Not printed. */
+  suggested_from?: string | null;
+  /** What past cases' lines were adjusted to per unit (median). A
+   * reference for the surveyor only -- never the workshop's estimate. */
+  usual_unit_price?: number | null;
 };
 
 export type AnnexAInfo = {
@@ -956,6 +962,154 @@ export async function renderReportPdf(id: string): Promise<{ id: string; status:
     const text = await res.text();
     throw new Error(`Failed to render PDF (${res.status}): ${text}`);
   }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Annex A and past reports (apps/bot-service/app/api/parts.py). Past report
+// spreadsheets are imported on the Knowledge page; their Annex A lines
+// suggest what a new case's Annex A needs and what each line usually costs.
+// Nothing is written into a case until the surveyor saves its Annex A.
+
+/** One line past cases wrote for a damaged part. */
+export type AnnexSuggestionLine = {
+  name: string;
+  family?: string | null;
+  qty: number;
+  /** Median of what past lines were adjusted to per unit; null when none
+   * of them had a price. */
+  usual_unit_price: number | null;
+  /** How many cases the usual price comes from. */
+  price_from_cases?: number;
+  price_range?: [number, number] | null;
+  /** How many past cases had this line (0 for AI lines). */
+  cases: number;
+  /** Past cases always listed it among the nett items. */
+  nett?: boolean;
+  conditions?: string[];
+  /** "fitting": clips, seals and the like renewed on refit. */
+  kind: "part" | "fitting";
+  last_seen?: string | null;
+  /** "AI suggestion" on lines from askAiAnnexSuggestions. */
+  source?: string;
+};
+
+export type AnnexSuggestionGroup = {
+  part: string;
+  /** "damaged", "often replaced with Boot Lid (2 of 2 cases)" or
+   * "AI suggestion (no past case)". */
+  reason: string;
+  lines: AnnexSuggestionLine[];
+};
+
+export type AnnexSuggestions = {
+  /** "past Honda Vezel cases", "past Honda cases" or "all imported cases". */
+  scope: string;
+  cases_used: number;
+  vehicle: string | null;
+  damaged_parts: string[];
+  /** Damaged parts no past case covers. */
+  without_history: string[];
+  /** Lines already in the case's Annex A are left out. */
+  groups: AnnexSuggestionGroup[];
+};
+
+export async function getAnnexSuggestions(reportId: string): Promise<AnnexSuggestions> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load suggested lines"));
+  return res.json();
+}
+
+/** Gemini's lines for parts no past case covers: names and quantities only,
+ * no prices. Spends AI quota, so only on the surveyor's click. */
+export async function askAiAnnexSuggestions(reportId: string, parts: string[]): Promise<{ groups: AnnexSuggestionGroup[] }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-suggestions/ai`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parts }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "The AI couldn't suggest lines"));
+  return res.json();
+}
+
+/** Saves the whole Annex A table. The API numbers the rows, works out each
+ * adjusted cost and the Annex A/C totals, and drops rows with no part name;
+ * a signed-off case is refused (409). The PDF is rendered again on the next
+ * download. */
+export async function saveAnnexA(
+  reportId: string,
+  items: AnnexAPartItem[]
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-a`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save Annex A"));
+  return res.json();
+}
+
+/** One imported past report. */
+export type PastReportCase = {
+  /** The firm's case reference, e.g. "CL 12330". */
+  ref: string;
+  plate: string;
+  make: string;
+  model: string;
+  /** ISO date of the survey, when the report gave one. */
+  surveyed: string | null;
+  lines: number;
+  file: string;
+};
+
+/** One line wording for one make and model, across the past reports. */
+export type PartsHistoryLine = {
+  item: string;
+  family: string | null;
+  make: string;
+  model: string;
+  cases: number;
+  /** Median of what the lines were adjusted to per unit. */
+  usual_unit_price: number | null;
+  min_price: number | null;
+  max_price: number | null;
+  /** Clips, seals and the like renewed on refit. */
+  fitting: boolean;
+  last_seen: string | null;
+};
+
+export type PartsHistory = { cases: PastReportCase[]; lines: PartsHistoryLine[] };
+
+export async function getPartsHistory(): Promise<PartsHistory> {
+  const res = await apiFetch(`${API_BASE_URL}/parts-history`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load the parts price history"));
+  return res.json();
+}
+
+export type PastReportImportResult =
+  | { file: string; ref: string; make: string; model: string; lines: number }
+  | { file: string; error: string };
+
+/** Upload limit per import (the API refuses more). */
+export const MAX_PAST_REPORT_FILES = 50;
+
+/** Admin only. Called straight from the browser, like the intake photo
+ * uploads (lib/intake.ts): files don't suit a server action's body limit.
+ * Each file is one past report; one that can't be read is listed with the
+ * reason and the rest still import. */
+export async function importPastReports(files: File[]): Promise<{ results: PastReportImportResult[] }> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  const res = await apiFetch(`${API_BASE_URL}/parts-history/import`, { method: "POST", body: form });
+  if (res.status === 413) throw new Error("Too large for one upload. Import fewer files at a time.");
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to import the reports"));
+  return res.json();
+}
+
+/** Admin only. Removes every line imported from that report. */
+export async function deletePastReport(ref: string): Promise<{ ok: boolean; lines: number }> {
+  const res = await apiFetch(`${API_BASE_URL}/parts-history/${encodeURIComponent(ref)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to remove the report"));
   return res.json();
 }
 

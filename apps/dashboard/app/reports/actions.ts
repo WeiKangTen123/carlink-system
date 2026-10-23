@@ -11,6 +11,14 @@ import {
   analyzeReportPhotos,
   analyzeExistingReportPhotos,
   getReport,
+  getAnnexSuggestions,
+  askAiAnnexSuggestions,
+  saveAnnexA,
+  type AnnexAInfo,
+  type AnnexAPartItem,
+  type AnnexCInfo,
+  type AnnexSuggestionGroup,
+  type AnnexSuggestions,
   type PhotoAnalysisDraft,
   type SignOffRequest,
   type SignOffInfo,
@@ -158,6 +166,50 @@ export async function reopenReportAction(id: string): Promise<{ ok: true } | { e
   revalidatePath(`/reports/${id}`);
   revalidatePath("/reports");
   return { ok: true };
+}
+
+// Annex A: suggested lines from past reports, and saving the table. Errors
+// come back as values so the Annex A tab can show them inline.
+
+export async function getAnnexSuggestionsAction(reportId: string): Promise<AnnexSuggestions | { error: string }> {
+  try {
+    return await getAnnexSuggestions(reportId);
+  } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load suggested lines" };
+  }
+}
+
+/** Spends AI quota -- called only when the surveyor clicks for it. A 503
+ * (the AI is unavailable) comes back as its message. */
+export async function askAiAnnexSuggestionsAction(
+  reportId: string,
+  parts: string[]
+): Promise<{ groups: AnnexSuggestionGroup[] } | { error: string }> {
+  try {
+    return await askAiAnnexSuggestions(reportId, parts);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "The AI couldn't suggest lines" };
+  }
+}
+
+/** Returns the saved table as the API worked it out (numbering, adjusted
+ * costs, totals), or the error -- e.g. the 409 when the case is signed off. */
+export async function saveAnnexAAction(
+  reportId: string,
+  items: AnnexAPartItem[]
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo } | { error: string }> {
+  try {
+    const result = await saveAnnexA(reportId, items);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save Annex A" };
+  }
 }
 
 export async function aiEnrichReportAction(id: string) {
