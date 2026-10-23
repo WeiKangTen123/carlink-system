@@ -4,7 +4,8 @@
  * not through Server Actions: a real case is 40-80 photos uploaded a few at a
  * time in parallel, and Server Actions run one at a time with a 25MB body cap.
  * In prod API_BASE_URL is the same-origin /api path nginx proxies to FastAPI
- * (100MB body limit); in local dev it's the API port, which CORS allows.
+ * (nginx allows 30MB per request; the API caps a photo at 25MB); in local
+ * dev it's the API port, which CORS allows.
  * apiFetch sends the sign-in cookie, and if the session has ended mid-intake
  * it tells SessionGuard, which offers to sign in again without leaving the
  * page -- everything on screen is kept and the failed step can be retried. */
@@ -62,6 +63,10 @@ export type IntakePhoto = {
   area: string | null;
   quality: "good" | "blurry" | "unusable" | null;
   shows_damage: boolean;
+  /** The one damaged part the sorter says this photo shows best (a
+   * canonical part name), or null. Set by sorting only; regrouping a photo
+   * doesn't change it. */
+  part: string | null;
   note: string | null;
   kind_source: "ai" | "surveyor";
   excluded: boolean;
@@ -73,6 +78,9 @@ export type IntakeState = {
   created_at: string;
   stage: IntakeStage;
   progress: { done: number; total: number };
+  /** When the current stage began (ISO with offset), for elapsed time and
+   * the estimate of time left. Null on drafts from before it was recorded. */
+  stage_started_at: string | null;
   error: string | null;
   reporter_notes: string;
   read_photo_ids: string[];
@@ -83,16 +91,130 @@ export type IntakeState = {
 
 export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic"];
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await apiFetch(`${API_BASE_URL}/intake${path}`, { cache: "no-store", ...init });
+/** A failed intake API call. `status` is null when no answer came back at
+ * all (offline, connection dropped, or the request timed out). */
+export class IntakeRequestError extends Error {
+  readonly status: number | null;
+  readonly timedOut: boolean;
+  /** How long the server asked us to wait (Retry-After), in ms. */
+  readonly retryAfterMs: number | null;
+
+  constructor(message: string, status: number | null, opts: { timedOut?: boolean; retryAfterMs?: number | null } = {}) {
+    super(message);
+    this.name = "IntakeRequestError";
+    this.status = status;
+    this.timedOut = Boolean(opts.timedOut);
+    this.retryAfterMs = opts.retryAfterMs ?? null;
+  }
+}
+
+// Worth sending again unchanged: the request was fine, the connection or the
+// server wasn't (nginx answers 502/504 while the API restarts).
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+// Sending the same request again can't help: an unreadable or unsupported
+// file, one over the size cap, a full or already-finalized case.
+const PERMANENT_STATUSES = new Set([400, 404, 409, 413, 415, 422]);
+
+/** No answer, or an answer that says "try again later". */
+export function isTransientFailure(e: unknown): boolean {
+  return e instanceof IntakeRequestError && (e.status === null || TRANSIENT_STATUSES.has(e.status));
+}
+
+/** The server refused the request itself; retrying it won't change that. */
+export function isPermanentFailure(e: unknown): boolean {
+  return e instanceof IntakeRequestError && e.status !== null && PERMANENT_STATUSES.has(e.status);
+}
+
+/** A few words for a failed upload's tile; the full message goes in its tooltip. */
+export function uploadFailureReason(e: unknown): string {
+  if (!(e instanceof IntakeRequestError)) return "Upload failed";
+  if (e.timedOut) return "Timed out";
+  switch (e.status) {
+    case null:
+      return "No connection";
+    case 400:
+      return /unsupported/i.test(e.message) ? "Unsupported type" : "Not a readable photo";
+    case 401:
+    case 403:
+      return "Signed out";
+    case 404:
+      return "Draft not found";
+    case 408:
+    case 504:
+      return "Timed out";
+    case 409:
+      if (/limit|at most/i.test(e.message)) return "Case is full";
+      return /being turned/i.test(e.message) ? "Case is being created" : "Case already created";
+    case 413:
+      return "Too large";
+    case 415:
+      return "Unsupported type";
+    case 429:
+      return "Server busy";
+    case 502:
+    case 503:
+      return "Server unavailable";
+    default:
+      return e.status >= 500 ? "Server error" : `Failed (${e.status})`;
+  }
+}
+
+/** Plain words for an error page with no JSON detail (nginx's own pages). */
+function statusMessage(res: Response): string {
+  switch (res.status) {
+    case 408:
+    case 504:
+      return `The server took too long to answer (${res.status})`;
+    case 413:
+      return "Too large for the server (413)";
+    case 429:
+      return "Too many requests at once -- the server asked to slow down (429)";
+    case 502:
+    case 503:
+      return `The server is restarting or unavailable (${res.status}). Try again in a moment`;
+    default:
+      return `Request failed (${res.status} ${res.statusText})`;
+  }
+}
+
+function retryAfterMs(res: Response): number | null {
+  const value = res.headers.get("Retry-After");
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}
+
+/** timeoutMs: give up (and throw a timed-out IntakeRequestError) if no
+ * answer has started arriving by then. No limit if unset. */
+async function call<T>(path: string, init: RequestInit = {}, opts: { timeoutMs?: number } = {}): Promise<T> {
+  const controller = opts.timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : undefined;
+  let res: Response;
+  try {
+    res = await apiFetch(`${API_BASE_URL}/intake${path}`, {
+      cache: "no-store",
+      ...init,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } catch {
+    if (controller?.signal.aborted)
+      throw new IntakeRequestError(`No answer from the server after ${Math.round((opts.timeoutMs ?? 0) / 1000)}s`, null, { timedOut: true });
+    throw new IntakeRequestError("Couldn't reach the server. Check the connection", null);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
-    let detail: string | undefined;
+    let detail: unknown;
     try {
       detail = (await res.json()).detail;
     } catch {
       // not JSON -- fall through to the status text
     }
-    throw new Error(detail || `Request failed (${res.status} ${res.statusText})`);
+    // FastAPI's validation errors put a list here, not a sentence.
+    const message = typeof detail === "string" && detail ? detail : statusMessage(res);
+    throw new IntakeRequestError(message, res.status, { retryAfterMs: retryAfterMs(res) });
   }
   return res.json();
 }
@@ -107,6 +229,16 @@ export const createIntake = () => call<{ id: string }>("", { method: "POST" });
 
 export const getIntake = (id: string) => call<IntakeState>(`/${id}`);
 
+/** Waits before each automatic retry of an upload that failed transiently
+ * (see isTransientFailure): three retries after the first try. */
+export const UPLOAD_RETRY_DELAYS_MS = [2000, 5000, 12000];
+
+/** Per-request upload timeout: two minutes, stretched for big files so a
+ * 25MB photo on a slow phone connection (~64 KB/s) isn't cut off midway. */
+function uploadTimeoutMs(bytes: number): number {
+  return Math.max(120_000, Math.round(bytes / 64));
+}
+
 export function uploadIntakePhoto(
   id: string,
   file: File,
@@ -115,14 +247,16 @@ export function uploadIntakePhoto(
   const form = new FormData();
   form.append("file", file, file.name);
   form.append("position", String(position));
-  return call(`/${id}/photos`, { method: "POST", body: form });
+  return call(`/${id}/photos`, { method: "POST", body: form }, { timeoutMs: uploadTimeoutMs(file.size) });
 }
 
 export const updateIntakePhoto = (id: string, photoId: string, patch: { kind?: PhotoKind; excluded?: boolean }) =>
   call<{ ok: boolean }>(`/${id}/photos/${photoId}`, jsonInit("PATCH", patch));
 
-export const deleteIntakePhoto = (id: string, photoId: string) =>
-  call<{ deleted: string }>(`/${id}/photos/${photoId}`, { method: "DELETE" });
+/** keepalive: sent as the page is hidden or closed (a delete still inside
+ * its undo window). */
+export const deleteIntakePhoto = (id: string, photoId: string, opts: { keepalive?: boolean } = {}) =>
+  call<{ deleted: string }>(`/${id}/photos/${photoId}`, { method: "DELETE", keepalive: opts.keepalive });
 
 /** keepalive lets the save outlive the page -- used when the tab is being
  * hidden or closed (the browser caps such bodies at 64KB, ample for a form). */

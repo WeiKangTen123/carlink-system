@@ -1,20 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, Save, X } from "lucide-react";
 import type { ReportData, Taxonomy } from "@/lib/api";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
+  IntakeRequestError,
   createIntake,
   deleteIntakePhoto,
   finalizeIntake,
   formatBytes,
   getIntake,
+  isPermanentFailure,
+  isTransientFailure,
   processIntake,
   saveIntakeData,
   updateIntakePhoto,
+  uploadFailureReason,
   uploadIntakePhoto,
+  UPLOAD_RETRY_DELAYS_MS,
   type IntakePhoto,
   type IntakeStage,
   type IntakeState,
@@ -23,6 +28,7 @@ import {
 import { PartiesStep } from "./PartiesStep";
 import { ReviewStep } from "./ReviewStep";
 import { SortStep } from "./SortStep";
+import { UndoToast } from "./UndoToast";
 import { UploadStep, type UploadItem } from "./UploadStep";
 
 type Step = 1 | 2 | 3 | 4;
@@ -37,6 +43,11 @@ const STEPS: { n: Step; label: string }[] = [
 // Three at a time keeps a 70-photo case moving without one slow phone
 // connection starving the rest; the server does thumbnail work per upload.
 const UPLOAD_CONCURRENCY = 3;
+// A server's Retry-After can ask for a longer wait before an automatic
+// upload retry than UPLOAD_RETRY_DELAYS_MS, up to this.
+const MAX_RETRY_AFTER_MS = 60_000;
+// How long "Photo deleted · Undo" stays up before the delete is sent.
+const DELETE_UNDO_MS = 8000;
 const POLL_MS = 2000;
 const AUTOSAVE_MS = 1500;
 const DEFAULT_MAX_PHOTOS = 150;
@@ -87,9 +98,16 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const [dirty, setDirty] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
-  // Photos regrouped/excluded since the AI last read the case.
+  // Photos regrouped/excluded/deleted since the AI last read the case.
   const [regrouped, setRegrouped] = useState(false);
   const [aiSkipped, setAiSkipped] = useState(false);
+  // When each photo was last uploaded, regrouped or (un)excluded here, and
+  // when the last AI run began -- so step 2 can tell which unread photos the
+  // read never saw. Client-side only, like `regrouped`: lost on reload.
+  const [changedAt, setChangedAt] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [readStartedAt, setReadStartedAt] = useState(0);
+  // The "Photo deleted · Undo" toast; version restarts its countdown bar.
+  const [deleteToast, setDeleteToast] = useState<{ count: number; version: number } | null>(null);
 
   // The upload queue lives in refs: uploads finish out of order and each
   // completion schedules the next, so reading it through React state would
@@ -108,6 +126,17 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // Bumped on every edit, so a save that finishes after further typing
   // doesn't mark those newer edits as saved.
   const editVersionRef = useRef(0);
+  // Deleted photos inside their undo window: gone from the screen, not yet
+  // from the server. The DELETE goes out when the window ends, or sooner
+  // whenever the wizard moves on (see flushDeletes).
+  const pendingDeletesRef = useRef<Map<string, IntakePhoto>>(new Map());
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deletes sent and not yet answered; true if they all went through.
+  const flushingRef = useRef<Promise<boolean> | null>(null);
+  // `regrouped` as it was before this batch of deletes, for Undo to put back.
+  const regroupedBeforeDeleteRef = useRef<boolean | null>(null);
+  // The latest flushDeletes, for timers and page-hide listeners set up once.
+  const flushDeletesRef = useRef<(opts?: { keepalive?: boolean }) => Promise<boolean>>(async () => true);
   dataRef.current = data;
   notesRef.current = notes;
   dirtyRef.current = dirty;
@@ -132,7 +161,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const applyState = useCallback((s: IntakeState, initial: boolean) => {
     const finishedReading = isRunning(stageRef.current) && s.stage === "ready";
     stageRef.current = s.stage;
-    setState(s);
+    // Photos waiting out their undo window are still on the server; keep
+    // them off the screen.
+    const hidden = pendingDeletesRef.current;
+    setState(hidden.size ? { ...s, photos: s.photos.filter((p) => !hidden.has(p.id)) } : s);
     if (initial || finishedReading) {
       // The server's form replaces the local one -- only ever at these two
       // moments, never on routine polls, so typing isn't overwritten. After
@@ -205,7 +237,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // browser's own prompt covers closing the tab and reloading; in-app links
   // (sidebar, breadcrumbs, "Back to Cases Repository") never fire
   // beforeunload, so those clicks are caught here too.
-  const uploading = uploads.some((u) => u.status === "queued" || u.status === "uploading");
+  const uploading = uploads.some((u) => u.status === "queued" || u.status === "uploading" || u.status === "retrying");
   const unsafeToLeave = uploading || dirty;
   useEffect(() => {
     if (!unsafeToLeave) return;
@@ -232,11 +264,14 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   }, [unsafeToLeave, uploading]);
 
   // A hidden tab may be discarded or closed without warning; push unsaved
-  // edits out first. keepalive lets the request finish after the page goes.
+  // edits and deletes still inside their undo window out first. keepalive
+  // lets the requests finish after the page goes.
   useEffect(() => {
     const flush = () => {
+      if (document.visibilityState !== "hidden") return;
+      void flushDeletesRef.current({ keepalive: true });
       const id = draftIdRef.current;
-      if (document.visibilityState !== "hidden" || !id || !dirtyRef.current || !loadedRef.current) return;
+      if (!id || !dirtyRef.current || !loadedRef.current) return;
       if (isRunning(stageRef.current)) return;
       saveIntakeData(id, dataRef.current, notesRef.current, { keepalive: true })
         .then(() => setDirty(false))
@@ -244,8 +279,16 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           // stays dirty; the next autosave retries
         });
     };
+    const pageHide = () => void flushDeletesRef.current({ keepalive: true });
     document.addEventListener("visibilitychange", flush);
-    return () => document.removeEventListener("visibilitychange", flush);
+    window.addEventListener("pagehide", pageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", flush);
+      window.removeEventListener("pagehide", pageHide);
+      // Leaving the wizard (an in-app link, Save & exit): the undo window
+      // ends here too.
+      void flushDeletesRef.current({ keepalive: true });
+    };
   }, []);
 
   async function ensureDraft(): Promise<string> {
@@ -276,6 +319,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     syncUploads();
   }
 
+  function noteChanged(photoId: string) {
+    const at = Date.now();
+    setChangedAt((prev) => new Map(prev).set(photoId, at));
+  }
+
   function pump() {
     const id = draftIdRef.current;
     if (!id) return;
@@ -283,24 +331,51 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       const next = uploadsRef.current.find((u) => u.status === "queued");
       if (!next) break;
       activeRef.current += 1;
-      patchUpload(next.key, { status: "uploading", error: undefined });
+      patchUpload(next.key, { status: "uploading" });
       uploadIntakePhoto(id, next.file, next.position)
         .then((res) => {
-          patchUpload(next.key, { status: res.duplicate_of ? "duplicate" : "done" });
+          // On a retry, "duplicate" almost always means the earlier try that
+          // timed out did land after all -- it's this photo, not a repeat.
+          patchUpload(next.key, {
+            status: res.duplicate_of && next.attempts === 0 ? "duplicate" : "done",
+            error: undefined,
+            reason: undefined,
+          });
           const photo = res.photo;
-          // A poll or refresh may already have brought this photo in; adding
-          // it again gave a duplicate tile (and a duplicate React key).
-          if (photo)
+          if (photo) {
+            noteChanged(photo.id);
+            // The server numbers photos (P01, P02...) only when the case is
+            // reloaded below; until then a placeholder, not a blank tile label.
+            const shown = { ...photo, label: photo.label || "…" };
+            // A poll or refresh may already have brought this photo in; adding
+            // it again gave a duplicate tile (and a duplicate React key).
             setState((prev) =>
-              prev && !prev.photos.some((p) => p.id === photo.id) ? { ...prev, photos: [...prev.photos, photo].sort(byPosition) } : prev
+              prev && !prev.photos.some((p) => p.id === shown.id) ? { ...prev, photos: [...prev.photos, shown].sort(byPosition) } : prev
             );
+          }
         })
-        .catch((e: Error) => patchUpload(next.key, { status: "failed", error: e.message }))
+        .catch((e: unknown) => {
+          const error = e instanceof Error ? e.message : String(e);
+          const reason = uploadFailureReason(e);
+          if (isTransientFailure(e) && next.attempts < UPLOAD_RETRY_DELAYS_MS.length) {
+            const asked = e instanceof IntakeRequestError ? (e.retryAfterMs ?? 0) : 0;
+            const wait = Math.min(MAX_RETRY_AFTER_MS, Math.max(UPLOAD_RETRY_DELAYS_MS[next.attempts], asked));
+            patchUpload(next.key, { status: "retrying", attempts: next.attempts + 1, error, reason });
+            setTimeout(() => {
+              // Removed from the queue while it waited.
+              if (!uploadsRef.current.some((u) => u.key === next.key && u.status === "retrying")) return;
+              patchUpload(next.key, { status: "queued" });
+              pump();
+            }, wait);
+          } else {
+            patchUpload(next.key, { status: "failed", error, reason, permanent: isPermanentFailure(e) });
+          }
+        })
         .finally(() => {
           activeRef.current -= 1;
           pump();
           // Queue drained: reload once for the server's P-number labels.
-          if (activeRef.current === 0 && !uploadsRef.current.some((u) => u.status === "queued")) refresh();
+          if (activeRef.current === 0 && !uploadsRef.current.some((u) => u.status === "queued" || u.status === "retrying")) refresh();
         });
     }
   }
@@ -314,7 +389,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     let position =
       Math.max(-1, ...(state?.photos.map((p) => p.position) ?? []), ...uploadsRef.current.map((u) => u.position)) + 1;
-    const pending = uploadsRef.current.filter((u) => u.status === "queued" || u.status === "uploading").length;
+    const pending = uploadsRef.current.filter((u) => u.status === "queued" || u.status === "uploading" || u.status === "retrying").length;
     let room = maxPhotos - (state?.photos.length ?? 0) - pending;
 
     const items: UploadItem[] = [];
@@ -325,7 +400,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
       let rejection: string | undefined;
       if (!ALLOWED_PHOTO_EXTENSIONS.includes(ext)) rejection = "Not a supported photo type";
-      else if (file.size > maxBytes) rejection = `Over ${formatBytes(maxBytes)}`;
+      else if (file.size > maxBytes) rejection = `${formatBytes(file.size)} -- over the ${formatBytes(maxBytes)} limit`;
       else if (room <= 0) rejection = `Case limit of ${maxPhotos} photos reached`;
       else room -= 1;
       items.push({
@@ -335,6 +410,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         size: file.size,
         position: rejection ? -1 : position++,
         status: rejection ? "rejected" : "queued",
+        attempts: 0,
         error: rejection,
       });
     }
@@ -349,14 +425,24 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(`Couldn't start the draft: ${message}`);
-      uploadsRef.current = uploadsRef.current.map((u) => (u.status === "queued" ? { ...u, status: "failed", error: message } : u));
+      uploadsRef.current = uploadsRef.current.map((u) =>
+        u.status === "queued" ? { ...u, status: "failed", error: message, reason: "Draft not started" } : u
+      );
       syncUploads();
     }
   }
 
-  function retryFailed() {
-    const retried = new Set(uploadsRef.current.filter((u) => u.status === "failed").map((u) => u.key));
-    uploadsRef.current = uploadsRef.current.map((u) => (retried.has(u.key) ? { ...u, status: "queued", error: undefined } : u));
+  /** Retries failed uploads that may still work -- `key` for one tile, or
+   * every one. Uploads the server refused (unreadable, too big, case full)
+   * are left alone: sending them again can't help. */
+  function retryUploads(key?: string) {
+    const retried = new Set(
+      uploadsRef.current.filter((u) => u.status === "failed" && !u.permanent && (key === undefined || u.key === key)).map((u) => u.key)
+    );
+    if (!retried.size) return;
+    uploadsRef.current = uploadsRef.current.map((u) =>
+      retried.has(u.key) ? { ...u, status: "queued", attempts: 0, error: undefined, reason: undefined } : u
+    );
     syncUploads();
     ensureDraft()
       .then(() => pump())
@@ -364,9 +450,23 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         // Put them back to failed: left "queued" with no draft to upload
         // into, they would spin forever and keep Save & exit disabled.
         setError(e.message);
-        uploadsRef.current = uploadsRef.current.map((u) => (retried.has(u.key) ? { ...u, status: "failed", error: e.message } : u));
+        uploadsRef.current = uploadsRef.current.map((u) =>
+          retried.has(u.key) ? { ...u, status: "failed", error: e.message, reason: "Draft not started" } : u
+        );
         syncUploads();
       });
+  }
+
+  /** Drops a failed (or waiting-to-retry) upload from the queue. One mid-upload
+   * can't be called back, so it stays. */
+  function removeUpload(key: string) {
+    uploadsRef.current = uploadsRef.current.filter((u) => u.key !== key || u.status === "uploading");
+    syncUploads();
+  }
+
+  function dismissRejected() {
+    uploadsRef.current = uploadsRef.current.filter((u) => u.status !== "rejected");
+    syncUploads();
   }
 
   /** quiet: an autosave -- no busy state, no error banner (it retries). */
@@ -407,6 +507,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
 
   async function goTo(next: Step) {
     if (next === step) return;
+    // A failed delete puts its photo back and says so; it doesn't hold up
+    // the step change.
+    await flushDeletes();
     if (draftIdRef.current && !(await save())) return;
     setStep(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -418,10 +521,15 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setBusy("starting");
     setError(null);
     try {
+      // The AI must not read a photo that is on its way out (and the server
+      // refuses deletes once it has started).
+      if (!(await flushDeletes())) return;
       await saveIntakeData(id, dataRef.current, notesRef.current);
       setSavedAt(new Date());
       setDirty(false);
+      const started = Date.now();
       applyState(await processIntake(id, mode), false);
+      setReadStartedAt(started);
       setAiSkipped(false);
       setStep(2);
     } catch (e) {
@@ -431,13 +539,22 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     }
   }
 
+  /** A change the AI's last read didn't see: offer a re-read. */
+  function markRegrouped(photoId: string) {
+    noteChanged(photoId);
+    if (!state?.read_photo_ids.length) return;
+    setRegrouped(true);
+    // Undoing a delete must not clear the flag this change set.
+    if (regroupedBeforeDeleteRef.current === false) regroupedBeforeDeleteRef.current = true;
+  }
+
   async function regroup(photoId: string, kind: PhotoKind) {
     const id = draftIdRef.current;
     if (!id) return;
     setState((prev) =>
       prev ? { ...prev, photos: prev.photos.map((p) => (p.id === photoId ? { ...p, kind, kind_source: "surveyor" as const } : p)) } : prev
     );
-    if (state?.read_photo_ids.length) setRegrouped(true);
+    markRegrouped(photoId);
     try {
       await updateIntakePhoto(id, photoId, { kind });
     } catch (e) {
@@ -450,7 +567,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     const id = draftIdRef.current;
     if (!id) return;
     setState((prev) => (prev ? { ...prev, photos: prev.photos.map((p) => (p.id === photoId ? { ...p, excluded } : p)) } : prev));
-    if (state?.read_photo_ids.length) setRegrouped(true);
+    markRegrouped(photoId);
     try {
       await updateIntakePhoto(id, photoId, { excluded });
     } catch (e) {
@@ -459,17 +576,84 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     }
   }
 
-  async function removePhoto(photoId: string) {
-    const id = draftIdRef.current;
-    if (!id) return;
+  /** Takes the photo off the screen at once; the DELETE waits out the undo
+   * window. Deleting more photos meanwhile adds them to the same toast and
+   * restarts its countdown. */
+  function deletePhoto(photoId: string) {
+    const photo = state?.photos.find((p) => p.id === photoId);
+    if (!photo || !draftIdRef.current) return;
+    const pending = pendingDeletesRef.current;
+    if (pending.size === 0) regroupedBeforeDeleteRef.current = regrouped;
+    pending.set(photoId, photo);
     setState((prev) => (prev ? { ...prev, photos: prev.photos.filter((p) => p.id !== photoId) } : prev));
-    try {
-      await deleteIntakePhoto(id, photoId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    if (state?.read_photo_ids.includes(photoId)) setRegrouped(true);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = setTimeout(() => void flushDeletesRef.current(), DELETE_UNDO_MS);
+    const count = pending.size;
+    setDeleteToast((t) => ({ count, version: (t?.version ?? 0) + 1 }));
+  }
+
+  function undoDelete() {
+    const pending = pendingDeletesRef.current;
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = null;
+    setDeleteToast(null);
+    if (!pending.size) return;
+    pendingDeletesRef.current = new Map();
+    const restored = [...pending.values()];
+    setState((prev) =>
+      prev ? { ...prev, photos: [...prev.photos.filter((p) => !pending.has(p.id)), ...restored].sort(byPosition) } : prev
+    );
+    if (regroupedBeforeDeleteRef.current === false) setRegrouped(false);
+    regroupedBeforeDeleteRef.current = null;
+  }
+
+  /** Sends the deletes still inside their undo window, now, and waits for
+   * any already on their way (the toast's own timer may have just sent
+   * some -- finalize mustn't overtake them). A delete that fails puts its
+   * photo back and shows why. True if all went through.
+   * keepalive: the page is being hidden or left. */
+  async function flushDeletes(opts: { keepalive?: boolean } = {}): Promise<boolean> {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = null;
+    const batch = pendingDeletesRef.current;
+    const id = draftIdRef.current;
+    if (batch.size && id) {
+      pendingDeletesRef.current = new Map();
+      regroupedBeforeDeleteRef.current = null;
+      setDeleteToast(null);
+      const sent = sendDeletes(id, [...batch.values()], opts);
+      const earlier = flushingRef.current;
+      flushingRef.current = earlier ? Promise.all([earlier, sent]).then(([a, b]) => a && b) : sent;
     }
-    // Later photos' P-numbers shift down by one.
-    refresh();
+    const inFlight = flushingRef.current;
+    if (!inFlight) return true;
+    const ok = await inFlight;
+    if (flushingRef.current === inFlight) flushingRef.current = null;
+    return ok;
+  }
+  flushDeletesRef.current = flushDeletes;
+
+  async function sendDeletes(id: string, photos: IntakePhoto[], opts: { keepalive?: boolean }): Promise<boolean> {
+    const results = await Promise.allSettled(photos.map((p) => deleteIntakePhoto(id, p.id, opts)));
+    const failed: IntakePhoto[] = [];
+    let message = "";
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") return;
+      // Already gone (deleted from another tab): that's what was wanted.
+      if (r.reason instanceof IntakeRequestError && r.reason.status === 404) return;
+      failed.push(photos[i]);
+      message ||= r.reason instanceof Error ? r.reason.message : String(r.reason);
+    });
+    if (failed.length) {
+      const back = new Set(failed.map((p) => p.id));
+      setState((prev) => (prev ? { ...prev, photos: [...prev.photos.filter((p) => !back.has(p.id)), ...failed].sort(byPosition) } : prev));
+      const what = failed.length === 1 ? `photo ${failed[0].label || failed[0].name}, so it's` : `${failed.length} photos, so they're`;
+      setError(`Couldn't delete ${what} back in the case: ${message}`);
+    }
+    // Later photos' P-numbers shift down. Not while the page is going away.
+    if (!opts.keepalive) void refresh();
+    return failed.length === 0;
   }
 
   async function finalize() {
@@ -478,6 +662,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setBusy("finalizing");
     setError(null);
     try {
+      // A photo deleted moments ago must not end up in the case.
+      if (!(await flushDeletes())) {
+        setBusy(null);
+        return;
+      }
       await finalizeIntake(id, data);
       setDirty(false);
       router.push(`/reports/${id}`);
@@ -489,6 +678,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   }
 
   async function saveAndExit() {
+    if (!(await flushDeletes())) return;
     if (await save()) router.push("/reports");
   }
 
@@ -497,8 +687,14 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     if (n === 1) return true;
     if (!draftId || !state) return false;
     if (n === 2) return stage !== "uploading" || state.photos.some((p) => p.kind);
-    return stage === "ready" || aiSkipped;
+    // A failed AI never blocks filling in the facts by hand.
+    return stage === "ready" || stage === "failed" || aiSkipped;
   };
+
+  const changedSinceRead = useMemo(
+    () => new Set([...changedAt].filter(([, at]) => at > readStartedAt).map(([photoId]) => photoId)),
+    [changedAt, readStartedAt]
+  );
 
   if (loading) {
     return <div className="intake-shell"><div className="card intake-panel intake-muted">Loading draft…</div></div>;
@@ -589,8 +785,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           maxPhotoBytes={state?.limits.max_photo_bytes ?? DEFAULT_MAX_BYTES}
           busy={Boolean(busy)}
           onFiles={addFiles}
-          onRetryFailed={retryFailed}
-          onRemovePhoto={removePhoto}
+          onRetryFailed={() => retryUploads()}
+          onRetryUpload={retryUploads}
+          onRemoveUpload={removeUpload}
+          onDismissRejected={dismissRejected}
+          onRemovePhoto={deletePhoto}
           onStart={() => startProcessing("all")}
           onContinue={() => goTo(2)}
         />
@@ -600,10 +799,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         <SortStep
           state={state}
           regrouped={regrouped}
+          changedSinceRead={changedSinceRead}
+          aiSkipped={aiSkipped}
           busy={Boolean(busy)}
           onRegroup={regroup}
           onToggleExclude={toggleExclude}
-          onRemove={removePhoto}
+          onRemove={deletePhoto}
           onReread={() => startProcessing("read")}
           onRetry={() => startProcessing("all")}
           onSkipAi={() => {
@@ -636,6 +837,16 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           uploading={uploading}
           onBack={() => goTo(3)}
           onFinalize={finalize}
+        />
+      )}
+
+      {deleteToast && (
+        <UndoToast
+          message={deleteToast.count === 1 ? "Photo deleted" : `${deleteToast.count} photos deleted`}
+          durationMs={DELETE_UNDO_MS}
+          timerKey={deleteToast.version}
+          onUndo={undoDelete}
+          onDismiss={() => void flushDeletes()}
         />
       )}
     </div>
