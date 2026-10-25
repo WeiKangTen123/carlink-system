@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 // Filter out benign THREE.Clock deprecation notice triggered by @react-three/fiber v9 until upstream updates to THREE.Timer
@@ -52,7 +52,7 @@ const SEVERITY_RANK: Record<string, number> = { minor: 1, moderate: 2, severe: 3
 // Zone key -> real mesh names in the sedan model.
 //
 // "Generic Sedan Car" by MMC Works (CC-BY 4.0, credited in
-// public/assets/generic-sedan/CREDIT.txt) -- 124 separate real meshes
+// public/assets/vehicles/CREDIT.txt) -- 124 separate real meshes
 // (bumper-front, door-front-l, headlight-projector-l, etc), not a merged
 // blob, so damage highlighting recolors the actual named part. The
 // free-text-part -> zone-key mapping itself lives in lib/vehicleZones.ts,
@@ -158,12 +158,18 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden =
 
 export type VehicleArchetype = "suv" | "sedan" | "van" | "mpv" | "hatchback";
 
+// Geometry-only, meshopt-compressed copies of the original models (about
+// 67MB -> 4.8MB for all five; see scripts/optimize-vehicle-models.mjs).
+// drei's useGLTF turns the meshopt decoder on by default. /assets/* is
+// served `immutable`, so a changed model needs a new file name (bump the
+// .vN), never an in-place replacement -- browsers that cached the old URL
+// would keep using the old file.
 export const MODEL_PATHS: Record<VehicleArchetype, string> = {
-  suv: "/assets/vehicles/suv.glb",
-  sedan: "/assets/vehicles/sedan.glb",
-  van: "/assets/vehicles/van.glb",
-  mpv: "/assets/vehicles/mpv.glb",
-  hatchback: "/assets/vehicles/hatchback.glb",
+  suv: "/assets/vehicles/suv.v2.glb",
+  sedan: "/assets/vehicles/sedan.v2.glb",
+  van: "/assets/vehicles/van.v2.glb",
+  mpv: "/assets/vehicles/mpv.v2.glb",
+  hatchback: "/assets/vehicles/hatchback.v2.glb",
 };
 
 export function detectBodyType(vehicleText: string, statedBodyType?: string | null): VehicleArchetype {
@@ -423,9 +429,18 @@ function VehicleModel({
     onFocusRequest(center, partBox.getSize(new THREE.Vector3()));
   }, [highlightedIdx, zoneResolutions, root, onFocusRequest]);
 
-  // Synchronize 3D camera when an automotive zone is selected from the evidence strip
+  // Synchronize 3D camera when an automotive zone is selected from the evidence strip.
+  // Guarded like highlightedIdx above: zoom once per new selection, not on
+  // every re-run of the effect (a re-run used to re-focus, which re-rendered,
+  // which re-ran it again).
+  const lastZoneRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedZone) return;
+    if (!selectedZone) {
+      lastZoneRef.current = null;
+      return;
+    }
+    if (selectedZone === lastZoneRef.current) return;
+    lastZoneRef.current = selectedZone;
     let targetKey = selectedZone;
     if (selectedZone === "skeleton") targetKey = "underbody";
     if (selectedZone === "lighting") targetKey = "l_taillamp";
@@ -486,12 +501,9 @@ function VehicleModel({
     </>
   );
 }
-useGLTF.preload(MODEL_PATHS.suv);
-useGLTF.preload(MODEL_PATHS.sedan);
-useGLTF.preload(MODEL_PATHS.van);
-useGLTF.preload(MODEL_PATHS.mpv);
-useGLTF.preload(MODEL_PATHS.hatchback);
-useGLTF.preload("/assets/generic-sedan/sedan.glb");
+// No useGLTF.preload() here: a case shows one model, and useGLTF(modelUrl)
+// above fetches just that one. Preloading at module load downloaded all of
+// them on the first case page.
 
 // =============================================================================
 // Van (procedural) -- no free/realistic van model sourced yet, so this
@@ -715,7 +727,9 @@ export function VehicleBlueprint3D({
     onHotspotClick(idx, damageEntries[idx]);
   };
 
-  const handleFocusRequest = (center: THREE.Vector3, size: THREE.Vector3) => {
+  // Stable identity (setFocus never changes): VehicleModel's zoom effects
+  // list this as a dependency, so a new function every render re-ran them.
+  const handleFocusRequest = useCallback((center: THREE.Vector3, size: THREE.Vector3) => {
     const radius = Math.max(size.x, size.y, size.z, 0.25);
     const dist = Math.max(radius * 2.6, 0.9);
     // Approach from the direction the part actually sits relative to the
@@ -731,11 +745,30 @@ export function VehicleBlueprint3D({
     outward.normalize();
     const dir = outward.multiplyScalar(0.82).add(new THREE.Vector3(0, 0.45, 0)).normalize();
     setFocus({ position: center.clone().addScaledVector(dir, dist), target: center.clone() });
-  };
+  }, []);
+
+  // Stop drawing frames (auto-rotate renders continuously) while the stage
+  // is scrolled out of view or hidden; resume just before it comes back.
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [onScreen, setOnScreen] = useState(true);
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => setOnScreen(entries[entries.length - 1].isIntersecting),
+      { rootMargin: "200px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <div className="blueprint-stage-3d">
-      <Canvas camera={{ position: home.position.toArray(), fov: 40 }} dpr={[1, 2]}>
+    <div className="blueprint-stage-3d" ref={stageRef}>
+      <Canvas
+        camera={{ position: home.position.toArray(), fov: 40 }}
+        dpr={[1, 2]}
+        frameloop={onScreen ? "always" : "never"}
+      >
         <React.Suspense
           fallback={
             <Html center>

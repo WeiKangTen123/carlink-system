@@ -6321,3 +6321,97 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end P3: upload, sort, viewer ---- */
+
+/* ==========================================================================
+   PAGE LOADING SKELETON (components/PageSkeleton.tsx, the loading.tsx files)
+   Shown while the server renders the next page. It fades in after a short
+   delay so a quick navigation doesn't flash it.
+   ========================================================================== */
+.page-skeleton {
+  animation: skeleton-appear 0.2s ease-out 0.15s backwards;
+}
+
+.page-skeleton-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.page-skeleton-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+}
+
+.page-skeleton-split {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 12px;
+}
+
+.page-skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Theme tokens only, so it follows dark and light mode. */
+.skeleton-bar {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--border-color) 25%, var(--surface-hover) 50%, var(--border-color) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-bar.skeleton-title {
+  height: 18px;
+  width: min(240px, 50%);
+}
+
+.skeleton-bar.skeleton-short {
+  width: 60%;
+}
+
+.skeleton-bar.skeleton-block {
+  height: 64px;
+  border-radius: 8px;
+}
+
+.page-skeleton-split > .skeleton-block {
+  height: 240px;
+}
+
+.page-skeleton-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes skeleton-appear {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-skeleton,
+  .skeleton-bar {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-skeleton-row,
+  .page-skeleton-split {
+    grid-template-columns: 1fr;
+  }
+}
