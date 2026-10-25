@@ -30,7 +30,7 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   return (
     <CurrentUserProvider value={user}>
       <div className="app-shell">
-        <Sidebar showSettings={isAdmin(user)} pendingRequests={isAdmin(user) ? (user?.pending_access_requests ?? 0) : 0} />
+        <Sidebar showSettings={isAdmin(user)} />
 
         <div className="main-column">
           <header className="top-bar">

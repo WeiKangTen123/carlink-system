@@ -4,8 +4,8 @@ import { Lock } from "lucide-react";
 import {
   getAppSettings,
   getCurrentUser,
+  getSignupsOpen,
   getSystemInfo,
-  listAccessRequests,
   listAccountLinks,
   listUsers,
 } from "@/lib/api";
@@ -48,12 +48,12 @@ export default async function SettingsPage() {
   // table. The previous version of this page displayed hardcoded values
   // (including a model chain that didn't match the real one) and three
   // invented users.
-  const [settings, system, users, accessRequests, accountLinks] = await Promise.all([
+  const [settings, system, users, accountLinks, signupsOpen] = await Promise.all([
     getAppSettings(),
     getSystemInfo(),
     listUsers(),
-    orNull(listAccessRequests("pending")),
     orNull(listAccountLinks()),
+    getSignupsOpen(),
   ]);
 
   // Narrowed deliberately: passing the whole system object would serialize
@@ -75,8 +75,8 @@ export default async function SettingsPage() {
       settings={settings}
       setup={setup}
       users={users}
-      accessRequests={accessRequests}
       accountLinks={accountLinks}
+      signupsOpen={signupsOpen}
       currentUserId={me.id}
     />
   );

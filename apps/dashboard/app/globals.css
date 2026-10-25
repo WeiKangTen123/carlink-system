@@ -5151,133 +5151,41 @@ button.intake-tile:hover {
   }
 }
 
-/* Settings -> Users: access requests and one-time links
-   (app/settings/AccessRequestsTab.tsx, AccountLinksTab.tsx, LinkDialogs.tsx) */
-.sidebar-badge {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
-  color: var(--badge-amber-text);
-  background: var(--badge-amber-bg);
-  border: 1px solid var(--badge-amber-border);
-}
-.sidebar-link.active .sidebar-badge {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.22);
-  border-color: rgba(255, 255, 255, 0.4);
-}
-.request-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.request-row {
+/* Settings -> Users: the signup switch and one-time links
+   (app/settings/UsersCard.tsx, AccountLinksTab.tsx, LinkDialogs.tsx) */
+/* The "New signups: on/off" switch (UsersCard.tsx). */
+.signup-switch {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border-color);
-  font-size: 13px;
-}
-.request-row:last-child {
-  border-bottom: none;
-}
-.request-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-}
-.request-note {
-  margin: 6px 0 0;
-  padding: 4px 10px;
-  border-left: 3px solid var(--border-color);
-  font-size: 12px;
-  font-style: italic;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.request-flags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-.request-flag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 6px;
-  color: var(--badge-amber-text);
-  background: var(--badge-amber-bg);
-  border: 1px solid var(--badge-amber-border);
-}
-.request-flag.strong {
-  color: var(--badge-red-text);
-  background: var(--badge-red-bg);
-  border-color: var(--badge-red-border);
-}
-.request-actions {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-/* Bulk reject/delete: the tick box on each request and the bar above them. */
-.request-pick {
-  margin-top: 3px;
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-.request-row.picked {
-  background: var(--accent-soft, rgba(56, 189, 248, 0.06));
-  margin: 0 -8px;
-  padding-left: 8px;
-  padding-right: 8px;
-  border-radius: 8px;
-}
-.request-bulk-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  min-height: 34px;
-  padding: 4px 0 8px;
-  border-bottom: 1px solid var(--border-color);
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.request-select-network {
-  font-size: 11px;
-  background: none;
-  border: none;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-.request-summary {
-  font-size: 13px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--surface-card);
   padding: 12px 14px;
   margin-bottom: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--badge-green-border);
+  background: var(--badge-green-bg);
+}
+.signup-switch.off {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+}
+@media (max-width: 640px) {
+  .signup-switch {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+.user-new-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--badge-green-text);
+  background: var(--badge-green-bg);
+  border: 1px solid var(--badge-green-border);
 }
 .link-ready-url {
   font-family: var(--font-mono);

@@ -162,22 +162,22 @@ async function handleSignInProblem(res: Response, opts: ApiFetchOptions): Promis
   redirect(reason === "password_change_required" ? "/account" : await loginPath());
 }
 
-export type UserRole = "admin" | "surveyor";
+/** "user" was called "surveyor" until 2026-10-25. Everyone who signs up is
+ * a user; only an admin makes someone an admin (Settings -> Users). */
+export type UserRole = "admin" | "user";
 
 export type CurrentUser = {
   id: string;
   email: string;
+  /** Lower-case, unique; signs in like the email. */
+  username: string;
+  /** The full name printed on sign-offs; starts out as the username. */
   name: string;
   role: UserRole;
   must_change_password: boolean;
   qualifications: string;
   license_number: string;
   firm_name: string;
-  /** Requests from the public /signup page waiting for a decision. Sent
-   * to admins only (GET /auth/me); drives the badge on Settings. */
-  pending_access_requests?: number;
-  /** How many may wait before new requests are refused (admins only). */
-  pending_access_limit?: number;
 };
 
 export type UserAccount = CurrentUser & {
@@ -188,8 +188,9 @@ export type UserAccount = CurrentUser & {
 };
 
 /** Profile fields a user edits on their own Account page, and an admin on
- * anyone's. Printed on the PDF at sign-off. */
+ * anyone's. The name, licence and firm are printed on the PDF at sign-off. */
 export type ProfileFields = {
+  username?: string;
   name?: string;
   qualifications?: string;
   license_number?: string;
@@ -239,21 +240,9 @@ export async function listUsers(): Promise<UserAccount[]> {
   return res.json();
 }
 
-export async function createUser(
-  fields: ProfileFields & { email: string; name: string; role: "admin" | "surveyor" }
-): Promise<{ user: UserAccount; temporary_password: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/users`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(fields),
-  });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to add the user"));
-  return res.json();
-}
-
 export async function updateUser(
   id: string,
-  patch: ProfileFields & { email?: string; role?: "admin" | "surveyor"; active?: boolean }
+  patch: ProfileFields & { email?: string; role?: UserRole; active?: boolean }
 ): Promise<UserAccount> {
   const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
     method: "PATCH",
@@ -265,36 +254,33 @@ export async function updateUser(
 }
 
 // ---------------------------------------------------------------------------
-// Access requests and one-time links (admin only). Someone asks for an
-// account on the public /signup page; an admin approves it, which makes an
-// invite link to send them by WhatsApp. A "reset" link sets a new password
-// on an existing account. The public half (sending a request, opening a
-// link) runs straight from the browser: app/signup, app/invite.
+// Signup and one-time links. Anyone signs up on the public /signup page
+// (app/signup, straight from the browser); admins can switch that off, and
+// make invite links and password-reset links to send by WhatsApp. Opening a
+// link runs from the browser too: app/invite.
 
-export type AccessRequestRow = {
-  id: string;
-  reference: string;
-  name: string;
-  email: string;
-  phone: string;
-  organisation: string;
-  requested_role: UserRole;
-  note: string;
-  status: "pending" | "approved" | "rejected";
-  created_at: string;
-  decided_at: string | null;
-  decided_by_name: string;
-  decision_note: string;
-  /** The email already belongs to an account. */
-  has_account: boolean;
-  /** Other pending requests with the same email. */
-  same_email_pending: number;
-  /** Other requests from the same IP address in the last 24 hours. */
-  same_ip_24h: number;
-  /** Same value for every request from one network; not the address
-   * itself. "" when the network wasn't recorded. */
-  network: string;
-};
+/** Whether the public /signup page takes new accounts. Public. */
+export async function getSignupsOpen(): Promise<boolean> {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/auth/signup`, { cache: "no-store" }, { timeoutMs: 8000, onSignedOut: "return" });
+    if (!res.ok) return true;
+    return Boolean((await res.json()).open);
+  } catch (err) {
+    unstable_rethrow(err);
+    return true;
+  }
+}
+
+/** Admin: switch new signups on or off. */
+export async function setSignupsOpen(open: boolean): Promise<boolean> {
+  const res = await apiFetch(`${API_BASE_URL}/signup-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ open }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Failed to change signups"));
+  return Boolean((await res.json()).open);
+}
 
 export type AccountLinkRow = {
   id: string;
@@ -317,61 +303,6 @@ export type IssuedLink = { link: AccountLinkRow; token: string };
 /** Hours a new link stays usable. */
 export type LinkLifetime = 24 | 72 | 168;
 
-export async function listAccessRequests(status: "pending" | "all" = "pending"): Promise<AccessRequestRow[]> {
-  const res = await apiFetch(`${API_BASE_URL}/access-requests?status=${status}`, { cache: "no-store" }, { timeoutMs: 8000 });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load access requests"));
-  return res.json();
-}
-
-export async function approveAccessRequest(
-  id: string,
-  role: UserRole,
-  expiresHours: LinkLifetime
-): Promise<IssuedLink & { request: AccessRequestRow }> {
-  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}/approve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, expires_hours: expiresHours }),
-  });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to approve the request"));
-  return res.json();
-}
-
-export async function rejectAccessRequest(id: string, note: string): Promise<AccessRequestRow> {
-  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}/reject`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(note ? { note } : {}),
-  });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to reject the request"));
-  return res.json();
-}
-
-/** Rejects (pending ones only) or erases many requests at once, e.g. a
- * spam flood. Returns how many were changed and how many were skipped. */
-export async function bulkDecideAccessRequests(
-  ids: string[],
-  action: "reject" | "delete",
-  note = ""
-): Promise<{ done: number; skipped: number }> {
-  const res = await apiFetch(`${API_BASE_URL}/access-requests/bulk`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, action, note }),
-  });
-  if (!res.ok) {
-    throw new Error(await errorDetail(res, action === "reject" ? "Failed to reject the requests" : "Failed to delete the requests"));
-  }
-  return res.json();
-}
-
-/** Erases the request for good (someone asking for their details to be
- * removed, under the PDPA). */
-export async function deleteAccessRequest(id: string): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/access-requests/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to delete the request"));
-}
-
 /** Newest first. */
 export async function listAccountLinks(): Promise<AccountLinkRow[]> {
   const res = await apiFetch(`${API_BASE_URL}/account-links`, { cache: "no-store" }, { timeoutMs: 8000 });
@@ -379,7 +310,7 @@ export async function listAccountLinks(): Promise<AccountLinkRow[]> {
   return res.json();
 }
 
-/** An invite link made directly, without a request. */
+/** An invite link for one email (works even while signups are off). */
 export async function createAccountLink(fields: {
   email: string;
   role: UserRole;

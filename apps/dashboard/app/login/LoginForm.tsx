@@ -45,14 +45,16 @@ export function LoginForm({ next }: { next: string }) {
         <LoginBrand />
 
         <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>Sign in</h1>
-        <p className="setup-note" style={{ marginBottom: 18 }}>Use the email and password your admin set up for you.</p>
+        <p className="setup-note" style={{ marginBottom: 18 }}>With your email or username.</p>
 
         <label style={{ display: "block", marginBottom: 14 }}>
-          <span className="detail-field-label">Email</span>
+          <span className="detail-field-label">Email or username</span>
           <input
             className="settings-input"
-            type="email"
+            type="text"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             autoFocus
             required
             value={email}
@@ -101,9 +103,9 @@ export function LoginForm({ next }: { next: string }) {
 
         <div className="login-divider" />
         <p className="setup-note" style={{ margin: 0, textAlign: "center" }}>
-          New to Carlink Studio?{" "}
+          New here?{" "}
           <Link href="/signup" className="setup-help-link">
-            Request access →
+            Create an account →
           </Link>
         </p>
       </form>

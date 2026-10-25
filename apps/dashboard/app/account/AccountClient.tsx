@@ -4,26 +4,25 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, KeyRound, Save, UserCog } from "lucide-react";
 import type { CurrentUser } from "@/lib/api";
-import { MIN_PASSWORD_LENGTH } from "@/lib/signup";
+import { MIN_PASSWORD_LENGTH, ROLE_LABEL, USERNAME_HINT } from "@/lib/signup";
 import { changeMyPasswordAction, updateMyProfileAction } from "./actions";
 
 function ProfileCard({ user }: { user: CurrentUser }) {
   const router = useRouter();
-  const [fields, setFields] = useState({
-    name: user.name,
-    qualifications: user.qualifications,
-    license_number: user.license_number,
-    firm_name: user.firm_name,
+  const fromUser = (u: CurrentUser) => ({
+    username: u.username,
+    name: u.name,
+    qualifications: u.qualifications,
+    license_number: u.license_number,
+    firm_name: u.firm_name,
   });
+  const [stored, setStored] = useState(fromUser(user));
+  const [fields, setFields] = useState(fromUser(user));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dirty =
-    fields.name !== user.name ||
-    fields.qualifications !== user.qualifications ||
-    fields.license_number !== user.license_number ||
-    fields.firm_name !== user.firm_name;
+  const dirty = (Object.keys(fields) as (keyof typeof fields)[]).some((key) => fields[key] !== stored[key]);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,19 +35,26 @@ function ProfileCard({ user }: { user: CurrentUser }) {
       setError(result.error);
       return;
     }
+    // What the server stored (the username comes back lower-cased).
+    setFields(fromUser(result.user));
+    setStored(fromUser(result.user));
     setSaved(true);
+    // The top bar shows the name.
     router.refresh();
   };
 
-  const field = (key: keyof typeof fields, label: string, placeholder = "") => (
+  const field = (key: keyof typeof fields, label: string, placeholder = "", hint = "") => (
     <label style={{ display: "block" }}>
       <span className="detail-field-label">{label}</span>
       <input
         className="settings-input"
         value={fields[key]}
         placeholder={placeholder}
+        autoCapitalize={key === "username" ? "none" : undefined}
+        spellCheck={key === "username" ? false : undefined}
         onChange={(e) => setFields({ ...fields, [key]: e.target.value })}
       />
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 
@@ -61,14 +67,15 @@ function ProfileCard({ user }: { user: CurrentUser }) {
           </div>
           <div>
             <div className="card-title" style={{ marginBottom: 2 }}>Your profile</div>
-            <div className="card-subtitle" style={{ marginBottom: 0 }}>Printed on every report you sign off</div>
+            <div className="card-subtitle" style={{ marginBottom: 0 }}>Your full name, licence and firm are printed on reports you sign off</div>
           </div>
         </div>
       </div>
       <div className="setup-card-divider" />
 
       <div className="account-grid">
-        {field("name", "Name")}
+        {field("username", "Username", "", `Signs you in, like your email. ${USERNAME_HINT}`)}
+        {field("name", "Full name", "e.g. Tan Wei Ming", "Printed on reports you sign off.")}
         <label style={{ display: "block" }}>
           <span className="detail-field-label">Email</span>
           <input className="settings-input" value={user.email} readOnly disabled />
@@ -78,7 +85,7 @@ function ProfileCard({ user }: { user: CurrentUser }) {
         {field("firm_name", "Firm")}
         <label style={{ display: "block" }}>
           <span className="detail-field-label">Role</span>
-          <input className="settings-input" value={user.role === "admin" ? "Admin" : "Surveyor"} readOnly disabled />
+          <input className="settings-input" value={ROLE_LABEL[user.role] ?? user.role} readOnly disabled />
         </label>
       </div>
       <p className="setup-note" style={{ marginTop: 12 }}>
