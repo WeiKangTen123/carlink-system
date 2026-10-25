@@ -470,7 +470,10 @@ def suggest(
         found = lines_for(family, side)
         if found:
             groups.append({"part": family if not side else f"{side} {family}", "reason": "damaged", "lines": found})
-        else:
+        elif not any(ln.family == family for ln in pool):
+            # Only parts no past case covers. A part whose past lines are all
+            # already in this Annex A is simply done -- calling it "no
+            # history" sent surveyors to ask the AI for nothing.
             without_history.append(family if not side else f"{side} {family}")
 
     # Companions: families present in at least half (and at least 2) of the

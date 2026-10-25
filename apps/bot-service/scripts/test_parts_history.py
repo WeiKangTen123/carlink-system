@@ -180,7 +180,8 @@ def main() -> int:
     boot2 = next((g for g in s2["groups"] if g["part"] == "Boot Lid"), {"lines": []})
     assert not any(normalise_item(l["name"]) == "tailgate" for l in boot2["lines"])
     ok("Annex A saves with adjusted costs and totals worked out on the server; blank rows dropped")
-    ok("lines already in Annex A aren't suggested again")
+    assert "Boot Lid" not in s2["without_history"], s2["without_history"]
+    ok("lines already in Annex A aren't suggested again, and their part isn't called \"no history\"")
 
     db = SessionLocal()
     row = db.get(Report, rid)
