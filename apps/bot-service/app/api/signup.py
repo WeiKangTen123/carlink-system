@@ -72,7 +72,7 @@ from app.auth.links import (
 )
 from app.auth.passwords import MAX_PASSWORD_LENGTH, hash_password, password_problem
 from app.reports.db import SessionLocal
-from app.reports.models import AccountLink, AppSetting, AuditEntry, User, iso_utc
+from app.reports.models import AccountLink, AppSetting, User, iso_utc
 
 router = APIRouter(tags=["signup"])
 
@@ -82,8 +82,9 @@ Role = Literal["user", "admin"]
 # Per network: a person tries a username or two; a script tries hundreds.
 _SIGNUP_TRIES_PER_IP = 20
 _SIGNUP_WINDOW_SECONDS = 60 * 60
-# New accounts across everyone in 24 hours. Beyond it signup pauses, so a
-# flood from many networks can't fill the users table before an admin sees it.
+# Active accounts made in the last 24 hours. Beyond it signup pauses, so a
+# flood from many networks can't fill the users table before an admin sees
+# it; disabling the junk accounts frees the room again.
 MAX_SIGNUPS_PER_DAY = 50
 
 _signup_tries: dict[str, deque] = {}
@@ -126,6 +127,16 @@ def _field_error(status: int, field: str, message: str) -> JSONResponse:
 def signups_open(db) -> bool:
     row = db.get(AppSetting, SIGNUPS_OPEN_KEY)
     return not (row and row.value == "false")
+
+
+def _open_invite(db, email: str) -> bool:
+    return db.query(AccountLink).filter(
+        AccountLink.email == email,
+        AccountLink.purpose == "invite",
+        AccountLink.used_at.is_(None),
+        AccountLink.revoked_at.is_(None),
+        AccountLink.expires_at > utc_now(),
+    ).first() is not None
 
 
 def _end_previous_session(db, request: Request) -> None:
@@ -180,12 +191,16 @@ def signup(body: SignupIn, request: Request, response: Response):
             return _field_error(400, "email", "That doesn't look like an email address.")
         if db.query(User).filter(User.email == email).first():
             return _field_error(409, "email", "There's already an account with that email. Sign in instead.")
+        # An admin is expecting this person to come in through their link
+        # (maybe as an admin); a stranger mustn't claim the address first.
+        if _open_invite(db, email):
+            return _field_error(409, "email", "You've been invited with this email. Use the link your admin sent you.")
         problem = password_problem(body.password, (username, email))
         if problem:
             return _field_error(400, "password", problem)
 
         day_ago = utc_now() - timedelta(days=1)
-        recent = db.query(AuditEntry).filter(AuditEntry.action == "signed_up", AuditEntry.created_at >= day_ago).count()
+        recent = db.query(User).filter(User.created_at >= day_ago, User.active.is_(True)).count()
         if recent >= MAX_SIGNUPS_PER_DAY:
             raise HTTPException(status_code=503, detail="Lots of people signed up today. Try again tomorrow.")
 
@@ -309,7 +324,8 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
                     db.rollback()
                     raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
                 user = User(
-                    email=link.email, username=username, name=username, role=link.role,
+                    # The name the admin typed, if any, for sign-offs.
+                    email=link.email, username=username, name=link.name or username, role=link.role,
                     password_hash=password_hash, must_change_password=False,
                 )
                 db.add(user)

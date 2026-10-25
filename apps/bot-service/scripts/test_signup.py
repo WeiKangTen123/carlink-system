@@ -181,7 +181,7 @@ def main() -> int:
     ok("a 21st signup try from one network in an hour gets 429; other networks are unaffected")
 
     old_cap = signup_api.MAX_SIGNUPS_PER_DAY
-    signup_api.MAX_SIGNUPS_PER_DAY = count(AuditEntry, action="signed_up")
+    signup_api.MAX_SIGNUPS_PER_DAY = count(User, active=True)
     r = signup(anon, "one.too.many", "toomany@example.com")
     assert r.status_code == 503 and count(User, email="toomany@example.com") == 0
     signup_api.MAX_SIGNUPS_PER_DAY = old_cap
@@ -256,6 +256,65 @@ def main() -> int:
     assert all("username" in u and "password_hash" not in u for u in users)
     ok("the user list carries usernames, never password hashes")
 
+    print("passing for someone else")
+    for name in ("Kelvin Lim", "  kelvin   LIM ", "Ｋｅｌｖｉｎ Ｌｉｍ", "Carlink Admin", "Sys Admin", "Support Team"):
+        r = newcomer.put("/auth/me", json={"name": name})
+        assert r.status_code == 400, (name, r.text)
+    assert admin.patch(f"/users/{ali_id}", json={"name": "Carlink Support"}).status_code == 200
+    assert newcomer.put("/auth/me", json={"name": "Ali Tan"}).status_code == 200
+    ok("people can't name themselves like another account or like the system/admins (an admin still can)")
+
+    case_id = newcomer.post("/reports", json={"draft": {"category": ["Other"], "description": "history name"}}).json()["id"]
+    history = admin.get(f"/reports/{case_id}").json()["history"]
+    assert history[0]["action"] == "created" and history[0]["user_name"] == "Ali Tan (@ali.t)", history
+    ok("the history names an account by full name and username, so two 'Ali Tan's can't be confused")
+
+    for bad in ("weikangten@gmail.com\u200b", "weikangten@gmail.com\u00ad", "\uff57eikangten@gmail.com", "we\u0456kang@gmail.com", "a@b"):
+        r = signup(anon, "lookalike.user", bad)
+        assert r.status_code == 400 and r.json()["field"] == "email", (repr(bad), r.text)
+    ok("emails with invisible or look-alike characters are refused (plain ASCII only)")
+
+    for name in ("sysadmin", "carlink.support", "the-owner", "root.user"):
+        r = signup(anon, name, f"{name.replace('.', '').replace('-', '')}@example.com")
+        assert r.status_code == 400 and r.json()["field"] == "username", (name, r.text)
+    assert newcomer.put("/auth/me", json={"username": "ali.admin"}).status_code == 400
+    assert admin.patch(f"/users/{ali_id}", json={"username": "carlink.ali"}).json()["username"] == "carlink.ali"
+    assert admin.patch(f"/users/{ali_id}", json={"username": "ali.t"}).status_code == 200
+    ok("usernames people choose can't contain admin/carlink/support/owner/root...; an admin can still give one")
+
+    prober = browser()
+    sign_in(prober, role="user", name="Prober")
+    codes = [prober.put("/auth/me", json={"username": f"probe.{i}"}).status_code for i in range(11)]
+    assert codes[:10] == [200] * 10 and codes[10] == 429, codes
+    ok("an account can change its username at most 10 times an hour (so it can't probe which names exist)")
+
+    invite_for = admin.post("/account-links", json={"email": "expected@example.com", "role": "admin"}).json()
+    r = signup(anon, "squatter", "expected@example.com")
+    assert r.status_code == 409 and r.json()["field"] == "email" and "invited" in r.json()["detail"], r.text
+    r = browser().post("/auth/links/accept", json={"token": invite_for["token"], "username": "expected.one", "password": GOOD_PASSWORD}, headers=fresh_ip())
+    assert r.status_code == 200 and r.json()["role"] == "admin", r.text
+    ok("while someone has an open invite, nobody else can sign up with their email")
+
+    racers = []
+    for i in range(2):
+        c = browser()
+        sign_in(c, role="user", name=f"Renamer {i}")
+        racers.append(c)
+    results = []
+    barrier = threading.Barrier(2)
+
+    def rename(c) -> None:
+        barrier.wait()
+        results.append(c.put("/auth/me", json={"username": "contested"}).status_code)
+
+    threads = [threading.Thread(target=rename, args=(c,)) for c in racers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [200, 409], results
+    ok("two accounts renaming to the same username at once: one gets it, the other a 409 (not a crash)")
+
     print("invite links")
     anon_ip = fresh_ip()
     token = admin.post("/account-links", json={"email": "WeiMing@Example.com", "role": "user", "name": "Tan Wei Ming"}).json()["token"]
@@ -277,6 +336,7 @@ def main() -> int:
     assert r.status_code == 200, r.text
     me = invited.get("/auth/me").json()
     assert me["username"] == "wei.ming" and me["role"] == "user" and me["email"] == "weiming@example.com"
+    assert me["name"] == "Tan Wei Ming"  # the name the admin typed, for sign-offs
     for path in ("/auth/links/accept", "/auth/links/lookup"):
         r = anon.post(path, json={"token": token, "username": "again.one", "password": GOOD_PASSWORD}, headers=anon_ip)
         assert r.status_code == 410 and r.json()["code"] == "used", (path, r.text)

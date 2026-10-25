@@ -324,7 +324,8 @@ export function CaseAssessmentTab({
   const qualifications = signer.qualifications || "";
   const licenseNumber = signer.license || "—";
   const firmName = signer.firm || "";
-  const profileIncomplete = !isSignedOff && Boolean(user) && !user?.license_number;
+  const noFullName = !isSignedOff && Boolean(user) && (!user?.name || user.name === user.username);
+  const profileIncomplete = !isSignedOff && Boolean(user) && (!user?.license_number || noFullName);
   const [signatureMode, setSignatureMode] = useState<"seal" | "canvas">("seal");
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
@@ -1457,7 +1458,9 @@ export function CaseAssessmentTab({
 
           {profileIncomplete && (
             <div style={{ color: "var(--badge-amber-text)", fontSize: 12 }}>
-              Your profile has no licence number, so the report will print without one.{" "}
+              {noFullName
+                ? "Your profile has no full name yet, so the report will print your username."
+                : "Your profile has no licence number, so the report will print without one."}{" "}
               <a href="/account" className="setup-help-link">Add it on My account</a>
             </div>
           )}

@@ -1,5 +1,6 @@
 from pathlib import Path
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.config import BOT_SERVICE_DIR, settings
@@ -72,13 +73,20 @@ def _upgrade_schema() -> None:
 
     log = logging.getLogger(__name__)
     inspector = inspect(engine)
-    with engine.begin() as conn:
-        for table, column, sql_type in _ADDED_COLUMNS:
-            if table in inspector.get_table_names():
-                existing = {c["name"] for c in inspector.get_columns(table)}
-                if column not in existing:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+    # The api and telegram-bot containers (and deploy.sh's admin check)
+    # start at the same moment and all run this; whichever loses a race
+    # finds the work already done, so each step tolerates that.
+    for table, column, sql_type in _ADDED_COLUMNS:
+        if table in inspector.get_table_names():
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if column not in existing:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
                     log.info("Added column %s.%s", table, column)
+                except OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
     for statement in _ADDED_INDEXES:
         try:
             with engine.begin() as conn:
@@ -90,8 +98,11 @@ def _upgrade_schema() -> None:
         table = statement.split()[1] if statement.startswith("UPDATE") else None
         if table and table not in names:
             continue
-        with engine.begin() as conn:
-            conn.execute(text(statement))
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(statement))
+        except OperationalError as exc:
+            log.warning("Could not apply data fix (%s): %s", statement, exc)
     _backfill_usernames()
 
 
@@ -102,12 +113,26 @@ def _backfill_usernames() -> None:
     from app.auth.core import username_from_email
     from app.reports.models import User
 
+    from sqlalchemy.exc import IntegrityError
+
     db = SessionLocal()
     try:
-        for user in db.query(User).filter(User.username.is_(None)).all():
-            user.username = username_from_email(db, user.email)
-            db.flush()
-        db.commit()
+        # Oldest first, so the first account with a given email name gets it
+        # without a number.
+        ids = [u.id for u in db.query(User).filter(User.username.is_(None)).order_by(User.created_at, User.id).all()]
+        for user_id in ids:
+            for _ in range(3):
+                user = db.get(User, user_id)
+                if user is None or user.username:
+                    break  # another process just did it
+                user.username = username_from_email(db, user.email)
+                try:
+                    db.commit()
+                    break
+                except IntegrityError:
+                    # Another process took that name a moment ago; pick again.
+                    db.rollback()
+                    db.expire_all()
     finally:
         db.close()
 

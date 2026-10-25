@@ -191,7 +191,7 @@ def main() -> int:
 
         history = pat.get(f"/reports/{case_id}").json()["history"]
         actions = [(h["action"], h["user_name"]) for h in history]
-        assert actions == [("created", "Pat Surveyor"), ("edited", "Pat Surveyor"), ("signed_off", "Pat Surveyor"), ("reopened", "Pat Surveyor")], actions
+        assert actions == [("created", "Pat Surveyor (@pat)"), ("edited", "Pat Surveyor (@pat)"), ("signed_off", "Pat Surveyor (@pat)"), ("reopened", "Pat Surveyor (@pat)")], actions
         assert history[2]["detail"] == "pat@example.com"
         ok("history: created, edited (two saves = one entry), signed off (with the account email), reopened")
 

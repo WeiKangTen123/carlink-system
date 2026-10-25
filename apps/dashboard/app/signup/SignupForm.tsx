@@ -106,6 +106,9 @@ export function SignupForm({ open }: { open: boolean }) {
       if (detail && isField(body?.field)) {
         setErrors({ [body.field]: detail });
         setAttempt((n) => n + 1);
+      } else if (res.status === 429) {
+        // nginx's own limit answers in HTML, so there may be no detail.
+        setFailure(detail || "Too many tries. Wait a minute, then try again.");
       } else {
         setFailure(detail || SEND_FAILED);
       }

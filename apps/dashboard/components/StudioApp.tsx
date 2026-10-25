@@ -327,9 +327,12 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                 Signing as <strong>{user.name}</strong>
                 {user.license_number ? <> · Licence {user.license_number}</> : null}
                 {user.firm_name ? <> · {user.firm_name}</> : null}
-                {!user.license_number && (
+                {(!user.license_number || user.name === user.username) && (
                   <span style={{ display: "block", fontSize: 12, color: "var(--badge-amber-text)", marginTop: 4 }}>
-                    Your profile has no licence number, so the report will print without one. Add it on My account.
+                    {user.name === user.username
+                      ? "Your profile has no full name yet, so the report will print your username."
+                      : "Your profile has no licence number, so the report will print without one."}{" "}
+                    Add it on My account.
                   </span>
                 )}
               </p>

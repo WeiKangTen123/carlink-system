@@ -23,6 +23,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.core import (
     LOCKOUT,
@@ -34,6 +35,7 @@ from app.auth.core import (
     create_session,
     end_session,
     end_user_sessions,
+    full_name_problem,
     locked_for,
     max_age,
     me_dict,
@@ -63,7 +65,15 @@ from app.reports.models import User
 router = APIRouter(tags=["auth"])
 
 WRONG_CREDENTIALS = "Email, username or password is wrong."
-_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+# Plain ASCII only, checked after lower-casing. Emails aren't verified, so a
+# zero-width space or a Cyrillic look-alike would otherwise make an address
+# that reads exactly like someone else's in the users list.
+_EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}")
+
+# Changing your own username answers "is this one taken?", so it is limited
+# per account like signup is per network.
+_USERNAME_CHANGES_PER_HOUR = 10
+_username_changes: dict[str, deque] = {}
 
 # Per-network limit on wrong passwords, on top of the per-account lockout,
 # so one address can't try a few passwords on every account. In memory: the
@@ -248,9 +258,10 @@ class ProfileFields(BaseModel):
     firm_name: Optional[str] = Field(default=None, max_length=160)
 
 
-def username_issue(db, username: str, exclude_id: str | None = None) -> tuple[int, str] | None:
-    """(status, message) if a normalized username can't be used, else None."""
-    problem = username_problem(username)
+def username_issue(db, username: str, exclude_id: str | None = None, *, self_chosen: bool = True) -> tuple[int, str] | None:
+    """(status, message) if a normalized username can't be used, else None.
+    self_chosen=False only when an admin sets it."""
+    problem = username_problem(username, self_chosen=self_chosen)
     if problem:
         return 400, problem
     if username_taken(db, username, exclude_id):
@@ -258,24 +269,55 @@ def username_issue(db, username: str, exclude_id: str | None = None) -> tuple[in
     return None
 
 
-def checked_username(db, username: str, exclude_id: str | None = None) -> str:
+def _commit_or_taken(db) -> None:
+    """Commit, turning a unique-index clash (the same username or email
+    claimed a moment ago by someone else) into a 409 rather than a 500."""
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That username or email was just taken by another account.")
+
+
+def checked_username(db, username: str, exclude_id: str | None = None, *, self_chosen: bool = True) -> str:
     """The normalized username, or a 400/409 saying why it can't be used."""
     username = normalize_username(username)
-    issue = username_issue(db, username, exclude_id)
+    issue = username_issue(db, username, exclude_id, self_chosen=self_chosen)
     if issue:
         raise HTTPException(status_code=issue[0], detail=issue[1])
     return username
 
 
-def _apply_profile(db, row: User, body: ProfileFields) -> None:
+def _username_change_allowed(user_id: str) -> bool:
+    now = time.monotonic()
+    with _ip_lock:
+        times = _username_changes.setdefault(user_id, deque())
+        while times and now - times[0] > 3600:
+            times.popleft()
+        if len(times) >= _USERNAME_CHANGES_PER_HOUR:
+            return False
+        times.append(now)
+        return True
+
+
+def _apply_profile(db, row: User, body: ProfileFields, *, by_admin: bool) -> None:
+    """by_admin: an admin editing an account may use reserved words and
+    any full name; people naming themselves may not (core.full_name_problem)."""
     if body.username is not None:
         new = normalize_username(body.username)
         if new != (row.username or ""):
-            row.username = checked_username(db, new, exclude_id=row.id)
+            if not by_admin and not _username_change_allowed(row.id):
+                raise HTTPException(status_code=429, detail="Too many username changes. Try again in an hour.")
+            row.username = checked_username(db, new, exclude_id=row.id, self_chosen=not by_admin)
     if body.name is not None:
-        if not body.name.strip():
+        name = " ".join(body.name.split())
+        if not name:
             raise HTTPException(status_code=400, detail="Name can't be empty.")
-        row.name = body.name.strip()
+        if not by_admin and name != row.name:
+            problem = full_name_problem(db, name, exclude_id=row.id)
+            if problem:
+                raise HTTPException(status_code=400, detail=problem)
+        row.name = name
     for field in ("qualifications", "license_number", "firm_name"):
         value = getattr(body, field)
         if value is not None:
@@ -288,13 +330,13 @@ def update_me(body: ProfileFields, user: CurrentUser = Depends(current_user)) ->
     try:
         row = db.get(User, user.id)
         before = _profile_changes(row, _PROFILE_FIELDS)
-        _apply_profile(db, row, body)
+        _apply_profile(db, row, body, by_admin=False)
         changes = _describe_changes(before, row)
         if changes:
             # Username, name and licence show in the history and on
             # sign-offs; keep a record of every change to them.
             audit(db, user, "profile_updated", detail=f"{row.email}: {changes}")
-        db.commit()
+        _commit_or_taken(db)
         db.refresh(row)
         return me_dict(row)
     finally:
@@ -386,17 +428,17 @@ def create_user(body: NewUser, admin: CurrentUser = Depends(require_admin)) -> d
         email = _checked_email(db, body.email)
         row = User(
             email=email,
-            username=checked_username(db, body.username) if body.username else username_from_email(db, email),
+            username=checked_username(db, body.username, self_chosen=False) if body.username else username_from_email(db, email),
             name="",
             role=body.role,
             password_hash=hash_password(password),
             must_change_password=True,
         )
         body.username = None  # already applied
-        _apply_profile(db, row, body)
+        _apply_profile(db, row, body, by_admin=True)
         db.add(row)
         audit(db, admin, "user_created", detail=f"{row.email} ({row.role})")
-        db.commit()
+        _commit_or_taken(db)
         db.refresh(row)
         return {"user": user_dict(row), "temporary_password": password}
     finally:
@@ -421,7 +463,7 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
             row.email = _checked_email(db, body.email, exclude_id=row.id)
         if body.role is not None:
             row.role = body.role
-        _apply_profile(db, row, body)
+        _apply_profile(db, row, body, by_admin=True)
         changes = _describe_changes(before, row)
         if changes:
             audit(db, admin, "user_updated", detail=f"{row.email}: {changes}")
@@ -430,7 +472,7 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
             if not body.active:
                 end_user_sessions(db, row.id)
             audit(db, admin, "user_enabled" if body.active else "user_disabled", detail=row.email)
-        db.commit()
+        _commit_or_taken(db)
         db.refresh(row)
         return user_dict(row)
     finally:
