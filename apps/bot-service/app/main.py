@@ -9,6 +9,12 @@ import uvicorn
 from app.config import settings
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request URL at INFO, and the Telegram Bot API puts the bot
+# token in the URL (https://api.telegram.org/bot<TOKEN>/getUpdates): the bot
+# worker was writing its token to the container log every few seconds.
+# Warnings and errors still come through.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def start_api_server() -> None:
