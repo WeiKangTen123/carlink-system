@@ -1,5 +1,5 @@
 """One-time account links -- invites and password resets -- and the sweep
-that deletes old ones and old access requests.
+that deletes old ones.
 
 There is no email service, so an admin copies the link and sends it by
 WhatsApp. That makes the link itself the only proof of who someone is, so
@@ -14,12 +14,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.auth.core import as_utc, token_hash, utc_now
-from app.reports.models import AccessRequest, AccountLink, User, iso_utc
-
-# Requests waiting for a decision. Beyond this, new ones are refused, so a
-# flood from many networks can't fill the database; admins clear it with
-# the bulk reject/delete in Settings.
-MAX_PENDING_REQUESTS = 200
+from app.reports.models import AccountLink, User, iso_utc
 
 # Choices offered to the admin, in hours (1, 3 and 7 days).
 EXPIRY_CHOICES = (24, 72, 168)
@@ -29,8 +24,6 @@ DEFAULT_RESET_HOURS = 24
 # PDPA: kept only as long as they're useful (app/intake/cleanup.py runs
 # this every 6 hours).
 KEEP_CLOSED_LINKS = timedelta(days=30)
-KEEP_DECIDED_REQUESTS = timedelta(days=30)
-KEEP_PENDING_REQUESTS = timedelta(days=60)
 
 
 def new_link(
@@ -43,7 +36,6 @@ def new_link(
     hours: int,
     name: str = "",
     user_id: str | None = None,
-    request_id: str | None = None,
 ) -> tuple[AccountLink, str]:
     """Adds a link (the caller commits) and returns it with its token, the
     only time the token exists outside the person's browser.
@@ -70,7 +62,6 @@ def new_link(
         role=role,
         name=name,
         user_id=user_id,
-        access_request_id=request_id,
         created_by=creator.id,
         created_by_name=creator.name,
         created_at=now,
@@ -144,25 +135,16 @@ def link_dict(link: AccountLink) -> dict:
     }
 
 
-def sweep_signups(db: Session, now: datetime | None = None) -> dict:
-    """Deletes links closed more than 30 days ago, requests decided more
-    than 30 days ago and requests left pending for 60 days."""
+def sweep_links(db: Session, now: datetime | None = None) -> int:
+    """Deletes links closed (used, revoked or expired) more than 30 days
+    ago. Returns how many."""
     now = now or utc_now()
-    removed_links = 0
+    removed = 0
     for link in db.query(AccountLink).all():
         status = link_status(link, now)
         closed_at = {"used": link.used_at, "revoked": link.revoked_at, "expired": link.expires_at}.get(status)
         if closed_at and as_utc(closed_at) + KEEP_CLOSED_LINKS <= now:
             db.delete(link)
-            removed_links += 1
-    removed_requests = 0
-    for request in db.query(AccessRequest).all():
-        if request.status == "pending":
-            stale = as_utc(request.created_at) + KEEP_PENDING_REQUESTS <= now
-        else:
-            stale = as_utc(request.decided_at or request.created_at) + KEEP_DECIDED_REQUESTS <= now
-        if stale:
-            db.delete(request)
-            removed_requests += 1
+            removed += 1
     db.commit()
-    return {"links": removed_links, "requests": removed_requests}
+    return removed

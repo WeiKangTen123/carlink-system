@@ -24,8 +24,9 @@ PUBLIC_PATHS = {
     "/health",
     "/auth/login",
     "/auth/logout",
-    # Signing up and using a one-time link (app/api/signup.py).
-    "/auth/access-requests",
+    # Signing up and using a one-time link (app/api/signup.py). /auth/signup
+    # answers GET (are signups open?) and POST (sign up).
+    "/auth/signup",
     "/auth/links/lookup",
     "/auth/links/accept",
 }

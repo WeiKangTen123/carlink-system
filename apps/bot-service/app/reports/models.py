@@ -166,11 +166,12 @@ class User(Base):
     """A person who can sign in to the dashboard (app/auth).
 
     The first admin is created on the server with
-    `python -m app.auth.manage create-user`. Everyone else joins through a
-    one-time invite link an admin creates, directly or by approving an
-    AccessRequest (app/api/signup.py), or is added by an admin in Settings.
-    Users are disabled rather than deleted, so the case history keeps
-    pointing at real accounts.
+    `python -m app.auth.manage create-user`. Everyone else signs up on the
+    public /signup page (username, email, password) and is in at once as a
+    "user", or joins through a one-time invite link an admin creates
+    (app/api/signup.py). Only an admin makes someone an admin. Users are
+    disabled rather than deleted, so the case history keeps pointing at real
+    accounts.
 
     The surveyor profile (qualifications, licence, firm) is what sign-off
     prints -- it used to be typed in, or defaulted to one fixed surveyor, so
@@ -181,9 +182,16 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
     # Always stored lower-cased (app/auth/core.normalize_email).
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    # Lower-cased, 3-30 characters (app/auth/core.username_problem); signs
+    # in like the email. Unique through ux_users_username (reports/db.py),
+    # which also covers databases from before this column existed.
+    # (Added after the table shipped: see db._ADDED_COLUMNS.)
+    username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The full name printed on sign-offs; starts out as the username.
     name: Mapped[str] = mapped_column(String)
-    # "admin": users, API keys, settings, deleting cases. "surveyor": cases.
-    role: Mapped[str] = mapped_column(String, default="surveyor")
+    # "admin": users, API keys, settings, deleting cases. "user": cases.
+    # (Called "surveyor" until 2026-10-25; db._DATA_FIXES renames it.)
+    role: Mapped[str] = mapped_column(String, default="user")
     password_hash: Mapped[str] = mapped_column(String)
     # Set when an admin hands out a temporary password; the API refuses
     # everything but changing it until it is changed.
@@ -235,41 +243,6 @@ class AuditEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
 
 
-class AccessRequest(Base):
-    """Someone asking for an account on the public /signup page.
-
-    Never an account itself and never holds a password: an admin approves it
-    (choosing the role) and that creates an invite AccountLink, which is how
-    the person sets their password. Several pending requests may share an
-    email -- the first one isn't trusted to be the real person -- and admins
-    see the overlap. Rejected and old requests are deleted by the cleanup
-    sweep (app/auth/links.sweep_signups), per the PDPA's retention rule.
-    """
-    __tablename__ = "access_requests"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
-    # Shown to the requester ("Ref REQ-7F3K") so they can quote it to an admin.
-    reference: Mapped[str] = mapped_column(String, index=True)
-    name: Mapped[str] = mapped_column(String)
-    email: Mapped[str] = mapped_column(String, index=True)
-    phone: Mapped[str] = mapped_column(String, default="")
-    organisation: Mapped[str] = mapped_column(String, default="")
-    # What they asked for -- information only; the admin picks the role.
-    requested_role: Mapped[str] = mapped_column(String, default="surveyor")
-    note: Mapped[str] = mapped_column(String, default="")
-    # pending -> approved | rejected
-    status: Mapped[str] = mapped_column(String, default="pending", index=True)
-    consent_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
-    ip: Mapped[str] = mapped_column(String, default="")
-    user_agent: Mapped[str] = mapped_column(String, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
-    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    decided_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    decided_by_name: Mapped[str] = mapped_column(String, default="")
-    decision_note: Mapped[str] = mapped_column(String, default="")
-    link_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-
-
 class AccountLink(Base):
     """A one-time link an admin sends someone (by WhatsApp -- there is no
     email service): "invite" creates an account, "reset" sets a new
@@ -285,12 +258,11 @@ class AccountLink(Base):
     purpose: Mapped[str] = mapped_column(String, default="invite")  # invite | reset
     token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
     email: Mapped[str] = mapped_column(String, index=True)
-    role: Mapped[str] = mapped_column(String, default="surveyor")
-    # Pre-fills the invite form (from the request or the admin).
+    role: Mapped[str] = mapped_column(String, default="user")
+    # The name the admin typed, for the greeting on the invite page.
     name: Mapped[str] = mapped_column(String, default="")
     # The account a reset link is for.
     user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    access_request_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_by: Mapped[str] = mapped_column(String)
     created_by_name: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

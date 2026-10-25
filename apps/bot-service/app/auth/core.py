@@ -7,6 +7,7 @@ user's password is changed or reset or the account is disabled.
 """
 import hashlib
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,8 @@ logger = logging.getLogger(__name__)
 # The prefix needs Secure, so plain-HTTP setups (AUTH_COOKIE_SECURE=false)
 # use the bare name. The dashboard forwards either (lib/api.ts).
 SESSION_COOKIE = "__Host-carlink_session" if settings.auth_cookie_secure else "carlink_session"
-ROLES = ("admin", "surveyor")
+# "user" was called "surveyor" until 2026-10-25 (reports/db._DATA_FIXES).
+ROLES = ("admin", "user")
 
 MAX_FAILED_LOGINS = 5
 LOCKOUT = timedelta(minutes=15)
@@ -57,6 +59,54 @@ def max_age() -> timedelta:
     return timedelta(days=settings.auth_session_max_days)
 
 
+# 3-30 characters: letters, numbers, dots, dashes, underscores, starting and
+# ending with a letter or number. Stored lower-cased; "Wei.Kang" and
+# "wei.kang" are one username.
+_USERNAME = re.compile(r"[a-z0-9](?:[a-z0-9._-]{1,28})[a-z0-9]")
+USERNAME_RULE = "Use 3-30 letters, numbers, dots, dashes or underscores, starting and ending with a letter or number."
+# Names that would let a new account pass itself off as the system or the
+# admins in the history and the top bar.
+_RESERVED_USERNAMES = {
+    "admin", "administrator", "root", "system", "support", "help", "staff", "owner",
+    "carlink", "carlinkstudio", "security", "noreply", "no-reply", "info", "null", "undefined",
+}
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def username_problem(username: str) -> str | None:
+    """Why a username (already normalized) is refused, or None. Doesn't
+    check whether it's taken."""
+    if not _USERNAME.fullmatch(username):
+        return USERNAME_RULE
+    if username in _RESERVED_USERNAMES:
+        return "That username is reserved. Choose another."
+    return None
+
+
+def username_taken(db: Session, username: str, exclude_id: str | None = None) -> bool:
+    query = db.query(User).filter(User.username == username)
+    if exclude_id:
+        query = query.filter(User.id != exclude_id)
+    return query.first() is not None
+
+
+def username_from_email(db: Session, email: str) -> str:
+    """A free, valid username made from an email's local part, for accounts
+    that didn't choose one (from before usernames, or made by an admin)."""
+    local = re.sub(r"[^a-z0-9._-]+", "", email.split("@", 1)[0].lower()).strip("._-")[:26]
+    base = local if len(local) >= 3 and username_problem(local) is None else f"user{local}"[:26].strip("._-")
+    if len(base) < 3:
+        base = "user"
+    candidate, n = base, 1
+    while username_problem(candidate) is not None or username_taken(db, candidate):
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -71,6 +121,7 @@ class CurrentUser:
     row, which is detached once the lookup's database session closes."""
     id: str
     email: str
+    username: str
     name: str
     role: str
     must_change_password: bool
@@ -88,6 +139,7 @@ def _current(user: User, session_hash: str) -> CurrentUser:
     return CurrentUser(
         id=user.id,
         email=user.email,
+        username=user.username or "",
         name=user.name,
         role=user.role,
         must_change_password=bool(user.must_change_password),
@@ -252,6 +304,7 @@ def user_dict(user: User) -> dict:
     return {
         "id": user.id,
         "email": user.email,
+        "username": user.username or "",
         "name": user.name,
         "role": user.role,
         "active": bool(user.active),
@@ -270,6 +323,7 @@ def me_dict(user: CurrentUser | User) -> dict:
     return {
         "id": user.id,
         "email": user.email,
+        "username": user.username or "",
         "name": user.name,
         "role": user.role,
         "must_change_password": bool(user.must_change_password),

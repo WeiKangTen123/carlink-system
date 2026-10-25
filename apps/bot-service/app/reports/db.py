@@ -42,12 +42,26 @@ _ADDED_COLUMNS = [
     ("intake_sessions", "ai_draft", "JSON"),
     ("intake_photos", "part", "VARCHAR"),
     ("intake_sessions", "stage_started_at", "DATETIME"),
+    ("users", "username", "VARCHAR"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing
 # duplicate rows blocking a UNIQUE index) is logged, not fatal.
 _ADDED_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_intake_photos_report_sha ON intake_photos (report_id, sha256)",
+    # NULLs don't collide, so accounts from before usernames are fine until
+    # _backfill_usernames gives them one.
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users (username)",
+]
+
+# One-off data changes, each safe to run on every start-up.
+_DATA_FIXES = [
+    # The non-admin role was called "surveyor" until 2026-10-25.
+    "UPDATE users SET role = 'user' WHERE role = 'surveyor'",
+    "UPDATE account_links SET role = 'user' WHERE role = 'surveyor'",
+    # The "request access" flow it held was replaced by open signup the
+    # same day; requests are personal data with no further use (PDPA).
+    "DROP TABLE IF EXISTS access_requests",
 ]
 
 
@@ -71,6 +85,31 @@ def _upgrade_schema() -> None:
                 conn.execute(text(statement))
         except Exception as exc:
             log.warning("Could not create index (%s): %s", statement, exc)
+    names = set(inspect(engine).get_table_names())
+    for statement in _DATA_FIXES:
+        table = statement.split()[1] if statement.startswith("UPDATE") else None
+        if table and table not in names:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(statement))
+    _backfill_usernames()
+
+
+def _backfill_usernames() -> None:
+    """Accounts from before usernames get one made from their email
+    ("weikangten@gmail.com" -> "weikangten"); they can change it on My
+    account."""
+    from app.auth.core import username_from_email
+    from app.reports.models import User
+
+    db = SessionLocal()
+    try:
+        for user in db.query(User).filter(User.username.is_(None)).all():
+            user.username = username_from_email(db, user.email)
+            db.flush()
+        db.commit()
+    finally:
+        db.close()
 
 
 def init_db() -> None:

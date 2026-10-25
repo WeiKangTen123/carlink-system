@@ -106,7 +106,7 @@ def main() -> int:
     admin = TestClient(app, base_url="https://carlink.test")
     sign_in(admin, role="admin", name="Kelvin Lim")
     surveyor = TestClient(app, base_url="https://carlink.test")
-    sign_in(surveyor, role="surveyor")
+    sign_in(surveyor, role="user")
 
     print("importing")
     files = [
