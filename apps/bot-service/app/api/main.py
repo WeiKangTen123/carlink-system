@@ -748,6 +748,7 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             "license_number": user.license_number or None,
             "firm_name": user.firm_name or None,
             "signed_by_user_id": user.id,
+            "signed_by_username": user.username,
             "signed_by_email": user.email,
             "signature_hash": sig_hash,
             "signature_data_url": _drawn_signature(body_data.get("signature_data_url")),
@@ -796,7 +797,10 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         
         pdf_path = r.pdf_path or report_pdf_path(r.id)
         try:
-            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+            # On a worker thread: this endpoint is async (it reads the JSON
+            # body itself), and Playwright's sync API refuses to run on the
+            # event loop -- the signed PDF used to keep the unsigned copy.
+            await asyncio.to_thread(render_pdf, r.data, r.photo_paths or [], pdf_path, report_id=r.id)
             r.pdf_path = pdf_path
         except Exception as exc:
             logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
