@@ -5,6 +5,9 @@
    Creator: MMC Works (@mmcworks)
    License: Creative Commons Attribution (CC-BY 4.0)
    URL: https://sketchfab.com/mmcworks
+   Sedan: "Generic Sedan Car" by MMC Works
+   Source: https://sketchfab.com/3d-models/generic-sedan-car-58c33766470d46e7b2aed542650494e5
+   License: CC Attribution (CC-BY 4.0) -- https://creativecommons.org/licenses/by/4.0/
 
 2. 2005 Toyota HiAce (Commercial Van)
    Creator: ActsOfDoge
@@ -18,3 +21,11 @@
 4. 2018 Honda Fit / Jazz (Hatchback)
    License: Creative Commons Attribution
    URL: https://sketchfab.com/3d-models/2018-honda-fit-jazz-2b1f535f185e4a6abf6b0a3222487704
+
+Changes made to all five models (the *.v2.glb files here)
+---------------------------------------------------------
+The dashboard renders the geometry only, as a wireframe, so textures, the
+UVs and tangents they used, and vertex colours were removed. Vertices were
+welded and quantized and the geometry compressed (EXT_meshopt_compression).
+Meshes, node names and triangles are otherwise as published. Reproducible
+with apps/dashboard/scripts/optimize-vehicle-models.mjs.

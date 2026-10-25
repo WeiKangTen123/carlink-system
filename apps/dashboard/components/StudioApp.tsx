@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Search,
   FileText,
@@ -55,16 +55,25 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   // Same fallback the original detail page used: real damage_summary items
   // when they exist, otherwise the plain damaged_parts list with everything
   // else honestly left unknown -- never invented from the description text.
-  const damageEntries: DamageSummaryItem[] =
-    d.damage_summary && d.damage_summary.length > 0
-      ? d.damage_summary
-      : (d.damaged_parts || []).map((p) => ({ part: p, severity: d.severity_level || null, human_verified: false }));
+  // Memoised on the report data so the array keeps its identity across
+  // re-renders: the 3D blueprint resets its camera and rebuilds materials
+  // whenever it gets a new damageEntries array.
+  const damageSummary = d.damage_summary;
+  const damagedParts = d.damaged_parts;
+  const severityLevel = d.severity_level;
+  const damageEntries = useMemo<DamageSummaryItem[]>(
+    () =>
+      damageSummary && damageSummary.length > 0
+        ? damageSummary
+        : (damagedParts || []).map((p) => ({ part: p, severity: severityLevel || null, human_verified: false })),
+    [damageSummary, damagedParts, severityLevel],
+  );
 
   // Same resolution the 3D blueprint uses for its numbered markers -- one
   // shared function so a badge number always means the same part in both
   // places, never two independently-computed numbering schemes drifting
   // apart.
-  const zoneResolutions = resolveZones(damageEntries);
+  const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
 
   const photos = report.photo_urls || [];
   const photoThumbs = report.photo_thumb_urls;
