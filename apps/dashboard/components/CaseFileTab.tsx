@@ -104,6 +104,8 @@ const HISTORY_LABELS: Record<string, string> = {
   finalized: "Filed as a case",
   signed_off: "Signed off",
   reopened: "Reopened",
+  // Detail: "Assigned to Name (@username)" or "Unassigned".
+  assigned: "Owner changed",
 };
 
 export function CaseFileTab({ report }: { report: ReportDetail }) {

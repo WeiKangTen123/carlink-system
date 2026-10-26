@@ -14,11 +14,18 @@ import {
   getAnnexSuggestions,
   askAiAnnexSuggestions,
   saveAnnexA,
+  listReports,
+  listUsers,
+  setCaseOwner,
+  errorCode,
+  messageForCode,
   type AnnexAInfo,
   type AnnexAPartItem,
   type AnnexCInfo,
   type AnnexSuggestionGroup,
   type AnnexSuggestions,
+  type CaseCounts,
+  type Owner,
   type PhotoAnalysisDraft,
   type SignOffRequest,
   type SignOffInfo,
@@ -84,7 +91,16 @@ export async function reanalyzeExistingPhotosAction(
 
 export async function updateReportAction(id: string, formData: FormData) {
   const { payload, tempPhotoPaths } = buildReportPayload(formData);
-  await updateReport(id, payload, tempPhotoPaths);
+  try {
+    await updateReport(id, payload, tempPhotoPaths);
+  } catch (err) {
+    unstable_rethrow(err);
+    // A refusal with a code (not_allowed, disk_full, render_busy) goes back
+    // to the form with its message instead of the error page.
+    const code = errorCode(err);
+    if (code && messageForCode(code)) redirect(`/reports/${id}/edit?error=${encodeURIComponent(code)}`);
+    throw err;
+  }
   // Without these, Next.js's client-side Router Cache can serve the stale
   // pre-edit RSC payload for these routes on the next visit -- e.g. if the
   // user was already on the detail page before clicking Edit, navigating
@@ -240,3 +256,50 @@ export async function aiEnrichAllReportsAction() {
   }
 }
 
+
+// Case owners (admin only -- the API refuses anyone else).
+
+/** One person an admin can give a case to. */
+export type AssignableUser = Pick<Owner, "id" | "name" | "username"> & { cases: CaseCounts | null };
+
+/** Active accounts, for the Assign dialog (GET /users is admin only). */
+export async function listAssignableUsersAction(): Promise<{ users: AssignableUser[] } | { error: string }> {
+  try {
+    const users = await listUsers();
+    return {
+      users: users
+        .filter((u) => u.active)
+        .map((u) => ({ id: u.id, name: u.name, username: u.username, cases: u.cases ?? null })),
+    };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load users" };
+  }
+}
+
+/** Gives the case to ownerId, or makes it Unassigned (null). */
+export async function setCaseOwnerAction(
+  reportId: string,
+  ownerId: string | null
+): Promise<{ owner: Owner | null } | { error: string }> {
+  try {
+    const result = await setCaseOwner(reportId, ownerId);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return { owner: result.owner ?? null };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to change the owner" };
+  }
+}
+
+/** How many cases have no owner (for the admin's Unassigned card while the
+ * list shows only their own cases). Null if it couldn't be counted. */
+export async function countUnassignedAction(): Promise<number | null> {
+  try {
+    return (await listReports("unassigned")).length;
+  } catch (err) {
+    unstable_rethrow(err);
+    return null;
+  }
+}

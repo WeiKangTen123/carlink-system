@@ -166,7 +166,7 @@ async function handleSignInProblem(res: Response, opts: ApiFetchOptions): Promis
  * a user; only an admin makes someone an admin (Settings -> Users). */
 export type UserRole = "admin" | "user";
 
-export type CurrentUser = {
+type UserProfile = {
   id: string;
   email: string;
   /** Lower-case, unique; signs in like the email. */
@@ -180,12 +180,118 @@ export type CurrentUser = {
   firm_name: string;
 };
 
-export type UserAccount = CurrentUser & {
+/** GET /auth/me. The three flags are what the account may do in effect
+ * (admins always may), not the raw ticks an admin sets on Settings -> Users. */
+export type CurrentUser = UserProfile & {
+  /** Sees every case (and the My cases / All / Unassigned switch). */
+  can_view_all_cases: boolean;
+  may_sign_off: boolean;
+  /** May run the AI (admins, and accounts allowed the company AI key). */
+  ai_allowed: boolean;
+};
+
+/** A person's cases by state (GET /users). */
+export type CaseCounts = { open: number; signed_off: number; drafts: number };
+
+/** GET /users (admin). The three ticks are as the admin set them; admins
+ * have all of it whatever these say. */
+export type UserAccount = UserProfile & {
   active: boolean;
   locked: boolean;
   last_login_at: string | null;
   created_at: string;
+  /** "Can see and work on all cases". */
+  sees_all_cases: boolean;
+  /** "May use the company AI key". */
+  ai_company_key_allowed: boolean;
+  /** "May sign off reports". */
+  may_sign_off: boolean;
+  cases: CaseCounts;
 };
+
+/** The three ticks on Settings -> Users. */
+export type UserTicks = Pick<UserAccount, "sees_all_cases" | "ai_company_key_allowed" | "may_sign_off">;
+
+/** Who a case belongs to. A case with no owner (null) is Unassigned: only
+ * admins and staff who see all cases see it. */
+export type Owner = { id: string; name: string; username: string; active: boolean };
+
+/** What the signed-in user may do on one case, as the API worked it out
+ * (GET /reports/{id}, GET /intake/{id}). The API checks again on every call. */
+export type CasePermissions = { edit: boolean; sign_off: boolean; reopen: boolean; delete: boolean; assign: boolean };
+
+/** Admins only, on an Unassigned case: who probably owns it, and why. */
+export type SuggestedOwner = { id: string; name: string; username: string; reason: string };
+
+/** Which cases GET /reports lists. Plain users only get "mine". */
+export type CaseScope = "mine" | "all" | "unassigned";
+
+export const CASE_SCOPES: readonly CaseScope[] = ["mine", "all", "unassigned"];
+
+export function isCaseScope(value: unknown): value is CaseScope {
+  return typeof value === "string" && (CASE_SCOPES as readonly string[]).includes(value);
+}
+
+/** "Tan Ah Huat (@ahhuat)", or "@ahhuat" when the name is just the username. */
+export function personLabel(p: { name: string; username: string }): string {
+  return p.name && p.name !== p.username ? `${p.name} (@${p.username})` : `@${p.username}`;
+}
+
+/** personLabel, "(disabled)" for a disabled account, "Unassigned" for none. */
+export function ownerLabel(owner: Owner | null | undefined): string {
+  if (!owner) return "Unassigned";
+  return owner.active ? personLabel(owner) : `${personLabel(owner)} (disabled)`;
+}
+
+// ---------------------------------------------------------------------------
+// Errors. The API sends {"detail": "...", "code": "..."} for refusals the
+// screen should explain (like password_change_required above). The code is
+// kept on the error, and the message is already the plain-words version, so
+// a caller that just shows err.message shows the right thing.
+
+/** Plain words for the API's error codes. */
+export const ERROR_MESSAGES: Record<string, string> = {
+  ai_key_missing: "AI is off for your account. Ask an admin to allow the company AI key.",
+  draft_limit: "You have too many unfinished drafts. Finish or delete one, then try again.",
+  disk_full: "The server is almost out of space, so new photos and cases can't be saved. Please tell an admin.",
+  render_busy: "Too many PDFs are being made right now. Wait a minute and try again.",
+  not_allowed: "You can't change this case. Ask its owner or an admin.",
+  scope_not_allowed: "You can only see your own cases.",
+  owner_inactive: "That account is disabled. Pick someone else.",
+  owner_draft: "This case is still an unfinished draft. Drafts can't be given to someone else.",
+};
+
+/** The plain-words message for an error code, if it has one. */
+export function messageForCode(code: string | null | undefined): string | null {
+  return (code && ERROR_MESSAGES[code]) || null;
+}
+
+/** A refused API call. `code` is the API's error code, when it sent one. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(message: string, status: number, code: string | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** The error code of anything thrown by these calls, or null. */
+export function errorCode(err: unknown): string | null {
+  return err instanceof ApiError ? err.code : null;
+}
+
+/** An ApiError from a failed response: the plain-words message for its
+ * code, else the API's own detail, else "<fallback> (<status>)". */
+export async function apiError(res: Response, fallback: string): Promise<ApiError> {
+  const body = await res.json().catch(() => null);
+  const code = typeof body?.code === "string" ? body.code : null;
+  const detail = typeof body?.detail === "string" && body.detail ? body.detail : null;
+  return new ApiError(messageForCode(code) || detail || `${fallback} (${res.status})`, res.status, code);
+}
 
 /** Profile fields a user edits on their own Account page, and an admin on
  * anyone's. The name, licence and firm are printed on the PDF at sign-off. */
@@ -196,11 +302,6 @@ export type ProfileFields = {
   license_number?: string;
   firm_name?: string;
 };
-
-async function errorDetail(res: Response, fallback: string): Promise<string> {
-  const body = await res.json().catch(() => null);
-  return typeof body?.detail === "string" ? body.detail : `${fallback} (${res.status})`;
-}
 
 /** The signed-in user, or null when there is none. Never redirects. */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
@@ -221,7 +322,7 @@ export async function updateMyProfile(patch: ProfileFields): Promise<CurrentUser
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save your profile"));
+  if (!res.ok) throw await apiError(res, "Failed to save your profile");
   return res.json();
 }
 
@@ -231,25 +332,25 @@ export async function changeMyPassword(currentPassword: string, newPassword: str
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to change your password"));
+  if (!res.ok) throw await apiError(res, "Failed to change your password");
 }
 
 export async function listUsers(): Promise<UserAccount[]> {
   const res = await apiFetch(`${API_BASE_URL}/users`, { cache: "no-store" }, { timeoutMs: 8000 });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load users"));
+  if (!res.ok) throw await apiError(res, "Failed to load users");
   return res.json();
 }
 
-export async function updateUser(
-  id: string,
-  patch: ProfileFields & { email?: string; role?: UserRole; active?: boolean }
-): Promise<UserAccount> {
+/** What an admin may change on someone's account (PATCH /users/{id}). */
+export type UserPatch = ProfileFields & Partial<UserTicks> & { email?: string; role?: UserRole; active?: boolean };
+
+export async function updateUser(id: string, patch: UserPatch): Promise<UserAccount> {
   const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save the user"));
+  if (!res.ok) throw await apiError(res, "Failed to save the user");
   return res.json();
 }
 
@@ -278,7 +379,7 @@ export async function setSignupsOpen(open: boolean): Promise<boolean> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ open }),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to change signups"));
+  if (!res.ok) throw await apiError(res, "Failed to change signups");
   return Boolean((await res.json()).open);
 }
 
@@ -306,7 +407,7 @@ export type LinkLifetime = 24 | 72 | 168;
 /** Newest first. */
 export async function listAccountLinks(): Promise<AccountLinkRow[]> {
   const res = await apiFetch(`${API_BASE_URL}/account-links`, { cache: "no-store" }, { timeoutMs: 8000 });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load links"));
+  if (!res.ok) throw await apiError(res, "Failed to load links");
   return res.json();
 }
 
@@ -322,13 +423,13 @@ export async function createAccountLink(fields: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to create the link"));
+  if (!res.ok) throw await apiError(res, "Failed to create the link");
   return res.json();
 }
 
 export async function revokeAccountLink(id: string): Promise<AccountLinkRow> {
   const res = await apiFetch(`${API_BASE_URL}/account-links/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to cancel the link"));
+  if (!res.ok) throw await apiError(res, "Failed to cancel the link");
   return res.json();
 }
 
@@ -340,7 +441,7 @@ export async function createResetLink(userId: string, expiresHours: LinkLifetime
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ expires_hours: expiresHours }),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to create the reset link"));
+  if (!res.ok) throw await apiError(res, "Failed to create the reset link");
   return res.json();
 }
 
@@ -624,6 +725,8 @@ export type ReportSummary = {
   disassembly_required?: boolean;
   reported_to_police?: boolean;
   incident_datetime?: string | null;
+  /** Null when the case is Unassigned. */
+  owner: Owner | null;
 };
 
 export type ReportData = {
@@ -687,10 +790,16 @@ export type ReportDetail = {
   /** Who created, edited, signed off and reopened it, oldest first.
    * Optional so an older API response still parses. */
   history?: HistoryEntry[];
+  /** Null when the case is Unassigned. */
+  owner: Owner | null;
+  permissions: CasePermissions;
+  /** Sent to admins only, and only while the case is Unassigned. */
+  suggested_owner?: SuggestedOwner | null;
 };
 
 export type HistoryEntry = {
-  action: "created" | "edited" | "finalized" | "signed_off" | "reopened" | string;
+  /** "assigned": the owner changed; detail is "Assigned to Name (@username)" or "Unassigned". */
+  action: "created" | "edited" | "finalized" | "signed_off" | "reopened" | "assigned" | string;
   /** Null for entries with no account behind them (Telegram, or before sign-in). */
   user_name: string | null;
   detail: string | null;
@@ -734,20 +843,38 @@ export const EMPTY_ANALYTICS_SUMMARY: AnalyticsSummary = {
   ai_confidence_avg: null,
 };
 
-export async function listReports(): Promise<ReportSummary[]> {
-  const res = await apiFetch(`${API_BASE_URL}/reports`, { cache: "no-store" }, { timeoutMs: 8000 });
-  if (!res.ok) throw new Error(`Failed to load reports (${res.status}: ${res.statusText})`);
+/** No scope: the API's default (All for admins, My cases for everyone
+ * else). Asking a plain user's list for anything but "mine" is refused
+ * (ApiError code scope_not_allowed). */
+export async function listReports(scope?: CaseScope): Promise<ReportSummary[]> {
+  const query = scope ? `?scope=${scope}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/reports${query}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load cases");
   return res.json();
 }
 
+/** Null when there is no such case, and equally when it isn't one the
+ * signed-in user may open: the API answers both with the same 404. */
 export async function getReport(id: string): Promise<ReportDetail | null> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" }, { timeoutMs: 8000 });
   // Resilient 404 handling: return null so Next.js notFound() renders the branded 404 page instead of a 500 error
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Failed to load report ${id} (${res.status}: ${res.statusText})`);
+  if (!res.ok) throw await apiError(res, `Failed to load case ${id}`);
   const body = await res.json();
   if (body && typeof body === "object" && "error" in body) return null;
   return body as ReportDetail;
+}
+
+/** Admin: give a case to someone, or (null) make it Unassigned. Refused
+ * for a disabled account (owner_inactive) and for a draft (owner_draft). */
+export async function setCaseOwner(reportId: string, ownerId: string | null): Promise<{ owner: Owner | null }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/owner`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner_id: ownerId }),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to change the owner");
+  return res.json();
 }
 
 export async function createReport(payload: ReportData, tempPhotoPaths: string[] = []): Promise<{ id: string }> {
@@ -756,10 +883,7 @@ export async function createReport(payload: ReportData, tempPhotoPaths: string[]
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to create report (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to create report");
   return res.json();
 }
 
@@ -782,10 +906,7 @@ export async function analyzeReportPhotos(
     method: "POST",
     body: formData,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`AI analysis failed (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "AI analysis failed");
   return res.json();
 }
 
@@ -813,10 +934,7 @@ export async function analyzeExistingReportPhotos(
     method: "POST",
     body: formData,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`AI analysis failed (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "AI analysis failed");
   const result = await res.json();
   return { draft: result.draft };
 }
@@ -831,10 +949,7 @@ export async function updateReport(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to update report (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to update report");
   return res.json();
 }
 
@@ -851,19 +966,13 @@ export async function reviewDamageItem(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to update damage item (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to update damage item");
   return res.json();
 }
 
 export async function reopenReport(id: string): Promise<{ id: string; status: string }> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to reopen report (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to reopen report");
   return res.json();
 }
 
@@ -878,10 +987,7 @@ export async function signOffReport(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to sign off report (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to sign off report");
   return res.json();
 }
 
@@ -889,10 +995,7 @@ export async function renderReportPdf(id: string): Promise<{ id: string; status:
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}/render-pdf`, {
     method: "POST",
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to render PDF (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to render PDF");
   return res.json();
 }
 
@@ -947,7 +1050,7 @@ export type AnnexSuggestions = {
 
 export async function getAnnexSuggestions(reportId: string): Promise<AnnexSuggestions> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load suggested lines"));
+  if (!res.ok) throw await apiError(res, "Failed to load suggested lines");
   return res.json();
 }
 
@@ -959,7 +1062,7 @@ export async function askAiAnnexSuggestions(reportId: string, parts: string[]): 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parts }),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "The AI couldn't suggest lines"));
+  if (!res.ok) throw await apiError(res, "The AI couldn't suggest lines");
   return res.json();
 }
 
@@ -976,7 +1079,7 @@ export async function saveAnnexA(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
   });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to save Annex A"));
+  if (!res.ok) throw await apiError(res, "Failed to save Annex A");
   return res.json();
 }
 
@@ -984,12 +1087,14 @@ export async function saveAnnexA(
 export type PastReportCase = {
   /** The firm's case reference, e.g. "CL 12330". */
   ref: string;
+  /** Admins only; empty for everyone else. */
   plate: string;
   make: string;
   model: string;
   /** ISO date of the survey, when the report gave one. */
   surveyed: string | null;
   lines: number;
+  /** Admins only; empty for everyone else. */
   file: string;
 };
 
@@ -1009,12 +1114,19 @@ export type PartsHistoryLine = {
   last_seen: string | null;
 };
 
-export type PartsHistory = { cases: PastReportCase[]; lines: PartsHistoryLine[] };
+export type PartsHistory = {
+  cases: PastReportCase[];
+  lines: PartsHistoryLine[];
+  /** True when prices are for staff only (admins and accounts that see all
+   * cases) and this account isn't one: the lists come back empty. */
+  hidden: boolean;
+};
 
 export async function getPartsHistory(): Promise<PartsHistory> {
   const res = await apiFetch(`${API_BASE_URL}/parts-history`, { cache: "no-store" }, { timeoutMs: 15000 });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to load the parts price history"));
-  return res.json();
+  if (!res.ok) throw await apiError(res, "Failed to load the parts price history");
+  const body = await res.json();
+  return { cases: body?.cases ?? [], lines: body?.lines ?? [], hidden: Boolean(body?.hidden) };
 }
 
 export type PastReportImportResult =
@@ -1033,14 +1145,14 @@ export async function importPastReports(files: File[]): Promise<{ results: PastR
   for (const f of files) form.append("files", f, f.name);
   const res = await apiFetch(`${API_BASE_URL}/parts-history/import`, { method: "POST", body: form });
   if (res.status === 413) throw new Error("Too large for one upload. Import fewer files at a time.");
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to import the reports"));
+  if (!res.ok) throw await apiError(res, "Failed to import the reports");
   return res.json();
 }
 
 /** Admin only. Removes every line imported from that report. */
 export async function deletePastReport(ref: string): Promise<{ ok: boolean; lines: number }> {
   const res = await apiFetch(`${API_BASE_URL}/parts-history/${encodeURIComponent(ref)}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await errorDetail(res, "Failed to remove the report"));
+  if (!res.ok) throw await apiError(res, "Failed to remove the report");
   return res.json();
 }
 
@@ -1112,10 +1224,7 @@ export async function updateAppSettings(patch: Partial<AppSettings>): Promise<Ap
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to save settings (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save settings");
   return res.json();
 }
 
@@ -1213,10 +1322,7 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 
 export async function deleteReport(id: string): Promise<void> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { method: "DELETE" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to delete report (${res.status}): ${text}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete report");
 }
 
 // Always browser-facing (an <img>/<a> src ends up in the DOM regardless of
@@ -1230,7 +1336,7 @@ export async function aiEnrichReport(id: string): Promise<{ id: string; status: 
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}/ai-enrich`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error(`AI enrich failed: ${res.statusText}`);
+  if (!res.ok) throw await apiError(res, "Fill derived fields failed");
   return res.json();
 }
 
@@ -1238,7 +1344,7 @@ export async function aiEnrichAllReports(): Promise<{ status: string; enriched_c
   const res = await apiFetch(`${API_BASE_URL}/reports/ai-enrich-all`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error(`Batch AI enrich failed: ${res.statusText}`);
+  if (!res.ok) throw await apiError(res, "Fill derived fields failed");
   return res.json();
 }
 

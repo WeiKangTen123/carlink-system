@@ -9,7 +9,15 @@
  * apiFetch sends the sign-in cookie, and if the session has ended mid-intake
  * it tells SessionGuard, which offers to sign in again without leaving the
  * page -- everything on screen is kept and the failed step can be retried. */
-import { API_BASE_URL, apiFetch, type DamageSummaryItem, type ReportData } from "./api";
+import {
+  API_BASE_URL,
+  apiFetch,
+  messageForCode,
+  type CasePermissions,
+  type DamageSummaryItem,
+  type Owner,
+  type ReportData,
+} from "./api";
 
 export type IntakeStage = "uploading" | "sorting" | "reading" | "ready" | "failed";
 
@@ -87,22 +95,34 @@ export type IntakeState = {
   photos: IntakePhoto[];
   data: ReportData;
   limits: { max_photos: number; max_photo_bytes: number };
+  /** Null when the draft is Unassigned. */
+  owner: Owner | null;
+  /** What the signed-in user may do with this draft; the API checks again. */
+  permissions: CasePermissions;
 };
 
 export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic"];
 
 /** A failed intake API call. `status` is null when no answer came back at
- * all (offline, connection dropped, or the request timed out). */
+ * all (offline, connection dropped, or the request timed out). `code` is the
+ * API's error code (ai_key_missing, draft_limit, disk_full, not_allowed...),
+ * when it sent one; the message is then already in plain words. */
 export class IntakeRequestError extends Error {
   readonly status: number | null;
+  readonly code: string | null;
   readonly timedOut: boolean;
   /** How long the server asked us to wait (Retry-After), in ms. */
   readonly retryAfterMs: number | null;
 
-  constructor(message: string, status: number | null, opts: { timedOut?: boolean; retryAfterMs?: number | null } = {}) {
+  constructor(
+    message: string,
+    status: number | null,
+    opts: { timedOut?: boolean; retryAfterMs?: number | null; code?: string | null } = {}
+  ) {
     super(message);
     this.name = "IntakeRequestError";
     this.status = status;
+    this.code = opts.code ?? null;
     this.timedOut = Boolean(opts.timedOut);
     this.retryAfterMs = opts.retryAfterMs ?? null;
   }
@@ -114,6 +134,9 @@ const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 // Sending the same request again can't help: an unreadable or unsupported
 // file, one over the size cap, a full or already-finalized case.
 const PERMANENT_STATUSES = new Set([400, 404, 409, 413, 415, 422]);
+// Refusals that sending again won't fix, whatever their status (disk_full
+// is 507, not_allowed 403).
+const PERMANENT_CODES = new Set(["ai_key_missing", "draft_limit", "disk_full", "not_allowed"]);
 
 /** No answer, or an answer that says "try again later". */
 export function isTransientFailure(e: unknown): boolean {
@@ -122,13 +145,16 @@ export function isTransientFailure(e: unknown): boolean {
 
 /** The server refused the request itself; retrying it won't change that. */
 export function isPermanentFailure(e: unknown): boolean {
-  return e instanceof IntakeRequestError && e.status !== null && PERMANENT_STATUSES.has(e.status);
+  if (!(e instanceof IntakeRequestError)) return false;
+  return (e.code !== null && PERMANENT_CODES.has(e.code)) || (e.status !== null && PERMANENT_STATUSES.has(e.status));
 }
 
 /** A few words for a failed upload's tile; the full message goes in its tooltip. */
 export function uploadFailureReason(e: unknown): string {
   if (!(e instanceof IntakeRequestError)) return "Upload failed";
   if (e.timedOut) return "Timed out";
+  if (e.code === "disk_full") return "Server full";
+  if (e.code === "not_allowed") return "Not allowed";
   switch (e.status) {
     case null:
       return "No connection";
@@ -207,14 +233,17 @@ async function call<T>(path: string, init: RequestInit = {}, opts: { timeoutMs?:
   }
   if (!res.ok) {
     let detail: unknown;
+    let code: string | null = null;
     try {
-      detail = (await res.json()).detail;
+      const body = await res.json();
+      detail = body?.detail;
+      code = typeof body?.code === "string" ? body.code : null;
     } catch {
       // not JSON -- fall through to the status text
     }
     // FastAPI's validation errors put a list here, not a sentence.
-    const message = typeof detail === "string" && detail ? detail : statusMessage(res);
-    throw new IntakeRequestError(message, res.status, { retryAfterMs: retryAfterMs(res) });
+    const message = messageForCode(code) || (typeof detail === "string" && detail ? detail : statusMessage(res));
+    throw new IntakeRequestError(message, res.status, { retryAfterMs: retryAfterMs(res), code });
   }
   return res.json();
 }

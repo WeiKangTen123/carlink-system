@@ -97,16 +97,26 @@ export function KnowledgeClient({
       <div className="kpi-grid-modern" style={{ marginBottom: 20 }}>
         <div className="kpi-card-glow">
           <div className="kpi-label">Imported Past Reports</div>
-          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>{history ? history.cases.length : "—"}</div>
+          <div className="kpi-val" style={{ color: "var(--accent-cyan)" }}>{history && !history.hidden ? history.cases.length : "—"}</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            {history ? (history.cases.length ? "Report spreadsheets on file" : "None imported yet") : "Couldn't load"}
+            {history
+              ? history.hidden
+                ? "Staff only"
+                : history.cases.length
+                  ? "Report spreadsheets on file"
+                  : "None imported yet"
+              : "Couldn't load"}
           </div>
         </div>
         <div className="kpi-card-glow">
           <div className="kpi-label">Lines With A Usual Price</div>
-          <div className="kpi-val">{history ? pricedLines : "—"}</div>
+          <div className="kpi-val">{history && !history.hidden ? pricedLines : "—"}</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            {history ? `Of ${history.lines.length} line wordings, per make and model` : "Couldn't load"}
+            {history
+              ? history.hidden
+                ? "Staff only"
+                : `Of ${history.lines.length} line wordings, per make and model`
+              : "Couldn't load"}
           </div>
         </div>
         <div className="kpi-card-glow">

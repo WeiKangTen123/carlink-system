@@ -20,8 +20,8 @@ import {
   type IssuedLink,
   type LinkLifetime,
   type LlmKey,
-  type ProfileFields,
   type UserAccount,
+  type UserPatch,
   type UserRole,
 } from "@/lib/api";
 
@@ -106,10 +106,7 @@ export async function listUsersAction(): Promise<{ users: UserAccount[] } | { er
   }
 }
 
-export async function updateUserAction(
-  id: string,
-  patch: ProfileFields & { email?: string; role?: UserRole; active?: boolean }
-): Promise<{ user: UserAccount } | { error: string }> {
+export async function updateUserAction(id: string, patch: UserPatch): Promise<{ user: UserAccount } | { error: string }> {
   try {
     return { user: await updateUser(id, patch) };
   } catch (err) {

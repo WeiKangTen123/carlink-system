@@ -17,3 +17,9 @@ export function useCurrentUser(): CurrentUser | null {
 export function isAdmin(user: CurrentUser | null): boolean {
   return user?.role === "admin";
 }
+
+/** Admins, and staff ticked "Can see and work on all cases". Everyone else
+ * sees only the cases they own. */
+export function canViewAllCases(user: CurrentUser | null): boolean {
+  return isAdmin(user) || Boolean(user?.can_view_all_cases);
+}

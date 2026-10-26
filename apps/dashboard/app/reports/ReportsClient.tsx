@@ -26,10 +26,19 @@ import {
   Send,
   SlidersHorizontal,
   ExternalLink,
+  UserX,
 } from "lucide-react";
-import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
+import {
+  type ReportSummary,
+  type ReportDetail,
+  type AnalyticsSummary,
+  type CaseScope,
+  type DamageSummaryItem,
+  fileUrl,
+  ownerLabel,
+} from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
-import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
+import { canViewAllCases, isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import {
   caseTitle,
@@ -55,6 +64,7 @@ import {
   getReportDetailAction,
   aiEnrichReportAction,
   aiEnrichAllReportsAction,
+  countUnassignedAction,
 } from "./actions";
 
 type ViewMode = "split" | "matrix";
@@ -68,7 +78,19 @@ type QuickFilter = "all" | "urgent_sla" | "strip_down" | "severe" | "high_quantu
 interface Props {
   initialReports: ReportSummary[];
   initialAnalytics?: AnalyticsSummary | null;
+  /** The ?scope= the list was loaded with; null for the API's default. */
+  scope?: CaseScope | null;
+  /** Why the list isn't the one asked for (e.g. scope_not_allowed). */
+  notice?: string | null;
 }
+
+/** The My cases / All / Unassigned switch, for admins and staff who see all
+ * cases. Each is its own address so the server lists just those. */
+const SCOPE_TABS: { scope: CaseScope; label: string; title: string }[] = [
+  { scope: "mine", label: "My cases", title: "Cases you own" },
+  { scope: "all", label: "All", title: "Every case" },
+  { scope: "unassigned", label: "Unassigned", title: "Cases nobody owns yet" },
+];
 
 const PART_PRICES_MAP: Record<string, number> = {
   "Front Bumper": 1250,
@@ -149,11 +171,18 @@ type RowInfo = {
   insurer: string;
   workshop: string;
   filedAt: string;
+  /** "Tan Ah Huat (@ahhuat)", or "Unassigned". */
+  owner: string;
   searchText: string;
 };
 
-export function ReportsClient({ initialReports, initialAnalytics }: Props) {
+export function ReportsClient({ initialReports, scope = null, notice = null }: Props) {
   const user = useCurrentUser();
+  const admin = isAdmin(user);
+  // Owners only matter to someone who sees other people's cases.
+  const showOwner = canViewAllCases(user);
+  // The API's default when no scope was asked for.
+  const activeScope: CaseScope = scope ?? (admin ? "all" : "mine");
   const [reportsList, setReportsList] = useState<ReportSummary[]>(initialReports || []);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [searchTerm, setSearchTerm] = useState("");
@@ -267,6 +296,25 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     [reportsList]
   );
 
+  // Admins' Unassigned card. The All and Unassigned lists show it directly;
+  // My cases doesn't, so it is counted separately then.
+  const [unassignedElsewhere, setUnassignedElsewhere] = useState<number | null>(null);
+  useEffect(() => {
+    if (!admin || activeScope !== "mine") return;
+    let live = true;
+    countUnassignedAction().then((n) => {
+      if (live) setUnassignedElsewhere(n);
+    });
+    return () => {
+      live = false;
+    };
+  }, [admin, activeScope, initialReports]);
+  const unassignedCount = useMemo(() => {
+    if (activeScope === "unassigned") return reportsList.length;
+    if (activeScope === "all") return reportsList.filter((r) => !r.owner).length;
+    return unassignedElsewhere;
+  }, [activeScope, reportsList, unassignedElsewhere]);
+
   // Per-case values for the filter and the rows, once per list instead of
   // on every keystroke and j/k press (formatSgtDateTime is the slow one).
   const rowInfo = useMemo(() => {
@@ -278,6 +326,8 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       const workshop = inferWorkshopName(r.workshop_assigned);
       const body = inferBodyType(r);
       const make = inferVehicleMake(r);
+      // Owner name and username, so the search finds someone's cases.
+      const ownerText = r.owner ? `${r.owner.name} ${r.owner.username}` : "unassigned";
       map.set(r, {
         stage: getOperationalStage(r),
         arch: getClaimArchetype(r),
@@ -289,7 +339,8 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
         insurer,
         workshop,
         filedAt: formatSgtDateTime(r.created_at),
-        searchText: `${r.id} ${ref} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make}`.toLowerCase(),
+        owner: ownerLabel(r.owner),
+        searchText: `${r.id} ${ref} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make} ${ownerText}`.toLowerCase(),
       });
     }
     return map;
@@ -481,6 +532,16 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   // The photo on show; the first if the index is left from another case.
   const heroIdx = activeDetail?.photo_urls?.[activePhotoIdx] ? activePhotoIdx : 0;
 
+  // An empty list says whether it is empty or just filtered.
+  const emptyListText =
+    reportsList.length > 0
+      ? "No cases match current filter criteria."
+      : activeScope === "unassigned"
+        ? "No unassigned cases. Every case has an owner."
+        : activeScope === "mine"
+          ? "You have no cases yet. Cases you start, or an admin gives you, appear here."
+          : "No cases yet.";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {/* 1. Header with Title, Inline Metrics Strip & Action Suite */}
@@ -493,6 +554,25 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--badge-green-text)", boxShadow: "0 0 5px var(--badge-green-text)" }} />
             {user?.name ?? "Surveyor"} • GIA SLA 48h
           </span>
+
+          {showOwner && (
+            <div className="view-mode-toggle case-scope-switch" style={{ padding: 2 }} role="tablist" aria-label="Which cases">
+              {SCOPE_TABS.map((t) => (
+                <Link
+                  key={t.scope}
+                  href={`/reports?scope=${t.scope}`}
+                  prefetch={false}
+                  role="tab"
+                  aria-selected={activeScope === t.scope}
+                  className={`view-mode-btn ${activeScope === t.scope ? "active" : ""}`}
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                  title={t.title}
+                >
+                  {t.label}
+                </Link>
+              ))}
+            </div>
+          )}
 
           {/* Inline Compact Metric Chips */}
           <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -516,6 +596,17 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
               <Flame style={{ width: 11, height: 11, color: "var(--accent-primary)" }} />
               <strong style={{ color: "var(--accent-primary)" }}>{highStakesCount}</strong> SJE/TMA
             </span>
+            {admin && (
+              <Link
+                href="/reports?scope=unassigned"
+                prefetch={false}
+                className={`kpi-chip-compact case-unassigned-chip ${unassignedCount ? "has-cases" : ""}`}
+                title="Cases nobody owns yet. Open one and use Assign to give it to someone."
+              >
+                <UserX style={{ width: 11, height: 11 }} />
+                <strong>{unassignedCount ?? "—"}</strong> Unassigned
+              </Link>
+            )}
           </div>
         </div>
 
@@ -575,6 +666,12 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
           </Link>
         </div>
       </div>
+
+      {notice && (
+        <div className="case-scope-notice" role="status">
+          {notice}
+        </div>
+      )}
 
       {/* 2. Unified Navigation & Operational Filter Toolbar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -779,7 +876,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             <div className="case-queue-scrollable">
               {filteredReports.map((r) => {
                 const isSelected = r.id === selectedReportId;
-                const { cost, ref, vehicle, insurer, workshop, filedAt } = rowInfo.get(r)!;
+                const { cost, ref, vehicle, insurer, workshop, filedAt, owner } = rowInfo.get(r)!;
                 const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                 return (
@@ -822,6 +919,12 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       {insurer} • {workshop.split("(")[0].trim()}
                     </div>
 
+                    {showOwner && (
+                      <div className={`case-queue-owner ${r.owner ? "" : "unassigned"}`}>
+                        Owner: {owner}
+                      </div>
+                    )}
+
                     {/* Bottom Row: Exact Filing Time & SLA Badge */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--border-color)" }}>
                       <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
@@ -850,7 +953,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       </Link>
                     </div>
                   ) : (
-                    "No cases match current filter criteria."
+                    emptyListText
                   )}
                 </div>
               )}
@@ -912,6 +1015,12 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     </div>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                       Insurer: <strong style={{ color: "var(--text-primary)" }}>{inferInsurerName(selectedSummary)}</strong> • Workshop: <strong style={{ color: "var(--text-primary)" }}>{inferWorkshopName(selectedSummary.workshop_assigned)}</strong>
+                      {showOwner && (
+                        <>
+                          {" "}
+                          • Owner: <strong style={{ color: selectedSummary.owner ? "var(--text-primary)" : "var(--badge-amber-text)" }}>{ownerLabel(selectedSummary.owner)}</strong>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -966,7 +1075,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       </>
                     )}
 
-                    <DeleteButton id={selectedSummary.id} status={selectedSummary.status} />
+                    <DeleteButton id={selectedSummary.id} status={selectedSummary.status} ownerId={selectedSummary.owner?.id ?? null} />
                   </div>
                 </div>
 
@@ -1299,6 +1408,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                   <th>Case Ref & Intake Time</th>
                   <th>Claim Archetype</th>
                   <th>Insurer // Workshop</th>
+                  {showOwner && <th>Owner</th>}
                   <th className="col-reserve">Est. Reserve ($ SGD)</th>
                   <th>SLA Window</th>
                   <th className="col-actions">Actions</th>
@@ -1306,7 +1416,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
               </thead>
               <tbody>
                 {filteredReports.map((r) => {
-                  const { arch, cost, ref, vehicle, insurer, workshop, filedAt } = rowInfo.get(r)!;
+                  const { arch, cost, ref, vehicle, insurer, workshop, filedAt, owner } = rowInfo.get(r)!;
                   const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                   return (
@@ -1396,6 +1506,23 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                         </div>
                       </td>
 
+                      {showOwner && (
+                        <td title={owner}>
+                          <div
+                            className="triage-cell-truncate"
+                            style={{ fontSize: 11, fontWeight: 700, color: r.owner ? "var(--text-primary)" : "var(--badge-amber-text)" }}
+                          >
+                            {r.owner ? r.owner.name || `@${r.owner.username}` : "Unassigned"}
+                          </div>
+                          {r.owner && (
+                            <div className="triage-cell-truncate" style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
+                              @{r.owner.username}
+                              {!r.owner.active && " (disabled)"}
+                            </div>
+                          )}
+                        </td>
+                      )}
+
                       <td className="col-reserve" title="Indicative estimate, not an assessment">
                         <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 12, color: cost > 0 ? "var(--accent-cyan)" : "var(--text-muted)" }}>
                           {cost > 0 ? `$${cost.toLocaleString()}` : "—"}
@@ -1448,7 +1575,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <ArrowRight style={{ width: 12, height: 12 }} />
                           </Link>
 
-                          <DeleteButton id={r.id} status={r.status} />
+                          <DeleteButton id={r.id} status={r.status} ownerId={r.owner?.id ?? null} />
                         </div>
                       </td>
                     </tr>
@@ -1457,7 +1584,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
 
                 {filteredReports.length === 0 && (
                   <tr>
-                    <td colSpan={8} style={{ textAlign: "center", padding: 36, color: "var(--text-muted)" }}>
+                    <td colSpan={showOwner ? 9 : 8} style={{ textAlign: "center", padding: 36, color: "var(--text-muted)" }}>
                       {selectedStage === "intake" ? (
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
                           <FileText style={{ width: 28, height: 28, opacity: 0.4 }} />
@@ -1467,7 +1594,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           </Link>
                         </div>
                       ) : (
-                        "No cases match current filter criteria."
+                        emptyListText
                       )}
                     </td>
                   </tr>

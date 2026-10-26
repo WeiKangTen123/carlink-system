@@ -6415,3 +6415,211 @@ html:has(.intake-footer) {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   P1 CASE PRIVACY: owners, the My cases / All / Unassigned switch, the Assign
+   dialog, "Case not found", and the access ticks on Settings -> Users.
+   Theme tokens only, so it follows dark and light mode.
+   ========================================================================== */
+
+/* Cases list: the scope switch is links, not buttons. */
+.case-scope-switch .view-mode-btn {
+  text-decoration: none;
+}
+
+.case-unassigned-chip {
+  text-decoration: none;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+.case-unassigned-chip:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+.case-unassigned-chip.has-cases {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.case-unassigned-chip.has-cases strong {
+  color: var(--badge-amber-text);
+}
+
+.case-scope-notice {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+
+.case-queue-owner {
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.case-queue-owner.unassigned {
+  color: var(--badge-amber-text);
+  font-weight: 700;
+}
+
+/* Case page header: "Owner: Name (@username) [Assign]". */
+.case-owner-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.case-owner-disabled {
+  color: var(--badge-amber-text);
+}
+.case-owner-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.case-owner-assign {
+  font-size: 11px !important;
+  padding: 3px 10px !important;
+}
+
+.case-history-dot.assigned {
+  background: var(--accent-cyan);
+}
+
+/* Assign dialog (components/AssignOwnerDialog.tsx). */
+.assign-owner-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid var(--badge-blue-border, var(--border-color));
+  background: var(--badge-blue-bg);
+  color: var(--text-primary);
+}
+.assign-owner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.assign-owner-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.assign-owner-row:hover {
+  background: var(--surface-hover);
+}
+.assign-owner-row.picked {
+  border-color: var(--accent-primary);
+  background: var(--surface-hover);
+}
+.assign-owner-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* components/CaseNotFound.tsx */
+.case-not-found {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+.case-not-found-card {
+  max-width: 460px;
+  width: 100%;
+  padding: 36px 28px;
+  text-align: center;
+}
+.case-not-found-card h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 800;
+}
+.case-not-found-card p {
+  margin: 0 auto 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+.case-not-found-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-cyan);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-color);
+}
+
+/* Someone else's unfinished draft, opened by staff who see all cases. */
+.intake-view-only {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+/* Settings -> Users: the three ticks and the case counts. */
+.user-ticks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.user-tick {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.user-tick input {
+  margin-top: 3px;
+}
+.user-tick .field-hint {
+  margin-top: 2px;
+}
+.user-tick.disabled {
+  cursor: default;
+  color: var(--text-muted);
+}
+.user-tick-warning {
+  color: var(--badge-amber-text);
+}
+.user-access-summary {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.user-cases {
+  font-size: 12px;
+}
+.user-cases-zero {
+  color: var(--text-muted);
+}
+/* ---- end P1 case privacy ---- */

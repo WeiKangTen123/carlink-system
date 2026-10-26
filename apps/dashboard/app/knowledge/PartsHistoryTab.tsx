@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Download, FileSpreadsheet, History, Search, Trash2, Upload } from "lucide-react";
+import { Download, FileSpreadsheet, History, Lock, Search, Trash2, Upload } from "lucide-react";
 import {
   importPastReports,
   MAX_PAST_REPORT_FILES,
@@ -239,6 +239,12 @@ export function PartsHistoryTab({
               {reloading ? "Loading…" : "Try again"}
             </button>
           </div>
+        ) : history?.hidden ? (
+          // GET /parts-history hides prices from accounts that aren't staff.
+          <div style={{ textAlign: "center", padding: "28px 12px", color: "var(--text-muted)" }}>
+            <Lock style={{ width: 24, height: 24, marginBottom: 8 }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>Price history is available to staff only.</div>
+          </div>
         ) : cases.length === 0 ? (
           <div style={{ textAlign: "center", padding: "28px 12px", color: "var(--text-muted)" }}>
             <FileSpreadsheet style={{ width: 28, height: 28, marginBottom: 8 }} />
@@ -264,7 +270,7 @@ export function PartsHistoryTab({
                   <tr>
                     <th>Ref</th>
                     <th>Vehicle</th>
-                    <th>Plate</th>
+                    {admin && <th>Plate</th>}
                     <th>Surveyed</th>
                     <th style={{ textAlign: "right" }}>Lines</th>
                     {admin && <th aria-label="Remove" />}
@@ -277,7 +283,7 @@ export function PartsHistoryTab({
                         {c.ref}
                       </td>
                       <td>{vehicleOf(c)}</td>
-                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.plate || "—"}</td>
+                      {admin && <td style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.plate || "—"}</td>}
                       <td style={{ whiteSpace: "nowrap" }}>{shortIsoDate(c.surveyed) || "—"}</td>
                       <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{c.lines}</td>
                       {admin && (

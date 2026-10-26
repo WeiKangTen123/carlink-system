@@ -4,11 +4,13 @@ import { Trash2 } from "lucide-react";
 import { deleteReportAction } from "@/app/reports/actions";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 
-/** Only admins delete cases; anyone may throw away an unfinished intake
- * (status "intake"). The API enforces the same rule. */
-export function DeleteButton({ id, status }: { id: string; status: string }) {
+/** Only admins delete filed cases; an unfinished intake (status "intake")
+ * may also be thrown away by its owner. The API enforces the same rule
+ * (the list rows carry the owner but not the case's permissions). */
+export function DeleteButton({ id, status, ownerId }: { id: string; status: string; ownerId: string | null }) {
   const user = useCurrentUser();
-  if (!isAdmin(user) && status !== "intake") return null;
+  const ownDraft = status === "intake" && ownerId !== null && ownerId === user?.id;
+  if (!isAdmin(user) && !ownDraft) return null;
 
   return (
     <form
