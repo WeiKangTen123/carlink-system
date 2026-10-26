@@ -105,8 +105,13 @@ def main() -> int:
 
     admin = TestClient(app, base_url="https://carlink.test")
     sign_in(admin, role="admin", name="Kelvin Lim")
+    # An in-house surveyor: the price book is for admins and "see all cases"
+    # staff, and AI for the company-key tick.
     surveyor = TestClient(app, base_url="https://carlink.test")
-    sign_in(surveyor, role="user")
+    sign_in(surveyor, role="user", sees_all_cases=True, ai_company_key_allowed=True)
+    # A self-signup: no ticks.
+    stranger = TestClient(app, base_url="https://carlink.test")
+    sign_in(stranger, role="user")
 
     print("importing")
     files = [
@@ -122,10 +127,15 @@ def main() -> int:
     again = admin.post("/parts-history/import", files=files[:1]).json()["results"][0]
     assert again["lines"] == 6
     hist = surveyor.get("/parts-history").json()
-    assert len(hist["cases"]) == 2
+    assert len(hist["cases"]) == 2 and hist["hidden"] is False
     striker = next(l for l in hist["lines"] if "striker" in l["item"].lower())
     assert striker["cases"] == 2 and striker["usual_unit_price"] == 76.0 and striker["min_price"] == 72.0
     ok("admins import reports (re-import replaces), other files are refused by name; history shows usual prices")
+    assert all(c["plate"] == "" and c["file"] == "" for c in hist["cases"]), hist["cases"]
+    assert {c["plate"] for c in admin.get("/parts-history").json()["cases"]} == {"SLK3063Z", "SMV7530X"}
+    r = stranger.get("/parts-history")
+    assert r.status_code == 200 and r.json() == {"cases": [], "lines": [], "hidden": True}, r.text
+    ok("plates and file names for admins only; a self-signup gets empty lists and hidden: true")
 
     print("suggestions")
     # The surveyor's own case: a plain user only sees the cases they own.
@@ -148,6 +158,18 @@ def main() -> int:
     assert lock["lines"][0]["usual_unit_price"] == 76.0 and lock["lines"][0]["cases"] == 2
     ok("suggestions per damaged part, same make and model, mirrored to the case's side, with usual prices")
     ok("parts often replaced together (rear windscreen trims with a tailgate) come as companions")
+    assert s["hidden"] is False
+    r = stranger.post("/reports", json={"draft": {
+        "category": ["Vehicle Collision or Damage"], "description": "Rear-ended",
+        "vehicle_info": {"plate_number": "SNA5678C", "make": "Honda", "model": "Vezel"},
+        "damage_summary": [{"part": "Boot Lid"}, {"part": "Right Tail Lamp"}],
+    }})
+    r = stranger.get(f"/reports/{r.json()['id']}/annex-suggestions")
+    hidden = r.json()
+    assert r.status_code == 200 and hidden["hidden"] is True and hidden["groups"] == [] and hidden["cases_used"] == 0, hidden
+    assert hidden["without_history"] == hidden["damaged_parts"] == ["Boot Lid", "Right Tail Lamp"], hidden
+    assert "521.6" not in r.text and "Tail lamp RH" not in r.text
+    ok("a self-signup's suggestions carry nothing from the price book (hidden: true)")
     from app.parts.history import suggest
     from app.reports.db import SessionLocal as _S
     db = _S()
@@ -202,6 +224,9 @@ def main() -> int:
     parts_api.call_structured = boom
     assert surveyor.post(f"/reports/{rid}/annex-suggestions/ai", json={"parts": ["Front Grille"]}).status_code == 503
     ok("parts with no history can get AI lines: names and quantities only, labelled, no price")
+    r = stranger.post(f"/reports/{rid}/annex-suggestions/ai", json={"parts": ["Front Grille"]})
+    assert r.status_code == 404, r.text  # not theirs: the view gate answers first
+    ok("AI lines on someone else's case: 404 before any AI check")
 
     assert surveyor.delete("/parts-history/CL 12330").status_code == 403
     assert admin.delete("/parts-history/CL 12330").json()["lines"] == 5

@@ -243,6 +243,10 @@ def logout(request: Request, response: Response) -> dict:
         finally:
             db.close()
     response.delete_cookie(SESSION_COOKIE, path="/", secure=settings.auth_cookie_secure, httponly=True, samesite="lax")
+    # Case photos are cached for a year (/files), and they'd stay readable
+    # on a shared computer after signing out. The browser calls this
+    # directly (components/UserMenu.tsx), so the header reaches it.
+    response.headers["Clear-Site-Data"] = '"cache", "storage"'
     return {"ok": True}
 
 

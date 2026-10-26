@@ -147,6 +147,10 @@ def main() -> int:
         case_id = new_case(pat)
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 1"}}).status_code == 200
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 2"}}).status_code == 200
+        # Signing off is for staff: an admin, or an account ticked "May sign off".
+        r = pat.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
+        assert admin.patch(f"/users/{pat_id}", json={"may_sign_off": True}).status_code == 200
         r = pat.post(f"/reports/{case_id}/sign-off", json={
             "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True,
             "signature_data_url": "http://169.254.169.254/latest/meta-data/",

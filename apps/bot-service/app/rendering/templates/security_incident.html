@@ -302,6 +302,32 @@
     display: flex;
     justify-content: space-between;
   }
+{% if unverified_owner %}
+  /* A case owned by someone outside the firm (renderer._owner_unverified)
+     still prints the letterhead, so every page says who made it: in the
+     bottom page margin, where it can't cover the report (a position: fixed
+     line sat on the last line of every full page). Margin boxes need
+     Chromium 131+; the notice under the cover letterhead stays either way. */
+  @page {
+    @bottom-center {
+      content: "Prepared by an unverified user, not issued by Carlink Consultancy";
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      color: #b91c1c;
+    }
+  }
+  .unverified-notice {
+    border: 1.5px solid #b91c1c;
+    background: #fef2f2;
+    color: #b91c1c;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: center;
+    padding: 4px 8px;
+    margin-bottom: 10px;
+  }
+{% endif %}
 </style>
 </head>
 <body>
@@ -337,6 +363,9 @@
       <div><strong>Generated:</strong> {{ generated_at }}</div>
     </div>
   </div>
+  {% if unverified_owner %}
+  <div class="unverified-notice">Prepared by an unverified user, not issued by Carlink Consultancy</div>
+  {% endif %}
 
   <div class="report-title-banner">
     <div class="report-title-text">Accident Vehicle Inspection / Assessment Report</div>

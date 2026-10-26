@@ -368,11 +368,13 @@ def _read(report_id: str) -> None:
         db.close()
 
 
-# Sections only the surveyor fills in (step 4 and the reporter fields). A
-# re-read never touches them when they hold anything.
+# Sections only the surveyor fills in (step 4, the reporter fields, and Our
+# Ref, which the AI never drafts). A re-read never touches them when they
+# hold anything.
 _SURVEYOR_SECTIONS = (
     "people_involved", "witnesses", "police_report", "insurance_details", "third_party_info",
     "immediate_actions", "reported_to_authorities", "authority_reference", "recommendations",
+    "report_id",
 ) + REPORTER_FIELDS
 
 # Facts the AI drafts but the surveyor may correct.

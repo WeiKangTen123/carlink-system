@@ -19,6 +19,8 @@ from fastapi import APIRouter, Request, Response
 
 import httpx
 
+from app.api.limits import require_ai
+from app.auth.deps import current_user
 from app.config import settings
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
@@ -89,6 +91,9 @@ def _finalize(chat_id: str, session) -> str:
 
 @router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request) -> Response:
+    # Behind AuthMiddleware only a signed-in user gets here, and this drafts
+    # with the company AI key: the dashboard's AI rule (api/limits.py).
+    require_ai(current_user(request))
     form = await request.form()
     chat_id = f"whatsapp:{form.get('From', 'unknown')}"
     body = (form.get("Body") or "").strip()

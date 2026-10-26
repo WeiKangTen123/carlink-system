@@ -195,6 +195,19 @@ def tmp_dir() -> Path:
     return d
 
 
+def disk_space_low() -> bool:
+    """Whether the storage disk has under settings.min_free_disk_gb free, so
+    uploads and new cases should be refused (api/limits.py, the Telegram
+    bot). Not being able to read it counts as enough room: this guard must
+    never be what stops all work."""
+    try:
+        free = shutil.disk_usage(settings.storage_dir).free
+    except OSError as exc:
+        logger.warning("Could not read free disk space for %s: %s", settings.storage_dir, exc)
+        return False
+    return free < settings.min_free_disk_gb * 1024**3
+
+
 def to_thumbnail_url(abs_path: str) -> str:
     """Public URL of a photo's thumbnail, falling back to the full image
     when no thumbnail exists (an older report, or a file Pillow couldn't

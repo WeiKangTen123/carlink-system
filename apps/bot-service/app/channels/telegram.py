@@ -22,7 +22,7 @@ from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report, gen_id
 from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, save_photo, tmp_dir
+from app.storage.files import disk_space_low, report_pdf_path, save_photo, tmp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +189,17 @@ async def _photo_limit_reached(update: Update, session) -> bool:
     return True
 
 
+async def _disk_full(update: Update) -> bool:
+    """Before a download: the dashboard refuses uploads too once the server's
+    disk is nearly full (storage/files.disk_space_low)."""
+    if not disk_space_low():
+        return False
+    await update.message.reply_text(
+        "Sorry, the server is low on storage, so I can't take photos right now. Please tell your Carlink admin."
+    )
+    return True
+
+
 @_staff_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
@@ -258,7 +269,7 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # A photo that finds an expired draft starts the new one, so the rest of
     # an album sent with it isn't split across two drafts.
     session, _ = await _current_session(update, chat_id)
-    if await _photo_limit_reached(update, session):
+    if await _photo_limit_reached(update, session) or await _disk_full(update):
         return
 
     photo = update.message.photo[-1]
@@ -311,7 +322,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Sorry, I can only use photos (JPG, PNG, WebP or HEIC). Please send this as a photo or an image file."
             )
             return
-        if await _photo_limit_reached(update, session):
+        if await _photo_limit_reached(update, session) or await _disk_full(update):
             return
         file = await doc.get_file()
         dest = _new_temp_path(ext)

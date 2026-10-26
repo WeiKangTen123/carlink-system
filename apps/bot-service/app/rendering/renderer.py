@@ -8,6 +8,7 @@ step. See docs/proposal.md section E for the fuller tradeoff.
 import base64
 import logging
 import mimetypes
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,23 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
+
+# Chromium takes 200-500 MB per render on a small VM shared with another app,
+# and nothing limited how many ran at once (about 40 could: one per API
+# worker thread). Per process: the api and the Telegram bot each have their
+# own. A render waits up to RENDER_SLOT_WAIT_SECONDS for a free slot -- two
+# big reports ahead of it take about a minute -- and then gives up with
+# RenderBusy. The per-person limit on renders is api/limits.py's.
+MAX_CONCURRENT_RENDERS = 2
+RENDER_SLOT_WAIT_SECONDS = 120
+_render_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERS)
+
+
+class RenderBusy(RuntimeError):
+    """Every Chromium slot stayed busy for RENDER_SLOT_WAIT_SECONDS. A
+    RuntimeError like every other render failure, so callers that already
+    carry on without the PDF still do."""
+
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 # Autoescape is a security requirement, not a style choice: report fields are
@@ -78,7 +96,43 @@ def _org_name() -> str:
     return "Carlink Consultancy"
 
 
-def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id=None) -> None:
+def _owner_unverified(case_id) -> bool:
+    """Whether the case belongs to an account outside the firm: not an admin
+    and not ticked "May sign off" (permissions.is_staff). Its PDF then says
+    so on every page, since the template prints the firm's letterhead on
+    everyone's reports. Unassigned cases (the Telegram bot's) and cases not
+    saved yet have no owner, so no banner.
+
+    Looked up here for the same reason as _org_name. Unlike that, a failed
+    lookup prints the banner: it is what keeps a stranger's PDF from passing
+    as the firm's."""
+    if not case_id:
+        return False
+    try:
+        from app.auth.permissions import is_staff
+        from app.reports.db import SessionLocal
+        from app.reports.models import Report, User
+
+        db = SessionLocal()
+        try:
+            owner_id = db.query(Report.owner_id).filter(Report.id == case_id).scalar()
+            if owner_id is None:
+                return False
+            owner = db.query(User.role, User.may_sign_off).filter(User.id == owner_id).first()
+            return owner is None or not is_staff(owner)
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Could not read the owner of case %s; printing the unverified banner", case_id, exc_info=True)
+        return True
+
+
+def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id=None, unverified: bool | None = None) -> None:
+    """unverified: whether to print the unverified-owner banner. Left None,
+    it comes from the case's owner (_owner_unverified); pass it only when
+    the case isn't saved yet but has an owner (POST /reports)."""
+    if unverified is None:
+        unverified = _owner_unverified(report_id)
     try:
         template = _env.get_template("security_incident.html")
         html = template.render(
@@ -91,6 +145,7 @@ def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id
             org_name=_org_name(),
             photo_data_uris=[_to_data_uri(p) for p in (photo_paths or [])],
             generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            unverified_owner=unverified,
         )
     except Exception as exc:
         logger.error("Template rendering failed for %s: %s", output_path, exc, exc_info=True)
@@ -121,8 +176,19 @@ def html_to_pdf(html: str, output_path: str) -> None:
     """Print a fully self-contained HTML page to an A4 PDF, offline.
 
     Scripts are off and every request except data: URIs is refused, so the
-    page can't fetch anything even if a field slipped markup through.
+    page can't fetch anything even if a field slipped markup through. At
+    most MAX_CONCURRENT_RENDERS run at once; RenderBusy if no slot frees up.
     """
+    if not _render_slots.acquire(timeout=RENDER_SLOT_WAIT_SECONDS):
+        logger.warning("No PDF render slot free after %ss for %s", RENDER_SLOT_WAIT_SECONDS, output_path)
+        raise RenderBusy("Every PDF render slot stayed busy.")
+    try:
+        _chromium_pdf(html, output_path)
+    finally:
+        _render_slots.release()
+
+
+def _chromium_pdf(html: str, output_path: str) -> None:
     try:
         with sync_playwright() as p:
             browser = None

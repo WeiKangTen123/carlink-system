@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
+from app.api import limits
 from app.api.auth import router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
@@ -34,7 +35,7 @@ from app.auth.deps import (
 )
 from app.auth.middleware import LOCAL_DEV_ORIGIN, AuthMiddleware
 from app.auth.passwords import HashingBusy
-from app.auth.permissions import can_assign, can_delete_case, can_reopen, list_scope
+from app.auth.permissions import can_assign, can_delete_case, can_reopen, can_sign_off, is_staff, list_scope
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports import owners
@@ -50,7 +51,7 @@ from app.reports.taxonomy import (
     body_type_for,
 )
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
-from app.rendering.renderer import render_pdf
+from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import (
     generate_preview,
     generate_thumbnail,
@@ -75,7 +76,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
+# The API docs list every route to anyone signed in, which with open signup
+# is anyone. Off unless ENABLE_API_DOCS=true; app.openapi() works either way.
+_docs = settings.enable_api_docs
+app = FastAPI(
+    title="Carlink Bot Service API",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 # Every request needs a signed-in user (app/auth/middleware.py), except
 # /health and signing in itself. Added before CORS so CORS wraps it: a 401
 # still carries CORS headers in local dev instead of looking like a network
@@ -334,9 +344,11 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
         # now only change through the surveyor's own edits or the explicit
         # "fill derived fields" action (POST /reports/{id}/ai-enrich).
 
-        # If PDF is missing or doesn't exist on disk, render it on-demand
+        # If PDF is missing or doesn't exist on disk, render it on-demand --
+        # unless this person has had their share of renders for now
+        # (limits.renders): the case still opens, without a PDF until later.
         pdf_path = r.pdf_path
-        if not pdf_path or not Path(pdf_path).exists():
+        if (not pdf_path or not Path(pdf_path).exists()) and limits.renders.take(user.id):
             target_pdf_path = report_pdf_path(r.id)
             try:
                 render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
@@ -383,11 +395,14 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
+            limits.require_render(user)
             target_pdf_path = report_pdf_path(r.id)
             try:
                 render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
                 r.pdf_path = target_pdf_path
                 db.commit()
+            except RenderBusy as exc:
+                raise limits.render_busy() from exc
             except Exception as exc:
                 logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
                 raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
@@ -400,6 +415,9 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case
             path=r.pdf_path,
             filename=filename,
             media_type="application/pdf",
+            # Not kept by the browser: a cached copy outlives signing out and
+            # losing access to the case (reassigned, account unticked).
+            headers={"Cache-Control": "no-store"},
         )
     finally:
         db.close()
@@ -414,6 +432,7 @@ def render_report_pdf_endpoint(report_id: str, user: CurrentUser = Depends(edita
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
+        limits.require_render(user)
 
         target_pdf_path = report_pdf_path(r.id)
         try:
@@ -425,6 +444,8 @@ def render_report_pdf_endpoint(report_id: str, user: CurrentUser = Depends(edita
                 "status": "rendered",
                 "pdf_url": to_public_url(r.pdf_path),
             }
+        except RenderBusy as exc:
+            raise limits.render_busy() from exc
         except Exception as exc:
             logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
             raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
@@ -457,6 +478,11 @@ async def analyze_report_photos(
     goes on to save the report, so the photos are only ever attached to a
     report the reporter actually confirmed.
     """
+    # No case to gate on: the photos go to a case later, through PUT
+    # /reports/{id}'s checks. AI first, then room on the disk, before any
+    # photo is saved.
+    limits.require_ai(user)
+    limits.require_disk_space()
     saved_paths: list[str] = []
     td = tmp_dir()
     for photo in photos:
@@ -528,6 +554,13 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = body.draft.model_dump()
     data["sign_off"] = blank_sign_off()
+    data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), None)
+    limits.require_disk_space()
+    db = SessionLocal()
+    try:
+        limits.check_new_cases_today(db, user)
+    finally:
+        db.close()
 
     # Photos and PDF first, the database row last, so no SQLite write lock
     # is held while Chromium renders (it used to flush the row first and
@@ -539,12 +572,17 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         for i, temp_path in enumerate(temp_paths)
         if Path(temp_path).exists()
     ]
-    pdf_path: str | None = report_pdf_path(report_id)
-    try:
-        render_pdf(data, photo_paths, pdf_path, report_id=report_id)
-    except Exception as exc:
-        logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
-        pdf_path = None
+    # Over this person's share of renders for now, the first download
+    # renders it instead.
+    pdf_path: str | None = None
+    if limits.renders.take(user.id):
+        pdf_path = report_pdf_path(report_id)
+        try:
+            # Not saved yet, so the renderer can't look its owner up.
+            render_pdf(data, photo_paths, pdf_path, report_id=report_id, unverified=not is_staff(user))
+        except Exception as exc:
+            logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
+            pdf_path = None
 
     db = SessionLocal()
     try:
@@ -578,9 +616,31 @@ def _merge_into(base: dict, patch: dict) -> dict:
     return base
 
 
+def _render_after_change(user: CurrentUser, r: Report, what: str) -> Optional[str]:
+    """Renders case r's PDF again after a change (an edit, signing off,
+    reopening) and returns the path to keep on it. None -- the next download
+    renders it -- when this person has had their share of renders for now
+    (limits.renders) or every Chromium slot stayed busy: the old file shows
+    the case from before the change. A render that fails keeps the old
+    path, as before."""
+    if not limits.renders.take(user.id):
+        return None
+    pdf_path = r.pdf_path or report_pdf_path(r.id)
+    try:
+        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+        return pdf_path
+    except RenderBusy:
+        return None
+    except Exception as exc:
+        logger.error("Failed to render PDF for %s report %s: %s", what, r.id, exc)
+        return r.pdf_path
+
+
 @app.put("/reports/{report_id}")
 def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     temp_paths = _checked_temp_paths(body.temp_photo_paths, user)
+    if temp_paths:
+        limits.require_disk_space()
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
@@ -601,7 +661,10 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         # dashboard's Edit form sends a partial draft (no annexes, liability
         # assessment, vehicle year...), and replacing the whole case with
         # it -- defaults filling every gap -- silently erased those.
-        data = _merge_into(dict(r.data or {}), body.draft.model_dump(exclude_unset=True))
+        sent = body.draft.model_dump(exclude_unset=True)
+        if "report_id" in sent:
+            sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
+        data = _merge_into(dict(r.data or {}), sent)
         data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
         r.data = data
 
@@ -620,12 +683,7 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
 
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for updated report %s: %s", r.id, exc)
+        r.pdf_path = _render_after_change(user, r, "updated")
 
         audit(db, user, "edited", r.id)
         db.commit()
@@ -755,12 +813,7 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
 
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for reopened report %s: %s", r.id, exc)
+        r.pdf_path = _render_after_change(user, r, "reopened")
 
         audit(db, user, "reopened", r.id)
         db.commit()
@@ -774,7 +827,10 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
     """Signs the case as the signed-in user, with their own profile
     (Account page). The name, qualifications, licence and firm used to come
     from the request -- defaulting to one fixed surveyor -- so anyone could
-    sign as anyone; any such fields in the body are now ignored."""
+    sign as anyone; any such fields in the body are now ignored.
+
+    Signing puts the firm's stamp on the report, so only staff may: admins
+    and "May sign off" accounts (permissions.can_sign_off)."""
     import hashlib
     db = SessionLocal()
     try:
@@ -782,6 +838,8 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
+        if not can_sign_off(user, r):
+            raise not_allowed("Only an admin, or an account an admin has allowed to sign off, can sign off a report.")
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="This report is already signed off.")
 
@@ -852,16 +910,11 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             new_data["bola_assessment"] = ba
 
         r.data = new_data
-        
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            # On a worker thread: this endpoint is async (it reads the JSON
-            # body itself), and Playwright's sync API refuses to run on the
-            # event loop -- the signed PDF used to keep the unsigned copy.
-            await asyncio.to_thread(render_pdf, r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
+
+        # On a worker thread: this endpoint is async (it reads the JSON body
+        # itself), and Playwright's sync API refuses to run on the event
+        # loop -- the signed PDF used to keep the unsigned copy.
+        r.pdf_path = await asyncio.to_thread(_render_after_change, user, r, "signed off")
 
         # The account's email too: the name on a profile can be edited.
         audit(db, user, "signed_off", r.id, detail=user.email)

@@ -21,8 +21,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.ai.structured import call_structured
+from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, current_user, editable_case, require_admin, visible_case
+from app.auth.permissions import can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, Report
@@ -47,6 +49,14 @@ def _report(db, report_id: str) -> Report:
 
 def _signed_off(r: Report) -> bool:
     return ((r.data or {}).get("sign_off") or {}).get("status") == "Signed Off"
+
+
+def _sees_price_book(user) -> bool:
+    """The imported past reports -- their lines and what each was adjusted
+    to -- are the firm's price book: admins and "see all cases" staff only.
+    Anyone else gets the same answer shapes with empty lists and
+    hidden: true. Plates and file names are for admins alone."""
+    return can_view_all_cases(user)
 
 
 # ------------------------------------------------------------ history
@@ -98,14 +108,18 @@ def import_past_reports(files: list[UploadFile] = File(...), admin: CurrentUser 
 @router.get("/parts-history")
 def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUser = Depends(current_user)) -> dict:
     """Imported cases, and per line wording and vehicle: how many cases
-    had it and what one unit was adjusted to."""
+    had it and what one unit was adjusted to (_sees_price_book)."""
+    if not _sees_price_book(user):
+        return {"cases": [], "lines": [], "hidden": True}
+    admin = is_admin(user)
     db = SessionLocal()
     try:
         lines = db.query(PastAnnexLine).all()
         cases = {}
         for ln in lines:
-            cases.setdefault(ln.case_ref, {"ref": ln.case_ref, "plate": ln.plate, "make": ln.make, "model": ln.model,
-                                           "surveyed": ln.surveyed, "lines": 0, "file": ln.source_file})
+            cases.setdefault(ln.case_ref, {"ref": ln.case_ref, "plate": ln.plate if admin else "", "make": ln.make,
+                                           "model": ln.model, "surveyed": ln.surveyed, "lines": 0,
+                                           "file": ln.source_file if admin else ""})
             cases[ln.case_ref]["lines"] += 1
         needle = q.strip().lower()
         groups: dict[tuple, list[PastAnnexLine]] = {}
@@ -134,7 +148,8 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
                 "last_seen": max((g.surveyed or "") for g in group) or None,
             })
         rows.sort(key=lambda r: (r["make"], r["model"], r["family"] or "~", -r["cases"], r["item"]))
-        return {"cases": sorted(cases.values(), key=lambda c: c["surveyed"] or "", reverse=True), "lines": rows[:1000]}
+        return {"cases": sorted(cases.values(), key=lambda c: c["surveyed"] or "", reverse=True), "lines": rows[:1000],
+                "hidden": False}
     finally:
         db.close()
 
@@ -174,7 +189,13 @@ def annex_suggestions(report_id: str, user: CurrentUser = Depends(visible_case))
             name = canonical_part(p)
             if name and name != "Other / Not Listed" and name not in parts:
                 parts.append(name)
-        result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
+        if _sees_price_book(user):
+            result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
+            result["hidden"] = False
+        else:
+            # Built from the price book, so nothing of it: as if no past
+            # report covered any part (the AI may still be asked for lines).
+            result = {"scope": "", "cases_used": 0, "groups": [], "without_history": parts, "hidden": True}
         result["vehicle"] = " ".join(x for x in (vehicle.get("make"), vehicle.get("model")) if x) or None
         result["damaged_parts"] = parts
         return result
@@ -226,7 +247,9 @@ class AiSuggestionRequest(BaseModel):
 @router.post("/reports/{report_id}/annex-suggestions/ai")
 def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Gemini's lines for parts no imported report covers. Names and
-    quantities only -- no prices, no part numbers -- and labelled as AI."""
+    quantities only -- no prices, no part numbers -- and labelled as AI.
+    Reads nothing from the price book, so it has nothing to hide."""
+    limits.require_ai(user)
     db = SessionLocal()
     try:
         r = _report(db, report_id)
