@@ -43,7 +43,7 @@ from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id,
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
-from app.rendering.renderer import render_pdf
+from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import generate_preview, generate_thumbnail, report_pdf_path
 
 logger = logging.getLogger(__name__)
@@ -427,6 +427,10 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
             raise HTTPException(status_code=409, detail="Wait for AI processing to finish first.")
         body.data.report_id = limits.checked_our_ref(user, body.data.report_id, (report.data or {}).get("report_id"))
         limits.check_new_cases_today(db, user)
+        # Finalizing copies every photo into the case folder (up to
+        # MAX_DRAFT_BYTES, 1.5 GB): 507 disk_full before the draft is
+        # claimed, so it stays as it was and Finish can be tried again.
+        limits.require_disk_space()
         prior_stage = session.stage
         if not _claim_stage(db, report_id, "finalizing"):
             raise HTTPException(status_code=409, detail="This intake is already being turned into a case.")
@@ -446,16 +450,17 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
 
 
 def _render_case_pdf(report_id: str, user: CurrentUser) -> None:
-    # Over this person's share of renders for now (limits.renders), the
-    # first download renders it instead.
-    if not limits.renders.take(user.id):
-        return
+    # When this person may not render now (limits.render_turn) or every
+    # Chromium slot stays busy, the first download renders it instead.
     db = SessionLocal()
     try:
         report = db.get(Report, report_id)
-        pdf_path = report_pdf_path(report_id)
         try:
-            render_pdf(report.data, report.photo_paths, pdf_path, report_id=report_id)
+            with limits.render_turn(user):
+                pdf_path = report_pdf_path(report_id)
+                render_pdf(report.data, report.photo_paths, pdf_path, report_id=report_id)
+        except (limits.RenderRefused, RenderBusy):
+            return
         except Exception as exc:
             # The case exists regardless; GET /reports/{id} and /download
             # render a missing PDF on demand.

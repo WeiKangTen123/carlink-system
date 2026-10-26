@@ -1,10 +1,13 @@
 """Release P1's abuse limits (app/api/limits.py, the renderer's slot limit
 and unverified-owner banner), beyond what test_permissions.py's B2 sections
 check over HTTP: the AI never writing Our Ref, sign-off order, who gets the
-banner and where it lands on a real PDF, Our Ref edge cases, renders
-deferred rather than refused on saves, the Chromium slot limit, the daily
-case cap, the disk guard on edits and in the Telegram bot, and the PDF
-download's Cache-Control.
+banner (none once staff sign off) and where it lands on a real PDF, Our Ref
+edge cases, renders deferred rather than refused on saves, the render
+budget (unvetted accounts only, refunded when nothing rendered), one render
+at a time per person, the Chromium slot limit and the bot's longer wait for
+it, the daily case cap, the disk guard on edits, finalize and in the
+Telegram bot, ticks on new accounts, and the PDF download's Cache-Control.
+test_render_threads.py checks the API's threads under a burst of renders.
 
     python scripts/test_abuse_limits.py
 
@@ -19,6 +22,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
@@ -68,7 +72,9 @@ from app.auth.deps import ApiError  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake.pipeline import merge_redraft  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
-from app.reports.models import Report, gen_id  # noqa: E402
+from app.reports.models import AuditEntry, Report, gen_id  # noqa: E402
+from app.reports.owners import TICKS  # noqa: E402
+from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.storage import files as storage_files  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
 
@@ -76,13 +82,27 @@ BASE = "https://carlink.test"
 BANNER = "Prepared by an unverified user, not issued by Carlink Consultancy"
 
 # Chromium: records each page's HTML and writes a stub PDF. The slot limit
-# around it (html_to_pdf) is the real one.
+# around it (html_to_pdf) is the real one. CHROMIUM["fail"] makes it crash;
+# with CHROMIUM["gate"] set it holds its slot until the gate opens.
 REAL_CHROMIUM_PDF = renderer._chromium_pdf
 RENDERED: list[str] = []
+CHROMIUM = {"fail": False, "gate": None, "inside": 0}
+_inside_lock = threading.Lock()
 
 
 def _fake_chromium_pdf(html: str, output_path: str) -> None:
     RENDERED.append(html)
+    if CHROMIUM["fail"]:
+        raise RuntimeError("Playwright PDF generation failed: Chromium crashed")
+    gate = CHROMIUM["gate"]
+    if gate is not None:
+        with _inside_lock:
+            CHROMIUM["inside"] += 1
+        try:
+            gate.wait(30)
+        finally:
+            with _inside_lock:
+                CHROMIUM["inside"] -= 1
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_bytes(b"%PDF-1.4\n% test\n%%EOF\n")
 
@@ -130,6 +150,27 @@ def low_disk():
     """shutil.disk_usage reporting 1 GB free."""
     usage = namedtuple("usage", "total used free")
     return mock.patch.object(shutil, "disk_usage", lambda path: usage(100 * 2**30, 99 * 2**30, 2**30))
+
+
+def drop_pdf(case_id: str) -> None:
+    """Deletes the case's PDF file, so the next download or opening renders."""
+    path = stored(case_id).pdf_path
+    if path:
+        Path(path).unlink(missing_ok=True)
+
+
+def counted(user_id: str) -> int:
+    """Renders on this account's budget right now."""
+    return len(limits.renders._times.get(user_id, ()))
+
+
+def wait_until(cond, timeout: float = 5.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
 
 
 def main() -> int:
@@ -224,6 +265,32 @@ def main() -> int:
         assert RENDERED and "unverified" not in RENDERED[-1].lower()
         ok("POST /reports renders before the case is saved: the caller's status decides the banner")
 
+        staff = person(name="Stu Staff", may_sign_off=True, sees_all_cases=True)
+        outsider = person(name="Otto Outside")
+        case_id = new_case(outsider)
+        RENDERED.clear()
+        r = staff.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        assert r.status_code == 200 and RENDERED and BANNER not in RENDERED[-1], r.text
+        RENDERED.clear()
+        assert admin.c.post(f"/reports/{case_id}/render-pdf").status_code == 200
+        assert RENDERED and BANNER not in RENDERED[-1]
+        RENDERED.clear()
+        assert admin.c.post(f"/reports/{case_id}/reopen").status_code == 200
+        assert RENDERED and BANNER in RENDERED[-1]
+        ok("signed off by staff, an unvetted owner's case PDF has no banner (re-renders too); reopened, it's back")
+
+        def signed(signer_id, status="Signed Off"):
+            return {"sign_off": {"status": status, "signed_by_user_id": signer_id}}
+
+        assert renderer._signed_off_by_staff(signed(admin.id)) and renderer._signed_off_by_staff(signed(signer.id))
+        for data in (signed(seer.id), signed(ai_only.id), signed(plain.id), signed("gone-user-id"),
+                     signed(admin.id, status="Draft"), signed(None), {"sign_off": None}, {}):
+            assert not renderer._signed_off_by_staff(data), data
+        with mock.patch("app.reports.db.SessionLocal", side_effect=RuntimeError("database is locked")):
+            assert not renderer._signed_off_by_staff(signed(admin.id))
+        ok("only a signer who is admin or May-sign-off counts; other signers, a gone account, a reopened case "
+           "and a failed lookup keep the banner")
+
         print("Our Ref")
         rid = new_case(admin, report_id="CL 70001")
         db = SessionLocal()
@@ -254,9 +321,11 @@ def main() -> int:
         now = [1000.0]
         with mock.patch.object(limits.time, "monotonic", lambda: now[0]):
             assert budget.take("a") and budget.take("a") and not budget.take("a") and budget.take("b")
+            budget.refund("a")
+            assert budget.take("a") and not budget.take("a")
             now[0] += 601
             assert budget.take("a")
-        ok("the budget is per account and rolls over")
+        ok("the budget is per account, takes a refund and rolls over")
 
         rid = new_case(plain)
         limits.renders.reset()
@@ -267,12 +336,22 @@ def main() -> int:
         r = plain.c.get(f"/reports/{rid}")
         assert r.status_code == 200 and r.json()["pdf_url"] is None and r.json()["data"]["description"] == "over budget"
         r = plain.c.get(f"/reports/{rid}/download")
-        assert r.status_code == 429 and r.json()["code"] == "render_busy" and r.json()["detail"] == limits.RENDER_BUSY, r.text
+        assert r.status_code == 429 and r.json() == {
+            "detail": "You've made a lot of PDFs in the last few minutes. Wait a few minutes and try again.",
+            "code": "render_limit",
+        }, r.text
         r = plain.c.post(f"/reports/{rid}/render-pdf")
-        assert r.status_code == 429 and r.json()["code"] == "render_busy"
+        assert r.status_code == 429 and r.json()["code"] == "render_limit"
         made = plain.c.post("/reports", json={"draft": draft()})
         assert made.status_code == 200 and stored(made.json()["id"]).pdf_path is None
-        ok("over the per-person limit a save still saves, without a PDF; a request for the PDF gets 429 render_busy")
+        assert counted(plain.id) == limits.RENDERS_PER_WINDOW
+        ok("an unvetted account over its share: a save still saves, without a PDF; asking for the PDF is 429 render_limit")
+
+        for who in (admin, signer, seer, ai_only):
+            case = new_case(who)
+            codes = {who.c.post(f"/reports/{case}/render-pdf").status_code for _ in range(limits.RENDERS_PER_WINDOW + 5)}
+            assert codes == {200} and counted(who.id) == 0, (who.id, codes)
+        ok(f"admins and accounts with any one tick have no render budget: {limits.RENDERS_PER_WINDOW + 5} in a row all render")
 
         limits.renders.reset()
         r = plain.c.get(f"/reports/{rid}/download")
@@ -281,8 +360,10 @@ def main() -> int:
         assert "immutable" in signer.c.get(files_url).headers["cache-control"]
         ok("later the download renders it, sent with Cache-Control: no-store (/files keeps its caching)")
 
+        assert renderer.RENDER_SLOT_WAIT_SECONDS <= 5 and renderer.BOT_RENDER_SLOT_WAIT_SECONDS >= 60
         held = [renderer._render_slots.acquire(timeout=1) for _ in range(renderer.MAX_CONCURRENT_RENDERS)]
         assert all(held)
+        before = counted(plain.id)
         try:
             with mock.patch.object(renderer, "RENDER_SLOT_WAIT_SECONDS", 0.2):
                 started = time.monotonic()
@@ -292,14 +373,101 @@ def main() -> int:
                 except renderer.RenderBusy:
                     assert time.monotonic() - started >= 0.2
                 r = plain.c.post(f"/reports/{rid}/render-pdf")
-                assert r.status_code == 429 and r.json()["code"] == "render_busy", r.text
+                assert r.status_code == 429 and r.json() == {"detail": limits.RENDER_BUSY, "code": "render_busy"}, r.text
                 r = plain.c.put(f"/reports/{rid}", json={"draft": {"category": ["Other"], "description": "slots busy"}})
                 assert r.status_code == 200 and stored(rid).pdf_path is None, r.text
+            # Not patched: opening a case doesn't wait the api's few seconds either.
+            started = time.monotonic()
+            r = plain.c.get(f"/reports/{rid}")
+            assert r.status_code == 200 and r.json()["pdf_url"] is None and time.monotonic() - started < 1.5, r.text
         finally:
             for _ in held:
                 renderer._render_slots.release()
+        assert counted(plain.id) == before
         renderer.html_to_pdf("<html></html>", str(Path(_tmp, "x.pdf")))
-        ok("with both Chromium slots busy a render waits, then gives up: 429 for render-pdf, PDF deferred on a save")
+        ok("with both Chromium slots busy a render waits briefly, then gives up: 429 render_busy for render-pdf, "
+           "PDF deferred on a save, none on opening a case (which never waits); nothing counted")
+
+        limits.renders.reset()
+        for _ in range(limits.RENDERS_PER_WINDOW - 1):
+            assert limits.renders.take(plain.id)
+        drop_pdf(rid)
+        CHROMIUM["fail"] = True
+        try:
+            assert plain.c.post(f"/reports/{rid}/render-pdf").status_code == 500
+            assert plain.c.get(f"/reports/{rid}/download").status_code == 503
+            assert plain.c.get(f"/reports/{rid}").json()["pdf_url"] is None
+        finally:
+            CHROMIUM["fail"] = False
+        assert counted(plain.id) == limits.RENDERS_PER_WINDOW - 1
+        assert plain.c.post(f"/reports/{rid}/render-pdf").status_code == 200
+        r = plain.c.post(f"/reports/{rid}/render-pdf")
+        assert r.status_code == 429 and r.json()["code"] == "render_limit", r.text
+        ok("a render that fails gives its count back: after 19 and three failures the 20th still renders, the 21st doesn't")
+
+        print("renders: one at a time per person")
+        quick = person(name="Quinn Quick")
+        first, other = new_case(quick), new_case(quick)
+        drop_pdf(first)
+        drop_pdf(other)
+        signer_case = new_case(signer)
+        limits.renders.reset()
+        gate = threading.Event()
+        CHROMIUM.update(gate=gate, inside=0)
+        answers: dict = {}
+        threads = [
+            threading.Thread(target=lambda: answers.setdefault("first", quick.c.post(f"/reports/{first}/render-pdf"))),
+            threading.Thread(target=lambda: answers.setdefault("signer", signer.c.post(f"/reports/{signer_case}/render-pdf"))),
+        ]
+        try:
+            threads[0].start()
+            assert wait_until(lambda: CHROMIUM["inside"] == 1), "the first render never reached Chromium"
+            started = time.monotonic()
+            r = quick.c.post(f"/reports/{first}/render-pdf")
+            assert r.status_code == 429 and r.json() == {"detail": limits.RENDER_BUSY, "code": "render_busy"}, r.text
+            r = quick.c.get(f"/reports/{other}/download")
+            assert r.status_code == 429 and r.json()["code"] == "render_busy", r.text
+            r = quick.c.get(f"/reports/{other}")
+            assert r.status_code == 200 and r.json()["pdf_url"] is None, r.text
+            r = quick.c.put(f"/reports/{other}", json={"draft": {"category": ["Other"], "description": "while rendering"}})
+            assert r.status_code == 200 and r.json()["pdf_url"] is None, r.text
+            assert time.monotonic() - started < 2, "a refused render waited"
+            assert counted(quick.id) == 1  # a refusal takes nothing
+            threads[1].start()
+            assert wait_until(lambda: CHROMIUM["inside"] == 2), "someone else's render was held up"
+        finally:
+            gate.set()
+            CHROMIUM["gate"] = None
+            for t in threads:
+                t.join(10)
+        assert answers["first"].status_code == 200 and answers["signer"].status_code == 200
+        assert quick.c.post(f"/reports/{first}/render-pdf").status_code == 200
+        ok("while one of a person's PDFs renders, their next is 429 render_busy at once (download too), opening "
+           "and saving skip it; other people render meanwhile; once it's done they can render again")
+
+        print("the Telegram bot still waits for Chromium")
+        photo = Path(_tmp, "tg-photo.jpg")
+        photo.write_bytes(jpeg())
+        session = tg.get_session("4343")
+        session.draft = SecurityIncidentDraft(description="Filed from the bot")
+        session.photo_paths = [str(photo)]
+        held = [renderer._render_slots.acquire(timeout=1) for _ in range(renderer.MAX_CONCURRENT_RENDERS)]
+        assert all(held)
+        threading.Timer(1.0, renderer._render_slots.release).start()  # one slot frees up in a second
+        try:
+            with mock.patch.object(renderer, "RENDER_SLOT_WAIT_SECONDS", 0.3):  # the api would give up first
+                started = time.monotonic()
+                asyncio.run(tg._finalize_report(SimpleNamespace(message=None, callback_query=None), session, "4343"))
+                waited = time.monotonic() - started
+        finally:
+            renderer._render_slots.release()
+        db = SessionLocal()
+        try:
+            bot_case = db.query(Report).filter(Report.reporter_chat_id == "4343").one()
+        finally:
+            db.close()
+        assert bot_case.pdf_path and Path(bot_case.pdf_path).exists() and waited >= 0.9, (bot_case.pdf_path, waited)
+        ok("with both slots busy the bot's render waits past the api's limit for one, and its case gets the PDF")
 
         print("drafts and new cases")
         def filed(owner, n, age=timedelta(0)):
@@ -367,6 +535,20 @@ def main() -> int:
             assert r.status_code == 200, r.text
         ok("an edit adding photos is refused under the threshold (setting-driven); an edit without photos isn't")
 
+        finisher = person(name="Fay Finisher", ai_company_key_allowed=True)
+        d = finisher.c.post("/intake").json()["id"]
+        r = finisher.c.post(f"/intake/{d}/photos", files={"file": ("IMG_1.jpg", jpeg(), "image/jpeg")}, data={"position": "1"})
+        assert r.status_code == 200, r.text
+        before = finisher.c.get(f"/intake/{d}").json()
+        with low_disk():
+            r = finisher.c.post(f"/intake/{d}/finalize", json={"data": draft()})
+            assert r.status_code == 507 and r.json()["code"] == "disk_full", r.text
+        after = finisher.c.get(f"/intake/{d}").json()
+        assert after["stage"] == before["stage"] and len(after["photos"]) == 1 and after["status"] == "intake", after
+        r = finisher.c.post(f"/intake/{d}/finalize", json={"data": draft()})
+        assert r.status_code == 200 and stored(d).pdf_path, r.text
+        ok("finalize under the threshold is 507 disk_full before the draft is claimed: it stays as it was, and finishes later")
+
         async def telegram_checks():
             tg._allowed_ids.add("4242")
             texts, downloads = [], []
@@ -392,6 +574,34 @@ def main() -> int:
 
         asyncio.run(telegram_checks())
         ok("the Telegram bot answers politely and downloads nothing")
+
+        print("ticks on a new account")
+        def created(**body) -> dict:
+            r = admin.c.post("/users", json=body)
+            assert r.status_code == 200, r.text
+            return r.json()["user"]
+
+        kim = created(email="kim@example.com", name="Kim Staff", sees_all_cases=True, may_sign_off=True)
+        lee = created(email="lee@example.com", name="Lee Plain")
+        nul = created(email="nul@example.com", name="Nu Null", sees_all_cases=None, ai_company_key_allowed=False)
+        boss = created(email="boss@example.com", name="Bo Boss", role="admin", **{t: True for t in TICKS})
+        assert [kim[t] for t in TICKS] == [True, False, True], kim
+        assert not any(u[t] for u in (lee, nul, boss) for t in TICKS), (lee, nul, boss)
+        listed = {u["email"]: u for u in admin.c.get("/users").json()}
+        assert [listed["kim@example.com"][t] for t in TICKS] == [True, False, True]
+        db = SessionLocal()
+        try:
+            details = [e.detail for e in db.query(AuditEntry).filter(AuditEntry.action == "user_created").order_by(AuditEntry.id)]
+        finally:
+            db.close()
+        assert details[-4:] == [
+            "kim@example.com (user); sees_all_cases: False -> True; may_sign_off: False -> True",
+            "lee@example.com (user)",
+            "nul@example.com (user)",
+            "boss@example.com (admin)",
+        ], details[-4:]
+        ok("POST /users takes the three ticks (off when left out or null), records them as PATCH does, "
+           "and ignores them for an admin")
 
     print("a real PDF")
     renderer._chromium_pdf = REAL_CHROMIUM_PDF

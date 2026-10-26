@@ -254,7 +254,7 @@ DECISIONS = {
     ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", ""),
     ("POST", "/reports/{report_id}/ai-enrich"): ("case-edit", "not a Gemini call"),
     ("PUT", "/reports/{report_id}/annex-a"): ("case-edit", ""),
-    ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_busy; 2 renders at once (B2)"),
+    ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_limit; 2 renders at once (B2)"),
     ("POST", "/intake/{report_id}/photos"): ("case-edit", "507 disk_full under 3 GB free (B2)"),
     ("PATCH", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),
     ("DELETE", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),
@@ -915,7 +915,9 @@ def b2_render_limits() -> None:
     for _ in range(25):
         r = A.c.post(f"/reports/{case_id}/render-pdf")
         codes.append((r.status_code, code_of(r)))
-    check((429, "render_busy") in codes, "25 render-pdf calls in a row from one person hit 429 render_busy",
+    # render_limit since the P1 review: render_busy now means the server
+    # (or this person's last PDF) is still busy, not the per-person limit.
+    check((429, "render_limit") in codes, "25 render-pdf calls in a row from a self-signup hit 429 render_limit",
           str(sorted(set(codes), key=str)))
 
     print("  at most 2 renders at once")
@@ -1036,7 +1038,7 @@ B2_SECTIONS = [
     ("Knowledge: plates, file names and prices (hidden: true)", b2_knowledge),
     ("/docs, /redoc, /openapi.json off", b2_docs_off),
     ("Clear-Site-Data on logout", b2_clear_site_data),
-    ("render limits: per person (429 render_busy) and 2 at once", b2_render_limits),
+    ("render limits: per person (429 render_limit) and 2 at once", b2_render_limits),
     ("disk guard: 507 disk_full under 3 GB free", b2_disk_guard),
     ("draft limits: 5 per person (409 draft_limit), staff exempt from the shared 30", b2_draft_limits),
 ]

@@ -396,6 +396,11 @@ class NewUser(ProfileFields):
     email: str = Field(max_length=320)
     name: str = Field(max_length=120)
     role: Literal["admin", "user"] = "user"
+    # The ticks, as on PATCH /users/{id}; off unless sent as true. Ignored
+    # for an admin, who has all of it anyway.
+    sees_all_cases: Optional[bool] = None
+    ai_company_key_allowed: Optional[bool] = None
+    may_sign_off: Optional[bool] = None
 
 
 class UserUpdate(ProfileFields):
@@ -408,7 +413,7 @@ class UserUpdate(ProfileFields):
     may_sign_off: Optional[bool] = None
 
 
-def _apply_ticks(row: User, body: UserUpdate) -> str:
+def _apply_ticks(row: User, body: UserUpdate | NewUser) -> str:
     """Sets the ticks the request carries; returns what changed, for the
     history. Unset (None) and off read the same, so None -> off is no change."""
     changes = []
@@ -457,8 +462,10 @@ def create_user(body: NewUser, admin: CurrentUser = Depends(require_admin)) -> d
         )
         body.username = None  # already applied
         _apply_profile(db, row, body, by_admin=True)
+        # Recorded the way PATCH records them: "sees_all_cases: False -> True".
+        ticks = "" if row.role == "admin" else _apply_ticks(row, body)
         db.add(row)
-        audit(db, admin, "user_created", detail=f"{row.email} ({row.role})")
+        audit(db, admin, "user_created", detail="; ".join(filter(None, [f"{row.email} ({row.role})", ticks])))
         _commit_or_taken(db)
         db.refresh(row)
         return {"user": user_dicts(db, [row])[0], "temporary_password": password}

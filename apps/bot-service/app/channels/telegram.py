@@ -21,7 +21,7 @@ from app.conversation.flow import build_draft, build_template_prompt, combined_d
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report, gen_id
-from app.rendering.renderer import render_pdf
+from app.rendering.renderer import BOT_RENDER_SLOT_WAIT_SECONDS, render_pdf
 from app.storage.files import disk_space_low, report_pdf_path, save_photo, tmp_dir
 
 logger = logging.getLogger(__name__)
@@ -529,7 +529,11 @@ async def _finalize_report(update: Update, session, chat_id: str) -> None:
     stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
     pdf_path: str | None = report_pdf_path(report_id)
     try:
-        await asyncio.to_thread(render_pdf, data, stored_photos, pdf_path, report_id=report_id)
+        # The long wait for a Chromium slot (renderer.py): the bot renders
+        # seldom, on its own threads, and the PDF is what the chat gets back.
+        await asyncio.to_thread(
+            render_pdf, data, stored_photos, pdf_path, report_id=report_id, slot_wait=BOT_RENDER_SLOT_WAIT_SECONDS
+        )
     except Exception as exc:
         logger.error("Failed to render PDF for report %s in Telegram: %s", report_id, exc)
         pdf_path = None

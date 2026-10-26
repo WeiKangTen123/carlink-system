@@ -83,7 +83,7 @@ def hostile_report() -> dict:
 # 1. Typed fields come out escaped in the HTML handed to Chromium.
 captured: list[str] = []
 real_html_to_pdf = renderer.html_to_pdf
-renderer.html_to_pdf = lambda html, path: captured.append(html)
+renderer.html_to_pdf = lambda html, path, slot_wait=None: captured.append(html)
 try:
     renderer.render_pdf(hostile_report(), [], str(out_dir / "captured.pdf"))
 finally:

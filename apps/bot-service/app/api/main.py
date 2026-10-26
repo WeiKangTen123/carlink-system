@@ -345,15 +345,20 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
         # "fill derived fields" action (POST /reports/{id}/ai-enrich).
 
         # If PDF is missing or doesn't exist on disk, render it on-demand --
-        # unless this person has had their share of renders for now
-        # (limits.renders): the case still opens, without a PDF until later.
+        # unless this person may not render right now (limits.render_turn)
+        # or no Chromium slot is free this moment (slot_wait=0: opening a
+        # case never waits for one). The case still opens, without a PDF
+        # until later.
         pdf_path = r.pdf_path
-        if (not pdf_path or not Path(pdf_path).exists()) and limits.renders.take(user.id):
-            target_pdf_path = report_pdf_path(r.id)
+        if not pdf_path or not Path(pdf_path).exists():
             try:
-                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                with limits.render_turn(user):
+                    target_pdf_path = report_pdf_path(r.id)
+                    render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id, slot_wait=0)
                 r.pdf_path = target_pdf_path
                 db.commit()
+            except (limits.RenderRefused, RenderBusy):
+                r.pdf_path = None
             except Exception as exc:
                 logger.warning("Failed to render PDF on-demand for report %s: %s", r.id, exc)
                 r.pdf_path = None
@@ -395,17 +400,18 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
-            limits.require_render(user)
-            target_pdf_path = report_pdf_path(r.id)
-            try:
-                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
-                r.pdf_path = target_pdf_path
-                db.commit()
-            except RenderBusy as exc:
-                raise limits.render_busy() from exc
-            except Exception as exc:
-                logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
-                raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            # 429 render_busy / render_limit if this person may not render now.
+            with limits.render_turn(user):
+                target_pdf_path = report_pdf_path(r.id)
+                try:
+                    render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                except RenderBusy as exc:
+                    raise limits.render_busy() from exc
+                except Exception as exc:
+                    logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
+                    raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            r.pdf_path = target_pdf_path
+            db.commit()
 
         if not r.pdf_path or not Path(r.pdf_path).exists():
             raise HTTPException(status_code=503, detail="PDF generation currently unavailable.")
@@ -432,23 +438,24 @@ def render_report_pdf_endpoint(report_id: str, user: CurrentUser = Depends(edita
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
-        limits.require_render(user)
 
-        target_pdf_path = report_pdf_path(r.id)
-        try:
-            render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
-            r.pdf_path = target_pdf_path
-            db.commit()
-            return {
-                "id": r.id,
-                "status": "rendered",
-                "pdf_url": to_public_url(r.pdf_path),
-            }
-        except RenderBusy as exc:
-            raise limits.render_busy() from exc
-        except Exception as exc:
-            logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
-            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+        # 429 render_busy / render_limit if this person may not render now.
+        with limits.render_turn(user):
+            target_pdf_path = report_pdf_path(r.id)
+            try:
+                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+            except RenderBusy as exc:
+                raise limits.render_busy() from exc
+            except Exception as exc:
+                logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
+                raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+        r.pdf_path = target_pdf_path
+        db.commit()
+        return {
+            "id": r.id,
+            "status": "rendered",
+            "pdf_url": to_public_url(r.pdf_path),
+        }
     finally:
         db.close()
 
@@ -572,17 +579,19 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         for i, temp_path in enumerate(temp_paths)
         if Path(temp_path).exists()
     ]
-    # Over this person's share of renders for now, the first download
-    # renders it instead.
+    # When this person may not render now (limits.render_turn) or every
+    # Chromium slot stays busy, the first download renders it instead.
     pdf_path: str | None = None
-    if limits.renders.take(user.id):
-        pdf_path = report_pdf_path(report_id)
-        try:
+    try:
+        with limits.render_turn(user):
+            pdf_path = report_pdf_path(report_id)
             # Not saved yet, so the renderer can't look its owner up.
             render_pdf(data, photo_paths, pdf_path, report_id=report_id, unverified=not is_staff(user))
-        except Exception as exc:
-            logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
-            pdf_path = None
+    except (limits.RenderRefused, RenderBusy):
+        pdf_path = None
+    except Exception as exc:
+        logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
+        pdf_path = None
 
     db = SessionLocal()
     try:
@@ -619,17 +628,15 @@ def _merge_into(base: dict, patch: dict) -> dict:
 def _render_after_change(user: CurrentUser, r: Report, what: str) -> Optional[str]:
     """Renders case r's PDF again after a change (an edit, signing off,
     reopening) and returns the path to keep on it. None -- the next download
-    renders it -- when this person has had their share of renders for now
-    (limits.renders) or every Chromium slot stayed busy: the old file shows
-    the case from before the change. A render that fails keeps the old
-    path, as before."""
-    if not limits.renders.take(user.id):
-        return None
-    pdf_path = r.pdf_path or report_pdf_path(r.id)
+    renders it -- when this person may not render now (limits.render_turn)
+    or every Chromium slot stayed busy: the old file shows the case from
+    before the change. A render that fails keeps the old path, as before."""
     try:
-        render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+        with limits.render_turn(user):
+            pdf_path = r.pdf_path or report_pdf_path(r.id)
+            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
         return pdf_path
-    except RenderBusy:
+    except (limits.RenderRefused, RenderBusy):
         return None
     except Exception as exc:
         logger.error("Failed to render PDF for %s report %s: %s", what, r.id, exc)
