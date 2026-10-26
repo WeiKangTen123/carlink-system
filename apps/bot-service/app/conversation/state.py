@@ -6,6 +6,7 @@ standing up Redis before there's a real reason to. docs/proposal.md section D
 already calls out Redis-backed session state as the Phase 1 upgrade, needed
 once this runs as more than one worker.
 """
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -44,6 +45,12 @@ class Session:
     vehicle_body_type: Optional[str] = None
     claim_type: Optional[str] = None
     clarifying_field: Optional[str] = None
+    # Telegram (channels/telegram.py): set while a Confirm is being saved, so
+    # a second tap saves nothing; and when the chat was last active, so a
+    # draft left for over a day expires instead of being confirmed after the
+    # api's cleanup has deleted its photos.
+    finalizing: bool = False
+    last_active: float = field(default_factory=time.monotonic)
 
 
 _sessions: dict[str, Session] = {}

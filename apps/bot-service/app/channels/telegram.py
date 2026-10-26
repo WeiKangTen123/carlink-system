@@ -3,7 +3,12 @@ which is what makes it the fastest channel to stand up (see docs/proposal.md
 section B). Get a token from @BotFather, put it in .env, and this runs.
 """
 import asyncio
+import functools
 import logging
+import os
+import time
+import uuid
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
@@ -42,21 +47,172 @@ WELCOME_GUIDE = (
 
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 
+REFUSAL_TEXT = "This Carlink bot is for registered staff only. Please ask your Carlink admin for access."
+REFUSAL_EVERY_SECONDS = 60 * 60
+# The api's cleanup deletes storage/tmp files after a day (intake/cleanup.py
+# TMP_MAX_AGE), so a draft idle longer than that may have lost its photos.
+SESSION_MAX_IDLE_SECONDS = 24 * 60 * 60
+MAX_PHOTOS_PER_DRAFT = 40
+# Documents the drafting flow can use: they go to Gemini as images and into
+# the PDF's photo pages, so only image types both handle (the dashboard's
+# ALLOWED_PHOTO_EXTENSIONS). A PDF used to be passed along as an "image".
+DOCUMENT_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+}
 
+# Until account linking ships, only today's users may use the bot: the ids
+# in TELEGRAM_ALLOWED_IDS plus every chat that has filed a case through
+# Telegram. Filled once by _post_init -- only allowed chats can file new
+# cases, so it never needs refreshing. Empty until then, which refuses all.
+_allowed_ids: set[str] = set()
+_refused_at: dict[str, float] = {}
+
+
+def _load_allowed_ids() -> set[str]:
+    ids = {part.strip() for part in settings.telegram_allowed_ids.split(",") if part.strip()}
+    try:
+        db = SessionLocal()
+        try:
+            rows = db.query(Report.reporter_chat_id).filter(Report.channel == "telegram").distinct().all()
+        finally:
+            db.close()
+        ids.update(str(chat_id).strip() for (chat_id,) in rows if chat_id)
+    except Exception:
+        # Carries on with TELEGRAM_ALLOWED_IDS alone: past reporters are
+        # refused until a restart, but nobody unknown gets in.
+        logger.exception("Could not read past Telegram reporters for the allow-list")
+    return ids
+
+
+def _is_allowed(update: Update) -> bool:
+    return any(
+        who is not None and str(who.id) in _allowed_ids
+        for who in (update.effective_user, update.effective_chat)
+    )
+
+
+def _staff_only(handler):
+    """Runs handler only for an allowed user or chat. Anyone else gets
+    REFUSAL_TEXT at most once an hour per chat and nothing more: no
+    download, no session, no AI call, no database write."""
+
+    @functools.wraps(handler)
+    async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if _is_allowed(update):
+            await handler(update, context)
+            return
+        chat_key = str(update.effective_chat.id) if update.effective_chat else ""
+        now = time.monotonic()
+        last = _refused_at.get(chat_key)
+        if last is not None and now - last < REFUSAL_EVERY_SECONDS:
+            return
+        _refused_at[chat_key] = now
+        # Ids only, never the message: enough for an admin to add them to
+        # TELEGRAM_ALLOWED_IDS. Logged with the reply, so a flood of
+        # messages can't flood the log either.
+        logger.info(
+            "Refused Telegram user %s in chat %s: not on the allow-list",
+            update.effective_user.id if update.effective_user else None,
+            update.effective_chat.id if update.effective_chat else None,
+        )
+        if update.effective_message:
+            await update.effective_message.reply_text(REFUSAL_TEXT)
+
+    return guarded
+
+
+def _new_temp_path(ext: str) -> Path:
+    # Random, not {chat_id}_{n}: the dashboard API takes any storage/tmp
+    # file by name (temp_photo_paths), and chat ids are easy to guess.
+    return tmp_dir() / f"tg-{uuid.uuid4().hex}{ext}"
+
+
+def _discard_temp_files(session) -> None:
+    """Deletes a session's downloads from storage/tmp once its case is saved
+    or its draft is dropped, rather than leaving them there for a day."""
+    for path in session.photo_paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not delete temp file %s: %s", path, exc)
+
+
+def _keep_temp_files(session) -> None:
+    """Marks a live draft's downloads as fresh. The api's cleanup deletes
+    storage/tmp files by age (mtime), so a draft worked on for over a day
+    would otherwise lose its earliest photos; an idle one expires first."""
+    for path in session.photo_paths:
+        try:
+            os.utime(path)
+        except OSError:
+            pass
+
+
+def _reset(chat_id: str) -> None:
+    _discard_temp_files(get_session(chat_id))
+    reset_session(chat_id)
+
+
+async def _current_session(update: Update, chat_id: str):
+    """The chat's session, and whether a stale draft was just expired: one
+    idle past SESSION_MAX_IDLE_SECONDS is dropped and the user told to start
+    again, since confirming it could find its photos already deleted."""
+    session = get_session(chat_id)
+    now = time.monotonic()
+    has_draft = bool(session.photo_paths) or session.draft is not None
+    expired = has_draft and now - session.last_active > SESSION_MAX_IDLE_SECONDS
+    if expired:
+        _discard_temp_files(session)
+        session = reset_session(chat_id)
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "⌛ Your previous draft expired after 24 hours without activity and was discarded. "
+                "Please start again: send /new or your photos."
+            )
+    else:
+        _keep_temp_files(session)
+    session.last_active = now
+    return session, expired
+
+
+async def _photo_limit_reached(update: Update, session) -> bool:
+    if len(session.photo_paths) < MAX_PHOTOS_PER_DRAFT:
+        return False
+    await update.message.reply_text(
+        f"{MAX_PHOTOS_PER_DRAFT} photos is the limit for one report, so this one wasn't added. "
+        "Please confirm the report as it is, or send /new to start again."
+    )
+    return True
+
+
+@_staff_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    reset_session(str(update.effective_chat.id))
-    await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
+    chat_id = str(update.effective_chat.id)
+    async with _lock_for(chat_id):
+        _reset(chat_id)
+        await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
 
 
+@_staff_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
+    async with _lock_for(str(update.effective_chat.id)):
+        await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
 
 
+@_staff_only
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    reset_session(str(update.effective_chat.id))
-    await update.message.reply_text("🔄 Current report session cancelled and reset. Send /new or a photo to start a fresh report.")
+    chat_id = str(update.effective_chat.id)
+    async with _lock_for(chat_id):
+        _reset(chat_id)
+        await update.message.reply_text("🔄 Current report session cancelled and reset. Send /new or a photo to start a fresh report.")
 
 
+# One per chat, held by every handler, so updates from one chat run one at
+# a time: a /cancel can't delete photos a Confirm is still copying.
 _chat_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -91,6 +247,7 @@ def _build_inline_keyboard(session) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+@_staff_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with _lock_for(str(update.effective_chat.id)):
         await _handle_photo(update, context)
@@ -98,11 +255,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
-    session = get_session(chat_id)
+    # A photo that finds an expired draft starts the new one, so the rest of
+    # an album sent with it isn't split across two drafts.
+    session, _ = await _current_session(update, chat_id)
+    if await _photo_limit_reached(update, session):
+        return
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
-    dest = tmp_dir() / f"{chat_id}_{len(session.photo_paths)}.jpg"
+    dest = _new_temp_path(".jpg")
     await file.download_to_drive(str(dest))
     session.photo_paths.append(str(dest))
 
@@ -136,17 +297,24 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(build_template_prompt(), parse_mode="Markdown")
 
 
+@_staff_only
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with _lock_for(str(update.effective_chat.id)):
         chat_id = str(update.effective_chat.id)
-        session = get_session(chat_id)
+        session, _ = await _current_session(update, chat_id)
         doc = update.message.document
         if not doc:
             return
-        mime = doc.mime_type or ""
-        ext = ".pdf" if "pdf" in mime else ".jpg"
+        ext = DOCUMENT_EXTENSIONS.get((doc.mime_type or "").lower())
+        if not ext:
+            await update.message.reply_text(
+                "Sorry, I can only use photos (JPG, PNG, WebP or HEIC). Please send this as a photo or an image file."
+            )
+            return
+        if await _photo_limit_reached(update, session):
+            return
         file = await doc.get_file()
-        dest = tmp_dir() / f"{chat_id}_{len(session.photo_paths)}{ext}"
+        dest = _new_temp_path(ext)
         await file.download_to_drive(str(dest))
         session.photo_paths.append(str(dest))
 
@@ -164,6 +332,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text(build_template_prompt(), parse_mode="Markdown")
 
 
+@_staff_only
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with _lock_for(str(update.effective_chat.id)):
         await _handle_text(update, context)
@@ -171,7 +340,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
-    session = get_session(chat_id)
+    session, expired = await _current_session(update, chat_id)
+    if expired:
+        return  # meant for the expired draft
     text = update.message.text.strip()
 
     if session.stage == Stage.AWAITING_CONFIRMATION:
@@ -245,11 +416,36 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
             await msg_target.reply_text(result.summary_text, reply_markup=keyboard)
 
 
+@_staff_only
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
     chat_id = str(update.effective_chat.id)
-    session = get_session(chat_id)
+    claimed = None
+    if query.data == "confirm":
+        claimed = get_session(chat_id)
+        if claimed.finalizing:
+            # A second tap while the first is still saving. Answered here
+            # rather than queued behind the chat lock, and saves nothing.
+            await query.answer("Already saving this report -- one moment.")
+            return
+        # Claimed before the first await, so even a near-simultaneous second
+        # tap is turned away above.
+        claimed.finalizing = True
+    try:
+        await query.answer()
+        async with _lock_for(chat_id):
+            await _handle_callback(update, context)
+    finally:
+        if claimed is not None:
+            claimed.finalizing = False
+
+
+async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat_id = str(update.effective_chat.id)
+    session, expired = await _current_session(update, chat_id)
+    if expired:
+        return  # a tap on the expired draft
     data = query.data
 
     if data == "confirm":
@@ -285,7 +481,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def finalize_report(update: Update, session, chat_id: str) -> None:
+    # While this runs a second Confirm tap is answered, not saved (see
+    # handle_callback). Cleared on failure too, so the user can retry.
+    session.finalizing = True
+    try:
+        await _finalize_report(update, session, chat_id)
+    finally:
+        session.finalizing = False
+
+
+async def _finalize_report(update: Update, session, chat_id: str) -> None:
     msg_target = update.message or (update.callback_query.message if update.callback_query else None)
+    # Backstop: _keep_temp_files keeps a live draft's photos from the api's
+    # day-old cleanup, but if any are gone anyway, save what's left rather
+    # than crash.
+    present = [p for p in session.photo_paths if Path(p).exists()]
+    if len(present) < len(session.photo_paths):
+        logger.warning(
+            "Confirm in chat %s: %d of %d temp photos are gone; saving without them",
+            chat_id, len(session.photo_paths) - len(present), len(session.photo_paths),
+        )
+        session.photo_paths = present
+    if not present:
+        if msg_target:
+            await msg_target.reply_text(
+                "The photos for this draft are no longer on the server. Please send them again, then confirm."
+            )
+        return
+
     # Photos and PDF before the database row, so no SQLite write lock is held
     # while Chromium renders: flushing the row first held it for the whole
     # render, and every other writer (dashboard uploads, autosaves) failed
@@ -317,6 +540,10 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
         db.expunge(report)
     finally:
         db.close()
+    # Saved: drop the draft before replying, so a reply that fails can't
+    # leave it there to be confirmed a second time.
+    _discard_temp_files(session)
+    reset_session(chat_id)
 
     if msg_target:
         rep_code = report.id[:8].upper()
@@ -333,10 +560,15 @@ async def finalize_report(update: Update, session, chat_id: str) -> None:
             f"Send /new or a photo to file another report.",
             parse_mode="Markdown"
         )
-    reset_session(chat_id)
 
 
 async def _post_init(app: Application) -> None:
+    _allowed_ids.clear()
+    _allowed_ids.update(_load_allowed_ids())
+    if _allowed_ids:
+        logger.info("Telegram allow-list: %d id(s) may use the bot", len(_allowed_ids))
+    else:
+        logger.warning("Telegram allow-list is empty: the bot will refuse everyone. Set TELEGRAM_ALLOWED_IDS.")
     try:
         await app.bot.set_my_name("Carlink Car Incident Reporter")
         await app.bot.set_my_description(
@@ -364,12 +596,15 @@ def build_app() -> Application:
         .post_init(_post_init)
         .build()
     )
-    application.add_handler(CommandHandler(["start", "new"], start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("cancel", cancel_command))
+    # New messages only. Edited messages and channel posts matched these
+    # too, and with no update.message they crashed the handlers.
+    new_message = filters.UpdateType.MESSAGE
+    application.add_handler(CommandHandler(["start", "new"], start, filters=new_message))
+    application.add_handler(CommandHandler("help", help_command, filters=new_message))
+    application.add_handler(CommandHandler("cancel", cancel_command, filters=new_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.PHOTO & new_message, handle_photo))
+    application.add_handler(MessageHandler(filters.Document.ALL & new_message, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & new_message, handle_text))
     return application
 

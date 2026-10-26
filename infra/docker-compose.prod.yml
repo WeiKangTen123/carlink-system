@@ -26,6 +26,10 @@ x-bot-service: &bot-service
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
     - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+    # Extra Telegram ids the bot accepts, comma-separated. Chats that have
+    # already filed a case through the bot are allowed without being listed
+    # (see the allow-list in app/channels/telegram.py).
+    - TELEGRAM_ALLOWED_IDS=${TELEGRAM_ALLOWED_IDS:-}
     # Kept in sync with config.py's default -- see the comment there for
     # why this order (bbox-capable models first, -lite models as the
     # always-available fallback) and why antigravity was dropped (no
