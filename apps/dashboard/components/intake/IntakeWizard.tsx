@@ -863,6 +863,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onRemovePhoto={deletePhoto}
           onStart={() => startProcessing("all")}
           onContinue={() => goTo(2)}
+          aiOff={aiOff}
+          onFillByHand={fillByHand}
         />
       )}
 

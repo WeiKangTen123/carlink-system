@@ -253,6 +253,7 @@ export function ownerLabel(owner: Owner | null | undefined): string {
 export const ERROR_MESSAGES: Record<string, string> = {
   ai_key_missing: "AI is off for your account. Ask an admin to allow the company AI key.",
   draft_limit: "You have too many unfinished drafts. Finish or delete one, then try again.",
+  case_limit: "You've filed the most cases allowed in 24 hours for an account without staff access. Try again later, or ask an admin.",
   disk_full: "The server is almost out of space, so new photos and cases can't be saved. Please tell an admin.",
   render_busy: "Too many PDFs are being made right now. Wait a minute and try again.",
   not_allowed: "You can't change this case. Ask its owner or an admin.",
@@ -1046,6 +1047,8 @@ export type AnnexSuggestions = {
   without_history: string[];
   /** Lines already in the case's Annex A are left out. */
   groups: AnnexSuggestionGroup[];
+  /** Past-report prices are for staff only: no groups, cases_used 0. */
+  hidden?: boolean;
 };
 
 export async function getAnnexSuggestions(reportId: string): Promise<AnnexSuggestions> {

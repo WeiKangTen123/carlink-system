@@ -7,7 +7,8 @@ Every refusal is an ApiError with a code the dashboard explains:
 
     409 ai_key_missing   AI is only for admins and the "company AI key" tick
     429 render_busy      too many PDFs from this person lately
-    409 draft_limit      too many open drafts, or too many new cases today
+    409 draft_limit      too many open drafts
+    409 case_limit       too many new cases today (accounts without staff access)
     507 disk_full        the storage disk is nearly full
     403 not_allowed      Our Ref is for staff only
 
@@ -160,7 +161,7 @@ def check_new_cases_today(db, user: CurrentUser) -> None:
             409,
             f"You've filed {MAX_NEW_CASES_PER_DAY} cases in the last 24 hours, the most for an account "
             "without staff access. Try again later, or ask an admin.",
-            "draft_limit",
+            "case_limit",
         )
 
 

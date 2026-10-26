@@ -105,7 +105,7 @@ export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".hei
 
 /** A failed intake API call. `status` is null when no answer came back at
  * all (offline, connection dropped, or the request timed out). `code` is the
- * API's error code (ai_key_missing, draft_limit, disk_full, not_allowed...),
+ * API's error code (ai_key_missing, draft_limit, case_limit, disk_full, not_allowed...),
  * when it sent one; the message is then already in plain words. */
 export class IntakeRequestError extends Error {
   readonly status: number | null;
@@ -136,7 +136,7 @@ const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const PERMANENT_STATUSES = new Set([400, 404, 409, 413, 415, 422]);
 // Refusals that sending again won't fix, whatever their status (disk_full
 // is 507, not_allowed 403).
-const PERMANENT_CODES = new Set(["ai_key_missing", "draft_limit", "disk_full", "not_allowed"]);
+const PERMANENT_CODES = new Set(["ai_key_missing", "draft_limit", "case_limit", "disk_full", "not_allowed"]);
 
 /** No answer, or an answer that says "try again later". */
 export function isTransientFailure(e: unknown): boolean {

@@ -324,9 +324,9 @@ def main() -> int:
         assert capped.c.post("/reports", json={"draft": draft()}).status_code == 200
         for r in (capped.c.post("/reports", json={"draft": draft()}), capped.c.post("/intake"),
                   capped.c.post(f"/intake/{early_draft}/finalize", json={"data": draft()})):
-            assert r.status_code == 409 and r.json()["code"] == "draft_limit" and "24 hours" in r.json()["detail"], r.text
+            assert r.status_code == 409 and r.json()["code"] == "case_limit" and "24 hours" in r.json()["detail"], r.text
         assert capped.c.get(f"/intake/{early_draft}").json()["stage"] == "uploading"  # the draft is as it was
-        ok("10 filed cases in 24 hours: the next case, draft or finalize is 409 draft_limit; older cases don't count")
+        ok("10 filed cases in 24 hours: the next case, draft or finalize is 409 case_limit; older cases don't count")
 
         filed(ai_only, 12)
         assert ai_only.c.post("/reports", json={"draft": draft()}).status_code == 200
