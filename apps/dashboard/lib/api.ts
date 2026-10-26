@@ -255,7 +255,9 @@ export const ERROR_MESSAGES: Record<string, string> = {
   draft_limit: "You have too many unfinished drafts. Finish or delete one, then try again.",
   case_limit: "You've filed the most cases allowed in 24 hours for an account without staff access. Try again later, or ask an admin.",
   disk_full: "The server is almost out of space, so new photos and cases can't be saved. Please tell an admin.",
-  render_busy: "Too many PDFs are being made right now. Wait a minute and try again.",
+  render_busy: "The server is busy making other PDFs. Try again in a moment.",
+  render_limit: "You've made a lot of PDFs in the last few minutes. Wait a few minutes and try again.",
+  /** Only when the API gave no reason of its own (see refusalMessage). */
   not_allowed: "You can't change this case. Ask its owner or an admin.",
   scope_not_allowed: "You can only see your own cases.",
   owner_inactive: "That account is disabled. Pick someone else.",
@@ -265,6 +267,20 @@ export const ERROR_MESSAGES: Record<string, string> = {
 /** The plain-words message for an error code, if it has one. */
 export function messageForCode(code: string | null | undefined): string | null {
   return (code && ERROR_MESSAGES[code]) || null;
+}
+
+/** Codes whose refusals each say why ("Only staff can set Our Ref."), so
+ * the API's own words beat the one-size message above. */
+const DETAIL_FIRST_CODES = new Set(["not_allowed"]);
+
+/** What to show for a refused call: the plain words for its code, else the
+ * API's own detail (for not_allowed, the detail first). Null when there is
+ * neither. FastAPI's validation errors put a list in detail, not a
+ * sentence; that counts as none. */
+export function refusalMessage(code: string | null, detail: unknown): string | null {
+  const text = typeof detail === "string" && detail ? detail : null;
+  if (code && text && DETAIL_FIRST_CODES.has(code)) return text;
+  return messageForCode(code) || text;
 }
 
 /** A refused API call. `code` is the API's error code, when it sent one. */
@@ -285,13 +301,12 @@ export function errorCode(err: unknown): string | null {
   return err instanceof ApiError ? err.code : null;
 }
 
-/** An ApiError from a failed response: the plain-words message for its
- * code, else the API's own detail, else "<fallback> (<status>)". */
+/** An ApiError from a failed response: refusalMessage() for its code and
+ * detail, else "<fallback> (<status>)". */
 export async function apiError(res: Response, fallback: string): Promise<ApiError> {
   const body = await res.json().catch(() => null);
   const code = typeof body?.code === "string" ? body.code : null;
-  const detail = typeof body?.detail === "string" && body.detail ? body.detail : null;
-  return new ApiError(messageForCode(code) || detail || `${fallback} (${res.status})`, res.status, code);
+  return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code);
 }
 
 /** Profile fields a user edits on their own Account page, and an admin on
@@ -854,6 +869,15 @@ export async function listReports(scope?: CaseScope): Promise<ReportSummary[]> {
   return res.json();
 }
 
+/** The scope for the firm-wide screens (Overview, Analytics): "all" for
+ * anyone who sees every case, since the API's default is My cases for
+ * ticked staff. Undefined (the default: their own cases) for everyone
+ * else. */
+export async function firmWideScope(): Promise<CaseScope | undefined> {
+  const me = await getCurrentUser();
+  return me?.can_view_all_cases ? "all" : undefined;
+}
+
 /** Null when there is no such case, and equally when it isn't one the
  * signed-in user may open: the API answers both with the same 404. */
 export async function getReport(id: string): Promise<ReportDetail | null> {
@@ -1159,9 +1183,12 @@ export async function deletePastReport(ref: string): Promise<{ ok: boolean; line
   return res.json();
 }
 
-export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const res = await apiFetch(`${API_BASE_URL}/analytics/summary`, { cache: "no-store" }, { timeoutMs: 8000 });
-  if (!res.ok) throw new Error(`Failed to load analytics (${res.status}: ${res.statusText})`);
+/** Over the same cases as listReports(scope), with the same default and
+ * the same refusal. */
+export async function getAnalyticsSummary(scope?: CaseScope): Promise<AnalyticsSummary> {
+  const query = scope ? `?scope=${scope}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/analytics/summary${query}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load analytics");
   return res.json();
 }
 

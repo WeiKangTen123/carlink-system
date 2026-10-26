@@ -12,7 +12,7 @@
 import {
   API_BASE_URL,
   apiFetch,
-  messageForCode,
+  refusalMessage,
   type CasePermissions,
   type DamageSummaryItem,
   type Owner,
@@ -241,8 +241,9 @@ async function call<T>(path: string, init: RequestInit = {}, opts: { timeoutMs?:
     } catch {
       // not JSON -- fall through to the status text
     }
-    // FastAPI's validation errors put a list here, not a sentence.
-    const message = messageForCode(code) || (typeof detail === "string" && detail ? detail : statusMessage(res));
+    // A detail that is not a sentence (FastAPI's validation errors put a
+    // list there) falls through to the status text.
+    const message = refusalMessage(code, detail) || statusMessage(res);
     throw new IntakeRequestError(message, res.status, { retryAfterMs: retryAfterMs(res), code });
   }
   return res.json();

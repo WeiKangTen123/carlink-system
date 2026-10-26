@@ -9,7 +9,7 @@ import {
   TrendingUp,
   ShieldAlert,
 } from "lucide-react";
-import { listReports, getAnalyticsSummary, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
+import { listReports, getAnalyticsSummary, firmWideScope, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
 import { caseTitle, daysOpen, isAwaitingSignOff } from "@/lib/caseFields";
 import { resolveRange, bucketReports, daysSinceMostRecent } from "@/lib/dateRange";
 import { TimelineBarChart } from "@/components/charts/TimelineBarChart";
@@ -26,14 +26,15 @@ export default async function AnalyticsPage({
 }: {
   searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
-  const params = await searchParams;
+  // The whole firm for anyone who sees every case; plain users their own.
+  const [params, scope] = await Promise.all([searchParams, firmWideScope()]);
   const [reports, analytics] = await Promise.all([
-    listReports().catch((err) => {
+    listReports(scope).catch((err) => {
       unstable_rethrow(err);
       console.warn("Failed to load reports for analytics:", err);
       return [];
     }),
-    getAnalyticsSummary().catch((err) => {
+    getAnalyticsSummary(scope).catch((err) => {
       unstable_rethrow(err);
       console.warn("Failed to load analytics summary:", err);
       return EMPTY_ANALYTICS_SUMMARY;

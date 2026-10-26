@@ -1,18 +1,20 @@
 import { unstable_rethrow } from "next/navigation";
 import Link from "next/link";
 import { ClipboardList, FilePlus2 } from "lucide-react";
-import { listReports, getAnalyticsSummary, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
+import { listReports, getAnalyticsSummary, firmWideScope, EMPTY_ANALYTICS_SUMMARY } from "@/lib/api";
 import { CommandCenterClient } from "@/components/CommandCenterClient";
 
 export default async function OverviewPage() {
+  // The whole firm for anyone who sees every case; plain users their own.
+  const scope = await firmWideScope();
   // Parallel resilient data fetching to prevent cascading downtime
   const [reports, analytics] = await Promise.all([
-    listReports().catch((err) => {
+    listReports(scope).catch((err) => {
       unstable_rethrow(err);
       console.warn("Failed to load reports for overview:", err);
       return [];
     }),
-    getAnalyticsSummary().catch((err) => {
+    getAnalyticsSummary(scope).catch((err) => {
       unstable_rethrow(err);
       console.warn("Failed to load analytics for overview:", err);
       return EMPTY_ANALYTICS_SUMMARY;
