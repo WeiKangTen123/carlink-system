@@ -11,13 +11,20 @@ import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
-_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+# Autoescape is a security requirement, not a style choice: report fields are
+# typed by users and by anyone messaging the Telegram bot, so they must print
+# as text. Unescaped, a name like <iframe src=http://internal-host/> made
+# Chromium fetch that page into the PDF.
+_env = Environment(
+    loader=FileSystemLoader(str(TEMPLATES_DIR)),
+    autoescape=select_autoescape(["html"]),
+)
 
 BLANK_IMAGE_DATA_URI = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 
@@ -95,14 +102,37 @@ def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id
         logger.error("Failed to create directory for %s: %s", output_path, exc, exc_info=True)
         raise RuntimeError(f"Failed to create output directory: {exc}") from exc
 
+    html_to_pdf(html, output_path)
+
+
+def _offline_only(route) -> None:
+    # Photos arrive inlined as data: URIs and the template links nothing
+    # external, so a real report never needs the network. Anything else is
+    # markup that got past escaping trying to reach a host from inside the
+    # container -- refuse it.
+    if route.request.url.startswith("data:"):
+        route.continue_()
+    else:
+        logger.warning("Blocked a network request while rendering a PDF: %.200s", route.request.url)
+        route.abort()
+
+
+def html_to_pdf(html: str, output_path: str) -> None:
+    """Print a fully self-contained HTML page to an A4 PDF, offline.
+
+    Scripts are off and every request except data: URIs is refused, so the
+    page can't fetch anything even if a field slipped markup through.
+    """
     try:
         with sync_playwright() as p:
             browser = None
             try:
                 browser = p.chromium.launch()
-                page = browser.new_page()
+                context = browser.new_context(java_script_enabled=False)
+                context.route("**/*", _offline_only)
+                page = context.new_page()
                 page.emulate_media(media="print")
-                page.set_content(html, wait_until="networkidle")
+                page.set_content(html, wait_until="load")
                 page.pdf(
                     path=output_path,
                     format="A4",
