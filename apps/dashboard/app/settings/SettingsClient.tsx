@@ -16,7 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import type { AccessRequestRow, AccountLinkRow, AppSettings, LlmKey, UserAccount } from "@/lib/api";
+import type { AccountLinkRow, AppSettings, LlmKey, UserAccount } from "@/lib/api";
 import { UsersCard } from "./UsersCard";
 import {
   updateSettingsAction,
@@ -278,16 +278,16 @@ export function SettingsClient({
   settings,
   setup,
   users,
-  accessRequests,
   accountLinks,
+  signupsOpen,
   currentUserId,
 }: {
   settings: AppSettings;
   setup: SetupStatus;
   users: UserAccount[];
   /** Null when they couldn't be loaded; the Users card offers a retry. */
-  accessRequests: AccessRequestRow[] | null;
   accountLinks: AccountLinkRow[] | null;
+  signupsOpen: boolean;
   currentUserId: string;
 }) {
   const [companyName, setCompanyName] = useState(settings.company_name);
@@ -329,8 +329,8 @@ export function SettingsClient({
 
       <UsersCard
         initialUsers={users}
-        initialRequests={accessRequests}
         initialLinks={accountLinks}
+        initialSignupsOpen={signupsOpen}
         currentUserId={currentUserId}
       />
 

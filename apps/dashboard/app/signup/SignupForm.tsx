@@ -2,98 +2,67 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2 } from "lucide-react";
-import { API_BASE_URL, type UserRole } from "@/lib/api";
+import { Eye, EyeOff } from "lucide-react";
+import { API_BASE_URL } from "@/lib/api";
 import { LoginBrand } from "@/components/LoginBrand";
-import { firstName, fullMobile, maskMobile, mobileProblem } from "@/lib/signup";
+import { MIN_PASSWORD_LENGTH, USERNAME_HINT, passwordLength, usernameProblem } from "@/lib/signup";
+import { clearEvidenceCache } from "@/lib/evidenceCache";
 
-const NOTE_LIMIT = 500;
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const SEND_FAILED = "Couldn't send your request. Check your connection and try again.";
+const SEND_FAILED = "Couldn't create your account. Check your connection and try again.";
 
-type Field = "name" | "email" | "mobile" | "consent";
+type Field = "username" | "email" | "password";
 type Errors = Partial<Record<Field, string>>;
 
 // In the order they appear, so the summary reads top to bottom.
 const FIELDS: { field: Field; id: string }[] = [
-  { field: "name", id: "signup-name" },
+  { field: "username", id: "signup-username" },
   { field: "email", id: "signup-email" },
-  { field: "mobile", id: "signup-mobile" },
-  { field: "consent", id: "signup-consent" },
-];
-
-const ROLES: { role: UserRole; label: string; hint: string }[] = [
-  { role: "surveyor", label: "Surveyor", hint: "works on cases" },
-  { role: "admin", label: "Admin", hint: "also manages users and settings" },
+  { field: "password", id: "signup-password" },
 ];
 
 type Draft = {
-  name: string;
+  username: string;
   email: string;
-  mobile: string;
-  role: UserRole;
-  organisation: string;
-  note: string;
-  consent: boolean;
+  password: string;
   /** The honeypot: people never see it, form-filling bots do. */
   website: string;
 };
 
 function check(d: Draft): Errors {
   const errors: Errors = {};
-  if (!d.name.trim()) errors.name = "Enter your full name.";
+  const username = usernameProblem(d.username);
+  if (username) errors.username = username;
   if (!d.email.trim()) errors.email = "Enter your email address.";
   else if (!EMAIL_SHAPE.test(d.email.trim())) errors.email = "That doesn't look like an email address.";
-  const mobile = mobileProblem(d.mobile);
-  if (mobile) errors.mobile = mobile;
-  if (!d.consent) errors.consent = "Tick the box to send your request.";
+  if (passwordLength(d.password) < MIN_PASSWORD_LENGTH) errors.password = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
   return errors;
 }
 
-/** Which field a 400 from the API is about, going by its wording
- * (apps/bot-service/app/api/signup.py); null puts it in the summary only. */
-function fieldOf(detail: string): Field | null {
-  if (/tick|consent/i.test(detail)) return "consent";
-  if (/mobile|phone/i.test(detail)) return "mobile";
-  if (/email/i.test(detail)) return "email";
-  if (/name/i.test(detail)) return "name";
-  return null;
+function isField(value: unknown): value is Field {
+  return value === "username" || value === "email" || value === "password";
 }
 
-export function SignupForm() {
-  const [draft, setDraft] = useState<Draft>({
-    name: "",
-    email: "",
-    mobile: "",
-    role: "surveyor",
-    organisation: "",
-    note: "",
-    consent: false,
-    website: "",
-  });
+/** Anyone can make an account here and is in at once as a "user"
+ * (apps/bot-service/app/api/signup.py). `open` is false when an admin has
+ * switched signups off. */
+export function SignupForm({ open }: { open: boolean }) {
+  const [draft, setDraft] = useState<Draft>({ username: "", email: "", password: "", website: "" });
+  const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
-  // A 400 the API sent that isn't about one field.
-  const [general, setGeneral] = useState<string | null>(null);
-  // 429/503/network: not something to fix in the form.
+  // 403/429/503/network: not something to fix in one box.
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState<{ reference: string; name: string; mobile: string } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const summaryRef = useRef<HTMLDivElement | null>(null);
-  const sentRef = useRef<HTMLHeadingElement | null>(null);
 
   const problems = FIELDS.filter(({ field }) => errors[field]);
-  const hasSummary = problems.length > 0 || Boolean(general);
 
-  // Move focus to the summary after each failed attempt, so a screen
-  // reader announces it and the keyboard starts from there.
+  // Focus the summary after each failed attempt, so a screen reader
+  // announces it and the keyboard starts from there.
   useEffect(() => {
     if (attempt) summaryRef.current?.focus();
   }, [attempt]);
-
-  useEffect(() => {
-    if (sent) sentRef.current?.focus();
-  }, [sent]);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -104,7 +73,6 @@ export function SignupForm() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFailure(null);
-    setGeneral(null);
     const found = check(draft);
     setErrors(found);
     if (Object.keys(found).length) {
@@ -113,82 +81,42 @@ export function SignupForm() {
     }
     setBusy(true);
     try {
-      // Straight from the browser, not a server action: the API limits
-      // requests per visitor address, so it must see the visitor's.
-      const phone = fullMobile(draft.mobile);
-      const res = await fetch(`${API_BASE_URL}/auth/access-requests`, {
+      // Straight from the browser, like sign-in: the response sets the
+      // session cookie, and the API limits tries per visitor address.
+      const res = await fetch(`${API_BASE_URL}/auth/signup`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: draft.name.trim(),
+          username: draft.username.trim(),
           email: draft.email.trim(),
-          phone,
-          organisation: draft.organisation.trim(),
-          requested_role: draft.role,
-          note: draft.note.trim(),
-          consent: draft.consent,
+          password: draft.password,
           website: draft.website,
         }),
       });
       const body = await res.json().catch(() => null);
       const detail = typeof body?.detail === "string" ? body.detail : null;
       if (res.ok) {
-        setSent({ reference: String(body?.reference ?? ""), name: draft.name.trim(), mobile: phone });
-      } else if (res.status === 400 && detail) {
-        const field = fieldOf(detail);
-        if (field) setErrors({ [field]: detail });
-        else setGeneral(detail);
+        // Signed in now. Whoever used this browser before may have left
+        // case photos cached; sign-out clears them too (UserMenu.tsx).
+        await clearEvidenceCache().catch(() => undefined);
+        window.location.assign("/");
+        return;
+      }
+      if (detail && isField(body?.field)) {
+        setErrors({ [body.field]: detail });
         setAttempt((n) => n + 1);
-      } else if ((res.status === 429 || res.status === 503) && detail) {
-        setFailure(detail);
+      } else if (res.status === 429) {
+        // nginx's own limit answers in HTML, so there may be no detail.
+        setFailure(detail || "Too many tries. Wait a minute, then try again.");
       } else {
-        setFailure(SEND_FAILED);
+        setFailure(detail || SEND_FAILED);
       }
     } catch {
       setFailure(SEND_FAILED);
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
-
-  if (sent) {
-    const first = firstName(sent.name);
-    return (
-      <div className="login-screen">
-        <div className="login-card card-glass wide">
-          <LoginBrand />
-          <CheckCircle2 style={{ width: 28, height: 28, color: "var(--badge-green-text)", marginBottom: 8 }} />
-          <h1 ref={sentRef} tabIndex={-1} style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800, outline: "none" }}>
-            Request sent
-          </h1>
-          <p className="setup-note" style={{ marginBottom: 18 }}>
-            Thanks{first ? `, ${first}` : ""}. Your request is with the Carlink admins.
-          </p>
-
-          <div className="detail-field-label">What happens next</div>
-          <ol className="auth-steps">
-            <li>An admin checks your details.</li>
-            <li>
-              If approved, they WhatsApp you a sign-in link at <strong>{maskMobile(sent.mobile)}</strong>.
-            </li>
-            <li>Open it and choose your password.</li>
-          </ol>
-
-          <p className="setup-note">Nothing after 2 working days? Contact your Carlink admin directly.</p>
-          {sent.reference && (
-            <p className="setup-note" style={{ marginBottom: 18 }}>
-              Ref <span className="auth-ref">{sent.reference}</span>
-            </p>
-          )}
-
-          <Link href="/login" className="btn-primary-modern" style={{ width: "100%", justifyContent: "center" }}>
-            Back to sign in
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   const errorId = (field: Field) => (errors[field] ? `${field}-error` : undefined);
   const fieldError = (field: Field) =>
@@ -198,17 +126,32 @@ export function SignupForm() {
       </span>
     ) : null;
 
+  if (!open) {
+    return (
+      <div className="login-screen">
+        <div className="login-card card-glass">
+          <LoginBrand />
+          <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>Signups are closed</h1>
+          <p className="setup-note" style={{ marginBottom: 18 }}>
+            New accounts can&apos;t be made right now. Ask the Carlink admin to invite you.
+          </p>
+          <Link href="/login" className="btn-secondary-modern" style={{ width: "100%", justifyContent: "center" }}>
+            Back to sign in
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="login-screen">
-      <form className="login-card card-glass wide" onSubmit={submit} noValidate>
+      <form className="login-card card-glass" onSubmit={submit} noValidate>
         <LoginBrand />
 
-        <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>Request access</h1>
-        <p className="setup-note" style={{ marginBottom: 18 }}>
-          Tell us who you are. An admin will review your request, usually within 1 working day.
-        </p>
+        <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>Create an account</h1>
+        <p className="setup-note" style={{ marginBottom: 18 }}>It takes a minute. You&apos;re in as soon as it&apos;s made.</p>
 
-        {hasSummary && (
+        {problems.length > 0 && (
           <div ref={summaryRef} className="error-summary" role="alert" tabIndex={-1} aria-labelledby="signup-problem">
             <div id="signup-problem" className="error-summary-title">
               There&apos;s a problem
@@ -228,25 +171,29 @@ export function SignupForm() {
                   </a>
                 </li>
               ))}
-              {general && <li>{general}</li>}
             </ul>
           </div>
         )}
 
         <label className="auth-field">
-          <span className="detail-field-label">Full name</span>
+          <span className="detail-field-label">Username</span>
           <input
-            id="signup-name"
+            id="signup-username"
             className="settings-input"
-            autoComplete="name"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             autoFocus
             required
-            value={draft.name}
-            onChange={(e) => set("name", e.target.value)}
-            aria-invalid={Boolean(errors.name)}
-            aria-describedby={errorId("name")}
+            value={draft.username}
+            onChange={(e) => set("username", e.target.value)}
+            aria-invalid={Boolean(errors.username)}
+            aria-describedby={["username-hint", errorId("username")].filter(Boolean).join(" ")}
           />
-          {fieldError("name")}
+          <span id="username-hint" className="field-hint">
+            {USERNAME_HINT}
+          </span>
+          {fieldError("username")}
         </label>
 
         <label className="auth-field">
@@ -266,71 +213,35 @@ export function SignupForm() {
         </label>
 
         <label className="auth-field">
-          <span className="detail-field-label">Mobile (for WhatsApp)</span>
-          <div className="phone-field">
-            {/* Gone once they type their own "+country code". */}
-            {!draft.mobile.trim().startsWith("+") && <span className="phone-prefix">+65</span>}
+          <span className="detail-field-label">Password</span>
+          <div style={{ position: "relative" }}>
             <input
-              id="signup-mobile"
+              id="signup-password"
               className="settings-input"
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel-national"
-              placeholder="9123 4567"
+              style={{ paddingRight: 38 }}
+              type={showPassword ? "text" : "password"}
+              autoComplete="new-password"
               required
-              value={draft.mobile}
-              onChange={(e) => set("mobile", e.target.value)}
-              aria-invalid={Boolean(errors.mobile)}
-              aria-describedby={["mobile-hint", errorId("mobile")].filter(Boolean).join(" ")}
+              value={draft.password}
+              onChange={(e) => set("password", e.target.value)}
+              aria-invalid={Boolean(errors.password)}
+              aria-describedby={["password-hint", errorId("password")].filter(Boolean).join(" ")}
             />
+            <button
+              type="button"
+              className="setup-reveal-btn"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              title={showPassword ? "Hide" : "Show"}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", top: "calc(50% + 3px)", color: "var(--text-muted)" }}
+            >
+              {showPassword ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
+            </button>
           </div>
-          <span id="mobile-hint" className="field-hint">
-            Your admin sends your sign-in link here.
+          <span id="password-hint" className="field-hint">
+            At least {MIN_PASSWORD_LENGTH} characters.
           </span>
-          {fieldError("mobile")}
-        </label>
-
-        <fieldset className="auth-field" style={{ border: 0, padding: 0, minWidth: 0 }}>
-          <legend className="detail-field-label" style={{ padding: 0 }}>
-            Role you need
-          </legend>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6 }}>
-            {ROLES.map(({ role, label, hint }) => (
-              <label key={role} className={`choice-option ${draft.role === role ? "selected" : ""}`}>
-                <input type="radio" name="requested_role" checked={draft.role === role} onChange={() => set("role", role)} />
-                <span>
-                  <strong>{label}</strong> <span style={{ color: "var(--text-muted)" }}>— {hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <label className="auth-field">
-          <span className="detail-field-label">Company (optional)</span>
-          <input
-            className="settings-input"
-            autoComplete="organization"
-            value={draft.organisation}
-            onChange={(e) => set("organisation", e.target.value)}
-          />
-        </label>
-
-        <label className="auth-field">
-          <span style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <span className="detail-field-label">Note for the admin (optional)</span>
-            <span className="char-count" aria-live="polite">
-              {draft.note.length}/{NOTE_LIMIT}
-            </span>
-          </span>
-          <textarea
-            className="settings-input"
-            rows={3}
-            maxLength={NOTE_LIMIT}
-            value={draft.note}
-            onChange={(e) => set("note", e.target.value)}
-            style={{ resize: "vertical" }}
-          />
+          {fieldError("password")}
         </label>
 
         {/* Honeypot: off screen rather than type=hidden, which bots skip. */}
@@ -348,25 +259,6 @@ export function SignupForm() {
           </label>
         </div>
 
-        <label className="consent-row auth-field">
-          <input
-            id="signup-consent"
-            type="checkbox"
-            required
-            checked={draft.consent}
-            onChange={(e) => set("consent", e.target.checked)}
-            aria-invalid={Boolean(errors.consent)}
-            aria-describedby={errorId("consent")}
-          />
-          <span>
-            I agree that Carlink may use these details to review my request and contact me about it.{" "}
-            <Link href="/privacy" target="_blank" rel="noopener" className="setup-help-link">
-              Privacy notice
-            </Link>
-          </span>
-        </label>
-        {fieldError("consent")}
-
         {failure && (
           <div className="setup-error" role="alert" style={{ marginTop: 12 }}>
             {failure}
@@ -379,8 +271,16 @@ export function SignupForm() {
           style={{ width: "100%", justifyContent: "center", marginTop: 16 }}
           disabled={busy}
         >
-          {busy ? "Sending…" : "Send request"}
+          {busy ? "Creating your account…" : "Create account"}
         </button>
+
+        <p className="setup-note" style={{ margin: "12px 0 0", textAlign: "center" }}>
+          By creating an account you agree to the{" "}
+          <Link href="/privacy" target="_blank" rel="noopener" className="setup-help-link">
+            privacy notice
+          </Link>
+          .
+        </p>
 
         <div className="login-divider" />
         <p className="setup-note" style={{ margin: 0, textAlign: "center" }}>

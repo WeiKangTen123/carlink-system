@@ -1,7 +1,7 @@
 """Account commands for the server, where there is no dashboard admin yet
 (the first account) or none can sign in (a forgotten admin password).
 
-    docker exec -it carlink_api python -m app.auth.manage create-user --email you@example.com --name "Your Name" --role admin
+    docker exec -it carlink_api python -m app.auth.manage create-user --email you@example.com --name "Your Name" --role admin [--username you]
     docker exec -it carlink_api python -m app.auth.manage reset-password --email you@example.com
     docker exec carlink_api python -m app.auth.manage list-users
 
@@ -13,7 +13,16 @@ import argparse
 import getpass
 import sys
 
-from app.auth.core import ROLES, audit, end_user_sessions, normalize_email
+from app.auth.core import (
+    ROLES,
+    audit,
+    end_user_sessions,
+    normalize_email,
+    normalize_username,
+    username_from_email,
+    username_problem,
+    username_taken,
+)
 from app.auth.passwords import hash_password, password_problem
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import User
@@ -38,8 +47,18 @@ def create_user(args) -> None:
         email = normalize_email(args.email)
         if db.query(User).filter(User.email == email).first():
             sys.exit(f"There is already an account for {email}.")
+        if args.username:
+            username = normalize_username(args.username)
+            problem = username_problem(username)
+            if problem:
+                sys.exit(problem)
+            if username_taken(db, username):
+                sys.exit(f"The username {username} is taken.")
+        else:
+            username = username_from_email(db, email)
         user = User(
             email=email,
+            username=username,
             name=args.name.strip(),
             role=args.role,
             password_hash=hash_password(_read_password(args.password_stdin, (args.name, email))),
@@ -47,7 +66,7 @@ def create_user(args) -> None:
         db.add(user)
         audit(db, None, "user_created", detail=f"{email} ({args.role}) from the server command line")
         db.commit()
-        print(f"Created {args.role} {email}.")
+        print(f"Created {args.role} {email} (username {username}).")
     finally:
         db.close()
 
@@ -75,9 +94,9 @@ def reset_password(args) -> None:
 def list_users(_args) -> None:
     db = SessionLocal()
     try:
-        for u in db.query(User).order_by(User.name).all():
+        for u in db.query(User).order_by(User.username, User.name).all():
             state = "active" if u.active else "disabled"
-            print(f"{u.email:40} {u.role:9} {state:9} {u.name}")
+            print(f"{u.email:40} {(u.username or ''):24} {u.role:9} {state:9} {u.name}")
     finally:
         db.close()
 
@@ -89,7 +108,8 @@ def main() -> None:
     create = sub.add_parser("create-user")
     create.add_argument("--email", required=True)
     create.add_argument("--name", required=True)
-    create.add_argument("--role", choices=ROLES, default="surveyor")
+    create.add_argument("--role", choices=ROLES, default="user")
+    create.add_argument("--username", help="default: made from the email")
     create.add_argument("--password-stdin", action="store_true")
     create.set_defaults(run=create_user)
 

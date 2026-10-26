@@ -90,7 +90,7 @@ def main() -> int:
         print("signing in")
         admin = browser()
         assert login(admin, ADMIN_EMAIL, "wrong-password").status_code == 401
-        assert login(admin, "nobody@example.com", ADMIN_PASSWORD).json()["detail"] == "Email or password is wrong."
+        assert login(admin, "nobody@example.com", ADMIN_PASSWORD).json()["detail"] == "Email, username or password is wrong."
         r = login(admin, "  OWNER@example.com", ADMIN_PASSWORD)
         assert r.status_code == 200, r.text
         assert r.json()["role"] == "admin" and r.json()["must_change_password"] is False
@@ -113,7 +113,7 @@ def main() -> int:
         ok("a POST carrying another site's Origin is refused (sign-in too); same host on another port, and local dev, pass")
 
         print("adding a surveyor")
-        r = admin.post("/users", json={"email": "Pat@Example.com", "name": "Pat Surveyor", "role": "surveyor",
+        r = admin.post("/users", json={"email": "Pat@Example.com", "name": "Pat Surveyor", "role": "user",
                                        "qualifications": "MIMI", "license_number": "LIC-123", "firm_name": "Pat & Co."})
         assert r.status_code == 200, r.text
         pat_id, temp = r.json()["user"]["id"], r.json()["temporary_password"]
@@ -191,7 +191,7 @@ def main() -> int:
 
         history = pat.get(f"/reports/{case_id}").json()["history"]
         actions = [(h["action"], h["user_name"]) for h in history]
-        assert actions == [("created", "Pat Surveyor"), ("edited", "Pat Surveyor"), ("signed_off", "Pat Surveyor"), ("reopened", "Pat Surveyor")], actions
+        assert actions == [("created", "Pat Surveyor (@pat)"), ("edited", "Pat Surveyor (@pat)"), ("signed_off", "Pat Surveyor (@pat)"), ("reopened", "Pat Surveyor (@pat)")], actions
         assert history[2]["detail"] == "pat@example.com"
         ok("history: created, edited (two saves = one entry), signed off (with the account email), reopened")
 
@@ -237,7 +237,7 @@ def main() -> int:
         assert any(u["email"] == "sam@example.com" for u in users)
         admin_id = [u for u in users if u["email"] == ADMIN_EMAIL][0]["id"]
         assert admin.patch(f"/users/{admin_id}", json={"active": False}).status_code == 409
-        assert admin.patch(f"/users/{admin_id}", json={"role": "surveyor"}).status_code == 409
+        assert admin.patch(f"/users/{admin_id}", json={"role": "user"}).status_code == 409
         ok("an admin can't disable themselves or demote the last admin")
         assert admin.patch(f"/users/{pat_id}", json={"active": False}).status_code == 200
         assert pat.get("/reports").status_code == 401
@@ -245,7 +245,7 @@ def main() -> int:
         assert admin.patch(f"/users/{pat_id}", json={"active": True}).status_code == 200
         ok("disabling a user signs them out at once and stops them signing in (same answer as a wrong password)")
         assert admin.patch(f"/users/{pat_id}", json={"role": "admin"}).status_code == 200
-        assert admin.patch(f"/users/{pat_id}", json={"role": "surveyor"}).status_code == 200
+        assert admin.patch(f"/users/{pat_id}", json={"role": "user"}).status_code == 200
         r = admin.post(f"/users/{pat_id}/reset-password")
         assert r.status_code == 200
         assert login(browser(), "pat@example.com", "amber lantern quiet harbour").status_code == 401
@@ -257,12 +257,12 @@ def main() -> int:
         r = sam.put("/auth/me", json={"name": "Sam S.", "license_number": "  LIC-9 "})
         assert r.status_code == 200 and r.json()["name"] == "Sam S." and r.json()["license_number"] == "LIC-9"
         assert sam.put("/auth/me", json={"name": "  "}).status_code == 400
-        assert sam.put("/auth/me", json={"role": "admin"}).json()["role"] == "surveyor"
+        assert sam.put("/auth/me", json={"role": "admin"}).json()["role"] == "user"
         db = SessionLocal()
         details = [e.detail for e in db.query(AuditEntry).filter(AuditEntry.action.in_(["profile_updated", "user_updated"])).all()]
         db.close()
         assert any("Sam S." in d and "LIC-9" in d for d in details), details
-        assert any("role: 'surveyor' -> 'admin'" in d for d in details), details
+        assert any("role: 'user' -> 'admin'" in d for d in details), details
         ok("users edit their own name and profile, never their role; profile and role changes are in the history")
 
         print("session end")

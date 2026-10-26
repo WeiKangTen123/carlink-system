@@ -7,7 +7,9 @@ user's password is changed or reset or the account is disabled.
 """
 import hashlib
 import logging
+import re
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 # The prefix needs Secure, so plain-HTTP setups (AUTH_COOKIE_SECURE=false)
 # use the bare name. The dashboard forwards either (lib/api.ts).
 SESSION_COOKIE = "__Host-carlink_session" if settings.auth_cookie_secure else "carlink_session"
-ROLES = ("admin", "surveyor")
+# "user" was called "surveyor" until 2026-10-25 (reports/db._DATA_FIXES).
+ROLES = ("admin", "user")
 
 MAX_FAILED_LOGINS = 5
 LOCKOUT = timedelta(minutes=15)
@@ -57,6 +60,95 @@ def max_age() -> timedelta:
     return timedelta(days=settings.auth_session_max_days)
 
 
+# 3-30 characters: letters, numbers, dots, dashes, underscores, starting and
+# ending with a letter or number. Stored lower-cased; "Wei.Kang" and
+# "wei.kang" are one username.
+_USERNAME = re.compile(r"[a-z0-9](?:[a-z0-9._-]{1,28})[a-z0-9]")
+USERNAME_RULE = "Use 3-30 letters, numbers, dots, dashes or underscores, starting and ending with a letter or number."
+# Names that would let a new account pass itself off as the system or the
+# admins in the history and the top bar.
+_RESERVED_USERNAMES = {
+    "admin", "administrator", "root", "system", "support", "help", "staff", "owner",
+    "carlink", "carlinkstudio", "security", "noreply", "no-reply", "info", "null", "undefined",
+}
+# Anywhere inside a name someone chooses for themselves ("sysadmin",
+# "carlink.support"): only an admin can give out names like these.
+_RESERVED_STEMS = ("admin", "carlink", "support", "staff", "owner", "system", "root", "security")
+RESERVED_NAME = "That name is reserved. Choose another."
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def username_problem(username: str, *, self_chosen: bool = False) -> str | None:
+    """Why a username (already normalized) is refused, or None. Doesn't
+    check whether it's taken. self_chosen: also refuse the reserved words
+    inside it (signup, invites, My account); an admin may still set them."""
+    if not _USERNAME.fullmatch(username):
+        return USERNAME_RULE
+    if username in _RESERVED_USERNAMES:
+        return "That username is reserved. Choose another."
+    if self_chosen and any(stem in username for stem in _RESERVED_STEMS):
+        return "That username is reserved. Choose another."
+    return None
+
+
+def _name_key(name: str) -> str:
+    """Two names that look the same compare equal: compatibility forms,
+    case and spacing folded, invisible characters dropped."""
+    folded = unicodedata.normalize("NFKC", name).casefold()
+    visible = "".join(ch for ch in folded if unicodedata.category(ch)[0] != "C")
+    return " ".join(visible.split())
+
+
+def full_name_problem(db: Session, name: str, exclude_id: str) -> str | None:
+    """Why someone can't give themselves this full name: it reads as the
+    system or the admins, or it is another account's name. The name is
+    printed on sign-offs and shown in the history, so it mustn't let one
+    account pass for another. (Admins can still set any name.)"""
+    key = _name_key(name)
+    words = re.split(r"[^a-z0-9]+", key)
+    if any(stem in word for word in words for stem in _RESERVED_STEMS):
+        return RESERVED_NAME
+    for other_id, other_name in db.query(User.id, User.name).filter(User.id != exclude_id).all():
+        if _name_key(other_name or "") == key:
+            return "Another account already uses that name. If it really is yours, ask an admin to set it."
+    return None
+
+
+def display_name(user) -> str:
+    """How an account is named in the history: the full name, and the
+    username when that differs -- the username is unique, the name isn't."""
+    name = (user.name or "").strip()
+    username = (getattr(user, "username", "") or "").strip()
+    if username and name and _name_key(name) != username:
+        return f"{name} (@{username})"
+    return name or username
+
+
+def username_taken(db: Session, username: str, exclude_id: str | None = None) -> bool:
+    query = db.query(User).filter(User.username == username)
+    if exclude_id:
+        query = query.filter(User.id != exclude_id)
+    return query.first() is not None
+
+
+def username_from_email(db: Session, email: str) -> str:
+    """A free, valid username made from an email's local part, for accounts
+    that didn't choose one (from before usernames, or made by an admin)."""
+    local = re.sub(r"[^a-z0-9._-]+", "", email.split("@", 1)[0].lower()).strip("._-")[:26]
+    base = local if len(local) >= 3 and username_problem(local) is None else f"user{local}"[:26].strip("._-")
+    if len(base) < 3:
+        base = "user"
+    candidate, n = base, 1
+    # Not self_chosen: the reserved stems would never let "useradmin" through.
+    while username_problem(candidate) is not None or username_taken(db, candidate):
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -71,6 +163,7 @@ class CurrentUser:
     row, which is detached once the lookup's database session closes."""
     id: str
     email: str
+    username: str
     name: str
     role: str
     must_change_password: bool
@@ -88,6 +181,7 @@ def _current(user: User, session_hash: str) -> CurrentUser:
     return CurrentUser(
         id=user.id,
         email=user.email,
+        username=user.username or "",
         name=user.name,
         role=user.role,
         must_change_password=bool(user.must_change_password),
@@ -215,7 +309,7 @@ def audit(
     db.add(AuditEntry(
         report_id=report_id,
         user_id=actor.id if actor else None,
-        user_name=actor.name if actor else "",
+        user_name=display_name(actor) if actor else "",
         action=action,
         detail=detail[:500],
         created_at=now,
@@ -252,6 +346,7 @@ def user_dict(user: User) -> dict:
     return {
         "id": user.id,
         "email": user.email,
+        "username": user.username or "",
         "name": user.name,
         "role": user.role,
         "active": bool(user.active),
@@ -270,6 +365,7 @@ def me_dict(user: CurrentUser | User) -> dict:
     return {
         "id": user.id,
         "email": user.email,
+        "username": user.username or "",
         "name": user.name,
         "role": user.role,
         "must_change_password": bool(user.must_change_password),

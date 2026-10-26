@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func
 
 from app.auth.core import sweep_sessions
-from app.auth.links import sweep_signups
+from app.auth.links import sweep_links
 from app.intake.photos import remove_intake_dir
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
@@ -84,24 +84,22 @@ def sweep(now: datetime | None = None) -> dict:
     db = SessionLocal()
     try:
         removed_sessions = sweep_sessions(db, now)
-        # Old invite/reset links and access requests (PDPA retention).
-        removed_signups = sweep_signups(db, now)
+        # Old invite/reset links (PDPA retention).
+        removed_links = sweep_links(db, now)
     finally:
         db.close()
 
-    if removed_drafts or removed_tmp or removed_sessions or any(removed_signups.values()):
+    if removed_drafts or removed_tmp or removed_sessions or removed_links:
         logger.info(
-            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d expired session(s), "
-            "%d old account link(s) and %d old access request(s)",
-            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions,
-            removed_signups["links"], removed_signups["requests"],
+            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d expired session(s) "
+            "and %d old account link(s)",
+            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions, removed_links,
         )
     return {
         "drafts": removed_drafts,
         "tmp_files": removed_tmp,
         "sessions": removed_sessions,
-        "links": removed_signups["links"],
-        "access_requests": removed_signups["requests"],
+        "links": removed_links,
     }
 
 

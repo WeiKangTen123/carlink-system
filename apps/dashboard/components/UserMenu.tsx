@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ChevronDown, LogOut, UserCog } from "lucide-react";
 import { API_BASE_URL, type CurrentUser } from "@/lib/api";
 import { clearEvidenceCache } from "@/lib/evidenceCache";
+import { ROLE_LABEL } from "@/lib/signup";
 
 export function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -61,8 +62,11 @@ export function UserMenu({ user }: { user: CurrentUser }) {
         <div className="user-menu-panel" role="menu">
           <div className="user-menu-head">
             <div style={{ fontWeight: 800, fontSize: 13 }}>{user.name}</div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>{user.email}</div>
-            <span className={`role-chip ${user.role}`}>{user.role === "admin" ? "Admin" : "Surveyor"}</span>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>
+              {user.username ? `${user.username} · ` : ""}
+              {user.email}
+            </div>
+            <span className={`role-chip ${user.role}`}>{ROLE_LABEL[user.role] ?? user.role}</span>
           </div>
           <Link href="/account" className="user-menu-item" role="menuitem" onClick={() => setOpen(false)}>
             <UserCog style={{ width: 14, height: 14 }} /> My account &amp; password

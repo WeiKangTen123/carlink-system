@@ -6,7 +6,15 @@ import { Check, Circle, Eye, EyeOff, X } from "lucide-react";
 import { API_BASE_URL, type UserRole } from "@/lib/api";
 import { LoginBrand } from "@/components/LoginBrand";
 import { clearEvidenceCache } from "@/lib/evidenceCache";
-import { MIN_PASSWORD_LENGTH, ROLE_LABEL, formatSgt, isGuessablePasswordError, passwordLength } from "@/lib/signup";
+import {
+  MIN_PASSWORD_LENGTH,
+  ROLE_LABEL,
+  USERNAME_HINT,
+  formatSgt,
+  isGuessablePasswordError,
+  passwordLength,
+  usernameProblem,
+} from "@/lib/signup";
 
 /** The link's token, kept for this tab only once it's out of the address
  * bar, so a reload still works. */
@@ -168,7 +176,7 @@ function Ended({ title, text, action }: { title: string; text: string; action: s
 
 function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string; onEnded: (code: Ended) => void }) {
   const invite = link.purpose === "invite";
-  const [name, setName] = useState(link.name || "");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -188,7 +196,8 @@ function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string;
     e.preventDefault();
     setError(null);
     setAccountExists(false);
-    if (invite && !name.trim()) return setError("Enter your full name.");
+    const badUsername = invite ? usernameProblem(username) : null;
+    if (badUsername) return setError(badUsername);
     if (!longEnough) return setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
     if (password !== confirm) return setError("The two passwords don't match.");
 
@@ -198,7 +207,7 @@ function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string;
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, name: invite ? name.trim() : "", password }),
+        body: JSON.stringify({ token, username: invite ? username.trim() : "", password }),
       });
       const body = await res.json().catch(() => null);
       const detail = typeof body?.detail === "string" ? body.detail : null;
@@ -218,6 +227,8 @@ function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string;
       if (res.status === 400 && detail) {
         setError(detail);
         if (isGuessablePasswordError(detail)) setGuessable(true);
+      } else if (res.status === 409 && detail && /username/i.test(detail)) {
+        setError(detail);
       } else if (res.status === 409) {
         setError(detail || "An account with this email already exists.");
         setAccountExists(true);
@@ -246,19 +257,22 @@ function PasswordForm({ link, token, onEnded }: { link: LinkInfo; token: string;
 
           <label className="auth-field">
             <span className="detail-field-label">Email (locked)</span>
-            <input className="settings-input" type="email" autoComplete="username" value={link.email} readOnly />
+            <input className="settings-input" type="email" autoComplete="email" value={link.email} readOnly />
             <span className="field-hint">Not your email? Ask {inviter || "your admin"} for a new link.</span>
           </label>
 
           <label className="auth-field">
-            <span className="detail-field-label">Full name</span>
+            <span className="detail-field-label">Username</span>
             <input
               className="settings-input"
-              autoComplete="name"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
             />
+            <span className="field-hint">{USERNAME_HINT} You can sign in with it or your email.</span>
           </label>
         </>
       ) : (

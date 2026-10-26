@@ -9,18 +9,12 @@ import {
   deleteLlmKey,
   testService,
   listUsers,
-  createUser,
   updateUser,
-  listAccessRequests,
-  approveAccessRequest,
-  rejectAccessRequest,
-  bulkDecideAccessRequests,
-  deleteAccessRequest,
   listAccountLinks,
   createAccountLink,
   revokeAccountLink,
   createResetLink,
-  type AccessRequestRow,
+  setSignupsOpen,
   type AccountLinkRow,
   type AppSettings,
   type IssuedLink,
@@ -112,21 +106,9 @@ export async function listUsersAction(): Promise<{ users: UserAccount[] } | { er
   }
 }
 
-export async function createUserAction(
-  fields: ProfileFields & { email: string; name: string; role: "admin" | "surveyor" }
-): Promise<{ user: UserAccount; temporaryPassword: string } | { error: string }> {
-  try {
-    const result = await createUser(fields);
-    return { user: result.user, temporaryPassword: result.temporary_password };
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to add the user" };
-  }
-}
-
 export async function updateUserAction(
   id: string,
-  patch: ProfileFields & { email?: string; role?: "admin" | "surveyor"; active?: boolean }
+  patch: ProfileFields & { email?: string; role?: UserRole; active?: boolean }
 ): Promise<{ user: UserAccount } | { error: string }> {
   try {
     return { user: await updateUser(id, patch) };
@@ -147,67 +129,18 @@ export async function createResetLinkAction(id: string): Promise<IssuedLink | { 
   }
 }
 
-// Access requests from the public /signup page, and the one-time links
-// that turn them into accounts. The link's token comes back once, in the
+/** The on/off switch for the public /signup page. */
+export async function setSignupsOpenAction(open: boolean): Promise<{ open: boolean } | { error: string }> {
+  try {
+    return { open: await setSignupsOpen(open) };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to change signups" };
+  }
+}
+
+// One-time invite and reset links. The token comes back once, in the
 // result, for the admin to copy; the API keeps only its hash.
-
-export async function listAccessRequestsAction(
-  status: "pending" | "all"
-): Promise<{ requests: AccessRequestRow[] } | { error: string }> {
-  try {
-    return { requests: await listAccessRequests(status) };
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to load access requests" };
-  }
-}
-
-export async function approveAccessRequestAction(
-  id: string,
-  role: UserRole,
-  expiresHours: LinkLifetime
-): Promise<(IssuedLink & { request: AccessRequestRow }) | { error: string }> {
-  try {
-    return await approveAccessRequest(id, role, expiresHours);
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to approve the request" };
-  }
-}
-
-export async function rejectAccessRequestAction(
-  id: string,
-  note: string
-): Promise<{ request: AccessRequestRow } | { error: string }> {
-  try {
-    return { request: await rejectAccessRequest(id, note) };
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to reject the request" };
-  }
-}
-
-export async function bulkAccessRequestsAction(
-  ids: string[],
-  action: "reject" | "delete"
-): Promise<{ done: number; skipped: number } | { error: string }> {
-  try {
-    return await bulkDecideAccessRequests(ids, action);
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to update the requests" };
-  }
-}
-
-export async function deleteAccessRequestAction(id: string): Promise<{ ok: true } | { error: string }> {
-  try {
-    await deleteAccessRequest(id);
-    return { ok: true };
-  } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to delete the request" };
-  }
-}
 
 export async function listAccountLinksAction(): Promise<{ links: AccountLinkRow[] } | { error: string }> {
   try {

@@ -27,10 +27,10 @@ export const LIFETIMES: { hours: LinkLifetime; label: string }[] = [
 export function RoleChoice({ name, value, onChange }: { name: string; value: UserRole; onChange: (role: UserRole) => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, fontSize: 13 }}>
-      {(["surveyor", "admin"] as UserRole[]).map((role) => (
+      {(["user", "admin"] as UserRole[]).map((role) => (
         <label key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
           <input type="radio" name={name} checked={value === role} onChange={() => onChange(role)} />
-          {role === "admin" ? "Admin — also manages users, keys and settings" : "Surveyor — works on cases"}
+          {role === "admin" ? "Admin — also manages users, keys and settings" : "User — works on cases"}
         </label>
       ))}
     </div>
@@ -164,7 +164,7 @@ export function LinkReadyDialog({ link, onClose }: { link: ReadyLink; onClose: (
 export function CreateInviteDialog({ onCancel, onCreated }: { onCancel: () => void; onCreated: (link: ReadyLink) => void }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
-  const [role, setRole] = useState<UserRole>("surveyor");
+  const [role, setRole] = useState<UserRole>("user");
   const [mobile, setMobile] = useState("");
   const [hours, setHours] = useState<LinkLifetime>(72);
   const [saving, setSaving] = useState(false);

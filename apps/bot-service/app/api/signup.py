@@ -1,34 +1,29 @@
-"""Requesting access, and the one-time links that create accounts and reset
+"""Signing up, and the one-time links that create accounts and reset
 passwords.
 
 Public (app/auth/middleware.PUBLIC_PATHS):
-    POST   /auth/access-requests          ask for an account (no password)
+    GET    /auth/signup                   are new signups open?
+    POST   /auth/signup                   username + email + password -> signed in
     POST   /auth/links/lookup             what a link is for, without using it
-    POST   /auth/links/accept             use it: set a password, get signed in
+    POST   /auth/links/accept             use it: choose a username/password, get signed in
 Admin:
-    GET    /access-requests               pending (or all) requests
-    POST   /access-requests/{id}/approve  choose the role -> invite link
-    POST   /access-requests/{id}/reject
-    DELETE /access-requests/{id}          erase it (PDPA)
-    POST   /access-requests/bulk          reject or erase many (spam floods)
+    PUT    /signup-settings               switch new signups on or off
     GET    /account-links                 invites and reset links, never tokens
     POST   /account-links                 invite someone directly
     DELETE /account-links/{id}            revoke
     POST   /users/{id}/reset-link         one-time link to set a new password
 
-A request is never an account and never carries a password: anyone could
-type a colleague's name and email. An account only comes from an admin's
-link, and the admin choosing whom to send it to is the identity check
-(there's no email service to verify addresses with). The token travels in
-the link's #fragment and in POST bodies -- never in a URL path -- so it
-stays out of access logs, Referer headers and link previews.
+Signup is open (the owner's choice, 2026-10-25): anyone with the address can
+make an account and is in at once as a "user"; only an admin makes someone
+an admin. There is no email service, so the email isn't verified. The
+safety valves are the admins' on/off switch, disabling an account, the
+per-network and per-day limits below, and the history of who signed up.
+Until 2026-10-25 people requested access and an admin sent them a link.
 
-Every public answer is the same whether or not the email has an account,
-like sign-in's.
+Link tokens travel in the link's #fragment and in POST bodies -- never in a
+URL path -- so they stay out of access logs, Referer headers and link
+previews.
 """
-import hashlib
-import re
-import secrets
 import threading
 import time
 from collections import deque
@@ -40,24 +35,32 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
-from app.api.auth import _EMAIL, _checked_email, _ip_blocked, _note_ip_failure, _set_session_cookie, client_ip
+from app.api.auth import (
+    _EMAIL,
+    _checked_email,
+    _ip_blocked,
+    _note_ip_failure,
+    _set_session_cookie,
+    checked_username,
+    client_ip,
+    username_issue,
+)
 from app.auth.core import (
     SESSION_COOKIE,
     CurrentUser,
-    as_utc,
     audit,
     create_session,
     end_session,
     end_user_sessions,
     me_dict,
     normalize_email,
+    normalize_username,
     record_login,
     token_hash,
     utc_now,
 )
 from app.auth.deps import require_admin
 from app.auth.links import (
-    MAX_PENDING_REQUESTS,
     DEFAULT_INVITE_HOURS,
     DEFAULT_RESET_HOURS,
     claim,
@@ -69,25 +72,27 @@ from app.auth.links import (
 )
 from app.auth.passwords import MAX_PASSWORD_LENGTH, hash_password, password_problem
 from app.reports.db import SessionLocal
-from app.reports.models import AccessRequest, AccountLink, User, iso_utc
+from app.reports.models import AccountLink, AppSetting, User, iso_utc
 
 router = APIRouter(tags=["signup"])
 
 ExpiryHours = Literal[24, 72, 168]
-Role = Literal["surveyor", "admin"]
+Role = Literal["user", "admin"]
 
-# Per network: a person sends one request; a script sends hundreds.
-_REQUESTS_PER_IP = 5
-_REQUEST_WINDOW_SECONDS = 60 * 60
-# Beyond this one email's requests are quietly dropped, so a flood can't
-# bury a real request (the overall cap is links.MAX_PENDING_REQUESTS).
-MAX_PENDING_PER_EMAIL = 3
+# Per network: a person tries a username or two; a script tries hundreds.
+_SIGNUP_TRIES_PER_IP = 20
+_SIGNUP_WINDOW_SECONDS = 60 * 60
+# Active accounts made in the last 24 hours. Beyond it signup pauses, so a
+# flood from many networks can't fill the users table before an admin sees
+# it; disabling the junk accounts frees the room again.
+MAX_SIGNUPS_PER_DAY = 50
 
-_request_times: dict[str, deque] = {}
-_request_lock = threading.Lock()
+_signup_tries: dict[str, deque] = {}
+_signup_lock = threading.Lock()
 
-_PHONE = re.compile(r"\+?[\d\s()-]{8,30}")
-_REFERENCE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+# app_settings key; anything but "false" means open.
+SIGNUPS_OPEN_KEY = "signups_open"
+SIGNUPS_CLOSED = "New signups are closed. Ask the Carlink admin to invite you."
 
 LINK_GONE = {
     "expired": "This link has expired. Ask your admin for a new one.",
@@ -96,19 +101,15 @@ LINK_GONE = {
 }
 
 
-def _reference() -> str:
-    return "REQ-" + "".join(secrets.choice(_REFERENCE_ALPHABET) for _ in range(4))
-
-
-def _too_many_requests(ip: str) -> bool:
+def _too_many_tries(ip: str) -> bool:
     now = time.monotonic()
-    with _request_lock:
-        if len(_request_times) > 5000:
-            _request_times.clear()
-        times = _request_times.setdefault(ip, deque())
-        while times and now - times[0] > _REQUEST_WINDOW_SECONDS:
+    with _signup_lock:
+        if len(_signup_tries) > 5000:
+            _signup_tries.clear()
+        times = _signup_tries.setdefault(ip, deque())
+        while times and now - times[0] > _SIGNUP_WINDOW_SECONDS:
             times.popleft()
-        if len(times) >= _REQUESTS_PER_IP:
+        if len(times) >= _SIGNUP_TRIES_PER_IP:
             return True
         times.append(now)
         return False
@@ -118,66 +119,120 @@ def _gone(code: str) -> JSONResponse:
     return JSONResponse(status_code=410, content={"detail": LINK_GONE[code], "code": code})
 
 
+def _field_error(status: int, field: str, message: str) -> JSONResponse:
+    """An error the signup form shows under one box."""
+    return JSONResponse(status_code=status, content={"detail": message, "field": field})
+
+
+def signups_open(db) -> bool:
+    row = db.get(AppSetting, SIGNUPS_OPEN_KEY)
+    return not (row and row.value == "false")
+
+
+def _open_invite(db, email: str) -> bool:
+    return db.query(AccountLink).filter(
+        AccountLink.email == email,
+        AccountLink.purpose == "invite",
+        AccountLink.used_at.is_(None),
+        AccountLink.revoked_at.is_(None),
+        AccountLink.expires_at > utc_now(),
+    ).first() is not None
+
+
+def _end_previous_session(db, request: Request) -> None:
+    """Someone else signed in on this browser: their session ends here, not
+    merely loses its cookie, so a copy of that cookie is useless."""
+    previous = request.cookies.get(SESSION_COOKIE)
+    if previous:
+        end_session(db, token_hash(previous))
+
+
 # ------------------------------------------------------------ public
 
 
-class AccessRequestIn(BaseModel):
-    name: str = Field(max_length=120)
+@router.get("/auth/signup")
+def signup_status() -> dict:
+    db = SessionLocal()
+    try:
+        return {"open": signups_open(db)}
+    finally:
+        db.close()
+
+
+class SignupIn(BaseModel):
+    username: str = Field(max_length=60)
     email: str = Field(max_length=320)
-    phone: str = Field(max_length=40)
-    organisation: str = Field(default="", max_length=160)
-    requested_role: Role = "surveyor"
-    note: str = Field(default="", max_length=500)
-    consent: bool = False
+    password: str = Field(max_length=MAX_PASSWORD_LENGTH)
     # Honeypot: hidden from people by CSS, filled in by form-spamming bots.
     website: str = Field(default="", max_length=200)
 
 
-@router.post("/auth/access-requests", status_code=202)
-def request_access(body: AccessRequestIn, request: Request) -> dict:
-    name = " ".join(body.name.split())
-    email = normalize_email(body.email)
-    phone = " ".join(body.phone.split())
-    if len(name) < 2:
-        raise HTTPException(status_code=400, detail="Enter your full name.")
-    if not _EMAIL.fullmatch(email):
-        raise HTTPException(status_code=400, detail="That doesn't look like an email address.")
-    if not _PHONE.fullmatch(phone) or not 8 <= sum(c.isdigit() for c in phone) <= 15:
-        raise HTTPException(status_code=400, detail="Enter a mobile number, e.g. 9123 4567.")
-    if not body.consent:
-        raise HTTPException(status_code=400, detail="Tick the box to send your request.")
-
+@router.post("/auth/signup")
+def signup(body: SignupIn, request: Request, response: Response):
+    """Makes a "user" account and signs it in. Unlike sign-in, this does say
+    when a username or email is taken -- a signup form can't avoid it -- so
+    it's limited per network and per day."""
     ip = client_ip(request)
-    if _too_many_requests(ip):
-        raise HTTPException(status_code=429, detail="Too many requests from this network. Try again in an hour.")
-    # The same answer as a stored request: nothing here says what happened.
-    accepted = {"reference": _reference()}
+    if _ip_blocked(ip) or _too_many_tries(ip):
+        raise HTTPException(status_code=429, detail="Too many signups from this network. Try again in an hour.")
     if body.website:
-        return accepted
+        raise HTTPException(status_code=400, detail="Couldn't create the account.")
 
+    username = normalize_username(body.username)
+    email = normalize_email(body.email)
     db = SessionLocal()
     try:
-        if db.query(AccessRequest).filter(AccessRequest.status == "pending").count() >= MAX_PENDING_REQUESTS:
-            raise HTTPException(status_code=503, detail="We've received a lot of requests. Try again tomorrow.")
-        same_email = db.query(AccessRequest).filter(AccessRequest.status == "pending", AccessRequest.email == email).count()
-        if same_email >= MAX_PENDING_PER_EMAIL:
-            return accepted
-        # Stored even when the email already has an account: refusing would
-        # tell a stranger it does. Admins see the overlap flagged instead.
-        db.add(AccessRequest(
-            reference=accepted["reference"],
-            name=name,
+        if not signups_open(db):
+            raise HTTPException(status_code=403, detail=SIGNUPS_CLOSED)
+        issue = username_issue(db, username)
+        if issue:
+            return _field_error(issue[0], "username", issue[1])
+        if not _EMAIL.fullmatch(email):
+            return _field_error(400, "email", "That doesn't look like an email address.")
+        if db.query(User).filter(User.email == email).first():
+            return _field_error(409, "email", "There's already an account with that email. Sign in instead.")
+        # An admin is expecting this person to come in through their link
+        # (maybe as an admin); a stranger mustn't claim the address first.
+        if _open_invite(db, email):
+            return _field_error(409, "email", "You've been invited with this email. Use the link your admin sent you.")
+        problem = password_problem(body.password, (username, email))
+        if problem:
+            return _field_error(400, "password", problem)
+
+        day_ago = utc_now() - timedelta(days=1)
+        recent = db.query(User).filter(User.created_at >= day_ago, User.active.is_(True)).count()
+        if recent >= MAX_SIGNUPS_PER_DAY:
+            raise HTTPException(status_code=503, detail="Lots of people signed up today. Try again tomorrow.")
+
+        user = User(
+            username=username,
             email=email,
-            phone=phone,
-            organisation=body.organisation.strip(),
-            requested_role=body.requested_role,
-            note=body.note.strip(),
-            consent_at=utc_now(),
-            ip=ip[:64],
-            user_agent=request.headers.get("user-agent", "")[:256],
-        ))
-        db.commit()
-        return accepted
+            # The name printed on sign-offs, until they set their full name.
+            name=username,
+            role="user",
+            password_hash=hash_password(body.password),
+            must_change_password=False,
+        )
+        try:
+            db.add(user)
+            # The INSERT happens here (the audit row needs the user's id), so
+            # a unique-index clash is raised here, not at the commit.
+            db.flush()
+            audit(db, user, "signed_up", detail=email)
+            _end_previous_session(db, request)
+            record_login(user)
+            token = create_session(db, user, ip, request.headers.get("user-agent", ""))
+            db.commit()
+        except IntegrityError:
+            # The same username or email signed up a moment ago.
+            db.rollback()
+            taken_email = db.query(User).filter(User.email == email).first() is not None
+            field = "email" if taken_email else "username"
+            message = "There's already an account with that email. Sign in instead." if taken_email else "That username is taken."
+            return _field_error(409, field, message)
+        _set_session_cookie(response, token)
+        db.refresh(user)
+        return me_dict(user)
     finally:
         db.close()
 
@@ -187,7 +242,8 @@ class LinkToken(BaseModel):
 
 
 class LinkAccept(LinkToken):
-    name: str = Field(default="", max_length=120)
+    # An invite chooses one, like signup; a reset keeps the account's.
+    username: str = Field(default="", max_length=60)
     password: str = Field(max_length=MAX_PASSWORD_LENGTH)
 
 
@@ -247,13 +303,12 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
         link, user, gone = _usable_link(db, body.token, ip)
         if gone:
             return gone
-        name = " ".join(body.name.split())
+        username = ""
         if link.purpose == "invite":
-            if not name:
-                raise HTTPException(status_code=400, detail="Enter your full name.")
-            problem = password_problem(body.password, (name, link.email))
+            username = checked_username(db, body.username)
+            problem = password_problem(body.password, (username, link.name, link.email))
         else:
-            problem = password_problem(body.password, (user.name, user.email))
+            problem = password_problem(body.password, (user.name, user.username or "", user.email))
         if problem:
             raise HTTPException(status_code=400, detail=problem)
         # Hashed before the link is claimed: a busy hasher (503) leaves the
@@ -263,37 +318,40 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
         if not claim(db, link):
             db.rollback()
             return _gone("used")
-        if link.purpose == "invite":
-            if db.query(User).filter(User.email == link.email).first():
-                db.rollback()
-                raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
-            user = User(email=link.email, name=name, role=link.role, password_hash=password_hash, must_change_password=False)
-            db.add(user)
-            db.flush()
-            audit(db, user, "invite_accepted", detail=f"{link.email} ({link.role}), invited by {link.created_by_name}")
-        else:
-            user.password_hash = password_hash
-            user.must_change_password = False
-            user.failed_logins = 0
-            user.locked_until = None
-            # Every browser still signed in with the old password.
-            end_user_sessions(db, user.id)
-            audit(db, user, "password_reset_by_link", detail=user.email)
-        link.used_by_user_id = user.id
-        # Someone else signed in on this browser: their session ends here,
-        # not merely loses its cookie, so a copy of that cookie is useless.
-        previous = request.cookies.get(SESSION_COOKIE)
-        if previous:
-            end_session(db, token_hash(previous))
-        record_login(user)
-        token = create_session(db, user, ip, request.headers.get("user-agent", ""))
         try:
+            if link.purpose == "invite":
+                if db.query(User).filter(User.email == link.email).first():
+                    db.rollback()
+                    raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
+                user = User(
+                    # The name the admin typed, if any, for sign-offs.
+                    email=link.email, username=username, name=link.name or username, role=link.role,
+                    password_hash=password_hash, must_change_password=False,
+                )
+                db.add(user)
+                # The INSERT (and any unique-index clash) happens here.
+                db.flush()
+                audit(db, user, "invite_accepted", detail=f"{link.email} ({link.role}), invited by {link.created_by_name}")
+            else:
+                user.password_hash = password_hash
+                user.must_change_password = False
+                user.failed_logins = 0
+                user.locked_until = None
+                # Every browser still signed in with the old password.
+                end_user_sessions(db, user.id)
+                audit(db, user, "password_reset_by_link", detail=user.email)
+            link.used_by_user_id = user.id
+            _end_previous_session(db, request)
+            record_login(user)
+            token = create_session(db, user, ip, request.headers.get("user-agent", ""))
             db.commit()
         except IntegrityError:
-            # The email was taken between the check and the commit; the
-            # rollback also puts the link back to unused.
+            # The email or username was taken between the check and the
+            # INSERT; the rollback also puts the link back to unused.
             db.rollback()
-            raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
+            if db.query(User).filter(User.email == link.email).first():
+                raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
+            raise HTTPException(status_code=409, detail="That username is taken.")
         _set_session_cookie(response, token)
         db.refresh(user)
         return me_dict(user)
@@ -304,178 +362,25 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
 # ------------------------------------------------------------- admin
 
 
-def _network_tag(ip: str) -> str:
-    """Groups requests from one network for the admin's "select all from
-    this network" without putting the address itself on screen."""
-    return hashlib.sha256(f"carlink-network:{ip}".encode()).hexdigest()[:8] if ip else ""
+class SignupSettings(BaseModel):
+    open: bool
 
 
-def _request_dict(row: AccessRequest, *, has_account: bool, same_email_pending: int, same_ip_24h: int) -> dict:
-    return {
-        "id": row.id,
-        "reference": row.reference,
-        "name": row.name,
-        "email": row.email,
-        "phone": row.phone,
-        "organisation": row.organisation or "",
-        "requested_role": row.requested_role,
-        "note": row.note or "",
-        "status": row.status,
-        "created_at": iso_utc(row.created_at),
-        "decided_at": iso_utc(row.decided_at) if row.decided_at else None,
-        "decided_by_name": row.decided_by_name or "",
-        "decision_note": row.decision_note or "",
-        "has_account": has_account,
-        "same_email_pending": same_email_pending,
-        "same_ip_24h": same_ip_24h,
-        "network": _network_tag(row.ip),
-    }
-
-
-def _requests_with_flags(db, rows: list[AccessRequest]) -> list[dict]:
-    """Adds what an admin should notice before approving: the email already
-    has an account, others asked with the same email, or many requests came
-    from one network."""
-    emails = {u.email for u in db.query(User.email).all()}
-    everything = db.query(AccessRequest).all()
-    day_ago = utc_now() - timedelta(days=1)
-    out = []
-    for row in rows:
-        same_email = sum(1 for r in everything if r.id != row.id and r.status == "pending" and r.email == row.email)
-        same_ip = sum(
-            1 for r in everything
-            if r.id != row.id and row.ip and r.ip == row.ip and as_utc(r.created_at) >= day_ago
-        )
-        out.append(_request_dict(row, has_account=row.email in emails, same_email_pending=same_email, same_ip_24h=same_ip))
-    return out
-
-
-def _one_request(db, row: AccessRequest) -> dict:
-    return _requests_with_flags(db, [row])[0]
-
-
-@router.get("/access-requests")
-def list_access_requests(status: Literal["pending", "all"] = "pending", admin: CurrentUser = Depends(require_admin)) -> list[dict]:
+@router.put("/signup-settings")
+def set_signups_open(body: SignupSettings, admin: CurrentUser = Depends(require_admin)) -> dict:
+    """Not under /auth/signup: that path is public, so a session is never
+    looked up for it."""
     db = SessionLocal()
     try:
-        query = db.query(AccessRequest)
-        if status == "pending":
-            query = query.filter(AccessRequest.status == "pending")
-        return _requests_with_flags(db, query.order_by(AccessRequest.created_at.desc()).all())
-    finally:
-        db.close()
-
-
-def _pending_request(db, request_id: str) -> AccessRequest:
-    row = db.get(AccessRequest, request_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Request not found.")
-    if row.status != "pending":
-        raise HTTPException(status_code=409, detail=f"This request has already been {row.status}.")
-    return row
-
-
-class Approval(BaseModel):
-    # No default: the admin decides, whatever the request asked for.
-    role: Role
-    expires_hours: ExpiryHours = DEFAULT_INVITE_HOURS
-
-
-@router.post("/access-requests/{request_id}/approve")
-def approve_access_request(request_id: str, body: Approval, admin: CurrentUser = Depends(require_admin)) -> dict:
-    db = SessionLocal()
-    try:
-        row = _pending_request(db, request_id)
-        if db.query(User).filter(User.email == row.email).first():
-            raise HTTPException(status_code=409, detail="There's already an account for this email. Use its Reset password instead.")
-        link, token = new_link(
-            db, purpose="invite", email=row.email, role=body.role, creator=admin,
-            hours=body.expires_hours, name=row.name, request_id=row.id,
-        )
-        row.status = "approved"
-        row.decided_at = utc_now()
-        row.decided_by = admin.id
-        row.decided_by_name = admin.name
-        row.link_id = link.id
-        audit(db, admin, "access_request_approved", detail=f"{row.email} as {body.role} ({row.reference})")
+        row = db.get(AppSetting, SIGNUPS_OPEN_KEY)
+        value = "true" if body.open else "false"
+        if row:
+            row.value = value
+        else:
+            db.add(AppSetting(key=SIGNUPS_OPEN_KEY, value=value))
+        audit(db, admin, "signups_opened" if body.open else "signups_closed")
         db.commit()
-        return {"request": _one_request(db, row), "link": link_dict(link), "token": token}
-    finally:
-        db.close()
-
-
-class Rejection(BaseModel):
-    note: str = Field(default="", max_length=300)
-
-
-@router.post("/access-requests/{request_id}/reject")
-def reject_access_request(request_id: str, body: Rejection, admin: CurrentUser = Depends(require_admin)) -> dict:
-    db = SessionLocal()
-    try:
-        row = _pending_request(db, request_id)
-        row.status = "rejected"
-        row.decided_at = utc_now()
-        row.decided_by = admin.id
-        row.decided_by_name = admin.name
-        row.decision_note = body.note.strip()
-        audit(db, admin, "access_request_rejected", detail=f"{row.email} ({row.reference})")
-        db.commit()
-        return _one_request(db, row)
-    finally:
-        db.close()
-
-
-@router.delete("/access-requests/{request_id}")
-def delete_access_request(request_id: str, admin: CurrentUser = Depends(require_admin)) -> dict:
-    db = SessionLocal()
-    try:
-        row = db.get(AccessRequest, request_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Request not found.")
-        audit(db, admin, "access_request_deleted", detail=f"{row.email} ({row.reference})")
-        db.delete(row)
-        db.commit()
-        return {"ok": True}
-    finally:
-        db.close()
-
-
-class BulkDecision(BaseModel):
-    ids: list[str] = Field(min_length=1, max_length=MAX_PENDING_REQUESTS * 2)
-    action: Literal["reject", "delete"]
-    note: str = Field(default="", max_length=300)
-
-
-@router.post("/access-requests/bulk")
-def bulk_access_requests(body: BulkDecision, admin: CurrentUser = Depends(require_admin)) -> dict:
-    """Reject or erase many requests at once -- a spam flood is cleared in
-    one go rather than row by row. Reject only touches pending requests;
-    anything else (already decided, or deleted meanwhile) is counted as
-    skipped. One history entry for the whole batch."""
-    db = SessionLocal()
-    try:
-        wanted = set(body.ids)
-        rows = db.query(AccessRequest).filter(AccessRequest.id.in_(wanted)).all()
-        now = utc_now()
-        done: list[AccessRequest] = []
-        for row in rows:
-            if body.action == "reject":
-                if row.status != "pending":
-                    continue
-                row.status = "rejected"
-                row.decided_at = now
-                row.decided_by = admin.id
-                row.decided_by_name = admin.name
-                row.decision_note = body.note.strip()
-            else:
-                db.delete(row)
-            done.append(row)
-        if done:
-            emails = ", ".join(sorted({r.email for r in done}))
-            verb = "rejected" if body.action == "reject" else "deleted"
-            audit(db, admin, f"access_requests_{verb}", detail=f"{len(done)} request(s): {emails}")
-        db.commit()
-        return {"done": len(done), "skipped": len(wanted) - len(done)}
+        return {"open": body.open}
     finally:
         db.close()
 
