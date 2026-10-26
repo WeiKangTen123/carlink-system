@@ -181,7 +181,8 @@ def main() -> int:
         sam = browser()
         login(sam, "sam@example.com", r.json()["temporary_password"])
         sam.post("/auth/password", json={"current_password": r.json()["temporary_password"], "new_password": "silver kettle rainy morning"})
-        assert sam.post(f"/reports/{case_id}/reopen").status_code == 403
+        # Sam can't see Pat's case at all (it's Pat's), so it's "not found".
+        assert sam.post(f"/reports/{case_id}/reopen").status_code == 404
         assert pat.post(f"/reports/{case_id}/reopen").status_code == 200
         ok("only the signer or an admin may reopen")
         assert pat.delete(f"/reports/{case_id}").status_code == 403

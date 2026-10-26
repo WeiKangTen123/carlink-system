@@ -91,6 +91,12 @@ class Report(Base):
     photo_paths: Mapped[list] = mapped_column(JSON, default=list)
     pdf_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+    # The account the case belongs to (users.id); None = Unassigned, which
+    # only admins and "see all cases" staff see (app/auth/permissions.py).
+    # Set to whoever files it on the dashboard; Telegram cases stay
+    # Unassigned until an admin assigns them. (Added after the table
+    # shipped: see db._ADDED_COLUMNS / _ADDED_INDEXES.)
+    owner_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
 
 
 class IntakeSession(Base):
@@ -200,6 +206,15 @@ class User(Base):
     qualifications: Mapped[str] = mapped_column(String, default="")
     license_number: Mapped[str] = mapped_column(String, default="")
     firm_name: Mapped[str] = mapped_column(String, default="")
+    # Ticks an admin sets on a "user" (admins have all of it anyway); None
+    # means no. "Can see and work on all cases", including Unassigned ones;
+    # "May use the company AI key"; "May sign off reports" under the
+    # company's name. Accounts from before these existed that an admin made
+    # or invited got all three (reports/owners.grandfather_staff_ticks);
+    # self-signups start without. (Added later: see db._ADDED_COLUMNS.)
+    sees_all_cases: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    ai_company_key_allowed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    may_sign_off: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
     # Wrong passwords in a row; reaching the limit sets locked_until.
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

@@ -17,6 +17,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.auth.permissions import can_view_all_cases, is_staff, may_use_company_key
 from app.config import settings
 from app.reports.models import AuditEntry, AuthSession, Report, User, iso_utc
 
@@ -171,6 +172,11 @@ class CurrentUser:
     license_number: str
     firm_name: str
     session_hash: str
+    # The ticks an admin sets (models.User); read fresh on every request,
+    # so a change applies at once. app/auth/permissions.py says what they do.
+    sees_all_cases: bool = False
+    ai_company_key_allowed: bool = False
+    may_sign_off: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -189,6 +195,9 @@ def _current(user: User, session_hash: str) -> CurrentUser:
         license_number=user.license_number or "",
         firm_name=user.firm_name or "",
         session_hash=session_hash,
+        sees_all_cases=bool(user.sees_all_cases),
+        ai_company_key_allowed=bool(user.ai_company_key_allowed),
+        may_sign_off=bool(user.may_sign_off),
     )
 
 
@@ -357,11 +366,26 @@ def user_dict(user: User) -> dict:
         "locked": locked_for(user) is not None,
         "last_login_at": iso_utc(user.last_login_at) if user.last_login_at else None,
         "created_at": iso_utc(user.created_at),
+        # The ticks as set, not what they add up to (an admin has all of it
+        # whatever they say).
+        "sees_all_cases": bool(user.sees_all_cases),
+        "ai_company_key_allowed": bool(user.ai_company_key_allowed),
+        "may_sign_off": bool(user.may_sign_off),
     }
 
 
+def user_dicts(db: Session, users: list[User]) -> list[dict]:
+    """user_dict plus each account's case counts (open, signed off,
+    drafts), for the admin's Users screen -- one query for all of them."""
+    from app.reports.owners import case_counts
+
+    counts = case_counts(db, [u.id for u in users])
+    return [{**user_dict(u), "cases": counts[u.id]} for u in users]
+
+
 def me_dict(user: CurrentUser | User) -> dict:
-    """What the signed-in user sees about themselves (GET /auth/me)."""
+    """What the signed-in user sees about themselves (GET /auth/me). The
+    last three are what the ticks add up to, admins having all of it."""
     return {
         "id": user.id,
         "email": user.email,
@@ -372,6 +396,9 @@ def me_dict(user: CurrentUser | User) -> dict:
         "qualifications": user.qualifications or "",
         "license_number": user.license_number or "",
         "firm_name": user.firm_name or "",
+        "can_view_all_cases": can_view_all_cases(user),
+        "may_sign_off": is_staff(user),
+        "ai_allowed": may_use_company_key(user),
     }
 
 

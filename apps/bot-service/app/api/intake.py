@@ -26,7 +26,7 @@ from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.core import CurrentUser, audit
-from app.auth.deps import current_user
+from app.auth.deps import current_user, editable_case, visible_case
 from app.intake import pipeline
 from app.intake.photos import (
     copy_into_case,
@@ -36,6 +36,7 @@ from app.intake.photos import (
     remove_intake_dir,
     serialize_photo,
 )
+from app.reports import owners
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
@@ -90,7 +91,7 @@ def _claim_stage(db, report_id: str, new_stage: str) -> bool:
     return result.rowcount == 1
 
 
-def _state(db, report: Report, session: IntakeSession) -> dict:
+def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
     stage, error = session.stage, session.error
     # Left mid-run by a restart: the thread is gone but the row still says
     # it's working, and the wizard would poll forever.
@@ -114,6 +115,7 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
         "photos": [serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
         "data": report.data or {},
         "limits": {"max_photos": MAX_PHOTOS_PER_CASE, "max_photo_bytes": MAX_PHOTO_SIZE_BYTES},
+        **owners.access_fields(db, report, user),
     }
 
 
@@ -133,6 +135,9 @@ def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
             channel="manual",
             reporter_chat_id="dashboard",
             status="intake",
+            # The draft, and the case it becomes, are the caller's -- also
+            # when an admin finishes it for them.
+            owner_id=user.id,
             # Full default shape, not a stub: the Cases Repository lists and
             # previews drafts like any other report, and reads nested fields
             # (people_involved, insurance_details...) without guarding.
@@ -149,11 +154,11 @@ def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
 
 
 @router.get("/{report_id}")
-def get_intake(report_id: str) -> dict:
+def get_intake(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id)
-        return _state(db, report, session)
+        return _state(db, report, session, user)
     finally:
         db.close()
 
@@ -163,6 +168,7 @@ def upload_intake_photo(
     report_id: str,
     file: UploadFile = File(...),
     position: int = Form(0),
+    user: CurrentUser = Depends(editable_case),
 ) -> dict:
     """One photo per request, so a 150-photo case is 150 small requests the
     browser can run a few at a time and retry one by one, rather than one
@@ -277,7 +283,9 @@ class PhotoUpdateRequest(BaseModel):
 
 
 @router.patch("/{report_id}/photos/{photo_id}")
-def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest) -> dict:
+def update_intake_photo(
+    report_id: str, photo_id: str, body: PhotoUpdateRequest, user: CurrentUser = Depends(editable_case)
+) -> dict:
     from app.ai.triage import PHOTO_KINDS
 
     db = SessionLocal()
@@ -301,7 +309,7 @@ def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest)
 
 
 @router.delete("/{report_id}/photos/{photo_id}")
-def delete_intake_photo(report_id: str, photo_id: str) -> dict:
+def delete_intake_photo(report_id: str, photo_id: str, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
         _load_draft(db, report_id, mutating=True, block_while_running=True)
@@ -322,7 +330,7 @@ class IntakeDataRequest(BaseModel):
 
 
 @router.put("/{report_id}/data")
-def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
+def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
@@ -345,7 +353,7 @@ class ProcessRequest(BaseModel):
 
 
 @router.post("/{report_id}/process")
-def process_intake(report_id: str, body: ProcessRequest) -> dict:
+def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True)
@@ -365,7 +373,7 @@ def process_intake(report_id: str, body: ProcessRequest) -> dict:
             raise
         pipeline.start_reserved(report_id, body.mode)
         db.refresh(session)
-        return _state(db, report, session)
+        return _state(db, report, session, user)
     finally:
         db.close()
 
@@ -375,7 +383,7 @@ class FinalizeRequest(BaseModel):
 
 
 @router.post("/{report_id}/finalize")
-def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = Depends(current_user)) -> dict:
+def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Turns the draft into a case.
 
     Ordered so a failure at any point leaves either the untouched draft (and

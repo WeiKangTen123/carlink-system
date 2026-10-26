@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from app.ai.structured import call_structured
 from app.auth.core import CurrentUser, audit
-from app.auth.deps import current_user, require_admin
+from app.auth.deps import CASE_NOT_FOUND, current_user, editable_case, require_admin, visible_case
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, Report
@@ -39,7 +39,7 @@ MAX_IMPORT_BYTES = 5 * 1024 * 1024  # one report spreadsheet is well under 1MB
 def _report(db, report_id: str) -> Report:
     r = db.get(Report, report_id)
     if r is None:
-        raise HTTPException(status_code=404, detail="Report not found")
+        raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
     if r.status == "intake":
         raise HTTPException(status_code=409, detail="This case is still an intake draft.")
     return r
@@ -162,7 +162,7 @@ def _damaged_parts(data: dict) -> list[str]:
 
 
 @router.get("/reports/{report_id}/annex-suggestions")
-def annex_suggestions(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+def annex_suggestions(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     db = SessionLocal()
     try:
         r = _report(db, report_id)
@@ -224,7 +224,7 @@ class AiSuggestionRequest(BaseModel):
 
 
 @router.post("/reports/{report_id}/annex-suggestions/ai")
-def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: CurrentUser = Depends(current_user)) -> dict:
+def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Gemini's lines for parts no imported report covers. Names and
     quantities only -- no prices, no part numbers -- and labelled as AI."""
     db = SessionLocal()
@@ -268,7 +268,7 @@ class AnnexASave(BaseModel):
 
 
 @router.put("/reports/{report_id}/annex-a")
-def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(current_user)) -> dict:
+def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(editable_case)) -> dict:
     """Saves the surveyor's Annex A table. Adjusted costs and the Annex A/C
     totals are worked out here, so they always agree with the rows."""
     db = SessionLocal()

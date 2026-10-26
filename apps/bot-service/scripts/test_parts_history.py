@@ -128,7 +128,8 @@ def main() -> int:
     ok("admins import reports (re-import replaces), other files are refused by name; history shows usual prices")
 
     print("suggestions")
-    r = admin.post("/reports", json={"draft": {
+    # The surveyor's own case: a plain user only sees the cases they own.
+    r = surveyor.post("/reports", json={"draft": {
         "category": ["Vehicle Collision or Damage"], "description": "Rear-ended",
         "vehicle_info": {"plate_number": "SNA1234B", "make": "Honda", "model": "Vezel"},
         "damage_summary": [{"part": "Boot Lid", "severity": "Severe"}, {"part": "Right Tail Lamp"}],
