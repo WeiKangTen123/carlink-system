@@ -386,7 +386,7 @@ export function StudioApp({ report }: { report: ReportDetail }) {
                     {user.name === user.username
                       ? "Your profile has no full name yet, so the report will print your username."
                       : "Your profile has no licence number, so the report will print without one."}{" "}
-                    Add it on My account.
+                    Add it in Settings.
                   </span>
                 )}
               </p>

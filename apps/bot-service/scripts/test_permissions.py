@@ -226,7 +226,8 @@ DECISIONS = {
 
     ("GET", "/users"): ("admin", "with the three ticks and case counts"),
     ("POST", "/users"): ("admin", ""),
-    ("PATCH", "/users/{user_id}"): ("admin", "sets the three ticks; each change in the audit log"),
+    ("PATCH", "/users/{user_id}"): ("admin", "sets the three ticks; each change in the audit log; own role 403 not_allowed, "
+                                             "disabling takes open_cases keep|unassign|move (P2, test_disable_reassign.py)"),
     ("POST", "/users/{user_id}/reset-password"): ("admin", ""),
     ("POST", "/users/{user_id}/reset-link"): ("admin", ""),
     ("PUT", "/signup-settings"): ("admin", ""),
@@ -243,6 +244,8 @@ DECISIONS = {
     ("DELETE", "/setup/llm-keys/{key_id}"): ("admin", ""),
     ("POST", "/setup/test/{service}"): ("admin", ""),
     ("PATCH", "/reports/{report_id}/owner"): ("admin", "on a case: 404 unknown, 409 owner_inactive / owner_draft"),
+    ("POST", "/reports/reassign"): ("admin", "someone's open cases (+ signed off) to an active account or Unassigned; "
+                                             "409 owner_inactive (P2, test_disable_reassign.py)"),
 
     ("GET", "/reports/{report_id}"): ("case-view", "adds owner, permissions; suggested_owner for admins on Unassigned"),
     ("GET", "/reports/{report_id}/download"): ("case-view", ""),
@@ -567,6 +570,7 @@ def temp_password() -> None:
 # real request from a plain user is refused", not "a malformed one is".
 ADMIN_BODIES = {
     ("PATCH", "/reports/{}/owner"): lambda: {"json": {"owner_id": None}},
+    ("POST", "/reports/reassign"): lambda: {"json": {"from_user_id": W.B.id, "to_user_id": None, "include_signed": True}},
     ("POST", "/users"): lambda: {"json": {"email": "nope@example.com", "name": "Nope Person", "role": "admin"}},
     ("PATCH", "/users/{}"): lambda: {"json": {"sees_all_cases": True}},
     ("PUT", "/signup-settings"): lambda: {"json": {"open": False}},

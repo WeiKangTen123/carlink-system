@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, LogOut, UserCog } from "lucide-react";
+import { ChevronDown, LogOut, Settings } from "lucide-react";
 import { API_BASE_URL, type CurrentUser } from "@/lib/api";
 import { clearEvidenceCache } from "@/lib/evidenceCache";
 import { ROLE_LABEL } from "@/lib/signup";
@@ -68,9 +68,13 @@ export function UserMenu({ user }: { user: CurrentUser }) {
             </div>
             <span className={`role-chip ${user.role}`}>{ROLE_LABEL[user.role] ?? user.role}</span>
           </div>
-          <Link href="/account" className="user-menu-item" role="menuitem" onClick={() => setOpen(false)}>
-            <UserCog style={{ width: 14, height: 14 }} /> My account &amp; password
-          </Link>
+          {/* Your profile and password are on Settings -> My settings. Not
+              while on a temporary password: only /account opens then. */}
+          {!user.must_change_password && (
+            <Link href="/settings" prefetch={false} className="user-menu-item" role="menuitem" onClick={() => setOpen(false)}>
+              <Settings style={{ width: 14, height: 14 }} /> Settings
+            </Link>
+          )}
           <button
             type="button"
             className="user-menu-item danger"

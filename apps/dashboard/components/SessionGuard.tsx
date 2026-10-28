@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Lock } from "lucide-react";
 import { API_BASE_URL, SIGNED_OUT_EVENT, type CurrentUser } from "@/lib/api";
 
@@ -18,7 +17,6 @@ const MIN_GAP_MS = 60 * 1000;
  * refused, and checks on its own when the tab comes back into view.
  */
 export function SessionGuard({ user }: { user: CurrentUser }) {
-  const router = useRouter();
   const [signedOut, setSignedOut] = useState(false);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -40,7 +38,10 @@ export function SessionGuard({ user }: { user: CurrentUser }) {
   useEffect(() => {
     const onSignedOut = (e: Event) => {
       const reason = (e as CustomEvent<string>).detail;
-      if (reason === "password_change_required") router.replace("/account");
+      // A full load, so the layout picks up the temporary password (and the
+      // server sends every other page to /account). A client navigation here
+      // can race a redirect already under way and crash Next's router.
+      if (reason === "password_change_required") window.location.assign("/account");
       else setSignedOut(true);
     };
     const onVisible = () => {
@@ -54,7 +55,7 @@ export function SessionGuard({ user }: { user: CurrentUser }) {
       document.removeEventListener("visibilitychange", onVisible);
       window.clearInterval(timer);
     };
-  }, [check, router]);
+  }, [check]);
 
   if (!signedOut) return null;
 
@@ -76,7 +77,7 @@ export function SessionGuard({ user }: { user: CurrentUser }) {
       }
       setPassword("");
       setSignedOut(false);
-      if (body?.must_change_password) router.replace("/account");
+      if (body?.must_change_password) window.location.assign("/account");
     } catch {
       setError("Couldn't reach the server. Check your connection and try again.");
     } finally {

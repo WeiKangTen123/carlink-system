@@ -1,5 +1,6 @@
 /** Helpers shared by the public sign-up pages (app/signup, app/invite),
- * My account and Settings -> Users, which hands out invite and reset links.
+ * Settings -> My settings and Settings -> Users, which hands out invite and
+ * reset links.
  * Browser-safe: no API calls here. */
 
 import type { UserRole } from "./api";

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
 from app.api import limits
-from app.api.auth import router as auth_router
+from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
 from app.api.intake import delete_intake_files, router as intake_router
@@ -1146,9 +1146,42 @@ def set_report_owner(report_id: str, body: OwnerUpdate, user: CurrentUser = Depe
             raise HTTPException(status_code=404, detail="User not found.")
         if new_owner is not None and not new_owner.active:
             raise ApiError(409, "That account is disabled. Enable it first, or choose someone else.", "owner_inactive")
-        owners.set_owner(db, r, new_owner, user)
+        if owners.set_owner(db, r, new_owner, user):
+            # Holding the write lock now: refuse if they were disabled since
+            # the check above, so a case never lands on a disabled account.
+            db.flush()
+            recipient_still_active(db, new_owner)
         db.commit()
         return {"owner": owners.owner_dict(new_owner)}
+    finally:
+        db.close()
+
+
+class Reassign(BaseModel):
+    from_user_id: str
+    # Required, as OwnerUpdate.owner_id; null means Unassigned.
+    to_user_id: Optional[str]
+    include_signed: bool = False
+
+
+@app.post("/reports/reassign")
+def reassign_cases(body: Reassign, admin: CurrentUser = Depends(require_admin)) -> dict:
+    """Admins move all of someone's open cases at once ("Move their cases"
+    on the Users screen), and with include_signed their signed-off ones
+    too, to an active account or Unassigned. Each case gets an "assigned"
+    history entry, as PATCH /reports/{id}/owner writes; drafts stay."""
+    db = SessionLocal()
+    try:
+        source = db.get(User, body.from_user_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        target = case_recipient(db, body.to_user_id, source.id) if body.to_user_id else None
+        # Its UPDATE takes the write lock; then the target, who may have
+        # been disabled since the check above, is checked again.
+        moved = owners.reassign_open_cases(db, source.id, target, admin, include_signed=body.include_signed)
+        recipient_still_active(db, target)
+        db.commit()
+        return {"moved": moved}
     finally:
         db.close()
 

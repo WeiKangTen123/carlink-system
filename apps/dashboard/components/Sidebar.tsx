@@ -16,7 +16,8 @@ const NAV_ITEMS = [
   { href: "/reports", label: "Cases Repository", icon: FolderArchive },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
-  // Admin only (users, API keys, branding) -- see Sidebar's showSettings.
+  // Everyone: My settings (profile, password). Admins also get the Users
+  // and Company tabs there (app/settings/layout.tsx).
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -28,13 +29,16 @@ function isActiveLink(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
-export function Sidebar({ showSettings }: { showSettings: boolean }) {
+/** locked: signed in with a temporary password. Nothing opens until it's
+ * replaced on /account, so there are no links away from it: following one
+ * would only bounce back (see AppShell). */
+export function Sidebar({ locked = false }: { locked?: boolean }) {
   const pathname = usePathname();
-  const items = showSettings ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.href !== "/settings");
+  const items = locked ? [] : NAV_ITEMS;
 
   return (
     <aside className="sidebar">
-      <Link href="/" className="sidebar-brand">
+      <Link href={locked ? "/account" : "/"} className="sidebar-brand">
         <div className="brand-icon">
           <CarFront style={{ width: 18, height: 18 }} />
         </div>

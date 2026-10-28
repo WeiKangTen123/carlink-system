@@ -1,5 +1,6 @@
 /** Thin client over the bot-service FastAPI backend (apps/bot-service/app/api/main.py). */
 
+import { cache } from "react";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { isPublicPage } from "./publicPages";
 
@@ -117,7 +118,8 @@ async function forwardedCookie(): Promise<string | null> {
   return pairs.length ? pairs.join("; ") : null;
 }
 
-async function loginPath(): Promise<string> {
+/** /login, with ?next= back to the page being rendered. Server side only. */
+export async function loginPath(): Promise<string> {
   // Set by proxy.ts on every page request.
   const { headers } = await import("next/headers");
   const here = (await headers()).get("x-carlink-path");
@@ -309,7 +311,7 @@ export async function apiError(res: Response, fallback: string): Promise<ApiErro
   return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code);
 }
 
-/** Profile fields a user edits on their own Account page, and an admin on
+/** Profile fields a user edits on Settings -> My settings, and an admin on
  * anyone's. The name, licence and firm are printed on the PDF at sign-off. */
 export type ProfileFields = {
   username?: string;
@@ -319,8 +321,11 @@ export type ProfileFields = {
   firm_name?: string;
 };
 
-/** The signed-in user, or null when there is none. Never redirects. */
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+/** The signed-in user, or null when there is none. Never redirects.
+ * Asked once per server render however many layouts and pages want it (the
+ * root layout, Settings' layout and its page all do); React's cache() lasts
+ * one request, so every new request still asks the API. */
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   try {
     const res = await apiFetch(`${API_BASE_URL}/auth/me`, { cache: "no-store" }, { timeoutMs: 8000, onSignedOut: "return" });
     if (!res.ok) return null;
@@ -330,7 +335,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     console.warn("Failed to load the signed-in user:", err);
     return null;
   }
-}
+});
 
 export async function updateMyProfile(patch: ProfileFields): Promise<CurrentUser> {
   const res = await apiFetch(`${API_BASE_URL}/auth/me`, {
@@ -357,10 +362,31 @@ export async function listUsers(): Promise<UserAccount[]> {
   return res.json();
 }
 
-/** What an admin may change on someone's account (PATCH /users/{id}). */
-export type UserPatch = ProfileFields & Partial<UserTicks> & { email?: string; role?: UserRole; active?: boolean };
+/** What happens to someone's open cases when they are disabled: "move" to
+ * another active account, "unassign" (admins and staff who see all cases
+ * pick them up), or "keep" them under the disabled account. Signed-off cases
+ * and unfinished drafts stay with them either way. */
+export type OpenCasesChoice = "keep" | "unassign" | "move";
 
-export async function updateUser(id: string, patch: UserPatch): Promise<UserAccount> {
+/** What an admin may change on someone's account (PATCH /users/{id}).
+ * `role` on your own account is refused (403 not_allowed), so it is only
+ * sent when it changed. `open_cases` (+ `open_cases_to` for "move") go only
+ * with `active: false`; the API does the whole disable or none of it. */
+export type UserPatch = ProfileFields &
+  Partial<UserTicks> & {
+    email?: string;
+    role?: UserRole;
+    active?: boolean;
+    open_cases?: OpenCasesChoice;
+    open_cases_to?: string;
+  };
+
+/** PATCH /users/{id} answers with the account. When a disable applied an
+ * open_cases choice it also says how many cases that touched (`moved`);
+ * absent otherwise, and from an API that doesn't send it yet. */
+export type UpdatedUser = UserAccount & { moved?: number };
+
+export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedUser> {
   const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -902,6 +928,24 @@ export async function setCaseOwner(reportId: string, ownerId: string | null): Pr
   return res.json();
 }
 
+/** Admin: moves everything one person owns that isn't signed off (plus their
+ * signed-off cases with includeSigned) to toUserId, or makes it Unassigned
+ * (null). Unfinished drafts stay. Each case gets an "assigned" history
+ * entry. Refused for a disabled target (owner_inactive). */
+export async function reassignCases(
+  fromUserId: string,
+  toUserId: string | null,
+  includeSigned = false
+): Promise<{ moved: number }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/reassign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_user_id: fromUserId, to_user_id: toUserId, include_signed: includeSigned }),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to move the cases");
+  return res.json();
+}
+
 export async function createReport(payload: ReportData, tempPhotoPaths: string[] = []): Promise<{ id: string }> {
   const res = await apiFetch(`${API_BASE_URL}/reports`, {
     method: "POST",
@@ -1001,7 +1045,7 @@ export async function reopenReport(id: string): Promise<{ id: string; status: st
   return res.json();
 }
 
-/** Signs as the signed-in user, with their own profile (Account page) --
+/** Signs as the signed-in user, with their own profile (My settings) --
  * the API ignores any name, licence or firm in the request. */
 export async function signOffReport(
   id: string,
