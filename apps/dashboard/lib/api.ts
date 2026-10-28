@@ -358,16 +358,19 @@ export function aiOffMessage(code: AiOffCode, said?: unknown): string {
   return AI_OFF_MESSAGES[code];
 }
 
-/** A refused API call. `code` is the API's error code, when it sent one. */
+/** A refused API call. `code` is the API's error code, when it sent one;
+ * `detail` its own words, when it sent a sentence. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
+  readonly detail: string | null;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(message: string, status: number, code: string | null = null, detail: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -376,12 +379,22 @@ export function errorCode(err: unknown): string | null {
   return err instanceof ApiError ? err.code : null;
 }
 
+/** For a refusal the API words for the case at hand -- a 409 (the case's
+ * photo limit, a signed-off case) or a 429 (one AI request at a time, too
+ * many photos this hour) -- its own words; otherwise err.message. */
+export function limitMessage(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  if (err instanceof ApiError && (err.status === 409 || err.status === 429) && err.detail) return err.detail;
+  return err.message;
+}
+
 /** An ApiError from a failed response: refusalMessage() for its code and
  * detail, else "<fallback> (<status>)". */
 export async function apiError(res: Response, fallback: string): Promise<ApiError> {
   const body = await res.json().catch(() => null);
   const code = typeof body?.code === "string" ? body.code : null;
-  return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code);
+  const detail = typeof body?.detail === "string" && body.detail ? body.detail : null;
+  return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code, detail);
 }
 
 /** Profile fields a user edits on Settings -> My settings, and an admin on

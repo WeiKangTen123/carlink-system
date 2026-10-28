@@ -18,7 +18,9 @@ import {
   listReports,
   listUsers,
   setCaseOwner,
+  ApiError,
   errorCode,
+  limitMessage,
   messageForCode,
   type AnnexAInfo,
   type AnnexAPartItem,
@@ -50,15 +52,20 @@ export async function getReportDetailAction(id: string) {
   }
 }
 
-/** A failed AI call (or photo attach), with the API's error code when it
- * sent one -- so the screen can tell AI being off for this person
- * (AI_OFF_CODES, release P4) from the AI failing, and say what to do. */
-export type AiActionError = { error: string; code: string | null };
+/** A failed AI call (or photo attach), with the API's error code and status
+ * when it sent them -- so the screen can tell AI being off for this person
+ * (AI_OFF_CODES, release P4) and a limit (409, 429: in the API's own words,
+ * see limitMessage) from the AI failing, and say what to do. */
+export type AiActionError = { error: string; code: string | null; status?: number | null };
 
 function aiActionError(err: unknown, fallback: string): AiActionError {
   // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
   unstable_rethrow(err);
-  return { error: err instanceof Error ? err.message : fallback, code: errorCode(err) };
+  return {
+    error: limitMessage(err) || fallback,
+    code: errorCode(err),
+    status: err instanceof ApiError ? err.status : null,
+  };
 }
 
 /** Runs on the server so the browser never talks to the API's port
@@ -115,14 +122,21 @@ export async function attachPhotosAction(
   }
 }
 
-export async function updateReportAction(id: string, formData: FormData) {
+/** Saves the edit form. A 409 or 429 (the case's photo limit, a case
+ * signed off meanwhile, too many requests) comes back as the API's own
+ * words, for the form to show where it is, with nothing typed or attached
+ * lost. */
+export async function updateReportAction(id: string, formData: FormData): Promise<{ error: string } | void> {
   const { payload, tempPhotoPaths } = buildReportPayload(formData);
   try {
     await updateReport(id, payload, tempPhotoPaths);
   } catch (err) {
     unstable_rethrow(err);
-    // A refusal with a code (not_allowed, disk_full, render_busy) goes back
-    // to the form with its message instead of the error page.
+    if (err instanceof ApiError && (err.status === 409 || err.status === 429)) {
+      return { error: limitMessage(err) || "The case couldn't be saved. Try again." };
+    }
+    // A refusal with a code (not_allowed, disk_full) goes back to the form
+    // with its message instead of the error page.
     const code = errorCode(err);
     if (code && messageForCode(code)) redirect(`/reports/${id}/edit?error=${encodeURIComponent(code)}`);
     throw err;

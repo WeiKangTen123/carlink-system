@@ -95,6 +95,12 @@ export type IntakeState = {
    * started it (one of AI_OFF_CODES in lib/api.ts); null otherwise, and
    * cleared on the next start. Absent from an API before release P4. */
   error_code?: string | null;
+  /** Who started the run that stopped, and whether that was the signed-in
+   * user. The AI runs on the key of whoever presses Start or Retry, so a
+   * stop because of someone else's key is theirs to fix, not the viewer's.
+   * Absent from an API before they were added: read as the viewer's own. */
+  error_by?: { id: string; name: string; username: string } | null;
+  error_mine?: boolean;
   reporter_notes: string;
   read_photo_ids: string[];
   photos: IntakePhoto[];

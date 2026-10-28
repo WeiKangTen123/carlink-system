@@ -185,9 +185,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const applyState = useCallback((s: IntakeState, initial: boolean) => {
     const wasRunning = isRunning(stageRef.current);
     const finishedReading = wasRunning && s.stage === "ready";
-    // A run that stopped here because the AI was refused for whoever
-    // started it (their key stopped working mid-run, say): AI is off now.
-    if (wasRunning && s.stage === "failed" && isAiOffCode(s.error_code)) {
+    // A run this person started that stopped because the AI was refused for
+    // them (their key stopped working mid-run, say): AI is off for them now.
+    // Someone else's run stopping says nothing about this person's AI.
+    if (wasRunning && s.stage === "failed" && isAiOffCode(s.error_code) && s.error_mine !== false) {
       setAiNow({ allowed: false, code: s.error_code, said: s.error });
     }
     stageRef.current = s.stage;
@@ -815,8 +816,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // Step 2 says why the last run stopped itself (SortStep), with what to do.
   const failedAiOff = state?.stage === "failed" && isAiOffCode(state.error_code) ? state.error_code : null;
   // Why AI is off, when known: what the API last said, else the last run's
-  // stop. Null: off for a reason not known here (My AI key says which).
-  const aiOffCode = aiNow?.code ?? failedAiOff;
+  // stop if this person started it. Null: off for a reason not known here
+  // (My AI key says which).
+  const aiOffCode = aiNow?.code ?? (state?.error_mine === false ? null : failedAiOff);
   const aiOffSaid = aiNow?.code ? aiNow.said : state?.error;
   // Step 1 as before (P1). Step 2 only when a Retry or Re-read there was
   // just refused, and not beside SortStep's own word on a stopped run.

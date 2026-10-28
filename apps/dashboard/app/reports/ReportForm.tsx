@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState, useTransition } from "react";
 import { unstable_rethrow } from "next/navigation";
 import { Sparkles, AlertTriangle, CheckCircle2, Paperclip, Plus } from "lucide-react";
 import { analyzePhotosAction, attachPhotosAction, reanalyzeExistingPhotosAction, type AiActionError } from "./actions";
@@ -25,12 +25,15 @@ import {
 /** Why the last Analyze / Re-analyze didn't fill the form. `aiOff`: the AI
  * was refused for this person (release P4) -- nothing was analyzed, and the
  * photos it was sent weren't attached (the API checks before saving any);
- * "Attach photos without AI" attaches them instead. */
-type AnalyzeError = { text: string; aiOff: AiOffCode | null; newPhotos: boolean };
+ * "Attach photos without AI" attaches them instead. `limit`: a 409 or 429
+ * the API words itself (one AI request at a time, the case's photo limit),
+ * shown as it is rather than as the AI failing. */
+type AnalyzeError = { text: string; aiOff: AiOffCode | null; limit: boolean; newPhotos: boolean };
 
 function toAnalyzeError(result: AiActionError, newPhotos: boolean): AnalyzeError {
-  if (isAiOffCode(result.code)) return { text: aiOffMessage(result.code, result.error), aiOff: result.code, newPhotos };
-  return { text: result.error, aiOff: null, newPhotos };
+  if (isAiOffCode(result.code)) return { text: aiOffMessage(result.code, result.error), aiOff: result.code, limit: false, newPhotos };
+  const limit = result.status === 409 || result.status === 429;
+  return { text: result.error, aiOff: null, limit, newPhotos };
 }
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
@@ -53,7 +56,9 @@ type ReportFormProps = {
    * up server-side when the reporter hasn't picked any new files. Omitted
    * for create, where there's no report yet to look up. */
   reportId?: string;
-  action: (formData: FormData) => void | Promise<void>;
+  /** Saves the form. A refusal it answers with ({error}) is shown above the
+   * save button, with the form as it was. */
+  action: (formData: FormData) => void | Promise<{ error: string } | void>;
   submitLabel: string;
 };
 
@@ -78,6 +83,12 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attachedWithoutAi, setAttachedWithoutAi] = useState(false);
   const user = useCurrentUser();
+  // Bumped on every new pick of photos. An analysis or attach that finishes
+  // after the photos it was sent were replaced is dropped: its temp paths
+  // are for the old photos. (The picker is also disabled while either runs.)
+  const pickRef = useRef(0);
+  const [saving, startSaving] = useTransition();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [description, setDescription] = useState(initialData?.description ?? "");
   const [category, setCategory] = useState<Set<string>>(
@@ -137,6 +148,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   // the moment photos were first selected.
   async function runAnalysis(currentPhotos: File[], currentDescription: string) {
     if (currentPhotos.length === 0) return;
+    const pick = pickRef.current;
     setUploading(true);
     setAnalyzeError(null);
     setAiApplied(false);
@@ -144,6 +156,8 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     fd.set("description", currentDescription);
     for (const p of currentPhotos) fd.append("photos", p);
     const result = await analyzePhotosAction(fd);
+    // Other photos were picked meanwhile: this result is for the old ones.
+    if (pick !== pickRef.current) return;
     setUploading(false);
 
     if ("error" in result) {
@@ -165,6 +179,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   // edit mode only.
   async function attachWithoutAi() {
     if (!reportId || photos.length === 0) return;
+    const pick = pickRef.current;
     setAttaching(true);
     setAttachError(null);
     const fd = new FormData();
@@ -177,6 +192,8 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
       unstable_rethrow(err);
       result = { error: "Couldn't reach Carlink just now. Check your connection and try again.", code: null };
     }
+    // Other photos were picked meanwhile: these paths are for the old ones.
+    if (pick !== pickRef.current) return;
     setAttaching(false);
     if ("error" in result) {
       setAttachError(result.error);
@@ -195,10 +212,12 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   // new to attach on save.
   async function reanalyzeExistingPhotos() {
     if (!reportId) return;
+    const pick = pickRef.current;
     setUploading(true);
     setAnalyzeError(null);
     setAiApplied(false);
     const result = await reanalyzeExistingPhotosAction(reportId, description);
+    if (pick !== pickRef.current) return;
     setUploading(false);
 
     if ("error" in result) {
@@ -211,6 +230,10 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     photoPreviews.forEach((url) => URL.revokeObjectURL(url));
     const files = Array.from(e.target.files || []);
+    // Anything still running for the previous pick no longer counts.
+    pickRef.current += 1;
+    setUploading(false);
+    setAttaching(false);
     setPhotos(files);
     setPhotoPreviews(files.map((f) => URL.createObjectURL(f)));
     setTempPhotoPaths([]);
@@ -225,9 +248,12 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     await runAnalysis(files, description);
   }
 
-  // AI is off for this person: GET /auth/me said so with the page, or the
-  // last Analyze was refused for it. Unknown counts as on; the API decides.
-  const aiOff = Boolean(analyzeError?.aiOff) || user?.ai_allowed === false;
+  // GET /auth/me, with the page: whether the AI runs for this person. Unknown
+  // counts as allowed; the API decides.
+  const aiAllowed = user?.ai_allowed !== false;
+  // AI is off for this person: GET /auth/me said so, or the last Analyze was
+  // refused for it.
+  const aiOff = Boolean(analyzeError?.aiOff) || !aiAllowed;
   const attached = tempPhotoPaths.length > 0;
   // Picked photos not attached: offer to attach them without AI when AI is
   // off, or when the analysis failed (which attaches nothing).
@@ -242,12 +268,24 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           : { tone: "ok", label: "Attached · analyzed by AI" }
         : { tone: "warn", label: "Not attached yet" };
 
-  /** Picked photos that aren't attached would be dropped on save without a
-   * word: ask first. */
-  function confirmUnattached(e: React.FormEvent<HTMLFormElement>) {
-    if (photos.length === 0 || attached) return;
-    const why = uploading || attaching ? "The new photos are still being attached." : "The new photos aren't attached.";
-    if (!window.confirm(`${why} Save without them?`)) e.preventDefault();
+  /** Saves. Run here rather than as the form's action, so a refusal the
+   * save answers with (the case's photo limit, say) is shown with the form
+   * as it was: React resets a form's fields after its action finishes.
+   * Picked photos that aren't attached would be dropped without a word, so
+   * that asks first. */
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (saving) return;
+    if (photos.length > 0 && !attached) {
+      const why = uploading || attaching ? "The new photos are still being attached." : "The new photos aren't attached.";
+      if (!window.confirm(`${why} Save without them?`)) return;
+    }
+    const formData = new FormData(e.currentTarget);
+    setSaveError(null);
+    startSaving(async () => {
+      const result = await action(formData);
+      if (result && "error" in result) setSaveError(result.error);
+    });
   }
 
   function toggleCategory(c: string) {
@@ -260,7 +298,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   }
 
   return (
-    <form action={action} onSubmit={confirmUnattached} className="new-report-form">
+    <form onSubmit={submit} className="new-report-form">
       <h1>{mode === "edit" ? "Edit Incident Report" : "New Case Intake (FNOL)"}</h1>
       <p className="form-hint">
         {mode === "edit"
@@ -295,9 +333,9 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
       <section className="card">
         <h2>Photo Evidence &amp; Description</h2>
         <p className="form-hint">
-          Upload photos of the incident and describe what happened. AI automatically analyzes the
-          photos and description to fill in the accident type, severity, damaged parts, and
-          category below -- review and adjust before saving.
+          {aiAllowed
+            ? "Upload photos of the incident and describe what happened. AI automatically analyzes the photos and description to fill in the accident type, severity, damaged parts, and category below -- review and adjust before saving."
+            : "Upload photos of the incident and describe what happened, then fill in the accident type, severity, damaged parts, and category below."}
         </p>
 
         {existingPhotoUrls.length > 0 && (
@@ -322,7 +360,9 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
 
         <label style={{ marginTop: 16 }}>
           {existingPhotoUrls.length > 0 ? "Add More Photos" : "Photos"}
-          <input type="file" accept="image/*" multiple onChange={handlePhotoChange} />
+          {/* Not while photos are being analyzed or attached: a new pick
+              then would get the old pick's result. */}
+          <input type="file" accept="image/*" multiple onChange={handlePhotoChange} disabled={uploading || attaching} />
         </label>
 
         {aiOff && !analyzeError && photos.length === 0 && reportId && (
@@ -389,20 +429,24 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           />
         </label>
 
-        <button
-          type="button"
-          className="add-row-button"
-          style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
-          onClick={() => (photos.length > 0 ? runAnalysis(photos, description) : reanalyzeExistingPhotos())}
-          disabled={uploading || attaching || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
-          title={
-            photos.length > 0
-              ? "Re-run AI analysis using the description as currently written -- use this after editing the description following a photo upload"
-              : "Re-run AI analysis against this report's already-saved photos"
-          }
-        >
-          <Sparkles style={{ width: 14, height: 14 }} /> {uploading ? "Analyzing..." : "Re-analyze with AI"}
-        </button>
+        {/* Only for people with AI: for the rest it would only be refused,
+            and "Attach photos without AI" is their way to add photos. */}
+        {aiAllowed && (
+          <button
+            type="button"
+            className="add-row-button"
+            style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
+            onClick={() => (photos.length > 0 ? runAnalysis(photos, description) : reanalyzeExistingPhotos())}
+            disabled={uploading || attaching || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
+            title={
+              photos.length > 0
+                ? "Re-run AI analysis using the description as currently written -- use this after editing the description following a photo upload"
+                : "Re-run AI analysis against this report's already-saved photos"
+            }
+          >
+            <Sparkles style={{ width: 14, height: 14 }} /> {uploading ? "Analyzing..." : "Re-analyze with AI"}
+          </button>
+        )}
 
         {analyzeError?.aiOff ? (
           <div className="form-hint ai-off-hint" role="alert">
@@ -417,10 +461,14 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           </div>
         ) : analyzeError ? (
           <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError.text} --{" "}
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} />{" "}
+            {/* A limit (409/429) is in the API's own words: not the AI failing. */}
+            {analyzeError.limit ? `Not analyzed: ${analyzeError.text}` : `AI analysis failed: ${analyzeError.text}`}
             {analyzeError.newPhotos && !attached && reportId
-              ? "the new photos aren't attached; try again, or attach them without AI."
-              : "photos may not be attached; try again before saving."}
+              ? " -- the new photos aren't attached; try again, or attach them without AI."
+              : analyzeError.limit
+                ? ""
+                : " -- photos may not be attached; try again before saving."}
           </p>
         ) : null}
         {aiApplied && !analyzeError && (
@@ -697,8 +745,13 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
         </label>
       </section>
 
-      <button type="submit" className="submit-button">
-        {submitLabel}
+      {saveError && (
+        <div className="setup-error" role="alert" style={{ marginTop: 16, marginBottom: 0 }}>
+          Not saved: {saveError}
+        </div>
+      )}
+      <button type="submit" className="submit-button" disabled={saving}>
+        {saving ? "Saving…" : submitLabel}
       </button>
     </form>
   );

@@ -212,6 +212,10 @@ export function SortStep({
   const stoppedAiOff = stage === "failed" && isAiOffCode(state.error_code) ? state.error_code : null;
   const failedAiOff = stoppedAiOff ? (aiRefused?.code ?? stoppedAiOff) : null;
   const failedAiOffSaid = aiRefused?.code ? aiRefused.said : state.error;
+  // Someone else started it (an admin and the owner on one draft): their
+  // key, theirs to fix. A Retry here runs on the viewer's own AI. Unless the
+  // viewer's own Retry was refused since, which is theirs again.
+  const stoppedBy = stoppedAiOff && !aiRefused?.code && state.error_mine === false && state.error_by ? state.error_by : null;
 
   return (
     <section className="card intake-panel">
@@ -239,11 +243,24 @@ export function SortStep({
         <div className="intake-alert danger" role="alert">
           <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
           <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-            {aiOffMessage(failedAiOff, failedAiOffSaid)}
+            {stoppedBy ? (
+              <>
+                The AI run {stoppedBy.name || `@${stoppedBy.username}`} started stopped: their AI key isn&apos;t working (or AI
+                is off for them).
+              </>
+            ) : (
+              aiOffMessage(failedAiOff, failedAiOffSaid)
+            )}
             {photos.some((p) => p.kind && p.kind_source === "ai") && " The photos sorted before it stopped are kept."}{" "}
-            <AiFixLink code={failedAiOff} />
+            {!stoppedBy && <AiFixLink code={failedAiOff} />}
           </div>
-          <button type="button" className="btn-secondary-modern" onClick={onRetry} disabled={busy}>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            onClick={onRetry}
+            disabled={busy}
+            title={stoppedBy ? "Runs the AI again on your own AI: your key, or the company key if you may use it" : undefined}
+          >
             <RotateCcw style={{ width: 13, height: 13 }} /> Retry
           </button>
           <button type="button" className="btn-secondary-modern" onClick={onSkipAi} disabled={busy}>
