@@ -292,7 +292,11 @@ TEMP_PASSWORD_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}
 BASE = "https://carlink.test"
 PASSWORD = "purple tiger lamp bicycle"
 TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
-AI_OFF_DETAIL = "AI is off for your account. Ask an admin to allow the company AI key."
+# P4: no working own key and not allowed the company key (app/ai/keys.py).
+AI_OFF_DETAIL = (
+    "AI is off for your account. Add your own AI key in Settings → My AI key, "
+    "or ask an admin to allow the company key."
+)
 BANNER_WORDS = ("unverified user", "not issued by")
 
 PASSED = {"B1": 0, "B2": 0}

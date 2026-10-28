@@ -15,7 +15,7 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
-from app.ai.client import available_api_keys
+from app.ai.keys import AiActor, AiUnavailable, resolve_keys
 from app.ai.rate_limit import estimate_wait
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
@@ -46,6 +46,11 @@ WELCOME_GUIDE = (
 )
 
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
+
+# Who the bot's AI calls are for: the company keys, as before P4 (ai/keys.py).
+# The bot knows chats, not Carlink accounts, until Telegram is linked to
+# them; meanwhile the allow-list (_staff_only) decides who gets this far.
+AI_ACTOR = AiActor.cli()
 
 REFUSAL_TEXT = "This Carlink bot is for registered staff only. Please ask your Carlink admin for access."
 REFUSAL_EVERY_SECONDS = 60 * 60
@@ -395,8 +400,11 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
     msg_target = update.message or (update.callback_query.message if update.callback_query else None)
 
     def _queued_seconds() -> float:
-        keys = available_api_keys()
-        return estimate_wait(keys[0] if keys else None)
+        try:
+            first = resolve_keys(AI_ACTOR)[0]
+        except AiUnavailable:
+            return 0.0  # no key at all: the drafting call below says so
+        return estimate_wait(first.rate_limit_id)
 
     queued = await asyncio.to_thread(_queued_seconds)
     if msg_target:
@@ -406,7 +414,7 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
             await msg_target.reply_text(notice)
 
     try:
-        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
+        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session, actor=AI_ACTOR)
     except Exception:
         logger.exception("AI drafting failed")
         if msg_target:
@@ -605,7 +613,8 @@ async def _post_init(app: Application) -> None:
 def build_app() -> Application:
     init_db()
     # Own AI keys: the bot only reads the secret the api makes, and checks
-    # the canary (ai/secretbox.py). Not used for AI until P4.
+    # the canary (ai/secretbox.py). Its own drafting runs on the company
+    # keys (AI_ACTOR) until Telegram is linked to accounts.
     from app.ai import secretbox
 
     secretbox.startup(create=False)

@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, update
 from sqlalchemy.exc import IntegrityError
 
+from app.ai import keys as ai_keys
+from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import current_user, editable_case, visible_case
@@ -89,14 +91,14 @@ def _claim_stage(db, report_id: str, new_stage: str) -> bool:
     result = db.execute(
         update(IntakeSession)
         .where(IntakeSession.report_id == report_id, IntakeSession.stage != "finalizing")
-        .values(stage=new_stage, progress_done=0, progress_total=0, error=None)
+        .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None)
     )
     db.commit()
     return result.rowcount == 1
 
 
 def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
-    stage, error = session.stage, session.error
+    stage, error, error_code = session.stage, session.error, session.error_code
     # Left mid-run by a restart: the thread is gone but the row still says
     # it's working, and the wizard would poll forever.
     if stage in pipeline.RUNNING_STAGES and not pipeline.is_running(report.id):
@@ -105,6 +107,7 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
             "Processing stopped before finishing (the server restarted). "
             "Press Retry to continue -- photos already sorted are kept."
         )
+        error_code = None
     photos = ordered_photos(db, report.id)
     return {
         "id": report.id,
@@ -114,6 +117,9 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         "progress": {"done": session.progress_done, "total": session.progress_total},
         "stage_started_at": iso_utc(session.stage_started_at) if session.stage_started_at else None,
         "error": error,
+        # Why the last run stopped when the person's AI wasn't available
+        # (ai/keys.AiUnavailable's codes), else None.
+        "error_code": error_code,
         "reporter_notes": session.reporter_notes,
         "read_photo_ids": session.read_photo_ids or [],
         "photos": [serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
@@ -376,12 +382,17 @@ class ProcessRequest(BaseModel):
 
 @router.post("/{report_id}/process")
 def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Depends(editable_case)) -> dict:
-    limits.require_ai(user)
+    # Whoever presses Start or Retry pays -- not the draft's owner -- and the
+    # run keeps who that was, not a key (intake/pipeline.py).
+    actor = AiActor.for_user(user.id, "dashboard")
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True)
         if db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).count() == 0 and not session.reporter_notes.strip():
             raise HTTPException(status_code=400, detail="Upload photos or describe what happened first.")
+        # After the view (404), edit (403) and input (400) checks, before
+        # the stage is touched: 409 {detail, code} (api/main.py).
+        ai_keys.ensure_ai_ready(actor)
         # Reserved before the stage is committed (so a GET in between never
         # sees a stage with no run behind it), and the stage committed
         # before the thread starts (whose own progress writes would
@@ -394,7 +405,7 @@ def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Dep
         except Exception:
             pipeline.release(report_id)
             raise
-        pipeline.start_reserved(report_id, body.mode)
+        pipeline.start_reserved(report_id, body.mode, actor)
         db.refresh(session)
         return _state(db, report, session, user)
     finally:

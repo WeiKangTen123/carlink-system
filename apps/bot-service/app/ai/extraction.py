@@ -20,6 +20,7 @@ import json
 import logging
 import re
 
+from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
@@ -374,11 +375,14 @@ def draft_report(
     known_facts: dict | None = None,
     photo_labels: list[str] | None = None,
     timeout: float = 45.0,
+    *,
+    actor: AiActor,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
     model attempt; intake raises it because it sends up to ~24 photos in one
-    call, where the bot's few photos fit comfortably in 45s."""
+    call, where the bot's few photos fit comfortably in 45s. actor: who
+    pays (structured.call_structured)."""
     return call_structured(
         purpose="draft",
         system_instruction=SYSTEM_PROMPT,
@@ -386,5 +390,6 @@ def draft_report(
         schema=_response_schema(),
         parse=_parse_draft,
         models=_model_chain(),
+        actor=actor,
         timeout=timeout,
     )

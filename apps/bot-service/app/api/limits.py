@@ -1,11 +1,12 @@
 """What an account may spend, beyond which cases it can see (app/auth/
-permissions.py): the company AI key, PDF renders, drafts and new cases, and
-disk. Signup is open to strangers, and the api, the Telegram bot and
-another app share one small VM, so each of these is capped.
+permissions.py): PDF renders, drafts and new cases, and disk. Signup is open
+to strangers, and the api, the Telegram bot and another app share one small
+VM, so each of these is capped. Which AI key a person may use -- their own,
+or the company's for admins and ticked people -- is app/ai/keys.py's, whose
+refusals are 409s with codes too (ai_key_missing, ai_key_invalid, ...).
 
 Every refusal is an ApiError with a code the dashboard explains:
 
-    409 ai_key_missing   AI is only for admins and the "company AI key" tick
     429 render_busy      the server is busy making PDFs, or this person's
                          last one is still being made
     429 render_limit     too many PDFs lately (accounts without staff access)
@@ -27,21 +28,9 @@ from sqlalchemy import func
 
 from app.auth.core import CurrentUser
 from app.auth.deps import ApiError, not_allowed
-from app.auth.permissions import is_admin, is_staff, may_use_company_key
+from app.auth.permissions import is_admin, is_staff
 from app.reports.models import Report
 from app.storage.files import disk_space_low
-
-# ------------------------------------------------------------------- AI
-
-AI_OFF = "AI is off for your account. Ask an admin to allow the company AI key."
-
-
-def require_ai(user: CurrentUser) -> None:
-    """Before anything that ends in a Gemini call on the company key. Case
-    routes ask after their view (404) and edit (403) gates."""
-    if not may_use_company_key(user):
-        raise ApiError(409, AI_OFF, "ai_key_missing")
-
 
 # ----------------------------------------------------------------- disk
 

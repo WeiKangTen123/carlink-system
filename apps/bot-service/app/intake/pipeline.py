@@ -10,6 +10,13 @@ leave and come back) instead of holding one request open for minutes:
 
 The api process is a single uvicorn worker (app/main.py), so an in-process
 set is enough to stop the same draft being processed twice at once.
+
+A run is for the person who started it (an AiActor: who, never a key),
+handed by hand to the run's thread and to every sorting worker -- context
+variables don't reach either -- and each Gemini call looks their keys up
+again. When their AI stops being available mid-run (their key refused, an
+admin's untick), the run fails with the reason's code in
+IntakeSession.error_code; photos already sorted stay sorted.
 """
 import logging
 import re
@@ -19,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.ai.extraction import draft_report
+from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.reports.db import SessionLocal
@@ -94,13 +102,16 @@ def release(report_id: str) -> None:
         _running.discard(report_id)
 
 
-def start_reserved(report_id: str, mode: str) -> None:
+def start_reserved(report_id: str, mode: str, actor: AiActor) -> None:
     """mode "all" sorts unsorted photos then reads; "read" only re-reads
-    (after the surveyor regrouped photos). Call reserve() first."""
-    threading.Thread(target=_run, args=(report_id, mode), name=f"intake-{report_id}", daemon=True).start()
+    (after the surveyor regrouped photos). actor: who pressed the button,
+    and pays. Call reserve() first."""
+    threading.Thread(target=_run, args=(report_id, mode, actor), name=f"intake-{report_id}", daemon=True).start()
 
 
-def _set_stage(report_id: str, stage: str, done: int = 0, total: int = 0, error: str | None = None) -> None:
+def _set_stage(
+    report_id: str, stage: str, done: int = 0, total: int = 0, error: str | None = None, error_code: str | None = None
+) -> None:
     db = SessionLocal()
     try:
         session = db.get(IntakeSession, report_id)
@@ -111,6 +122,7 @@ def _set_stage(report_id: str, stage: str, done: int = 0, total: int = 0, error:
             session.progress_done = done
             session.progress_total = total
             session.error = error
+            session.error_code = error_code
             db.commit()
     finally:
         db.close()
@@ -121,6 +133,8 @@ def _friendly_error(exc: Exception) -> str:
     is used up" for every failure sent people to Retry even when the request
     itself was being rejected (the 400s before 877d99d), where Retry can
     never help."""
+    if isinstance(exc, AiUnavailable):
+        return exc.message
     if isinstance(exc, RuntimeError) and "fallback models" in str(exc):
         cause = str(exc.__cause__ or "")
         if any(s in cause for s in ("429", "RESOURCE_EXHAUSTED", "quota", "503", "high demand")):
@@ -128,18 +142,24 @@ def _friendly_error(exc: Exception) -> str:
                 "The AI is busy or today's quota is used up. Your photos are saved -- "
                 "press Retry in a few minutes."
             )
-        return f"The AI rejected the request on every model ({cause[:200] or 'no detail'}). Retrying won't help; please report this."
+        # Google's words, shown to the surveyor: scrubbed of anything key-like.
+        return f"The AI rejected the request on every model ({scrub(cause) or 'no detail'}). Retrying won't help; please report this."
     if isinstance(exc, FileNotFoundError):
         return "A photo was removed while the AI was working. Press Retry."
     return f"AI processing failed: {exc}"[:300]
 
 
-def _run(report_id: str, mode: str) -> None:
+def _run(report_id: str, mode: str, actor: AiActor) -> None:
     try:
         if mode == "all":
-            _sort(report_id)
-        _read(report_id)
+            _sort(report_id, actor)
+        _read(report_id, actor)
         _set_stage(report_id, "ready", 1, 1)
+    except AiUnavailable as exc:
+        # Not a fault: the person's AI stopped being available (their key
+        # refused or out of quota, an untick). The wizard says how to fix it.
+        logger.warning("Intake processing for %s stopped: %s", report_id, exc.code)
+        _set_stage(report_id, "failed", error=_friendly_error(exc), error_code=exc.code)
     except Exception as exc:
         logger.exception("Intake processing failed for %s", report_id)
         _set_stage(report_id, "failed", error=_friendly_error(exc))
@@ -148,7 +168,7 @@ def _run(report_id: str, mode: str) -> None:
             _running.discard(report_id)
 
 
-def _sort(report_id: str) -> None:
+def _sort(report_id: str, actor: AiActor) -> None:
     db = SessionLocal()
     try:
         photos = ordered_photos(db, report_id)
@@ -165,14 +185,14 @@ def _sort(report_id: str) -> None:
     done = 0
     done_lock = threading.Lock()
 
-    def sort_batch(batch: list[tuple[str, str, str]]) -> None:
+    def sort_batch(batch: list[tuple[str, str, str]], actor: AiActor) -> None:
         nonlocal done
         # Paths were captured at the start of the run; a photo deleted since
         # is skipped rather than failing the whole run on a missing file.
         batch = [item for item in batch if Path(item[2]).exists()]
         if not batch:
             return
-        result = triage_photos([(label, path) for label, _, path in batch])
+        result = triage_photos([(label, path) for label, _, path in batch], actor=actor)
         db = SessionLocal()
         try:
             for label, photo_id, _ in batch:
@@ -198,14 +218,17 @@ def _sort(report_id: str) -> None:
             db.close()
 
     batches = [todo[offset:offset + BATCH_SIZE] for offset in range(0, total, BATCH_SIZE)]
+    # The actor goes to each worker as an argument: a pool thread sees
+    # nothing of the thread that submitted to it.
     with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
-        futures = [pool.submit(sort_batch, batch) for batch in batches]
+        futures = [pool.submit(sort_batch, batch, actor) for batch in batches]
     # A failed batch fails the run, but every batch that finished stays
     # sorted -- the others are left to complete rather than cancelled -- so
-    # Retry only sorts what's left.
-    for future in futures:
-        if future.exception():
-            raise future.exception()
+    # Retry only sorts what's left. The person's AI going away is the
+    # failure to report when it is among them: it says what to fix.
+    failures = [future.exception() for future in futures if future.exception()]
+    if failures:
+        raise next((e for e in failures if isinstance(e, AiUnavailable)), failures[0])
 
 
 def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
@@ -309,7 +332,7 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     return sorted(chosen, key=lambda p: order[p.id])
 
 
-def _read(report_id: str) -> None:
+def _read(report_id: str, actor: AiActor) -> None:
     _set_stage(report_id, "reading", 0, 1)
     db = SessionLocal()
     try:
@@ -335,6 +358,7 @@ def _read(report_id: str) -> None:
         [path for _, _, path in inputs],
         photo_labels=[label for label, _, _ in inputs],
         timeout=120.0,
+        actor=actor,
     )
     data = draft.model_dump()
 

@@ -30,6 +30,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 from app.ai import keys as own_keys
 from app.ai import secretbox
 from app.ai.extraction import draft_report
+from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
 from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
@@ -54,7 +55,7 @@ from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports import owners
 from app.reports.db import SessionLocal, init_db
-from app.ai.client import available_api_keys, get_client, reset_client_cache
+from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, User, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
@@ -143,6 +144,13 @@ async def _hashing_busy(request: Request, exc: HashingBusy):
 @app.exception_handler(ApiError)
 async def _api_error(request: Request, exc: ApiError):
     return JSONResponse({"detail": exc.detail, "code": exc.code}, status_code=exc.status_code, headers=exc.headers)
+
+
+@app.exception_handler(AiUnavailable)
+async def _ai_unavailable(request: Request, exc: AiUnavailable):
+    """The person's AI isn't available (ai/keys.py): no key of theirs works
+    and they may not use the company's. Same shape as ApiError."""
+    return JSONResponse({"detail": exc.message, "code": exc.code}, status_code=409)
 
 
 def blank_sign_off() -> dict:
@@ -504,9 +512,11 @@ async def analyze_report_photos(
     report the reporter actually confirmed.
     """
     # No case to gate on: the photos go to a case later, through PUT
-    # /reports/{id}'s checks. AI first, then room on the disk, before any
-    # photo is saved.
-    limits.require_ai(user)
+    # /reports/{id}'s checks. AI first (the presser pays: 409 {detail,
+    # code} when theirs isn't available), then room on the disk, before
+    # any photo is saved.
+    actor = AiActor.for_user(user.id, "dashboard")
+    await asyncio.to_thread(own_keys.ensure_ai_ready, actor)
     limits.require_disk_space()
     saved_paths: list[str] = []
     td = tmp_dir()
@@ -532,11 +542,13 @@ async def analyze_report_photos(
         saved_paths.append(str(dest))
 
     try:
-        draft = await asyncio.to_thread(draft_report, description, saved_paths)
+        draft = await asyncio.to_thread(draft_report, description, saved_paths, actor=actor)
         if draft.vehicle_info:
             draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
+    except AiUnavailable:
+        raise  # their own key was refused mid-call: the 409 with its code
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"AI drafting failed: {own_keys.scrub(str(exc))}") from exc
 
     return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
 
@@ -1435,20 +1447,21 @@ async def test_service(service: str, admin: CurrentUser = Depends(require_admin)
     for display -- never raises for a failed credential, since 'your key
     is wrong' is a normal result here, not a server error."""
     if service == "llm":
-        keys = available_api_keys()
+        # The company keys, as always: own keys are tested on My AI key.
+        keys = own_keys.company_keys()
         if not keys:
             return {"ok": False, "message": "No API key configured"}
 
-        def _probe(api_key: str) -> tuple[bool, str]:
+        def _probe(key: own_keys.AiKey) -> tuple[bool, str]:
             try:
-                client = get_client(api_key)
+                client = get_client(key)
                 # Cheapest real call that still proves the key is accepted:
                 # list models. Avoids spending generation quota just to
                 # answer "does this key work".
                 next(iter(client.models.list()), None)
                 return True, "Key accepted"
             except Exception as exc:
-                return False, str(exc)[:160]
+                return False, own_keys.scrub(str(exc), key.value)[:160]
 
         working = 0
         first_error = ""

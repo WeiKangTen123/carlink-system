@@ -17,7 +17,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.auth.permissions import can_view_all_cases, is_staff, may_use_company_key
+from app.auth.permissions import can_view_all_cases, is_staff
 from app.config import settings
 from app.reports.models import AuditEntry, AuthSession, Report, User, iso_utc
 
@@ -390,7 +390,10 @@ def user_dicts(db: Session, users: list[User]) -> list[dict]:
 
 def me_dict(user: CurrentUser | User) -> dict:
     """What the signed-in user sees about themselves (GET /auth/me). The
-    last three are what the ticks add up to, admins having all of it."""
+    last three are what the ticks add up to, admins having all of it;
+    ai_allowed also counts a working own AI key (ai/keys.ai_allowed)."""
+    from app.ai.keys import ai_allowed  # ai/keys.py imports this module
+
     return {
         "id": user.id,
         "email": user.email,
@@ -403,7 +406,7 @@ def me_dict(user: CurrentUser | User) -> dict:
         "firm_name": user.firm_name or "",
         "can_view_all_cases": can_view_all_cases(user),
         "may_sign_off": is_staff(user),
-        "ai_allowed": may_use_company_key(user),
+        "ai_allowed": ai_allowed(user),
     }
 
 

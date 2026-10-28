@@ -19,7 +19,8 @@ from fastapi import APIRouter, Request, Response
 
 import httpx
 
-from app.api.limits import RenderRefused, render_turn, require_ai
+from app.ai.keys import AiActor, AiUnavailable, ensure_ai_ready
+from app.api.limits import RenderRefused, render_turn
 from app.auth.deps import current_user
 from app.config import settings
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
@@ -39,6 +40,19 @@ _DRAFT_ERROR_MESSAGE = (
 )
 
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
+
+# Whoever presses the button pays for the AI (ai/keys.py), and a WhatsApp
+# number isn't linked to a Carlink account, so there is nobody to pay:
+# resolve_keys refuses an actor with no account before any Gemini call.
+AI_ACTOR = AiActor.for_user(None, "whatsapp")
+_NO_AI_MESSAGE = "Sorry, AI drafting isn't available over WhatsApp yet. Please file this report on the Carlink dashboard."
+
+
+def _draft(description: str, session):
+    """build_draft for AI_ACTOR. Readiness first: drafting reads and
+    encodes every photo before the call itself looks for a key."""
+    ensure_ai_ready(AI_ACTOR)
+    return build_draft(description, session.photo_paths, session, actor=AI_ACTOR)
 
 
 def _escape(text: str) -> str:
@@ -96,10 +110,9 @@ def _finalize(chat_id: str, session, user) -> str:
 
 @router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request) -> Response:
-    # Behind AuthMiddleware only a signed-in user gets here, and this drafts
-    # with the company AI key: the dashboard's AI rule (api/limits.py).
+    # Behind AuthMiddleware only a signed-in user gets here. No AI for
+    # anyone (AI_ACTOR): drafting gets _NO_AI_MESSAGE.
     user = current_user(request)
-    require_ai(user)
     form = await request.form()
     chat_id = f"whatsapp:{form.get('From', 'unknown')}"
     body = (form.get("Body") or "").strip()
@@ -141,7 +154,9 @@ async def whatsapp_webhook(request: Request) -> Response:
             # `api` FastAPI process, the same one serving the whole
             # dashboard, so a blocking call here freezes the entire
             # dashboard for every user, not just this WhatsApp reply.
-            result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
+            result = await asyncio.to_thread(_draft, description, session)
+        except AiUnavailable:
+            return _twiml(_NO_AI_MESSAGE)
         except Exception:
             logger.exception("AI drafting failed")
             return _twiml(_DRAFT_ERROR_MESSAGE)
@@ -173,7 +188,9 @@ async def whatsapp_webhook(request: Request) -> Response:
         # freezing the whole api container, dashboard included, for the
         # full duration. render_pdf() (see _finalize above) already gets
         # this right via asyncio.to_thread; this call was just missed.
-        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session)
+        result = await asyncio.to_thread(_draft, description, session)
+    except AiUnavailable:
+        return _twiml(_NO_AI_MESSAGE)
     except Exception:
         logger.exception("AI drafting failed")
         return _twiml(_DRAFT_ERROR_MESSAGE)

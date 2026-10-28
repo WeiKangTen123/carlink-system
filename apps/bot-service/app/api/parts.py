@@ -20,8 +20,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from app.ai import keys as ai_keys
+from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured
-from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import can_view_all_cases, is_admin
@@ -248,8 +249,11 @@ class AiSuggestionRequest(BaseModel):
 def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Gemini's lines for parts no imported report covers. Names and
     quantities only -- no prices, no part numbers -- and labelled as AI.
-    Reads nothing from the price book, so it has nothing to hide."""
-    limits.require_ai(user)
+    Reads nothing from the price book, so it has nothing to hide. The
+    person asking pays (ai/keys.py): 409 {detail, code} when their AI isn't
+    available."""
+    actor = AiActor.for_user(user.id, "dashboard")
+    ai_keys.ensure_ai_ready(actor)
     db = SessionLocal()
     try:
         r = _report(db, report_id)
@@ -266,10 +270,13 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
             schema=_AI_SCHEMA,
             parse=json.loads,
             models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+            actor=actor,
             timeout=60.0,
         )
+    except AiUnavailable:
+        raise  # their own key was refused mid-call: the 409, not "try again"
     except Exception as exc:
-        logger.warning("AI annex suggestions failed for %s: %s", report_id, exc)
+        logger.warning("AI annex suggestions failed for %s: %s", report_id, ai_keys.scrub(str(exc)))
         raise HTTPException(status_code=503, detail="The AI couldn't suggest lines just now. Try again in a minute.")
     groups = []
     for p in out.get("parts") or []:

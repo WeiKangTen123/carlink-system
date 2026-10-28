@@ -1,9 +1,21 @@
 """People's own AI (Gemini) keys, added on Settings > My AI key
-(models.UserAiKey, the routes in api/ai_keys.py).
+(models.UserAiKey, the routes in api/ai_keys.py), and which key an AI call
+uses (P4, the end of this file).
 
-Release P3 only stores them and says how they stand. The AI still runs on
-the company key for everyone allowed it (auth/permissions.may_use_company_key),
-exactly as before; P4 makes it use the presser's own key first.
+Whoever presses the button pays. Every Gemini call is made for an AiActor
+-- a person, never a key -- and resolve_keys looks the keys up afresh on
+each call, so a removed key, an admin's untick or a disabled account
+applies from the very next call, even in the middle of an intake run:
+
+    1. their own key, if it is saved, Google hasn't refused it or run it
+       dry (WORKING), and own keys can be read here (secretbox.state() ok);
+    2. then the company keys, for admins and people ticked "may use the
+       company key" (auth/permissions.may_use_company_key) -- also when
+       their own key has stopped working.
+
+Nothing left: AiUnavailable, with a code the dashboard explains. Scripts
+and the Telegram bot use AiActor.cli(): the company keys, as before P4 (the
+bot until Telegram is linked to accounts). No HTTP route ever does.
 
 One key per person and one person per key: a key someone else has saved,
 or one of the company's, is refused. The key is sealed the moment it
@@ -19,11 +31,16 @@ admins included, sees only its last 4 characters and a status:
                 keep Google's last verdict, so the right secret put back
                 mends them all
 """
+import hashlib
 import hmac
 import logging
 import re
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import timedelta
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, or_, update
 from sqlalchemy.orm import Session
 
 from app.ai import secretbox
@@ -41,7 +58,7 @@ STORED_STATUSES = ("untested", "ok", "invalid", "quota")
 # The one answer for a key someone else has (an own key, or a company
 # key): it mustn't confirm which, or that the key exists at all.
 IN_USE = "This key can't be used here."
-# What the AI will use (P4): a key Google hasn't refused or run dry.
+# What the AI uses: a key Google hasn't refused or run dry.
 WORKING = ("ok", "untested")
 
 # Gemini keys are 39 characters starting "AIza"; looser than that, so a
@@ -268,10 +285,9 @@ def keys_by_user(db: Session, user_ids) -> dict[str, dict]:
 
 
 def ai_key_status(db: Session, user, *, unreadable: bool = False) -> dict:
-    """GET /auth/me/ai-key: the person's own key and what the AI will use
-    for them. source is what P4 will use; in P3 the AI still runs on the
-    company key, for the people allowed it, as before. unreadable: this
-    row wouldn't open, though the secret is fine (shown, not stored)."""
+    """GET /auth/me/ai-key: the person's own key and what the AI uses for
+    them -- source and ai_available follow resolve_keys' order. unreadable:
+    this row wouldn't open, though the secret is fine (shown, not stored)."""
     row = get_row(db, user.id)
     company = may_use_company_key(user)
     if row is None:
@@ -304,3 +320,299 @@ def ai_key_status(db: Session, user, *, unreadable: bool = False) -> dict:
         "ai_available": working or company,
         "source": "own" if working else "company" if company else "none",
     }
+
+
+# ------------------------------------------------- P4: which key a call uses
+
+# AiUnavailable's codes, and what the person is told (the dashboard has its
+# own words for each, with a way to fix it).
+AI_KEY_MISSING = "ai_key_missing"
+AI_KEY_INVALID = "ai_key_invalid"
+AI_QUOTA_USED = "ai_quota_used"
+AI_KEY_UNREADABLE = "ai_key_unreadable"
+AI_ACCOUNT_OFF = "ai_account_off"
+MESSAGES = {
+    AI_KEY_MISSING: (
+        "AI is off for your account. Add your own AI key in Settings → My AI key, "
+        "or ask an admin to allow the company key."
+    ),
+    AI_KEY_INVALID: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
+    AI_QUOTA_USED: "Your AI key has used up its quota for now. Try later, or check billing in Google Cloud.",
+    AI_KEY_UNREADABLE: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
+    AI_ACCOUNT_OFF: "AI is off: this account is disabled.",
+}
+# A stored status that keeps an own key out, and the code it means when
+# nothing else is left.
+_STATUS_CODES = {"invalid": AI_KEY_INVALID, "quota": AI_QUOTA_USED}
+
+# Google saying the key itself is wrong. A 400 is just as often about the
+# request (a photo it can't take, a schema), which says nothing about the key.
+_KEY_REFUSED = re.compile(r"API_KEY_INVALID|API key not valid|API key expired", re.IGNORECASE)
+# A 429 for the day's allowance (or a model the key has none of, "limit:
+# 0"), not the per-minute window: waiting a few seconds can't help.
+_DAILY_QUOTA = re.compile(r"PerDay|per[ _-]day|limit: 0\b", re.IGNORECASE)
+
+# A success stamps last_used_at at most this often per key: a busy intake
+# makes dozens of calls, and each stamp is a write on the shared database.
+TOUCH_EVERY = timedelta(minutes=10)
+_touched: dict[tuple[str, str], float] = {}  # (user id, fingerprint) -> this process's last stamp
+_touched_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class AiActor:
+    """Who an AI call is for: whoever pressed the button -- an admin working
+    on someone else's case is the admin, never the case's owner. A person,
+    never a key: a background run keeps this, and resolve_keys finds the
+    keys again for every call.
+
+    Passed by hand to every thread that calls Gemini. Context variables
+    don't reach plain threads or ThreadPoolExecutor workers, so an intake
+    run and each of its sorting workers would lose the person.
+
+    cli: AiActor.cli(), for scripts and the Telegram bot."""
+    user_id: str | None
+    channel: str
+    cli: bool = False
+
+    @classmethod
+    def for_user(cls, user_id: str | None, channel: str) -> "AiActor":
+        return cls(user_id=user_id, channel=channel)
+
+
+def _cli_actor(cls) -> AiActor:
+    """The company keys, as before P4: scripts, and the Telegram bot until
+    Telegram is linked to accounts (its allow-list guards it meanwhile).
+    Never for an HTTP request."""
+    return cls(user_id=None, channel="cli", cli=True)
+
+
+# Attached after the class is made: the field and the factory share a name
+# (AiActor(..., cli=True), AiActor.cli()). An instance's own value hides the
+# factory, so on an actor .cli is always the bool.
+AiActor.cli = classmethod(_cli_actor)
+
+
+@dataclass(frozen=True)
+class AiKey:
+    """One key a call may use. value is the key itself, for the SDK and
+    nothing else: repr and str show only label ("own ..1234", "company
+    #1"), which is what logs say."""
+    value: str = field(repr=False)
+    fingerprint: str
+    source: str  # "own" | "company"
+    label: str
+
+    def __repr__(self) -> str:
+        return f"AiKey({self.label})"
+
+    def __str__(self) -> str:
+        return self.label
+
+    @property
+    def rate_limit_id(self) -> str:
+        """What its rate-limit window is named after (ai/rate_limit.py
+        hashes it): a company key's value, so its window is the one it has
+        always had; an own key's fingerprint, so not even a plain hash of
+        the key is on disk."""
+        return self.value if self.source == "company" else self.fingerprint
+
+
+class AiUnavailable(Exception):
+    """No key is left that this person's call may use. code is one of
+    MESSAGES'; message is what they are told. Never holds a key. The API
+    answers it with 409 {detail, code} (api/main.py)."""
+
+    def __init__(self, code: str, message: str | None = None):
+        self.code = code
+        self.message = message or MESSAGES.get(code) or MESSAGES[AI_KEY_MISSING]
+        super().__init__(self.message)
+
+
+def company_keys() -> list[AiKey]:
+    """The company's keys, in the order a call tries them: those added on
+    Settings > Company (oldest first), then GEMINI_API_KEY -- so an
+    env-var-only deployment works untouched, and adding a key needs no
+    redeploy. Each is its own allowance across every model in the chain.
+    Read afresh every call, as before P4."""
+    values: list[str] = []
+    # Imported here rather than at module scope: app.reports.db makes the
+    # engine, and this module is imported by every AI path.
+    try:
+        from app.reports.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            rows = db.query(ApiKey.key).filter(ApiKey.provider == PROVIDER).order_by(ApiKey.created_at).all()
+            values.extend(k for (k,) in rows if k)
+        finally:
+            db.close()
+    except Exception:
+        # A missing or locked table must never take down drafting: the
+        # environment key still works.
+        pass
+    if settings.gemini_api_key and settings.gemini_api_key not in values:
+        values.append(settings.gemini_api_key)
+    return [
+        AiKey(value=v, fingerprint=hashlib.sha256(v.encode("utf-8")).hexdigest(), source="company", label=f"company #{n}")
+        for n, v in enumerate(values, start=1)
+    ]
+
+
+def _own_key(row: UserAiKey) -> tuple[AiKey | None, str | None]:
+    """(this person's own key, None) when a call may use it, else (None,
+    the AiUnavailable code saying why not). The secret first, as
+    ai_key_status shows it: unreadable hides the stored verdict."""
+    if secretbox.state() != secretbox.OK:
+        return None, AI_KEY_UNREADABLE
+    if row.status not in WORKING:
+        return None, _STATUS_CODES.get(row.status, AI_KEY_INVALID)
+    try:
+        value = unseal_key(row)
+    except secretbox.Unreadable:
+        return None, AI_KEY_UNREADABLE
+    return AiKey(value=value, fingerprint=row.fingerprint, source="own", label=f"own ..{row.last4}"), None
+
+
+def resolve_keys(actor: AiActor) -> list[AiKey]:
+    """The keys a call for this person tries, in order (the top of this
+    file). Read afresh every time: one small query, and the company keys
+    only for those allowed them. Raises AiUnavailable when there are none:
+    a disabled or missing account (ai_account_off), else why their own key
+    can't be used (ai_key_missing when they have none)."""
+    if actor.cli:
+        found = company_keys()
+        if not found:
+            raise AiUnavailable(AI_KEY_MISSING)
+        return found
+    if not actor.user_id:
+        raise AiUnavailable(AI_ACCOUNT_OFF)
+    from app.reports.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        found = (
+            db.query(User, UserAiKey)
+            .outerjoin(UserAiKey, UserAiKey.user_id == User.id)
+            .filter(User.id == actor.user_id)
+            .first()
+        )
+    finally:
+        db.close()
+    if found is None or not found[0].active:
+        raise AiUnavailable(AI_ACCOUNT_OFF)
+    user, row = found
+    own, problem = _own_key(row) if row is not None else (None, AI_KEY_MISSING)
+    keys = [own] if own else []
+    if may_use_company_key(user):
+        keys += company_keys()
+    if not keys:
+        raise AiUnavailable(problem)
+    return keys
+
+
+def ensure_ai_ready(actor: AiActor) -> None:
+    """resolve_keys' check, spending nothing, before anything that ends in a
+    Gemini call. The routes ask after their view (404), edit (403) and
+    input (400) checks, and before reserving a run or saving a file."""
+    resolve_keys(actor)
+
+
+def ai_allowed(user) -> bool:
+    """GET /auth/me's ai_allowed: whether ensure_ai_ready would pass for
+    this signed-in person -- an admin, ticked, or a working own key that
+    can be read here. One small query, and only when not ticked."""
+    if may_use_company_key(user):
+        return True
+    from app.reports.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        status = db.query(UserAiKey.status).filter(UserAiKey.user_id == user.id).scalar()
+    finally:
+        db.close()
+    return status in WORKING and secretbox.state() == secretbox.OK
+
+
+def refusal(exc: BaseException) -> str | None:
+    """What a failed call says about the key it was made with: "invalid"
+    (Google refused the key: a 401, a 403, or a 400 about the key),
+    "quota" (a daily-allowance 429), or None (anything else: busy, the
+    per-minute window, a timeout, an answer that didn't parse)."""
+    from google.genai import errors
+
+    if not isinstance(exc, errors.APIError):
+        return None
+    if exc.code in (401, 403):
+        return "invalid"
+    text = str(exc)
+    if exc.code == 400 and _KEY_REFUSED.search(text):
+        return "invalid"
+    if exc.code == 429 and _DAILY_QUOTA.search(text):
+        return "quota"
+    return None
+
+
+def _touch_due(user_id: str, fingerprint: str) -> bool:
+    now = time.monotonic()
+    with _touched_lock:
+        last = _touched.get((user_id, fingerprint))
+        if last is not None and now - last < TOUCH_EVERY.total_seconds():
+            return False
+        if len(_touched) > 5000:
+            _touched.clear()
+        _touched[(user_id, fingerprint)] = now
+        return True
+
+
+def _google_said(error: BaseException | None) -> str | None:
+    if error is None:
+        return None
+    code = getattr(error, "code", None)
+    words = getattr(error, "message", None) or getattr(error, "status", None)
+    return f"Google said: {code} {words or ''}" if code else f"Google said: {type(error).__name__}"
+
+
+def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException | None = None) -> None:
+    """Keeps what a call found out about an OWN key on its row; company keys
+    are left as they always were.
+
+        "ok"                 stamps last_used_at, at most every TOUCH_EVERY
+        "invalid", "quota"   refusal()'s verdicts: the status, with Google's
+                             words (scrubbed) as last_error. resolve_keys
+                             leaves the key out until it is tested again
+                             on Settings > My AI key
+
+    Only while the key is still this person's (record_check's rule): one
+    saved meanwhile mustn't get the old key's verdict. Never raises: a
+    stamp that fails mustn't fail the call it is about."""
+    if key.source != "own" or not actor.user_id or outcome not in ("ok", "invalid", "quota"):
+        return
+    if outcome == "ok" and not _touch_due(actor.user_id, key.fingerprint):
+        return
+    from app.reports.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if outcome == "ok":
+            now = utc_now()
+            db.execute(
+                update(UserAiKey)
+                .where(
+                    UserAiKey.user_id == actor.user_id,
+                    UserAiKey.fingerprint == key.fingerprint,
+                    or_(UserAiKey.last_used_at.is_(None), UserAiKey.last_used_at < now - TOUCH_EVERY),
+                )
+                .values(last_used_at=now)
+                .execution_options(synchronize_session=False)
+            )
+        else:
+            why = _google_said(error)
+            if record_check(db, actor.user_id, key.fingerprint, outcome, scrub(why, key.value) if why else None):
+                logger.warning("AI key %s of user %s marked %s by Google's answer", key.label, actor.user_id, outcome)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Couldn't record %s for AI key %s (%s)", outcome, key.label, type(exc).__name__)
+    finally:
+        db.close()

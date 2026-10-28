@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.ai.extraction import draft_report
+from app.ai.keys import AiActor
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo
 from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
 
@@ -81,7 +82,9 @@ def _carry_over_damage(draft: SecurityIncidentDraft, previous: SecurityIncidentD
     return draft
 
 
-def build_draft(description: str, photo_paths: list[str], session=None) -> DraftResult:
+def build_draft(description: str, photo_paths: list[str], session=None, *, actor: AiActor) -> DraftResult:
+    """The draft and its chat summary. actor: who pays for the drafting call
+    (the Telegram bot: AiActor.cli())."""
     # Hand the model what the reporter already told us, so a partial
     # correction ("the time was 16:45 not 08:00") has something to be applied
     # TO. Only on a redraft: on the first pass these values are what the
@@ -113,7 +116,7 @@ def build_draft(description: str, photo_paths: list[str], session=None) -> Draft
                 )
                 if previous.severity_level:
                     known_facts["overall severity"] = previous.severity_level
-    draft = draft_report(description, photo_paths, known_facts or None)
+    draft = draft_report(description, photo_paths, known_facts or None, actor=actor)
     if session is not None and session.pending_edits and getattr(session, "draft", None) is not None:
         draft = _carry_over_damage(draft, session.draft, session.pending_edits[-1])
     # Merging the reporter's typed template answers with the AI's draft.

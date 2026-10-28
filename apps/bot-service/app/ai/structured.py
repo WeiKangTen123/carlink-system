@@ -4,6 +4,9 @@ Originally the body of extraction.draft_report. Pulled out once dashboard
 intake added a second kind of call (photo sorting, see ai/triage.py) that
 needs exactly the same fallback, rate-limit and retry behaviour -- two
 copies of this loop would drift the first time either was tuned.
+
+Every call is for an AiActor (ai/keys.py), a required keyword: forgetting it
+is a crash in the tests, never a call quietly made on the company's key.
 """
 import base64
 import logging
@@ -14,7 +17,17 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from app.ai.client import available_api_keys, get_client
+from app.ai.client import get_client
+from app.ai.keys import (
+    AI_KEY_INVALID,
+    AI_QUOTA_USED,
+    AiActor,
+    AiUnavailable,
+    record_result,
+    refusal,
+    resolve_keys,
+    scrub,
+)
 from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
 
 logger = logging.getLogger(__name__)
@@ -80,6 +93,7 @@ def call_structured(
     schema: dict,
     parse: Callable[[str], T],
     models: list[str],
+    actor: AiActor,
     timeout: float = 45.0,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
@@ -88,24 +102,39 @@ def call_structured(
     parse runs inside the fallback: a response that fails validation moves
     on to the next model exactly like a transport error does, since a
     malformed answer is no more usable than none.
+
+    actor: who the call is for. Their keys are looked up now, for this
+    call (keys.resolve_keys). Google refusing their own key, or its daily
+    allowance running out on every model, is kept on its row
+    (keys.record_result) and the next key is tried: the company's, if they
+    may use it. Raises AiUnavailable when there is no key to try, or when
+    their own key was the only one and failed that way.
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
-    # independent per-model quotas. Outer: each configured API key, since
-    # every model shares one key's allowance -- once a key is exhausted
-    # across the whole chain, only a different key helps. Ordered so a
-    # single key's full chain is tried before moving on, rather than
-    # burning every key on the first model.
-    api_keys = available_api_keys() or [None]
+    # independent per-model quotas. Outer: each key, since every model
+    # shares one key's allowance -- once a key is exhausted across the
+    # whole chain, only a different key helps. Ordered so a single key's
+    # full chain is tried before moving on, rather than burning every key
+    # on the first model.
+    keys = resolve_keys(actor)
     last_error: Exception | None = None
+    last_key = None
+    # Own keys that failed for their own reasons ("invalid", "quota").
+    refused: list[str] = []
 
-    for key_index, api_key in enumerate(api_keys):
-        client = get_client(api_key)
+    for key in keys:
+        last_key = key
+        client = get_client(key)
+        own = key.source == "own"
+        # refusal() of each model's last error, for an own key.
+        verdicts: list[str | None] = []
         for model_id in models:
             # Every attempt takes a slot, not just the first. Previously the
             # gate ran once before these loops, so a draft that fell through
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
-            acquire(api_key)
+            acquire(key.rate_limit_id)
+            verdict = None
             # One retry per model on a 429, using the delay the server itself
             # supplies. Falling straight through to the next model is
             # pointless: it draws on the same per-key quota and 429s too.
@@ -138,25 +167,47 @@ def call_structured(
                     # visibly thinner analyses (no photo reference, bounding
                     # box or confidence), and without this line a thin draft
                     # in production is indistinguishable from a bug.
-                    logger.info("Gemini %s produced by %r on key #%d", purpose, model_id, key_index + 1)
+                    logger.info("Gemini %s produced by %r on %s", purpose, model_id, key.label)
+                    record_result(actor, key, "ok")
                     return result
                 except Exception as exc:
                     last_error = exc
-                    delay = retry_after_seconds(exc) if is_rate_limit_error(exc) else None
+                    # A company key's failures go on exactly as before P4.
+                    verdict = refusal(exc) if own else None
+                    # A refused key or a spent day's allowance won't come
+                    # back in 30 seconds: no wait, straight to the next.
+                    delay = retry_after_seconds(exc) if verdict is None and is_rate_limit_error(exc) else None
                     if delay is not None and attempt == 1:
                         logger.warning(
-                            "Gemini model %r rate-limited on key #%d; waiting %.1fs as instructed",
-                            model_id, key_index + 1, delay,
+                            "Gemini model %r rate-limited on %s; waiting %.1fs as instructed",
+                            model_id, key.label, delay,
                         )
                         time.sleep(delay)
                         continue
                     logger.warning(
-                        "Gemini model %r failed on key #%d, trying next: %s",
-                        model_id, key_index + 1, exc,
+                        "Gemini model %r failed on %s, trying next: %s",
+                        model_id, key.label, scrub(str(exc), key.value),
                     )
                     break
+            verdicts.append(verdict)
+            if verdict == "invalid":
+                break  # Google refused the key itself: no other model will take it
+        if own and verdicts and (verdicts[-1] == "invalid" or all(v == "quota" for v in verdicts)):
+            outcome = "invalid" if verdicts[-1] == "invalid" else "quota"
+            record_result(actor, key, outcome, last_error)
+            refused.append(outcome)
 
+    if refused and len(refused) == len(keys):
+        # Their own key was all they had: say what's wrong with it rather
+        # than "the AI failed". (Not chained: the SDK's error stays in the
+        # log lines above, scrubbed.)
+        raise AiUnavailable(AI_KEY_INVALID if refused[-1] == "invalid" else AI_QUOTA_USED) from None
+    cause = last_error
+    if last_error is not None and last_key is not None and last_key.source == "own":
+        # The cause is shown (intake's message) and logged (its traceback):
+        # for a person's own key, only Google's words, scrubbed.
+        cause = RuntimeError(f"{type(last_error).__name__}: {scrub(str(last_error), last_key.value)}")
     raise RuntimeError(
         f"All Gemini fallback models ({', '.join(models)}) failed "
-        f"across {len(api_keys)} configured API key(s)."
-    ) from last_error
+        f"across {len(keys)} configured API key(s)."
+    ) from cause

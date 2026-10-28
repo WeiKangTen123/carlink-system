@@ -57,7 +57,6 @@ class FakeInteractions:
 
 
 structured.get_client = lambda key=None: SimpleNamespace(interactions=FakeInteractions())
-structured.available_api_keys = lambda: ["fake"]
 structured.acquire = lambda key=None: 0.0
 
 from fastapi import FastAPI  # noqa: E402
@@ -213,13 +212,26 @@ def main() -> int:
                                qualifications="", license_number="", firm_name="", session_hash="", ai_company_key_allowed=ai)
 
         wa = TestClient(mini)
-        as_user["user"] = current(False)
-        r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": "hello"})
-        assert r.status_code == 409 and r.json()["code"] == "ai_key_missing", r.text
-        as_user["user"] = current(True)
-        r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": ""})
-        assert r.status_code == 200 and "Send a photo" in r.text, r.text
-        ok("the WhatsApp webhook (mounted only with Twilio credentials) needs the AI tick too")
+        # P4: whoever presses the button pays, and a WhatsApp number has no
+        # account behind it -- so no AI for anyone there, ticked or not.
+        from app.conversation import state as chat_state
+
+        def no_gemini(key=None):
+            raise AssertionError("Gemini was called for WhatsApp")
+
+        real_get_client, structured.get_client = structured.get_client, no_gemini
+        try:
+            for ticked in (False, True):
+                as_user["user"] = current(ticked)
+                r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": ""})
+                assert r.status_code == 200 and "Send a photo" in r.text, r.text
+                chat_state.get_session("whatsapp:whatsapp:+6500000000").photo_paths.append(str(Path(_tmp, "wa.jpg")))
+                r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": "it was scraped"})
+                assert r.status_code == 200 and "isn't available over WhatsApp" in r.text, r.text
+                chat_state.reset_session("whatsapp:whatsapp:+6500000000")
+        finally:
+            structured.get_client = real_get_client
+        ok("the WhatsApp webhook (mounted only with Twilio credentials) has no AI for anyone: a polite reply")
 
         print("sign-off")
         d = signer.c.post("/intake").json()["id"]

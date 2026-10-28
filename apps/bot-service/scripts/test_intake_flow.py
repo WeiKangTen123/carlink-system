@@ -93,7 +93,6 @@ class FakeInteractions:
 
 
 structured.get_client = lambda key=None: SimpleNamespace(interactions=FakeInteractions())
-structured.available_api_keys = lambda: ["fake"]
 structured.acquire = lambda key=None: 0.0
 
 from fastapi.testclient import TestClient  # noqa: E402

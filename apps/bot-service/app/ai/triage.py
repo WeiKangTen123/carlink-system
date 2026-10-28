@@ -11,6 +11,7 @@ the ones worth drafting from.
 import json
 import logging
 
+from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import settings
 from app.reports.taxonomy import CANONICAL_PARTS
@@ -110,8 +111,9 @@ def _clean(item: dict) -> dict:
     }
 
 
-def triage_photos(photos: list[tuple[str, str]]) -> dict[str, dict]:
-    """Sorts one batch of (label, image path) pairs. Returns label -> result.
+def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str, dict]:
+    """Sorts one batch of (label, image path) pairs for actor (who pays,
+    structured.call_structured). Returns label -> result.
 
     Labels the model returned that weren't asked about are dropped. A batch
     where it answered for under half the photos is treated as a failed call
@@ -145,5 +147,6 @@ def triage_photos(photos: list[tuple[str, str]]) -> dict[str, dict]:
         schema=_RESPONSE_SCHEMA,
         parse=parse,
         models=_triage_chain(),
+        actor=actor,
         timeout=60.0,
     )

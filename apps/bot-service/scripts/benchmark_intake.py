@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.ai.extraction as extraction  # noqa: E402
 import app.ai.triage as triage  # noqa: E402
+from app.ai.keys import AiActor  # noqa: E402
 from app.intake import pipeline  # noqa: E402
 from app.intake.photos import intake_dir, ordered_photos  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
@@ -211,10 +212,11 @@ def run_case(case: dict, cases_dir: Path) -> dict:
     out: dict = {"case": case["name"], "report_id": rid}
     started = time.monotonic()
     try:
-        pipeline._sort(rid)
+        # The company keys, as the benchmark always ran on.
+        pipeline._sort(rid, AiActor.cli())
         out["sort_seconds"] = round(time.monotonic() - started, 1)
         started = time.monotonic()
-        pipeline._read(rid)
+        pipeline._read(rid, AiActor.cli())
         out["read_seconds"] = round(time.monotonic() - started, 1)
     except Exception as exc:  # recorded, and the next case still runs
         out["error"] = f"{type(exc).__name__}: {exc}"[:500]
