@@ -14,13 +14,16 @@ admins included, sees only its last 4 characters and a status:
     ok          Google accepted it at the last check
     invalid     Google refused it (wrong, deleted, or the API is off for it)
     quota       Google accepted it but it has no allowance left for now
-    unreadable  this server can't open it (secretbox.state() isn't "ok",
-                or it was sealed with a secret that is gone): add it again
+    unreadable  this server can't open saved keys right now (secretbox.state()
+                isn't "ok"). Worked out when read, never stored: the rows
+                keep Google's last verdict, so the right secret put back
+                mends them all
 """
 import hmac
 import logging
 import re
 
+from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from app.ai import secretbox
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "gemini"
 STATUSES = ("untested", "ok", "invalid", "quota", "unreadable")
+# What a row can hold: Google's verdicts. "unreadable" is only ever shown.
+STORED_STATUSES = ("untested", "ok", "invalid", "quota")
+# The one answer for a key someone else has (an own key, or a company
+# key): it mustn't confirm which, or that the key exists at all.
+IN_USE = "This key can't be used here."
 # What the AI will use (P4): a key Google hasn't refused or run dry.
 WORKING = ("ok", "untested")
 
@@ -48,6 +56,7 @@ MAX_ERROR = 200
 PROBE_TIMEOUT_MS = 10_000
 UNREACHABLE = "Couldn't reach Google to check the key."
 STORAGE_OFF_ERROR = "This server can't read saved AI keys right now. Please tell your admin."
+ROW_UNREADABLE_ERROR = "This key can't be opened on this server. Add it again."
 
 
 def format_problem(key: str) -> str | None:
@@ -135,6 +144,31 @@ def key_in_use(db: Session, key: str, fingerprint: str, user_id: str) -> str | N
     return None
 
 
+def fingerprint_if_readable(key: str) -> str | None:
+    """The key's fingerprint, or None when own keys can't be opened here
+    (their fingerprints couldn't be compared then anyway)."""
+    try:
+        return secretbox.fingerprint(key)
+    except secretbox.Unreadable:
+        return None
+
+
+def own_key_owner(db: Session, fingerprint: str | None) -> str | None:
+    """Whose own key this is ("@username"), for refusing it as a company
+    key, or None. fingerprint is fingerprint_if_readable's: worked out
+    before the caller takes the write lock, as it may read the secret
+    afresh. None (own keys can't be opened here) checks nothing: adding a
+    company key, the backup, mustn't wait on that."""
+    if fingerprint is None:
+        logger.warning("A company key was added without checking it against own keys (secret %s)", secretbox.state())
+        return None
+    other = db.query(UserAiKey.user_id).filter(UserAiKey.fingerprint == fingerprint).first()
+    if other is None:
+        return None
+    owner = db.get(User, other[0])
+    return "@" + owner.username if owner and owner.username else other[0]
+
+
 def get_row(db: Session, user_id: str) -> UserAiKey | None:
     return db.query(UserAiKey).filter(UserAiKey.user_id == user_id).first()
 
@@ -163,11 +197,17 @@ def save_key(
     return row
 
 
-def record_check(row: UserAiKey, status: str, error: str | None) -> None:
-    """Stores a re-check's verdict (the caller commits)."""
-    row.status = status
-    row.last_error = error
-    row.last_checked_at = utc_now()
+def record_check(db: Session, user_id: str, fingerprint: str, status: str, error: str | None) -> bool:
+    """Stores a re-check's verdict (the caller commits) -- only if the key
+    tested is still this person's key: one saved meanwhile mustn't get the
+    old key's verdict. False when it was thrown away."""
+    result = db.execute(
+        update(UserAiKey)
+        .where(UserAiKey.user_id == user_id, UserAiKey.fingerprint == fingerprint)
+        .values(status=status, last_error=error, last_checked_at=utc_now())
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount > 0
 
 
 def unseal_key(row: UserAiKey) -> str:
@@ -181,12 +221,20 @@ def delete_user_key(db: Session, user_id: str, actor, *, action: str = "ai_key_r
     entry; False if there was none. The caller commits, so this can be part
     of a bigger change -- disabling an account deletes its key in the same
     transaction (PATCH /users/{id} {active: false})."""
-    row = get_row(db, user_id)
-    if row is None:
+    # One DELETE, not a read and then a delete: it takes SQLite's write
+    # lock as it runs, so a key saved a moment before goes too, and one
+    # being saved meanwhile waits for this commit (then finds the account
+    # off, api/ai_keys.py).
+    gone = db.execute(
+        delete(UserAiKey)
+        .where(UserAiKey.user_id == user_id)
+        .returning(UserAiKey.last4)
+        .execution_options(synchronize_session=False)
+    ).all()
+    if not gone:
         return False
     owner = db.get(User, user_id)
-    detail = f"{owner.email if owner else user_id}: key ...{row.last4}"
-    db.delete(row)
+    detail = f"{owner.email if owner else user_id}: key ...{gone[0][0]}"
     audit(db, actor, action, detail=f"{detail} ({reason})" if reason else detail)
     return True
 
@@ -219,10 +267,11 @@ def keys_by_user(db: Session, user_ids) -> dict[str, dict]:
     }
 
 
-def ai_key_status(db: Session, user) -> dict:
+def ai_key_status(db: Session, user, *, unreadable: bool = False) -> dict:
     """GET /auth/me/ai-key: the person's own key and what the AI will use
     for them. source is what P4 will use; in P3 the AI still runs on the
-    company key, for the people allowed it, as before."""
+    company key, for the people allowed it, as before. unreadable: this
+    row wouldn't open, though the secret is fine (shown, not stored)."""
     row = get_row(db, user.id)
     company = may_use_company_key(user)
     if row is None:
@@ -238,9 +287,11 @@ def ai_key_status(db: Session, user) -> dict:
             "ai_available": company,
             "source": "company" if company else "none",
         }
-    readable = secretbox.state() == secretbox.OK
+    storage_ok = secretbox.state() == secretbox.OK
+    readable = storage_ok and not unreadable
     status = _status_of(row.status, readable)
     working = status in WORKING
+    error = row.last_error if readable else STORAGE_OFF_ERROR if not storage_ok else ROW_UNREADABLE_ERROR
     return {
         "has_key": True,
         "last4": row.last4,
@@ -248,7 +299,7 @@ def ai_key_status(db: Session, user) -> dict:
         "billing_confirmed": bool(row.billing_confirmed),
         "added_at": iso_utc(row.created_at),
         "last_checked_at": iso_utc(row.last_checked_at) if row.last_checked_at else None,
-        "last_error": row.last_error if readable else STORAGE_OFF_ERROR,
+        "last_error": error,
         "company_allowed": company,
         "ai_available": working or company,
         "source": "own" if working else "company" if company else "none",

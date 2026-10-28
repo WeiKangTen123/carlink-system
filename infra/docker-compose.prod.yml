@@ -66,8 +66,9 @@ services:
       - bot_data:/app/storage
       - ../apps/bot-service/app:/app/app
       # The api makes the secret on its first start, and never replaces it.
-      # Losing this volume loses every saved own AI key (people add theirs
-      # again); company keys are unaffected.
+      # Without this volume's file, own AI keys are off ("lost" in System
+      # info) until it's put back or reset (see infra/backup.sh); company
+      # keys are unaffected.
       - ai_secrets:/app/secrets
     # Not published to the host -- the browser only ever reaches this via
     # nginx's /api/ and /files/ proxies (see lib/api.ts), and other

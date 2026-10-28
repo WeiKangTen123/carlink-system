@@ -41,8 +41,9 @@ DB_FILE = (_tmp / "test.db").resolve()
 
 
 def make_key(label: str) -> str:
-    """A made-up key shaped like a Gemini one: AIza + 35 characters."""
-    return ("AIzaSy" + label + "x" * 40)[:39]
+    """A made-up key shaped like a Gemini one: AIza + 35 characters, the
+    last 4 different for each label."""
+    return ("AIzaSy" + label + "x" * 40)[:35] + hashlib.md5(label.encode()).hexdigest()[:4]
 
 
 ENV_COMPANY_KEY = make_key("CompanyEnv")
@@ -94,6 +95,9 @@ from google.genai import errors as genai_errors  # noqa: E402
 # quota, network, server. Every key it was asked about, in order.
 GOOGLE: dict[str, str] = {}
 PROBED: list[str] = []
+# Run once while Google is "thinking" about a key: what someone else does
+# meanwhile (a race).
+GOOGLE_HOOKS: dict[str, object] = {}
 
 
 def _google_says(code: int, status: str, message: str):
@@ -106,6 +110,9 @@ class _FakeModels:
 
     def list(self, *args, **kwargs):
         PROBED.append(self.key)
+        hook = GOOGLE_HOOKS.pop(self.key, None)
+        if hook:
+            hook()
         how = GOOGLE.get(self.key, "ok")
         if how == "refuse":
             # Google's real text names no key; this one does, to prove it's
@@ -142,9 +149,10 @@ from sqlalchemy import event, inspect, text  # noqa: E402
 import app.api.ai_keys as ai_keys_api  # noqa: E402
 from app.ai import keys, secretbox  # noqa: E402
 from app.api.main import app  # noqa: E402
+from app.auth.core import SESSION_COOKIE  # noqa: E402
 from app.config import DEFAULT_SECRETS_DIR, DEFAULT_STORAGE_DIR, settings  # noqa: E402
 from app.reports.db import SessionLocal, engine  # noqa: E402
-from app.reports.models import AppSetting, AuditEntry, User, UserAiKey  # noqa: E402
+from app.reports.models import ApiKey, AppSetting, AuditEntry, AuthSession, User, UserAiKey  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
 
 # ---------------------------------------------------------------- harness
@@ -248,6 +256,15 @@ class Person:
     def delete(self):
         return self.c.delete("/auth/me/ai-key")
 
+    def other_tab(self) -> "Person":
+        """The same session in a second browser (for a request made while
+        one of this person's is still running)."""
+        tab = object.__new__(Person)
+        tab.label, tab.id = self.label, self.id
+        tab.c = browser()
+        tab.c.cookies.set(SESSION_COOKIE, self.c.cookies.get(SESSION_COOKIE))
+        return tab
+
 
 def row_of(user_id: str):
     db = SessionLocal()
@@ -285,6 +302,48 @@ def restart_secretbox(create: bool = True) -> str:
     return secretbox.startup(create=create)
 
 
+def stored_statuses() -> set:
+    db = SessionLocal()
+    try:
+        return {s for (s,) in db.query(UserAiKey.status).distinct().all()}
+    finally:
+        db.close()
+
+
+def canary_value() -> str | None:
+    db = SessionLocal()
+    try:
+        row = db.get(AppSetting, secretbox.CANARY_KEY)
+        return row.value if row else None
+    finally:
+        db.close()
+
+
+def set_canary(value: str | None) -> None:
+    db = SessionLocal()
+    try:
+        row = db.get(AppSetting, secretbox.CANARY_KEY)
+        if value is None:
+            if row:
+                db.delete(row)
+        elif row:
+            row.value = value
+        else:
+            db.add(AppSetting(key=secretbox.CANARY_KEY, value=value))
+        db.commit()
+    finally:
+        db.close()
+
+
+def storage_info() -> dict:
+    r = W.admin.c.get("/system/info")
+    return (jd(r).get("ai_key_storage") or {}) if r.status_code == 200 else {"error": brief(r)}
+
+
+def error_lines(*words) -> list[str]:
+    return [line for line in LOG_LINES if "app.ai.secretbox ERROR" in line and all(w in line for w in words)]
+
+
 W = type("World", (), {})()
 
 
@@ -295,8 +354,11 @@ def setup() -> None:
     W.boot.__enter__()
     need(secretbox.state() == "ok", "the api's start-up makes the secret and the canary", secretbox.state())
     W.admin = Person("Ada", role="admin")
-    W.A = Person("Alice")
-    W.B = Person("Bob")
+    # Ticked to see all cases, so they get the ordinary per-person limits
+    # (an account with no ticks gets 3 saves an hour); neither may use the
+    # company key, which is what matters to their AI key.
+    W.A = Person("Alice", sees_all_cases=True)
+    W.B = Person("Bob", sees_all_cases=True)
     W.V = Person("Vic", ai_company_key_allowed=True)
 
 
@@ -651,6 +713,9 @@ def users_screen() -> None:
         if statement.lstrip().upper().startswith("SELECT"):
             selects["n"] += 1
 
+    # The secret's every-10-seconds look at the canary is one SELECT; not
+    # while counting.
+    recheck, secretbox._RECHECK_SECONDS = secretbox._RECHECK_SECONDS, 1e9
     event.listen(engine, "before_cursor_execute", count)
     try:
         W.admin.c.get("/users")
@@ -666,13 +731,29 @@ def users_screen() -> None:
         after = selects["n"]
     finally:
         event.remove(engine, "before_cursor_execute", count)
+        secretbox._RECHECK_SECONDS = recheck
     check(sum(1 for u in users.values() if u.get("ai_key")) >= 7, "GET /users shows the new keys")
     check(after == before, "5 more accounts with keys add no queries to GET /users", f"{before} -> {after} SELECTs")
 
 
 def rate_limits() -> None:
     ai_keys_api.reset_limits()
-    p = Person("Rita")
+    clock = [10_000.0]
+    ai_keys_api._clock = lambda: clock[0]
+    try:
+        _rate_limits(clock)
+    finally:
+        ai_keys_api._clock = time.monotonic
+        ai_keys_api.reset_limits()
+
+
+def _limited(p) -> list[AuditEntry]:
+    return [a for a in audits("ai_key_rate_limited") if a.user_id == p.id]
+
+
+def _rate_limits(clock) -> None:
+    print("  someone with a tick: 10 an hour")
+    p = Person("Rita", sees_all_cases=True)
     codes = [p.put("bad").status_code for _ in range(ai_keys_api.SAVES_PER_HOUR)]
     check(codes == [400] * ai_keys_api.SAVES_PER_HOUR, f"{ai_keys_api.SAVES_PER_HOUR} tries in an hour are answered", str(codes))
     r = p.put(make_key("RitaGood"))
@@ -681,15 +762,65 @@ def rate_limits() -> None:
     r = W.B.put("bad")
     check(r.status_code == 400, "someone else isn't affected", brief(r))
 
-    print("  everyone together")
+    print("  an account with no ticks: 3 an hour, 10 a day")
+    u = Person("Uma")
+    codes = [u.put("bad").status_code for _ in range(3)]
+    check(codes == [400] * 3, "3 tries are answered", str(codes))
+    for _ in range(3):
+        r = u.put(make_key("UmaGood"))
+    check(r.status_code == 429 and "hour" in jd(r).get("detail", ""), "the 4th within the hour -> 429 rate_limited", brief(r))
+    check(len(_limited(u)) == 1, "three 429s, one history entry (at most one an hour each)", str(len(_limited(u))))
+    answered = 3
+    for _hour in range(5):
+        clock[0] += ai_keys_api._HOUR + 1
+        for _ in range(3):
+            if u.put("bad").status_code == 400:
+                answered += 1
+    check(answered == ai_keys_api.UNVETTED_SAVES_PER_DAY, f"over the day: {ai_keys_api.UNVETTED_SAVES_PER_DAY} answered in all",
+          str(answered))
+    r = u.put("bad")
+    check(r.status_code == 429 and "today" in jd(r).get("detail", ""), "then 429 rate_limited for the day", brief(r))
+    check(len(_limited(u)) >= 2, "an hour on, a 429 is in the history again", str(len(_limited(u))))
+    clock[0] += ai_keys_api._DAY
+    check(u.put("bad").status_code == 400, "a day later it is answered again")
+
+    print("  the day's total: only checked keys count")
     ai_keys_api.reset_limits()
-    people = [Person(f"Many{i}") for i in range(ai_keys_api.SAVES_PER_DAY_ALL // ai_keys_api.SAVES_PER_HOUR)]
-    codes = [q.put("bad").status_code for q in people for _ in range(ai_keys_api.SAVES_PER_HOUR)]
-    check(codes.count(400) == ai_keys_api.SAVES_PER_DAY_ALL, f"{ai_keys_api.SAVES_PER_DAY_ALL} tries a day across accounts",
+    staff = [Person(f"Many{i}", sees_all_cases=True) for i in range(ai_keys_api.SAVES_PER_DAY_ALL // ai_keys_api.SAVES_PER_HOUR)]
+    for q in staff:
+        for i in range(ai_keys_api.SAVES_PER_HOUR):
+            if i % 2:
+                q.put("bad")
+            else:
+                q.put(make_key("NoBilling"), billing=None)
+    check(ai_keys_api.saves_all.used("all") == 0, "100 tries with a bad format or no billing tick use none of it",
+          str(ai_keys_api.saves_all.used("all")))
+    clock[0] += ai_keys_api._HOUR + 1
+    refused = make_key("RefusedForCap")
+    GOOGLE[refused] = "refuse"
+    codes = [q.put(refused).status_code for q in staff for _ in range(ai_keys_api.SAVES_PER_HOUR)]
+    check(codes.count(400) == ai_keys_api.SAVES_PER_DAY_ALL, f"{ai_keys_api.SAVES_PER_DAY_ALL} checked tries across accounts are answered",
           f"{codes.count(400)} answered")
-    r = Person("Late").put(make_key("LateGood"))
+    late = Person("Late", sees_all_cases=True)
+    r = late.put(make_key("LateGood"))
     check(r.status_code == 429 and jd(r).get("code") == "rate_limited" and "today" in jd(r).get("detail", ""),
-          "the next, from a fresh account -> 429 rate_limited (the day's total)", brief(r))
+          "the next, from another account -> 429 rate_limited (the day's total)", brief(r))
+    for who, p in (("an admin", Person("Ann", role="admin")),
+                   ("someone ticked for the company key", Person("Cara", ai_company_key_allowed=True)),
+                   ("someone ticked to sign off", Person("Sam", may_sign_off=True))):
+        r = p.put(make_key(f"Exempt{p.label}"))
+        check(r.status_code == 200, f"{who} isn't held to it", brief(r))
+
+    print("  one stranger can't use it up")
+    ai_keys_api.reset_limits()
+    stranger = Person("Stan")
+    for _hour in range(24):
+        for _ in range(5):
+            stranger.put(refused)
+        clock[0] += ai_keys_api._HOUR + 1
+    used = ai_keys_api.saves_all.used("all")
+    check(used <= ai_keys_api.UNVETTED_SAVES_PER_DAY, f"a day of trying uses {used} of the {ai_keys_api.SAVES_PER_DAY_ALL}")
+    check(len(_limited(stranger)) <= 24, "and the history has at most one 429 an hour from them", str(len(_limited(stranger))))
 
     print("  re-checking")
     ai_keys_api.reset_limits()
@@ -697,7 +828,145 @@ def rate_limits() -> None:
     check(codes == [200] * ai_keys_api.TESTS_PER_HOUR, f"{ai_keys_api.TESTS_PER_HOUR} tests in an hour", str(codes))
     r = W.A.test()
     check(r.status_code == 429 and jd(r).get("code") == "rate_limited", "the next -> 429 rate_limited", brief(r))
+
+
+def company_keys() -> None:
     ai_keys_api.reset_limits()
+    before = audits("ai_key_refused")
+    r = W.admin.c.post("/setup/llm-keys", json={"apiKey": f"  {W.A_key} ", "label": "Not Alice's"})
+    check(r.status_code == 409 and jd(r) == IN_USE_BODY, "an admin adding someone's own key as a company key -> the same generic 409", brief(r))
+    db = SessionLocal()
+    try:
+        stored = db.query(ApiKey).filter(ApiKey.key == W.A_key).count()
+    finally:
+        db.close()
+    check(stored == 0, "it isn't added")
+    entry = audits("ai_key_refused")[len(before):]
+    check(entry and "@alice" in entry[-1].detail and "own key" in entry[-1].detail and W.A_key not in entry[-1].detail,
+          "the history says whose (for the admins)", entry[-1].detail if entry else "none")
+    fresh = make_key("CompanyFresh")
+    SENT_KEYS.add(fresh)
+    W.stored_plain.add(fresh)
+    r = W.admin.c.post("/setup/llm-keys", json={"apiKey": fresh, "label": "Fresh"})
+    check(r.status_code == 200, "a key nobody has is added as usual", brief(r))
+    r = W.B.put(fresh)
+    check(r.status_code == 409, "...and then can't be saved as someone's own", brief(r))
+
+
+def save_vs_disable() -> None:
+    ai_keys_api.reset_limits()
+    done: list[int] = []
+
+    def disable(p):
+        def hook():
+            done.append(W.admin.c.patch(f"/users/{p.id}", json={"active": False}).status_code)
+        return hook
+
+    print("  the account is disabled while Google checks the key")
+    for label, has_key in (("Rae", False), ("Rex", True)):
+        p = Person(label, sees_all_cases=True)
+        if has_key:
+            need(p.put(make_key(f"{label}Old")).status_code == 200, f"{label} has a key")
+        k = make_key(f"{label}Race")
+        saved_before = len([a for a in audits("ai_key_saved") if a.user_id == p.id])
+        GOOGLE_HOOKS[k] = disable(p)
+        r = p.put(k)
+        check(done[-1:] == [200], f"the admin disabled {label} meanwhile", str(done))
+        check(r.status_code == 401 and jd(r).get("code") == "signed_out", f"{label}'s save is refused: 401 signed_out", brief(r))
+        check(row_of(p.id) is None,
+              f"no key is left on {label}'s disabled account" + (" (the old one went with the disable)" if has_key else ""))
+        check(len([a for a in audits("ai_key_saved") if a.user_id == p.id]) == saved_before, "and no ai_key_saved entry for it")
+
+    print("  signed out meanwhile, or switched off without it")
+    p = Person("Ria", sees_all_cases=True)
+    k = make_key("RiaRace")
+
+    def sign_out():
+        db = SessionLocal()
+        try:
+            db.query(AuthSession).filter(AuthSession.user_id == p.id).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    GOOGLE_HOOKS[k] = sign_out
+    r = p.put(k)
+    check(r.status_code == 401 and jd(r).get("code") == "signed_out" and row_of(p.id) is None,
+          "the session ended meanwhile -> 401 signed_out, nothing saved", brief(r))
+    q = Person("Roy", sees_all_cases=True)
+    k = make_key("RoyRace")
+
+    def switch_off():
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET active = 0 WHERE id = :id"), {"id": q.id})
+
+    GOOGLE_HOOKS[k] = switch_off
+    r = q.put(k)
+    check(r.status_code == 403 and jd(r).get("code") == "account_disabled" and row_of(q.id) is None,
+          "the account switched off (session left) -> 403 account_disabled, nothing saved", brief(r))
+
+    print("  keys.delete_user_key holds the write lock from the moment it runs")
+    t = Person("Tia", sees_all_cases=True)
+    need(t.put(make_key("TiaKey")).status_code == 200, "Tia has a key")
+    import sqlite3
+
+    db = SessionLocal()
+    try:
+        check(keys.delete_user_key(db, t.id, None, reason="test") is True, "it deletes her key (not committed yet)")
+        other = sqlite3.connect(str(DB_FILE), timeout=0.2)
+        try:
+            other.execute("UPDATE app_settings SET value = value WHERE key = 'nothing'")
+            other.commit()
+            locked = False
+        except sqlite3.OperationalError as exc:
+            locked = "locked" in str(exc).lower()
+        finally:
+            other.close()
+        check(locked, "another writer has to wait: no key can be saved between its read and its delete")
+        db.rollback()
+    finally:
+        db.close()
+    check(row_of(t.id) is not None, "(rolled back: she keeps it)")
+
+    print("  an admin removing a key stops being one meanwhile")
+    ann = Person("Ana", role="admin")
+    real = keys.delete_user_key
+
+    def demoted_first(db, user_id, actor, **kw):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET role = 'user' WHERE id = :id"), {"id": ann.id})
+        return real(db, user_id, actor, **kw)
+
+    keys.delete_user_key = demoted_first
+    try:
+        r = ann.c.delete(f"/users/{t.id}/ai-key")
+    finally:
+        keys.delete_user_key = real
+    check(r.status_code == 403 and row_of(t.id) is not None, "-> 403, and Tia keeps her key", brief(r))
+
+
+def test_vs_replace() -> None:
+    ai_keys_api.reset_limits()
+    sid = Person("Sid", sees_all_cases=True)
+    old, new = make_key("SidOld"), make_key("SidNew")
+    need(sid.put(old).status_code == 200, "Sid has a key")
+    tab = sid.other_tab()
+    replaced: list[int] = []
+
+    def replace():
+        replaced.append(tab.put(new).status_code)
+
+    GOOGLE[old] = "refuse"  # the old key's verdict, once Google answers
+    GOOGLE_HOOKS[old] = replace
+    r = sid.test()
+    check(replaced == [200], "Sid saved a new key in another tab while the old one was being re-checked", str(replaced))
+    body = jd(r)
+    check(r.status_code == 200 and body.get("last4") == new[-4:] and body.get("status") == "ok",
+          "the test answers about the key he has now: ok", brief(r))
+    row = row_of(sid.id)
+    check(row.status == "ok" and row.fingerprint == secretbox.fingerprint(new) and row.last_error is None,
+          "the old key's verdict (invalid) wasn't stamped on the new key")
+
 
 
 ROUTES = (("GET", "/auth/me/ai-key"), ("PUT", "/auth/me/ai-key"), ("POST", "/auth/me/ai-key/test"),
@@ -730,8 +999,9 @@ def bad_secret() -> None:
     path = SECRETS / "ai-keys.secret"
     need(restart_secretbox() == "ok", "the right secret opens the canary")
     a_status = jd(W.A.get()).get("status")
+    check(storage_info().get("state") == "ok", "GET /system/info: ai_key_storage ok", str(storage_info()))
 
-    def unreadable_everywhere(what: str):
+    def unreadable_everywhere(what: str, state: str):
         r = W.A.get()
         body = jd(r)
         check(body.get("status") == "unreadable" and body.get("has_key") is True and body.get("last4") == W.A_key[-4:],
@@ -746,6 +1016,10 @@ def bad_secret() -> None:
               f"{what}: test says unreadable, without asking Google", brief(r))
         r = W.B.put(make_key("WhileBroken"))
         check(r.status_code == 503 and jd(r).get("code") == "ai_key_storage_off", f"{what}: saving -> 503 ai_key_storage_off", brief(r))
+        info = storage_info()
+        check(info.get("state") == state and "reset --confirm" in info.get("detail", "") and "ai-keys.secret" in info.get("detail", ""),
+              f"{what}: /system/info says {state}, and names both fixes", str(info))
+        check("unreadable" not in stored_statuses(), f"{what}: nothing written into the key rows", str(stored_statuses()))
 
     other = Fernet.generate_key()  # a valid secret, but the wrong one
     for label, content in (("the wrong secret", other), ("a damaged file", b"this is not a secret\n"), ("an empty file", b"")):
@@ -755,59 +1029,176 @@ def bad_secret() -> None:
         check(state == want, f"{label}: the start-up check says {want}", state)
         check(path.read_bytes() == content, f"{label}: the file is NOT replaced")
         check(sorted(p.name for p in SECRETS.iterdir()) == ["ai-keys.secret"], f"{label}: no new file made")
-        unreadable_everywhere(label)
-    errors = [line for line in LOG_LINES if "app.ai.secretbox ERROR" in line]
-    check(any("NOT replaced" in line for line in errors) and any("canary" in line for line in errors),
-          "each is logged as an error", str(errors[-2:]))
+        unreadable_everywhere(label, want)
+    check(error_lines("NOT replaced", "reset --confirm") and error_lines("canary", "reset --confirm"),
+          "each is logged as an error that names the fixes")
+    company = make_key("CompanyWhileBroken")
+    SENT_KEYS.add(company)
+    W.stored_plain.add(company)
+    r = W.admin.c.post("/setup/llm-keys", json={"apiKey": company})
+    check(r.status_code == 200, "adding a company key (the backup) still works meanwhile", brief(r))
+
+    print("  a secret that doesn't open the saved keys is never blessed with a new canary")
+    saved = canary_value()
+    set_canary(None)
+    path.write_bytes(other)
+    check(restart_secretbox(create=True) == "canary_failed" and canary_value() is None,
+          "canary row gone + the wrong secret: canary_failed, and no canary is sealed with it")
+    set_canary(saved)
 
     path.unlink()
     path.mkdir()
     state = restart_secretbox(create=True)
     check(state == "broken" and path.is_dir(), "something at the path that can't be read (a folder): broken, left alone", state)
-    unreadable_everywhere("an unreadable path")
+    unreadable_everywhere("an unreadable path", "broken")
     path.rmdir()
-
-    print("  the bot never makes one")
-    empty = (_tmp / "secrets-empty").resolve()
-    empty.mkdir()
-    settings.secrets_dir = str(empty)
-    check(restart_secretbox(create=False) == "missing", "a reader with no secret file: missing")
-    check(not any(empty.iterdir()), "...and it made nothing")
-    settings.secrets_dir = str(SECRETS)
 
     path.write_bytes(W.good_secret)
     check(restart_secretbox(create=True) == "ok", "the right file back: ok again")
-    check(jd(W.A.get()).get("status") == a_status, "Alice's key reads as before", str(jd(W.A.get()).get("status")))
+    check(jd(W.A.get()).get("status") == a_status, "Alice's key reads as it did, with no step in between",
+          str(jd(W.A.get()).get("status")))
+
+    print("  noticed while running, without a restart")
+    recheck, secretbox._RECHECK_SECONDS = secretbox._RECHECK_SECONDS, 0
+    try:
+        path.write_bytes(other)
+        check(secretbox.state() == "canary_failed", "the file swapped under a running process: canary_failed at the next look")
+        path.write_bytes(W.good_secret)
+        check(secretbox.state() == "ok" and jd(W.A.get()).get("status") == a_status, "the right one back: ok, and Alice's key with it")
+        foreign = secretbox._make_box(other).fernet.encrypt(b"carlink ai-keys canary v1").decode()
+        set_canary(foreign)
+        check(secretbox.state() == "canary_failed", "a database from elsewhere restored under it: canary_failed")
+        set_canary(saved)
+        check(secretbox.state() == "ok", "the right database back: ok")
+    finally:
+        secretbox._RECHECK_SECONDS = recheck
+
+    print("  a reset elsewhere while a save is under way")
+    ai_keys_api.reset_limits()
+    recheck, secretbox._RECHECK_SECONDS = secretbox._RECHECK_SECONDS, 1e9
+    try:
+        k = make_key("DuringReset")
+        fp = secretbox.fingerprint(k)
+        GOOGLE_HOOKS[k] = lambda: set_canary(secretbox._make_box(Fernet.generate_key()).fernet.encrypt(b"x").decode())
+        r = W.B.put(k)
+        check(r.status_code == 503 and jd(r).get("code") == "ai_key_storage_off" and row_of(W.B.id).fingerprint != fp,
+              "the canary changed before the save could commit -> 503, nothing sealed with the old secret", brief(r))
+    finally:
+        set_canary(saved)
+        secretbox._RECHECK_SECONDS = recheck
+    check(secretbox.state() == "ok", "and the next use looks again: ok")
 
 
 def lost_secret() -> None:
-    """Last: afterwards the original secret is useless."""
+    print("  the volume isn't there (a missing mount, or a new server)")
     fresh = (_tmp / "secrets-new-server").resolve()
     settings.secrets_dir = str(fresh)
-    with_keys = key_rows()
+    rows_before, statuses_before = key_rows(), stored_statuses()
+    logged = len(error_lines("is missing", "reset --confirm", "Copy the old ai-keys.secret"))
     state = restart_secretbox(create=True)
-    check(state == "ok" and (fresh / "ai-keys.secret").is_file(), "the secret file gone: the api makes a new one", state)
-    db = SessionLocal()
+    check(state == "lost", "the api's start-up: lost (the database has keys sealed with a secret)", state)
+    check(not (fresh / "ai-keys.secret").exists(), "and NO new secret is made")
+    check(len(error_lines("is missing", "reset --confirm", "Copy the old ai-keys.secret")) == logged + 1,
+          "logged as an error naming both fixes")
+    restart_secretbox(create=True)
+    check(len(error_lines("is missing", "reset --confirm")) == logged + 2, "...at every start")
+    r = W.A.get()
+    check(jd(r).get("status") == "unreadable" and jd(r).get("source") == "none", "Alice's key reads as unreadable", brief(r))
+    ai_keys_api.reset_limits()
+    r = W.B.put(make_key("WhileLost"))
+    check(r.status_code == 503 and jd(r).get("code") == "ai_key_storage_off", "saving -> 503 ai_key_storage_off", brief(r))
+    info = storage_info()
+    check(info.get("state") == "lost" and "reset --confirm" in info.get("detail", "") and "ai-keys.secret" in info.get("detail", ""),
+          "/system/info: lost, naming both fixes", str(info))
+    check(restart_secretbox(create=False) == "lost" and not fresh.exists(), "the bot: lost too, and it makes nothing")
+    check(key_rows() == rows_before and stored_statuses() == statuses_before, "the key rows are left exactly as they were")
+
+    print("  putting the old file back mends everything")
+    restart_secretbox(create=True)
+    fresh.mkdir(parents=True, exist_ok=True)
+    (fresh / "ai-keys.secret").write_bytes(W.good_secret)
+    recheck, secretbox._RECHECK_SECONDS = secretbox._RECHECK_SECONDS, 0
     try:
-        statuses = {r.status for r in db.query(UserAiKey).all()}
+        check(secretbox.state() == "ok", "noticed at the next use, no restart needed")
     finally:
-        db.close()
-    check(with_keys and statuses == {"unreadable"}, f"every one of the {with_keys} saved keys is marked unreadable", str(statuses))
+        secretbox._RECHECK_SECONDS = recheck
+    check(restart_secretbox(create=True) == "ok" and jd(W.A.get()).get("status") == "ok", "and after a restart: Alice's key is ok")
+
+    print("  or starting over: python -m app.ai.secretbox reset")
+    gone = (_tmp / "secrets-reset").resolve()
+    settings.secrets_dir = str(gone)
+    check(restart_secretbox(create=True) == "lost", "(another server with no secret file: lost)")
+    env = dict(os.environ, SECRETS_DIR=str(gone))
+    cli = [sys.executable, "-m", "app.ai.secretbox"]
+    status = subprocess.run(cli + ["status"], cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+    check(status.returncode == 1 and "lost" in status.stdout, "`status` says lost (exit 1)", status.stdout[-200:] + status.stderr[-200:])
+    canary_before, rows_before = canary_value(), key_rows()
+    dry = subprocess.run(cli + ["reset"], cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+    check(dry.returncode == 1 and "--confirm" in dry.stdout and f"delete the {rows_before} saved" in dry.stdout,
+          "`reset` without --confirm only explains (how many keys it would delete)", dry.stdout[-300:])
+    check(not (gone / "ai-keys.secret").exists() and key_rows() == rows_before and canary_value() == canary_before,
+          "...and changes nothing")
+    done = subprocess.run(cli + ["reset", "--confirm"], cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+    check(done.returncode == 0 and "Done" in done.stdout, "`reset --confirm` -> exit 0", done.stdout[-300:] + done.stderr[-300:])
+    check((gone / "ai-keys.secret").is_file() and key_rows() == 0, "a new secret, and every saved own key deleted", str(key_rows()))
+    check(canary_value() != canary_before, "the canary is sealed again")
+    entry = audits("ai_keys_reset")
+    check(entry and f"{rows_before} saved own key(s) deleted" in entry[-1].detail, "a history entry says so",
+          entry[-1].detail if entry else "none")
+    check(not any(k in done.stdout + done.stderr + dry.stdout + status.stdout for k in SENT_KEYS), "it prints no key")
+    recheck, secretbox._RECHECK_SECONDS = secretbox._RECHECK_SECONDS, 0
+    try:
+        check(secretbox.state() == "ok", "the running api picks the new secret up at its next use")
+    finally:
+        secretbox._RECHECK_SECONDS = recheck
     body = jd(W.A.get())
-    check(body.get("status") == "unreadable" and body.get("last_error") == secretbox.LOST_SECRET_ERROR,
-          "Alice is told to add hers again", str(body.get("last_error")))
-    r = W.A.test()
-    check(jd(r).get("status") == "unreadable", "test: still unreadable (sealed with the old secret)", brief(r))
+    check(body.get("has_key") is False and body.get("source") == "none", "Alice has no key now", str(body))
     ai_keys_api.reset_limits()
     r = W.A.put(W.A_key)
-    check(r.status_code == 200 and jd(r).get("status") == "ok", "she adds it again: ok", brief(r))
-    lost = [line for line in LOG_LINES if "can't be read any more" in line]
-    check(lost, "logged as an error")
+    check(r.status_code == 200 and jd(r).get("status") == "ok", "and adds hers again: ok", brief(r))
     settings.secrets_dir = str(SECRETS)
-    check(restart_secretbox(create=True) == "canary_failed", "the old secret now fails the new canary (never re-made)")
+    check(restart_secretbox(create=True) == "canary_failed", "the old secret now fails the new canary (and isn't re-made)")
     check((SECRETS / "ai-keys.secret").read_bytes() == W.good_secret, "...and is left as it was")
-    settings.secrets_dir = str(fresh)
+    settings.secrets_dir = str(gone)
     restart_secretbox(create=True)
+
+
+def uvicorn_logging() -> None:
+    folder = (_tmp / "uvicorn").resolve()
+    folder.mkdir()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ, SECRETS_DIR=str(folder / "secrets"), STORAGE_DIR=str(folder),
+               DATABASE_URL=f"sqlite:///{(folder / 'uv.db').as_posix()}")
+    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.api.main:app", "--host", "127.0.0.1", "--port", str(port)],
+                            cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines: list[str] = []
+    import threading as _threading
+
+    reader = _threading.Thread(target=lambda: lines.extend(iter(proc.stdout.readline, "")), daemon=True)
+    reader.start()
+    try:
+        deadline = time.time() + 90
+        while time.time() < deadline and not any("Application startup complete" in line for line in lines):
+            time.sleep(0.2)
+        need(any("Application startup complete" in line for line in lines), "uvicorn starts the api", "".join(lines)[-400:])
+        r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=10)
+        check(r.status_code == 200, "GET /health", str(r.status_code))
+        time.sleep(0.5)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        reader.join(timeout=5)
+    out = "".join(lines)
+    check(out.count("AI key secret ready") == 1 and out.count("Made a new AI key secret") == 1,
+          "the app's own INFO lines now show under uvicorn, once each", out[-600:])
+    check(out.count("Application startup complete") == 1 and out.count("Uvicorn running on") == 1,
+          "uvicorn's own lines aren't doubled", out[-600:])
+    check(out.count('"GET /health HTTP/1.1" 200') == 1, "nor its access log line", out[-600:])
 
 
 # ------------------------------------------------------------- other processes
@@ -836,7 +1227,7 @@ while time.time() < go - 0.05:
 while time.time() < go:
     pass
 state = secretbox.startup(create=(mode in ("api", "loser")))
-out = {"state": state}
+out = {"state": state, "described": secretbox.describe()["state"]}
 if state == "ok":
     out["fp"] = secretbox.fingerprint("race probe")
     out["sealed"] = secretbox.seal("hello from %d" % os.getpid())
@@ -867,6 +1258,10 @@ def racing_processes() -> None:
         folder = (_tmp / f"race{round_no}").resolve()
         folder.mkdir()
         _children(["init"], folder, delay=0)
+        if round_no == 1:
+            early = _children(["bot"], folder, delay=0)[0][0]
+            check(early.get("state") == "off" and early.get("described") == "off" and not (folder / "secrets").exists(),
+                  "a brand-new database, the bot first: off (waiting for the api), and it makes nothing", str(early))
         results = _children(["api"] * 4, folder)
         states = [r["state"] for r, _ in results]
         check(states == ["ok"] * 4, f"round {round_no}: 4 api processes start at the same moment, all ok", str(states))
@@ -928,11 +1323,15 @@ def main() -> int:
         ("deleting: self, admin, the disable helper", deleting),
         ("disabling an account deletes its key", disabling),
         ("GET /users: ai_key, batched", users_screen),
-        ("rate limits", rate_limits),
+        ("rate limits: order, exemptions, accounts with no ticks", rate_limits),
+        ("company keys: never someone's own", company_keys),
+        ("a save racing a disable", save_vs_disable),
+        ("a re-check racing a new key", test_vs_replace),
         ("signed out, temporary password, plain user", who_may),
-        ("a wrong or broken secret: unreadable, never re-made", bad_secret),
-        ("a lost secret: a new one, old keys unreadable", lost_secret),
+        ("a wrong or broken secret: unreadable, never re-made, mends", bad_secret),
+        ("a lost secret: never re-made; put back, or reset", lost_secret),
         ("processes racing to make the secret", racing_processes),
+        ("logging under uvicorn", uvicorn_logging),
         ("no key in any log line, response or the database", nothing_leaked),
     ):
         run_section(name, fn)
