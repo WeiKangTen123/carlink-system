@@ -6623,3 +6623,210 @@ html:has(.intake-footer) {
   color: var(--text-muted);
 }
 /* ---- end P1 case privacy ---- */
+
+
+/* ==========================================================================
+   P2 SETTINGS SPLIT: the Settings tabs (app/settings/layout.tsx,
+   SettingsTabs.tsx), the lock card on admin tabs (AdminOnly.tsx), the setup
+   checklist on My settings, the "⋯" row menu, notice and the Disable /
+   Move their cases dialogs on Users. Theme tokens only, so it follows dark
+   and light mode.
+   ========================================================================== */
+
+/* Tabs are links, not buttons. */
+.settings-tabs .case-tab {
+  text-decoration: none;
+}
+
+/* Disabled buttons on Settings look disabled (as in the intake wizard). */
+.settings-page :is(.btn-primary-modern, .btn-secondary-modern):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* A non-admin on /settings/users or /settings/company. */
+.settings-lock-card {
+  max-width: 560px;
+  padding: 28px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.settings-lock-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-color);
+}
+.settings-lock-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 800;
+}
+.settings-lock-link {
+  font-size: 12px;
+  padding: 7px 14px;
+}
+
+/* My settings: what's still missing. */
+.settings-checklist {
+  border-left: 4px solid var(--badge-amber-text);
+}
+.settings-checklist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-checklist-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.settings-checklist-list li:not(.done) {
+  background: var(--surface-hover);
+}
+.settings-checklist-list li.done {
+  color: var(--text-muted);
+}
+.settings-checklist-list li.done .settings-checklist-label {
+  text-decoration: line-through;
+}
+.settings-checklist-label {
+  display: block;
+  font-weight: 700;
+}
+.settings-checklist-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Users: the "⋯" menu on each row, drawn fixed to the window (UsersCard.tsx). */
+.users-row-menu-btn {
+  padding: 4px 8px !important;
+}
+.users-row-menu {
+  position: fixed;
+  min-width: 200px;
+  background: var(--surface-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  z-index: 900;
+}
+
+/* What the last Disable or Move their cases did. */
+.settings-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--badge-green-text);
+  background: var(--badge-green-bg);
+  border: 1px solid var(--badge-green-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+.settings-notice-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.settings-notice-close:hover {
+  opacity: 1;
+}
+
+/* Disable and Move their cases dialogs. */
+.settings-dialog-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+.settings-dialog-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.settings-dialog-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.settings-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-choice:hover {
+  background: var(--surface-hover);
+}
+.settings-choice.picked {
+  border-color: var(--accent-primary);
+  background: var(--surface-hover);
+}
+.settings-choice input[type="radio"] {
+  margin-top: 3px;
+}
+.settings-choice-title {
+  display: block;
+  font-weight: 700;
+}
+.settings-choice-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.settings-person-select {
+  margin-top: 6px;
+  padding: 8px 10px;
+}
+.settings-danger-btn {
+  background: var(--badge-red-text);
+  box-shadow: none;
+}
+.settings-danger-btn:hover {
+  box-shadow: none;
+}
+/* ---- end P2 settings split ---- */

@@ -322,7 +322,7 @@ export function CaseAssessmentTab({
   };
 
   // Sign-Off & Endorsement State. Who signs is the signed-in user, with
-  // their own profile (My account) -- the API takes it from the account.
+  // their own profile (Settings -> My settings) -- the API takes it from the account.
   // This defaulted to one fixed surveyor's name, qualifications and
   // licence, so every case read as signed by them.
   const user = useCurrentUser();
@@ -1475,7 +1475,7 @@ export function CaseAssessmentTab({
               {noFullName
                 ? "Your profile has no full name yet, so the report will print your username."
                 : "Your profile has no licence number, so the report will print without one."}{" "}
-              <a href="/account" className="setup-help-link">Add it on My account</a>
+              <a href="/settings#my-profile" className="setup-help-link">Add it in Settings</a>
             </div>
           )}
 

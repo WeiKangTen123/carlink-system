@@ -25,7 +25,7 @@ export default function PrivacyPage() {
             can&apos;t be turned back into the password), and when you signed up.
           </li>
           <li>
-            Anything you add on My account, such as your full name, licence number and firm, which are printed on
+            Anything you add in Settings, such as your full name, licence number and firm, which are printed on
             reports you sign off.
           </li>
           <li>
@@ -54,7 +54,7 @@ export default function PrivacyPage() {
 
         <h2>Seeing or correcting your details</h2>
         <p>
-          You can change your username, full name and surveyor details on My account. For anything else, ask your
+          You can change your username, full name and surveyor details in Settings. For anything else, ask your
           Carlink administrator: they can show you what&apos;s held about you and correct it.
         </p>
 

@@ -16,7 +16,8 @@ const NAV_ITEMS = [
   { href: "/reports", label: "Cases Repository", icon: FolderArchive },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
-  // Admin only (users, API keys, branding) -- see Sidebar's showSettings.
+  // Everyone: My settings (profile, password). Admins also get the Users
+  // and Company tabs there (app/settings/layout.tsx).
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -28,9 +29,8 @@ function isActiveLink(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
-export function Sidebar({ showSettings }: { showSettings: boolean }) {
+export function Sidebar() {
   const pathname = usePathname();
-  const items = showSettings ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.href !== "/settings");
 
   return (
     <aside className="sidebar">
@@ -45,7 +45,7 @@ export function Sidebar({ showSettings }: { showSettings: boolean }) {
       </Link>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 12 }}>
-        {items.map((item) => {
+        {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const active = isActiveLink(pathname, item.href);
           return (

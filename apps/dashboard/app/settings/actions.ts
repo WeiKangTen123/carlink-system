@@ -3,6 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import {
+  changeMyPassword,
+  reassignCases,
+  updateMyProfile,
   updateAppSettings,
   listLlmKeys,
   addLlmKey,
@@ -17,9 +20,11 @@ import {
   setSignupsOpen,
   type AccountLinkRow,
   type AppSettings,
+  type CurrentUser,
   type IssuedLink,
   type LinkLifetime,
   type LlmKey,
+  type ProfileFields,
   type UserAccount,
   type UserPatch,
   type UserRole,
@@ -30,12 +35,44 @@ import {
  * through one. Errors are returned rather than thrown so the settings UI
  * can show them inline instead of blowing up the page. */
 
+// My settings (everyone, on their own account). The forced temporary
+// password change on /account uses changeMyPasswordAction too: it calls only
+// POST /auth/password, which the API allows before the password is changed.
+
+export async function updateMyProfileAction(patch: ProfileFields): Promise<{ user: CurrentUser } | { error: string }> {
+  try {
+    const user = await updateMyProfile(patch);
+    // The name is shown in the top bar, which the root layout renders.
+    revalidatePath("/", "layout");
+    return { user };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save your profile" };
+  }
+}
+
+export async function changeMyPasswordAction(
+  currentPassword: string,
+  newPassword: string
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    await changeMyPassword(currentPassword, newPassword);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to change your password" };
+  }
+}
+
+// Company (admin only -- the API refuses anyone else).
+
 export async function updateSettingsAction(
   patch: Partial<AppSettings>
 ): Promise<{ settings: AppSettings } | { error: string }> {
   try {
     const settings = await updateAppSettings(patch);
-    revalidatePath("/settings");
+    revalidatePath("/settings", "layout");
     return { settings };
   } catch (err) {
     // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
@@ -62,7 +99,7 @@ export async function addLlmKeyAction(
 ): Promise<{ key: LlmKey } | { error: string }> {
   try {
     const key = await addLlmKey(apiKey, label);
-    revalidatePath("/settings");
+    revalidatePath("/settings", "layout");
     return { key };
   } catch (err) {
     // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
@@ -74,7 +111,7 @@ export async function addLlmKeyAction(
 export async function deleteLlmKeyAction(id: string): Promise<{ ok: true } | { error: string }> {
   try {
     await deleteLlmKey(id);
-    revalidatePath("/settings");
+    revalidatePath("/settings", "layout");
     return { ok: true };
   } catch (err) {
     // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
@@ -106,12 +143,36 @@ export async function listUsersAction(): Promise<{ users: UserAccount[] } | { er
   }
 }
 
+/** Also disables, with what happens to their open cases (patch.open_cases);
+ * the API does all of that or none of it. */
 export async function updateUserAction(id: string, patch: UserPatch): Promise<{ user: UserAccount } | { error: string }> {
   try {
-    return { user: await updateUser(id, patch) };
+    const user = await updateUser(id, patch);
+    // Disabling can move or unassign their cases, which the case lists show.
+    if (patch.active === false) revalidatePath("/reports");
+    return { user };
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to save the user" };
+  }
+}
+
+/** "Move their cases": everything they own that isn't signed off (and,
+ * with includeSigned, what is) goes to toUserId, or becomes Unassigned. */
+export async function reassignCasesAction(
+  fromUserId: string,
+  toUserId: string | null,
+  includeSigned: boolean
+): Promise<{ moved: number } | { error: string }> {
+  try {
+    const result = await reassignCases(fromUserId, toUserId, includeSigned);
+    // The case lists show owners.
+    revalidatePath("/reports");
+    revalidatePath("/settings", "layout");
+    return { moved: result.moved };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to move the cases" };
   }
 }
 

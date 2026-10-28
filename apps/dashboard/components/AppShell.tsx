@@ -6,7 +6,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu";
 import { SessionGuard } from "@/components/SessionGuard";
-import { CurrentUserProvider, isAdmin } from "@/components/CurrentUser";
+import { CurrentUserProvider } from "@/components/CurrentUser";
 import type { CurrentUser } from "@/lib/api";
 import { isPublicPage } from "@/lib/publicPages";
 
@@ -20,7 +20,8 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   const bare = isPublicPage(pathname);
 
   // A temporary password has to be replaced before anything else; the API
-  // refuses everything else meanwhile (app/auth/middleware.py).
+  // refuses everything else meanwhile (app/auth/middleware.py). /account is
+  // now only that forced change (everyone else is sent on to /settings).
   useEffect(() => {
     if (!bare && user?.must_change_password && pathname !== "/account") router.replace("/account");
   }, [bare, user, pathname, router]);
@@ -30,7 +31,7 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   return (
     <CurrentUserProvider value={user}>
       <div className="app-shell">
-        <Sidebar showSettings={isAdmin(user)} />
+        <Sidebar />
 
         <div className="main-column">
           <header className="top-bar">
