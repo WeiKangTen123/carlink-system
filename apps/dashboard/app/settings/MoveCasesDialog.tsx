@@ -5,25 +5,29 @@ import { ArrowRightLeft } from "lucide-react";
 import { personLabel, type UserAccount } from "@/lib/api";
 import { reassignCasesAction } from "./actions";
 import { CaseCountsText } from "./EditUserDialog";
-import { PersonSelect, plural, shortName, useEscape } from "./DisableUserDialog";
+import { PersonSelect, plural, shortName, useEscape, useFreshCounts } from "./DisableUserDialog";
 
 /** Settings -> Users -> Move their cases (POST /reports/reassign): all of
  * one person's open cases, and their signed-off ones if ticked, go to
  * someone else or become Unassigned. Unfinished drafts stay with them.
  * Each case's history records the move, as with Assign on a case. Works
- * for disabled accounts too, whose cases may have been kept under them. */
+ * for disabled accounts too, whose cases may have been kept under them.
+ * The counts are read again when the dialog opens (useFreshCounts); the
+ * message afterwards uses the number the API says it moved. */
 export function MoveCasesDialog({
-  user,
-  people,
+  user: rowUser,
+  people: rowPeople,
   onCancel,
   onDone,
 }: {
   user: UserAccount;
-  /** Everyone the cases could go to: active, and not them. */
+  /** Everyone the cases could go to (active, and not them), as the table
+   * had it; read again on open. */
   people: UserAccount[];
   onCancel: () => void;
   onDone: (notice: string) => void;
 }) {
+  const { user, people, checking, stale } = useFreshCounts(rowUser, rowPeople);
   const open = user.cases?.open ?? 0;
   const signedOff = user.cases?.signed_off ?? 0;
   const who = shortName(user);
@@ -37,7 +41,7 @@ export function MoveCasesDialog({
 
   const targetPerson = people.find((p) => p.id === target) ?? null;
   const count = open + (includeSigned ? signedOff : 0);
-  const ready = count > 0 && (toUnassigned || Boolean(targetPerson));
+  const ready = !checking && count > 0 && (toUnassigned || Boolean(targetPerson));
 
   const submit = async () => {
     setSaving(true);
@@ -70,9 +74,20 @@ export function MoveCasesDialog({
         <h3 id="move-cases-title" style={{ fontSize: 16, fontWeight: 800, margin: "0 0 4px" }}>
           Move {personLabel(user)}&apos;s cases
         </h3>
-        <p className="setup-note" style={{ margin: "0 0 4px" }}>
-          Now: <CaseCountsText cases={user.cases} />. The new owner sees them under My cases and works on them.
+        <p className="setup-note" style={{ margin: "0 0 4px" }} role="status">
+          {checking ? (
+            "Checking their cases…"
+          ) : (
+            <>
+              Now: <CaseCountsText cases={user.cases} />. The new owner sees them under My cases and works on them.
+            </>
+          )}
         </p>
+        {stale && (
+          <p className="setup-note" style={{ margin: "0 0 4px", color: "var(--badge-amber-text)" }}>
+            Couldn&apos;t check their latest cases; these counts are from when the page loaded.
+          </p>
+        )}
 
         <div className="settings-dialog-section">
           <div className="settings-dialog-label">Move to</div>
@@ -111,7 +126,9 @@ export function MoveCasesDialog({
             </label>
           )}
           <p className="setup-note" style={{ margin: "10px 0 0" }}>
-            {count === 0
+            {checking
+              ? "Checking…"
+              : count === 0
               ? signedOff > 0
                 ? "They have no open cases. Tick the box to move their signed-off ones."
                 : "They have no open cases to move."
@@ -133,7 +150,7 @@ export function MoveCasesDialog({
             style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
           >
             <ArrowRightLeft style={{ width: 14, height: 14 }} />
-            {saving ? "Moving…" : count > 0 ? `Move ${plural(count, "case")}` : "Move cases"}
+            {saving ? "Moving…" : !checking && count > 0 ? `Move ${plural(count, "case")}` : "Move cases"}
           </button>
         </div>
       </div>

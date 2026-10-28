@@ -6829,4 +6829,119 @@ html:has(.intake-footer) {
 .settings-danger-btn:hover {
   box-shadow: none;
 }
+/* Users table (UsersCard.tsx): fits the Settings column with no sideways
+   scrolling -- email under the username, two-line cells -- and becomes one
+   small card per person when the card itself is narrow. */
+.users-table-wrap {
+  container-type: inline-size;
+  container-name: users-table;
+}
+.users-people-table th,
+.users-people-table td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.users-people-table th {
+  white-space: nowrap;
+}
+.users-people-table th:first-child,
+.users-people-table td:first-child {
+  padding-left: 0;
+}
+.users-people-table .col-person {
+  width: 100%;
+  min-width: 150px;
+}
+.users-people-table .col-role {
+  min-width: 112px;
+}
+.users-people-table .user-access-summary {
+  white-space: normal;
+}
+.users-people-table .col-cases,
+.users-people-table .col-seen {
+  white-space: nowrap;
+}
+.users-people-table .col-status {
+  min-width: 84px;
+}
+.users-people-table .user-status {
+  white-space: normal;
+}
+.users-people-table .col-actions {
+  width: 1%;
+  padding-right: 0;
+  text-align: right;
+}
+.users-person-name {
+  font-weight: 700;
+}
+.users-person-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-person-email {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.users-cell-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.users-cases-open {
+  font-weight: 700;
+}
+.users-cases-open.zero {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-seen-label {
+  display: none;
+}
+@container users-table (max-width: 640px) {
+  .users-people-table thead {
+    display: none;
+  }
+  .users-people-table,
+  .users-people-table tbody {
+    display: block;
+    width: 100%;
+  }
+  .users-people-table tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .users-people-table tr:last-child {
+    border-bottom: none;
+  }
+  .users-people-table td,
+  .users-people-table td:first-child {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    white-space: normal;
+  }
+  .users-people-table .col-person {
+    grid-column: 1 / -1;
+    padding-right: 44px;
+  }
+  .users-people-table .col-actions {
+    position: absolute;
+    top: 10px;
+    right: 0;
+    width: auto;
+  }
+  .users-seen-label {
+    display: inline;
+  }
+}
 /* ---- end P2 settings split ---- */

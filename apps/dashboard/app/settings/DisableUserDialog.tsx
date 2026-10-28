@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { UserX } from "lucide-react";
-import { personLabel, type OpenCasesChoice, type UserAccount } from "@/lib/api";
-import { updateUserAction } from "./actions";
+import { personLabel, type OpenCasesChoice, type UserAccount, type UserPatch } from "@/lib/api";
+import { listUsersAction, updateUserAction } from "./actions";
 
 /** "Tan Ah Huat", or "@ahhuat" when the name is just the username. */
 export function shortName(u: Pick<UserAccount, "name" | "username">): string {
@@ -23,6 +23,37 @@ export function useEscape(onClose: () => void, busy: boolean) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onClose]);
+}
+
+/** The person's case counts and who their cases could go to, read again
+ * (GET /users) when a dialog opens: the table's counts are from when the
+ * page loaded, and cases may have been filed or moved since. Until that
+ * answers, `checking` is true; if it fails, the table's counts are used
+ * and `stale` says so. Read once per dialog (`user` is the row it was
+ * opened from). */
+export function useFreshCounts(user: UserAccount, initialPeople: UserAccount[]) {
+  const [state, setState] = useState({ user, people: initialPeople, checking: true, stale: false });
+  const userId = user.id;
+  useEffect(() => {
+    let cancelled = false;
+    listUsersAction().then((res) => {
+      if (cancelled) return;
+      if ("error" in res) {
+        setState((s) => ({ ...s, checking: false, stale: true }));
+        return;
+      }
+      setState((s) => ({
+        user: res.users.find((u) => u.id === userId) ?? s.user,
+        people: res.users.filter((p) => p.active && p.id !== userId),
+        checking: false,
+        stale: false,
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+  return state;
 }
 
 /** A picker of the accounts cases can go to: active ones only (the API
@@ -58,61 +89,79 @@ export function PersonSelect({
 /** Settings -> Users -> Disable. One PATCH does all of it or none of it:
  * the account is disabled, its sessions end, and its open cases (not signed
  * off, not an unfinished draft) are moved, unassigned or kept as chosen.
- * The counts come from GET /users (`cases`).
+ * The counts are read again when the dialog opens (useFreshCounts).
  *
  * SLOT "ALSO" (P3-UI): "Their AI key is deleted." (P5): "Telegram @x is
  * disconnected. Enabling again won't reconnect." */
 export function DisableUserDialog({
-  user,
-  people,
+  user: rowUser,
+  people: rowPeople,
   onCancel,
   onDone,
 }: {
   user: UserAccount;
-  /** Everyone their cases could go to: active, and not them. */
+  /** Everyone their cases could go to (active, and not them), as the table
+   * had it; read again on open. */
   people: UserAccount[];
   onCancel: () => void;
   onDone: (notice: string) => void;
 }) {
+  const { user, people, checking, stale } = useFreshCounts(rowUser, rowPeople);
   const open = user.cases?.open ?? 0;
   const signedOff = user.cases?.signed_off ?? 0;
   const drafts = user.cases?.drafts ?? 0;
   const who = shortName(user);
 
-  const [choice, setChoice] = useState<OpenCasesChoice>("unassign");
+  // Null: nothing picked. With open cases it starts on "unassign" (agent5
+  // §9). With none, nothing is picked unless the admin picks something;
+  // with nothing sent the API keeps whatever turns up meanwhile under them.
+  const [choice, setChoice] = useState<OpenCasesChoice | null>(null);
   const [target, setTarget] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEscape(onCancel, saving);
 
+  useEffect(() => {
+    if (!checking && open > 0) setChoice((c) => c ?? "unassign");
+  }, [checking, open]);
+
   const targetPerson = people.find((p) => p.id === target) ?? null;
-  const ready = open === 0 || choice !== "move" || Boolean(targetPerson);
+  const ready = !checking && (choice !== "move" || Boolean(targetPerson));
 
   const submit = async () => {
     setSaving(true);
     setError(null);
-    // With nothing open there is nothing to choose; the API keeps whatever
-    // turns up meanwhile under them (its default).
-    const patch =
-      open === 0
-        ? { active: false }
-        : choice === "move"
-          ? { active: false, open_cases: choice, open_cases_to: target }
-          : { active: false, open_cases: choice };
+    const patch: UserPatch = { active: false };
+    if (choice) {
+      patch.open_cases = choice;
+      if (choice === "move") patch.open_cases_to = target;
+    }
     const result = await updateUserAction(user.id, patch);
     setSaving(false);
     if ("error" in result) {
       setError(result.error);
       return;
     }
-    const cases =
-      open === 0
-        ? ""
-        : choice === "move" && targetPerson
-          ? ` Their ${plural(open, "open case")} went to ${personLabel(targetPerson)}.`
-          : choice === "unassign"
-            ? ` Their ${plural(open, "open case")} ${open === 1 ? "is" : "are"} now Unassigned.`
-            : ` Their ${plural(open, "open case")} stayed under them.`;
+    // How many the API actually moved, when it says; plain words otherwise.
+    const moved = typeof result.user.moved === "number" ? result.user.moved : null;
+    let cases = "";
+    if (choice === "move" && targetPerson) {
+      cases =
+        moved === null
+          ? ` Their open cases went to ${personLabel(targetPerson)}.`
+          : moved === 0
+            ? " They had no open cases to move."
+            : ` ${plural(moved, "open case")} went to ${personLabel(targetPerson)}.`;
+    } else if (choice === "unassign") {
+      cases =
+        moved === null
+          ? " Their open cases are now Unassigned."
+          : moved === 0
+            ? " They had no open cases to unassign."
+            : ` ${plural(moved, "open case")} ${moved === 1 ? "is" : "are"} now Unassigned.`;
+    } else if (choice === "keep") {
+      cases = " Their open cases stay under them.";
+    }
     onDone(`${personLabel(user)} is disabled.${cases}`);
   };
 
@@ -141,10 +190,22 @@ export function DisableUserDialog({
         </p>
 
         <div className="settings-dialog-section">
-          {open > 0 ? (
+          {checking ? (
             <>
-              <div className="settings-dialog-label">Their {plural(open, "open case")}</div>
-              <div className="settings-choices" role="radiogroup" aria-label={`What happens to their ${plural(open, "open case")}`}>
+              <div className="settings-dialog-label">Their cases</div>
+              <p className="setup-note" style={{ margin: 0 }} role="status">
+                Checking their cases…
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="settings-dialog-label">{open > 0 ? `Their ${plural(open, "open case")}` : "Their open cases"}</div>
+              {open === 0 && (
+                <p className="setup-note" style={{ margin: "0 0 8px" }}>
+                  They have none right now. If you pick something, it also covers any filed before you confirm.
+                </p>
+              )}
+              <div className="settings-choices" role="radiogroup" aria-label="What happens to their open cases">
                 <label className={`settings-choice ${choice === "move" ? "picked" : ""}`}>
                   <input type="radio" name="open-cases" checked={choice === "move"} onChange={() => setChoice("move")} />
                   <span style={{ flex: 1, minWidth: 0 }}>
@@ -175,17 +236,17 @@ export function DisableUserDialog({
                   </span>
                 </label>
               </div>
+              {stays.length > 0 && (
+                <p className="setup-note" style={{ margin: "10px 0 0" }}>
+                  {stays.join(" ")}
+                </p>
+              )}
+              {stale && (
+                <p className="setup-note" style={{ margin: "10px 0 0", color: "var(--badge-amber-text)" }}>
+                  Couldn&apos;t check their latest cases; these counts are from when the page loaded.
+                </p>
+              )}
             </>
-          ) : (
-            <>
-              <div className="settings-dialog-label">Their cases</div>
-              <p className="setup-note" style={{ margin: 0 }}>They have no open cases.</p>
-            </>
-          )}
-          {stays.length > 0 && (
-            <p className="setup-note" style={{ margin: "10px 0 0" }}>
-              {stays.join(" ")}
-            </p>
           )}
         </div>
 

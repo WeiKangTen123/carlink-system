@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu";
@@ -16,22 +16,27 @@ import { isPublicPage } from "@/lib/publicPages";
  * current path. */
 export function AppShell({ user, children }: { user: CurrentUser | null; children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const bare = isPublicPage(pathname);
+  const mustChangePassword = Boolean(user?.must_change_password);
 
   // A temporary password has to be replaced before anything else; the API
   // refuses everything else meanwhile (app/auth/middleware.py). /account is
   // now only that forced change (everyone else is sent on to /settings).
+  // The root layout already redirects every other page on the server, and
+  // the shell offers no links away from /account (Sidebar, UserMenu), so
+  // this is only a fallback. It's a full page load, never router.replace():
+  // a client navigation racing the server's own redirect crashes Next's
+  // router (React error #310) and strands the browser on the wrong page.
   useEffect(() => {
-    if (!bare && user?.must_change_password && pathname !== "/account") router.replace("/account");
-  }, [bare, user, pathname, router]);
+    if (!bare && mustChangePassword && pathname !== "/account") window.location.replace("/account");
+  }, [bare, mustChangePassword, pathname]);
 
   if (bare) return <>{children}</>;
 
   return (
     <CurrentUserProvider value={user}>
       <div className="app-shell">
-        <Sidebar />
+        <Sidebar locked={mustChangePassword} />
 
         <div className="main-column">
           <header className="top-bar">

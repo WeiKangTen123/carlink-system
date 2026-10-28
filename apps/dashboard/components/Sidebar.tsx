@@ -29,12 +29,16 @@ function isActiveLink(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
-export function Sidebar() {
+/** locked: signed in with a temporary password. Nothing opens until it's
+ * replaced on /account, so there are no links away from it: following one
+ * would only bounce back (see AppShell). */
+export function Sidebar({ locked = false }: { locked?: boolean }) {
   const pathname = usePathname();
+  const items = locked ? [] : NAV_ITEMS;
 
   return (
     <aside className="sidebar">
-      <Link href="/" className="sidebar-brand">
+      <Link href={locked ? "/account" : "/"} className="sidebar-brand">
         <div className="brand-icon">
           <CarFront style={{ width: 18, height: 18 }} />
         </div>
@@ -45,7 +49,7 @@ export function Sidebar() {
       </Link>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 12 }}>
-        {NAV_ITEMS.map((item) => {
+        {items.map((item) => {
           const Icon = item.icon;
           const active = isActiveLink(pathname, item.href);
           return (

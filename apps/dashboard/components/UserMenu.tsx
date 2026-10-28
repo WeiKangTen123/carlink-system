@@ -68,10 +68,13 @@ export function UserMenu({ user }: { user: CurrentUser }) {
             </div>
             <span className={`role-chip ${user.role}`}>{ROLE_LABEL[user.role] ?? user.role}</span>
           </div>
-          {/* Your profile and password are on Settings -> My settings. */}
-          <Link href="/settings" prefetch={false} className="user-menu-item" role="menuitem" onClick={() => setOpen(false)}>
-            <Settings style={{ width: 14, height: 14 }} /> Settings
-          </Link>
+          {/* Your profile and password are on Settings -> My settings. Not
+              while on a temporary password: only /account opens then. */}
+          {!user.must_change_password && (
+            <Link href="/settings" prefetch={false} className="user-menu-item" role="menuitem" onClick={() => setOpen(false)}>
+              <Settings style={{ width: 14, height: 14 }} /> Settings
+            </Link>
+          )}
           <button
             type="button"
             className="user-menu-item danger"

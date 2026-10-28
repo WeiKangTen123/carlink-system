@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { ArrowRightLeft, Check, KeyRound, MoreHorizontal, Pencil, Plus, UserCheck, UserX, Users, X } from "lucide-react";
-import type { AccountLinkRow, UserAccount, UserPatch, UserTicks } from "@/lib/api";
-import { ROLE_LABEL, formatSgtDay } from "@/lib/signup";
+import type { AccountLinkRow, CaseCounts, UserAccount, UserPatch, UserTicks } from "@/lib/api";
+import { ROLE_LABEL, formatSgt, formatSgtDay } from "@/lib/signup";
 import { createResetLinkAction, listAccountLinksAction, listUsersAction, setSignupsOpenAction, updateUserAction } from "./actions";
 import { AccountLinksTab } from "./AccountLinksTab";
 import { DisableUserDialog } from "./DisableUserDialog";
-import { CaseCountsText, EditUserDialog, ticksOf, type EditUserDraft } from "./EditUserDialog";
+import { EditUserDialog, ticksOf, type EditUserDraft } from "./EditUserDialog";
 import { CreateInviteDialog, LinkReadyDialog, type ReadyLink } from "./LinkDialogs";
 import { MoveCasesDialog } from "./MoveCasesDialog";
 
@@ -23,11 +24,6 @@ function accessSummary(u: UserAccount): string {
 }
 
 const NEW_FOR_DAYS = 7;
-
-function lastSeen(iso: string | null): string {
-  if (!iso) return "Never";
-  return new Date(iso).toLocaleString("en-SG", { dateStyle: "medium", timeStyle: "short" });
-}
 
 function isNew(u: UserAccount): boolean {
   return Date.now() - new Date(u.created_at).getTime() < NEW_FOR_DAYS * 24 * 3600 * 1000;
@@ -77,18 +73,46 @@ function SignupSwitch({ open, onChange }: { open: boolean; onChange: (open: bool
 
 type MenuItem = { label: string; icon: React.ReactNode; onSelect: () => void; danger?: boolean };
 
-/** The "⋯" menu at the end of a user's row. Drawn fixed to the window, not
- * inside the row: the table scrolls sideways on narrow screens, which would
- * otherwise clip the menu. Closes on a click elsewhere, Escape, scrolling
- * or resizing. */
+/** Where the open menu sits, in window coordinates. */
+type MenuSpot = { right: number; top?: number; bottom?: number };
+
+/** How long after opening a scroll that moves the button counts as the
+ * browser still bringing it into view (the menu follows) rather than the
+ * person scrolling away (the menu closes). */
+const SETTLE_MS = 200;
+
+/** The "⋯" menu at the end of a user's row. Rendered into document.body:
+ * inside the card it would be placed and clipped relative to the card,
+ * whose backdrop-filter makes it the containing block of anything
+ * position: fixed (and whose overflow is hidden). Closes on a click
+ * elsewhere, Escape, resizing, and on scrolling that actually moves the
+ * button -- not on the scroll event the browser fires just after the
+ * opening click, nor on scrolling inside the menu. */
 function RowMenu({ label, items, disabled }: { label: string; items: MenuItem[]; disabled?: boolean }) {
-  const [at, setAt] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+  const [at, setAt] = useState<MenuSpot | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const panel = useRef<HTMLDivElement | null>(null);
+  /** The button's position when the menu was (last) placed, and when it opened. */
+  const anchor = useRef<{ top: number; left: number; openedAt: number } | null>(null);
+
+  const place = (): MenuSpot | null => {
+    const b = button.current;
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    anchor.current = { top: r.top, left: r.left, openedAt: anchor.current?.openedAt ?? Date.now() };
+    const right = Math.max(8, window.innerWidth - r.right);
+    const roomBelow = window.innerHeight - r.bottom;
+    const needed = 16 + items.length * 34;
+    // Opens upwards near the bottom of the window, if there's more room there.
+    return roomBelow < needed && r.top > roomBelow ? { right, bottom: window.innerHeight - r.top + 4 } : { right, top: r.bottom + 4 };
+  };
 
   useEffect(() => {
     if (!at) return;
-    const close = () => setAt(null);
+    const close = () => {
+      anchor.current = null;
+      setAt(null);
+    };
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (panel.current?.contains(t) || button.current?.contains(t)) return;
@@ -97,32 +121,41 @@ function RowMenu({ label, items, disabled }: { label: string; items: MenuItem[];
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       close();
-      button.current?.focus();
+      button.current?.focus({ preventScroll: true });
+    };
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && panel.current?.contains(e.target)) return;
+      const b = button.current;
+      const a = anchor.current;
+      if (!b || !a) return close();
+      const r = b.getBoundingClientRect();
+      if (Math.abs(r.top - a.top) < 1 && Math.abs(r.left - a.left) < 1) return;
+      if (Date.now() - a.openedAt < SETTLE_MS) setAt(place());
+      else close();
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
-    // Keyboard users land on the first item.
-    panel.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    window.addEventListener("scroll", onScroll, true);
+    // Keyboard users land on the first item, without scrolling the page.
+    panel.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", onScroll, true);
     };
+    // place() reads only refs and items: re-run only when the menu moves.
   }, [at]);
 
   const toggle = () => {
-    if (at || !button.current) {
+    if (at) {
+      anchor.current = null;
       setAt(null);
       return;
     }
-    const r = button.current.getBoundingClientRect();
-    const right = Math.max(8, window.innerWidth - r.right);
-    // Opens upwards near the bottom of the window.
-    const roomBelow = window.innerHeight - r.bottom;
-    setAt(roomBelow < 40 + items.length * 36 ? { right, bottom: window.innerHeight - r.top + 4 } : { right, top: r.bottom + 4 });
+    anchor.current = null;
+    setAt(place());
   };
 
   return (
@@ -140,24 +173,56 @@ function RowMenu({ label, items, disabled }: { label: string; items: MenuItem[];
       >
         <MoreHorizontal style={{ width: 14, height: 14 }} />
       </button>
-      {at && (
-        <div ref={panel} className="users-row-menu" role="menu" aria-label={label} style={{ right: at.right, top: at.top, bottom: at.bottom }}>
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              className={`user-menu-item ${item.danger ? "danger" : ""}`}
-              onClick={() => {
-                setAt(null);
-                item.onSelect();
-              }}
-            >
-              {item.icon} {item.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {at &&
+        createPortal(
+          <div ref={panel} className="users-row-menu" role="menu" aria-label={label} style={{ right: at.right, top: at.top, bottom: at.bottom }}>
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                className={`user-menu-item ${item.danger ? "danger" : ""}`}
+                onClick={() => {
+                  anchor.current = null;
+                  setAt(null);
+                  item.onSelect();
+                }}
+              >
+                {item.icon} {item.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+/** "28 Oct, 17:30" in Singapore time (the full date and year are in the
+ * tooltip). Fixed to SGT so the server and the browser print the same. */
+function sgtShort(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-SG", {
+    timeZone: "Asia/Singapore",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
+/** "4 open" over "11 signed off · 1 draft": two short lines, so the column
+ * stays narrow. */
+function CaseCountsCell({ cases }: { cases: CaseCounts | null | undefined }) {
+  if (!cases) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+  return (
+    <>
+      <div className={`users-cases-open ${cases.open ? "" : "zero"}`}>{cases.open} open</div>
+      <div className="users-cell-sub">
+        {cases.signed_off} signed off · {cases.drafts} {cases.drafts === 1 ? "draft" : "drafts"}
+      </div>
     </>
   );
 }
@@ -184,18 +249,19 @@ function UsersTable({
   const icon = (Icon: typeof Pencil) => <Icon style={{ width: 14, height: 14 }} />;
   return (
     <>
-      <div style={{ overflowX: "auto" }}>
-        <table className="users-table">
+      {/* Sized to fit the Settings column with no sideways scrolling; when
+          the card itself is narrow, each person becomes a small card
+          (globals.css, P2 block: @container users-table). */}
+      <div className="users-table-wrap">
+        <table className="users-table users-people-table">
           <thead>
             <tr>
-              <th>Username</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Cases</th>
-              <th>Joined</th>
-              <th>Last sign-in</th>
-              <th>Status</th>
-              <th aria-label="Actions" />
+              <th className="col-person">User</th>
+              <th className="col-role">Role</th>
+              <th className="col-cases">Cases</th>
+              <th className="col-seen">Last sign-in</th>
+              <th className="col-status">Status</th>
+              <th className="col-actions" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>
@@ -217,31 +283,34 @@ function UsersTable({
               ];
               return (
                 <tr key={u.id} style={{ opacity: u.active ? 1 : 0.6 }}>
-                  <td style={{ fontWeight: 700 }}>
-                    {u.username || u.name}
-                    {isSelf && <span className="settings-readonly-tag" style={{ marginLeft: 6 }}>You</span>}
-                    {!isSelf && isNew(u) && <span className="user-new-tag">New</span>}
-                    {u.name && u.name !== u.username && (
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>{u.name}</div>
-                    )}
+                  <td className="col-person">
+                    <div className="users-person-name">
+                      {u.username || u.name}
+                      {isSelf && <span className="settings-readonly-tag" style={{ marginLeft: 6 }}>You</span>}
+                      {!isSelf && isNew(u) && <span className="user-new-tag">New</span>}
+                    </div>
+                    {u.name && u.name !== u.username && <div className="users-person-sub">{u.name}</div>}
+                    <div className="users-person-email">{u.email}</div>
                   </td>
-                  <td style={{ wordBreak: "break-all" }}>{u.email}</td>
-                  <td>
+                  <td className="col-role">
                     <span className={`role-chip ${u.role}`}>{ROLE_LABEL[u.role] ?? u.role}</span>
                     <div className="user-access-summary">{accessSummary(u)}</div>
                   </td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    <CaseCountsText cases={u.cases} />
+                  <td className="col-cases">
+                    <CaseCountsCell cases={u.cases} />
                   </td>
-                  <td style={{ whiteSpace: "nowrap" }}>{formatSgtDay(u.created_at)}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>{lastSeen(u.last_login_at)}</td>
-                  <td>
+                  <td className="col-seen">
+                    <div title={u.last_login_at ? formatSgt(u.last_login_at) : undefined}>
+                      <span className="users-seen-label">Last sign-in </span>
+                      {u.last_login_at ? sgtShort(u.last_login_at) : "Never"}
+                    </div>
+                    <div className="users-cell-sub">Joined {formatSgtDay(u.created_at)}</div>
+                  </td>
+                  <td className="col-status">
                     <span className={`user-status ${status.tone}`}>{status.label}</span>
                   </td>
-                  <td>
-                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <RowMenu label={`Actions for ${u.username || u.name}`} items={items} disabled={busy} />
-                    </div>
+                  <td className="col-actions">
+                    <RowMenu label={`Actions for ${u.username || u.name}`} items={items} disabled={busy} />
                   </td>
                 </tr>
               );

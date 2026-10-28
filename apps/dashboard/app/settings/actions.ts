@@ -26,6 +26,7 @@ import {
   type LlmKey,
   type ProfileFields,
   type UserAccount,
+  type UpdatedUser,
   type UserPatch,
   type UserRole,
 } from "@/lib/api";
@@ -145,7 +146,7 @@ export async function listUsersAction(): Promise<{ users: UserAccount[] } | { er
 
 /** Also disables, with what happens to their open cases (patch.open_cases);
  * the API does all of that or none of it. */
-export async function updateUserAction(id: string, patch: UserPatch): Promise<{ user: UserAccount } | { error: string }> {
+export async function updateUserAction(id: string, patch: UserPatch): Promise<{ user: UpdatedUser } | { error: string }> {
   try {
     const user = await updateUser(id, patch);
     // Disabling can move or unassign their cases, which the case lists show.

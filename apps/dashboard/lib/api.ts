@@ -381,7 +381,12 @@ export type UserPatch = ProfileFields &
     open_cases_to?: string;
   };
 
-export async function updateUser(id: string, patch: UserPatch): Promise<UserAccount> {
+/** PATCH /users/{id} answers with the account. When a disable applied an
+ * open_cases choice it also says how many cases that touched (`moved`);
+ * absent otherwise, and from an API that doesn't send it yet. */
+export type UpdatedUser = UserAccount & { moved?: number };
+
+export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedUser> {
   const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
