@@ -1,7 +1,9 @@
 """Tests for release P2 "Settings split", API side: an admin can't change
 their own role; disabling an account says what happens to their open cases
-(keep / unassign / move to someone), all in one transaction; and POST
-/reports/reassign ("Move their cases" on the Users screen).
+(keep / unassign / move to someone), all in one transaction; POST
+/reports/reassign ("Move their cases" on the Users screen); and the races
+the P2 review found -- two admins disabling or demoting each other at once,
+a recipient disabled meanwhile, a case signed off just before the move.
 
     python scripts/test_disable_reassign.py
 
@@ -16,6 +18,7 @@ import os
 import sys
 import tempfile
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -40,17 +43,20 @@ os.environ["RUN_BACKGROUND_CLEANUP"] = "false"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import event, text  # noqa: E402
 
 import app.api.auth as auth_api  # noqa: E402
+import app.api.main as main_api  # noqa: E402
 from app.api.main import app  # noqa: E402
-from app.auth.core import utc_now  # noqa: E402
+from app.auth.core import SESSION_COOKIE, create_session, utc_now  # noqa: E402
 from app.reports import owners  # noqa: E402
-from app.reports.db import SessionLocal  # noqa: E402
+from app.reports.db import SessionLocal, engine  # noqa: E402
 from app.reports.models import AuditEntry, AuthSession, Report, User  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
 
 BASE = "https://carlink.test"
 OWN_ROLE = "You can't change your own role."
+LAST_ADMIN = "Keep at least one active admin."
 
 PASSED = [0]
 FAILURES: list[str] = []
@@ -213,6 +219,53 @@ def session_count(p) -> int:
         db.close()
 
 
+def is_active(p) -> bool:
+    db = SessionLocal()
+    try:
+        return bool(db.get(User, p.id).active)
+    finally:
+        db.close()
+
+
+def active_admins() -> set:
+    db = SessionLocal()
+    try:
+        return {uid for (uid,) in db.query(User.id).filter(User.role == "admin", User.active.is_(True))}
+    finally:
+        db.close()
+
+
+def new_session(p) -> None:
+    """Signs p in again, after a disable ended their sessions."""
+    db = SessionLocal()
+    try:
+        token = create_session(db, db.get(User, p.id))
+        db.commit()
+    finally:
+        db.close()
+    p.c.cookies.set(SESSION_COOKIE, token)
+
+
+@contextmanager
+def run_between(module, name: str, other_request):
+    """The first call to module.name -- a check a request makes before it
+    writes anything -- runs other_request() right after the real check
+    returns: another admin's request landing between this request's check
+    and its write. Yields a dict that gets the other request's response."""
+    real = getattr(module, name)
+    seen: dict = {}
+
+    def wrapper(*args, **kwargs):
+        result = real(*args, **kwargs)
+        if "response" not in seen:
+            seen["response"] = None  # only once: not for the other request's own checks
+            seen["response"] = other_request()
+        return result
+
+    with mock.patch.object(module, name, wrapper):
+        yield seen
+
+
 W = SimpleNamespace()
 
 
@@ -263,6 +316,7 @@ def disable_keep() -> None:
     r = admin.c.patch(f"/users/{K.id}", json={"active": False, "open_cases": "keep"})
     check(r.status_code == 200 and jd(r).get("active") is False and jd(r).get("cases") == want,
           "disable with open_cases \"keep\" -> 200, inactive, the same counts", brief(r))
+    check("moved" not in jd(r), "...and no \"moved\" in the response (nothing was applied)", brief(r))
     check(all(o == K.id for o in owners_of(c.all).values()), "...every case is still Kim's", repr(owners_of(c.all)))
     check(not assigned_entries(c.all), "...no case history entries", repr(assigned_entries(c.all)))
     check(not signed_in(K) and session_count(K) == 0, "...and her sessions ended at once (401)", f"{session_count(K)} sessions left")
@@ -273,8 +327,12 @@ def disable_keep() -> None:
     D = person("Del Default", "del.d")
     cd = cases(D, open=1, drafts=1)
     r = admin.c.patch(f"/users/{D.id}", json={"active": False})
-    check(r.status_code == 200 and all(o == D.id for o in owners_of(cd.all).values()) and not signed_in(D),
-          "disable with just {active: false} -> 200, cases stay, signed out", brief(r))
+    check(r.status_code == 200 and all(o == D.id for o in owners_of(cd.all).values()) and not signed_in(D) and "moved" not in jd(r),
+          "disable with just {active: false} -> 200, cases stay, signed out, no \"moved\"", brief(r))
+    r = admin.c.patch(f"/users/{D.id}", json={"active": True})
+    check(r.status_code == 200 and jd(r).get("active") is True and "moved" not in jd(r), "enabling again -> 200, no \"moved\"", brief(r))
+    r = admin.c.patch(f"/users/{D.id}", json={"qualifications": "MIMI"})
+    check(r.status_code == 200 and "moved" not in jd(r), "an edit that isn't a disable -> no \"moved\"", brief(r))
 
 
 def disable_unassign() -> None:
@@ -284,6 +342,7 @@ def disable_unassign() -> None:
     r = admin.c.patch(f"/users/{U.id}", json={"active": False, "open_cases": "unassign"})
     check(r.status_code == 200 and jd(r).get("active") is False and jd(r).get("cases") == {"open": 0, "signed_off": 1, "drafts": 1},
           "disable with open_cases \"unassign\" -> 200, inactive, open count 0", brief(r))
+    check(jd(r).get("moved") == 3, "...and the response says moved: 3", brief(r))
     got = owners_of(c.all)
     check(all(got[i] is None for i in c.open), "...her 3 open cases are Unassigned", repr(got))
     check(all(got[i] == U.id for i in c.signed + c.drafts), "...the signed-off case and the draft stay hers", repr(got))
@@ -296,6 +355,12 @@ def disable_unassign() -> None:
     listed = {row["id"] for row in admin.c.get("/reports?scope=unassigned").json()}
     check(set(c.open) <= listed, "...and the admin finds them in the Unassigned list")
 
+    Z = person("Zed Zero", "zed.z")
+    cz = cases(Z, signed=1, drafts=1)
+    r = admin.c.patch(f"/users/{Z.id}", json={"active": False, "open_cases": "unassign"})
+    check(r.status_code == 200 and jd(r).get("moved") == 0 and all(o == Z.id for o in owners_of(cz.all).values()),
+          "\"unassign\" for someone with no open cases -> moved: 0 (applied, nothing to move)", brief(r))
+
 
 def disable_move() -> None:
     admin, T = W.admin, W.target
@@ -306,6 +371,7 @@ def disable_move() -> None:
     r = admin.c.patch(f"/users/{M.id}", json={"active": False, "open_cases": "move", "open_cases_to": T.id})
     check(r.status_code == 200 and jd(r).get("active") is False and jd(r).get("cases") == {"open": 0, "signed_off": 1, "drafts": 1},
           "disable with open_cases \"move\" to Tina -> 200, inactive, open count 0", brief(r))
+    check(jd(r).get("moved") == 2, "...and the response says moved: 2", brief(r))
     got = owners_of(c.all)
     check(all(got[i] == T.id for i in c.open), "...his 2 open cases are Tina's", repr(got))
     check(all(got[i] == M.id for i in c.signed + c.drafts), "...the signed-off case and the draft stay his", repr(got))
@@ -365,20 +431,21 @@ def atomic() -> None:
     P = person("Al Atomic", "al.a")
     c = cases(P, open=3, signed=1)
 
-    print("  a failure after the first case has moved")
-    real_set_owner = owners.set_owner
+    print("  a failure after the cases moved, on the second case's history entry")
+    real_owners_audit = owners.audit
     calls = {"n": 0}
 
-    def fails_second_time(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("simulated failure part-way through moving the cases")
-        return real_set_owner(*args, **kwargs)
+    def fails_second_entry(db, actor, action, *args, **kwargs):
+        if action == "assigned":
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated failure part-way through moving the cases")
+        return real_owners_audit(db, actor, action, *args, **kwargs)
 
     before = snapshot(P, c.all)
-    with mock.patch.object(owners, "set_owner", fails_second_time):
+    with mock.patch.object(owners, "audit", fails_second_entry):
         r = admin.c.patch(f"/users/{P.id}", json={"active": False, "open_cases": "move", "open_cases_to": T.id})
-    check(r.status_code == 500 and calls["n"] == 2, "the disable fails on the second case (500)", f"{brief(r)} after {calls['n']} set_owner calls")
+    check(r.status_code == 500 and calls["n"] == 2, "the disable fails on the second case (500)", f"{brief(r)} after {calls['n']} history entries")
     check(snapshot(P, c.all) == before, "...and nothing changed: still active, sessions kept, every case his, no history",
           f"{before} -> {snapshot(P, c.all)}")
     check(signed_in(P), "...and he is still signed in")
@@ -479,6 +546,106 @@ def reassign_refusals() -> None:
         check(snapshot(F, c.all) == before, "...and nothing changed")
 
 
+def conditional_move() -> None:
+    """The move is one conditional UPDATE: a case someone else signs off
+    after the request has read what it reads, just before its first write,
+    stays where it is and gets no history entry. (Reading the cases first
+    and then updating them by id would move it anyway.)"""
+    admin, T = W.admin, W.target
+    S = person("Sid Signoff", "sid.s")
+    c = cases(S, open=3)
+    late = c.open[1]
+    fired = []
+
+    def sign_off_first(conn, cursor, statement, parameters, context, executemany):
+        head = statement.lstrip().upper()
+        if fired or not (head.startswith("UPDATE REPORTS") or head.startswith("INSERT INTO AUDIT_LOG")):
+            return
+        fired.append(statement)
+        # Another request signing the case off, on its own connection.
+        with engine.begin() as other:
+            other.execute(text("UPDATE reports SET status = 'Signed Off' WHERE id = :id"), {"id": late})
+
+    event.listen(engine, "before_cursor_execute", sign_off_first)
+    try:
+        r = admin.c.post("/reports/reassign", json={"from_user_id": S.id, "to_user_id": T.id})
+    finally:
+        event.remove(engine, "before_cursor_execute", sign_off_first)
+    need(fired, "one of Sid's 3 open cases is signed off just before the move runs")
+    got = owners_of(c.all)
+    rest = [i for i in c.open if i != late]
+    check(r.status_code == 200 and jd(r) == {"moved": 2}, "POST /reports/reassign Sid -> Tina -> {moved: 2}", brief(r))
+    check(got[late] == S.id and all(got[i] == T.id for i in rest), "...the case signed off meanwhile stays Sid's, the other two are Tina's", repr(got))
+    entries = assigned_entries(c.all)
+    check(sorted(e.report_id for e in entries) == sorted(rest), "...and only the two that moved got a history entry", repr(entries))
+
+
+def race_last_admin() -> None:
+    """Two admins disabling (then demoting) each other at the same moment.
+    Each request counts the active admins before it writes; the other
+    admin's request is run in that gap. Ada and Ben are the only admins."""
+    A, B = W.admin, W.admin2
+    need(active_admins() == {A.id, B.id}, "Ada and Ben are the only active admins", repr(active_admins()))
+
+    print("  disabling each other")
+    with run_between(auth_api, "active_admin_count", lambda: B.c.patch(f"/users/{A.id}", json={"active": False})) as other:
+        r = A.c.patch(f"/users/{B.id}", json={"active": False})
+    b = other.get("response")
+    check(b is not None and b.status_code == 200, "Ben disables Ada, between Ada's count and her write -> 200",
+          brief(b) if b is not None else "not run")
+    check(r.status_code == 409 and jd(r).get("detail") == LAST_ADMIN, f"Ada's disable of Ben is then refused: 409 \"{LAST_ADMIN}\"", brief(r))
+    check(active_admins() == {B.id}, "...one active admin is left (Ben), not none", repr(active_admins()))
+    check(signed_in(B), "...and Ben is still signed in (his sessions weren't ended)")
+    r = B.c.patch(f"/users/{A.id}", json={"active": True})
+    need(r.status_code == 200, "Ben enables Ada again", brief(r))
+    new_session(A)
+    need(signed_in(A), "Ada signs in again")
+
+    print("  demoting each other")
+    with run_between(auth_api, "active_admin_count", lambda: B.c.patch(f"/users/{A.id}", json={"role": "user"})) as other:
+        r = A.c.patch(f"/users/{B.id}", json={"role": "user"})
+    b = other.get("response")
+    check(b is not None and b.status_code == 200, "Ben demotes Ada, between Ada's count and her write -> 200",
+          brief(b) if b is not None else "not run")
+    check(r.status_code == 409 and jd(r).get("detail") == LAST_ADMIN, f"Ada's demotion of Ben is then refused: 409 \"{LAST_ADMIN}\"", brief(r))
+    check(active_admins() == {B.id}, "...one active admin is left (Ben), not none", repr(active_admins()))
+    r = B.c.patch(f"/users/{A.id}", json={"role": "admin"})
+    need(r.status_code == 200 and active_admins() == {A.id, B.id}, "Ben makes Ada an admin again", brief(r))
+
+
+def race_recipient() -> None:
+    """Moving cases to someone while another admin disables them: the
+    recipient is checked before anything is written; the other admin's
+    disable is run in that gap."""
+    A, B = W.admin, W.admin2
+
+    print("  disable with a move")
+    X = person("Xia Leaving", "xia.l")
+    cx = cases(X, open=2, signed=1)
+    Y = person("Yan Receiver", "yan.r")
+    with run_between(auth_api, "case_recipient", lambda: B.c.patch(f"/users/{Y.id}", json={"active": False})) as other:
+        r = A.c.patch(f"/users/{X.id}", json={"active": False, "open_cases": "move", "open_cases_to": Y.id})
+    b = other.get("response")
+    check(b is not None and b.status_code == 200, "Ben disables Yan, between the check that Yan is active and the move -> 200",
+          brief(b) if b is not None else "not run")
+    check(r.status_code == 409 and code_of(r) == "owner_inactive", "the disable-with-move to Yan is then refused: 409 owner_inactive", brief(r))
+    check(is_active(X) and signed_in(X) and all(o == X.id for o in owners_of(cx.all).values()) and not assigned_entries(cx.all),
+          "...and nothing changed: Xia still active and signed in, every case hers, no history", repr(owners_of(cx.all)))
+
+    print("  POST /reports/reassign")
+    F = person("Flo From", "flo.f")
+    cf = cases(F, open=2)
+    Y2 = person("Yul Receiver", "yul.r")
+    with run_between(main_api, "case_recipient", lambda: B.c.patch(f"/users/{Y2.id}", json={"active": False})) as other:
+        r = A.c.post("/reports/reassign", json={"from_user_id": F.id, "to_user_id": Y2.id})
+    b = other.get("response")
+    check(b is not None and b.status_code == 200, "Ben disables Yul, between the check that Yul is active and the move -> 200",
+          brief(b) if b is not None else "not run")
+    check(r.status_code == 409 and code_of(r) == "owner_inactive", "the reassign to Yul is then refused: 409 owner_inactive", brief(r))
+    check(all(o == F.id for o in owners_of(cf.all).values()) and not assigned_entries(cf.all),
+          "...and nothing moved: every case Flo's, no history", repr(owners_of(cf.all)))
+
+
 def main() -> int:
     run_section("setup", setup)
     if FAILURES:
@@ -493,6 +660,10 @@ def main() -> int:
         ("disable: one transaction (a failure part-way changes nothing)", atomic),
         ("POST /reports/reassign", reassign),
         ("POST /reports/reassign: refusals and non-admins", reassign_refusals),
+        ("the move skips a case signed off meanwhile", conditional_move),
+        # Last: Ada is disabled and demoted for a moment here.
+        ("race: two admins disabling or demoting each other", race_last_admin),
+        ("race: the recipient disabled meanwhile", race_recipient),
     ):
         run_section(name, fn)
     return summary()

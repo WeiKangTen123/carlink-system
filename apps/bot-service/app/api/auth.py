@@ -275,11 +275,15 @@ def username_issue(db, username: str, exclude_id: str | None = None, *, self_cho
     return None
 
 
-def _commit_or_taken(db) -> None:
-    """Commit, turning a unique-index clash (the same username or email
-    claimed a moment ago by someone else) into a 409 rather than a 500."""
+def _commit_or_taken(db, *, flush_only: bool = False) -> None:
+    """Commit (or only flush, keeping the transaction open), turning a
+    unique-index clash (the same username or email claimed a moment ago by
+    someone else) into a 409 rather than a 500."""
     try:
-        db.commit()
+        if flush_only:
+            db.flush()
+        else:
+            db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="That username or email was just taken by another account.")
@@ -414,8 +418,9 @@ class UserUpdate(ProfileFields):
     may_sign_off: Optional[bool] = None
     # Only with active: false, and used when it disables the account: their
     # open cases stay theirs ("keep"), become Unassigned, or go to the
-    # active account open_cases_to ("move"). Signed-off cases and
-    # unfinished drafts stay theirs whichever is chosen.
+    # active account open_cases_to ("move"); the response's "moved" says
+    # how many. Signed-off cases and unfinished drafts stay theirs
+    # whichever is chosen.
     open_cases: Literal["keep", "unassign", "move"] = "keep"
     open_cases_to: Optional[str] = Field(default=None, max_length=64)
 
@@ -444,6 +449,10 @@ def _checked_email(db, email: str, exclude_id: str | None = None) -> str:
     return email
 
 
+LAST_ADMIN = "Keep at least one active admin."
+OWNER_INACTIVE = "That account is disabled. Enable it first, or choose someone else."
+
+
 def case_recipient(db, user_id: str, from_user_id: str) -> User:
     """The account someone's cases are to go to (disabling them here, POST
     /reports/reassign), or why it can't be: like PATCH /reports/{id}/owner,
@@ -454,17 +463,30 @@ def case_recipient(db, user_id: str, from_user_id: str) -> User:
     if target is None:
         raise HTTPException(status_code=404, detail="The account to give the cases to wasn't found.")
     if not target.active:
-        raise ApiError(409, "That account is disabled. Enable it first, or choose someone else.", "owner_inactive")
+        raise ApiError(409, OWNER_INACTIVE, "owner_inactive")
     return target
 
 
-def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User | None) -> None:
+def recipient_still_active(db, recipient: User | None) -> None:
+    """case_recipient again, once the request holds SQLite's write lock (it
+    has written): the account may have been disabled since the first check,
+    and must not end up owning the cases. Refused with everything rolled
+    back, so nothing moves."""
+    if recipient is None:
+        return
+    # A column, not db.get: that would answer from the row loaded earlier.
+    if not db.query(User.active).filter(User.id == recipient.id).scalar():
+        db.rollback()
+        raise ApiError(409, OWNER_INACTIVE, "owner_inactive")
+
+
+def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User | None) -> int | None:
     """Turns an account off. Everything goes into the caller's one commit,
     so a failure part-way leaves the account, its sessions and its cases
-    as they were."""
+    as they were. Returns how many open cases moved, or None for "keep"."""
     row.active = False
     end_user_sessions(db, row.id)
-    outcome = ""
+    moved, outcome = None, ""
     if open_cases != "keep":
         # "unassign" has no recipient: the cases become Unassigned.
         moved = reassign_open_cases(db, row.id, recipient, admin)
@@ -472,6 +494,7 @@ def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User
     # P3 ("My AI key"): their AI key is deleted here, in this same
     # transaction (agent6 D6) -- keys.delete_user_key(db, row.id, admin).
     audit(db, admin, "user_disabled", detail="; ".join(filter(None, [row.email, outcome])))
+    return moved
 
 
 @router.get("/users")
@@ -513,7 +536,9 @@ def create_user(body: NewUser, admin: CurrentUser = Depends(require_admin)) -> d
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(require_admin)) -> dict:
     """One commit for the whole request, disabling included: a refusal or a
-    failure part-way changes nothing."""
+    failure part-way changes nothing. Returns the account as GET /users
+    shows it, plus "moved" (how many open cases went) when a disable
+    applied an open_cases choice other than keep."""
     db = SessionLocal()
     try:
         row = db.get(User, user_id)
@@ -527,7 +552,7 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
             raise HTTPException(status_code=409, detail="You can't disable your own account.")
         losing_admin = row.role == "admin" and row.active and (body.role == "user" or body.active is False)
         if losing_admin and active_admin_count(db) <= 1:
-            raise HTTPException(status_code=409, detail="Keep at least one active admin.")
+            raise HTTPException(status_code=409, detail=LAST_ADMIN)
         if body.open_cases != "keep" and body.active is not False:
             raise HTTPException(status_code=422, detail="open_cases goes with disabling the account (active: false).")
         recipient = None
@@ -545,15 +570,30 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
         changes = "; ".join(filter(None, [_describe_changes(before, row), _apply_ticks(row, body)]))
         if changes:
             audit(db, admin, "user_updated", detail=f"{row.email}: {changes}")
+        moved = None
         if body.active is not None and body.active != row.active:
             if body.active:
                 row.active = True
                 audit(db, admin, "user_enabled", detail=row.email)
             else:
-                _disable(db, row, admin, body.open_cases, recipient)
+                moved = _disable(db, row, admin, body.open_cases, recipient)
+
+        # The checks above read before anything was written, so two admins
+        # disabling or demoting each other at the same moment would both
+        # pass the count, and the recipient may be disabled meanwhile.
+        # Flushing takes SQLite's write lock (other writers wait for this
+        # commit), so what is read from here on holds until the commit.
+        _commit_or_taken(db, flush_only=True)
+        if losing_admin and active_admin_count(db) < 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=LAST_ADMIN)
+        recipient_still_active(db, recipient)
         _commit_or_taken(db)
         db.refresh(row)
-        return user_dicts(db, [row])[0]
+        account = user_dicts(db, [row])[0]
+        if moved is not None:
+            account["moved"] = moved
+        return account
     finally:
         db.close()
 

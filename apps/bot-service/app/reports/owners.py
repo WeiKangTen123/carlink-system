@@ -15,8 +15,8 @@ ticks -- and changes nothing. Works on a database from before owners too
 """
 import argparse
 
-from sqlalchemy import func, text
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy import func, text, update
+from sqlalchemy.orm import Session
 
 from app.auth.core import audit
 from app.auth.permissions import case_permissions, is_admin
@@ -84,21 +84,29 @@ def case_counts(db: Session, user_ids) -> dict[str, dict]:
 def reassign_open_cases(db: Session, from_user_id: str, to_user, actor, include_signed: bool = False) -> int:
     """Gives someone's open cases -- with include_signed, their signed-off
     ones too -- to to_user (None = Unassigned), each noted in its case
-    history by set_owner. Open is what case_counts counts as open, so the
-    number the Users screen shows is the number that moves. Unfinished
-    drafts never move: a draft stays with the person filing it. The caller
-    checks who may and that to_user is active, and commits. Returns how
-    many moved."""
+    history as set_owner notes it. Open is what case_counts counts as open,
+    so the number the Users screen shows is the number that moves.
+    Unfinished drafts never move: a draft stays with the person filing it.
+
+    One conditional UPDATE, and history for exactly the rows it changed: a
+    case signed off or given to someone else a moment ago stays where it
+    is. It takes SQLite's write lock until the caller's commit, so the
+    caller re-checks that to_user is still active after it (see
+    api/auth.py recipient_still_active), then commits. Returns how many
+    moved."""
+    if to_user is not None and to_user.id == from_user_id:
+        return 0  # theirs already, as set_owner
     stays = ("intake",) if include_signed else ("intake",) + SIGNED_OFF_STATUSES
-    reports = (
-        db.query(Report)
-        # Not the case data, which can be large: only what set_owner uses.
-        .options(load_only(Report.id, Report.owner_id, Report.status))
-        .filter(Report.owner_id == from_user_id, Report.status.notin_(stays))
-        .order_by(Report.created_at, Report.id)
-        .all()
-    )
-    return sum(set_owner(db, report, to_user, actor) for report in reports)
+    moved = db.execute(
+        update(Report)
+        .where(Report.owner_id == from_user_id, Report.status.notin_(stays))
+        .values(owner_id=to_user.id if to_user else None)
+        .returning(Report.id)
+        .execution_options(synchronize_session=False)
+    ).scalars().all()
+    for report_id in moved:
+        audit(db, actor, "assigned", report_id, detail=assigned_detail(to_user))
+    return len(moved)
 
 
 # --------------------------------------------------- who a case points to
