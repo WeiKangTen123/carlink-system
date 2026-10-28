@@ -242,8 +242,10 @@ def main() -> int:
         assert any(u["email"] == "sam@example.com" for u in users)
         admin_id = [u for u in users if u["email"] == ADMIN_EMAIL][0]["id"]
         assert admin.patch(f"/users/{admin_id}", json={"active": False}).status_code == 409
-        assert admin.patch(f"/users/{admin_id}", json={"role": "user"}).status_code == 409
-        ok("an admin can't disable themselves or demote the last admin")
+        # Own role: refused outright (P2), whether or not another admin exists.
+        r = admin.patch(f"/users/{admin_id}", json={"role": "user"})
+        assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
+        ok("an admin can't disable themselves or change their own role")
         assert admin.patch(f"/users/{pat_id}", json={"active": False}).status_code == 200
         assert pat.get("/reports").status_code == 401
         assert login(browser(), "pat@example.com", "amber lantern quiet harbour").status_code == 401

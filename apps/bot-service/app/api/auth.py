@@ -7,7 +7,8 @@
     POST  /auth/password               change own password
     GET   /users                       admin: every account, with its case counts
     POST  /users                       admin: add an account (temporary password; API only)
-    PATCH /users/{id}                  admin: edit, change role and ticks, disable/enable
+    PATCH /users/{id}                  admin: edit, change role and ticks, disable (saying what
+                                       happens to their open cases) / enable
     POST  /users/{id}/reset-password   admin: new temporary password
 
 The first admin is created on the server (python -m app.auth.manage).
@@ -49,7 +50,7 @@ from app.auth.core import (
     username_problem,
     username_taken,
 )
-from app.auth.deps import current_user, require_admin
+from app.auth.deps import ApiError, current_user, not_allowed, require_admin
 from app.auth.passwords import (
     MAX_PASSWORD_LENGTH,
     burn_time,
@@ -61,7 +62,7 @@ from app.auth.passwords import (
 from app.config import settings
 from app.reports.db import SessionLocal
 from app.reports.models import User
-from app.reports.owners import TICKS
+from app.reports.owners import TICKS, assigned_detail, reassign_open_cases
 
 router = APIRouter(tags=["auth"])
 
@@ -411,6 +412,12 @@ class UserUpdate(ProfileFields):
     sees_all_cases: Optional[bool] = None
     ai_company_key_allowed: Optional[bool] = None
     may_sign_off: Optional[bool] = None
+    # Only with active: false, and used when it disables the account: their
+    # open cases stay theirs ("keep"), become Unassigned, or go to the
+    # active account open_cases_to ("move"). Signed-off cases and
+    # unfinished drafts stay theirs whichever is chosen.
+    open_cases: Literal["keep", "unassign", "move"] = "keep"
+    open_cases_to: Optional[str] = Field(default=None, max_length=64)
 
 
 def _apply_ticks(row: User, body: UserUpdate | NewUser) -> str:
@@ -435,6 +442,36 @@ def _checked_email(db, email: str, exclude_id: str | None = None) -> str:
     if clash.first():
         raise HTTPException(status_code=409, detail="There is already an account with that email.")
     return email
+
+
+def case_recipient(db, user_id: str, from_user_id: str) -> User:
+    """The account someone's cases are to go to (disabling them here, POST
+    /reports/reassign), or why it can't be: like PATCH /reports/{id}/owner,
+    a disabled account is 409 owner_inactive."""
+    if user_id == from_user_id:
+        raise ApiError(422, "Choose someone else to give the cases to.", "same_owner")
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="The account to give the cases to wasn't found.")
+    if not target.active:
+        raise ApiError(409, "That account is disabled. Enable it first, or choose someone else.", "owner_inactive")
+    return target
+
+
+def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User | None) -> None:
+    """Turns an account off. Everything goes into the caller's one commit,
+    so a failure part-way leaves the account, its sessions and its cases
+    as they were."""
+    row.active = False
+    end_user_sessions(db, row.id)
+    outcome = ""
+    if open_cases != "keep":
+        # "unassign" has no recipient: the cases become Unassigned.
+        moved = reassign_open_cases(db, row.id, recipient, admin)
+        outcome = f"{moved} open case{'s' if moved != 1 else ''}: {assigned_detail(recipient)}"
+    # P3 ("My AI key"): their AI key is deleted here, in this same
+    # transaction (agent6 D6) -- keys.delete_user_key(db, row.id, admin).
+    audit(db, admin, "user_disabled", detail="; ".join(filter(None, [row.email, outcome])))
 
 
 @router.get("/users")
@@ -475,16 +512,29 @@ def create_user(body: NewUser, admin: CurrentUser = Depends(require_admin)) -> d
 
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(require_admin)) -> dict:
+    """One commit for the whole request, disabling included: a refusal or a
+    failure part-way changes nothing."""
     db = SessionLocal()
     try:
         row = db.get(User, user_id)
         if row is None:
             raise HTTPException(status_code=404, detail="User not found.")
+        if row.id == admin.id and body.role is not None and body.role != row.role:
+            # Even with another admin about: a mistaken click would lock
+            # them out of the very screen that could undo it.
+            raise not_allowed("You can't change your own role.")
         if body.active is False and row.id == admin.id:
             raise HTTPException(status_code=409, detail="You can't disable your own account.")
         losing_admin = row.role == "admin" and row.active and (body.role == "user" or body.active is False)
         if losing_admin and active_admin_count(db) <= 1:
             raise HTTPException(status_code=409, detail="Keep at least one active admin.")
+        if body.open_cases != "keep" and body.active is not False:
+            raise HTTPException(status_code=422, detail="open_cases goes with disabling the account (active: false).")
+        recipient = None
+        if body.open_cases == "move" and row.active and body.active is False:
+            if not body.open_cases_to:
+                raise ApiError(422, "Choose who gets their open cases.", "owner_required")
+            recipient = case_recipient(db, body.open_cases_to, row.id)
 
         before = _profile_changes(row, ("email", "role") + _PROFILE_FIELDS)
         if body.email is not None:
@@ -496,10 +546,11 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
         if changes:
             audit(db, admin, "user_updated", detail=f"{row.email}: {changes}")
         if body.active is not None and body.active != row.active:
-            row.active = body.active
-            if not body.active:
-                end_user_sessions(db, row.id)
-            audit(db, admin, "user_enabled" if body.active else "user_disabled", detail=row.email)
+            if body.active:
+                row.active = True
+                audit(db, admin, "user_enabled", detail=row.email)
+            else:
+                _disable(db, row, admin, body.open_cases, recipient)
         _commit_or_taken(db)
         db.refresh(row)
         return user_dicts(db, [row])[0]
