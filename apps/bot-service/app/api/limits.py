@@ -10,8 +10,9 @@ Every refusal is an ApiError with a code the dashboard explains:
     429 render_busy      the server is busy making PDFs, or this person's
                          last one is still being made
     429 render_limit     too many PDFs lately (accounts without staff access)
-    429 rate_limited     too many photos added in an hour without AI
-                         (accounts without staff access)
+    429 rate_limited     too many photos added in an hour (accounts without
+                         staff access)
+    429 ai_busy          this person already has an AI request running
     409 draft_limit      too many open drafts
     409 case_limit       too many new cases today (accounts without staff access)
     507 disk_full        the storage disk is nearly full
@@ -130,8 +131,8 @@ rendering_now = _OneAtATime()
 
 # --------------------------------------------------------------- photos
 
-# Photos added on the report form without AI (POST /reports/{id}/
-# upload-photos), for unvetted accounts. Each can be 25 MB of the shared
+# Photos added on the report form (POST /reports/{id}/upload-photos, and
+# /reports/analyze-photos), for unvetted accounts. Each can be 25 MB of the shared
 # disk in storage/tmp until the case is saved (or the day-old sweep), and a
 # case rarely gets more than a few dozen: 60 an hour leaves room for a big
 # one while stopping a script filling the disk.
@@ -150,6 +151,34 @@ def charge_photo_uploads(user: CurrentUser, count: int) -> bool:
     if not photo_uploads.take(user.id, count):
         raise ApiError(429, PHOTO_LIMIT, "rate_limited")
     return True
+
+
+# ------------------------------------------------------------------- AI
+
+# One AI request at a time per account, whoever's case it is for: Analyze
+# photos, Annex A "Ask AI", and an intake run for as long as it runs. Each
+# is up to minutes of Gemini calls on the presser's key (or the company's),
+# holding one of the api's threads; a second one meanwhile is refused at
+# once rather than queued. In memory: the api is one process.
+AI_BUSY = "You already have an AI request running. Wait for it to finish, then try again."
+ai_running = _OneAtATime()
+
+
+def claim_ai_turn(user: CurrentUser) -> None:
+    """Claims this person's one AI request, or 429 ai_busy. Whoever claims
+    releases it (ai_running.release(user.id)) when the request -- or the
+    intake run it starts -- ends; ai_turn does both around a block."""
+    if not ai_running.claim(user.id):
+        raise ApiError(429, AI_BUSY, "ai_busy")
+
+
+@contextmanager
+def ai_turn(user: CurrentUser):
+    claim_ai_turn(user)
+    try:
+        yield
+    finally:
+        ai_running.release(user.id)
 
 
 class RenderRefused(ApiError):

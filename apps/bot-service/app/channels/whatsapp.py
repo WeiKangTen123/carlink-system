@@ -47,6 +47,13 @@ CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 AI_ACTOR = AiActor.for_user(None, "whatsapp")
 _NO_AI_MESSAGE = "Sorry, AI drafting isn't available over WhatsApp yet. Please file this report on the Carlink dashboard."
 
+# For when drafting is switched back on (AI_ACTOR linked to accounts):
+# media only from Twilio's API host, and no bigger than a dashboard photo.
+# Twilio's own SDK isn't installed, so X-Twilio-Signature isn't checked;
+# do that before turning this path on.
+MEDIA_HOSTS = {"api.twilio.com"}
+MAX_MEDIA_BYTES = 25 * 1024 * 1024
+
 
 def _draft(description: str, session):
     """build_draft for AI_ACTOR. Readiness first: drafting reads and
@@ -65,13 +72,39 @@ def _twiml(*messages: str) -> Response:
     return Response(content=xml, media_type="application/xml")
 
 
+def _media_url_ok(url: str) -> bool:
+    """Only Twilio's own media URLs (https://api.twilio.com/...): a
+    MediaUrl is whatever the request says, and _download_media sends the
+    Twilio account's SID and token with it."""
+    try:
+        parsed = httpx.URL(url)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.host in MEDIA_HOSTS and parsed.port in (None, 443)
+
+
 async def _download_media(chat_id: str, url: str, index: int) -> str:
+    """One photo from Twilio, at most MAX_MEDIA_BYTES. Raises ValueError for
+    a URL that isn't Twilio's or a file that's too big (nothing kept).
+    Twilio answers with a redirect to its CDN; httpx drops the credentials
+    when a redirect leaves the host they were sent to."""
+    if not _media_url_ok(url):
+        raise ValueError("not a Twilio media URL")
     dest = tmp_dir() / f"{chat_id.replace(':', '_')}_{index}.jpg"
     auth = (settings.twilio_account_sid, settings.twilio_auth_token)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, auth=auth)
-        resp.raise_for_status()
-        dest.write_bytes(resp.content)
+    size = 0
+    async with httpx.AsyncClient(follow_redirects=True, max_redirects=3, timeout=30.0) as client:
+        async with client.stream("GET", url, auth=auth) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as out:
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > MAX_MEDIA_BYTES:
+                        break
+                    out.write(chunk)
+    if size > MAX_MEDIA_BYTES:
+        dest.unlink(missing_ok=True)
+        raise ValueError("media over the size limit")
     return str(dest)
 
 
@@ -111,8 +144,13 @@ def _finalize(chat_id: str, session, user) -> str:
 @router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request) -> Response:
     # Behind AuthMiddleware only a signed-in user gets here. No AI for
-    # anyone (AI_ACTOR): drafting gets _NO_AI_MESSAGE.
+    # anyone (AI_ACTOR), so every message gets _NO_AI_MESSAGE at once:
+    # before the form is read, so no media is ever fetched.
     user = current_user(request)
+    try:
+        await asyncio.to_thread(ensure_ai_ready, AI_ACTOR)
+    except AiUnavailable:
+        return _twiml(_NO_AI_MESSAGE)
     form = await request.form()
     chat_id = f"whatsapp:{form.get('From', 'unknown')}"
     body = (form.get("Body") or "").strip()
@@ -125,7 +163,11 @@ async def whatsapp_webhook(request: Request) -> Response:
             media_url = form.get(f"MediaUrl{i}")
             if not media_url:
                 continue
-            dest = await _download_media(chat_id, media_url, len(session.photo_paths))
+            try:
+                dest = await _download_media(chat_id, media_url, len(session.photo_paths))
+            except (ValueError, httpx.HTTPError) as exc:
+                logger.warning("WhatsApp media %d skipped: %s", i, type(exc).__name__)
+                continue
             session.photo_paths.append(dest)
         got_it = f"Got it -- {len(session.photo_paths)} photo(s) received. Send more if you have any."
         if not session.template_sent:

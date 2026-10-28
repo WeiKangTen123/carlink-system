@@ -108,20 +108,26 @@ class _NoGoogle:
         raise AssertionError("a real Gemini client was used")
 
 
+# The real one, for "the real SDK" below: it runs on a mock transport.
+_REAL_GENAI_CLIENT = _genai.Client
 _genai.Client = _NoGoogle
 
 import app.ai.structured as structured  # noqa: E402
+import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from google.genai import types as genai_types  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from app.ai import client as ai_client  # noqa: E402
 from app.ai import keys, secretbox  # noqa: E402
 from app.ai.keys import AiActor, AiKey, AiUnavailable  # noqa: E402
+from app.api import limits  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.auth.core import SESSION_COOKIE, create_session  # noqa: E402
 from app.intake import pipeline  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
 from app.reports.models import ApiKey, IntakePhoto, IntakeSession, Report, User, UserAiKey, gen_id  # noqa: E402
+from app.storage.files import tmp_dir  # noqa: E402
 
 # ------------------------------------------------------------ the fake SDK
 # Every get_client: (key value, thread name). Every Gemini call: (key
@@ -193,13 +199,15 @@ def refuses(key_text: str):
 
 
 def forbidden(*_):
-    raise google_error(403, "PERMISSION_DENIED", "Method doesn't allow unregistered callers.")
+    """Google's answer for a suspended key: a 403 about the key itself."""
+    raise google_error(403, "PERMISSION_DENIED", "Permission denied: Consumer 'api_key:AIza...' has been suspended.",
+                       [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "CONSUMER_SUSPENDED"}])
 
 
 def daily_quota(*_):
     raise google_error(429, "RESOURCE_EXHAUSTED",
                        "You exceeded your current quota. Quota exceeded for metric: generate_content_free_tier_requests, "
-                       "limit: 0, model: x. Please retry in 29.5s.",
+                       "limit: 250, model: x. Please retry in 29.5s.",
                        [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}])
 
 
@@ -764,6 +772,341 @@ def quota_recovery() -> None:
         BEHAVIOUR.clear()
 
 
+# ------------------------------------------------------- the real SDK
+# google-genai 2.22.0's client.interactions raises its own error family
+# (BadRequestError, RateLimitError... with .status_code), not
+# google.genai.errors.APIError, and retried 429/5xx once by itself. The
+# fakes above raise the other family; this drives the REAL genai.Client --
+# built by the app's own get_client, with its own retry options -- over an
+# httpx MockTransport answering in Google's shapes.
+SDK_REQUESTS: list[tuple[str, str]] = []  # (key, model) of every HTTP request
+SDK_ANSWER: dict[str, object] = {}  # key -> fn(model, n) -> httpx.Response; n counts this key's requests
+_sdk_lock = threading.Lock()
+
+
+def _google_json(code: int, status: str, message: str, details=None) -> dict:
+    error = {"code": code, "status": status, "message": message}
+    if details:
+        error["details"] = details
+    return {"error": error}
+
+
+def sdk_ok(model, n=0):
+    return httpx.Response(200, json={"id": "int-1", "status": "completed", "model": model, "steps": [
+        {"type": "model_output", "content": [{"type": "text", "text": json.dumps({"ok": True})}]}]})
+
+
+def sdk_error(code, status, message, details=None, headers=None):
+    return lambda model, n=0: httpx.Response(code, json=_google_json(code, status, message, details), headers=headers)
+
+
+def sdk_quota(per: str, limit: int, delay: str):
+    return sdk_error(429, "RESOURCE_EXHAUSTED",
+                     "You exceeded your current quota, please check your plan and billing details. For more information "
+                     "on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for "
+                     f"metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: {limit}, "
+                     f"model: gemini-3-flash\nPlease retry in {delay}.",
+                     [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+                         "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                         "quotaId": f"GenerateRequestsPer{per}PerProjectPerModel-FreeTier"}]},
+                      {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}])
+
+
+def _sdk_shapes():
+    return {
+        "400 API_KEY_INVALID": sdk_error(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.",
+                                         [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID",
+                                           "domain": "googleapis.com"}]),
+        "401": sdk_error(401, "UNAUTHENTICATED", "Request had invalid authentication credentials. Expected OAuth 2 access "
+                                                 "token, login cookie or other valid authentication credential."),
+        "403 CONSUMER_SUSPENDED": sdk_error(403, "PERMISSION_DENIED",
+                                            f"Permission denied: Consumer 'api_key:{W.A_KEY}' has been suspended.",
+                                            [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "CONSUMER_SUSPENDED"}]),
+        "403 API_KEY_SERVICE_BLOCKED": sdk_error(403, "PERMISSION_DENIED",
+                                                 "Requests to this API generativelanguage.googleapis.com method "
+                                                 "google.ai.generativelanguage.v1beta.InteractionService.CreateInteraction "
+                                                 "are blocked.",
+                                                 [{"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                                                   "reason": "API_KEY_SERVICE_BLOCKED"}]),
+        "403 one model": sdk_error(403, "PERMISSION_DENIED",
+                                   "Permission denied on resource 'models/gemini-x' (or it may not exist)."),
+        "400 bad request": sdk_error(400, "INVALID_ARGUMENT", "Request contains an invalid argument."),
+        "429 per day": sdk_quota("Day", 250, "70210.5s"),
+        "429 limit 0": sdk_quota("Day", 0, "30s"),
+        "429 per minute": sdk_quota("Minute", 10, "0.2s"),
+        "503": sdk_error(503, "UNAVAILABLE", "The model is overloaded. Please try again later."),
+    }
+
+
+def _sdk_handler(request: httpx.Request) -> httpx.Response:
+    key = request.headers.get("x-goog-api-key", "")
+    model = json.loads(request.content or b"{}").get("model", "")
+    with _sdk_lock:
+        n = sum(1 for k, _ in SDK_REQUESTS if k == key)
+        SDK_REQUESTS.append((key, model))
+    return SDK_ANSWER.get(key, sdk_ok)(model, n)
+
+
+def sdk_raise(shape) -> Exception:
+    """The exception the real client raises for one of Google's answers."""
+    client = _REAL_GENAI_CLIENT(api_key=make_key("ShapeProbe"), http_options=genai_types.HttpOptions(
+        retry_options=ai_client._HTTP_OPTIONS.retry_options,
+        httpx_client=httpx.Client(transport=httpx.MockTransport(lambda req: shape("gemini-x")))))
+    try:
+        client.interactions.create(model="gemini-x", input=[{"type": "text", "text": "x"}], timeout=5)
+    except Exception as exc:
+        return exc
+    raise AssertionError("expected an error")
+
+
+def real_sdk() -> None:
+    a, b, cli = AiActor.for_user(W.A, "dashboard"), AiActor.for_user(W.B, "dashboard"), AiActor.cli()
+    shapes = _sdk_shapes()
+    saved = (ai_client.genai.Client, ai_client._HTTP_OPTIONS, structured.get_client)
+    ai_client.genai.Client = _REAL_GENAI_CLIENT
+    ai_client._HTTP_OPTIONS = genai_types.HttpOptions(
+        retry_options=saved[1].retry_options, httpx_client=httpx.Client(transport=httpx.MockTransport(_sdk_handler)))
+    ai_client.reset_client_cache()
+    structured.get_client = ai_client.get_client
+
+    def fresh(*rows):
+        reset_fakes()
+        SDK_REQUESTS.clear()
+        SDK_ANSWER.clear()
+        for user_id in rows:
+            set_row(user_id, status="ok", last_error=None, last_checked_at=None)
+
+    def outcome(fn):
+        started = time.monotonic()
+        try:
+            got = fn()
+        except AiUnavailable as exc:
+            got = exc.code
+        except RuntimeError as exc:
+            got = "RuntimeError" if "fallback models" in str(exc) else repr(exc)
+        return got, time.monotonic() - started
+
+    try:
+        print("  what the real SDK raises")
+        for name, status, verdict in (("400 API_KEY_INVALID", 400, "invalid"), ("401", 401, "invalid"),
+                                      ("403 CONSUMER_SUSPENDED", 403, "invalid"), ("403 API_KEY_SERVICE_BLOCKED", 403, "invalid"),
+                                      ("403 one model", 403, None), ("400 bad request", 400, None),
+                                      ("429 per day", 429, "quota"), ("429 limit 0", 429, "no_allowance"),
+                                      ("429 per minute", 429, None), ("503", 503, None)):
+            exc = sdk_raise(shapes[name])
+            check(keys.http_status(exc) == status and keys.refusal(exc) == verdict,
+                  f"{name}: {type(exc).__name__} (not errors.APIError: {not isinstance(exc, genai_errors.APIError)}) "
+                  f"-> status {status}, verdict {verdict}", f"{keys.http_status(exc)} {keys.refusal(exc)!r}")
+        said = keys._google_said(sdk_raise(shapes["400 API_KEY_INVALID"]))
+        check(said == "Google said: 400 API key not valid. Please pass a valid API key.", "...and Google's own words are kept", said)
+
+        print("  through call_structured, on a real client")
+        fresh(W.A)
+        got, _ = outcome(lambda: call(a))
+        check(got == {"ok": True} and SDK_REQUESTS == [(W.A_KEY, "model-a")], "success: her key, one request", repr(SDK_REQUESTS))
+        check(ai_client._clients and len(SDK_REQUESTS) == 1, "...through the app's own get_client")
+
+        for name, code in (("400 API_KEY_INVALID", "ai_key_invalid"), ("401", "ai_key_invalid"),
+                           ("403 CONSUMER_SUSPENDED", "ai_key_invalid"), ("403 API_KEY_SERVICE_BLOCKED", "ai_key_invalid")):
+            fresh(W.A)
+            SDK_ANSWER[W.A_KEY] = shapes[name]
+            got, _ = outcome(lambda: call(a))
+            row = row_of(W.A)
+            check(got == code and len(SDK_REQUESTS) == 1 and row.status == "invalid",
+                  f"{name}: {code}, after ONE request, key stored as invalid", f"{got} {len(SDK_REQUESTS)} {row.status}")
+            check(row.last_error and row.last_error.startswith("Google said: ") and W.A_KEY not in row.last_error,
+                  "...with Google's words, scrubbed", row.last_error)
+
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = lambda model, n=0: shapes["403 one model"](model) if model == "model-a" else sdk_ok(model)
+        got, _ = outcome(lambda: call(a))
+        check(got == {"ok": True} and len(SDK_REQUESTS) == 2 and row_of(W.A).status == "ok",
+              "a 403 for one model: the next model answers, nothing marked", f"{got} {len(SDK_REQUESTS)}")
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = shapes["403 one model"]
+        got, _ = outcome(lambda: call(a))
+        check(got == "RuntimeError" and len(SDK_REQUESTS) == len(MODELS) and row_of(W.A).status == "ok",
+              "a 403 for every model: the usual RuntimeError, key not marked", f"{got} {len(SDK_REQUESTS)}")
+
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = shapes["429 per day"]
+        got, took = outcome(lambda: call(a))
+        check(got == "ai_quota_used" and row_of(W.A).status == "quota", "429 per day on every model: ai_quota_used, stored quota",
+              repr(got))
+        check(len(SDK_REQUESTS) == len(MODELS) and took < 5,
+              "...ONE request per model: no SDK retry, no 30s wait (Google said 70210s)", f"{len(SDK_REQUESTS)} in {took:.1f}s")
+
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = shapes["429 limit 0"]
+        got, took = outcome(lambda: call(a))
+        row = row_of(W.A)
+        check(got == "ai_key_invalid" and row.status == "invalid" and row.last_error == keys.NO_ALLOWANCE_ERROR,
+              "'limit: 0' on every model (no billing): ai_key_invalid, stored invalid, 'turn on billing'", f"{got} {row.last_error!r}")
+        check(len(SDK_REQUESTS) == len(MODELS) and took < 5, "...one request per model, no wait", f"{len(SDK_REQUESTS)} in {took:.1f}s")
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = lambda model, n=0: (shapes["429 per day"] if model == "model-c" else shapes["429 limit 0"])(model)
+        got, _ = outcome(lambda: call(a))
+        check(got == "ai_quota_used" and row_of(W.A).status == "quota",
+              "'limit: 0' on some models, the day's allowance spent on the rest: quota", repr(got))
+
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = lambda model, n=0: shapes["429 per minute"](model) if n == 0 else sdk_ok(model)
+        got, took = outcome(lambda: call(a))
+        check(got == {"ok": True} and SDK_REQUESTS == [(W.A_KEY, "model-a")] * 2 and row_of(W.A).status == "ok",
+              "429 per minute: our one wait, the same model again, nothing marked (2 requests, none from the SDK)",
+              f"{got} {SDK_REQUESTS}")
+
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = shapes["503"]
+        got, _ = outcome(lambda: call(a))
+        check(got == "RuntimeError" and len(SDK_REQUESTS) == len(MODELS) and row_of(W.A).status == "ok",
+              "503 on every model: the usual RuntimeError, one request per model (the SDK retried 503s before)",
+              f"{got} {len(SDK_REQUESTS)}")
+
+        print("  a ticked user falls back")
+        fresh(W.B)
+        SDK_ANSWER[W.B_KEY] = shapes["400 API_KEY_INVALID"]
+        got, _ = outcome(lambda: call(b))
+        check(got == {"ok": True} and SDK_REQUESTS == [(W.B_KEY, "model-a"), (DB_KEY, "model-a")] and row_of(W.B).status == "invalid",
+              "own key refused: one request on it, then company #1 answers; their key stored invalid",
+              repr([(k[-4:], m) for k, m in SDK_REQUESTS]))
+        fresh(W.B)
+        SDK_ANSWER[W.B_KEY] = shapes["429 per day"]
+        got, _ = outcome(lambda: call(b))
+        check(got == {"ok": True} and len(SDK_REQUESTS) == len(MODELS) + 1 and SDK_REQUESTS[-1][0] == DB_KEY
+              and row_of(W.B).status == "quota", "own key out of quota: one request per model on it, then the company key",
+              repr([(k[-4:], m) for k, m in SDK_REQUESTS]))
+
+        print("  a company key's error never reaches a traceback")
+        fresh()
+        SDK_ANSWER[DB_KEY] = sdk_error(403, "PERMISSION_DENIED", f"Permission denied: Consumer 'api_key:{DB_KEY}' has been suspended.",
+                                       [{"reason": "CONSUMER_SUSPENDED"}])
+        SDK_ANSWER[ENV_KEY] = sdk_error(503, "UNAVAILABLE", f"Overloaded for {ENV_KEY}")
+        try:
+            call(cli)
+            cause = None
+        except RuntimeError as exc:
+            cause = exc.__cause__
+        check(cause is not None and DB_KEY not in str(cause) and ENV_KEY not in str(cause) and "503" in str(cause),
+              "the RuntimeError's cause is a scrubbed copy, company keys too", repr(str(cause))[:150])
+        check(len(SDK_REQUESTS) == 2 * len(MODELS), "company keys: every model on each, as before P4", str(len(SDK_REQUESTS)))
+
+        print("  an intake run on a real client")
+        fresh(W.A)
+        SDK_ANSWER[W.A_KEY] = shapes["403 CONSUMER_SUSPENDED"]
+        rid = new_draft(W.A, photos=3)
+        s = run_intake(rid, a)
+        check(s.stage == "failed" and s.error_code == "ai_key_invalid" and s.error_by == W.A,
+              "Google suspends her key: the run fails with error_code ai_key_invalid, error_by her", f"{s.stage} {s.error_code}")
+        check(len(SDK_REQUESTS) == 1 and row_of(W.A).status == "invalid", "...after one request", str(len(SDK_REQUESTS)))
+    finally:
+        ai_client.genai.Client, ai_client._HTTP_OPTIONS, structured.get_client = saved
+        ai_client.reset_client_cache()
+        set_row(W.A, status="ok", last_error=None)
+        set_row(W.B, status="ok", last_error=None)
+        SDK_ANSWER.clear()
+
+
+def one_at_a_time() -> None:
+    """One AI request in flight per account: analyze-photos, Annex A "Ask
+    AI" and an intake run (for as long as it runs) -> 429 ai_busy."""
+    a_web, v_web = signed_in(W.A), signed_in(W.V)
+    a_case, v_case = new_case(W.A), new_case(W.V)
+    rid = new_draft(W.A, photos=2)
+    gate, inside = threading.Event(), threading.Event()
+
+    def held(model, input, response_format):
+        inside.set()
+        gate.wait(20)
+        return answer(model, input, response_format)
+
+    def busy_checks(what: str) -> None:
+        r = a_web.post("/reports/analyze-photos", data={"description": "x"})
+        check(r.status_code == 429 and r.json() == {"detail": limits.AI_BUSY, "code": "ai_busy"},
+              f"while {what}: analyze-photos -> 429 ai_busy, plain detail", r.text[:200])
+        r = a_web.post(f"/reports/{a_case}/annex-suggestions/ai", json={"parts": ["Rear Bumper"]})
+        check(r.status_code == 429 and r.json().get("code") == "ai_busy", f"...Annex A 'Ask AI' -> 429 ai_busy", r.text[:200])
+        r = a_web.post(f"/intake/{rid}/process", json={"mode": "all"})
+        check(r.status_code == 429 and r.json().get("code") == "ai_busy" and session_of(rid).stage in ("uploading", "ready"),
+              "...intake process -> 429 ai_busy, the stage untouched", r.text[:200])
+        r = v_web.post(f"/reports/{v_case}/annex-suggestions/ai", json={"parts": ["Rear Bumper"]})
+        check(r.status_code == 200, "...while someone else's AI runs as usual", r.text[:200])
+
+    try:
+        reset_fakes()
+        BEHAVIOUR[W.A_KEY] = held
+        box = {}
+        t = threading.Thread(target=lambda: box.update(r=a_web.post("/reports/analyze-photos", data={"description": "x"})))
+        t.start()
+        check(inside.wait(10), "(her analyze-photos is waiting on Gemini)")
+        busy_checks("her analyze-photos runs")
+        gate.set()
+        t.join(30)
+        check(box.get("r") is not None and box["r"].status_code == 200, "it finishes", str(getattr(box.get("r"), "status_code", None)))
+        r = a_web.post(f"/reports/{a_case}/annex-suggestions/ai", json={"parts": ["Rear Bumper"]})
+        check(r.status_code == 200, "then her next request runs", r.text[:200])
+
+        print("  an intake run holds it until it ends")
+        gate.clear()
+        inside.clear()
+        other = new_draft(W.A, photos=2)
+        r = a_web.post(f"/intake/{other}/process", json={"mode": "all"})
+        check(r.status_code == 200 and inside.wait(10), "her intake run starts", r.text[:200])
+        busy_checks("her intake run runs")
+        gate.set()
+        deadline = time.monotonic() + 30
+        while pipeline.is_running(other) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        r = a_web.post("/reports/analyze-photos", data={"description": "x"})
+        check(session_of(other).stage == "ready" and r.status_code == 200, "when it ends, she can ask again", r.text[:200])
+    finally:
+        gate.set()
+        BEHAVIOUR.clear()
+
+
+def analyze_keeps_nothing() -> None:
+    """analyze-photos: photos count towards the hourly limit (unvetted
+    accounts), and go when the AI fails."""
+    a_web = signed_in(W.A)
+    prefix = f"u{W.A}-"
+
+    def mine():
+        return sorted(p.name for p in tmp_dir().iterdir() if p.name.startswith(prefix))
+
+    def photos(n):
+        return [("photos", (f"IMG_{i}.jpg", jpeg(), "image/jpeg")) for i in range(n)]
+
+    limits.photo_uploads.reset()
+    before = mine()
+    reset_fakes()
+    BEHAVIOUR[W.A_KEY] = busy
+    r = a_web.post("/reports/analyze-photos", data={"description": "x"}, files=photos(2))
+    check(r.status_code == 502 and W.A_KEY not in r.text, "the AI fails -> 502", r.text[:200])
+    check(mine() == before, "...and the 2 photos it saved are removed")
+    check(len(limits.photo_uploads._times.get(W.A, ())) == 0, "...and given back to her hourly count")
+    BEHAVIOUR[W.A_KEY] = refuses(W.A_KEY)
+    r = a_web.post("/reports/analyze-photos", data={"description": "x"}, files=photos(2))
+    check(r.status_code == 409 and r.json().get("code") == "ai_key_invalid" and mine() == before,
+          "her key refused mid-call -> 409 ai_key_invalid, photos removed too", r.text[:200])
+    set_row(W.A, status="ok", last_error=None)
+    BEHAVIOUR.clear()
+    r = a_web.post("/reports/analyze-photos", data={"description": "x"}, files=photos(2))
+    kept = r.json().get("temp_photo_paths") or []
+    check(r.status_code == 200 and len(kept) == 2 and len(limits.photo_uploads._times.get(W.A, ())) == 2,
+          "it works: 2 photos kept, counted for her (an unvetted account)", r.text[:200])
+    limits.photo_uploads.take(W.A, limits.PHOTOS_PER_HOUR - 3)
+    reset_fakes()
+    r = a_web.post("/reports/analyze-photos", data={"description": "x"}, files=photos(2))
+    check(r.status_code == 429 and r.json().get("code") == "rate_limited" and not CALLS,
+          "past 60 photos an hour (shared with upload-photos) -> 429 rate_limited, no Gemini call", r.text[:200])
+    r = a_web.post("/reports/analyze-photos", data={"description": "x"},
+                   files=photos(1) + [("photos", ("notes.pdf", b"%PDF-1.4", "application/pdf"))])
+    check(r.status_code == 400 and not CALLS, "a .pdf among them -> 400 before anything is saved", r.text[:200])
+    for p in kept:
+        Path(p).unlink(missing_ok=True)
+    limits.photo_uploads.reset()
+
+
 def client_cache() -> None:
     built: list[str] = []
 
@@ -797,6 +1140,29 @@ def client_cache() -> None:
 
 
 # --------------------------------------------------------- intake threads
+def jpeg() -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 24), (90, 40, 200)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def new_case(owner_id: str) -> str:
+    """A filed case (status "confirmed"), for Annex A."""
+    from app.reports.schema import SecurityIncidentDraft
+
+    db = SessionLocal()
+    try:
+        data = SecurityIncidentDraft(description="Rear-ended.", category=["Vehicle Collision or Damage"]).model_dump()
+        report = Report(channel="manual", reporter_chat_id="dashboard", status="confirmed", owner_id=owner_id, data=data)
+        db.add(report)
+        db.commit()
+        return report.id
+    finally:
+        db.close()
+
+
 def new_draft(owner_id: str, photos: int) -> str:
     db = SessionLocal()
     try:
@@ -881,7 +1247,8 @@ def pool_threads() -> None:
             batch_one_answered.set()
             return out
         batch_one_answered.wait(10)  # the first batch has answered first
-        raise google_error(403, "PERMISSION_DENIED", f"API key {W.A_KEY} was deleted.")
+        raise google_error(403, "PERMISSION_DENIED", f"Permission denied: Consumer 'api_key:{W.A_KEY}' has been suspended.",
+                           [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "CONSUMER_SUSPENDED"}])
 
     BEHAVIOUR[W.A_KEY] = mid_run
     s = run_intake(rid, a)
@@ -898,9 +1265,22 @@ def pool_threads() -> None:
     BEHAVIOUR.clear()
     c = signed_in(W.A)
     r = c.get(f"/intake/{rid}")
-    check(r.status_code == 200 and r.json().get("error_code") == "ai_key_invalid", "GET /intake/{id} shows error_code", r.text[:200])
+    body = r.json() if r.status_code == 200 else {}
+    check(body.get("error_code") == "ai_key_invalid", "GET /intake/{id} shows error_code", r.text[:200])
+    db = SessionLocal()
+    try:
+        alice = db.get(User, W.A)
+        want = {"id": W.A, "name": alice.name, "username": alice.username}
+    finally:
+        db.close()
+    check(body.get("error_by") == want and body.get("error_mine") is True,
+          "...error_by {id, name, username} of who started the run, error_mine true for her", repr(body.get("error_by")))
+    r = signed_in(W.admin).get(f"/intake/{rid}")
+    check(r.status_code == 200 and r.json().get("error_by") == want and r.json().get("error_mine") is False,
+          "...the admin sees the same error_by, error_mine false", r.text[:200])
     r = c.post(f"/intake/{rid}/process", json={"mode": "all"})
-    check(r.status_code == 200 and r.json().get("error_code") is None, "POST /process clears it", r.text[:200])
+    check(r.status_code == 200 and r.json().get("error_code") is None and r.json().get("error_by") is None
+          and r.json().get("error_mine") is False, "POST /process clears error_code and error_by", r.text[:200])
     deadline = time.monotonic() + 60
     while pipeline.is_running(rid) and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -984,6 +1364,9 @@ def main() -> int:
         ("record_result", recording),
         ("quota clears by itself after an hour", quota_recovery),
         ("get_client cache", client_cache),
+        ("the real SDK (google-genai's own errors) through call_structured", real_sdk),
+        ("one AI request at a time", one_at_a_time),
+        ("analyze-photos keeps nothing when the AI fails", analyze_keeps_nothing),
         ("the actor reaches every thread of an intake run", pool_threads),
         ("routes", routes),
         ("AiActor.cli() is never reachable from HTTP", cli_never_from_http),

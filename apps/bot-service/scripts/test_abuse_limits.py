@@ -219,19 +219,34 @@ def main() -> int:
         def no_gemini(key=None):
             raise AssertionError("Gemini was called for WhatsApp")
 
+        import app.channels.whatsapp as whatsapp
+
+        fetched: list[str] = []
+
+        async def no_download(chat_id, url, index):
+            fetched.append(url)
+            raise AssertionError("WhatsApp media was fetched")
+
         real_get_client, structured.get_client = structured.get_client, no_gemini
+        real_download, whatsapp._download_media = whatsapp._download_media, no_download
         try:
             for ticked in (False, True):
                 as_user["user"] = current(ticked)
-                r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": ""})
-                assert r.status_code == 200 and "Send a photo" in r.text, r.text
-                chat_state.get_session("whatsapp:whatsapp:+6500000000").photo_paths.append(str(Path(_tmp, "wa.jpg")))
-                r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": "it was scraped"})
-                assert r.status_code == 200 and "isn't available over WhatsApp" in r.text, r.text
-                chat_state.reset_session("whatsapp:whatsapp:+6500000000")
+                for form in ({"From": "whatsapp:+6500000000", "Body": ""},
+                             {"From": "whatsapp:+6500000000", "Body": "it was scraped"},
+                             # Not Twilio's: before P4 any signed-in account could make the
+                             # api fetch this, with the Twilio SID and token attached.
+                             {"From": "whatsapp:+6500000000", "NumMedia": "1",
+                              "MediaUrl0": "http://169.254.169.254/latest/meta-data/"}):
+                    r = wa.post("/whatsapp/webhook", data=form)
+                    assert r.status_code == 200 and "isn't available over WhatsApp" in r.text, r.text
+            assert not fetched, fetched
+            assert not chat_state.get_session("whatsapp:whatsapp:+6500000000").photo_paths
         finally:
             structured.get_client = real_get_client
-        ok("the WhatsApp webhook (mounted only with Twilio credentials) has no AI for anyone: a polite reply")
+            whatsapp._download_media = real_download
+        ok("the WhatsApp webhook (mounted only with Twilio credentials) has no AI for anyone: a polite reply, "
+           "before any media is fetched")
 
         print("sign-off")
         d = signer.c.post("/intake").json()["id"]

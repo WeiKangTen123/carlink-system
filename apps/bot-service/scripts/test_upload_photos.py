@@ -338,6 +338,52 @@ def hourly_cap() -> None:
     limits.photo_uploads.reset()
 
 
+def set_photo_paths(report_id: str, paths: list[str]) -> None:
+    db = SessionLocal()
+    try:
+        db.get(Report, report_id).photo_paths = paths
+        db.commit()
+    finally:
+        db.close()
+
+
+def per_case_cap() -> None:
+    """A case holds at most MAX_PHOTOS_PER_CASE (150), as an intake does --
+    checked by upload-photos and again by PUT /reports/{id}."""
+    limits.photo_uploads.reset()
+    cap = main.MAX_PHOTOS_PER_CASE
+    full = new_case(W.P)
+    set_photo_paths(full, [f"/nowhere/photo_{i:03d}.jpg" for i in range(cap - 2)])
+    before = tmp_files()
+    r = upload(W.p, full, "a.jpg", "b.jpg", "c.jpg")
+    check(r.status_code == 409 and f"at most {cap} photos" in r.json().get("detail", "") and "Add at most 2 more" in r.json()["detail"],
+          f"{cap - 2} photos + 3 -> 409, a plain message", brief(r))
+    check(tmp_files() == before and not limits.photo_uploads._times.get(W.P), "...nothing saved or counted")
+    r = upload(W.p, full, "a.jpg", "b.jpg")
+    two = r.json().get("temp_photo_paths") or []
+    check(r.status_code == 200 and len(two) == 2, f"{cap - 2} + 2 -> 200", brief(r))
+    r = W.p.put(f"/reports/{full}", json={"draft": {"description": "Full."}, "temp_photo_paths": two})
+    check(r.status_code == 200 and len(photo_paths_of(full)) == cap, f"PUT attaches them: {cap} photos", brief(r))
+    r = upload(W.p, full, "one-more.jpg")
+    check(r.status_code == 409, f"a full case: upload-photos -> 409", brief(r))
+
+    print("  PUT /reports/{id} checks it too")
+    r = upload(W.p, W.case, "elsewhere.jpg")
+    other = r.json().get("temp_photo_paths") or []
+    check(r.status_code == 200 and other, "(a photo uploaded while another case had room)", brief(r))
+    r = W.p.put(f"/reports/{full}", json={"draft": {"description": "Too many."}, "temp_photo_paths": other})
+    check(r.status_code == 409 and f"at most {cap} photos" in r.json().get("detail", ""),
+          "PUT that would take the full case past the limit -> 409", brief(r))
+    check(len(photo_paths_of(full)) == cap and Path(other[0]).exists(), "...the case unchanged, the upload still there to use elsewhere")
+    r = W.p.put(f"/reports/{full}", json={"draft": {"description": "Just words."}})
+    check(r.status_code == 200, "a full case still saves edits that add no photo", brief(r))
+    set_photo_paths(full, [f"/nowhere/old_{i:03d}.jpg" for i in range(cap + 10)])
+    r = W.p.put(f"/reports/{full}", json={"draft": {"description": "From before the limit."}})
+    check(r.status_code == 200, f"so does a case from before the limit with {cap + 10}", brief(r))
+    Path(other[0]).unlink(missing_ok=True)
+    limits.photo_uploads.reset()
+
+
 def ai_unchanged() -> None:
     r = W.p.post("/reports/analyze-photos", data={"description": "x"}, files=files("a.jpg"))
     check(r.status_code == 409 and r.json().get("code") == "ai_key_missing", "analyze-photos still needs AI (409 ai_key_missing)",
@@ -353,6 +399,7 @@ def main_() -> int:
         ("file type and size", type_and_size),
         ("saved like analyze-photos, attached by PUT", saved_like_analyze),
         ("60 photos an hour for unvetted accounts", hourly_cap),
+        ("at most 150 photos a case", per_case_cap),
         ("AI routes unchanged", ai_unchanged),
     ):
         run_section(name, fn)

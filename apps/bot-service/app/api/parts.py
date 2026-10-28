@@ -23,8 +23,9 @@ from pydantic import BaseModel, Field
 from app.ai import keys as ai_keys
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured
+from app.api import limits
 from app.auth.core import CurrentUser, audit
-from app.auth.deps import CASE_NOT_FOUND, current_user, editable_case, require_admin, visible_case
+from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
@@ -263,18 +264,22 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
     car = " ".join(x for x in (vehicle.get("make"), vehicle.get("model"), vehicle.get("year")) if x) or "unknown vehicle"
     prompt = f"Vehicle: {car}, Singapore.\nDamaged parts: {json.dumps(body.parts)}"
     try:
-        out = call_structured(
-            purpose="annex suggestions",
-            system_instruction=_AI_SYSTEM,
-            input_parts=[{"type": "text", "text": prompt}],
-            schema=_AI_SCHEMA,
-            parse=json.loads,
-            models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
-            actor=actor,
-            timeout=60.0,
-        )
-    except AiUnavailable:
-        raise  # their own key was refused mid-call: the 409, not "try again"
+        # One AI request at a time per person (429 ai_busy).
+        with limits.ai_turn(user):
+            out = call_structured(
+                purpose="annex suggestions",
+                system_instruction=_AI_SYSTEM,
+                input_parts=[{"type": "text", "text": prompt}],
+                schema=_AI_SCHEMA,
+                parse=json.loads,
+                models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+                actor=actor,
+                timeout=60.0,
+            )
+    except (AiUnavailable, ApiError):
+        # Their own key refused mid-call (the 409), or AI already running
+        # for them (429): not "try again in a minute".
+        raise
     except Exception as exc:
         logger.warning("AI annex suggestions failed for %s: %s", report_id, ai_keys.scrub(str(exc)))
         raise HTTPException(status_code=503, detail="The AI couldn't suggest lines just now. Try again in a minute.")

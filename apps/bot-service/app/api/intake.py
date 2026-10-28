@@ -91,14 +91,22 @@ def _claim_stage(db, report_id: str, new_stage: str) -> bool:
     result = db.execute(
         update(IntakeSession)
         .where(IntakeSession.report_id == report_id, IntakeSession.stage != "finalizing")
-        .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None)
+        .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None, error_by=None)
     )
     db.commit()
     return result.rowcount == 1
 
 
+def _error_by(db, user_id: str | None) -> dict | None:
+    """{id, name, username} of who started the run that failed, or None."""
+    if not user_id:
+        return None
+    who = db.get(User, user_id)
+    return {"id": user_id, "name": who.name if who else None, "username": (who.username or None) if who else None}
+
+
 def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
-    stage, error, error_code = session.stage, session.error, session.error_code
+    stage, error, error_code, error_by = session.stage, session.error, session.error_code, session.error_by
     # Left mid-run by a restart: the thread is gone but the row still says
     # it's working, and the wizard would poll forever.
     if stage in pipeline.RUNNING_STAGES and not pipeline.is_running(report.id):
@@ -107,7 +115,7 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
             "Processing stopped before finishing (the server restarted). "
             "Press Retry to continue -- photos already sorted are kept."
         )
-        error_code = None
+        error_code = error_by = None
     photos = ordered_photos(db, report.id)
     return {
         "id": report.id,
@@ -120,6 +128,10 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         # Why the last run stopped when the person's AI wasn't available
         # (ai/keys.AiUnavailable's codes), else None.
         "error_code": error_code,
+        # Whose run that was: the error is about THEIR key, so the wizard
+        # words it for the viewer ("your AI key" only when error_mine).
+        "error_by": _error_by(db, error_by),
+        "error_mine": bool(error_by) and error_by == user.id,
         "reporter_notes": session.reporter_notes,
         "read_photo_ids": session.read_photo_ids or [],
         "photos": [serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
@@ -399,13 +411,20 @@ def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Dep
         # otherwise be overwritten with these zeros).
         if not pipeline.reserve(report_id):
             raise HTTPException(status_code=409, detail="AI processing is already running for this draft.")
+        claimed = False
         try:
+            # This person's one AI request at a time (limits.ai_turn), held
+            # for the whole run and given back when it ends (on_done).
+            limits.claim_ai_turn(user)
+            claimed = True
             if not _claim_stage(db, report_id, "sorting" if body.mode == "all" else "reading"):
                 raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
+            pipeline.start_reserved(report_id, body.mode, actor, on_done=lambda: limits.ai_running.release(user.id))
         except Exception:
             pipeline.release(report_id)
+            if claimed:
+                limits.ai_running.release(user.id)
             raise
-        pipeline.start_reserved(report_id, body.mode, actor)
         db.refresh(session)
         return _state(db, report, session, user)
     finally:

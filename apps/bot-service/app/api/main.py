@@ -36,7 +36,7 @@ from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
-from app.api.intake import delete_intake_files, router as intake_router
+from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
 from app.auth.core import CurrentUser, audit, report_history
 from app.auth.deps import (
     CASE_NOT_FOUND,
@@ -513,13 +513,42 @@ async def analyze_report_photos(
     """
     # No case to gate on: the photos go to a case later, through PUT
     # /reports/{id}'s checks. AI first (the presser pays: 409 {detail,
-    # code} when theirs isn't available), then room on the disk, before
-    # any photo is saved.
+    # code} when theirs isn't available; one request at a time, 429
+    # ai_busy), then room on the disk, the file types and the hourly photo
+    # count, before any photo is saved.
     actor = AiActor.for_user(user.id, "dashboard")
     await asyncio.to_thread(own_keys.ensure_ai_ready, actor)
-    limits.require_disk_space()
-    saved_paths: list[str] = []
-    td = tmp_dir()
+    limits.claim_ai_turn(user)
+    try:
+        limits.require_disk_space()
+        exts = _photo_exts(photos)
+        counted = limits.charge_photo_uploads(user, len(photos))
+        saved_paths: list[str] = []
+        try:
+            saved_paths = await asyncio.to_thread(_save_temp_photos, photos, exts, user)
+            draft = await asyncio.to_thread(draft_report, description, saved_paths, actor=actor)
+            if draft.vehicle_info:
+                draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
+        except BaseException as exc:
+            # Nothing was drafted, so nothing is kept: the photos go, and
+            # back to the hourly count.
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
+            if counted:
+                limits.photo_uploads.refund(user.id, len(photos))
+            if isinstance(exc, (AiUnavailable, HTTPException)) or not isinstance(exc, Exception):
+                raise  # their own key refused mid-call (the 409 with its code), a 413...
+            raise HTTPException(status_code=502, detail=f"AI drafting failed: {own_keys.scrub(str(exc))}") from exc
+    finally:
+        limits.ai_running.release(user.id)
+
+    return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
+
+
+def _photo_exts(photos: list[UploadFile]) -> list[str]:
+    """Each photo's extension, all checked before any is saved: these
+    extensions, none meaning .jpg (400 otherwise)."""
+    exts: list[str] = []
     for photo in photos:
         raw_ext = Path(photo.filename or "").suffix.lower()
         if raw_ext and raw_ext not in ALLOWED_PHOTO_EXTENSIONS:
@@ -527,30 +556,43 @@ async def analyze_report_photos(
                 status_code=400,
                 detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
             )
-        ext = raw_ext or ".jpg"
-        dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
-        with open(dest, "wb") as f:
-            shutil.copyfileobj(photo.file, f)
-        if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
-            dest.unlink(missing_ok=True)
-            for p in saved_paths:
-                Path(p).unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=413,
-                detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
-            )
-        saved_paths.append(str(dest))
+        exts.append(raw_ext or ".jpg")
+    return exts
 
+
+def _save_temp_photos(photos: list[UploadFile], exts: list[str], user: CurrentUser) -> list[str]:
+    """Saves them to storage/tmp as u{user id}-{random}{ext} (_temp_prefix),
+    25MB each at most (413) -- all or none."""
+    saved_paths: list[str] = []
     try:
-        draft = await asyncio.to_thread(draft_report, description, saved_paths, actor=actor)
-        if draft.vehicle_info:
-            draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
-    except AiUnavailable:
-        raise  # their own key was refused mid-call: the 409 with its code
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI drafting failed: {own_keys.scrub(str(exc))}") from exc
+        td = tmp_dir()
+        for photo, ext in zip(photos, exts):
+            dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
+            with open(dest, "wb") as f:
+                shutil.copyfileobj(photo.file, f)
+            saved_paths.append(str(dest))
+            if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
+                )
+    except BaseException:
+        for p in saved_paths:
+            Path(p).unlink(missing_ok=True)
+        raise
+    return saved_paths
 
-    return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
+
+def _too_many_photos(already: int, adding: int) -> None:
+    """A case holds at most MAX_PHOTOS_PER_CASE, as an intake does: 409.
+    Only when photos are being added: a case from before the limit with
+    more still saves its other edits."""
+    if adding > 0 and already + adding > MAX_PHOTOS_PER_CASE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A case can hold at most {MAX_PHOTOS_PER_CASE} photos, and this one has {already}. "
+            f"Add at most {max(0, MAX_PHOTOS_PER_CASE - already)} more.",
+        )
 
 
 @app.post("/reports/{report_id}/upload-photos")
@@ -579,37 +621,17 @@ def upload_report_photos(
         _refuse_intake_draft(r)
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+        _too_many_photos(len(r.photo_paths or []), len(photos))
     finally:
         db.close()
 
     # analyze-photos' rules: these extensions (none means .jpg), 25MB each.
-    exts: list[str] = []
-    for photo in photos:
-        raw_ext = Path(photo.filename or "").suffix.lower()
-        if raw_ext and raw_ext not in ALLOWED_PHOTO_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
-            )
-        exts.append(raw_ext or ".jpg")
+    exts = _photo_exts(photos)
     counted = limits.charge_photo_uploads(user, len(photos))
-    saved_paths: list[str] = []
     try:
-        td = tmp_dir()
-        for photo, ext in zip(photos, exts):
-            dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
-            with open(dest, "wb") as f:
-                shutil.copyfileobj(photo.file, f)
-            saved_paths.append(str(dest))
-            if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
-                )
+        saved_paths = _save_temp_photos(photos, exts, user)
     except BaseException:
         # All or nothing, and the photos given back to the hourly count.
-        for p in saved_paths:
-            Path(p).unlink(missing_ok=True)
         if counted:
             limits.photo_uploads.refund(user.id, len(photos))
         raise
@@ -753,6 +775,7 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
             )
+        _too_many_photos(len(r.photo_paths or []), len([p for p in temp_paths if Path(p).exists()]))
 
         if body.draft.vehicle_info:
             v = body.draft.vehicle_info

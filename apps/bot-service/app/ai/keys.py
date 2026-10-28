@@ -370,9 +370,20 @@ _STATUS_CODES = {"invalid": AI_KEY_INVALID, "quota": AI_QUOTA_USED}
 # Google saying the key itself is wrong. A 400 is just as often about the
 # request (a photo it can't take, a schema), which says nothing about the key.
 _KEY_REFUSED = re.compile(r"API_KEY_INVALID|API key not valid|API key expired", re.IGNORECASE)
-# A 429 for the day's allowance (or a model the key has none of, "limit:
-# 0"), not the per-minute window: waiting a few seconds can't help.
-_DAILY_QUOTA = re.compile(r"PerDay|per[ _-]day|limit: 0\b", re.IGNORECASE)
+# A 403 about the key (suspended, restricted to other APIs or callers, its
+# project's Gemini API off), not about one model it may not use.
+_KEY_FORBIDDEN = re.compile(
+    r"CONSUMER_SUSPENDED|API_KEY_[A-Z_]+|API key not valid|API key expired|SERVICE_DISABLED"
+    r"|has not been used in project|API has not been enabled|permission denied on (the|this) (api )?key",
+    re.IGNORECASE,
+)
+# A 429 for the day's allowance, not the per-minute window: waiting a few
+# seconds can't help.
+_DAILY_QUOTA = re.compile(r"PerDay|per[ _-]day", re.IGNORECASE)
+# A 429 for a model the key has no allowance for at all ("limit: 0": a free
+# tier asking for a paid-only model). On every model, the key needs billing.
+_NO_ALLOWANCE = re.compile(r"\blimit: 0\b", re.IGNORECASE)
+NO_ALLOWANCE_ERROR = "This key's Google project has no allowance for these models: turn on billing in Google Cloud."
 
 # A success stamps last_used_at at most this often per key: a busy intake
 # makes dozens of calls, and each stamp is a write on the shared database.
@@ -561,22 +572,47 @@ def ai_allowed(user) -> bool:
     return row is not None and usable(row.status, row.last_checked_at) and secretbox.state() == secretbox.OK
 
 
-def refusal(exc: BaseException) -> str | None:
-    """What a failed call says about the key it was made with: "invalid"
-    (Google refused the key: a 401, a 403, or a 400 about the key),
-    "quota" (a daily-allowance 429), or None (anything else: busy, the
-    per-minute window, a timeout, an answer that didn't parse)."""
-    from google.genai import errors
-
-    if not isinstance(exc, errors.APIError):
+def http_status(exc: BaseException) -> int | None:
+    """The HTTP status of an error from the Gemini SDK, else None. Two
+    families: google.genai.errors.APIError (.code; client.models...) and
+    the interactions client's own (BadRequestError, RateLimitError...;
+    .status_code), which is NOT a subclass of it -- and client.interactions
+    is what call_structured uses. Their text holds Google's JSON either way
+    ("Error code: 400 - {'error': {... 'API_KEY_INVALID' ...}}")."""
+    if not type(exc).__module__.startswith("google.genai"):
         return None
-    if exc.code in (401, 403):
-        return "invalid"
+    for name in ("code", "status_code"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and 100 <= value < 600:
+            return value
+    return None
+
+
+def refusal(exc: BaseException) -> str | None:
+    """What a failed call says about the key it was made with:
+
+        "invalid"        Google refused the key: a 401, or a 400 or 403
+                         about the key itself (_KEY_REFUSED, _KEY_FORBIDDEN)
+        "quota"          a 429 for the day's allowance
+        "no_allowance"   a 429 "limit: 0": none at all for this model
+        None             anything else: busy, the per-minute window, a 403
+                         for one model, a timeout, an answer that didn't parse
+    """
+    status = http_status(exc)
+    if status is None:
+        return None
     text = str(exc)
-    if exc.code == 400 and _KEY_REFUSED.search(text):
+    if status == 401:
         return "invalid"
-    if exc.code == 429 and _DAILY_QUOTA.search(text):
-        return "quota"
+    if status == 400 and _KEY_REFUSED.search(text):
+        return "invalid"
+    if status == 403 and _KEY_FORBIDDEN.search(text):
+        return "invalid"
+    if status == 429:
+        if _NO_ALLOWANCE.search(text):
+            return "no_allowance"
+        if _DAILY_QUOTA.search(text):
+            return "quota"
     return None
 
 
@@ -593,11 +629,20 @@ def _touch_due(user_id: str, fingerprint: str) -> bool:
 
 
 def _google_said(error: BaseException | None) -> str | None:
+    """'Google said: 400 API key not valid...' -- Google's own message from
+    the error's JSON (.body on interactions errors, .details on the
+    others), not the SDK's whole "Error code: ... {...}" text."""
     if error is None:
         return None
-    code = getattr(error, "code", None)
-    words = getattr(error, "message", None) or getattr(error, "status", None)
-    return f"Google said: {code} {words or ''}" if code else f"Google said: {type(error).__name__}"
+    code = http_status(error)
+    if code is None:
+        return f"Google said: {type(error).__name__}"
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        body = getattr(error, "details", None)
+    found = body.get("error") if isinstance(body, dict) else None
+    words = (found.get("message") or found.get("status")) if isinstance(found, dict) else None
+    return f"Google said: {code} {words or str(error)}"
 
 
 def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException | None = None) -> None:
@@ -612,11 +657,13 @@ def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException
                              leaves the key out -- an invalid one until it
                              is tested again on Settings > My AI key, one
                              out of quota for QUOTA_RETRY_AFTER
+        "no_allowance"       no allowance on any model: stored as "invalid",
+                             with NO_ALLOWANCE_ERROR (billing is the fix)
 
     Only while the key is still this person's (record_check's rule): one
     saved meanwhile mustn't get the old key's verdict. Never raises: a
     stamp that fails mustn't fail the call it is about."""
-    if key.source != "own" or not actor.user_id or outcome not in ("ok", "invalid", "quota"):
+    if key.source != "own" or not actor.user_id or outcome not in ("ok", "invalid", "quota", "no_allowance"):
         return
     back = outcome == "ok" and key.retrying
     touch = outcome == "ok" and _touch_due(actor.user_id, key.fingerprint)
@@ -646,9 +693,10 @@ def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException
                     .execution_options(synchronize_session=False)
                 )
         else:
-            why = _google_said(error)
-            if record_check(db, actor.user_id, key.fingerprint, outcome, scrub(why, key.value) if why else None):
-                logger.warning("AI key %s of user %s marked %s by Google's answer", key.label, actor.user_id, outcome)
+            status = "invalid" if outcome == "no_allowance" else outcome
+            why = NO_ALLOWANCE_ERROR if outcome == "no_allowance" else _google_said(error)
+            if record_check(db, actor.user_id, key.fingerprint, status, scrub(why, key.value) if why else None):
+                logger.warning("AI key %s of user %s marked %s by Google's answer (%s)", key.label, actor.user_id, status, outcome)
         db.commit()
     except Exception as exc:
         db.rollback()

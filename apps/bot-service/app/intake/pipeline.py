@@ -16,12 +16,14 @@ handed by hand to the run's thread and to every sorting worker -- context
 variables don't reach either -- and each Gemini call looks their keys up
 again. When their AI stops being available mid-run (their key refused, an
 admin's untick), the run fails with the reason's code in
-IntakeSession.error_code; photos already sorted stay sorted.
+IntakeSession.error_code, and error_by says whose run it was; photos
+already sorted stay sorted.
 """
 import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,15 +104,24 @@ def release(report_id: str) -> None:
         _running.discard(report_id)
 
 
-def start_reserved(report_id: str, mode: str, actor: AiActor) -> None:
+def start_reserved(report_id: str, mode: str, actor: AiActor, on_done: Callable[[], None] | None = None) -> None:
     """mode "all" sorts unsorted photos then reads; "read" only re-reads
     (after the surveyor regrouped photos). actor: who pressed the button,
-    and pays. Call reserve() first."""
-    threading.Thread(target=_run, args=(report_id, mode, actor), name=f"intake-{report_id}", daemon=True).start()
+    and pays. on_done runs when the run ends, however it ends (api/intake
+    releases the person's one AI request at a time). Call reserve() first."""
+    threading.Thread(
+        target=_run, args=(report_id, mode, actor, on_done), name=f"intake-{report_id}", daemon=True
+    ).start()
 
 
 def _set_stage(
-    report_id: str, stage: str, done: int = 0, total: int = 0, error: str | None = None, error_code: str | None = None
+    report_id: str,
+    stage: str,
+    done: int = 0,
+    total: int = 0,
+    error: str | None = None,
+    error_code: str | None = None,
+    error_by: str | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -123,6 +134,7 @@ def _set_stage(
             session.progress_total = total
             session.error = error
             session.error_code = error_code
+            session.error_by = error_by
             db.commit()
     finally:
         db.close()
@@ -149,23 +161,38 @@ def _friendly_error(exc: Exception) -> str:
     return f"AI processing failed: {exc}"[:300]
 
 
-def _run(report_id: str, mode: str, actor: AiActor) -> None:
+def _run(report_id: str, mode: str, actor: AiActor, on_done: Callable[[], None] | None = None) -> None:
+    def done() -> None:
+        # Once, and before the final stage is written: whoever sees the
+        # result may start their next AI request at once.
+        nonlocal on_done
+        callback, on_done = on_done, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                logger.exception("Intake run %s: on_done failed", report_id)
+
     try:
         if mode == "all":
             _sort(report_id, actor)
         _read(report_id, actor)
+        done()
         _set_stage(report_id, "ready", 1, 1)
     except AiUnavailable as exc:
         # Not a fault: the person's AI stopped being available (their key
         # refused or out of quota, an untick). The wizard says how to fix it.
         logger.warning("Intake processing for %s stopped: %s", report_id, exc.code)
-        _set_stage(report_id, "failed", error=_friendly_error(exc), error_code=exc.code)
+        done()
+        _set_stage(report_id, "failed", error=_friendly_error(exc), error_code=exc.code, error_by=actor.user_id)
     except Exception as exc:
         logger.exception("Intake processing failed for %s", report_id)
-        _set_stage(report_id, "failed", error=_friendly_error(exc))
+        done()
+        _set_stage(report_id, "failed", error=_friendly_error(exc), error_by=actor.user_id)
     finally:
         with _lock:
             _running.discard(report_id)
+        done()
 
 
 def _sort(report_id: str, actor: AiActor) -> None:

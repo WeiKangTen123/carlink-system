@@ -104,11 +104,13 @@ def call_structured(
     malformed answer is no more usable than none.
 
     actor: who the call is for. Their keys are looked up now, for this
-    call (keys.resolve_keys). Google refusing their own key, or its daily
-    allowance running out on every model, is kept on its row
-    (keys.record_result) and the next key is tried: the company's, if they
-    may use it. Raises AiUnavailable when there is no key to try, or when
-    their own key was the only one and failed that way.
+    call (keys.resolve_keys). Google refusing their own key, or its
+    allowance running out on every model (or never there: no billing), is
+    kept on its row (keys.record_result) and the next key is tried: the
+    company's, if they may use it. Raises AiUnavailable when there is no key
+    to try, or when their own key was the only one and failed that way.
+    Errors are told apart by keys.refusal, which knows both of the SDK's
+    error families.
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each key, since every model
@@ -118,12 +120,10 @@ def call_structured(
     # on the first model.
     keys = resolve_keys(actor)
     last_error: Exception | None = None
-    last_key = None
-    # Own keys that failed for their own reasons ("invalid", "quota").
+    # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
 
     for key in keys:
-        last_key = key
         client = get_client(key)
         own = key.source == "own"
         # refusal() of each model's last error, for an own key.
@@ -192,22 +192,54 @@ def call_structured(
             verdicts.append(verdict)
             if verdict == "invalid":
                 break  # Google refused the key itself: no other model will take it
-        if own and verdicts and (verdicts[-1] == "invalid" or all(v == "quota" for v in verdicts)):
-            outcome = "invalid" if verdicts[-1] == "invalid" else "quota"
+        outcome = _key_outcome(verdicts) if own else None
+        if outcome:
             record_result(actor, key, outcome, last_error)
-            refused.append(outcome)
+            refused.append(AI_QUOTA_USED if outcome == "quota" else AI_KEY_INVALID)
 
     if refused and len(refused) == len(keys):
         # Their own key was all they had: say what's wrong with it rather
         # than "the AI failed". (Not chained: the SDK's error stays in the
         # log lines above, scrubbed.)
-        raise AiUnavailable(AI_KEY_INVALID if refused[-1] == "invalid" else AI_QUOTA_USED) from None
-    cause = last_error
-    if last_error is not None and last_key is not None and last_key.source == "own":
-        # The cause is shown (intake's message) and logged (its traceback):
-        # for a person's own key, only Google's words, scrubbed.
-        cause = RuntimeError(f"{type(last_error).__name__}: {scrub(str(last_error), last_key.value)}")
+        raise AiUnavailable(refused[-1]) from None
     raise RuntimeError(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."
-    ) from cause
+    ) from _scrubbed(last_error, keys)
+
+
+def _key_outcome(verdicts: list[str | None]) -> str | None:
+    """What an own key's models, all failed, say about the key itself
+    (keys.record_result's outcomes), or None when it's no fault of the key:
+    refused ("invalid", which stops the chain); out of allowance on every
+    model -- "no_allowance" when none ever had any (billing off), else
+    "quota"."""
+    if not verdicts:
+        return None
+    if verdicts[-1] == "invalid":
+        return "invalid"
+    if all(v == "no_allowance" for v in verdicts):
+        return "no_allowance"
+    if all(v in ("quota", "no_allowance") for v in verdicts):
+        return "quota"
+    return None
+
+
+def _scrubbed(error: Exception | None, keys) -> Exception | None:
+    """A copy of the last error, holding only its scrubbed text, to chain
+    the final RuntimeError from: that cause is shown (intake's message) and
+    logged (its traceback), and the SDK's own error can quote the key it was
+    sent with -- a company key's too. Built-in types (TimeoutError from
+    _create_within, ValueError from parse) keep their type."""
+    if error is None:
+        return None
+    text = str(error)
+    for key in keys:
+        text = scrub(text, key.value)
+    text = scrub(text)
+    if type(error).__module__ == "builtins":
+        try:
+            return type(error)(text)
+        except Exception:
+            pass
+    return RuntimeError(f"{type(error).__name__}: {text}")

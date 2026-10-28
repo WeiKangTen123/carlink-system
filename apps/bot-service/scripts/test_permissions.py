@@ -783,6 +783,10 @@ def b2_ai_allowed() -> None:
     v_draft, v_case = new_draft(V, photos=1), new_case(V, plate="SVA1111A")
     r = V.c.post(f"/intake/{v_draft}/process", json={"mode": "all"})
     check(r.status_code == 200, "V (company AI key tick) starts AI on V's draft", brief(r))
+    # P4: one AI request at a time per person (429 ai_busy) -- let the run end.
+    deadline = time.monotonic() + 30
+    while jd(V.c.get(f"/intake/{v_draft}")).get("stage") in ("sorting", "reading") and time.monotonic() < deadline:
+        time.sleep(0.05)
     r = V.c.post(f"/reports/{v_case}/annex-suggestions/ai", json={"parts": ["Rear Bumper"]})
     check(r.status_code == 200, "V asks the AI for Annex A lines", brief(r))
     r = V.c.post("/reports/analyze-photos", data={"description": "x"}, files=[("photos", ("IMG_1.jpg", jpeg(), "image/jpeg"))])
