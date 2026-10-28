@@ -49,3 +49,7 @@ export function keyFormatProblem(typed: string): string | null {
 
 /** Google AI Studio's API keys page, where a key is made. */
 export const AI_STUDIO_KEYS_URL = "https://aistudio.google.com/apikey";
+
+/** Google Cloud's credentials page, where a key is restricted to one API
+ * and to this server's address. */
+export const CLOUD_CREDENTIALS_URL = "https://console.cloud.google.com/apis/credentials";

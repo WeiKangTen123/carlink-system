@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Building2, Check, MessageCircle, Save, Send } from "lucide-react";
 import type { AppSettings } from "@/lib/api";
 import { updateSettingsAction } from "./actions";
+import { AiKeyStorageStatus, type AiKeyStorageView } from "./AiKeyStorageStatus";
 import { CompanyAiKeysCard } from "./CompanyAiKeysCard";
 import { SetupCard } from "./SetupCard";
 
@@ -16,6 +17,8 @@ export interface SetupStatus {
   whatsappConfigured: boolean;
   telegramReports: number;
   whatsappReports: number;
+  /** Whether people's own AI keys can be read here; null when unknown. */
+  aiKeyStorage: AiKeyStorageView | null;
 }
 
 /** Report branding, saved on its own (there is no page-wide save bar: each
@@ -83,11 +86,13 @@ function BrandingCard({ initial }: { initial: AppSettings }) {
   );
 }
 
-/** Settings -> Company (admins): the company AI key, the Telegram bot,
- * WhatsApp and report branding. */
+/** Settings -> Company (admins): whether people's own AI keys can be read,
+ * the company AI key, the Telegram bot, WhatsApp and report branding. */
 export function CompanyClient({ settings, setup }: { settings: AppSettings; setup: SetupStatus }) {
   return (
     <>
+      <AiKeyStorageStatus storage={setup.aiKeyStorage} />
+
       <CompanyAiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 
       {/* SLOT (P5): bot name and "accounts connected" from GET /system/info

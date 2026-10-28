@@ -1,12 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { Check, Eye, EyeOff, Key, RefreshCw, Sparkles, Trash2, X, Zap } from "lucide-react";
 import type { MyAiKey } from "@/lib/api";
 import { formatSgt } from "@/lib/signup";
-import { deleteMyAiKeyAction, getMyAiKeyAction, saveMyAiKeyAction, testMyAiKeyAction, type AiKeyResult } from "./actions";
+import {
+  deleteMyAiKeyAction,
+  getMyAiKeyAction,
+  saveMyAiKeyAction,
+  testMyAiKeyAction,
+  type AiKeyError,
+  type AiKeyResult,
+} from "./actions";
 import {
   AI_STUDIO_KEYS_URL,
+  CLOUD_CREDENTIALS_URL,
   FAILING_FIX,
   FAILING_WHAT,
   aiKeyWord,
@@ -14,7 +23,7 @@ import {
   keyFormatProblem,
   maskedKey,
 } from "./aiKeyWords";
-import { SetupCard, TestResult, type TestState } from "./SetupCard";
+import { HelpLink, SetupCard, TestResult, type TestState } from "./SetupCard";
 
 /** Settings -> My settings -> My AI key (id="my-ai-key"): the person's own
  * Gemini key. Everyone, admins included, sees only its last 4 characters
@@ -26,6 +35,25 @@ import { SetupCard, TestResult, type TestState } from "./SetupCard";
  * update. So nothing here says "your AI works now" because of a key --
  * GET /auth/me/ai-key's `source` and `ai_available` are about that next
  * update and aren't shown. */
+
+/** Runs one of the AI key actions. If no answer comes back at all (the
+ * connection dropped, the server failed outright), that becomes an error
+ * like any other, so no button is left on "Saving…" or "Testing…". Next's
+ * own redirects pass through: signed out goes to sign-in, a temporary
+ * password to /account, and the page is leaving anyway. */
+async function settle(run: () => Promise<AiKeyResult>): Promise<AiKeyResult> {
+  try {
+    return await run();
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: "Couldn't reach Carlink just now. Check your connection and try again.", code: null, status: null };
+  }
+}
+
+/** The account itself was refused (disabled meanwhile, say), not the key. */
+function accountRefused(result: AiKeyError): boolean {
+  return result.status === 401 || result.status === 403;
+}
 
 /** What the card shows after something happened. */
 type Notice = { tone: "ok" | "fail"; text: string } | null;
@@ -129,10 +157,16 @@ function KeyForm({
     }
     setSaving(true);
     setError(null);
-    const result = await saveMyAiKeyAction(typed, true);
+    const result = await settle(() => saveMyAiKeyAction(typed, true));
     setSaving(false);
     if ("error" in result) {
       setError(result.error || "Failed to save your AI key");
+      // Not something a corrected key would fix: don't keep it on screen.
+      if (accountRefused(result)) {
+        setValue("");
+        setShow(false);
+        setBilling(false);
+      }
       return;
     }
     // Never kept on screen once it's saved.
@@ -238,7 +272,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
 
   const reload = async () => {
     setReloading(true);
-    const result = await getMyAiKeyAction();
+    const result = await settle(() => getMyAiKeyAction());
     setReloading(false);
     if ("error" in result) setLoadError(result.error || "Failed to load your AI key");
     else {
@@ -270,7 +304,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
 
   /** A refusal from Test or Remove. no_ai_key: it's gone already (another
    * tab, or an admin), so show the card as it now is. */
-  const refused = async (result: Extract<AiKeyResult, { error: string }>) => {
+  const refused = async (result: AiKeyError) => {
     setNotice({ tone: "fail", text: result.error || "Something went wrong. Try again." });
     if (result.code === "no_ai_key") await reload();
   };
@@ -279,7 +313,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
     setBusy("test");
     setTested(null);
     setNotice(null);
-    const result = await testMyAiKeyAction();
+    const result = await settle(() => testMyAiKeyAction());
     setBusy(null);
     if ("error" in result) return refused(result);
     setAi(result.key);
@@ -296,7 +330,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
     setBusy("remove");
     setTested(null);
     setNotice(null);
-    const result = await deleteMyAiKeyAction();
+    const result = await settle(() => deleteMyAiKeyAction());
     setBusy(null);
     if ("error" in result) {
       if (result.code === "removed") {
@@ -411,6 +445,11 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
       <p className="setup-note" style={{ margin: "12px 0 0" }}>
         Once saved, the key is locked away: nobody, admins included, can see it again. Carlink shows only its last 4
         characters. One key per person; a key someone else uses can&apos;t be added.
+      </p>
+      <p className="setup-note ai-key-tip">
+        <strong>Tip:</strong> in Google Cloud, restrict the key to the Generative Language API, and if you like to
+        this server&apos;s address (ask your admin).{" "}
+        <HelpLink url={CLOUD_CREDENTIALS_URL} label="Key settings in Google Cloud" />
       </p>
 
       <AiRightNow ai={ai} isAdmin={isAdmin} />

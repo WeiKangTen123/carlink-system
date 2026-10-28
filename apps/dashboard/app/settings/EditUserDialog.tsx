@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import type { CaseCounts, UserAccount, UserRole, UserTicks } from "@/lib/api";
 import { USERNAME_HINT, formatSgtDay } from "@/lib/signup";
@@ -108,7 +109,14 @@ function AiKeyRow({
       return;
     setRemoving(true);
     setError(null);
-    const problem = await onRemove();
+    let problem: string | null;
+    try {
+      problem = await onRemove();
+    } catch (err) {
+      // Next's redirects (signed out) go through; anything else is shown.
+      unstable_rethrow(err);
+      problem = "Couldn't reach Carlink just now. Check your connection and try again.";
+    }
     setRemoving(false);
     if (problem) setError(problem);
     else setRemoved(true);

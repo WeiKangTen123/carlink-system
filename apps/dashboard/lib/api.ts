@@ -480,7 +480,16 @@ export async function saveMyAiKey(apiKey: string, billingConfirmed: boolean): Pr
     },
     { timeoutMs: 30000 }
   );
-  if (!res.ok) throw await apiError(res, "Failed to save your AI key");
+  if (!res.ok) {
+    const err = await apiError(res, "Failed to save your AI key");
+    // Signed out meanwhile has already gone to sign-in (apiFetch). Any other
+    // 403 without words of its own: say so plainly, e.g. the account was
+    // disabled while the key was being checked.
+    if (res.status === 403 && err.message.endsWith("(403)")) {
+      throw new ApiError("Your account can't save an AI key right now; it may have been disabled. The key wasn't saved.", 403, err.code);
+    }
+    throw err;
+  }
   return res.json();
 }
 
@@ -1366,7 +1375,16 @@ export type SystemInfo = {
   storage: { reports: number; photos: number; pdfs: number; bytes_used: number; storage_dir: string };
   database: { engine: string };
   auth: { configured: boolean };
+  /** Whether this server can read people's own AI keys (the secret that
+   * seals them). `detail` says what's wrong and how to fix it. Absent from
+   * an API older than release P3's security follow-up. */
+  ai_key_storage?: AiKeyStorage;
 };
+
+/** "ok", or why people's own AI keys can't be read right now. Kept open
+ * (string) so a state a newer API adds still shows, with its detail. */
+export type AiKeyStorageState = "ok" | "lost" | "broken" | "canary_failed" | "off";
+export type AiKeyStorage = { state: AiKeyStorageState | (string & {}); detail?: string | null };
 
 export const DEFAULT_SYSTEM_INFO: SystemInfo = {
   ai: {

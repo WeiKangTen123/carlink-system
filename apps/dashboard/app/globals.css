@@ -7122,4 +7122,52 @@ html:has(.intake-footer) {
   color: var(--text-muted);
   font-size: 12px;
 }
+/* My AI key: restricting the key in Google Cloud (security report M3). */
+.ai-key-tip {
+  margin: 6px 0 0;
+}
+.ai-key-tip .setup-help-link {
+  vertical-align: baseline;
+}
+
+/* Company: whether people's own AI keys can be read on this server
+   (AiKeyStorageStatus.tsx). Quiet when fine, a warning when not. */
+.ai-key-storage-ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ai-key-storage-ok svg {
+  color: var(--badge-green-text);
+}
+.ai-key-storage-warning {
+  margin-bottom: 16px;
+}
+.ai-key-storage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--badge-amber-text);
+}
+.ai-key-storage-line {
+  margin: 6px 0 0;
+}
+.ai-key-storage-detail {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-key-storage-state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
 /* ---- end P3 my AI key ---- */
