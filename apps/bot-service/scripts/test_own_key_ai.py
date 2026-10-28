@@ -415,7 +415,8 @@ COMPANY = {ENV_COMPANY_KEY, SETTINGS_COMPANY_KEY}
 MESSAGES = {
     "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
     "ai_key_invalid": "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
-    "ai_quota_used": "Your AI key has used up its quota for now. Try later, or check billing in Google Cloud.",
+    # Reworded once quota keys came back by themselves after an hour.
+    "ai_quota_used": "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
     "ai_key_unreadable": "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
 }
 # Every key the test uses; none may appear in a response, a log line or the

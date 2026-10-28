@@ -7,8 +7,9 @@ Whoever presses the button pays. Every Gemini call is made for an AiActor
 each call, so a removed key, an admin's untick or a disabled account
 applies from the very next call, even in the middle of an intake run:
 
-    1. their own key, if it is saved, Google hasn't refused it or run it
-       dry (WORKING), and own keys can be read here (secretbox.state() ok);
+    1. their own key, if it is saved, Google hasn't refused it (out of
+       quota counts again after an hour: usable()), and own keys can be
+       read here (secretbox.state() ok);
     2. then the company keys, for admins and people ticked "may use the
        company key" (auth/permissions.may_use_company_key) -- also when
        their own key has stopped working.
@@ -44,7 +45,7 @@ from sqlalchemy import delete, or_, update
 from sqlalchemy.orm import Session
 
 from app.ai import secretbox
-from app.auth.core import audit, utc_now
+from app.auth.core import as_utc, audit, utc_now
 from app.auth.permissions import may_use_company_key
 from app.config import settings
 from app.reports.models import ApiKey, User, UserAiKey, iso_utc
@@ -60,6 +61,13 @@ STORED_STATUSES = ("untested", "ok", "invalid", "quota")
 IN_USE = "This key can't be used here."
 # What the AI uses: a key Google hasn't refused or run dry.
 WORKING = ("ok", "untested")
+# A key out of quota is used again this long after it was found so (its
+# last_checked_at): Google's allowances refill, and nobody should have to
+# press Test for that. A call that still hits the limit marks it again,
+# for another hour; one that works puts it back to "ok".
+QUOTA_RETRY_AFTER = timedelta(hours=1)
+# The retry's clock (tests move it on).
+_clock = utc_now
 
 # Gemini keys are 39 characters starting "AIza"; looser than that, so a
 # newer key format isn't turned away by this check rather than by Google.
@@ -260,6 +268,18 @@ def _status_of(stored: str, readable: bool) -> str:
     return stored if readable else "unreadable"
 
 
+def usable(status: str | None, checked_at) -> bool:
+    """Whether the AI uses an own key with this status (as shown: an
+    "unreadable" one never): working, or out of quota for longer than
+    QUOTA_RETRY_AFTER. checked_at is the row's last_checked_at, which
+    marking it "quota" set."""
+    if status in WORKING:
+        return True
+    if status != "quota":
+        return False
+    return checked_at is None or _clock() - as_utc(checked_at) >= QUOTA_RETRY_AFTER
+
+
 def keys_by_user(db: Session, user_ids) -> dict[str, dict]:
     """{user id: {has_key, last4, status, added_at}} for the people who have
     a key, for the admin's Users screen -- one query for all of them, and
@@ -306,7 +326,8 @@ def ai_key_status(db: Session, user, *, unreadable: bool = False) -> dict:
     storage_ok = secretbox.state() == secretbox.OK
     readable = storage_ok and not unreadable
     status = _status_of(row.status, readable)
-    working = status in WORKING
+    # "quota" still shows as quota an hour on, while the AI tries it again.
+    working = usable(status, row.last_checked_at)
     error = row.last_error if readable else STORAGE_OFF_ERROR if not storage_ok else ROW_UNREADABLE_ERROR
     return {
         "has_key": True,
@@ -337,7 +358,8 @@ MESSAGES = {
         "or ask an admin to allow the company key."
     ),
     AI_KEY_INVALID: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
-    AI_QUOTA_USED: "Your AI key has used up its quota for now. Try later, or check billing in Google Cloud.",
+    # The AI tries the key again after QUOTA_RETRY_AFTER by itself.
+    AI_QUOTA_USED: "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
     AI_KEY_UNREADABLE: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     AI_ACCOUNT_OFF: "AI is off: this account is disabled.",
 }
@@ -397,11 +419,13 @@ AiActor.cli = classmethod(_cli_actor)
 class AiKey:
     """One key a call may use. value is the key itself, for the SDK and
     nothing else: repr and str show only label ("own ..1234", "company
-    #1"), which is what logs say."""
+    #1"), which is what logs say. retrying: an own key out of quota for
+    over QUOTA_RETRY_AFTER, tried again (a success puts it back to ok)."""
     value: str = field(repr=False)
     fingerprint: str
     source: str  # "own" | "company"
     label: str
+    retrying: bool = False
 
     def __repr__(self) -> str:
         return f"AiKey({self.label})"
@@ -465,13 +489,15 @@ def _own_key(row: UserAiKey) -> tuple[AiKey | None, str | None]:
     ai_key_status shows it: unreadable hides the stored verdict."""
     if secretbox.state() != secretbox.OK:
         return None, AI_KEY_UNREADABLE
-    if row.status not in WORKING:
+    if not usable(row.status, row.last_checked_at):
         return None, _STATUS_CODES.get(row.status, AI_KEY_INVALID)
     try:
         value = unseal_key(row)
     except secretbox.Unreadable:
         return None, AI_KEY_UNREADABLE
-    return AiKey(value=value, fingerprint=row.fingerprint, source="own", label=f"own ..{row.last4}"), None
+    return AiKey(
+        value=value, fingerprint=row.fingerprint, source="own", label=f"own ..{row.last4}", retrying=row.status == "quota"
+    ), None
 
 
 def resolve_keys(actor: AiActor) -> list[AiKey]:
@@ -521,17 +547,18 @@ def ensure_ai_ready(actor: AiActor) -> None:
 def ai_allowed(user) -> bool:
     """GET /auth/me's ai_allowed: whether ensure_ai_ready would pass for
     this signed-in person -- an admin, ticked, or a working own key that
-    can be read here. One small query, and only when not ticked."""
+    can be read here (usable(): out of quota counts again after an hour).
+    One small query, and only when not ticked."""
     if may_use_company_key(user):
         return True
     from app.reports.db import SessionLocal
 
     db = SessionLocal()
     try:
-        status = db.query(UserAiKey.status).filter(UserAiKey.user_id == user.id).scalar()
+        row = db.query(UserAiKey.status, UserAiKey.last_checked_at).filter(UserAiKey.user_id == user.id).first()
     finally:
         db.close()
-    return status in WORKING and secretbox.state() == secretbox.OK
+    return row is not None and usable(row.status, row.last_checked_at) and secretbox.state() == secretbox.OK
 
 
 def refusal(exc: BaseException) -> str | None:
@@ -577,18 +604,23 @@ def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException
     """Keeps what a call found out about an OWN key on its row; company keys
     are left as they always were.
 
-        "ok"                 stamps last_used_at, at most every TOUCH_EVERY
+        "ok"                 stamps last_used_at, at most every TOUCH_EVERY;
+                             a key tried again after running out of quota
+                             (key.retrying) goes back to status "ok"
         "invalid", "quota"   refusal()'s verdicts: the status, with Google's
                              words (scrubbed) as last_error. resolve_keys
-                             leaves the key out until it is tested again
-                             on Settings > My AI key
+                             leaves the key out -- an invalid one until it
+                             is tested again on Settings > My AI key, one
+                             out of quota for QUOTA_RETRY_AFTER
 
     Only while the key is still this person's (record_check's rule): one
     saved meanwhile mustn't get the old key's verdict. Never raises: a
     stamp that fails mustn't fail the call it is about."""
     if key.source != "own" or not actor.user_id or outcome not in ("ok", "invalid", "quota"):
         return
-    if outcome == "ok" and not _touch_due(actor.user_id, key.fingerprint):
+    back = outcome == "ok" and key.retrying
+    touch = outcome == "ok" and _touch_due(actor.user_id, key.fingerprint)
+    if outcome == "ok" and not (back or touch):
         return
     from app.reports.db import SessionLocal
 
@@ -596,16 +628,23 @@ def record_result(actor: AiActor, key: AiKey, outcome: str, error: BaseException
     try:
         if outcome == "ok":
             now = utc_now()
-            db.execute(
-                update(UserAiKey)
-                .where(
-                    UserAiKey.user_id == actor.user_id,
-                    UserAiKey.fingerprint == key.fingerprint,
-                    or_(UserAiKey.last_used_at.is_(None), UserAiKey.last_used_at < now - TOUCH_EVERY),
+            mine = (UserAiKey.user_id == actor.user_id, UserAiKey.fingerprint == key.fingerprint)
+            if back:
+                # It answered: the allowance is back. Only from "quota" --
+                # a verdict that came in meanwhile stands.
+                db.execute(
+                    update(UserAiKey)
+                    .where(*mine, UserAiKey.status == "quota")
+                    .values(status="ok", last_error=None, last_checked_at=now)
+                    .execution_options(synchronize_session=False)
                 )
-                .values(last_used_at=now)
-                .execution_options(synchronize_session=False)
-            )
+            if touch:
+                db.execute(
+                    update(UserAiKey)
+                    .where(*mine, or_(UserAiKey.last_used_at.is_(None), UserAiKey.last_used_at < now - TOUCH_EVERY))
+                    .values(last_used_at=now)
+                    .execution_options(synchronize_session=False)
+                )
         else:
             why = _google_said(error)
             if record_check(db, actor.user_id, key.fingerprint, outcome, scrub(why, key.value) if why else None):

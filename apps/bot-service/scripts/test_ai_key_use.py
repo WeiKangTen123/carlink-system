@@ -375,7 +375,7 @@ def unavailable_codes() -> None:
     want = {
         "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
         "ai_key_invalid": "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
-        "ai_quota_used": "Your AI key has used up its quota for now. Try later, or check billing in Google Cloud.",
+        "ai_quota_used": "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
         "ai_key_unreadable": "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     }
     for code, message in want.items():
@@ -686,6 +686,84 @@ def _all_rows() -> list[UserAiKey]:
         db.close()
 
 
+def quota_recovery() -> None:
+    """A key out of quota is tried again an hour after it was marked, with
+    the clock moved on (keys._clock), not by sleeping."""
+    a, b = AiActor.for_user(W.A, "dashboard"), AiActor.for_user(W.B, "dashboard")
+    own = keys.resolve_keys(a)[0]
+    real_clock = keys._clock
+    later = lambda minutes: (lambda: real_clock() + timedelta(minutes=minutes))  # noqa: E731
+    alice_web = signed_in(W.A)
+
+    def web() -> tuple:
+        me = alice_web.get("/auth/me").json()
+        mine = alice_web.get("/auth/me/ai-key").json()
+        return me.get("ai_allowed"), mine.get("ai_available"), mine.get("source"), mine.get("status")
+
+    try:
+        keys.record_result(a, own, "quota", google_error(429, "RESOURCE_EXHAUSTED", "Quota exceeded PerDay"))
+        marked = row_of(W.A).last_checked_at
+        check(row_of(W.A).status == "quota" and marked is not None, "her key is marked quota (last_checked_at set)")
+        check(code_of(lambda: keys.resolve_keys(a)) == "ai_quota_used", "just marked: ai_quota_used")
+        check(web() == (False, False, "none", "quota"), "...and /auth/me ai_allowed, /auth/me/ai-key ai_available say no", repr(web()))
+
+        keys._clock = later(59)
+        check(code_of(lambda: keys.resolve_keys(a)) == "ai_quota_used", "59 minutes on: still left out")
+        check(web()[:2] == (False, False), "...and still no AI on /auth/me and /auth/me/ai-key", repr(web()))
+
+        keys._clock = later(61)
+        found = keys.resolve_keys(a)
+        check([k.value for k in found] == [W.A_KEY] and found[0].retrying, "61 minutes on: her key is tried again (retrying)",
+              repr(found))
+        check(web() == (True, True, "own", "quota"),
+              ".../auth/me ai_allowed and /auth/me/ai-key ai_available follow (status still shows quota)", repr(web()))
+        check(keys.ai_key_status(SessionLocal(), SimpleNamespace(id=W.A, role="user", ai_company_key_allowed=False))
+              ["ai_available"] is True, "ai_key_status agrees")
+
+        print("  still out of quota: marked again, for another hour")
+        reset_fakes()
+        BEHAVIOUR[W.A_KEY] = daily_quota
+        check(code_of(lambda: call(a)) == "ai_quota_used" and len(CALLS) == len(MODELS),
+              "the retry hits the daily quota on every model: ai_quota_used", f"{len(CALLS)} calls")
+        again = row_of(W.A).last_checked_at
+        check(row_of(W.A).status == "quota" and again >= marked, "...marked quota again, from now", f"{marked} -> {again}")
+        keys._clock = lambda: keys.as_utc(again) + timedelta(minutes=30)
+        check(code_of(lambda: keys.resolve_keys(a)) == "ai_quota_used", "...so 30 minutes after that, left out again")
+
+        print("  it works again: back to ok")
+        keys._clock = lambda: keys.as_utc(again) + timedelta(minutes=61)
+        reset_fakes()
+        check(call(a) == {"ok": True} and CALLS == [(W.A_KEY, "model-a")], "an hour on, the retry answers on her key")
+        row = row_of(W.A)
+        check(row.status == "ok" and row.last_error is None and row.last_checked_at >= again,
+              "...and her key is back to ok, the error cleared", f"{row.status} {row.last_error!r}")
+        keys._clock = real_clock
+        check(keys.resolve_keys(a)[0].retrying is False and web()[:3] == (True, True, "own"), "...used as normal from then on")
+
+        print("  a verdict that came in meanwhile stands")
+        keys.record_result(a, own, "quota", google_error(429, "RESOURCE_EXHAUSTED", "Quota exceeded PerDay"))
+        keys._clock = later(61)
+        retrying = keys.resolve_keys(a)[0]
+        set_row(W.A, status="invalid")
+        keys.record_result(a, retrying, "ok")
+        check(row_of(W.A).status == "invalid", "a success on the retried key doesn't undo an 'invalid' recorded since")
+        set_row(W.A, status="ok", last_error=None)
+
+        print("  a ticked user")
+        b_own = keys.resolve_keys(b)[0]
+        keys._clock = real_clock
+        keys.record_result(b, b_own, "quota", google_error(429, "RESOURCE_EXHAUSTED", "Quota exceeded PerDay"))
+        check(labels(keys.resolve_keys(b)) == ["company #1", "company #2"], "within the hour: the company keys only")
+        keys._clock = later(61)
+        check(labels(keys.resolve_keys(b)) == [f"own ..{W.B_KEY[-4:]}", "company #1", "company #2"],
+              "an hour on: their own key first again, then the company's")
+    finally:
+        keys._clock = real_clock
+        set_row(W.A, status="ok", last_error=None)
+        set_row(W.B, status="ok", last_error=None)
+        BEHAVIOUR.clear()
+
+
 def client_cache() -> None:
     built: list[str] = []
 
@@ -904,6 +982,7 @@ def main() -> int:
         ("ensure_ai_ready and ai_allowed", ready_and_allowed),
         ("call_structured: fallback and what's recorded", call_fallback),
         ("record_result", recording),
+        ("quota clears by itself after an hour", quota_recovery),
         ("get_client cache", client_cache),
         ("the actor reaches every thread of an intake run", pool_threads),
         ("routes", routes),

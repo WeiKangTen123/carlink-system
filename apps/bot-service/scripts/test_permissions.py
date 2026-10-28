@@ -265,6 +265,7 @@ DECISIONS = {
     ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", ""),
     ("POST", "/reports/{report_id}/ai-enrich"): ("case-edit", "not a Gemini call"),
     ("PUT", "/reports/{report_id}/annex-a"): ("case-edit", ""),
+    ("POST", "/reports/{report_id}/upload-photos"): ("case-edit", "no AI (P4); 507 disk_full; 60 photos an hour for unvetted accounts (429 rate_limited)"),
     ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_limit; 2 renders at once (B2)"),
     ("POST", "/intake/{report_id}/photos"): ("case-edit", "507 disk_full under 3 GB free (B2)"),
     ("PATCH", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),

@@ -553,6 +553,69 @@ async def analyze_report_photos(
     return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
 
 
+@app.post("/reports/{report_id}/upload-photos")
+def upload_report_photos(
+    report_id: str,
+    photos: list[UploadFile] = File(default=[]),
+    user: CurrentUser = Depends(editable_case),
+) -> dict:
+    """Photos for a case's edit form, with no AI at all: saved to
+    storage/tmp just as /reports/analyze-photos saves them, and attached
+    when the form is saved (PUT /reports/{id}, temp_photo_paths). Since P4
+    analyze-photos needs AI, and was the only way in, so someone with AI
+    off couldn't add a photo to their own case.
+
+    Plain `def`: FastAPI runs it in its threadpool, off the event loop."""
+    limits.require_disk_space()
+    if not photos:
+        raise HTTPException(status_code=400, detail="Choose at least one photo.")
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        # What PUT /reports/{id} would refuse to attach them to, refused
+        # before anything is saved for it.
+        _refuse_intake_draft(r)
+        if _is_signed_off(r):
+            raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+    finally:
+        db.close()
+
+    # analyze-photos' rules: these extensions (none means .jpg), 25MB each.
+    exts: list[str] = []
+    for photo in photos:
+        raw_ext = Path(photo.filename or "").suffix.lower()
+        if raw_ext and raw_ext not in ALLOWED_PHOTO_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
+            )
+        exts.append(raw_ext or ".jpg")
+    counted = limits.charge_photo_uploads(user, len(photos))
+    saved_paths: list[str] = []
+    try:
+        td = tmp_dir()
+        for photo, ext in zip(photos, exts):
+            dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
+            with open(dest, "wb") as f:
+                shutil.copyfileobj(photo.file, f)
+            saved_paths.append(str(dest))
+            if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
+                )
+    except BaseException:
+        # All or nothing, and the photos given back to the hourly count.
+        for p in saved_paths:
+            Path(p).unlink(missing_ok=True)
+        if counted:
+            limits.photo_uploads.refund(user.id, len(photos))
+        raise
+    return {"temp_photo_paths": saved_paths}
+
+
 class CreateReportRequest(BaseModel):
     draft: SecurityIncidentDraft
     temp_photo_paths: list[str] = []
@@ -560,9 +623,10 @@ class CreateReportRequest(BaseModel):
 
 def _checked_temp_paths(paths: list[str], user: CurrentUser) -> list[str]:
     """temp_photo_paths arrive from the browser, which only ever got them
-    from /reports/analyze-photos -- so anything not directly inside
-    storage/tmp is refused. Each path is copied into the public case folder
-    and then deleted, so before this check one request could publish and
+    from /reports/analyze-photos or /reports/{id}/upload-photos -- so
+    anything not directly inside storage/tmp is refused. Each path is
+    copied into the public case folder and then deleted, so before this
+    check one request could publish and
     delete any file the API can read: the SQLite database, the source code.
     Only the caller's own uploads (_temp_prefix) pass, or anyone could move
     someone else's photos -- a Telegram draft's, say -- into their case.

@@ -10,6 +10,8 @@ Every refusal is an ApiError with a code the dashboard explains:
     429 render_busy      the server is busy making PDFs, or this person's
                          last one is still being made
     429 render_limit     too many PDFs lately (accounts without staff access)
+    429 rate_limited     too many photos added in an hour without AI
+                         (accounts without staff access)
     409 draft_limit      too many open drafts
     409 case_limit       too many new cases today (accounts without staff access)
     507 disk_full        the storage disk is nearly full
@@ -66,9 +68,10 @@ RENDER_LIMIT = "You've made a lot of PDFs in the last few minutes. Wait a few mi
 
 
 class _RenderBudget:
-    """Renders per account over a rolling window. In memory, so per process:
-    the api is one uvicorn process; the Telegram bot's renders have no
-    account and only the renderer's slot limit applies to them."""
+    """Renders per account over a rolling window (and photos added without
+    AI: photo_uploads). In memory, so per process: the api is one uvicorn
+    process; the Telegram bot's renders have no account and only the
+    renderer's slot limit applies to them."""
 
     def __init__(self, limit: int, window_seconds: float):
         self.limit = limit
@@ -76,26 +79,26 @@ class _RenderBudget:
         self._lock = threading.Lock()
         self._times: dict[str, deque] = {}
 
-    def take(self, user_id: str) -> bool:
-        """Counts one render for this account; False (and not counted) if
-        it has had its share for now."""
+    def take(self, user_id: str, count: int = 1) -> bool:
+        """Counts count of them (one render) for this account; False, and
+        none counted, if that would go over its share for now."""
         now = time.monotonic()
         with self._lock:
             times = self._times.setdefault(user_id, deque())
             while times and now - times[0] >= self.window:
                 times.popleft()
-            if len(times) >= self.limit:
+            if len(times) + count > self.limit:
                 return False
-            times.append(now)
+            times.extend([now] * count)
             return True
 
-    def refund(self, user_id: str) -> None:
-        """Gives back the last one counted, for a render that didn't happen.
-        It is that render's own: an account renders one at a time
-        (render_turn)."""
+    def refund(self, user_id: str, count: int = 1) -> None:
+        """Gives back the last count counted, for renders (photos) that
+        didn't happen. They are that request's own: an account renders one
+        at a time (render_turn), and a photo is a photo."""
         with self._lock:
             times = self._times.get(user_id)
-            if times:
+            for _ in range(min(count, len(times or ()))):
                 times.pop()
 
     def reset(self) -> None:
@@ -124,6 +127,29 @@ class _OneAtATime:
 
 renders = _RenderBudget(RENDERS_PER_WINDOW, RENDER_WINDOW_SECONDS)
 rendering_now = _OneAtATime()
+
+# --------------------------------------------------------------- photos
+
+# Photos added on the report form without AI (POST /reports/{id}/
+# upload-photos), for unvetted accounts. Each can be 25 MB of the shared
+# disk in storage/tmp until the case is saved (or the day-old sweep), and a
+# case rarely gets more than a few dozen: 60 an hour leaves room for a big
+# one while stopping a script filling the disk.
+PHOTOS_PER_HOUR = 60
+PHOTO_LIMIT = "You've added a lot of photos in the last hour. Wait a while and try again."
+photo_uploads = _RenderBudget(PHOTOS_PER_HOUR, 60 * 60)
+
+
+def charge_photo_uploads(user: CurrentUser, count: int) -> bool:
+    """Before saving count photos: 429 rate_limited, nothing counted, when
+    an unvetted account would go past PHOTOS_PER_HOUR. Returns whether they
+    were counted (only unvetted accounts' are), so a failed upload can give
+    them back (photo_uploads.refund)."""
+    if not _unvetted(user):
+        return False
+    if not photo_uploads.take(user.id, count):
+        raise ApiError(429, PHOTO_LIMIT, "rate_limited")
+    return True
 
 
 class RenderRefused(ApiError):

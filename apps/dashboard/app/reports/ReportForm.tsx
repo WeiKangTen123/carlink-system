@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, AlertTriangle, CheckCircle2, Plus } from "lucide-react";
-import { analyzePhotosAction, reanalyzeExistingPhotosAction, type AiActionError } from "./actions";
+import { unstable_rethrow } from "next/navigation";
+import { Sparkles, AlertTriangle, CheckCircle2, Paperclip, Plus } from "lucide-react";
+import { analyzePhotosAction, attachPhotosAction, reanalyzeExistingPhotosAction, type AiActionError } from "./actions";
 import { AiFixLink } from "@/components/AiFixLink";
+import { useCurrentUser } from "@/components/CurrentUser";
 import {
   aiOffMessage,
   isAiOffCode,
@@ -22,7 +24,8 @@ import {
 
 /** Why the last Analyze / Re-analyze didn't fill the form. `aiOff`: the AI
  * was refused for this person (release P4) -- nothing was analyzed, and the
- * photos it was sent weren't attached (the API checks before saving any). */
+ * photos it was sent weren't attached (the API checks before saving any);
+ * "Attach photos without AI" attaches them instead. */
 type AnalyzeError = { text: string; aiOff: AiOffCode | null; newPhotos: boolean };
 
 function toAnalyzeError(result: AiActionError, newPhotos: boolean): AnalyzeError {
@@ -68,6 +71,13 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   const [uploading, setUploading] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<AnalyzeError | null>(null);
   const [aiApplied, setAiApplied] = useState(false);
+  // "Attach photos without AI" (release P4), for people whose AI is off: the
+  // picked photos go to the case on save, with no analysis. Set once the
+  // current pick was attached that way rather than by an analysis.
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [attachedWithoutAi, setAttachedWithoutAi] = useState(false);
+  const user = useCurrentUser();
 
   const [description, setDescription] = useState(initialData?.description ?? "");
   const [category, setCategory] = useState<Set<string>>(
@@ -141,9 +151,39 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
       return;
     }
     // Photos are attached the moment analysis succeeds, regardless of
-    // whether any structured field ends up changing below.
+    // whether any structured field ends up changing below. (After "Attach
+    // photos without AI", these replace the paths that attached.)
     setTempPhotoPaths(result.temp_photo_paths);
+    setAttachedWithoutAi(false);
+    setAttachError(null);
     applyDraft(result.draft, currentDescription);
+  }
+
+  // "Attach photos without AI": the picked photos go to the API's temp dir
+  // with no analysis, and come back as temp paths sent on save exactly like
+  // an analysis's (POST /reports/{id}/upload-photos). Needs the report, so
+  // edit mode only.
+  async function attachWithoutAi() {
+    if (!reportId || photos.length === 0) return;
+    setAttaching(true);
+    setAttachError(null);
+    const fd = new FormData();
+    for (const p of photos) fd.append("photos", p);
+    let result: Awaited<ReturnType<typeof attachPhotosAction>>;
+    try {
+      result = await attachPhotosAction(reportId, fd);
+    } catch (err) {
+      // Next's redirects (signed out) go through; no answer at all is an error.
+      unstable_rethrow(err);
+      result = { error: "Couldn't reach Carlink just now. Check your connection and try again.", code: null };
+    }
+    setAttaching(false);
+    if ("error" in result) {
+      setAttachError(result.error);
+      return;
+    }
+    setTempPhotoPaths(result.temp_photo_paths);
+    setAttachedWithoutAi(true);
   }
 
   // Lets "Re-analyze with AI" work in edit mode even when the reporter hasn't
@@ -174,9 +214,40 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     setPhotos(files);
     setPhotoPreviews(files.map((f) => URL.createObjectURL(f)));
     setTempPhotoPaths([]);
+    setAttachedWithoutAi(false);
+    setAttachError(null);
     setAiApplied(false);
     setAnalyzeError(null);
+    // AI is off for this person: an analysis would only be refused. They
+    // attach the photos without AI instead, or press Re-analyze if they've
+    // fixed it meanwhile.
+    if (user?.ai_allowed === false) return;
     await runAnalysis(files, description);
+  }
+
+  // AI is off for this person: GET /auth/me said so with the page, or the
+  // last Analyze was refused for it. Unknown counts as on; the API decides.
+  const aiOff = Boolean(analyzeError?.aiOff) || user?.ai_allowed === false;
+  const attached = tempPhotoPaths.length > 0;
+  // Picked photos not attached: offer to attach them without AI when AI is
+  // off, or when the analysis failed (which attaches nothing).
+  const offerAttach = Boolean(reportId) && photos.length > 0 && !attached && !uploading && (aiOff || analyzeError !== null);
+  const newPhotosStatus = uploading
+    ? { tone: "busy", label: "Being analyzed…" }
+    : attaching
+      ? { tone: "busy", label: "Attaching…" }
+      : attached
+        ? attachedWithoutAi
+          ? { tone: "ok", label: "Attached · not analyzed by AI" }
+          : { tone: "ok", label: "Attached · analyzed by AI" }
+        : { tone: "warn", label: "Not attached yet" };
+
+  /** Picked photos that aren't attached would be dropped on save without a
+   * word: ask first. */
+  function confirmUnattached(e: React.FormEvent<HTMLFormElement>) {
+    if (photos.length === 0 || attached) return;
+    const why = uploading || attaching ? "The new photos are still being attached." : "The new photos aren't attached.";
+    if (!window.confirm(`${why} Save without them?`)) e.preventDefault();
   }
 
   function toggleCategory(c: string) {
@@ -189,7 +260,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   }
 
   return (
-    <form action={action} className="new-report-form">
+    <form action={action} onSubmit={confirmUnattached} className="new-report-form">
       <h1>{mode === "edit" ? "Edit Incident Report" : "New Case Intake (FNOL)"}</h1>
       <p className="form-hint">
         {mode === "edit"
@@ -254,16 +325,56 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           <input type="file" accept="image/*" multiple onChange={handlePhotoChange} />
         </label>
 
+        {aiOff && !analyzeError && photos.length === 0 && reportId && (
+          <p className="form-hint ai-attach-note">
+            AI is off for your account, so photos added here aren&apos;t analyzed: attach them without AI, then fill in
+            the fields below by hand. <AiFixLink code={null} />
+          </p>
+        )}
+
         {photoPreviews.length > 0 && (
-          <div className="photo-preview-grid">
-            {photoPreviews.map((src, i) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img key={i} src={src} alt={`Selected photo ${i + 1}`} />
-            ))}
-          </div>
+          <>
+            <div className="detail-field-label ai-attach-label">
+              New photos ({photoPreviews.length})
+              <span className={`ai-attach-chip ${newPhotosStatus.tone}`}>{newPhotosStatus.label}</span>
+            </div>
+            <div className={`photo-preview-grid${attached ? "" : " ai-attach-pending"}`}>
+              {photoPreviews.map((src, i) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={i} src={src} alt={`Selected photo ${i + 1}`} />
+              ))}
+            </div>
+          </>
         )}
         {uploading && (
           <p className="form-hint" style={{ marginTop: 8 }}>Uploading and analyzing photos...</p>
+        )}
+        {attached && attachedWithoutAi && (
+          <p className="form-hint ai-attach-note">
+            <Paperclip style={{ width: 13, height: 13, flexShrink: 0, verticalAlign: "-2px" }} /> These photos are added to
+            the case when you save. The AI hasn&apos;t looked at them, so fill in the fields below by hand.
+          </p>
+        )}
+        {offerAttach && (
+          <div className="ai-attach-row">
+            <button
+              type="button"
+              className="add-row-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              onClick={() => void attachWithoutAi()}
+              disabled={attaching}
+            >
+              <Paperclip style={{ width: 14, height: 14 }} /> {attaching ? "Attaching…" : "Attach photos without AI"}
+            </button>
+            <span className="form-hint">
+              {aiOff ? "AI is off for you, so they weren't analyzed." : "The AI analysis failed, so they aren't attached."}
+            </span>
+          </div>
+        )}
+        {attachError && (
+          <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> Couldn&apos;t attach the photos: {attachError}
+          </p>
         )}
 
         <label style={{ marginTop: 16 }}>
@@ -283,7 +394,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           className="add-row-button"
           style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
           onClick={() => (photos.length > 0 ? runAnalysis(photos, description) : reanalyzeExistingPhotos())}
-          disabled={uploading || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
+          disabled={uploading || attaching || (photos.length === 0 && (existingPhotoUrls.length === 0 || !reportId))}
           title={
             photos.length > 0
               ? "Re-run AI analysis using the description as currently written -- use this after editing the description following a photo upload"
@@ -298,15 +409,18 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
             <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
             <span>
               <strong>{analyzeError.text}</strong>{" "}
-              {analyzeError.newPhotos
-                ? "The new photos weren't attached (this form attaches photos only when the AI analyzes them). You can still fill in the fields below by hand."
+              {analyzeError.newPhotos && reportId && !attached
+                ? "You can attach the new photos without AI (above) and fill in the fields below by hand."
                 : "You can still fill in the fields below by hand."}{" "}
               <AiFixLink code={analyzeError.aiOff} />
             </span>
           </div>
         ) : analyzeError ? (
           <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError.text} -- photos may not be attached; try again before saving.
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError.text} --{" "}
+            {analyzeError.newPhotos && !attached && reportId
+              ? "the new photos aren't attached; try again, or attach them without AI."
+              : "photos may not be attached; try again before saving."}
           </p>
         ) : null}
         {aiApplied && !analyzeError && (

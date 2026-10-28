@@ -26,14 +26,18 @@ export function maskedKey(last4: string | null | undefined): string {
  *   none / not available     -> "AI is off for you"
  * `text` says why, and what would change it. */
 export function aiRightNowWords(
-  ai: Pick<MyAiKey, "has_key" | "company_allowed" | "ai_available" | "source">,
+  ai: Pick<MyAiKey, "has_key" | "status" | "company_allowed" | "ai_available" | "source">,
   isAdmin: boolean
 ): { off: boolean; which: string; text: string } {
   const companyWhy = isAdmin ? "Admins can always use it." : "An admin has allowed you to use it.";
+  // Out of allowance mends itself (about an hour); a refused key doesn't.
+  const quota = ai.has_key && ai.status === "quota";
   if (!ai.ai_available || ai.source === "none") {
-    const why = ai.has_key
-      ? "Your own key isn't working, and the company key isn't yours to use. Fix your key above, or ask an admin to let you use the company key."
-      : "Add your own key above, or ask an admin to let you use the company key.";
+    const why = quota
+      ? "Your own key has used up its allowance for now; it should work again within about an hour, so try again later."
+      : ai.has_key
+        ? "Your own key isn't working, and the company key isn't yours to use. Fix your key above, or ask an admin to let you use the company key."
+        : "Add your own key above, or ask an admin to let you use the company key.";
     return { off: true, which: "AI is off for you.", text: `${why} You can still fill cases in by hand.` };
   }
   if (ai.source === "own") {
@@ -48,7 +52,9 @@ export function aiRightNowWords(
     return {
       off: false,
       which: "AI uses the company key (your own key isn't working).",
-      text: `${companyWhy} Fix your key above to use it again.`,
+      text: quota
+        ? `${companyWhy} Your key has used up its allowance for now; AI goes back to it once it works again, usually within about an hour.`
+        : `${companyWhy} Fix your key above to use it again.`,
     };
   }
   return { off: false, which: "AI uses the company key.", text: `${companyWhy} Add your own key above to use that instead.` };
@@ -64,7 +70,8 @@ export const FAILING_WHAT: Record<"invalid" | "quota" | "unreadable", string> = 
 /** What to do about it, on My AI key. */
 export const FAILING_FIX: Record<"invalid" | "quota" | "unreadable", string> = {
   invalid: "Replace it with a key Google accepts, or remove it.",
-  quota: "Check that billing is on for its Google Cloud project, then Test it again, or replace it.",
+  quota:
+    "It should work again by itself within about an hour, so try again later. If it keeps running out, check that billing is on for its Google Cloud project, or replace it.",
   unreadable: "Replace it: paste the key again, or a new one.",
 };
 

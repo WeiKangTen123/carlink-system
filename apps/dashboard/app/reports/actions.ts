@@ -10,6 +10,7 @@ import {
   signOffReport,
   analyzeReportPhotos,
   analyzeExistingReportPhotos,
+  uploadReportPhotos,
   getReport,
   getAnnexSuggestions,
   askAiAnnexSuggestions,
@@ -49,9 +50,9 @@ export async function getReportDetailAction(id: string) {
   }
 }
 
-/** A failed AI call, with the API's error code when it sent one -- so the
- * screen can tell AI being off for this person (AI_OFF_CODES, release P4)
- * from the AI failing, and say what to do about it. */
+/** A failed AI call (or photo attach), with the API's error code when it
+ * sent one -- so the screen can tell AI being off for this person
+ * (AI_OFF_CODES, release P4) from the AI failing, and say what to do. */
 export type AiActionError = { error: string; code: string | null };
 
 function aiActionError(err: unknown, fallback: string): AiActionError {
@@ -93,6 +94,24 @@ export async function reanalyzeExistingPhotosAction(
     return await analyzeExistingReportPhotos(report.photo_urls, description);
   } catch (err) {
     return aiActionError(err, "AI analysis failed");
+  }
+}
+
+/** "Attach photos without AI" on the edit form (release P4), for people
+ * whose AI is off: the photos go to the temp dir with no analysis, and the
+ * temp_photo_paths come back for the form to send on save, exactly as an
+ * analysis's do. A refusal comes back with its code and message (disk_full,
+ * rate_limited...). Same CORS reason as analyzePhotosAction. */
+export async function attachPhotosAction(
+  reportId: string,
+  formData: FormData
+): Promise<{ temp_photo_paths: string[] } | AiActionError> {
+  try {
+    const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
+    if (photos.length === 0) return { error: "Pick the photos to attach first.", code: null };
+    return await uploadReportPhotos(reportId, photos);
+  } catch (err) {
+    return aiActionError(err, "Failed to attach the photos");
   }
 }
 

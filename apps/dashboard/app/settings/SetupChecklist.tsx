@@ -44,7 +44,10 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
     return {
       key: "ai-key",
       label: "Fix your AI key",
-      hint: "The key you saved isn't working, so AI is off for you. Replace it on My AI key.",
+      hint:
+        ai.status === "quota"
+          ? "Your key has used up its allowance for now, so AI is off for you. It should work again within about an hour; try again later."
+          : "The key you saved isn't working, so AI is off for you. Replace it on My AI key.",
       done,
       href: "#my-ai-key",
       action: "Fix it",
