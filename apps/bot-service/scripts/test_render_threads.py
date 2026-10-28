@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 _tmp = tempfile.mkdtemp(prefix="render-threads-test-")
 os.environ["STORAGE_DIR"] = _tmp
+# uvicorn runs the start-up, which makes the AI key secret (app/ai/secretbox.py): not in the source tree.
+os.environ["SECRETS_DIR"] = str(Path(_tmp, "secrets"))
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmp, 'test.db').as_posix()}"
 os.environ["GEMINI_API_KEY"] = "fake"
 os.environ["RUN_BACKGROUND_CLEANUP"] = "false"

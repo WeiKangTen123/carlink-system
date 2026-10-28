@@ -18,12 +18,20 @@ import {
   revokeAccountLink,
   createResetLink,
   setSignupsOpen,
+  getMyAiKey,
+  saveMyAiKey,
+  testMyAiKey,
+  deleteMyAiKey,
+  deleteUserAiKey,
+  ApiError,
+  errorCode,
   type AccountLinkRow,
   type AppSettings,
   type CurrentUser,
   type IssuedLink,
   type LinkLifetime,
   type LlmKey,
+  type MyAiKey,
   type ProfileFields,
   type UserAccount,
   type UpdatedUser,
@@ -63,6 +71,73 @@ export async function changeMyPasswordAction(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to change your password" };
+  }
+}
+
+// My AI key (everyone, their own; GET/PUT/DELETE /auth/me/ai-key). The key
+// goes from the form to the API through here and is never sent back: every
+// answer has only its last 4 characters and a status. Errors keep the API's
+// code and status, so the card can tell "no key any more" (no_ai_key) and
+// "this account may not" (403) from the rest. Signed out, or still on a
+// temporary password: lib/api.ts redirects, and unstable_rethrow lets that
+// through to Next.
+
+export type AiKeyError = { error: string; code: string | null; status: number | null };
+export type AiKeyResult = { key: MyAiKey } | AiKeyError;
+
+function aiKeyError(err: unknown, fallback: string): AiKeyError {
+  unstable_rethrow(err);
+  return {
+    error: err instanceof Error ? err.message : fallback,
+    code: errorCode(err),
+    status: err instanceof ApiError ? err.status : null,
+  };
+}
+
+export async function getMyAiKeyAction(): Promise<AiKeyResult> {
+  try {
+    return { key: await getMyAiKey() };
+  } catch (err) {
+    return aiKeyError(err, "Failed to load your AI key");
+  }
+}
+
+export async function saveMyAiKeyAction(apiKey: string, billingConfirmed: boolean): Promise<AiKeyResult> {
+  try {
+    const key = await saveMyAiKey(apiKey, billingConfirmed);
+    // The setup checklist on My settings follows the key.
+    revalidatePath("/settings", "layout");
+    return { key };
+  } catch (err) {
+    return aiKeyError(err, "Failed to save your AI key");
+  }
+}
+
+export async function testMyAiKeyAction(): Promise<AiKeyResult> {
+  try {
+    const key = await testMyAiKey();
+    revalidatePath("/settings", "layout");
+    return { key };
+  } catch (err) {
+    return aiKeyError(err, "Failed to test your AI key");
+  }
+}
+
+/** Removes it, then reads what is left (whether the company key covers
+ * them), for the card to show. */
+export async function deleteMyAiKeyAction(): Promise<AiKeyResult> {
+  try {
+    await deleteMyAiKey();
+  } catch (err) {
+    return aiKeyError(err, "Failed to remove your AI key");
+  }
+  revalidatePath("/settings", "layout");
+  try {
+    return { key: await getMyAiKey() };
+  } catch (err) {
+    unstable_rethrow(err);
+    // Removed; only the read after it failed. The card works out the rest.
+    return { error: "", code: "removed", status: null };
   }
 }
 
@@ -174,6 +249,21 @@ export async function reassignCasesAction(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to move the cases" };
+  }
+}
+
+/** "Remove their key" on Settings -> Users -> Edit (DELETE
+ * /users/{id}/ai-key). They can add a new one; disabling the account is what
+ * stops that. */
+export async function deleteUserAiKeyAction(id: string): Promise<{ ok: true } | { error: string }> {
+  try {
+    await deleteUserAiKey(id);
+    // Your own key, if it was yours, is on My settings.
+    revalidatePath("/settings", "layout");
+    return { ok: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to remove their AI key" };
   }
 }
 

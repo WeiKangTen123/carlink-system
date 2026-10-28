@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
+from app.ai import keys
 from app.auth.core import (
     LOCKOUT,
     MAX_FAILED_LOGINS,
@@ -491,8 +492,9 @@ def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User
         # "unassign" has no recipient: the cases become Unassigned.
         moved = reassign_open_cases(db, row.id, recipient, admin)
         outcome = f"{moved} open case{'s' if moved != 1 else ''}: {assigned_detail(recipient)}"
-    # P3 ("My AI key"): their AI key is deleted here, in this same
-    # transaction (agent6 D6) -- keys.delete_user_key(db, row.id, admin).
+    # Their own AI key goes too, in this same transaction: a disabled
+    # account's key is never used, and isn't kept for later.
+    keys.delete_user_key(db, row.id, admin, action="ai_key_removed_by_admin", reason="account disabled")
     audit(db, admin, "user_disabled", detail="; ".join(filter(None, [row.email, outcome])))
     return moved
 

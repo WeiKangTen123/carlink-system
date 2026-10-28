@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 _tmp = tempfile.mkdtemp(prefix="abuse-limits-test-")
 os.environ["STORAGE_DIR"] = _tmp
+# The start-up below makes the AI key secret (app/ai/secretbox.py): not in the source tree.
+os.environ["SECRETS_DIR"] = tempfile.mkdtemp(prefix="secrets-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmp, 'test.db').as_posix()}"
 os.environ["GEMINI_API_KEY"] = "fake"
 os.environ["RUN_BACKGROUND_CLEANUP"] = "false"

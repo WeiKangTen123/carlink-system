@@ -4,9 +4,16 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { ArrowRightLeft, Check, KeyRound, MoreHorizontal, Pencil, Plus, UserCheck, UserX, Users, X } from "lucide-react";
-import type { AccountLinkRow, CaseCounts, UserAccount, UserPatch, UserTicks } from "@/lib/api";
+import { aiKeyWorking, type AccountLinkRow, type CaseCounts, type UserAccount, type UserPatch, type UserTicks } from "@/lib/api";
 import { ROLE_LABEL, formatSgt, formatSgtDay } from "@/lib/signup";
-import { createResetLinkAction, listAccountLinksAction, listUsersAction, setSignupsOpenAction, updateUserAction } from "./actions";
+import {
+  createResetLinkAction,
+  deleteUserAiKeyAction,
+  listAccountLinksAction,
+  listUsersAction,
+  setSignupsOpenAction,
+  updateUserAction,
+} from "./actions";
 import { AccountLinksTab } from "./AccountLinksTab";
 import { DisableUserDialog } from "./DisableUserDialog";
 import { EditUserDialog, ticksOf, type EditUserDraft } from "./EditUserDialog";
@@ -227,6 +234,44 @@ function CaseCountsCell({ cases }: { cases: CaseCounts | null | undefined }) {
   );
 }
 
+/** The AI key column (agent5 §9): "Own ..1234 OK" / "Own ..1234 Failing" /
+ * "Company (allowed)" / "None - AI off", on two short lines like the other
+ * cells. Company: admins, and accounts ticked "May use the company AI key".
+ * Only the last 4 characters of a key ever reach this screen. */
+function AiKeyCell({ u }: { u: UserAccount }) {
+  const key = u.ai_key;
+  const label = <span className="users-ai-label">AI key </span>;
+  if (key?.has_key) {
+    const ok = aiKeyWorking(key.status);
+    const state = ok ? "OK" : "Failing";
+    return (
+      <div title={`Own key ..${key.last4}: ${ok ? (key.status === "untested" ? "OK, not checked with Google yet" : "OK") : "failing"}`}>
+        <div className="users-ai-main">
+          {label}Own ..{key.last4}
+        </div>
+        <div className={`users-ai-state ${ok ? "ok" : "fail"}`}>
+          {state}
+          {key.status === "untested" && <span className="users-ai-untested"> · not checked</span>}
+        </div>
+      </div>
+    );
+  }
+  if (u.role === "admin" || u.ai_company_key_allowed) {
+    return (
+      <div title="No key of their own; may use the company AI key">
+        <div className="users-ai-main">{label}Company</div>
+        <div className="users-cell-sub">(allowed)</div>
+      </div>
+    );
+  }
+  return (
+    <div title="No key of their own, and not allowed the company AI key">
+      <div className="users-ai-main none">{label}None</div>
+      <div className="users-cell-sub">AI off</div>
+    </div>
+  );
+}
+
 function UsersTable({
   users,
   currentUserId,
@@ -259,6 +304,7 @@ function UsersTable({
               <th className="col-person">User</th>
               <th className="col-role">Role</th>
               <th className="col-cases">Cases</th>
+              <th className="col-ai">AI key</th>
               <th className="col-seen">Last sign-in</th>
               <th className="col-status">Status</th>
               <th className="col-actions" aria-label="Actions" />
@@ -299,6 +345,9 @@ function UsersTable({
                   <td className="col-cases">
                     <CaseCountsCell cases={u.cases} />
                   </td>
+                  <td className="col-ai">
+                    <AiKeyCell u={u} />
+                  </td>
                   <td className="col-seen">
                     <div title={u.last_login_at ? formatSgt(u.last_login_at) : undefined}>
                       <span className="users-seen-label">Last sign-in </span>
@@ -321,8 +370,9 @@ function UsersTable({
       <p className="setup-note" style={{ marginTop: 12, marginBottom: 0 }}>
         Everything for one person is in the ⋯ menu on their row. To make someone an admin, or change what they may do,
         use Edit. Forgot password? Use Reset password link and send them the link. Users are disabled rather than
-        deleted, so the history on their cases still shows who did what. Disable asks what happens to their open cases;
-        Move their cases hands them on at any time.
+        deleted, so the history on their cases still shows who did what. Disable asks what happens to their open cases, and
+        deletes their AI key; Move their cases hands them on at any time. Nobody sees anyone&apos;s AI key, admins
+        included: only its last 4 characters and whether it works.
       </p>
     </>
   );
@@ -357,9 +407,12 @@ export function UsersCard({
   /** What the last disable or move did, in words. */
   const [notice, setNotice] = useState<string | null>(null);
 
-  const refresh = async () => {
+  /** Reads the table again; the new rows, or null if that failed. */
+  const refresh = async (): Promise<UserAccount[] | null> => {
     const result = await listUsersAction();
-    if ("users" in result) setUsers(result.users);
+    if (!("users" in result)) return null;
+    setUsers(result.users);
+    return result.users;
   };
 
   const refreshLinks = async () => {
@@ -397,6 +450,18 @@ export function UsersCard({
     if (editing.id === currentUserId) router.refresh();
     setEditing(null);
     await refresh();
+    return null;
+  };
+
+  /** "Remove their key" in the Edit dialog: at once (the dialog asked
+   * first), then the table and the open dialog show it gone. */
+  const removeAiKey = async (u: UserAccount): Promise<string | null> => {
+    const result = await deleteUserAiKeyAction(u.id);
+    if ("error" in result) return result.error;
+    const fresh = await refresh();
+    const row = fresh?.find((x) => x.id === u.id) ?? { ...u, ai_key: null };
+    setUsers((all) => all.map((x) => (x.id === u.id ? row : x)));
+    setEditing((open) => (open && open.id === u.id ? row : open));
     return null;
   };
 
@@ -538,6 +603,7 @@ export function UsersCard({
           isSelf={editing.id === currentUserId}
           onCancel={() => setEditing(null)}
           onSubmit={saveUser}
+          onRemoveAiKey={() => removeAiKey(editing)}
         />
       )}
 

@@ -5,3 +5,5 @@ venv/
 .env
 *.db
 /storage/
+# ai-keys.secret when running locally (config.secrets_dir).
+/secrets/

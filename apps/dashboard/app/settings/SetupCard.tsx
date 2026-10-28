@@ -50,7 +50,8 @@ export function SetupCard({
   helpLabel?: string;
   /** The service POST /setup/test/{service} checks (admins only). */
   testKey?: string;
-  status?: { ok: boolean; label: string };
+  /** fail: a red dot ("Failing"), rather than the grey of "Not set up". */
+  status?: { ok: boolean; label: string; fail?: boolean };
   children: React.ReactNode;
 }) {
   const [testing, setTesting] = useState(false);
@@ -78,7 +79,12 @@ export function SetupCard({
           <TestResult result={result} />
           {status && !result && (
             <span className="setup-status">
-              <span style={{ color: status.ok ? "var(--badge-green-text)" : "var(--text-muted)" }}>●</span> {status.label}
+              <span
+                style={{ color: status.ok ? "var(--badge-green-text)" : status.fail ? "var(--badge-red-text)" : "var(--text-muted)" }}
+              >
+                ●
+              </span>{" "}
+              {status.label}
             </span>
           )}
           {testKey && (

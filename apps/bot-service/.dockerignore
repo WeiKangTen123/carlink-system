@@ -1,0 +1,15 @@
+# Never bake local secrets or data into an image (COPY . . in the Dockerfile).
+# The AI-key secret (app/ai/secretbox.py) lives in its own volume on the server.
+secrets/
+.env
+.env.*
+# Local databases and case files: the server mounts its own storage volume.
+*.db
+*.db-wal
+*.db-shm
+storage/
+# Local Python environments and caches.
+venv/
+.venv/
+__pycache__/
+*.pyc

@@ -24,6 +24,22 @@
 #   docker compose -f infra/docker-compose.prod.yml stop api telegram-bot
 #   cp /tmp/carlink.db "$VOL/carlink.db" && rm -f "$VOL/carlink.db-wal" "$VOL/carlink.db-shm"
 #   docker compose -f infra/docker-compose.prod.yml start api telegram-bot
+#
+# People's own AI keys (Settings > My AI key) are in the database, sealed
+# with ai-keys.secret, which lives in its own volume (infra_ai_secrets,
+# mounted at /app/secrets) and is NOT in these backups -- on purpose: a copy
+# that leaves the server would otherwise carry the keys and the means to
+# open them together. Restoring on the same server needs nothing more. When
+# MOVING to another server, copy the secret yourself, as root:
+#   old:  cat "$(docker volume inspect infra_ai_secrets --format '{{.Mountpoint}}')/ai-keys.secret"
+#   new:  restore the database as above and start the containers (the api
+#         makes no new secret for a database that already has keys: System
+#         info says "lost"), then put the file at
+#         "$(docker volume inspect infra_ai_secrets --format '{{.Mountpoint}}')/ai-keys.secret"
+#         (chmod 600). The api and the bot pick it up at their next use.
+# Without the old file, start over instead (every saved own key is deleted;
+# people add theirs again; company keys aren't touched):
+#   docker exec carlink_api python -m app.ai.secretbox reset --confirm
 # ==============================================================================
 set -euo pipefail
 

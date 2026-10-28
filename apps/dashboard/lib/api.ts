@@ -209,6 +209,9 @@ export type UserAccount = UserProfile & {
   /** "May sign off reports". */
   may_sign_off: boolean;
   cases: CaseCounts;
+  /** Their own AI key (Settings -> My AI key), or null for none. Last 4
+   * characters and a status only, never the key. */
+  ai_key: UserAiKeySummary | null;
 };
 
 /** The three ticks on Settings -> Users. */
@@ -264,6 +267,16 @@ export const ERROR_MESSAGES: Record<string, string> = {
   scope_not_allowed: "You can only see your own cases.",
   owner_inactive: "That account is disabled. Pick someone else.",
   owner_draft: "This case is still an unfinished draft. Drafts can't be given to someone else.",
+  // My AI key (/auth/me/ai-key). The API's own words come first for these
+  // (DETAIL_FIRST_CODES); these are only for an answer without them.
+  ai_key_format: "That doesn't look like a Gemini API key. It is usually 39 letters and numbers, starting with AIza.",
+  billing_not_confirmed: "Tick the box to confirm billing is turned on for this key's Google Cloud project.",
+  ai_key_invalid: "Google didn't accept this key. Check you copied all of it.",
+  ai_key_in_use: "This key can't be used here.",
+  rate_limited: "Too many tries. Try again later.",
+  ai_key_storage_off: "Saving AI keys is off on this server right now. Please tell your admin.",
+  no_ai_key: "There is no AI key saved for this account.",
+  ai_key_check_failed: "Couldn't reach Google to check the key. Try again in a minute.",
 };
 
 /** The plain-words message for an error code, if it has one. */
@@ -272,8 +285,20 @@ export function messageForCode(code: string | null | undefined): string | null {
 }
 
 /** Codes whose refusals each say why ("Only staff can set Our Ref."), so
- * the API's own words beat the one-size message above. */
-const DETAIL_FIRST_CODES = new Set(["not_allowed"]);
+ * the API's own words beat the one-size message above. The AI key ones too:
+ * rate_limited, say, is "in an hour" for one person but "tomorrow" when the
+ * whole firm has used up the day's saves. */
+const DETAIL_FIRST_CODES = new Set([
+  "not_allowed",
+  "ai_key_format",
+  "billing_not_confirmed",
+  "ai_key_invalid",
+  "ai_key_in_use",
+  "rate_limited",
+  "ai_key_storage_off",
+  "no_ai_key",
+  "ai_key_check_failed",
+]);
 
 /** What to show for a refused call: the plain words for its code, else the
  * API's own detail (for not_allowed, the detail first). Null when there is
@@ -394,6 +419,95 @@ export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedU
   });
   if (!res.ok) throw await apiError(res, "Failed to save the user");
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// My AI key (release P3): each person's own Gemini key, on Settings -> My
+// settings (bot-service app/api/ai_keys.py). Only its last 4 characters and
+// a status ever come back, to anyone, admins included.
+//
+// In this release the AI still runs on the company key, for admins and the
+// accounts allowed it; own keys are used from the next release on. `source`
+// and `ai_available` describe that next release, so the screen must not
+// read them as "your AI works now".
+
+/** untested: saved, but Google couldn't be reached to check it. ok: Google
+ * took it at the last check. invalid: Google refused it. quota: no
+ * allowance left for now. unreadable: this server can't open it. */
+export type AiKeyStatus = "untested" | "ok" | "invalid" | "quota" | "unreadable";
+
+/** GET, PUT and POST .../test /auth/me/ai-key. */
+export type MyAiKey = {
+  has_key: boolean;
+  last4: string | null;
+  /** Null when there is no key. */
+  status: AiKeyStatus | null;
+  billing_confirmed: boolean;
+  added_at: string | null;
+  last_checked_at: string | null;
+  /** Why it is failing, in Google's words with any key scrubbed out. */
+  last_error: string | null;
+  /** Admins, and accounts ticked "May use the company AI key". */
+  company_allowed: boolean;
+  /** Next release: a working own key, or company_allowed. */
+  ai_available: boolean;
+  /** Next release: what the AI will run on. */
+  source: "own" | "company" | "none";
+};
+
+/** The ai_key of a GET /users row. */
+export type UserAiKeySummary = { has_key: boolean; last4: string | null; status: AiKeyStatus; added_at: string | null };
+
+/** "Working" covers a key Google hasn't been asked about yet (untested). */
+export function aiKeyWorking(status: AiKeyStatus | null | undefined): boolean {
+  return status === "ok" || status === "untested";
+}
+
+export async function getMyAiKey(): Promise<MyAiKey> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/ai-key`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load your AI key");
+  return res.json();
+}
+
+/** Adds or replaces. The API asks Google about the key first (up to ~10 s). */
+export async function saveMyAiKey(apiKey: string, billingConfirmed: boolean): Promise<MyAiKey> {
+  const res = await apiFetch(
+    `${API_BASE_URL}/auth/me/ai-key`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey, billing_confirmed: billingConfirmed }),
+    },
+    { timeoutMs: 30000 }
+  );
+  if (!res.ok) {
+    const err = await apiError(res, "Failed to save your AI key");
+    // Signed out meanwhile has already gone to sign-in (apiFetch). Any other
+    // 403 without words of its own: say so plainly, e.g. the account was
+    // disabled while the key was being checked.
+    if (res.status === 403 && err.message.endsWith("(403)")) {
+      throw new ApiError("Your account can't save an AI key right now; it may have been disabled. The key wasn't saved.", 403, err.code);
+    }
+    throw err;
+  }
+  return res.json();
+}
+
+export async function testMyAiKey(): Promise<MyAiKey> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/ai-key/test`, { method: "POST" }, { timeoutMs: 30000 });
+  if (!res.ok) throw await apiError(res, "Failed to test your AI key");
+  return res.json();
+}
+
+export async function deleteMyAiKey(): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/ai-key`, { method: "DELETE" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to remove your AI key");
+}
+
+/** Admin: remove someone's own AI key (a leaver, or a key being misused). */
+export async function deleteUserAiKey(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/users/${id}/ai-key`, { method: "DELETE" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to remove their AI key");
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,7 +1375,16 @@ export type SystemInfo = {
   storage: { reports: number; photos: number; pdfs: number; bytes_used: number; storage_dir: string };
   database: { engine: string };
   auth: { configured: boolean };
+  /** Whether this server can read people's own AI keys (the secret that
+   * seals them). `detail` says what's wrong and how to fix it. Absent from
+   * an API older than release P3's security follow-up. */
+  ai_key_storage?: AiKeyStorage;
 };
+
+/** "ok", or why people's own AI keys can't be read right now. Kept open
+ * (string) so a state a newer API adds still shows, with its detail. */
+export type AiKeyStorageState = "ok" | "lost" | "broken" | "canary_failed" | "off";
+export type AiKeyStorage = { state: AiKeyStorageState | (string & {}); detail?: string | null };
 
 export const DEFAULT_SYSTEM_INFO: SystemInfo = {
   ai: {

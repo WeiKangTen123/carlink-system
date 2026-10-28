@@ -604,6 +604,11 @@ async def _post_init(app: Application) -> None:
 
 def build_app() -> Application:
     init_db()
+    # Own AI keys: the bot only reads the secret the api makes, and checks
+    # the canary (ai/secretbox.py). Not used for AI until P4.
+    from app.ai import secretbox
+
+    secretbox.startup(create=False)
     application = (
         Application.builder()
         .token(settings.telegram_bot_token)

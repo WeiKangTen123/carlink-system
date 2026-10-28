@@ -16,8 +16,22 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
+# The api container runs `uvicorn app.api.main:app`, which gives a handler
+# only to its own loggers ("uvicorn", "uvicorn.access"; neither passes lines
+# on to the root), so the app's INFO lines went nowhere and its errors came
+# out bare. One root handler for everything else: uvicorn's lines aren't
+# printed twice. Does nothing if app/main.py has set logging up already.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+# httpx logs every request URL at INFO, and a Telegram Bot API URL carries
+# the bot token (POST /setup/test/telegram): see app/main.py.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+from app.ai import keys as own_keys
+from app.ai import secretbox
 from app.ai.extraction import draft_report
 from app.api import limits
+from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
@@ -68,6 +82,9 @@ from app.storage.files import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Own AI keys: this process is the one that makes the secret if there
+    # isn't one, and seals the canary the bot checks (ai/secretbox.py).
+    secretbox.startup(create=True)
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
     if settings.run_background_cleanup:
         from app.intake.cleanup import start_background_cleanup
@@ -115,6 +132,7 @@ app.include_router(auth_router)
 app.include_router(signup_router)
 app.include_router(parts_router)
 app.include_router(intake_router)
+app.include_router(ai_keys_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -1310,6 +1328,9 @@ def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
                 # Every request needs a signed-in user (app/auth).
                 "configured": True,
             },
+            # People's own AI keys: whether this server can open them, and
+            # if not, why and what fixes it (ai/secretbox.py).
+            "ai_key_storage": secretbox.describe(),
         }
     finally:
         db.close()
@@ -1366,6 +1387,9 @@ def add_llm_key(body: AddApiKeyRequest, admin: CurrentUser = Depends(require_adm
     if not key:
         raise HTTPException(status_code=400, detail="API key cannot be empty")
 
+    # Someone's own key can't become everyone's: compared by fingerprint
+    # (worked out first; it may read the secret).
+    fingerprint = own_keys.fingerprint_if_readable(key)
     db = SessionLocal()
     try:
         existing = db.query(ApiKey).filter(ApiKey.provider == "gemini", ApiKey.key == key).first()
@@ -1373,6 +1397,15 @@ def add_llm_key(body: AddApiKeyRequest, admin: CurrentUser = Depends(require_adm
             raise HTTPException(status_code=409, detail="That API key has already been added")
         row = ApiKey(provider="gemini", key=key, label=(body.label or "").strip())
         db.add(row)
+        # Checked once flushed, holding SQLite's write lock: an own key being
+        # saved meanwhile waits, then finds this one (api/ai_keys.py).
+        db.flush()
+        owner = own_keys.own_key_owner(db, fingerprint)
+        if owner:
+            db.rollback()
+            audit(db, admin, "ai_key_refused", detail=f"company key ...{_mask(key)} is {owner}'s own key")
+            db.commit()
+            raise ApiError(409, own_keys.IN_USE, "ai_key_in_use")
         db.commit()
         reset_client_cache()
         return {"id": row.id, "label": row.label, "last4": _mask(row.key)}

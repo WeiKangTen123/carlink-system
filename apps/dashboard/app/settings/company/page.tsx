@@ -1,7 +1,16 @@
-import { getAppSettings, getSystemInfo } from "@/lib/api";
+import { getAppSettings, getSystemInfo, type SystemInfo } from "@/lib/api";
+import type { AiKeyStorageView } from "../AiKeyStorageStatus";
 import { AdminOnly } from "../AdminOnly";
 import { CompanyClient } from "../CompanyClient";
 import { isAdminUser, settingsUser } from "../gate";
+
+/** ai_key_storage as the page shows it, or null when the API didn't send
+ * a usable one (older APIs don't send it at all). */
+function aiKeyStorageOf(system: SystemInfo): AiKeyStorageView | null {
+  const s = system.ai_key_storage;
+  if (!s || typeof s.state !== "string" || !s.state) return null;
+  return { state: s.state, detail: typeof s.detail === "string" && s.detail.trim() ? s.detail : null };
+}
 
 /** Settings -> Company (admins). The role is checked here, before any
  * admin-only call: everyone else gets the lock card and nothing loads. */
@@ -25,6 +34,7 @@ export default async function CompanySettingsPage() {
     whatsappConfigured: system.channels.whatsapp_configured,
     telegramReports: system.channels.reports_by_channel.telegram ?? 0,
     whatsappReports: system.channels.reports_by_channel.whatsapp ?? 0,
+    aiKeyStorage: aiKeyStorageOf(system),
   };
 
   return <CompanyClient settings={settings} setup={setup} />;

@@ -24,3 +24,6 @@ xlrd>=2.0.1
 openpyxl>=3.1.0
 httpx>=0.27.0
 python-dotenv>=1.0.1
+# Fernet, which seals people's own AI keys (app/ai/secretbox.py). It was
+# only here by way of google-auth; named directly so it can't drop out.
+cryptography>=42.0.0
