@@ -98,6 +98,44 @@ function isSlaUrgent(r: ReportSummary): boolean {
   return s === "critical" || s === "expired";
 }
 
+/** Live Singapore time (Asia/Singapore, UTC+8). Its own component so the
+ * once-a-second tick re-renders this badge only, not the whole page. */
+function LiveSgtClock() {
+  const [sgtTime, setSgtTime] = useState<string>("");
+
+  useEffect(() => {
+    // Built once, not on every tick.
+    let format: (d: Date) => string;
+    try {
+      const fmt = new Intl.DateTimeFormat("en-SG", {
+        timeZone: "Asia/Singapore",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      });
+      format = (d) => fmt.format(d);
+    } catch {
+      format = (d) => d.toLocaleTimeString();
+    }
+    const updateTime = () => setSgtTime(format(new Date()));
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <span className="live-clock-badge">
+      <Clock style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
+      <span>{sgtTime ? `${sgtTime} SGT` : "Singapore (UTC+8)"}</span>
+      <span className="live-clock-pulse" />
+    </span>
+  );
+}
+
 export function CommandCenterClient({ initialReports, analytics }: Props) {
   const user = useCurrentUser();
   const [selectedSwimlane, setSelectedSwimlane] = useState<Swimlane>("all");
@@ -107,32 +145,6 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [previewReport, setPreviewReport] = useState<ReportSummary | null>(null);
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
-  const [sgtTime, setSgtTime] = useState<string>("");
-
-  // Live SGT (Asia/Singapore, UTC+8) Real-Time Clock Hook
-  useEffect(() => {
-    const updateTime = () => {
-      try {
-        const now = new Date();
-        const formatted = new Intl.DateTimeFormat("en-SG", {
-          timeZone: "Asia/Singapore",
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hourCycle: "h23",
-        }).format(now);
-        setSgtTime(formatted);
-      } catch {
-        setSgtTime(new Date().toLocaleTimeString());
-      }
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   const reports = initialReports;
   const openCases = useMemo(() => reports.filter((r) => isAwaitingSignOff(r.status)), [reports]);
@@ -337,11 +349,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             </span>
 
             {/* Live Singapore Standard Time (SGT) Clock */}
-            <span className="live-clock-badge">
-              <Clock style={{ width: 12, height: 12, color: "var(--accent-cyan)" }} />
-              <span>{sgtTime ? `${sgtTime} SGT` : "Singapore (UTC+8)"}</span>
-              <span className="live-clock-pulse" />
-            </span>
+            <LiveSgtClock />
 
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               Signed in: <strong style={{ color: "var(--text-primary)" }}>{user?.name ?? "—"}</strong>
@@ -411,7 +419,7 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                     <strong style={{ color: "var(--text-primary)" }}>{overdue ? sla.remainingText : sla.badgeText}</strong>
                   </span>
                 </div>
-                <Link href={`/reports/${r.id}`} style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <Link href={`/reports/${r.id}`} prefetch={false} style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>
                   Review Case <ArrowRight style={{ width: 12, height: 12 }} />
                 </Link>
               </div>
@@ -846,8 +854,11 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
                             <span>Preview</span>
                           </button>
 
+                          {/* No prefetch: one per row would queue a request
+                              for every open case in view. */}
                           <Link
                             href={`/reports/${r.id}`}
+                            prefetch={false}
                             className="btn-primary-modern"
                             style={{ fontSize: 11, padding: "4px 9px", display: "inline-flex", alignItems: "center", gap: 3 }}
                             title="Open Full Loss Adjuster Studio"

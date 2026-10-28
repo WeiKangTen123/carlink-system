@@ -29,6 +29,9 @@ type ReportFormProps = {
    * are added alongside these, never replacing them (see the backend's
    * PUT /reports/{id}, which appends rather than overwrites). */
   existingPhotoUrls?: string[];
+  /** 400px copies of existingPhotoUrls, same order (the API's
+   * photo_thumb_urls), shown instead of the multi-MB originals. */
+  existingPhotoThumbUrls?: string[];
   /** Needed so "Re-analyze with AI" can look the report's saved photos back
    * up server-side when the reporter hasn't picked any new files. Omitted
    * for create, where there's no report yet to look up. */
@@ -37,7 +40,7 @@ type ReportFormProps = {
   submitLabel: string;
 };
 
-export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId, action, submitLabel }: ReportFormProps) {
+export function ReportForm({ mode, initialData, existingPhotoUrls = [], existingPhotoThumbUrls = [], reportId, action, submitLabel }: ReportFormProps) {
   const [people, setPeople] = useState<PersonRow[]>(
     () => initialData?.people_involved?.map((p) => ({ id: nextRowId++, name: p.name, role: p.role, department: p.department || "", contact: p.contact || "" })) ?? []
   );
@@ -220,7 +223,13 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], reportId
             <div className="photo-preview-grid">
               {existingPhotoUrls.map((url, i) => (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img key={url} src={fileUrl(url)} alt={`Existing photo ${i + 1}`} />
+                <img
+                  key={url}
+                  src={fileUrl(existingPhotoThumbUrls[i] || url)}
+                  alt={`Existing photo ${i + 1}`}
+                  loading="lazy"
+                  decoding="async"
+                />
               ))}
             </div>
           </>

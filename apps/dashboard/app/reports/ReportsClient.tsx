@@ -25,6 +25,7 @@ import {
   RefreshCw,
   Send,
   SlidersHorizontal,
+  ExternalLink,
 } from "lucide-react";
 import { type ReportSummary, type ReportDetail, type AnalyticsSummary, type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { DeleteButton } from "@/components/DeleteButton";
@@ -126,6 +127,30 @@ function formatRecordedSGD(value?: string | null): string | null {
 function isAiDetected(d: DamageSummaryItem): boolean {
   return !!(d.ai_confidence || d.photo_reference || (d.bbox_2d && d.bbox_2d.length));
 }
+
+/** Photo i as a smaller copy (400px thumbnail or 1600px preview) when the
+ * API sent one, else the original. Both lists follow photo_urls' order.
+ * The originals are camera files of a few MB each. */
+function photoCopyUrl(detail: ReportDetail, copy: "photo_thumb_urls" | "photo_preview_urls", i: number): string {
+  return detail[copy]?.[i] || detail.photo_urls[i];
+}
+
+/** What the queue and matrix show for a case. Pure functions of the case,
+ * so worked out once per list; the SLA moves with the clock, so it isn't
+ * here. */
+type RowInfo = {
+  stage: ReturnType<typeof getOperationalStage>;
+  arch: ReturnType<typeof getClaimArchetype>;
+  body: ReturnType<typeof inferBodyType>;
+  make: string;
+  cost: number;
+  ref: string;
+  vehicle: string;
+  insurer: string;
+  workshop: string;
+  filedAt: string;
+  searchText: string;
+};
 
 export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const user = useCurrentUser();
@@ -242,19 +267,40 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
     [reportsList]
   );
 
-  // Filtered reports logic
-  const filteredReports = useMemo(() => {
-    return reportsList.filter((r) => {
-      const stage = getOperationalStage(r);
-      const arch = getClaimArchetype(r);
-      const body = inferBodyType(r);
-      const make = inferVehicleMake(r);
-      const cost = getEstimatedCostSGD(r);
-      const isSigned = r.status === "Signed Off";
-      const sla = getGiaSla(r.created_at, isSigned);
+  // Per-case values for the filter and the rows, once per list instead of
+  // on every keystroke and j/k press (formatSgtDateTime is the slow one).
+  const rowInfo = useMemo(() => {
+    const map = new Map<ReportSummary, RowInfo>();
+    for (const r of reportsList) {
+      const ref = formatCarlinkRef(r.id, r.plate_number, r.created_at);
       const vehicle = inferVehicleName(r);
       const insurer = inferInsurerName(r);
       const workshop = inferWorkshopName(r.workshop_assigned);
+      const body = inferBodyType(r);
+      const make = inferVehicleMake(r);
+      map.set(r, {
+        stage: getOperationalStage(r),
+        arch: getClaimArchetype(r),
+        body,
+        make,
+        cost: getEstimatedCostSGD(r),
+        ref,
+        vehicle,
+        insurer,
+        workshop,
+        filedAt: formatSgtDateTime(r.created_at),
+        searchText: `${r.id} ${ref} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make}`.toLowerCase(),
+      });
+    }
+    return map;
+  }, [reportsList]);
+
+  // Filtered reports logic
+  const filteredReports = useMemo(() => {
+    return reportsList.filter((r) => {
+      const { stage, arch, body, make, cost, insurer, searchText } = rowInfo.get(r)!;
+      const isSigned = r.status === "Signed Off";
+      const sla = getGiaSla(r.created_at, isSigned);
 
       // 1. Operational Stage Tab
       if (selectedStage === "intake" && stage !== "intake") return false;
@@ -294,14 +340,12 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
       // 8. Omni-Search
       if (searchTerm.trim() !== "") {
         const q = searchTerm.toLowerCase();
-        const refStr = formatCarlinkRef(r.id, r.plate_number, r.created_at).toLowerCase();
-        const haystack = `${r.id} ${refStr} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make}`.toLowerCase();
-        if (!haystack.includes(q)) return false;
+        if (!searchText.includes(q)) return false;
       }
 
       return true;
     });
-  }, [reportsList, selectedStage, dateFilter, bodyFilter, makeFilter, archetypeFilter, quickFilter, selectedInsurer, searchTerm]);
+  }, [reportsList, rowInfo, selectedStage, dateFilter, bodyFilter, makeFilter, archetypeFilter, quickFilter, selectedInsurer, searchTerm]);
 
   // Set default selected report if current is null or not in list
   useEffect(() => {
@@ -433,6 +477,9 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
   const damageItems = activeDetail?.data?.damage_summary ?? [];
   const aiDetectedCount = damageItems.filter(isAiDetected).length;
   const recordedParts = activeDetail?.data?.damaged_parts ?? [];
+
+  // The photo on show; the first if the index is left from another case.
+  const heroIdx = activeDetail?.photo_urls?.[activePhotoIdx] ? activePhotoIdx : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -732,12 +779,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
             <div className="case-queue-scrollable">
               {filteredReports.map((r) => {
                 const isSelected = r.id === selectedReportId;
-                const arch = getClaimArchetype(r);
-                const cost = getEstimatedCostSGD(r);
-                const ref = formatCarlinkRef(r.id, r.plate_number, r.created_at);
-                const vehicle = inferVehicleName(r);
-                const insurer = inferInsurerName(r);
-                const workshop = inferWorkshopName(r.workshop_assigned);
+                const { cost, ref, vehicle, insurer, workshop, filedAt } = rowInfo.get(r)!;
                 const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                 return (
@@ -783,7 +825,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                     {/* Bottom Row: Exact Filing Time & SLA Badge */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--border-color)" }}>
                       <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
-                        📥 {formatSgtDateTime(r.created_at)}
+                        📥 {filedAt}
                       </span>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -975,7 +1017,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                       <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.05em" }}>
                         Photographic Forensic Evidence
                       </span>
-                      <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      <span style={{ fontSize: 10, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: 8 }}>
                         {isLoadingDetail
                           ? ""
                           : activeDetail?.photo_urls?.length
@@ -983,22 +1025,37 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             : selectedSummary.thumbnail_url
                               ? "Thumbnail only"
                               : "No photos"}
+                        {/* The viewer shows a 1600px copy; the camera file
+                            as uploaded is one click away. */}
+                        {!isLoadingDetail && activeDetail?.photo_urls?.length ? (
+                          <a
+                            href={fileUrl(activeDetail.photo_urls[heroIdx])}
+                            target="_blank"
+                            rel="noopener"
+                            className="setup-help-link"
+                            style={{ fontSize: 10, display: "inline-flex", alignItems: "center", gap: 3 }}
+                            title="Full-size photo as uploaded, in a new tab"
+                          >
+                            Open original <ExternalLink style={{ width: 10, height: 10 }} />
+                          </a>
+                        ) : null}
                       </span>
                     </div>
 
                     <div className="dossier-hero-frame">
                       {isLoadingDetail ? (
-                        <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading high-resolution evidence...</div>
+                        <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading evidence photos...</div>
                       ) : activeDetail?.photo_urls?.length ? (
                         <>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
-                            src={fileUrl(activeDetail.photo_urls[activePhotoIdx] || activeDetail.photo_urls[0])}
+                            src={fileUrl(photoCopyUrl(activeDetail, "photo_preview_urls", heroIdx))}
                             alt="Evidence"
                             className="dossier-hero-img"
+                            decoding="async"
                           />
                           <div className="dossier-photo-badge">
-                            #{activePhotoIdx + 1} / {activeDetail.photo_urls.length}
+                            #{heroIdx + 1} / {activeDetail.photo_urls.length}
                           </div>
                         </>
                       ) : selectedSummary.thumbnail_url ? (
@@ -1028,7 +1085,13 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             title={`Photo ${idx + 1}`}
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={fileUrl(url)} alt="" className="dossier-thumb-img" />
+                            <img
+                              src={fileUrl(photoCopyUrl(activeDetail, "photo_thumb_urls", idx))}
+                              alt=""
+                              className="dossier-thumb-img"
+                              loading="lazy"
+                              decoding="async"
+                            />
                           </button>
                         ))}
                       </div>
@@ -1243,12 +1306,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
               </thead>
               <tbody>
                 {filteredReports.map((r) => {
-                  const arch = getClaimArchetype(r);
-                  const cost = getEstimatedCostSGD(r);
-                  const ref = formatCarlinkRef(r.id, r.plate_number, r.created_at);
-                  const vehicle = inferVehicleName(r);
-                  const insurer = inferInsurerName(r);
-                  const workshop = inferWorkshopName(r.workshop_assigned);
+                  const { arch, cost, ref, vehicle, insurer, workshop, filedAt } = rowInfo.get(r)!;
                   const sla = getGiaSla(r.created_at, r.status === "Signed Off");
 
                   return (
@@ -1285,7 +1343,7 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                           {ref}
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-                          📥 {formatSgtDateTime(r.created_at)}
+                          📥 {filedAt}
                         </div>
                       </td>
 
@@ -1377,8 +1435,11 @@ export function ReportsClient({ initialReports, initialAnalytics }: Props) {
                             <span>Preview</span>
                           </button>
 
+                          {/* No prefetch: one per row would queue a request
+                              for every case in view. */}
                           <Link
                             href={`/reports/${r.id}`}
+                            prefetch={false}
                             className="btn-primary-modern"
                             style={{ fontSize: 11, padding: "4px 9px", display: "inline-flex", alignItems: "center", gap: 3 }}
                             title="Open full Loss Adjuster Studio"

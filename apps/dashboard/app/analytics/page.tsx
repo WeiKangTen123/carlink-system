@@ -197,7 +197,7 @@ export default async function AnalyticsPage({
               <div className="detail-field-label" style={{ marginBottom: 8 }}>Longest waiting</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {oldest.map((r) => (
-                  <Link key={r.id} href={`/reports/${r.id}`} className="analytics-case-link">
+                  <Link key={r.id} href={`/reports/${r.id}`} prefetch={false} className="analytics-case-link">
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700 }}>{caseTitle(r)}</span>
                     <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
                       {daysOpen(r.created_at)}d
