@@ -605,6 +605,30 @@ def deleting() -> None:
     check(last.user_id == W.admin.id and "account disabled" in last.detail, "with a history entry naming the actor and reason", last.detail)
 
 
+def disabling() -> None:
+    ai_keys_api.reset_limits()
+    dee = Person("Dee")
+    k = make_key("Disabled")
+    r = dee.put(k)
+    need(r.status_code == 200 and row_of(dee.id) is not None, "Dee has a key", brief(r))
+
+    print("  a refused disable keeps the key")
+    r = W.admin.c.patch(f"/users/{dee.id}", json={"active": False, "open_cases": "move", "open_cases_to": "nosuchuser00"})
+    check(r.status_code >= 400 and row_of(dee.id) is not None, "disable refused (unknown recipient): the key is still there", brief(r))
+
+    print("  disabling deletes it, in the same change")
+    r = W.admin.c.patch(f"/users/{dee.id}", json={"active": False})
+    check(r.status_code == 200 and r.json().get("active") is False, "the admin disables Dee", brief(r))
+    check(row_of(dee.id) is None, "her key is gone")
+    entry = audits("ai_key_removed_by_admin")[-1]
+    check(entry.user_id == W.admin.id and "account disabled" in entry.detail and k[-4:] in entry.detail and k not in entry.detail,
+          "history: removed by the admin, because the account was disabled, last 4 only", entry.detail)
+    u = users_by_id(W.admin).get(dee.id, {})
+    check(u.get("ai_key") is None, "GET /users shows no key for her", str(u.get("ai_key")))
+    r = W.admin.c.patch(f"/users/{dee.id}", json={"active": True})
+    check(r.status_code == 200 and row_of(dee.id) is None, "enabling her again doesn't bring the key back", brief(r))
+
+
 def users_screen() -> None:
     ai_keys_api.reset_limits()
     users = users_by_id(W.admin)
@@ -902,6 +926,7 @@ def main() -> int:
         ("Google can't answer: untested; quota", no_answer),
         ("POST /auth/me/ai-key/test", test_endpoint),
         ("deleting: self, admin, the disable helper", deleting),
+        ("disabling an account deletes its key", disabling),
         ("GET /users: ai_key, batched", users_screen),
         ("rate limits", rate_limits),
         ("signed out, temporary password, plain user", who_may),
