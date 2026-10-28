@@ -6945,3 +6945,181 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end P2 settings split ---- */
+
+/* ==========================================================================
+   P3 MY AI KEY: the My AI key card on My settings (MyAiKeyCard.tsx), the
+   AI key column on Users, the AI key row in the Edit user dialog
+   (EditUserDialog.tsx). Theme tokens only, so it follows dark and light
+   mode.
+   ========================================================================== */
+
+/* My AI key: the saved key, a status word, and Test / Replace / Remove. */
+.ai-key-row {
+  gap: 8px 10px;
+}
+.ai-key-own {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ai-key-mask,
+.user-ai-key-mask {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+/* Remove / Remove their key in red (.btn-secondary-modern's colour is
+   !important, so the older .users-action.danger doesn't reach it). */
+.ai-key-row .btn-secondary-modern.danger,
+.user-ai-key-row .btn-secondary-modern.danger {
+  color: var(--badge-red-text) !important;
+}
+.ai-key-word {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ai-key-word.ok {
+  color: var(--badge-green-text);
+}
+.ai-key-word.fail {
+  color: var(--badge-red-text);
+}
+.ai-key-word-sub {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.ai-key-row-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.ai-key-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 2px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ai-key-failing {
+  margin: 10px 0 0;
+}
+.ai-key-failing-fix {
+  margin-top: 4px;
+  font-weight: 500;
+}
+.ai-key-replace {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* No key yet: three steps, then the form. */
+.ai-key-steps {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.ai-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ai-key-form .settings-input {
+  font-family: var(--font-mono);
+}
+.ai-key-billing {
+  font-weight: 600;
+}
+.ai-key-billing .field-hint {
+  font-weight: 400;
+}
+.ai-key-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* "AI right now": what this release does, whatever key is saved. */
+.ai-key-now {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-hover);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.ai-key-now svg {
+  color: var(--accent-primary);
+}
+
+/* Users: the AI key column ("Own ..1234" over "OK" / "Failing"). */
+.users-people-table .col-ai {
+  white-space: nowrap;
+}
+.users-ai-main {
+  font-weight: 700;
+}
+.users-ai-main.none {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-ai-state {
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.users-ai-state.ok {
+  color: var(--badge-green-text);
+}
+.users-ai-state.fail {
+  color: var(--badge-red-text);
+}
+.users-ai-untested {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-ai-label {
+  display: none;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+@container users-table (max-width: 640px) {
+  .users-ai-label {
+    display: inline;
+  }
+  /* Last in the small card, so the other cells keep the places P2 gave
+     them (Last sign-in stays in the left column, where it fits). */
+  .users-people-table .col-ai {
+    order: 1;
+  }
+}
+
+/* Edit user: the AI key row and [Remove their key]. */
+.user-ai-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.user-ai-key-sub {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+/* ---- end P3 my AI key ---- */

@@ -91,8 +91,9 @@ export function PersonSelect({
  * off, not an unfinished draft) are moved, unassigned or kept as chosen.
  * The counts are read again when the dialog opens (useFreshCounts).
  *
- * SLOT "ALSO" (P3-UI): "Their AI key is deleted." (P5): "Telegram @x is
- * disconnected. Enabling again won't reconnect." */
+ * "Also" says their AI key is deleted, when they have one (the same PATCH
+ * deletes it). SLOT (P5): "Telegram @x is disconnected. Enabling again
+ * won't reconnect." goes in the same list. */
 export function DisableUserDialog({
   user: rowUser,
   people: rowPeople,
@@ -126,6 +127,8 @@ export function DisableUserDialog({
   }, [checking, open]);
 
   const targetPerson = people.find((p) => p.id === target) ?? null;
+  // The API deletes it in the same change (P3; agent6 D6).
+  const hadAiKey = Boolean(user.ai_key?.has_key);
   const ready = !checking && (choice !== "move" || Boolean(targetPerson));
 
   const submit = async () => {
@@ -162,7 +165,7 @@ export function DisableUserDialog({
     } else if (choice === "keep") {
       cases = " Their open cases stay under them.";
     }
-    onDone(`${personLabel(user)} is disabled.${cases}`);
+    onDone(`${personLabel(user)} is disabled.${cases}${hadAiKey ? " Their AI key was deleted." : ""}`);
   };
 
   const stays = [
@@ -250,11 +253,16 @@ export function DisableUserDialog({
           )}
         </div>
 
-        {/* ---- SLOT "ALSO" (P3-UI, P5) ----
-            <div className="settings-dialog-section">
-              <div className="settings-dialog-label">Also</div>
-              <ul className="settings-dialog-list"><li>Their AI key is deleted.</li></ul>
-            </div> */}
+        {/* ALSO: one line per thing that goes with the account. P5 adds
+            "Telegram @x is disconnected. Enabling again won't reconnect." */}
+        {hadAiKey && (
+          <div className="settings-dialog-section">
+            <div className="settings-dialog-label">Also</div>
+            <ul className="settings-dialog-list">
+              <li>Their AI key is deleted. Enabling them again won&apos;t bring it back.</li>
+            </ul>
+          </div>
+        )}
 
         {error && <div className="setup-error" style={{ marginTop: 12 }}>{error}</div>}
 

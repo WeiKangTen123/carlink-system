@@ -1,15 +1,15 @@
 import { CheckCircle2, Circle, ListChecks } from "lucide-react";
-import type { CurrentUser } from "@/lib/api";
+import { aiKeyWorking, type CurrentUser, type MyAiKey } from "@/lib/api";
 
-/** One thing to set up on My settings. `href` is the card it's done on. */
-export type SetupItem = { key: string; label: string; hint: string; done: boolean; href: string };
+/** One thing to set up on My settings. `href` is the card it's done on;
+ * `action` the link's words (default "Add it"). */
+export type SetupItem = { key: string; label: string; hint: string; done: boolean; href: string; action?: string };
 
 /** What My settings asks everyone to set up, from what GET /auth/me says.
  *
  * Later releases add their own items here, reading the same state their
  * card shows ("Working" / "Not set up" / "Failing"):
- *   - SLOT (P3-UI): "AI key" -> #my-ai-key, done while GET /auth/me/ai-key
- *     says the key is working or untested.
+ *   - "AI key" (P3): aiKeySetupItem below.
  *   - SLOT (P5): "Telegram" -> #my-telegram, done once connected. */
 export function profileSetupItems(me: CurrentUser): SetupItem[] {
   const items: SetupItem[] = [
@@ -32,6 +32,31 @@ export function profileSetupItems(me: CurrentUser): SetupItem[] {
     });
   }
   return items;
+}
+
+/** "AI key" -> #my-ai-key. Done when the person's own key is working (or
+ * not checked yet), or when they may use the company key anyway (admins,
+ * and accounts an admin allowed). A failing key asks to be fixed. */
+export function aiKeySetupItem(ai: MyAiKey): SetupItem {
+  const ownWorking = ai.has_key && aiKeyWorking(ai.status);
+  const done = ownWorking || ai.company_allowed;
+  if (!done && ai.has_key) {
+    return {
+      key: "ai-key",
+      label: "Fix your AI key",
+      hint: "Google isn't accepting the key you saved, so it can't be used. Replace it on My AI key.",
+      done,
+      href: "#my-ai-key",
+      action: "Fix it",
+    };
+  }
+  return {
+    key: "ai-key",
+    label: "Set up AI",
+    hint: "Add your own Gemini key on My AI key; it is used for AI from the next update. Until then, admins can let you use the company key.",
+    done,
+    href: "#my-ai-key",
+  };
 }
 
 /** The top of My settings, shown only while something is still missing.
@@ -71,7 +96,7 @@ export function SetupChecklist({ items }: { items: SetupItem[] }) {
             </span>
             {!item.done && (
               <a href={item.href} className="setup-help-link">
-                Add it
+                {item.action || "Add it"}
               </a>
             )}
           </li>

@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { Trash2 } from "lucide-react";
 import type { CaseCounts, UserAccount, UserRole, UserTicks } from "@/lib/api";
-import { USERNAME_HINT } from "@/lib/signup";
+import { USERNAME_HINT, formatSgtDay } from "@/lib/signup";
+import { aiKeyWord, maskedKey } from "./aiKeyWords";
 
 export type EditUserDraft = {
   username: string;
@@ -74,23 +76,104 @@ export function CaseCountsText({ cases }: { cases: CaseCounts | null | undefined
   );
 }
 
+/** The AI key row of the Edit dialog: their own key (last 4 and a status,
+ * never the key) with [Remove their key], which acts at once after a
+ * confirm; or, with none, whether the company key covers them (as saved,
+ * not as ticked above). */
+function AiKeyRow({
+  user,
+  isSelf,
+  disabled,
+  onRemove,
+}: {
+  user: UserAccount;
+  isSelf: boolean;
+  disabled: boolean;
+  onRemove: () => Promise<string | null>;
+}) {
+  const [removing, setRemoving] = useState(false);
+  const [removed, setRemoved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const key = user.ai_key?.has_key ? user.ai_key : null;
+  const companyAllowed = user.role === "admin" || user.ai_company_key_allowed;
+
+  const remove = async () => {
+    if (!key) return;
+    const whose = isSelf ? "your" : `${user.name && user.name !== user.username ? user.name : `@${user.username}`}'s`;
+    if (
+      !confirm(
+        `Remove ${whose} AI key (${maskedKey(key.last4)})? It's deleted at once. ${isSelf ? "You" : "They"} can add a new one in Settings.`
+      )
+    )
+      return;
+    setRemoving(true);
+    setError(null);
+    const problem = await onRemove();
+    setRemoving(false);
+    if (problem) setError(problem);
+    else setRemoved(true);
+  };
+
+  const word = key ? aiKeyWord(true, key.status) : null;
+  return (
+    <div style={{ gridColumn: "1 / -1" }}>
+      <span className="detail-field-label">AI key</span>
+      <div className="user-ai-key-row">
+        {key ? (
+          <span style={{ minWidth: 0 }}>
+            Own key <span className="user-ai-key-mask">{maskedKey(key.last4)}</span>
+            {" · "}
+            <span className={`ai-key-word ${word === "Working" ? "ok" : "fail"}`}>{word}</span>
+            {key.status === "untested" && <span className="user-ai-key-sub"> · not checked yet</span>}
+            {key.added_at && <span className="user-ai-key-sub"> · added {formatSgtDay(key.added_at)}</span>}
+          </span>
+        ) : (
+          <span style={{ minWidth: 0 }}>
+            {removed ? "Removed. " : isSelf ? "No key of your own. " : "No key of their own. "}
+            <span className="user-ai-key-sub">
+              {companyAllowed
+                ? `The AI runs on the company key for ${isSelf ? "you" : "them"}.`
+                : "AI is off for them unless you tick “May use the company AI key” and save."}
+            </span>
+          </span>
+        )}
+        {key && (
+          <button
+            type="button"
+            className="btn-secondary-modern users-action danger"
+            onClick={() => void remove()}
+            disabled={disabled || removing}
+          >
+            <Trash2 style={{ width: 12, height: 12 }} /> {removing ? "Removing…" : isSelf ? "Remove my key" : "Remove their key"}
+          </button>
+        )}
+      </div>
+      {error && <div className="setup-error" style={{ margin: "8px 0 0" }}>{error}</div>}
+    </div>
+  );
+}
+
 /** Settings -> Users -> Edit. On your own account the role can't change
  * (the API refuses it too, 403 not_allowed), so the role choice is greyed
  * out with a note.
  *
- * SLOTS (P3-UI): an "AI key" row with [Remove their key]; (P5) a
- * "Telegram" row with [Disconnect]. Both act at once after a confirm,
- * between Access and Cases (agent5 §9 layout); Save covers the rest. */
+ * The AI key row's [Remove their key] acts at once after a confirm, between
+ * Access and Cases (agent5 §9 layout); Save covers the rest.
+ * SLOT (P5): a "Telegram" row with [Disconnect], working the same way,
+ * after the AI key row. */
 export function EditUserDialog({
   user,
   isSelf,
   onCancel,
   onSubmit,
+  onRemoveAiKey,
 }: {
   user: UserAccount;
   isSelf: boolean;
   onCancel: () => void;
   onSubmit: (draft: EditUserDraft) => Promise<string | null>;
+  /** DELETE /users/{id}/ai-key, then the dialog's `user` is read again. */
+  onRemoveAiKey: () => Promise<string | null>;
 }) {
   const initial = draftOf(user);
   const [draft, setDraft] = useState<EditUserDraft>(initial);
@@ -198,6 +281,7 @@ export function EditUserDialog({
               </span>
             )}
           </div>
+          <AiKeyRow user={user} isSelf={isSelf} disabled={saving} onRemove={onRemoveAiKey} />
           <div style={{ gridColumn: "1 / -1" }}>
             <span className="detail-field-label">Cases</span>
             <div style={{ fontSize: 13, marginTop: 6 }}>
