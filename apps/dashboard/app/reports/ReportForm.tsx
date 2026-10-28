@@ -2,8 +2,11 @@
 
 import { useState } from "react";
 import { Sparkles, AlertTriangle, CheckCircle2, Plus } from "lucide-react";
-import { analyzePhotosAction, reanalyzeExistingPhotosAction } from "./actions";
+import { analyzePhotosAction, reanalyzeExistingPhotosAction, type AiActionError } from "./actions";
+import { AiFixLink } from "@/components/AiFixLink";
 import {
+  aiOffMessage,
+  isAiOffCode,
   CATEGORY_OPTIONS,
   ACCIDENT_TYPE_OPTIONS,
   WEATHER_OPTIONS,
@@ -13,8 +16,19 @@ import {
   fileUrl,
   type PhotoAnalysisDraft,
   type ReportData,
+  type AiOffCode,
   type DamageSummaryItem,
 } from "@/lib/api";
+
+/** Why the last Analyze / Re-analyze didn't fill the form. `aiOff`: the AI
+ * was refused for this person (release P4) -- nothing was analyzed, and the
+ * photos it was sent weren't attached (the API checks before saving any). */
+type AnalyzeError = { text: string; aiOff: AiOffCode | null; newPhotos: boolean };
+
+function toAnalyzeError(result: AiActionError, newPhotos: boolean): AnalyzeError {
+  if (isAiOffCode(result.code)) return { text: aiOffMessage(result.code, result.error), aiOff: result.code, newPhotos };
+  return { text: result.error, aiOff: null, newPhotos };
+}
 
 type PersonRow = { id: number; name: string; role: string; department: string; contact: string };
 type WitnessRow = { id: number; name: string; contact: string; statement: string };
@@ -52,7 +66,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const [tempPhotoPaths, setTempPhotoPaths] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeError, setAnalyzeError] = useState<AnalyzeError | null>(null);
   const [aiApplied, setAiApplied] = useState(false);
 
   const [description, setDescription] = useState(initialData?.description ?? "");
@@ -123,7 +137,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     setUploading(false);
 
     if ("error" in result) {
-      setAnalyzeError(result.error);
+      setAnalyzeError(toAnalyzeError(result, true));
       return;
     }
     // Photos are attached the moment analysis succeeds, regardless of
@@ -148,7 +162,7 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     setUploading(false);
 
     if ("error" in result) {
-      setAnalyzeError(result.error);
+      setAnalyzeError(toAnalyzeError(result, false));
       return;
     }
     applyDraft(result.draft, description);
@@ -279,11 +293,22 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
           <Sparkles style={{ width: 14, height: 14 }} /> {uploading ? "Analyzing..." : "Re-analyze with AI"}
         </button>
 
-        {analyzeError && (
+        {analyzeError?.aiOff ? (
+          <div className="form-hint ai-off-hint" role="alert">
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
+            <span>
+              <strong>{analyzeError.text}</strong>{" "}
+              {analyzeError.newPhotos
+                ? "The new photos weren't attached (this form attaches photos only when the AI analyzes them). You can still fill in the fields below by hand."
+                : "You can still fill in the fields below by hand."}{" "}
+              <AiFixLink code={analyzeError.aiOff} />
+            </span>
+          </div>
+        ) : analyzeError ? (
           <p className="form-hint" style={{ color: "var(--badge-red-text)", marginTop: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError} -- photos may not be attached; try again before saving.
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} /> AI analysis failed: {analyzeError.text} -- photos may not be attached; try again before saving.
           </p>
-        )}
+        ) : null}
         {aiApplied && !analyzeError && (
           <p className="form-hint" style={{ color: "var(--badge-green-text)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
             <CheckCircle2 style={{ width: 14, height: 14, flexShrink: 0 }} /> AI filled in Accident Type, Severity, Damaged Parts, and Category below -- review before saving.

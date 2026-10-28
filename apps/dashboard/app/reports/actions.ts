@@ -49,6 +49,17 @@ export async function getReportDetailAction(id: string) {
   }
 }
 
+/** A failed AI call, with the API's error code when it sent one -- so the
+ * screen can tell AI being off for this person (AI_OFF_CODES, release P4)
+ * from the AI failing, and say what to do about it. */
+export type AiActionError = { error: string; code: string | null };
+
+function aiActionError(err: unknown, fallback: string): AiActionError {
+  // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+  unstable_rethrow(err);
+  return { error: err instanceof Error ? err.message : fallback, code: errorCode(err) };
+}
+
 /** Runs on the server so the browser never talks to the API's port
  * directly (avoids CORS) -- called imperatively from the client component,
  * not via <form action>, since the result drives React state (auto-filling
@@ -56,15 +67,13 @@ export async function getReportDetailAction(id: string) {
  * Report forms. */
 export async function analyzePhotosAction(
   formData: FormData
-): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | { error: string }> {
+): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | AiActionError> {
   try {
     const description = (formData.get("description") as string) || "";
     const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
     return await analyzeReportPhotos(description, photos);
   } catch (err) {
-    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+    return aiActionError(err, "AI analysis failed");
   }
 }
 
@@ -76,16 +85,14 @@ export async function analyzePhotosAction(
 export async function reanalyzeExistingPhotosAction(
   reportId: string,
   description: string
-): Promise<{ draft: PhotoAnalysisDraft } | { error: string }> {
+): Promise<{ draft: PhotoAnalysisDraft } | AiActionError> {
   try {
     const report = await getReport(reportId);
-    if (!report) return { error: "Report not found" };
-    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze" };
+    if (!report) return { error: "Report not found", code: null };
+    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze", code: null };
     return await analyzeExistingReportPhotos(report.photo_urls, description);
   } catch (err) {
-    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+    return aiActionError(err, "AI analysis failed");
   }
 }
 
@@ -197,17 +204,17 @@ export async function getAnnexSuggestionsAction(reportId: string): Promise<Annex
   }
 }
 
-/** Spends AI quota -- called only when the surveyor clicks for it. A 503
- * (the AI is unavailable) comes back as its message. */
+/** Spends AI quota (the surveyor's own key, or the company key) -- called
+ * only when the surveyor clicks for it. A 503 (the AI is unavailable) comes
+ * back as its message; AI off for them, with its code too. */
 export async function askAiAnnexSuggestionsAction(
   reportId: string,
   parts: string[]
-): Promise<{ groups: AnnexSuggestionGroup[] } | { error: string }> {
+): Promise<{ groups: AnnexSuggestionGroup[] } | AiActionError> {
   try {
     return await askAiAnnexSuggestions(reportId, parts);
   } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "The AI couldn't suggest lines" };
+    return aiActionError(err, "The AI couldn't suggest lines");
   }
 }
 

@@ -1,4 +1,4 @@
-import { aiKeyWorking, type AiKeyStatus } from "@/lib/api";
+import { aiKeyWorking, type AiKeyStatus, type MyAiKey } from "@/lib/api";
 
 /** The words every screen uses for an own AI key (agent5 §4.6), so My AI
  * key, the setup checklist and Users all say the same thing:
@@ -16,6 +16,42 @@ export function aiKeyWord(hasKey: boolean, status: AiKeyStatus | null | undefine
 /** "****1234", the only part of a key anyone ever sees. */
 export function maskedKey(last4: string | null | undefined): string {
   return `****${last4 || "????"}`;
+}
+
+/** Which key the AI uses for this person right now (release P4), from GET
+ * /auth/me/ai-key's `source` and `ai_available`:
+ *   own                      -> "AI uses your own key"
+ *   company, with a key      -> "AI uses the company key (your own key isn't working)"
+ *   company, no key          -> "AI uses the company key"
+ *   none / not available     -> "AI is off for you"
+ * `text` says why, and what would change it. */
+export function aiRightNowWords(
+  ai: Pick<MyAiKey, "has_key" | "company_allowed" | "ai_available" | "source">,
+  isAdmin: boolean
+): { off: boolean; which: string; text: string } {
+  const companyWhy = isAdmin ? "Admins can always use it." : "An admin has allowed you to use it.";
+  if (!ai.ai_available || ai.source === "none") {
+    const why = ai.has_key
+      ? "Your own key isn't working, and the company key isn't yours to use. Fix your key above, or ask an admin to let you use the company key."
+      : "Add your own key above, or ask an admin to let you use the company key.";
+    return { off: true, which: "AI is off for you.", text: `${why} You can still fill cases in by hand.` };
+  }
+  if (ai.source === "own") {
+    const fallback = ai.company_allowed ? " If your key stops working, AI uses the company key instead." : "";
+    return {
+      off: false,
+      which: "AI uses your own key.",
+      text: `Whatever you run with AI, on any case, is billed to its Google Cloud project.${fallback}`,
+    };
+  }
+  if (ai.has_key) {
+    return {
+      off: false,
+      which: "AI uses the company key (your own key isn't working).",
+      text: `${companyWhy} Fix your key above to use it again.`,
+    };
+  }
+  return { off: false, which: "AI uses the company key.", text: `${companyWhy} Add your own key above to use that instead.` };
 }
 
 /** What went wrong, when the API kept no message of Google's. */
