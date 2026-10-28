@@ -19,6 +19,8 @@ from fastapi import APIRouter, Request, Response
 
 import httpx
 
+from app.api.limits import RenderRefused, render_turn, require_ai
+from app.auth.deps import current_user
 from app.config import settings
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
@@ -59,7 +61,7 @@ async def _download_media(chat_id: str, url: str, index: int) -> str:
     return str(dest)
 
 
-def _finalize(chat_id: str, session) -> str:
+def _finalize(chat_id: str, session, user) -> str:
     db = SessionLocal()
     try:
         report = Report(
@@ -76,8 +78,13 @@ def _finalize(chat_id: str, session) -> str:
         report.photo_paths = stored_photos
         pdf_path = report_pdf_path(report.id)
         try:
-            render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
+            # In the api process, so the api's rules: a short wait for a
+            # Chromium slot, and one render at a time per account.
+            with render_turn(user):
+                render_pdf(report.data, stored_photos, pdf_path, report_id=report.id)
             report.pdf_path = pdf_path
+        except RenderRefused:
+            report.pdf_path = None
         except Exception as exc:
             logger.error("Failed to render PDF for report %s in WhatsApp: %s", report.id, exc)
             report.pdf_path = None
@@ -89,6 +96,10 @@ def _finalize(chat_id: str, session) -> str:
 
 @router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request) -> Response:
+    # Behind AuthMiddleware only a signed-in user gets here, and this drafts
+    # with the company AI key: the dashboard's AI rule (api/limits.py).
+    user = current_user(request)
+    require_ai(user)
     form = await request.form()
     chat_id = f"whatsapp:{form.get('From', 'unknown')}"
     body = (form.get("Body") or "").strip()
@@ -114,7 +125,7 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     if session.stage == Stage.AWAITING_CONFIRMATION:
         if body.lower() in CONFIRM_WORDS:
-            report_id = await asyncio.to_thread(_finalize, chat_id, session)
+            report_id = await asyncio.to_thread(_finalize, chat_id, session, user)
             reset_session(chat_id)
             rep_code = report_id[:8].upper()
             return _twiml(

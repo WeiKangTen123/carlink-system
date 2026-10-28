@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, Save, X } from "lucide-react";
-import type { ReportData, Taxonomy } from "@/lib/api";
+import { AlertTriangle, ArrowLeft, Bot, Check, Lock, Save, X } from "lucide-react";
+import { ownerLabel, type ReportData, type Taxonomy } from "@/lib/api";
+import { CaseNotFound } from "@/components/CaseNotFound";
+import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   IntakeRequestError,
@@ -79,6 +82,7 @@ type Props = {
 
 export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const router = useRouter();
+  const user = useCurrentUser();
   const [draftId, setDraftId] = useState<string | null>(initialDraftId);
   const [state, setState] = useState<IntakeState | null>(null);
   const [data, setData] = useState<ReportData>(EMPTY_DATA);
@@ -89,7 +93,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // then: the form is empty, and saving it would wipe the draft on the
   // server (the "Save & exit" button used to do exactly that).
   const [loadError, setLoadError] = useState<string | null>(null);
+  // The API said 404: no such draft, or not one this account may open.
+  const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The AI was refused for this account (ai_key_missing): offer to fill the
+  // case in by hand instead.
+  const [aiRefused, setAiRefused] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [busy, setBusy] = useState<null | "saving" | "starting" | "finalizing">(null);
   // Edits not yet on the server. Saved automatically shortly after the
@@ -208,6 +217,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         if (cancelled) return;
         if (e.message.includes("already been turned into a case")) {
           router.replace(`/reports/${initialDraftId}`);
+          return;
+        }
+        if (e instanceof IntakeRequestError && e.status === 404) {
+          setMissing(true);
           return;
         }
         setLoadError(e.message);
@@ -533,10 +546,18 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       setAiSkipped(false);
       setStep(2);
     } catch (e) {
+      if (e instanceof IntakeRequestError && e.code === "ai_key_missing") setAiRefused(true);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
+  }
+
+  /** No AI for this account: straight to entering the facts by hand. */
+  function fillByHand() {
+    setError(null);
+    setAiSkipped(true);
+    void goTo(3);
   }
 
   /** A change the AI's last read didn't see: offer a re-read. */
@@ -700,6 +721,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     return <div className="intake-shell"><div className="card intake-panel intake-muted">Loading draft…</div></div>;
   }
 
+  if (missing) return <CaseNotFound />;
+
   if (loadError) {
     return (
       <div className="intake-shell">
@@ -715,6 +738,31 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       </div>
     );
   }
+
+  // Someone else's unfinished draft: staff who see all cases can open it,
+  // but only its owner or an admin may work on it.
+  if (state && !state.permissions.edit) {
+    return (
+      <div className="intake-shell">
+        <div className="card intake-panel intake-view-only">
+          <Lock style={{ width: 20, height: 20, color: "var(--text-muted)", flexShrink: 0 }} />
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 6px" }}>Unfinished draft</h1>
+            <p className="form-hint" style={{ margin: "0 0 12px" }}>
+              Owner: <strong>{ownerLabel(state.owner)}</strong>. Only its owner or an admin can work on a draft. You can open
+              it once it is filed as a case.
+            </p>
+            <Link href="/reports" prefetch={false} className="btn-secondary-modern" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <ArrowLeft style={{ width: 13, height: 13 }} /> Back to cases
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // AI is off for this account (GET /auth/me), or the API just said so.
+  const aiOff = aiRefused || user?.ai_allowed === false;
 
   let saveStatus: React.ReactNode = null;
   if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
@@ -736,6 +784,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         </div>
         <div className="intake-header-actions">
           {draftId && <span className="intake-chip">Draft {draftId.slice(0, 6).toUpperCase()}</span>}
+          {/* Only someone who sees other people's cases needs telling whose
+              draft this is. Drafts can't be reassigned (owner_draft). */}
+          {state && canViewAllCases(user) && (
+            <span className={`intake-chip ${state.owner ? "" : "warn"}`}>Owner: {ownerLabel(state.owner)}</span>
+          )}
           <span role="status">{saveStatus}</span>
           {draftId && (
             <button type="button" className="btn-secondary-modern" onClick={saveAndExit} disabled={Boolean(busy) || uploading}>
@@ -771,6 +824,24 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         </div>
       )}
 
+      {step === 1 && aiOff && (
+        <div className="intake-alert info" role="status">
+          <Bot style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            AI is off for your account, so the photos won&apos;t be sorted or read for you. You can fill the case in by hand.
+          </div>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            onClick={fillByHand}
+            disabled={!draftId || !state || uploading || Boolean(busy)}
+            title={!draftId ? "Add the photos first" : undefined}
+          >
+            Fill in by hand
+          </button>
+        </div>
+      )}
+
       {step === 1 && (
         <UploadStep
           photos={state?.photos ?? []}
@@ -792,6 +863,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onRemovePhoto={deletePhoto}
           onStart={() => startProcessing("all")}
           onContinue={() => goTo(2)}
+          aiOff={aiOff}
+          onFillByHand={fillByHand}
         />
       )}
 

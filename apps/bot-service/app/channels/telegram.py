@@ -21,8 +21,8 @@ from app.conversation.flow import build_draft, build_template_prompt, combined_d
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report, gen_id
-from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, save_photo, tmp_dir
+from app.rendering.renderer import BOT_RENDER_SLOT_WAIT_SECONDS, render_pdf
+from app.storage.files import disk_space_low, report_pdf_path, save_photo, tmp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +189,17 @@ async def _photo_limit_reached(update: Update, session) -> bool:
     return True
 
 
+async def _disk_full(update: Update) -> bool:
+    """Before a download: the dashboard refuses uploads too once the server's
+    disk is nearly full (storage/files.disk_space_low)."""
+    if not disk_space_low():
+        return False
+    await update.message.reply_text(
+        "Sorry, the server is low on storage, so I can't take photos right now. Please tell your Carlink admin."
+    )
+    return True
+
+
 @_staff_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
@@ -258,7 +269,7 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # A photo that finds an expired draft starts the new one, so the rest of
     # an album sent with it isn't split across two drafts.
     session, _ = await _current_session(update, chat_id)
-    if await _photo_limit_reached(update, session):
+    if await _photo_limit_reached(update, session) or await _disk_full(update):
         return
 
     photo = update.message.photo[-1]
@@ -311,7 +322,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Sorry, I can only use photos (JPG, PNG, WebP or HEIC). Please send this as a photo or an image file."
             )
             return
-        if await _photo_limit_reached(update, session):
+        if await _photo_limit_reached(update, session) or await _disk_full(update):
             return
         file = await doc.get_file()
         dest = _new_temp_path(ext)
@@ -518,7 +529,11 @@ async def _finalize_report(update: Update, session, chat_id: str) -> None:
     stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
     pdf_path: str | None = report_pdf_path(report_id)
     try:
-        await asyncio.to_thread(render_pdf, data, stored_photos, pdf_path, report_id=report_id)
+        # The long wait for a Chromium slot (renderer.py): the bot renders
+        # seldom, on its own threads, and the PDF is what the chat gets back.
+        await asyncio.to_thread(
+            render_pdf, data, stored_photos, pdf_path, report_id=report_id, slot_wait=BOT_RENDER_SLOT_WAIT_SECONDS
+        )
     except Exception as exc:
         logger.error("Failed to render PDF for report %s in Telegram: %s", report_id, exc)
         pdf_path = None

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Loader2, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Loader2, PencilLine, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
 import { fileUrl, type ReportData } from "@/lib/api";
 import { formatBytes, UPLOAD_RETRY_DELAYS_MS, type IntakePhoto, type IntakeStage } from "@/lib/intake";
 
@@ -79,6 +79,10 @@ type Props = {
   onRemovePhoto: (photoId: string) => void;
   onStart: () => void;
   onContinue: () => void;
+  /** AI is off for this account: the main button goes to the facts step
+   * instead of offering an AI run the API would refuse. */
+  aiOff?: boolean;
+  onFillByHand?: () => void;
 };
 
 export function UploadStep({
@@ -101,6 +105,8 @@ export function UploadStep({
   onRemovePhoto,
   onStart,
   onContinue,
+  aiOff = false,
+  onFillByHand,
 }: Props) {
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -135,6 +141,8 @@ export function UploadStep({
   let primary: { label: string; action: () => void; icon: React.ReactNode };
   if (running) {
     primary = { label: "View AI progress", action: onContinue, icon: <Loader2 className="spin" style={{ width: 15, height: 15 }} /> };
+  } else if (aiOff && onFillByHand) {
+    primary = { label: "Next: fill in the facts", action: onFillByHand, icon: <PencilLine style={{ width: 15, height: 15 }} /> };
   } else if (stage === "ready" && unsorted === 0) {
     primary = { label: "Next: check AI sorting", action: onContinue, icon: <CheckCircle2 style={{ width: 15, height: 15 }} /> };
   } else if (stage === "ready") {
@@ -359,7 +367,9 @@ export function UploadStep({
             ? "Waiting for uploads to finish…"
             : photos.length === 0
               ? "Add photos to start. Your draft saves automatically."
-              : "The AI sorts every photo, then reads the vehicle facts and damage."}
+              : aiOff
+                ? "AI is off for your account, so you'll enter the facts yourself."
+                : "The AI sorts every photo, then reads the vehicle facts and damage."}
         </span>
         <button type="button" className="btn-primary-modern" onClick={primary.action} disabled={!running && !canStart}>
           {primary.icon} {primary.label}

@@ -2,32 +2,46 @@ import asyncio
 import logging
 import shutil
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
 from app.ai.extraction import draft_report
+from app.api import limits
 from app.api.auth import router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
 from app.api.intake import delete_intake_files, router as intake_router
 from app.auth.core import CurrentUser, audit, report_history
-from app.auth.deps import current_user, require_admin
+from app.auth.deps import (
+    CASE_NOT_FOUND,
+    ApiError,
+    can_view_file,
+    current_user,
+    editable_case,
+    not_allowed,
+    require_admin,
+    visible_case,
+)
 from app.auth.middleware import LOCAL_DEV_ORIGIN, AuthMiddleware
 from app.auth.passwords import HashingBusy
+from app.auth.permissions import can_assign, can_delete_case, can_reopen, can_sign_off, is_staff, list_scope
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
+from app.reports import owners
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import available_api_keys, get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, gen_id, iso_utc
+from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, User, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -37,10 +51,11 @@ from app.reports.taxonomy import (
     body_type_for,
 )
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
-from app.rendering.renderer import render_pdf
+from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import (
     generate_preview,
     generate_thumbnail,
+    remove_incident_dirs,
     report_pdf_path,
     save_photo,
     tmp_dir,
@@ -61,7 +76,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Carlink Bot Service API", lifespan=lifespan)
+# The API docs list every route to anyone signed in, which with open signup
+# is anyone. Off unless ENABLE_API_DOCS=true; app.openapi() works either way.
+_docs = settings.enable_api_docs
+app = FastAPI(
+    title="Carlink Bot Service API",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 # Every request needs a signed-in user (app/auth/middleware.py), except
 # /health and signing in itself. Added before CORS so CORS wraps it: a 401
 # still carries CORS headers in local dev instead of looking like a network
@@ -95,9 +119,12 @@ app.include_router(intake_router)
 
 @app.exception_handler(HashingBusy)
 async def _hashing_busy(request: Request, exc: HashingBusy):
-    from fastapi.responses import JSONResponse
-
     return JSONResponse({"detail": "The server is busy. Try again in a moment."}, status_code=503)
+
+
+@app.exception_handler(ApiError)
+async def _api_error(request: Request, exc: ApiError):
+    return JSONResponse({"detail": exc.detail, "code": exc.code}, status_code=exc.status_code, headers=exc.headers)
 
 
 def blank_sign_off() -> dict:
@@ -128,6 +155,14 @@ class _ImmutableStaticFiles(StaticFiles):
         # get_path() has already normalized the path, so ".." segments are
         # resolved before this check rather than slipping past it.
         if not path.replace("\\", "/").startswith(_PUBLIC_FILE_PREFIXES):
+            raise HTTPException(status_code=404)
+        # Only people who may see the case get its files, and anyone else
+        # the same "not found" as for a file that doesn't exist. Checked
+        # before super(), whose lookup_path would otherwise make a missing
+        # thumbnail or preview for whoever asked. (Here rather than in a
+        # middleware: only this sees the path after ".." is resolved.)
+        user = scope.get("state", {}).get("user")
+        if user is None or not await run_in_threadpool(can_view_file, user, path):
             raise HTTPException(status_code=404)
         return await super().get_response(path, scope)
 
@@ -176,16 +211,36 @@ def _refuse_intake_draft(r: Report) -> None:
         )
 
 
+Scope = Optional[Literal["mine", "all", "unassigned"]]
+
+
+def _scoped(query, user: CurrentUser, requested: str | None):
+    """Narrows a Report query to the cases a list covers for this user
+    (permissions.list_scope): their own, every case, or the Unassigned
+    ones. Lists, counts and charts all go through this."""
+    scope = list_scope(user, requested)
+    if scope is None:
+        raise ApiError(403, "You can only list your own cases.", "scope_not_allowed")
+    if scope == "mine":
+        return query.filter(Report.owner_id == user.id)
+    if scope == "unassigned":
+        return query.filter(Report.owner_id.is_(None))
+    return query
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
 
 
 @app.get("/reports")
-def list_reports() -> list[dict]:
+def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user)) -> list[dict]:
+    """?scope=mine|all|unassigned. Plain users only ever get their own
+    cases; "see all" staff default to their own, admins to all."""
     db = SessionLocal()
     try:
-        reports = db.query(Report).order_by(Report.created_at.desc()).all()
+        reports = _scoped(db.query(Report), user, scope).order_by(Report.created_at.desc()).all()
+        owner_rows = owners.owners_by_id(db, {r.owner_id for r in reports})
         result = []
         for r in reports:
             data = r.data or {}
@@ -247,6 +302,7 @@ def list_reports() -> list[dict]:
                 "claim_type": insurance.get("claim_type"),
                 "disassembly_required": recommendations.get("disassembly_required"),
                 "reported_to_police": police_report.get("reported_to_police"),
+                "owner": owners.owner_dict(owner_rows.get(r.owner_id)),
             })
         return result
     finally:
@@ -254,12 +310,15 @@ def list_reports() -> list[dict]:
 
 
 @app.get("/reports/{report_id}")
-def get_report(report_id: str) -> dict:
+def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            return {"error": "not found"}
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        # Owner, what this user may do (the buttons follow it), and for an
+        # admin on an Unassigned case, who it should probably go to.
+        access = owners.access_fields(db, r, user)
 
         if r.status == "intake":
             # Unfinished intake -- the dashboard sends these to the intake
@@ -277,6 +336,7 @@ def get_report(report_id: str) -> dict:
                 "photo_preview_urls": [],
                 "pdf_url": None,
                 "created_at": iso_utc(r.created_at),
+                **access,
             }
 
         # Opening a case used to "ensure" annexes by synthesizing and saving
@@ -284,14 +344,21 @@ def get_report(report_id: str) -> dict:
         # now only change through the surveyor's own edits or the explicit
         # "fill derived fields" action (POST /reports/{id}/ai-enrich).
 
-        # If PDF is missing or doesn't exist on disk, render it on-demand
+        # If PDF is missing or doesn't exist on disk, render it on-demand --
+        # unless this person may not render right now (limits.render_turn)
+        # or no Chromium slot is free this moment (slot_wait=0: opening a
+        # case never waits for one). The case still opens, without a PDF
+        # until later.
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
-            target_pdf_path = report_pdf_path(r.id)
             try:
-                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                with limits.render_turn(user):
+                    target_pdf_path = report_pdf_path(r.id)
+                    render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id, slot_wait=0)
                 r.pdf_path = target_pdf_path
                 db.commit()
+            except (limits.RenderRefused, RenderBusy):
+                r.pdf_path = None
             except Exception as exc:
                 logger.warning("Failed to render PDF on-demand for report %s: %s", r.id, exc)
                 r.pdf_path = None
@@ -312,8 +379,9 @@ def get_report(report_id: str) -> dict:
             "photo_preview_urls": photo_preview_urls,
             "pdf_url": to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None,
             "created_at": iso_utc(r.created_at),
-            # Who created, edited, signed off and reopened it (app/auth).
+            # Who created, edited, signed off, reopened and assigned it.
             "history": report_history(db, r),
+            **access,
         }
     finally:
         db.close()
@@ -321,25 +389,29 @@ def get_report(report_id: str) -> dict:
 
 @app.get("/reports/{report_id}/download")
 @app.head("/reports/{report_id}/download")
-def download_report_pdf(report_id: str):
+def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case)):
     from fastapi.responses import FileResponse
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
-            target_pdf_path = report_pdf_path(r.id)
-            try:
-                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
-                r.pdf_path = target_pdf_path
-                db.commit()
-            except Exception as exc:
-                logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
-                raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            # 429 render_busy / render_limit if this person may not render now.
+            with limits.render_turn(user):
+                target_pdf_path = report_pdf_path(r.id)
+                try:
+                    render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+                except RenderBusy as exc:
+                    raise limits.render_busy() from exc
+                except Exception as exc:
+                    logger.error("Failed to render PDF for report %s download: %s", r.id, exc)
+                    raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            r.pdf_path = target_pdf_path
+            db.commit()
 
         if not r.pdf_path or not Path(r.pdf_path).exists():
             raise HTTPException(status_code=503, detail="PDF generation currently unavailable.")
@@ -349,34 +421,41 @@ def download_report_pdf(report_id: str):
             path=r.pdf_path,
             filename=filename,
             media_type="application/pdf",
+            # Not kept by the browser: a cached copy outlives signing out and
+            # losing access to the case (reassigned, account unticked).
+            headers={"Cache-Control": "no-store"},
         )
     finally:
         db.close()
 
 
 @app.post("/reports/{report_id}/render-pdf")
-def render_report_pdf_endpoint(report_id: str) -> dict:
+def render_report_pdf_endpoint(report_id: str, user: CurrentUser = Depends(editable_case)) -> dict:
     """Explicitly triggers on-demand re-rendering of the official incident report PDF."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
 
-        target_pdf_path = report_pdf_path(r.id)
-        try:
-            render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
-            r.pdf_path = target_pdf_path
-            db.commit()
-            return {
-                "id": r.id,
-                "status": "rendered",
-                "pdf_url": to_public_url(r.pdf_path),
-            }
-        except Exception as exc:
-            logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
-            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+        # 429 render_busy / render_limit if this person may not render now.
+        with limits.render_turn(user):
+            target_pdf_path = report_pdf_path(r.id)
+            try:
+                render_pdf(r.data or {}, r.photo_paths or [], target_pdf_path, report_id=r.id)
+            except RenderBusy as exc:
+                raise limits.render_busy() from exc
+            except Exception as exc:
+                logger.error("Failed to render PDF for report %s on-demand: %s", r.id, exc)
+                raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+        r.pdf_path = target_pdf_path
+        db.commit()
+        return {
+            "id": r.id,
+            "status": "rendered",
+            "pdf_url": to_public_url(r.pdf_path),
+        }
     finally:
         db.close()
 
@@ -385,10 +464,18 @@ ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 MAX_PHOTO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
+def _temp_prefix(user: CurrentUser) -> str:
+    """Dashboard uploads in storage/tmp are named u{user id}-{random}, so
+    only the person who uploaded one can attach it to a case
+    (_checked_temp_paths). The Telegram bot's are tg-{random}."""
+    return f"u{user.id}-"
+
+
 @app.post("/reports/analyze-photos")
 async def analyze_report_photos(
     description: str = Form(""),
     photos: list[UploadFile] = File(default=[]),
+    user: CurrentUser = Depends(current_user),
 ) -> dict:
     """Dashboard equivalent of the Telegram bot's photo+text drafting step:
     saves the uploaded photos to a temp dir, runs the same Gemini drafting
@@ -398,6 +485,11 @@ async def analyze_report_photos(
     goes on to save the report, so the photos are only ever attached to a
     report the reporter actually confirmed.
     """
+    # No case to gate on: the photos go to a case later, through PUT
+    # /reports/{id}'s checks. AI first, then room on the disk, before any
+    # photo is saved.
+    limits.require_ai(user)
+    limits.require_disk_space()
     saved_paths: list[str] = []
     td = tmp_dir()
     for photo in photos:
@@ -408,7 +500,7 @@ async def analyze_report_photos(
                 detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
             )
         ext = raw_ext or ".jpg"
-        dest = td / f"{uuid.uuid4().hex}{ext}"
+        dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
         with open(dest, "wb") as f:
             shutil.copyfileobj(photo.file, f)
         if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
@@ -436,18 +528,21 @@ class CreateReportRequest(BaseModel):
     temp_photo_paths: list[str] = []
 
 
-def _checked_temp_paths(paths: list[str]) -> list[str]:
+def _checked_temp_paths(paths: list[str], user: CurrentUser) -> list[str]:
     """temp_photo_paths arrive from the browser, which only ever got them
     from /reports/analyze-photos -- so anything not directly inside
     storage/tmp is refused. Each path is copied into the public case folder
     and then deleted, so before this check one request could publish and
     delete any file the API can read: the SQLite database, the source code.
+    Only the caller's own uploads (_temp_prefix) pass, or anyone could move
+    someone else's photos -- a Telegram draft's, say -- into their case.
     """
     root = tmp_dir().resolve()
+    prefix = _temp_prefix(user)
     checked: list[str] = []
     for raw in paths:
         resolved = Path(raw).resolve()
-        if resolved.parent != root:
+        if resolved.parent != root or not resolved.name.startswith(prefix):
             raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
         checked.append(str(resolved))
     return checked
@@ -458,14 +553,21 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
     """Manual entry from the dashboard -- optionally with photos that were
     already analyzed via POST /reports/analyze-photos and are sitting in the
     temp dir, which get moved into the report's permanent storage here once
-    the reporter actually confirms and saves.
+    the reporter actually confirms and saves. The case is the caller's.
     """
-    temp_paths = _checked_temp_paths(body.temp_photo_paths)
+    temp_paths = _checked_temp_paths(body.temp_photo_paths, user)
     if body.draft.vehicle_info:
         v = body.draft.vehicle_info
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = body.draft.model_dump()
     data["sign_off"] = blank_sign_off()
+    data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), None)
+    limits.require_disk_space()
+    db = SessionLocal()
+    try:
+        limits.check_new_cases_today(db, user)
+    finally:
+        db.close()
 
     # Photos and PDF first, the database row last, so no SQLite write lock
     # is held while Chromium renders (it used to flush the row first and
@@ -477,9 +579,16 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         for i, temp_path in enumerate(temp_paths)
         if Path(temp_path).exists()
     ]
-    pdf_path: str | None = report_pdf_path(report_id)
+    # When this person may not render now (limits.render_turn) or every
+    # Chromium slot stays busy, the first download renders it instead.
+    pdf_path: str | None = None
     try:
-        render_pdf(data, photo_paths, pdf_path, report_id=report_id)
+        with limits.render_turn(user):
+            pdf_path = report_pdf_path(report_id)
+            # Not saved yet, so the renderer can't look its owner up.
+            render_pdf(data, photo_paths, pdf_path, report_id=report_id, unverified=not is_staff(user))
+    except (limits.RenderRefused, RenderBusy):
+        pdf_path = None
     except Exception as exc:
         logger.error("Failed to render PDF for created report %s: %s", report_id, exc)
         pdf_path = None
@@ -494,6 +603,7 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
             status="confirmed",
             photo_paths=photo_paths,
             pdf_path=pdf_path,
+            owner_id=user.id,
         ))
         audit(db, user, "created", report_id)
         db.commit()
@@ -515,14 +625,34 @@ def _merge_into(base: dict, patch: dict) -> dict:
     return base
 
 
+def _render_after_change(user: CurrentUser, r: Report, what: str) -> Optional[str]:
+    """Renders case r's PDF again after a change (an edit, signing off,
+    reopening) and returns the path to keep on it. None -- the next download
+    renders it -- when this person may not render now (limits.render_turn)
+    or every Chromium slot stayed busy: the old file shows the case from
+    before the change. A render that fails keeps the old path, as before."""
+    try:
+        with limits.render_turn(user):
+            pdf_path = r.pdf_path or report_pdf_path(r.id)
+            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
+        return pdf_path
+    except (limits.RenderRefused, RenderBusy):
+        return None
+    except Exception as exc:
+        logger.error("Failed to render PDF for %s report %s: %s", what, r.id, exc)
+        return r.pdf_path
+
+
 @app.put("/reports/{report_id}")
-def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser = Depends(current_user)) -> dict:
-    temp_paths = _checked_temp_paths(body.temp_photo_paths)
+def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser = Depends(editable_case)) -> dict:
+    temp_paths = _checked_temp_paths(body.temp_photo_paths, user)
+    if temp_paths:
+        limits.require_disk_space()
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
         if _is_signed_off(r):
             raise HTTPException(
@@ -538,7 +668,10 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         # dashboard's Edit form sends a partial draft (no annexes, liability
         # assessment, vehicle year...), and replacing the whole case with
         # it -- defaults filling every gap -- silently erased those.
-        data = _merge_into(dict(r.data or {}), body.draft.model_dump(exclude_unset=True))
+        sent = body.draft.model_dump(exclude_unset=True)
+        if "report_id" in sent:
+            sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
+        data = _merge_into(dict(r.data or {}), sent)
         data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
         r.data = data
 
@@ -557,12 +690,7 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
 
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for updated report %s: %s", r.id, exc)
+        r.pdf_path = _render_after_change(user, r, "updated")
 
         audit(db, user, "edited", r.id)
         db.commit()
@@ -582,7 +710,7 @@ class DamageItemReviewRequest(BaseModel):
 
 @app.patch("/reports/{report_id}/damage-items/{item_index}")
 def review_damage_item(
-    report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(current_user)
+    report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(editable_case)
 ) -> dict:
     """Marks one damage line item verified and/or records its OEM part
     number -- the two things a surveyor is meant to do while reviewing the
@@ -602,7 +730,7 @@ def review_damage_item(
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         # Same lock rule update_report enforces -- a signed-off report is
         # a finalized record; reopen it first.
         if _is_signed_off(r):
@@ -673,36 +801,26 @@ def _with_sign_off(report_data: dict, **updates) -> dict:
 
 
 @app.post("/reports/{report_id}/reopen")
-def reopen_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     """Explicitly unlocks a Signed Off report for editing -- a deliberate
     action rather than update_report silently allowing edits underneath an
     already-signed-off record.
 
     Reopening withdraws someone's signature, so only the surveyor who signed
-    it or an admin may. Sign-offs from before sign-in existed record no
-    account, so those need an admin."""
+    it or an admin may (permissions.can_reopen)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
-        signer_id = ((r.data or {}).get("sign_off") or {}).get("signed_by_user_id")
-        if _is_signed_off(r) and not user.is_admin and signer_id != user.id:
-            raise HTTPException(
-                status_code=403,
-                detail="Only the surveyor who signed this report, or an admin, can reopen it.",
-            )
+        if _is_signed_off(r) and not can_reopen(user, r):
+            raise not_allowed("Only the surveyor who signed this report, or an admin, can reopen it.")
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
 
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            render_pdf(r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for reopened report %s: %s", r.id, exc)
+        r.pdf_path = _render_after_change(user, r, "reopened")
 
         audit(db, user, "reopened", r.id)
         db.commit()
@@ -712,18 +830,23 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(current_user)) -> 
 
 
 @app.post("/reports/{report_id}/sign-off")
-async def sign_off_report(report_id: str, request: Request, user: CurrentUser = Depends(current_user)) -> dict:
+async def sign_off_report(report_id: str, request: Request, user: CurrentUser = Depends(editable_case)) -> dict:
     """Signs the case as the signed-in user, with their own profile
     (Account page). The name, qualifications, licence and firm used to come
     from the request -- defaulting to one fixed surveyor -- so anyone could
-    sign as anyone; any such fields in the body are now ignored."""
+    sign as anyone; any such fields in the body are now ignored.
+
+    Signing puts the firm's stamp on the report, so only staff may: admins
+    and "May sign off" accounts (permissions.can_sign_off)."""
     import hashlib
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
+        if not can_sign_off(user, r):
+            raise not_allowed("Only an admin, or an account an admin has allowed to sign off, can sign off a report.")
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="This report is already signed off.")
 
@@ -794,16 +917,11 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             new_data["bola_assessment"] = ba
 
         r.data = new_data
-        
-        pdf_path = r.pdf_path or report_pdf_path(r.id)
-        try:
-            # On a worker thread: this endpoint is async (it reads the JSON
-            # body itself), and Playwright's sync API refuses to run on the
-            # event loop -- the signed PDF used to keep the unsigned copy.
-            await asyncio.to_thread(render_pdf, r.data, r.photo_paths or [], pdf_path, report_id=r.id)
-            r.pdf_path = pdf_path
-        except Exception as exc:
-            logger.error("Failed to render PDF for signed off report %s: %s", r.id, exc)
+
+        # On a worker thread: this endpoint is async (it reads the JSON body
+        # itself), and Playwright's sync API refuses to run on the event
+        # loop -- the signed PDF used to keep the unsigned copy.
+        r.pdf_path = await asyncio.to_thread(_render_after_change, user, r, "signed off")
 
         # The account's email too: the name on a profile can be edited.
         audit(db, user, "signed_off", r.id, detail=user.email)
@@ -815,12 +933,18 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
 
 
 @app.get("/analytics/summary")
-def get_analytics_summary() -> dict:
+def get_analytics_summary(scope: Scope = None, user: CurrentUser = Depends(current_user)) -> dict:
+    """Over the same cases GET /reports lists for this ?scope=."""
     db = SessionLocal()
     try:
         # Unfinished intakes aren't incidents yet: counting them would add
         # empty "Moderate, Vehicle Collision" rows to every chart.
-        reports = db.query(Report).filter(Report.status != "intake").order_by(Report.created_at.desc()).all()
+        reports = (
+            _scoped(db.query(Report), user, scope)
+            .filter(Report.status != "intake")
+            .order_by(Report.created_at.desc())
+            .all()
+        )
         total_incidents = len(reports)
         pending_review = sum(1 for r in reports if r.status in ("confirmed", "draft", "pending", "Under Review"))
         signed_off = sum(1 for r in reports if r.status in ("Signed Off", "signed_off"))
@@ -910,28 +1034,25 @@ def get_analytics_summary() -> dict:
 
 
 @app.delete("/reports/{report_id}")
-def delete_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     """Admins only, except an unfinished intake draft (status "intake"),
-    which whoever is filing it may throw away."""
+    which the person filing it may throw away (permissions.can_delete_case)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="not found")
-        if r.status != "intake" and not user.is_admin:
-            raise HTTPException(status_code=403, detail="Only an admin can delete a case.")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        if not can_delete_case(user, r):
+            raise not_allowed(
+                "Only an admin can delete a case." if r.status != "intake"
+                else "Only the person filing this draft, or an admin, can throw it away."
+            )
 
         # Unconditional (and a no-op for ordinary cases): a draft that was
         # turned into a case some other way would otherwise leak its folder.
-        delete_intake_files(db, report_id)
-
-        folder = None
-        if r.pdf_path:
-            folder = Path(r.pdf_path).resolve().parent
-        elif r.photo_paths:
-            folder = Path(r.photo_paths[0]).resolve().parent.parent
-        if folder and folder.exists() and folder.is_relative_to(Path(settings.storage_dir).resolve()):
-            shutil.rmtree(folder, ignore_errors=True)
+        delete_intake_files(db, r.id)
+        # Every month folder the case has files in, not only the PDF's.
+        remove_incident_dirs(r.id)
 
         plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
         audit(db, user, "deleted", report_id, detail="Unfinished intake" if r.status == "intake" else (plate or ""))
@@ -978,13 +1099,13 @@ def _is_signed_off(r: Report) -> bool:
 
 
 @app.post("/reports/{report_id}/ai-enrich")
-def ai_enrich_report(report_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+def ai_enrich_report(report_id: str, user: CurrentUser = Depends(editable_case)) -> dict:
     """Fill derived fields on one report (see _enrich_single_report_data)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
@@ -992,6 +1113,42 @@ def ai_enrich_report(report_id: str, user: CurrentUser = Depends(current_user)) 
         audit(db, user, "edited", r.id)
         db.commit()
         return {"id": r.id, "status": "enriched", "data": r.data}
+    finally:
+        db.close()
+
+
+class OwnerUpdate(BaseModel):
+    # Required, so a body missing it can't unassign a case by accident;
+    # null means Unassigned.
+    owner_id: Optional[str]
+
+
+@app.patch("/reports/{report_id}/owner")
+def set_report_owner(report_id: str, body: OwnerUpdate, user: CurrentUser = Depends(visible_case)) -> dict:
+    """Admins hand a case to an active account, or make it Unassigned (only
+    admins and "see all" staff see those). Noted in the case history. A
+    draft stays with the person filing it."""
+    if not can_assign(user):
+        raise not_allowed("Only an admin can assign cases.")
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        if r.status == "intake":
+            raise ApiError(409, "This is an unfinished intake; it stays with the person filing it.", "owner_draft")
+        target_id = body.owner_id or None
+        if target_id == r.owner_id:
+            current = owners.owners_by_id(db, [target_id]).get(target_id)
+            return {"owner": owners.owner_dict(current)}
+        new_owner = db.get(User, target_id) if target_id else None
+        if target_id and new_owner is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if new_owner is not None and not new_owner.active:
+            raise ApiError(409, "That account is disabled. Enable it first, or choose someone else.", "owner_inactive")
+        owners.set_owner(db, r, new_owner, user)
+        db.commit()
+        return {"owner": owners.owner_dict(new_owner)}
     finally:
         db.close()
 
@@ -1287,7 +1444,7 @@ async def test_service(service: str, admin: CurrentUser = Depends(require_admin)
 
 
 @app.get("/taxonomy")
-def get_taxonomy() -> dict:
+def get_taxonomy(scope: Scope = None, user: CurrentUser = Depends(current_user)) -> dict:
     """The controlled vocabulary, plus how much of it real cases actually use.
 
     Usage counts are what make this more than a list: they show which parts
@@ -1295,10 +1452,13 @@ def get_taxonomy() -> dict:
     names from before the vocabulary existed are still in the data, so it's
     visible that older reports read differently rather than that being a
     silent inconsistency.
+
+    Counted over the cases GET /reports lists for this ?scope=, drafts left
+    out (like analytics).
     """
     db = SessionLocal()
     try:
-        reports = db.query(Report).all()
+        reports = _scoped(db.query(Report), user, scope).filter(Report.status != "intake").all()
         canonical = set(CANONICAL_PARTS)
         part_usage: dict[str, int] = {}
         legacy_usage: dict[str, int] = {}

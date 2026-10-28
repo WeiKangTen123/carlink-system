@@ -5,9 +5,9 @@
     GET   /auth/me                     the signed-in user
     PUT   /auth/me                     own username, name and surveyor profile
     POST  /auth/password               change own password
-    GET   /users                       admin: every account
+    GET   /users                       admin: every account, with its case counts
     POST  /users                       admin: add an account (temporary password; API only)
-    PATCH /users/{id}                  admin: edit, change role, disable/enable
+    PATCH /users/{id}                  admin: edit, change role and ticks, disable/enable
     POST  /users/{id}/reset-password   admin: new temporary password
 
 The first admin is created on the server (python -m app.auth.manage).
@@ -44,7 +44,7 @@ from app.auth.core import (
     record_failed_login,
     record_login,
     token_hash,
-    user_dict,
+    user_dicts,
     username_from_email,
     username_problem,
     username_taken,
@@ -61,6 +61,7 @@ from app.auth.passwords import (
 from app.config import settings
 from app.reports.db import SessionLocal
 from app.reports.models import User
+from app.reports.owners import TICKS
 
 router = APIRouter(tags=["auth"])
 
@@ -242,6 +243,10 @@ def logout(request: Request, response: Response) -> dict:
         finally:
             db.close()
     response.delete_cookie(SESSION_COOKIE, path="/", secure=settings.auth_cookie_secure, httponly=True, samesite="lax")
+    # Case photos are cached for a year (/files), and they'd stay readable
+    # on a shared computer after signing out. The browser calls this
+    # directly (components/UserMenu.tsx), so the header reaches it.
+    response.headers["Clear-Site-Data"] = '"cache", "storage"'
     return {"ok": True}
 
 
@@ -391,12 +396,33 @@ class NewUser(ProfileFields):
     email: str = Field(max_length=320)
     name: str = Field(max_length=120)
     role: Literal["admin", "user"] = "user"
+    # The ticks, as on PATCH /users/{id}; off unless sent as true. Ignored
+    # for an admin, who has all of it anyway.
+    sees_all_cases: Optional[bool] = None
+    ai_company_key_allowed: Optional[bool] = None
+    may_sign_off: Optional[bool] = None
 
 
 class UserUpdate(ProfileFields):
     email: Optional[str] = Field(default=None, max_length=320)
     role: Optional[Literal["admin", "user"]] = None
     active: Optional[bool] = None
+    # The ticks (models.User, app/auth/permissions.py).
+    sees_all_cases: Optional[bool] = None
+    ai_company_key_allowed: Optional[bool] = None
+    may_sign_off: Optional[bool] = None
+
+
+def _apply_ticks(row: User, body: UserUpdate | NewUser) -> str:
+    """Sets the ticks the request carries; returns what changed, for the
+    history. Unset (None) and off read the same, so None -> off is no change."""
+    changes = []
+    for tick in TICKS:
+        value = getattr(body, tick)
+        if value is not None and bool(getattr(row, tick)) != value:
+            changes.append(f"{tick}: {bool(getattr(row, tick))!r} -> {value!r}")
+            setattr(row, tick, value)
+    return "; ".join(changes)
 
 
 def _checked_email(db, email: str, exclude_id: str | None = None) -> str:
@@ -415,7 +441,7 @@ def _checked_email(db, email: str, exclude_id: str | None = None) -> str:
 def list_users(admin: CurrentUser = Depends(require_admin)) -> list[dict]:
     db = SessionLocal()
     try:
-        return [user_dict(u) for u in db.query(User).order_by(User.active.desc(), User.username, User.name).all()]
+        return user_dicts(db, db.query(User).order_by(User.active.desc(), User.username, User.name).all())
     finally:
         db.close()
 
@@ -436,11 +462,13 @@ def create_user(body: NewUser, admin: CurrentUser = Depends(require_admin)) -> d
         )
         body.username = None  # already applied
         _apply_profile(db, row, body, by_admin=True)
+        # Recorded the way PATCH records them: "sees_all_cases: False -> True".
+        ticks = "" if row.role == "admin" else _apply_ticks(row, body)
         db.add(row)
-        audit(db, admin, "user_created", detail=f"{row.email} ({row.role})")
+        audit(db, admin, "user_created", detail="; ".join(filter(None, [f"{row.email} ({row.role})", ticks])))
         _commit_or_taken(db)
         db.refresh(row)
-        return {"user": user_dict(row), "temporary_password": password}
+        return {"user": user_dicts(db, [row])[0], "temporary_password": password}
     finally:
         db.close()
 
@@ -464,7 +492,7 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
         if body.role is not None:
             row.role = body.role
         _apply_profile(db, row, body, by_admin=True)
-        changes = _describe_changes(before, row)
+        changes = "; ".join(filter(None, [_describe_changes(before, row), _apply_ticks(row, body)]))
         if changes:
             audit(db, admin, "user_updated", detail=f"{row.email}: {changes}")
         if body.active is not None and body.active != row.active:
@@ -474,7 +502,7 @@ def update_user(user_id: str, body: UserUpdate, admin: CurrentUser = Depends(req
             audit(db, admin, "user_enabled" if body.active else "user_disabled", detail=row.email)
         _commit_or_taken(db)
         db.refresh(row)
-        return user_dict(row)
+        return user_dicts(db, [row])[0]
     finally:
         db.close()
 
@@ -497,7 +525,7 @@ def reset_password(user_id: str, admin: CurrentUser = Depends(require_admin)) ->
         audit(db, admin, "password_reset", detail=row.email)
         db.commit()
         db.refresh(row)
-        return {"user": user_dict(row), "temporary_password": password}
+        return {"user": user_dicts(db, [row])[0], "temporary_password": password}
     finally:
         db.close()
 

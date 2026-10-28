@@ -176,6 +176,7 @@ export function AnnexSuggestionsPanel({
   let summary = "";
   if (loadState === "loading") summary = "Looking through past reports…";
   else if (loadState === "error") summary = "Couldn't load";
+  else if (data?.hidden) summary = "Staff only";
   else if (data) summary = data.cases_used > 0 ? scopeLine(data.cases_used, data.scope) : "No past reports imported yet";
 
   const renderGroup = ({ group, source, lines }: { group: AnnexSuggestionGroup; source: Source; lines: AnnexSuggestionLine[] }) => (
@@ -240,7 +241,11 @@ export function AnnexSuggestionsPanel({
 
           {loadState === "loaded" && data && (
             <>
-              {data.cases_used === 0 ? (
+              {data.hidden ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Price history is available to staff only.
+                </div>
+              ) : data.cases_used === 0 ? (
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   No past reports imported yet — import them on the Knowledge page.
                   {isAdmin(user) && (

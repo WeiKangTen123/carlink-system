@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     # app/auth/passwords.py. The dashboard's hints say 10 -- update
     # MIN_PASSWORD_LENGTH in apps/dashboard/lib/signup.ts when switching.
     strict_password_rules: bool = False
+    # Uploads and new cases are refused (507 disk_full, and a reply from the
+    # Telegram bot) once the storage disk has less than this many GB free: a
+    # full disk breaks SQLite writes for both processes, and the VM's ~10GB
+    # disk is shared with another app. See storage/files.disk_space_low.
+    min_free_disk_gb: float = 3.0
+    # /docs, /redoc and /openapi.json. Off: they list every route to anyone
+    # who signs up.
+    enable_api_docs: bool = False
 
 
 settings = Settings()

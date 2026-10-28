@@ -3,15 +3,13 @@
 import { useState } from "react";
 import { LockOpen } from "lucide-react";
 import { reopenReportAction } from "../../actions";
-import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 
 /** Reopening withdraws a signature, so only the surveyor who signed (by
- * account) or an admin may; the API enforces the same rule. */
-export function ReopenButton({ id, signedByUserId }: { id: string; signedByUserId: string | null }) {
-  const user = useCurrentUser();
+ * account) or an admin may. `allowed` is the case's permissions.reopen from
+ * the API, which enforces the same rule. */
+export function ReopenButton({ id, allowed }: { id: string; allowed: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const allowed = isAdmin(user) || (signedByUserId !== null && signedByUserId === user?.id);
 
   async function handleReopen() {
     if (!confirm("Reopen this report for editing? This resets its status to Draft until it's signed off again.")) return;

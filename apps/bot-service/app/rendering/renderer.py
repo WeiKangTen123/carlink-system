@@ -8,6 +8,7 @@ step. See docs/proposal.md section E for the fuller tradeoff.
 import base64
 import logging
 import mimetypes
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,32 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
+
+# Chromium takes 200-500 MB per render on a small VM shared with another app,
+# and nothing limited how many ran at once (about 40 could: one per API
+# worker thread). Per process: the api and the Telegram bot each have their
+# own. A render waits for a free slot and then gives up with RenderBusy.
+#
+# How long it waits is the caller's. The api's renders run on Starlette's
+# pool of 40 threads, which also signs every request in, so 20 renders each
+# waiting two minutes for a slot held the whole site up: they wait
+# RENDER_SLOT_WAIT_SECONDS, then 429 (or leave the PDF to later). The
+# Telegram bot renders rarely, on its own threads, and its PDF has to be
+# made, so it waits BOT_RENDER_SLOT_WAIT_SECONDS -- two big reports ahead of
+# it take about a minute. A parameter, not a setting per process: `python -m
+# app.main` without flags runs both in one. The per-person limits are
+# api/limits.py's.
+MAX_CONCURRENT_RENDERS = 2
+RENDER_SLOT_WAIT_SECONDS = 3
+BOT_RENDER_SLOT_WAIT_SECONDS = 120
+_render_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERS)
+
+
+class RenderBusy(RuntimeError):
+    """Every Chromium slot stayed busy for as long as the caller would wait.
+    A RuntimeError like every other render failure, so callers that already
+    carry on without the PDF still do."""
+
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 # Autoescape is a security requirement, not a style choice: report fields are
@@ -78,7 +105,82 @@ def _org_name() -> str:
     return "Carlink Consultancy"
 
 
-def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id=None) -> None:
+def _owner_unverified(case_id) -> bool:
+    """Whether the case belongs to an account outside the firm: not an admin
+    and not ticked "May sign off" (permissions.is_staff). Its PDF then says
+    so on every page, since the template prints the firm's letterhead on
+    everyone's reports. Unassigned cases (the Telegram bot's) and cases not
+    saved yet have no owner, so no banner.
+
+    Looked up here for the same reason as _org_name. Unlike that, a failed
+    lookup prints the banner: it is what keeps a stranger's PDF from passing
+    as the firm's."""
+    if not case_id:
+        return False
+    try:
+        from app.auth.permissions import is_staff
+        from app.reports.db import SessionLocal
+        from app.reports.models import Report, User
+
+        db = SessionLocal()
+        try:
+            owner_id = db.query(Report.owner_id).filter(Report.id == case_id).scalar()
+            if owner_id is None:
+                return False
+            owner = db.query(User.role, User.may_sign_off).filter(User.id == owner_id).first()
+            return owner is None or not is_staff(owner)
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Could not read the owner of case %s; printing the unverified banner", case_id, exc_info=True)
+        return True
+
+
+def _signed_off_by_staff(report: dict) -> bool:
+    """Whether staff (permissions.is_staff, read now) signed the case off:
+    then the firm has vetted it, and its PDF needs no unverified banner
+    whoever owns it. Read from the data being rendered, not the stored row,
+    since sign-off renders before it commits. Only /sign-off writes
+    signed_by_user_id -- every other save keeps the stored sign_off -- and
+    reopening sets the status back to Draft.
+
+    Fails closed: a signer who can't be looked up keeps the banner."""
+    sign_off = (report or {}).get("sign_off") or {}
+    signer_id = sign_off.get("signed_by_user_id")
+    if sign_off.get("status") != "Signed Off" or not signer_id:
+        return False
+    try:
+        from app.auth.permissions import is_staff
+        from app.reports.db import SessionLocal
+        from app.reports.models import User
+
+        db = SessionLocal()
+        try:
+            signer = db.query(User.role, User.may_sign_off).filter(User.id == signer_id).first()
+            return signer is not None and is_staff(signer)
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Could not read signer %s; keeping the unverified banner", signer_id, exc_info=True)
+        return False
+
+
+def render_pdf(
+    report: dict,
+    photo_paths: list[str],
+    output_path: str,
+    report_id=None,
+    unverified: bool | None = None,
+    slot_wait: float | None = None,
+) -> None:
+    """unverified: whether to print the unverified-owner banner. Left None,
+    it comes from the case's owner (_owner_unverified), unless staff signed
+    it off (_signed_off_by_staff); pass it only when the case isn't saved
+    yet but has an owner (POST /reports).
+
+    slot_wait: how long to wait for a Chromium slot (html_to_pdf)."""
+    if unverified is None:
+        unverified = _owner_unverified(report_id) and not _signed_off_by_staff(report)
     try:
         template = _env.get_template("security_incident.html")
         html = template.render(
@@ -91,6 +193,7 @@ def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id
             org_name=_org_name(),
             photo_data_uris=[_to_data_uri(p) for p in (photo_paths or [])],
             generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            unverified_owner=unverified,
         )
     except Exception as exc:
         logger.error("Template rendering failed for %s: %s", output_path, exc, exc_info=True)
@@ -102,7 +205,7 @@ def render_pdf(report: dict, photo_paths: list[str], output_path: str, report_id
         logger.error("Failed to create directory for %s: %s", output_path, exc, exc_info=True)
         raise RuntimeError(f"Failed to create output directory: {exc}") from exc
 
-    html_to_pdf(html, output_path)
+    html_to_pdf(html, output_path, slot_wait=slot_wait)
 
 
 def _offline_only(route) -> None:
@@ -117,12 +220,25 @@ def _offline_only(route) -> None:
         route.abort()
 
 
-def html_to_pdf(html: str, output_path: str) -> None:
+def html_to_pdf(html: str, output_path: str, slot_wait: float | None = None) -> None:
     """Print a fully self-contained HTML page to an A4 PDF, offline.
 
     Scripts are off and every request except data: URIs is refused, so the
-    page can't fetch anything even if a field slipped markup through.
+    page can't fetch anything even if a field slipped markup through. At
+    most MAX_CONCURRENT_RENDERS run at once; RenderBusy if no slot frees up
+    within slot_wait seconds (None: RENDER_SLOT_WAIT_SECONDS; 0: no wait).
     """
+    wait = RENDER_SLOT_WAIT_SECONDS if slot_wait is None else slot_wait
+    if not (_render_slots.acquire(timeout=wait) if wait > 0 else _render_slots.acquire(blocking=False)):
+        logger.warning("No PDF render slot free after %ss for %s", wait, output_path)
+        raise RenderBusy("Every PDF render slot stayed busy.")
+    try:
+        _chromium_pdf(html, output_path)
+    finally:
+        _render_slots.release()
+
+
+def _chromium_pdf(html: str, output_path: str) -> None:
     try:
         with sync_playwright() as p:
             browser = None

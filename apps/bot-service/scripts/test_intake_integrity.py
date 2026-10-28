@@ -229,15 +229,23 @@ def main() -> int:
         assert client.get(photo["preview_url"]).status_code == 200
         ok("a non-image named .jpg is rejected; an iPhone HEIC gets a thumbnail and preview")
 
-        # Limits.
+        # Limits. The shared cap counts and stops everyone but admins and
+        # ticked staff (this client is an admin).
+        plain = TestClient(app)
+        sign_in(plain, role="user")
         saved = intake_api.MAX_OPEN_DRAFTS
-        db = SessionLocal()
-        open_now = db.query(IntakeSession).count()
-        db.close()
-        intake_api.MAX_OPEN_DRAFTS = open_now
-        assert client.post("/intake").status_code == 409
-        intake_api.MAX_OPEN_DRAFTS = saved
-        ok("creating drafts beyond the open-draft cap is refused")
+        intake_api.MAX_OPEN_DRAFTS = 1
+        try:
+            first = plain.post("/intake")
+            assert first.status_code == 200, first.text
+            assert plain.post("/intake").status_code == 409
+            r = client.post("/intake")
+            assert r.status_code == 200, r.text
+        finally:
+            intake_api.MAX_OPEN_DRAFTS = saved
+        for draft in (first.json()["id"], r.json()["id"]):
+            assert client.delete(f"/reports/{draft}").status_code == 200
+        ok("creating drafts beyond the shared open-draft cap is refused; admins are exempt")
 
         # Cleanup sweep: idle draft and old tmp file go, recent ones stay.
         old_rid = new_draft(client, 1)

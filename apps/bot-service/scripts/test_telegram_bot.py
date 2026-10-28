@@ -159,7 +159,7 @@ def fake_build_draft(description, photo_paths, session=None):
     return DraftResult(draft=SecurityIncidentDraft(description=description), summary_text="Draft summary")
 
 
-def fake_render_pdf(data, photo_paths, output_path, report_id=None):
+def fake_render_pdf(data, photo_paths, output_path, report_id=None, slot_wait=None):
     RENDER_STARTED.set()
     time.sleep(RENDER_SECONDS)
     Path(output_path).write_bytes(b"%PDF-1.4 fake")

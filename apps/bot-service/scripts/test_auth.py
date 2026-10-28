@@ -147,6 +147,10 @@ def main() -> int:
         case_id = new_case(pat)
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 1"}}).status_code == 200
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 2"}}).status_code == 200
+        # Signing off is for staff: an admin, or an account ticked "May sign off".
+        r = pat.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
+        assert admin.patch(f"/users/{pat_id}", json={"may_sign_off": True}).status_code == 200
         r = pat.post(f"/reports/{case_id}/sign-off", json={
             "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True,
             "signature_data_url": "http://169.254.169.254/latest/meta-data/",
@@ -181,7 +185,8 @@ def main() -> int:
         sam = browser()
         login(sam, "sam@example.com", r.json()["temporary_password"])
         sam.post("/auth/password", json={"current_password": r.json()["temporary_password"], "new_password": "silver kettle rainy morning"})
-        assert sam.post(f"/reports/{case_id}/reopen").status_code == 403
+        # Sam can't see Pat's case at all (it's Pat's), so it's "not found".
+        assert sam.post(f"/reports/{case_id}/reopen").status_code == 404
         assert pat.post(f"/reports/{case_id}/reopen").status_code == 200
         ok("only the signer or an admin may reopen")
         assert pat.delete(f"/reports/{case_id}").status_code == 403

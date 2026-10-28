@@ -119,7 +119,11 @@ _REQUIRED_OUTPUT_FIELDS = [
 # fail on every model with 400 "Request contains an invalid argument".
 # Confirmed against the live API on 2026-10-20: the identical request with
 # these left out succeeds. They keep their defaults when parsed.
-_NOT_MODEL_OUTPUT = ("sign_off", "annex_a", "annex_b", "annex_c", "bola_assessment")
+# report_id is "Our Ref", the firm's own file reference: only staff set it
+# (api/limits.checked_our_ref), so the model doesn't either. Read off a
+# photo, it would reach a non-staff case through the intake pipeline,
+# which saves the AI's reading itself.
+_NOT_MODEL_OUTPUT = ("sign_off", "annex_a", "annex_b", "annex_c", "bola_assessment", "report_id")
 
 
 def _prune_unreferenced_defs(schema: dict) -> None:
@@ -359,6 +363,7 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     # bot, dashboard and intake -- with priced annexes, a liability finding
     # and a workshop before any human had seen the case.
     draft = SecurityIncidentDraft.model_validate_json(raw_output)
+    draft.report_id = None  # never the model's (_NOT_MODEL_OUTPUT)
     draft = _strip_placeholder_people(draft)
     return _backfill_damage_summary(draft)
 

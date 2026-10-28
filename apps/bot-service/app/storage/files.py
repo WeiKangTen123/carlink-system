@@ -45,6 +45,38 @@ def incident_dir(incident_id: str) -> Path:
     return d
 
 
+def remove_incident_dirs(incident_id: str) -> None:
+    """Deletes every incidents/{year}/{month}/{incident_id}/ folder. A case
+    can have several: incident_dir() follows the month a file is written
+    in, so a PDF rendered again in a later month starts a new folder, and
+    deleting only the PDF's left the photos behind in the first."""
+    root = Path(settings.storage_dir) / "incidents"
+    if not incident_id or incident_id in (".", "..") or "/" in incident_id or "\\" in incident_id or not root.is_dir():
+        return
+    for year in root.iterdir():
+        if not year.is_dir():
+            continue
+        for month in year.iterdir():
+            folder = month / incident_id
+            if folder.is_dir():
+                shutil.rmtree(folder, ignore_errors=True)
+
+
+def case_id_for_file(rel_path: str) -> str | None:
+    """The case a /files path (relative to storage_dir) belongs to, from
+    where cases keep their files: incidents/{year}/{month}/{case id}/...
+    (incident_dir) and intake/{case id}/... (intake/photos.intake_dir).
+    None for anything else, which /files then answers with "not found"."""
+    parts = rel_path.replace("\\", "/").split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+    if len(parts) >= 5 and parts[0] == "incidents" and parts[1].isdigit() and parts[2].isdigit():
+        return parts[3]
+    if len(parts) >= 3 and parts[0] == "intake":
+        return parts[1]
+    return None
+
+
 def thumbnail_path_for(photo_path: str) -> Path:
     """Thumbnail lives beside its original as <name>_thumb.jpg.
 
@@ -161,6 +193,19 @@ def tmp_dir() -> Path:
     d = Path(settings.storage_dir) / "tmp"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def disk_space_low() -> bool:
+    """Whether the storage disk has under settings.min_free_disk_gb free, so
+    uploads and new cases should be refused (api/limits.py, the Telegram
+    bot). Not being able to read it counts as enough room: this guard must
+    never be what stops all work."""
+    try:
+        free = shutil.disk_usage(settings.storage_dir).free
+    except OSError as exc:
+        logger.warning("Could not read free disk space for %s: %s", settings.storage_dir, exc)
+        return False
+    return free < settings.min_free_disk_gb * 1024**3
 
 
 def to_thumbnail_url(abs_path: str) -> str:

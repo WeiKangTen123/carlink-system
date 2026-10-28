@@ -134,15 +134,24 @@ const CONDITION_SUGGESTIONS = ["Deformed/cut", "Grazed/cracked", "Necessary", "S
 export function CaseAssessmentTab({
   report,
   damageEntries,
+  canEdit,
+  canSignOff,
 }: {
   report: ReportDetail;
   damageEntries: DamageSummaryItem[];
+  /** The case's permissions.edit and permissions.sign_off from the API. */
+  canEdit: boolean;
+  canSignOff: boolean;
 }) {
   const d = report.data;
   const v = d.vehicle_info;
   const ins = d.insurance_details;
   const signOff = d.sign_off;
   const isSignedOff = report.status === "Signed Off" || signOff?.status === "Signed Off";
+  // Annex A can't be changed once signed off, nor by someone who may only
+  // look at the case; the sign-off fields only by someone who may sign off.
+  const annexReadOnly = isSignedOff || !canEdit;
+  const signOffLocked = isSignedOff || !canSignOff;
 
   // Active Sub-Tab
   type SubTab = "annexA" | "annexB" | "annexC" | "bola";
@@ -162,8 +171,8 @@ export function CaseAssessmentTab({
   const [annexAItems, setAnnexAItems] = useState<AnnexRow[]>(() => initialAnnexA.map(toAnnexRow));
   const [annexASave, setAnnexASave] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [annexASaveError, setAnnexASaveError] = useState<string | null>(null);
-  const annexADirty = !isSignedOff && annexSignature(annexAItems.map(fromAnnexRow)) !== annexSignature(annexABaseline);
-  const annexALocked = isSignedOff || annexASave === "saving";
+  const annexADirty = !annexReadOnly && annexSignature(annexAItems.map(fromAnnexRow)) !== annexSignature(annexABaseline);
+  const annexALocked = annexReadOnly || annexASave === "saving";
 
   // Leaving the page (reload, another URL) with unsaved Annex A changes asks first.
   useEffect(() => {
@@ -191,7 +200,7 @@ export function CaseAssessmentTab({
   // Financial Calculations. A row's adjusted cost is worked out live while
   // the table can be edited (the API's own sum, so it matches what saving
   // stores); once signed off it is the recorded figure.
-  const rowAdjusted = (it: AnnexAPartItem) => (isSignedOff ? it.adjusted_cost : annexAdjustedCost(it));
+  const rowAdjusted = (it: AnnexAPartItem) => (annexReadOnly ? it.adjusted_cost : annexAdjustedCost(it));
   const totalPartsClaimed = annexAItems.reduce((acc, it) => acc + (it.workshop_est * (it.qty || 1)), 0);
   const totalPartsAdjusted = annexAItems.reduce((acc, it) => acc + rowAdjusted(it), 0);
 
@@ -324,8 +333,8 @@ export function CaseAssessmentTab({
   const qualifications = signer.qualifications || "";
   const licenseNumber = signer.license || "—";
   const firmName = signer.firm || "";
-  const noFullName = !isSignedOff && Boolean(user) && (!user?.name || user.name === user.username);
-  const profileIncomplete = !isSignedOff && Boolean(user) && (!user?.license_number || noFullName);
+  const noFullName = !isSignedOff && canSignOff && Boolean(user) && (!user?.name || user.name === user.username);
+  const profileIncomplete = !isSignedOff && canSignOff && Boolean(user) && (!user?.license_number || noFullName);
   const [signatureMode, setSignatureMode] = useState<"seal" | "canvas">("seal");
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
@@ -533,7 +542,7 @@ export function CaseAssessmentTab({
             </button>
           </div>
 
-          {!isSignedOff && activeSubTab === "annexA" && (
+          {!annexReadOnly && activeSubTab === "annexA" && (
             <button
               type="button"
               className="btn-secondary-modern"
@@ -561,6 +570,11 @@ export function CaseAssessmentTab({
                   Signed off — reopen the case to change Annex A.
                 </div>
               )}
+              {!isSignedOff && !canEdit && (
+                <div style={{ fontSize: 11, color: "var(--badge-amber-text)", marginTop: 2 }}>
+                  View only — you can&apos;t change this case.
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <span className="chip-severity minor" style={{ fontSize: 11 }}>
@@ -572,7 +586,7 @@ export function CaseAssessmentTab({
             </div>
           </div>
 
-          {!isSignedOff && (
+          {!annexReadOnly && (
             <AnnexSuggestionsPanel
               reportId={report.id}
               existingNames={annexAItems.map((r) => r.part_name)}
@@ -589,23 +603,23 @@ export function CaseAssessmentTab({
                   <th>Condition</th>
                   <th>Action</th>
                   <th style={{ textAlign: "center", width: 60 }}>Qty</th>
-                  <th style={{ textAlign: "right", width: 110 }}>{isSignedOff ? "W/Shop Est. ($)" : "W/Shop Est. / Unit ($)"}</th>
+                  <th style={{ textAlign: "right", width: 110 }}>{annexReadOnly ? "W/Shop Est. ($)" : "W/Shop Est. / Unit ($)"}</th>
                   <th style={{ textAlign: "center", width: 90 }}>Disc (%)</th>
-                  {!isSignedOff && (
+                  {!annexReadOnly && (
                     <th style={{ textAlign: "center", width: 50 }} title="Nett items (clips, sealants, plate) take no discount">
                       Nett
                     </th>
                   )}
                   <th style={{ textAlign: "right", width: 110 }}>Adjusted ($)</th>
                   <th>OEM Part #</th>
-                  {!isSignedOff && <th style={{ width: 36 }} aria-label="Remove line" />}
+                  {!annexReadOnly && <th style={{ width: 36 }} aria-label="Remove line" />}
                 </tr>
               </thead>
               <tbody>
                 {annexAItems.length === 0 && (
                   <tr>
-                    <td colSpan={isSignedOff ? 9 : 11} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
-                      {isSignedOff ? "No parts recorded yet" : "No parts recorded yet. Add suggested lines above, or add a line below."}
+                    <td colSpan={annexReadOnly ? 9 : 11} style={{ textAlign: "center", color: "var(--text-muted)", padding: "18px 10px" }}>
+                      {annexReadOnly ? "No parts recorded yet" : "No parts recorded yet. Add suggested lines above, or add a line below."}
                     </td>
                   </tr>
                 )}
@@ -615,7 +629,7 @@ export function CaseAssessmentTab({
                   const isUnpriced = !item.workshop_est;
 
                   // Signed off: the table as recorded, read-only.
-                  if (isSignedOff) {
+                  if (annexReadOnly) {
                     return (
                       <tr key={item._key} style={{ opacity: isDisallowed ? 0.65 : 1 }}>
                         <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{item.item_no || `${idx + 1}.0`}</td>
@@ -819,18 +833,18 @@ export function CaseAssessmentTab({
                   <td style={{ textAlign: "center", color: "#10b981", fontSize: 11 }}>
                     {hasPricedParts ? `-${sgd(totalPartsClaimed - totalPartsAdjusted)}` : "—"}
                   </td>
-                  {!isSignedOff && <td></td>}
+                  {!annexReadOnly && <td></td>}
                   <td style={{ textAlign: "right", color: "var(--accent-cyan)", fontSize: 13 }}>
                     {hasPricedParts ? sgd(totalPartsAdjusted) : "—"}
                   </td>
                   <td></td>
-                  {!isSignedOff && <td></td>}
+                  {!annexReadOnly && <td></td>}
                 </tr>
               </tfoot>
             </table>
           </div>
 
-          {!isSignedOff && (
+          {!annexReadOnly && (
             <div className="annex-edit-bar">
               <datalist id="annex-a-conditions">
                 {CONDITION_SUGGESTIONS.map((c) => (
@@ -1252,7 +1266,7 @@ export function CaseAssessmentTab({
                 step="0.01"
                 value={contractLumpSum ?? ""}
                 placeholder="Not recorded"
-                disabled={isSignedOff}
+                disabled={signOffLocked}
                 onChange={(e) => setContractLumpSum(e.target.value === "" ? null : Number(e.target.value))}
                 style={fieldInputStyle}
               />
@@ -1265,7 +1279,7 @@ export function CaseAssessmentTab({
                 step="1"
                 value={repairTurnaroundDays ?? ""}
                 placeholder="Not recorded"
-                disabled={isSignedOff}
+                disabled={signOffLocked}
                 onChange={(e) => setRepairTurnaroundDays(e.target.value === "" ? null : Number(e.target.value))}
                 style={fieldInputStyle}
               />
@@ -1276,7 +1290,7 @@ export function CaseAssessmentTab({
                 type="text"
                 value={liabilityOpinion}
                 placeholder="Pending surveyor assessment"
-                disabled={isSignedOff}
+                disabled={signOffLocked}
                 onChange={(e) => setLiabilityOpinion(e.target.value)}
                 style={fieldInputStyle}
               />
@@ -1294,7 +1308,7 @@ export function CaseAssessmentTab({
             <input
               type="checkbox"
               checked={declarations.mcf_inspection}
-              disabled={isSignedOff}
+              disabled={signOffLocked}
               onChange={(e) => setDeclarations((prev) => ({ ...prev, mcf_inspection: e.target.checked }))}
             />
             <span>1. Physical inspection conducted and photographic evidence verified in accordance with the Singapore GIA Motor Claims Framework.</span>
@@ -1304,7 +1318,7 @@ export function CaseAssessmentTab({
             <input
               type="checkbox"
               checked={declarations.damage_scope}
-              disabled={isSignedOff}
+              disabled={signOffLocked}
               onChange={(e) => setDeclarations((prev) => ({ ...prev, damage_scope: e.target.checked }))}
             />
             <span>2. Damage scope scrutinized; all non-accident, wear-and-tear, or pre-existing damages have been rigorously excluded from assessment.</span>
@@ -1314,7 +1328,7 @@ export function CaseAssessmentTab({
             <input
               type="checkbox"
               checked={declarations.market_pricing}
-              disabled={isSignedOff}
+              disabled={signOffLocked}
               onChange={(e) => setDeclarations((prev) => ({ ...prev, market_pricing: e.target.checked }))}
             />
             <span>3. Parts pricing vetted against prevailing OEM/OES market tariffs with standard 20% trade discounts applied to List Items.</span>
@@ -1324,7 +1338,7 @@ export function CaseAssessmentTab({
             <input
               type="checkbox"
               checked={declarations.without_prejudice}
-              disabled={isSignedOff}
+              disabled={signOffLocked}
               onChange={(e) => setDeclarations((prev) => ({ ...prev, without_prejudice: e.target.checked }))}
             />
             <span>4. Certified assessment represents fair, reasonable, and necessary repair costs strictly on a WITHOUT PREJUDICE basis.</span>
@@ -1338,7 +1352,7 @@ export function CaseAssessmentTab({
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>
                 Surveyor Endorsement Signature
               </div>
-              {!isSignedOff && (
+              {!signOffLocked && (
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
                     type="button"
@@ -1360,7 +1374,7 @@ export function CaseAssessmentTab({
               )}
             </div>
 
-            {signatureMode === "canvas" && !isSignedOff ? (
+            {signatureMode === "canvas" && !signOffLocked ? (
               <canvas
                 ref={canvasRef}
                 width={360}
@@ -1465,7 +1479,11 @@ export function CaseAssessmentTab({
             </div>
           )}
 
-          {!isSignedOff ? (
+          {!isSignedOff && !canSignOff ? (
+            <div style={{ color: "var(--badge-amber-text)", fontSize: 12 }}>
+              Your account can&apos;t sign off reports yet. Ask an admin to sign it off, or to allow you.
+            </div>
+          ) : !isSignedOff ? (
             <button
               type="button"
               className="btn-primary-modern"

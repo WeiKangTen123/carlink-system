@@ -22,11 +22,12 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, update
+from sqlalchemy import func, or_, update
 from sqlalchemy.exc import IntegrityError
 
+from app.api import limits
 from app.auth.core import CurrentUser, audit
-from app.auth.deps import current_user
+from app.auth.deps import current_user, editable_case, visible_case
 from app.intake import pipeline
 from app.intake.photos import (
     copy_into_case,
@@ -36,12 +37,13 @@ from app.intake.photos import (
     remove_intake_dir,
     serialize_photo,
 )
+from app.reports import owners
 from app.reports.db import SessionLocal
-from app.reports.models import IntakePhoto, IntakeSession, Report, gen_id, iso_utc
+from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
-from app.rendering.renderer import render_pdf
+from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import generate_preview, generate_thumbnail, report_pdf_path
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,9 @@ MAX_PHOTOS_PER_CASE = 150
 # Real cases are 90-200MB; this leaves room for a big one while stopping a
 # single draft from taking 150 x 25MB = 3.75GB of a shared VM's disk.
 MAX_DRAFT_BYTES = 1536 * 1024 * 1024
+# Open drafts across everyone but admins and ticked staff (limits.
+# counts_toward_shared_drafts); each person also has their own cap
+# (limits.MAX_OPEN_DRAFTS_PER_PERSON).
 MAX_OPEN_DRAFTS = 30
 _CHUNK = 1024 * 1024
 
@@ -90,7 +95,7 @@ def _claim_stage(db, report_id: str, new_stage: str) -> bool:
     return result.rowcount == 1
 
 
-def _state(db, report: Report, session: IntakeSession) -> dict:
+def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
     stage, error = session.stage, session.error
     # Left mid-run by a restart: the thread is gone but the row still says
     # it's working, and the wizard would poll forever.
@@ -114,17 +119,34 @@ def _state(db, report: Report, session: IntakeSession) -> dict:
         "photos": [serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
         "data": report.data or {},
         "limits": {"max_photos": MAX_PHOTOS_PER_CASE, "max_photo_bytes": MAX_PHOTO_SIZE_BYTES},
+        **owners.access_fields(db, report, user),
     }
+
+
+def _shared_open_drafts(db) -> int:
+    """Open drafts that count toward MAX_OPEN_DRAFTS: all but those owned by
+    admins and ticked staff (limits.counts_toward_shared_drafts, in SQL)."""
+    staff = or_(User.role == "admin", User.sees_all_cases.is_(True), User.may_sign_off.is_(True))
+    return (
+        db.query(func.count(IntakeSession.report_id))
+        .outerjoin(Report, Report.id == IntakeSession.report_id)
+        .outerjoin(User, User.id == Report.owner_id)
+        .filter(or_(User.id.is_(None), ~staff))
+        .scalar()
+    )
 
 
 @router.post("")
 def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
+    limits.require_disk_space()
     db = SessionLocal()
     try:
         # Each draft can hold MAX_DRAFT_BYTES; an unbounded number of them is
         # an unbounded amount of disk on a VM shared with other apps.
         # Abandoned drafts are swept after a week (intake/cleanup.py).
-        if db.query(IntakeSession).count() >= MAX_OPEN_DRAFTS:
+        limits.check_open_drafts(db, user)
+        limits.check_new_cases_today(db, user)
+        if limits.counts_toward_shared_drafts(user) and _shared_open_drafts(db) >= MAX_OPEN_DRAFTS:
             raise HTTPException(
                 status_code=409,
                 detail=f"There are already {MAX_OPEN_DRAFTS} unfinished intakes. Finish or delete some first.",
@@ -133,6 +155,9 @@ def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
             channel="manual",
             reporter_chat_id="dashboard",
             status="intake",
+            # The draft, and the case it becomes, are the caller's -- also
+            # when an admin finishes it for them.
+            owner_id=user.id,
             # Full default shape, not a stub: the Cases Repository lists and
             # previews drafts like any other report, and reads nested fields
             # (people_involved, insurance_details...) without guarding.
@@ -149,11 +174,11 @@ def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
 
 
 @router.get("/{report_id}")
-def get_intake(report_id: str) -> dict:
+def get_intake(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id)
-        return _state(db, report, session)
+        return _state(db, report, session, user)
     finally:
         db.close()
 
@@ -163,6 +188,7 @@ def upload_intake_photo(
     report_id: str,
     file: UploadFile = File(...),
     position: int = Form(0),
+    user: CurrentUser = Depends(editable_case),
 ) -> dict:
     """One photo per request, so a 150-photo case is 150 small requests the
     browser can run a few at a time and retry one by one, rather than one
@@ -177,6 +203,7 @@ def upload_intake_photo(
             status_code=400,
             detail=f"Unsupported file format '{ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
         )
+    limits.require_disk_space()
 
     db = SessionLocal()
     try:
@@ -277,7 +304,9 @@ class PhotoUpdateRequest(BaseModel):
 
 
 @router.patch("/{report_id}/photos/{photo_id}")
-def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest) -> dict:
+def update_intake_photo(
+    report_id: str, photo_id: str, body: PhotoUpdateRequest, user: CurrentUser = Depends(editable_case)
+) -> dict:
     from app.ai.triage import PHOTO_KINDS
 
     db = SessionLocal()
@@ -301,7 +330,7 @@ def update_intake_photo(report_id: str, photo_id: str, body: PhotoUpdateRequest)
 
 
 @router.delete("/{report_id}/photos/{photo_id}")
-def delete_intake_photo(report_id: str, photo_id: str) -> dict:
+def delete_intake_photo(report_id: str, photo_id: str, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
         _load_draft(db, report_id, mutating=True, block_while_running=True)
@@ -322,7 +351,7 @@ class IntakeDataRequest(BaseModel):
 
 
 @router.put("/{report_id}/data")
-def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
+def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
@@ -331,6 +360,7 @@ def save_intake_data(report_id: str, body: IntakeDataRequest) -> dict:
         # taken from the browser (see main.blank_sign_off).
         data = SecurityIncidentDraft.model_validate(body.data).model_dump()
         data["sign_off"] = SignOffInfo().model_dump()
+        data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), (report.data or {}).get("report_id"))
         report.data = data
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
@@ -345,7 +375,8 @@ class ProcessRequest(BaseModel):
 
 
 @router.post("/{report_id}/process")
-def process_intake(report_id: str, body: ProcessRequest) -> dict:
+def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Depends(editable_case)) -> dict:
+    limits.require_ai(user)
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True)
@@ -365,7 +396,7 @@ def process_intake(report_id: str, body: ProcessRequest) -> dict:
             raise
         pipeline.start_reserved(report_id, body.mode)
         db.refresh(session)
-        return _state(db, report, session)
+        return _state(db, report, session, user)
     finally:
         db.close()
 
@@ -375,7 +406,7 @@ class FinalizeRequest(BaseModel):
 
 
 @router.post("/{report_id}/finalize")
-def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = Depends(current_user)) -> dict:
+def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Turns the draft into a case.
 
     Ordered so a failure at any point leaves either the untouched draft (and
@@ -394,6 +425,12 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
         report, session = _load_draft(db, report_id, mutating=True)
         if pipeline.is_running(report_id):
             raise HTTPException(status_code=409, detail="Wait for AI processing to finish first.")
+        body.data.report_id = limits.checked_our_ref(user, body.data.report_id, (report.data or {}).get("report_id"))
+        limits.check_new_cases_today(db, user)
+        # Finalizing copies every photo into the case folder (up to
+        # MAX_DRAFT_BYTES, 1.5 GB): 507 disk_full before the draft is
+        # claimed, so it stays as it was and Finish can be tried again.
+        limits.require_disk_space()
         prior_stage = session.stage
         if not _claim_stage(db, report_id, "finalizing"):
             raise HTTPException(status_code=409, detail="This intake is already being turned into a case.")
@@ -408,17 +445,22 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
         db.close()
 
     remove_intake_dir(report_id)
-    _render_case_pdf(report_id)
+    _render_case_pdf(report_id, user)
     return {"id": report_id}
 
 
-def _render_case_pdf(report_id: str) -> None:
+def _render_case_pdf(report_id: str, user: CurrentUser) -> None:
+    # When this person may not render now (limits.render_turn) or every
+    # Chromium slot stays busy, the first download renders it instead.
     db = SessionLocal()
     try:
         report = db.get(Report, report_id)
-        pdf_path = report_pdf_path(report_id)
         try:
-            render_pdf(report.data, report.photo_paths, pdf_path, report_id=report_id)
+            with limits.render_turn(user):
+                pdf_path = report_pdf_path(report_id)
+                render_pdf(report.data, report.photo_paths, pdf_path, report_id=report_id)
+        except (limits.RenderRefused, RenderBusy):
+            return
         except Exception as exc:
             # The case exists regardless; GET /reports/{id} and /download
             # render a missing PDF on demand.

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Search,
   FileText,
@@ -11,8 +12,9 @@ import {
   ShieldCheck,
   CheckCircle2,
   Lock,
+  UserRound,
 } from "lucide-react";
-import { type ReportDetail, type DamageSummaryItem } from "@/lib/api";
+import { ownerLabel, personLabel, type ReportDetail, type DamageSummaryItem, type Owner } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
@@ -20,7 +22,8 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
-import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
+import { AssignOwnerDialog } from "@/components/AssignOwnerDialog";
+import { useCurrentUser } from "@/components/CurrentUser";
 import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 
@@ -38,6 +41,15 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const d = report.data;
   const v = d.vehicle_info;
   const user = useCurrentUser();
+  const router = useRouter();
+  // What this account may do here, as the API worked it out. The buttons
+  // follow it; the API checks again on every call.
+  const perms = report.permissions;
+  // Set by Assign, so the header shows the new owner before the refreshed
+  // page arrives with it.
+  const [assignedOwner, setAssignedOwner] = useState<Owner | null | undefined>(undefined);
+  const owner = assignedOwner !== undefined ? assignedOwner : report.owner;
+  const [assigning, setAssigning] = useState(false);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("inspection");
   // Once opened, the Assessment tab stays mounted (hidden) while another tab
@@ -179,20 +191,38 @@ export function StudioApp({ report }: { report: ReportDetail }) {
             {vehicleName}
             {d.accident_type && <> — {d.accident_type}</>}
           </h1>
+          <div className="case-owner-line">
+            <UserRound style={{ width: 13, height: 13, color: "var(--text-muted)" }} />
+            <span>
+              Owner: <strong className={owner && !owner.active ? "case-owner-disabled" : undefined}>{ownerLabel(owner)}</strong>
+            </span>
+            {!owner && report.suggested_owner && (
+              <span className="case-owner-hint">Suggested: {personLabel(report.suggested_owner)}</span>
+            )}
+            {perms.assign && (
+              <button type="button" className="btn-secondary-modern case-owner-assign" onClick={() => setAssigning(true)}>
+                Assign
+              </button>
+            )}
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <a href={`/reports/${report.id}/edit`} className="btn-secondary-modern">
-            <Pencil style={{ width: 13, height: 13 }} /> {isSignedOff ? "Reopen & Edit" : "Edit Report"}
-          </a>
+          {/* A signed-off case is edited by reopening it, which only the
+              signer or an admin may do. */}
+          {(isSignedOff ? perms.reopen : perms.edit) && (
+            <a href={`/reports/${report.id}/edit`} className="btn-secondary-modern">
+              <Pencil style={{ width: 13, height: 13 }} /> {isSignedOff ? "Reopen & Edit" : "Edit Report"}
+            </a>
+          )}
           <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={reportCode} />
-          {!isSignedOff && (
+          {!isSignedOff && perms.sign_off && (
             <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
               <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize & Sign Off
             </button>
           )}
-          {/* Admins only; the API refuses anyone else. */}
-          {isAdmin(user) && (
+          {/* Admins only for a filed case; the API refuses anyone else. */}
+          {perms.delete && (
             <form
               action={deleteReportAction}
               onSubmit={(e) => {
@@ -289,8 +319,23 @@ export function StudioApp({ report }: { report: ReportDetail }) {
       {activeTab === "file" && <CaseFileTab report={report} />}
       {(activeTab === "assessment" || assessmentOpened) && (
         <div style={{ display: activeTab === "assessment" ? undefined : "none" }}>
-          <CaseAssessmentTab report={report} damageEntries={damageEntries} />
+          <CaseAssessmentTab report={report} damageEntries={damageEntries} canEdit={perms.edit} canSignOff={perms.sign_off} />
         </div>
+      )}
+
+      {assigning && (
+        <AssignOwnerDialog
+          reportId={report.id}
+          owner={owner}
+          suggested={report.suggested_owner}
+          onClose={() => setAssigning(false)}
+          onAssigned={(next) => {
+            setAssignedOwner(next);
+            setAssigning(false);
+            // Brings in the "assigned" line in the case history.
+            router.refresh();
+          }}
+        />
       )}
 
       {/* Sign-Off Confirmation Modal */}

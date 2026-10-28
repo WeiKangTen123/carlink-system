@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { KeyRound, Pencil, Plus, UserCheck, UserX, Users } from "lucide-react";
-import type { AccountLinkRow, UserAccount, UserRole } from "@/lib/api";
+import type { AccountLinkRow, CaseCounts, UserAccount, UserRole, UserTicks } from "@/lib/api";
 import { ROLE_LABEL, USERNAME_HINT, formatSgtDay } from "@/lib/signup";
 import { createResetLinkAction, listAccountLinksAction, listUsersAction, setSignupsOpenAction, updateUserAction } from "./actions";
 import { AccountLinksTab } from "./AccountLinksTab";
@@ -18,7 +18,62 @@ type Draft = {
   qualifications: string;
   license_number: string;
   firm_name: string;
-};
+} & UserTicks;
+
+/** The three ticks, with what each one means when off. Admins have all of
+ * it whatever is ticked. */
+const TICKS: { key: keyof UserTicks; label: string; hint: string }[] = [
+  {
+    key: "sees_all_cases",
+    label: "Can see and work on all cases",
+    hint: "Off: only the cases they own. Either way, they can't delete or assign cases.",
+  },
+  {
+    key: "ai_company_key_allowed",
+    label: "May use the company AI key",
+    hint: "Off: the AI buttons don't work for them.",
+  },
+  {
+    key: "may_sign_off",
+    label: "May sign off reports",
+    hint: "Off: they can't sign off, and the PDFs of their cases say they were prepared by an unverified user.",
+  },
+];
+
+function ticksOf(u: UserAccount): UserTicks {
+  return {
+    sees_all_cases: Boolean(u.sees_all_cases),
+    ai_company_key_allowed: Boolean(u.ai_company_key_allowed),
+    may_sign_off: Boolean(u.may_sign_off),
+  };
+}
+
+/** "4 open · 11 signed off · 1 draft". */
+function CaseCountsText({ cases }: { cases: CaseCounts | null | undefined }) {
+  if (!cases) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+  const part = (n: number, one: string, many: string) => (
+    <span className={n ? undefined : "user-cases-zero"}>
+      {n} {n === 1 ? one : many}
+    </span>
+  );
+  return (
+    <span className="user-cases">
+      {part(cases.open, "open", "open")}
+      <span aria-hidden> · </span>
+      {part(cases.signed_off, "signed off", "signed off")}
+      <span aria-hidden> · </span>
+      {part(cases.drafts, "draft", "drafts")}
+    </span>
+  );
+}
+
+/** What a user's ticks allow, in a few words, under their role. */
+function accessSummary(u: UserAccount): string {
+  if (u.role === "admin") return "Everything";
+  const t = ticksOf(u);
+  const parts = [t.sees_all_cases ? "All cases" : "Own cases", t.ai_company_key_allowed ? "AI" : null, t.may_sign_off ? "Signs off" : null];
+  return parts.filter(Boolean).join(" · ");
+}
 
 const NEW_FOR_DAYS = 7;
 
@@ -41,11 +96,13 @@ function statusOf(u: UserAccount): { label: string; tone: "ok" | "warn" | "off" 
 function EditUserDialog({
   initial,
   isSelf,
+  cases,
   onCancel,
   onSubmit,
 }: {
   initial: Draft;
   isSelf: boolean;
+  cases: CaseCounts | null | undefined;
   onCancel: () => void;
   onSubmit: (draft: Draft) => Promise<string | null>;
 }) {
@@ -62,7 +119,11 @@ function EditUserDialog({
     if (problem) setError(problem);
   };
 
-  const text = (key: keyof Draft, label: string, type = "text", hint = "") => (
+  const isAdminDraft = draft.role === "admin";
+  // Made a user just now, with the first box off: say what that takes away.
+  const losesAllCases = initial.role === "admin" && !isAdminDraft && !draft.sees_all_cases;
+
+  const text = (key: Exclude<keyof Draft, "role" | keyof UserTicks>, label: string, type = "text", hint = "") => (
     <label style={{ display: "block" }}>
       <span className="detail-field-label">{label}</span>
       <input
@@ -103,6 +164,38 @@ function EditUserDialog({
               ))}
             </div>
             {isSelf && <span className="field-hint">You can&apos;t change your own role.</span>}
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <span className="detail-field-label">Access</span>
+            <div className="user-ticks">
+              {TICKS.map((t) => (
+                <label key={t.key} className={`user-tick ${isAdminDraft ? "disabled" : ""}`}>
+                  <input
+                    type="checkbox"
+                    // Admins have all three whatever is ticked.
+                    checked={isAdminDraft || draft[t.key]}
+                    disabled={isAdminDraft}
+                    onChange={(e) => setDraft({ ...draft, [t.key]: e.target.checked })}
+                  />
+                  <span>
+                    {t.label}
+                    {!isAdminDraft && <span className="field-hint">{t.hint}</span>}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {isAdminDraft && <span className="field-hint">Admins always have these.</span>}
+            {losesAllCases && (
+              <span className="field-hint user-tick-warning">
+                As a user with the first box off, they will only see the cases they own.
+              </span>
+            )}
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <span className="detail-field-label">Cases</span>
+            <div style={{ fontSize: 13, marginTop: 6 }}>
+              <CaseCountsText cases={cases} />
+            </div>
           </div>
           <div className="detail-field-label" style={{ gridColumn: "1 / -1", marginTop: 6 }}>
             Surveyor details — printed on reports they sign off
@@ -188,6 +281,7 @@ function UsersTable({
               <th>Username</th>
               <th>Email</th>
               <th>Role</th>
+              <th>Cases</th>
               <th>Joined</th>
               <th>Last sign-in</th>
               <th>Status</th>
@@ -212,6 +306,10 @@ function UsersTable({
                   <td style={{ wordBreak: "break-all" }}>{u.email}</td>
                   <td>
                     <span className={`role-chip ${u.role}`}>{ROLE_LABEL[u.role] ?? u.role}</span>
+                    <div className="user-access-summary">{accessSummary(u)}</div>
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <CaseCountsText cases={u.cases} />
                   </td>
                   <td style={{ whiteSpace: "nowrap" }}>{formatSgtDay(u.created_at)}</td>
                   <td style={{ whiteSpace: "nowrap" }}>{lastSeen(u.last_login_at)}</td>
@@ -247,8 +345,8 @@ function UsersTable({
         </table>
       </div>
       <p className="setup-note" style={{ marginTop: 12, marginBottom: 0 }}>
-        To make someone an admin, use Edit. Forgot password? Use Reset password and send them the link. Users are
-        disabled rather than deleted, so the history on their cases still shows who did what.
+        To make someone an admin, or change what they may do, use Edit. Forgot password? Use Reset password and send
+        them the link. Users are disabled rather than deleted, so the history on their cases still shows who did what.
       </p>
     </>
   );
@@ -297,7 +395,16 @@ export function UsersCard({
 
   const saveUser = async (draft: Draft): Promise<string | null> => {
     if (!editing) return null;
-    const result = await updateUserAction(editing.id, draft);
+    // Ticks only when changed, so the account's history records just the
+    // changes.
+    const before = ticksOf(editing);
+    const { sees_all_cases, ai_company_key_allowed, may_sign_off, ...profile } = draft;
+    const after: UserTicks = { sees_all_cases, ai_company_key_allowed, may_sign_off };
+    const changedTicks: Partial<UserTicks> = {};
+    for (const k of Object.keys(after) as (keyof UserTicks)[]) {
+      if (after[k] !== before[k]) changedTicks[k] = after[k];
+    }
+    const result = await updateUserAction(editing.id, { ...profile, ...changedTicks });
     if ("error" in result) return result.error;
     // Your own name is in the top bar.
     if (editing.id === currentUserId) router.refresh();
@@ -420,8 +527,10 @@ export function UsersCard({
             qualifications: editing.qualifications,
             license_number: editing.license_number,
             firm_name: editing.firm_name,
+            ...ticksOf(editing),
           }}
           isSelf={editing.id === currentUserId}
+          cases={editing.cases}
           onCancel={() => setEditing(null)}
           onSubmit={saveUser}
         />
