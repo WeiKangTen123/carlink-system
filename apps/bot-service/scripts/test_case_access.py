@@ -53,6 +53,8 @@ STORAGE.mkdir()
 # Forced, not setdefault: these tests delete case folders, so they must never
 # run against a real STORAGE_DIR from the environment or a .env file.
 os.environ["STORAGE_DIR"] = str(STORAGE)
+# The start-up (with browser()) makes the AI key secret (app/ai/secretbox.py): not in the source tree.
+os.environ["SECRETS_DIR"] = str(_tmp / "secrets")
 os.environ["DATABASE_URL"] = f"sqlite:///{(_tmp / 'test.db').as_posix()}"
 os.environ["GEMINI_API_KEY"] = "fake"
 os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "0"

@@ -376,11 +376,16 @@ def user_dict(user: User) -> dict:
 
 def user_dicts(db: Session, users: list[User]) -> list[dict]:
     """user_dict plus each account's case counts (open, signed off,
-    drafts), for the admin's Users screen -- one query for all of them."""
+    drafts) and own AI key ({has_key, last4, status, added_at} or None,
+    never the key), for the admin's Users screen -- one query each for all
+    of them, never one per account."""
+    from app.ai.keys import keys_by_user  # P3 "My AI key"
     from app.reports.owners import case_counts
 
-    counts = case_counts(db, [u.id for u in users])
-    return [{**user_dict(u), "cases": counts[u.id]} for u in users]
+    ids = [u.id for u in users]
+    counts = case_counts(db, ids)
+    ai_keys = keys_by_user(db, ids)  # P3
+    return [{**user_dict(u), "cases": counts[u.id], "ai_key": ai_keys.get(u.id)} for u in users]
 
 
 def me_dict(user: CurrentUser | User) -> dict:

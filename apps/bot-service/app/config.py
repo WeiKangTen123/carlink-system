@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BOT_SERVICE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = (BOT_SERVICE_DIR / "carlink.db").resolve()
 DEFAULT_STORAGE_DIR = (BOT_SERVICE_DIR / "storage").resolve()
+# /app/secrets in the container (BOT_SERVICE_DIR is /app there).
+DEFAULT_SECRETS_DIR = (BOT_SERVICE_DIR / "secrets").resolve()
 
 
 class Settings(BaseSettings):
@@ -40,6 +42,11 @@ class Settings(BaseSettings):
     run_background_cleanup: bool = False
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     storage_dir: str = str(DEFAULT_STORAGE_DIR)
+    # Holds ai-keys.secret, which seals people's own AI keys (ai/secretbox.py).
+    # Its own volume in production (/app/secrets: the api writes, the bot
+    # only reads), never under storage_dir, which /files serves and the
+    # backups copy.
+    secrets_dir: str = str(DEFAULT_SECRETS_DIR)
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     # Minimum spacing enforced between Gemini calls, per process (see

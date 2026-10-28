@@ -37,23 +37,38 @@ x-bot-service: &bot-service
     - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite}
     - STORAGE_DIR=/app/storage
     - DATABASE_URL=sqlite:////app/storage/carlink.db
+    # ai-keys.secret, which seals people's own AI keys (app/ai/secretbox.py).
+    # Its own volume (ai_secrets below), not under /app/storage: /files
+    # serves storage and backup.sh copies it.
+    - SECRETS_DIR=/app/secrets
     # Sweeps idle intake drafts / stale tmp uploads (app/intake/cleanup.py).
     # Only the api process acts on it; the bot process has no lifespan.
     - RUN_BACKGROUND_CLEANUP=true
-  volumes:
-    - bot_data:/app/storage
-    - ../apps/bot-service/app:/app/app
+  # volumes: set per service below -- the two mount ai_secrets differently,
+  # and a service's own volumes list replaces this one rather than adding.
 
 services:
   telegram-bot:
     <<: *bot-service
     container_name: carlink_telegram_bot
     command: ["python", "-m", "app.main", "--bot-only"]
+    volumes:
+      - bot_data:/app/storage
+      - ../apps/bot-service/app:/app/app
+      # Read-only: the bot only reads the secret the api makes.
+      - ai_secrets:/app/secrets:ro
 
   api:
     <<: *bot-service
     container_name: carlink_api
     command: ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - bot_data:/app/storage
+      - ../apps/bot-service/app:/app/app
+      # The api makes the secret on its first start, and never replaces it.
+      # Losing this volume loses every saved own AI key (people add theirs
+      # again); company keys are unaffected.
+      - ai_secrets:/app/secrets
     # Not published to the host -- the browser only ever reaches this via
     # nginx's /api/ and /files/ proxies (see lib/api.ts), and other
     # containers reach it over the Docker network by service name
@@ -103,3 +118,7 @@ services:
 
 volumes:
   bot_data:
+  # Own AI keys secret (see SECRETS_DIR above). Not in backup.sh on purpose:
+  # the keys in the database backups are sealed with it, and the two
+  # shouldn't travel together.
+  ai_secrets:

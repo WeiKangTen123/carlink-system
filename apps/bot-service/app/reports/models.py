@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -219,6 +219,47 @@ class User(Base):
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
+
+
+class UserAiKey(Base):
+    """Someone's own AI (Gemini) key, added on Settings > My AI key
+    (app/ai/keys.py). One per person, and one person per key.
+
+    Its own table, not rows in api_keys: the AI takes every gemini row
+    there as a company key. The key itself is only ever stored sealed
+    (key_enc, app/ai/secretbox.py) and never leaves the server again;
+    people, admins included, see last4 and status. fingerprint is an HMAC
+    of the key under the same secret -- not a plain hash, so a stolen
+    backup can't be used to test guessed keys against it.
+
+    The unique rules are part of the table itself (create_all makes it in
+    one statement), so no process stopping half-way can leave one out.
+    """
+    __tablename__ = "user_ai_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_ai_keys_user_id"),
+        UniqueConstraint("fingerprint", name="uq_user_ai_keys_fingerprint"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False, default="gemini")
+    key_enc: Mapped[str] = mapped_column(String, nullable=False)
+    last4: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # untested | ok | invalid | quota | unreadable (keys.STATUSES).
+    status: Mapped[str] = mapped_column(String, nullable=False, default="untested")
+    # Google's last complaint, at most 200 characters, with anything that
+    # looks like a key taken out. Shown only to the key's owner.
+    last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Ticked when saving: "This key's Google Cloud project has billing
+    # turned on" (on free keys Google may use what's sent, case photos too).
+    billing_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # When this key was added ("added_at"); a replacement key starts again.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 

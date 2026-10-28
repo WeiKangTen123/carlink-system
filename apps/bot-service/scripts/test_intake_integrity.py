@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 _tmp = tempfile.mkdtemp(prefix="intake-integrity-")
 os.environ.setdefault("STORAGE_DIR", _tmp)
+# The start-up below makes the AI key secret (app/ai/secretbox.py): not in the source tree.
+os.environ.setdefault("SECRETS_DIR", tempfile.mkdtemp(prefix="secrets-"))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_tmp, 'test.db').as_posix()}")
 os.environ.setdefault("GEMINI_API_KEY", "fake")
 

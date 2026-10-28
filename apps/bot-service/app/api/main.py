@@ -16,8 +16,10 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
+from app.ai import secretbox
 from app.ai.extraction import draft_report
 from app.api import limits
+from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
@@ -68,6 +70,9 @@ from app.storage.files import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Own AI keys: this process is the one that makes the secret if there
+    # isn't one, and seals the canary the bot checks (ai/secretbox.py).
+    secretbox.startup(create=True)
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
     if settings.run_background_cleanup:
         from app.intake.cleanup import start_background_cleanup
@@ -115,6 +120,7 @@ app.include_router(auth_router)
 app.include_router(signup_router)
 app.include_router(parts_router)
 app.include_router(intake_router)
+app.include_router(ai_keys_router)
 
 
 @app.exception_handler(HashingBusy)

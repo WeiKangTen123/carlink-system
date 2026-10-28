@@ -1,0 +1,2 @@
+# Never bake a local AI-key secret into an image (app/ai/secretbox.py).
+secrets/

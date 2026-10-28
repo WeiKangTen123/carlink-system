@@ -50,6 +50,8 @@ STORAGE = (_tmp / "storage").resolve()
 STORAGE.mkdir()
 # Forced, not setdefault: never a real STORAGE_DIR from the environment.
 os.environ["STORAGE_DIR"] = str(STORAGE)
+# Nor a real AI key secret (app/ai/secretbox.py).
+os.environ["SECRETS_DIR"] = str(_tmp / "secrets")
 os.environ["DATABASE_URL"] = f"sqlite:///{(_tmp / 'test.db').as_posix()}"
 os.environ["GEMINI_API_KEY"] = "fake"
 os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "0"
@@ -214,6 +216,11 @@ DECISIONS = {
     ("GET", "/auth/me"): ("self", "adds can_view_all_cases, may_sign_off, ai_allowed; open to temporary-password users"),
     ("PUT", "/auth/me"): ("self", "profile only: never role or ticks"),
     ("POST", "/auth/password"): ("self", "open to temporary-password users"),
+    # P3 "My AI key" (app/api/ai_keys.py; tested in scripts/test_ai_keys.py).
+    ("GET", "/auth/me/ai-key"): ("self", "P3: last 4 + status + what the AI will use, never the key"),
+    ("PUT", "/auth/me/ai-key"): ("self", "P3: 400 ai_key_format / billing_not_confirmed / ai_key_invalid, 409 ai_key_in_use, 429 rate_limited"),
+    ("POST", "/auth/me/ai-key/test"): ("self", "P3: asks Google again (models.list); 10 an hour"),
+    ("DELETE", "/auth/me/ai-key"): ("self", "P3: history entry ai_key_removed"),
 
     ("GET", "/reports"): ("signed-in", "?scope=mine|all|unassigned; plain users mine only (else 403 scope_not_allowed)"),
     ("POST", "/reports"): ("signed-in", "owner = caller; temp_photo_paths only the caller's u{id}- files"),
@@ -230,6 +237,7 @@ DECISIONS = {
                                              "disabling takes open_cases keep|unassign|move (P2, test_disable_reassign.py)"),
     ("POST", "/users/{user_id}/reset-password"): ("admin", ""),
     ("POST", "/users/{user_id}/reset-link"): ("admin", ""),
+    ("DELETE", "/users/{user_id}/ai-key"): ("admin", "P3: someone's own AI key; history entry ai_key_removed_by_admin"),
     ("PUT", "/signup-settings"): ("admin", ""),
     ("GET", "/account-links"): ("admin", ""),
     ("POST", "/account-links"): ("admin", ""),
