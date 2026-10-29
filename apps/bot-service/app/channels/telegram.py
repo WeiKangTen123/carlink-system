@@ -585,7 +585,24 @@ async def _finalize_report(update: Update, session, chat_id: str) -> None:
         )
 
 
+def _save_bot_username(username: str | None) -> None:
+    from app.auth.chat_links import save_bot_username
+
+    db = SessionLocal()
+    try:
+        save_bot_username(db, username)
+        db.commit()
+    finally:
+        db.close()
+
+
 async def _post_init(app: Application) -> None:
+    # Settings > My Telegram's "Open Telegram" deep link needs the bot's
+    # @username, which only the bot knows (initialize() ran getMe).
+    try:
+        await asyncio.to_thread(_save_bot_username, app.bot.username)
+    except Exception as exc:
+        logger.warning("Could not save the bot's @username for Settings (%s)", type(exc).__name__)
     _allowed_ids.clear()
     _allowed_ids.update(_load_allowed_ids())
     if _allowed_ids:

@@ -45,6 +45,7 @@ from app.api.auth import (
     client_ip,
     username_issue,
 )
+from app.auth.chat_links import end_chat_links
 from app.auth.core import (
     SESSION_COOKIE,
     CurrentUser,
@@ -340,6 +341,8 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
                 # Every browser still signed in with the old password.
                 end_user_sessions(db, user.id)
                 audit(db, user, "password_reset_by_link", detail=user.email)
+                # And any Telegram connected with it (agent6 H2).
+                end_chat_links(db, user.id, user, reason="password reset with a link")
             link.used_by_user_id = user.id
             _end_previous_session(db, request)
             record_login(user)

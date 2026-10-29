@@ -13,6 +13,7 @@ import argparse
 import getpass
 import sys
 
+from app.auth.chat_links import end_chat_links
 from app.auth.core import (
     ROLES,
     audit,
@@ -85,6 +86,7 @@ def reset_password(args) -> None:
         user.active = True
         end_user_sessions(db, user.id)
         audit(db, None, "password_reset", detail=f"{email} from the server command line")
+        end_chat_links(db, user.id, None, reason="password reset from the server command line")
         db.commit()
         print(f"Password reset for {email}; the account is unlocked and enabled.")
     finally:

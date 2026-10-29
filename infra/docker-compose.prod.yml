@@ -26,6 +26,9 @@ x-bot-service: &bot-service
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
     - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+    # Where people open Carlink (app/config.py public_base_url): the bot's
+    # case links and "connect first" message. Both api and bot get it.
+    - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-45-253-162.sslip.io}
     # Extra Telegram ids the bot accepts, comma-separated. Chats that have
     # already filed a case through the bot are allowed without being listed
     # (see the allow-list in app/channels/telegram.py).

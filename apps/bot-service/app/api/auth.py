@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from app.ai import keys
+from app.auth.chat_links import end_chat_links
 from app.auth.core import (
     LOCKOUT,
     MAX_FAILED_LOGINS,
@@ -389,6 +390,9 @@ def change_password(body: PasswordChange, user: CurrentUser = Depends(current_us
         # Signs out every other browser, e.g. one that has the old password.
         end_user_sessions(db, row.id, keep_hash=user.session_hash)
         audit(db, user, "password_changed", detail=row.email)
+        # And disconnects Telegram: whoever knew the old password may have
+        # connected their own (agent6 H2). Connecting again takes a minute.
+        end_chat_links(db, row.id, user, reason="password changed")
         db.commit()
         return {"ok": True}
     finally:
@@ -495,6 +499,9 @@ def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User
     # Their own AI key goes too, in this same transaction: a disabled
     # account's key is never used, and isn't kept for later.
     keys.delete_user_key(db, row.id, admin, action="ai_key_removed_by_admin", reason="account disabled")
+    # So do their Telegram link and any open code: enabling the account
+    # again doesn't reconnect it.
+    end_chat_links(db, row.id, admin, reason="account disabled")
     audit(db, admin, "user_disabled", detail="; ".join(filter(None, [row.email, outcome])))
     return moved
 
@@ -616,6 +623,7 @@ def reset_password(user_id: str, admin: CurrentUser = Depends(require_admin)) ->
         row.locked_until = None
         end_user_sessions(db, row.id)
         audit(db, admin, "password_reset", detail=row.email)
+        end_chat_links(db, row.id, admin, reason="password reset by an admin")
         db.commit()
         db.refresh(row)
         return {"user": user_dicts(db, [row])[0], "temporary_password": password}

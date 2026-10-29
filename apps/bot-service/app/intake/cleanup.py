@@ -7,6 +7,7 @@
 - storage/tmp files older than TMP_MAX_AGE: /reports/analyze-photos leaves
   its uploads there until the report is saved, which it may never be.
 - Expired and idle sign-in sessions (app/auth/core.py).
+- Telegram link codes a day after they expired (app/auth/chat_links.py).
 
 Runs in the api process (started from main.py's lifespan), every
 SWEEP_EVERY. The telegram-bot process doesn't run it.
@@ -18,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
+from app.auth.chat_links import sweep_codes
 from app.auth.core import sweep_sessions
 from app.auth.links import sweep_links
 from app.intake.photos import remove_intake_dir
@@ -86,20 +88,24 @@ def sweep(now: datetime | None = None) -> dict:
         removed_sessions = sweep_sessions(db, now)
         # Old invite/reset links (PDPA retention).
         removed_links = sweep_links(db, now)
+        # Telegram link codes (only their hashes), a day after expiry.
+        removed_codes = sweep_codes(db, now)
+        db.commit()
     finally:
         db.close()
 
-    if removed_drafts or removed_tmp or removed_sessions or removed_links:
+    if removed_drafts or removed_tmp or removed_sessions or removed_links or removed_codes:
         logger.info(
-            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d expired session(s) "
-            "and %d old account link(s)",
-            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions, removed_links,
+            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d expired session(s), "
+            "%d old account link(s) and %d old Telegram code(s)",
+            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions, removed_links, removed_codes,
         )
     return {
         "drafts": removed_drafts,
         "tmp_files": removed_tmp,
         "sessions": removed_sessions,
         "links": removed_links,
+        "telegram_codes": removed_codes,
     }
 
 

@@ -36,7 +36,9 @@ from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
+from app.api.telegram_link import router as telegram_link_router
 from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
+from app.auth import chat_links
 from app.auth.core import CurrentUser, audit, report_history
 from app.auth.deps import (
     CASE_NOT_FOUND,
@@ -134,6 +136,7 @@ app.include_router(signup_router)
 app.include_router(parts_router)
 app.include_router(intake_router)
 app.include_router(ai_keys_router)
+app.include_router(telegram_link_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -1430,6 +1433,12 @@ def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
             # People's own AI keys: whether this server can open them, and
             # if not, why and what fixes it (ai/secretbox.py).
             "ai_key_storage": secretbox.describe(),
+            # The bot's @username (the bot writes it when it starts; None
+            # until then) and how many accounts have connected a Telegram.
+            "telegram": {
+                "bot_username": chat_links.bot_username(db),
+                "accounts_connected": chat_links.accounts_connected(db),
+            },
         }
     finally:
         db.close()

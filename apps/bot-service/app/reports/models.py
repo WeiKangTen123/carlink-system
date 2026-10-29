@@ -273,6 +273,66 @@ class UserAiKey(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 
+class ChatLink(Base):
+    """A chat account connected to a Carlink account (app/auth/chat_links.py):
+    today a Telegram user, so the bot knows who is filing.
+
+    external_id is the Telegram USER id (as text), never a chat id: it is
+    the same for that person in every chat, for life. The username and name
+    are only for showing; people change them. One Telegram per account and
+    one account per Telegram: both unique rules are part of the table itself
+    (create_all makes it in one statement), so no process stopping half-way
+    can leave one out. Deleted on disconnect, on disabling the account and
+    on any password change or reset; the history keeps the record.
+    """
+    __tablename__ = "chat_links"
+    __table_args__ = (
+        UniqueConstraint("channel", "external_id", name="uq_chat_links_channel_external_id"),
+        UniqueConstraint("channel", "user_id", name="uq_chat_links_channel_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="telegram")
+    external_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    external_username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    external_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+    # When the bot last saw this person; written at most every 10 minutes.
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ChatLinkCode(Base):
+    """A one-time code someone made on Settings > My Telegram to connect
+    their Telegram (app/auth/chat_links.py). Only its SHA-256 is stored,
+    like sessions and account links. Works once, for 10 minutes; a new one
+    cancels the last.
+
+    Both sides confirm: Telegram taps Yes (used_by_* and waiting_since are
+    set: "waiting for Carlink"), then the account confirms in Settings
+    (linked_at), or says "Not me" (revoked_at). Swept a day after it expires
+    (app/intake/cleanup.py).
+    """
+    __tablename__ = "chat_link_codes"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="uq_chat_link_codes_code_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_id)
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="telegram")
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # The Telegram user who tapped [Yes, that's me] on it.
+    used_by_external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    used_by_username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    used_by_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    waiting_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    linked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class AuthSession(Base):
     """One signed-in browser. The cookie holds a random token; only its
     SHA-256 is stored, so a copy of the database (or a backup) can't be used

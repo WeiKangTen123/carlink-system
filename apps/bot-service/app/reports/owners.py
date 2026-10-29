@@ -18,6 +18,7 @@ import argparse
 from sqlalchemy import func, text, update
 from sqlalchemy.orm import Session
 
+from app.auth.chat_links import telegram_sender
 from app.auth.core import audit
 from app.auth.permissions import case_permissions, is_admin
 from app.reports.models import AuditEntry, Report, User, iso_utc
@@ -149,11 +150,22 @@ def _candidates(report_id: str, data: dict | None, first: dict, edits: dict) -> 
     return found
 
 
+TELEGRAM_SENDER = "sent from their Telegram"
+
+
 def suggested_owner(db: Session, report: Report) -> dict | None:
     """For an admin assigning an Unassigned case: the first active account
-    its history points to, or None."""
+    its history points to, or None. A Telegram case sent from a Telegram
+    that is now connected to an account suggests that account ("sent from
+    their Telegram") after whoever created or finished it, before who
+    signed it off or edited it. The person never claims these themselves
+    (agent6 D5); an admin assigns them."""
     first, edits = _history_accounts(db, report.id)
     candidates = _candidates(report.id, report.data, first, edits)
+    sender = telegram_sender(db, report)
+    if sender:
+        made = sum(1 for _, why in candidates if why in ("created it", "finished its intake"))
+        candidates.insert(made, (sender, TELEGRAM_SENDER))
     accounts = owners_by_id(db, [uid for uid, _ in candidates])
     for uid, why in candidates:
         user = accounts.get(uid)

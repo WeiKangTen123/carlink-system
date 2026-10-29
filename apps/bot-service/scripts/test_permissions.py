@@ -221,6 +221,12 @@ DECISIONS = {
     ("PUT", "/auth/me/ai-key"): ("self", "P3: 400 ai_key_format / billing_not_confirmed / ai_key_invalid, 409 ai_key_in_use, 429 rate_limited"),
     ("POST", "/auth/me/ai-key/test"): ("self", "P3: asks Google again (models.list); 10 an hour"),
     ("DELETE", "/auth/me/ai-key"): ("self", "P3: history entry ai_key_removed"),
+    # P5 "Telegram connect" (app/api/telegram_link.py; tested in scripts/test_telegram_link.py).
+    ("GET", "/auth/me/telegram"): ("self", "P5: connected?, the open code (never the code itself), bot_username"),
+    ("POST", "/auth/me/telegram/code"): ("self", "P5: the plain code in this response only; cancels the open one; 429 rate_limited after 10 an hour"),
+    ("DELETE", "/auth/me/telegram/code"): ("self", "P5: cancels the open code"),
+    ("POST", "/auth/me/telegram/confirm"): ("self", "P5: {accept}; 409 nothing_waiting / code_expired / telegram_in_use"),
+    ("DELETE", "/auth/me/telegram"): ("self", "P5: disconnect; history entry telegram_unlinked"),
 
     ("GET", "/reports"): ("signed-in", "?scope=mine|all|unassigned; plain users mine only (else 403 scope_not_allowed)"),
     ("POST", "/reports"): ("signed-in", "owner = caller; temp_photo_paths only the caller's u{id}- files"),
@@ -238,6 +244,7 @@ DECISIONS = {
     ("POST", "/users/{user_id}/reset-password"): ("admin", ""),
     ("POST", "/users/{user_id}/reset-link"): ("admin", ""),
     ("DELETE", "/users/{user_id}/ai-key"): ("admin", "P3: someone's own AI key; history entry ai_key_removed_by_admin"),
+    ("DELETE", "/users/{user_id}/telegram"): ("admin", "P5: someone's connected Telegram; history entry telegram_unlinked"),
     ("PUT", "/signup-settings"): ("admin", ""),
     ("GET", "/account-links"): ("admin", ""),
     ("POST", "/account-links"): ("admin", ""),

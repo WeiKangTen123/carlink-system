@@ -81,6 +81,9 @@ _ADDED_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users (username)",
     # Same name create_all gives Report.owner_id's index=True.
     "CREATE INDEX IF NOT EXISTS ix_reports_owner_id ON reports (owner_id)",
+    # Telegram link codes (P5): create_all adds this one separately. The
+    # unique rules of both chat tables are inside the tables themselves.
+    "CREATE INDEX IF NOT EXISTS ix_chat_link_codes_user_id ON chat_link_codes (user_id)",
 ]
 
 # One-off data changes, each safe to run on every start-up.
