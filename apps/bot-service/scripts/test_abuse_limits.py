@@ -73,7 +73,7 @@ from app.auth.deps import ApiError  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake.pipeline import merge_redraft  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
-from app.reports.models import AuditEntry, Report, gen_id  # noqa: E402
+from app.reports.models import AuditEntry, ChatLink, Report, gen_id  # noqa: E402
 from app.reports.owners import TICKS  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.storage import files as storage_files  # noqa: E402
@@ -475,6 +475,15 @@ def main() -> int:
            "and saving skip it; other people render meanwhile; once it's done they can render again")
 
         print("the Telegram bot still waits for Chromium")
+        # Filed by a Telegram connected to an account (P5).
+        filer = person(name="Bo Bot", ai_company_key_allowed=True)
+        db = SessionLocal()
+        try:
+            db.add(ChatLink(channel="telegram", external_id="4343", user_id=filer.id))
+            db.commit()
+        finally:
+            db.close()
+        linked = tg.Linked(id=filer.id, label="Bo Bot", staff=False)
         photo = Path(_tmp, "tg-photo.jpg")
         photo.write_bytes(jpeg())
         session = tg.get_session("4343")
@@ -486,7 +495,8 @@ def main() -> int:
         try:
             with mock.patch.object(renderer, "RENDER_SLOT_WAIT_SECONDS", 0.3):  # the api would give up first
                 started = time.monotonic()
-                asyncio.run(tg._finalize_report(SimpleNamespace(message=None, callback_query=None), session, "4343"))
+                update = SimpleNamespace(message=None, callback_query=None, effective_user=SimpleNamespace(id=4343))
+                asyncio.run(tg._finalize_report(update, session, "4343", linked))
                 waited = time.monotonic() - started
         finally:
             renderer._render_slots.release()
@@ -579,7 +589,14 @@ def main() -> int:
         ok("finalize under the threshold is 507 disk_full before the draft is claimed: it stays as it was, and finishes later")
 
         async def telegram_checks():
-            tg._allowed_ids.add("4242")
+            # A Telegram connected to an account with AI (P5): the disk
+            # guard is what stops it.
+            db = SessionLocal()
+            try:
+                db.add(ChatLink(channel="telegram", external_id="4242", user_id=finisher.id))
+                db.commit()
+            finally:
+                db.close()
             texts, downloads = [], []
 
             async def reply(text, **_kw):
@@ -591,7 +608,7 @@ def main() -> int:
 
             def update(**msg):
                 message = SimpleNamespace(**{"reply_text": reply, "caption": None, "photo": [], "document": None, **msg})
-                return SimpleNamespace(effective_user=SimpleNamespace(id=4242), effective_chat=SimpleNamespace(id=4242),
+                return SimpleNamespace(effective_user=SimpleNamespace(id=4242), effective_chat=SimpleNamespace(id=4242, type="private"),
                                        effective_message=message, message=message, callback_query=None)
 
             with low_disk():

@@ -51,6 +51,10 @@ class Session:
     # api's cleanup has deleted its photos.
     finalizing: bool = False
     last_active: float = field(default_factory=time.monotonic)
+    # Telegram: the Carlink account the draft is being filed as. A draft
+    # started for one account is thrown away, not filed, once the Telegram
+    # is connected to another.
+    carlink_user_id: Optional[str] = None
 
 
 _sessions: dict[str, Session] = {}
@@ -60,7 +64,18 @@ def get_session(chat_id: str) -> Session:
     return _sessions.setdefault(chat_id, Session())
 
 
+def find_session(chat_id: str) -> Optional[Session]:
+    """The chat's session if it has one, without starting one."""
+    return _sessions.get(chat_id)
+
+
 def reset_session(chat_id: str) -> Session:
     session = Session()
     _sessions[chat_id] = session
     return session
+
+
+def drop_session(chat_id: str) -> Optional[Session]:
+    """Forgets the chat's session, leaving none behind (Telegram, for a chat
+    that isn't connected to an account). Returns it, for its temp files."""
+    return _sessions.pop(chat_id, None)

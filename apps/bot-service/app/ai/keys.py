@@ -15,8 +15,9 @@ applies from the very next call, even in the middle of an intake run:
        their own key has stopped working.
 
 Nothing left: AiUnavailable, with a code the dashboard explains. Scripts
-and the Telegram bot use AiActor.cli(): the company keys, as before P4 (the
-bot until Telegram is linked to accounts). No HTTP route ever does.
+use AiActor.cli(): the company keys, as before P4. No HTTP route ever does,
+nor the Telegram bot, which drafts for the account its Telegram is linked
+to (AiActor.for_user(id, "telegram")).
 
 One key per person and one person per key: a key someone else has saved,
 or one of the company's, is refused. The key is sealed the moment it
@@ -403,7 +404,7 @@ class AiActor:
     don't reach plain threads or ThreadPoolExecutor workers, so an intake
     run and each of its sorting workers would lose the person.
 
-    cli: AiActor.cli(), for scripts and the Telegram bot."""
+    cli: AiActor.cli(), for scripts."""
     user_id: str | None
     channel: str
     cli: bool = False
@@ -414,9 +415,8 @@ class AiActor:
 
 
 def _cli_actor(cls) -> AiActor:
-    """The company keys, as before P4: scripts, and the Telegram bot until
-    Telegram is linked to accounts (its allow-list guards it meanwhile).
-    Never for an HTTP request."""
+    """The company keys, as before P4: scripts only. Never for an HTTP
+    request or the Telegram bot."""
     return cls(user_id=None, channel="cli", cli=True)
 
 

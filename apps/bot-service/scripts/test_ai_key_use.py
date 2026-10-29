@@ -1340,11 +1340,13 @@ def routes() -> None:
 
 def cli_never_from_http() -> None:
     places = list((ROOT / "app" / "api").glob("*.py")) + list((ROOT / "app" / "intake").glob("*.py")) + \
-        list((ROOT / "app" / "auth").glob("*.py")) + [ROOT / "app" / "channels" / "whatsapp.py"]
+        list((ROOT / "app" / "auth").glob("*.py")) + [ROOT / "app" / "channels" / "whatsapp.py", ROOT / "app" / "channels" / "telegram.py"]
     found = [str(p.relative_to(ROOT)) for p in places if re.search(r"AiActor\.cli\(|cli=True", p.read_text(encoding="utf-8"))]
-    check(not found, "AiActor.cli() appears in no API route, intake or auth module, nor WhatsApp", repr(found))
+    check(not found, "AiActor.cli() appears in no API route, intake or auth module, nor WhatsApp or the Telegram bot", repr(found))
     tg = (ROOT / "app" / "channels" / "telegram.py").read_text(encoding="utf-8")
-    check("AiActor.cli()" in tg and "actor=AI_ACTOR" in tg, "the Telegram bot drafts as AiActor.cli()")
+    # P5: the bot drafts for the person its Telegram is connected to.
+    check('AiActor.for_user(self.id, "telegram")' in tg and "actor=actor" in tg,
+          "the Telegram bot drafts as the linked person (AiActor.for_user)")
 
 
 def nothing_leaked() -> None:
