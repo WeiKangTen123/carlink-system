@@ -30,12 +30,13 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 from app.ai import keys as own_keys
 from app.ai import secretbox
 from app.ai.extraction import draft_report
+from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
 from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
-from app.api.intake import delete_intake_files, router as intake_router
+from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
 from app.auth.core import CurrentUser, audit, report_history
 from app.auth.deps import (
     CASE_NOT_FOUND,
@@ -54,7 +55,7 @@ from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.reports import owners
 from app.reports.db import SessionLocal, init_db
-from app.ai.client import available_api_keys, get_client, reset_client_cache
+from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, User, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
@@ -143,6 +144,13 @@ async def _hashing_busy(request: Request, exc: HashingBusy):
 @app.exception_handler(ApiError)
 async def _api_error(request: Request, exc: ApiError):
     return JSONResponse({"detail": exc.detail, "code": exc.code}, status_code=exc.status_code, headers=exc.headers)
+
+
+@app.exception_handler(AiUnavailable)
+async def _ai_unavailable(request: Request, exc: AiUnavailable):
+    """The person's AI isn't available (ai/keys.py): no key of theirs works
+    and they may not use the company's. Same shape as ApiError."""
+    return JSONResponse({"detail": exc.message, "code": exc.code}, status_code=409)
 
 
 def blank_sign_off() -> dict:
@@ -504,12 +512,43 @@ async def analyze_report_photos(
     report the reporter actually confirmed.
     """
     # No case to gate on: the photos go to a case later, through PUT
-    # /reports/{id}'s checks. AI first, then room on the disk, before any
-    # photo is saved.
-    limits.require_ai(user)
-    limits.require_disk_space()
-    saved_paths: list[str] = []
-    td = tmp_dir()
+    # /reports/{id}'s checks. AI first (the presser pays: 409 {detail,
+    # code} when theirs isn't available; one request at a time, 429
+    # ai_busy), then room on the disk, the file types and the hourly photo
+    # count, before any photo is saved.
+    actor = AiActor.for_user(user.id, "dashboard")
+    await asyncio.to_thread(own_keys.ensure_ai_ready, actor)
+    limits.claim_ai_turn(user)
+    try:
+        limits.require_disk_space()
+        exts = _photo_exts(photos)
+        counted = limits.charge_photo_uploads(user, len(photos))
+        saved_paths: list[str] = []
+        try:
+            saved_paths = await asyncio.to_thread(_save_temp_photos, photos, exts, user)
+            draft = await asyncio.to_thread(draft_report, description, saved_paths, actor=actor)
+            if draft.vehicle_info:
+                draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
+        except BaseException as exc:
+            # Nothing was drafted, so nothing is kept: the photos go, and
+            # back to the hourly count.
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
+            if counted:
+                limits.photo_uploads.refund(user.id, len(photos))
+            if isinstance(exc, (AiUnavailable, HTTPException)) or not isinstance(exc, Exception):
+                raise  # their own key refused mid-call (the 409 with its code), a 413...
+            raise HTTPException(status_code=502, detail=f"AI drafting failed: {own_keys.scrub(str(exc))}") from exc
+    finally:
+        limits.ai_running.release(user.id)
+
+    return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
+
+
+def _photo_exts(photos: list[UploadFile]) -> list[str]:
+    """Each photo's extension, all checked before any is saved: these
+    extensions, none meaning .jpg (400 otherwise)."""
+    exts: list[str] = []
     for photo in photos:
         raw_ext = Path(photo.filename or "").suffix.lower()
         if raw_ext and raw_ext not in ALLOWED_PHOTO_EXTENSIONS:
@@ -517,28 +556,86 @@ async def analyze_report_photos(
                 status_code=400,
                 detail=f"Unsupported file format '{raw_ext}'. Allowed formats: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}",
             )
-        ext = raw_ext or ".jpg"
-        dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
-        with open(dest, "wb") as f:
-            shutil.copyfileobj(photo.file, f)
-        if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
-            dest.unlink(missing_ok=True)
-            for p in saved_paths:
-                Path(p).unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=413,
-                detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
-            )
-        saved_paths.append(str(dest))
+        exts.append(raw_ext or ".jpg")
+    return exts
 
+
+def _save_temp_photos(photos: list[UploadFile], exts: list[str], user: CurrentUser) -> list[str]:
+    """Saves them to storage/tmp as u{user id}-{random}{ext} (_temp_prefix),
+    25MB each at most (413) -- all or none."""
+    saved_paths: list[str] = []
     try:
-        draft = await asyncio.to_thread(draft_report, description, saved_paths)
-        if draft.vehicle_info:
-            draft.vehicle_info.body_type = body_type_for(draft.vehicle_info.make, draft.vehicle_info.model, draft.vehicle_info.body_type)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI drafting failed: {exc}") from exc
+        td = tmp_dir()
+        for photo, ext in zip(photos, exts):
+            dest = td / f"{_temp_prefix(user)}{uuid.uuid4().hex}{ext}"
+            with open(dest, "wb") as f:
+                shutil.copyfileobj(photo.file, f)
+            saved_paths.append(str(dest))
+            if dest.stat().st_size > MAX_PHOTO_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File '{photo.filename}' exceeds maximum allowed size of 25MB.",
+                )
+    except BaseException:
+        for p in saved_paths:
+            Path(p).unlink(missing_ok=True)
+        raise
+    return saved_paths
 
-    return {"draft": draft.model_dump(), "temp_photo_paths": saved_paths}
+
+def _too_many_photos(already: int, adding: int) -> None:
+    """A case holds at most MAX_PHOTOS_PER_CASE, as an intake does: 409.
+    Only when photos are being added: a case from before the limit with
+    more still saves its other edits."""
+    if adding > 0 and already + adding > MAX_PHOTOS_PER_CASE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A case can hold at most {MAX_PHOTOS_PER_CASE} photos, and this one has {already}. "
+            f"Add at most {max(0, MAX_PHOTOS_PER_CASE - already)} more.",
+        )
+
+
+@app.post("/reports/{report_id}/upload-photos")
+def upload_report_photos(
+    report_id: str,
+    photos: list[UploadFile] = File(default=[]),
+    user: CurrentUser = Depends(editable_case),
+) -> dict:
+    """Photos for a case's edit form, with no AI at all: saved to
+    storage/tmp just as /reports/analyze-photos saves them, and attached
+    when the form is saved (PUT /reports/{id}, temp_photo_paths). Since P4
+    analyze-photos needs AI, and was the only way in, so someone with AI
+    off couldn't add a photo to their own case.
+
+    Plain `def`: FastAPI runs it in its threadpool, off the event loop."""
+    limits.require_disk_space()
+    if not photos:
+        raise HTTPException(status_code=400, detail="Choose at least one photo.")
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        # What PUT /reports/{id} would refuse to attach them to, refused
+        # before anything is saved for it.
+        _refuse_intake_draft(r)
+        if _is_signed_off(r):
+            raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+        _too_many_photos(len(r.photo_paths or []), len(photos))
+    finally:
+        db.close()
+
+    # analyze-photos' rules: these extensions (none means .jpg), 25MB each.
+    exts = _photo_exts(photos)
+    counted = limits.charge_photo_uploads(user, len(photos))
+    try:
+        saved_paths = _save_temp_photos(photos, exts, user)
+    except BaseException:
+        # All or nothing, and the photos given back to the hourly count.
+        if counted:
+            limits.photo_uploads.refund(user.id, len(photos))
+        raise
+    return {"temp_photo_paths": saved_paths}
 
 
 class CreateReportRequest(BaseModel):
@@ -548,9 +645,10 @@ class CreateReportRequest(BaseModel):
 
 def _checked_temp_paths(paths: list[str], user: CurrentUser) -> list[str]:
     """temp_photo_paths arrive from the browser, which only ever got them
-    from /reports/analyze-photos -- so anything not directly inside
-    storage/tmp is refused. Each path is copied into the public case folder
-    and then deleted, so before this check one request could publish and
+    from /reports/analyze-photos or /reports/{id}/upload-photos -- so
+    anything not directly inside storage/tmp is refused. Each path is
+    copied into the public case folder and then deleted, so before this
+    check one request could publish and
     delete any file the API can read: the SQLite database, the source code.
     Only the caller's own uploads (_temp_prefix) pass, or anyone could move
     someone else's photos -- a Telegram draft's, say -- into their case.
@@ -677,6 +775,7 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
                 status_code=409,
                 detail="Report is signed off and locked. Reopen it before editing.",
             )
+        _too_many_photos(len(r.photo_paths or []), len([p for p in temp_paths if Path(p).exists()]))
 
         if body.draft.vehicle_info:
             v = body.draft.vehicle_info
@@ -1435,20 +1534,21 @@ async def test_service(service: str, admin: CurrentUser = Depends(require_admin)
     for display -- never raises for a failed credential, since 'your key
     is wrong' is a normal result here, not a server error."""
     if service == "llm":
-        keys = available_api_keys()
+        # The company keys, as always: own keys are tested on My AI key.
+        keys = own_keys.company_keys()
         if not keys:
             return {"ok": False, "message": "No API key configured"}
 
-        def _probe(api_key: str) -> tuple[bool, str]:
+        def _probe(key: own_keys.AiKey) -> tuple[bool, str]:
             try:
-                client = get_client(api_key)
+                client = get_client(key)
                 # Cheapest real call that still proves the key is accepted:
                 # list models. Avoids spending generation quota just to
                 # answer "does this key work".
                 next(iter(client.models.list()), None)
                 return True, "Key accepted"
             except Exception as exc:
-                return False, str(exc)[:160]
+                return False, own_keys.scrub(str(exc), key.value)[:160]
 
         working = 0
         first_error = ""

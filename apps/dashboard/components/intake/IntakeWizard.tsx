@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeft, Bot, Check, Lock, Save, X } from "lucide-react";
-import { ownerLabel, type ReportData, type Taxonomy } from "@/lib/api";
+import { aiOffMessage, isAiOffCode, ownerLabel, type AiOffCode, type ReportData, type Taxonomy } from "@/lib/api";
+import { AiFixLink } from "@/components/AiFixLink";
 import { CaseNotFound } from "@/components/CaseNotFound";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import {
@@ -12,6 +13,7 @@ import {
   IntakeRequestError,
   createIntake,
   deleteIntakePhoto,
+  fetchAiAllowed,
   finalizeIntake,
   formatBytes,
   getIntake,
@@ -75,6 +77,17 @@ function stepFor(state: IntakeState): Step {
 
 const byPosition = (a: IntakePhoto, b: IntakePhoto) => a.position - b.position;
 
+// How often the wizard may ask GET /auth/me again while AI is off (the tab's
+// focus and visibility events often come in pairs).
+const AI_RECHECK_MIN_MS = 3000;
+
+/** The freshest word on whether the AI runs for this person, newer than the
+ * signed-in user loaded with the page: from a Start or Retry the API took or
+ * refused, a run that stopped, or a check when the tab came back into view.
+ * `code` and `said`: why it's off, when known (AI_OFF_CODES, and the API's
+ * words for it). */
+type AiNow = { allowed: boolean; code: AiOffCode | null; said: string | null };
+
 type Props = {
   initialDraftId: string | null;
   taxonomy: Taxonomy;
@@ -96,9 +109,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // The API said 404: no such draft, or not one this account may open.
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The AI was refused for this account (ai_key_missing): offer to fill the
-  // case in by hand instead.
-  const [aiRefused, setAiRefused] = useState(false);
+  // Null until something newer than the page's signed-in user says whether
+  // the AI runs for this person (see AiNow). Off: offer to fill the case in
+  // by hand instead, and say why and what to do about it.
+  const [aiNow, setAiNow] = useState<AiNow | null>(null);
+  const lastAiCheckRef = useRef(0);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [busy, setBusy] = useState<null | "saving" | "starting" | "finalizing">(null);
   // Edits not yet on the server. Saved automatically shortly after the
@@ -168,7 +183,14 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   };
 
   const applyState = useCallback((s: IntakeState, initial: boolean) => {
-    const finishedReading = isRunning(stageRef.current) && s.stage === "ready";
+    const wasRunning = isRunning(stageRef.current);
+    const finishedReading = wasRunning && s.stage === "ready";
+    // A run this person started that stopped because the AI was refused for
+    // them (their key stopped working mid-run, say): AI is off for them now.
+    // Someone else's run stopping says nothing about this person's AI.
+    if (wasRunning && s.stage === "failed" && isAiOffCode(s.error_code) && s.error_mine !== false) {
+      setAiNow({ allowed: false, code: s.error_code, said: s.error });
+    }
     stageRef.current = s.stage;
     // Photos waiting out their undo window are still on the server; keep
     // them off the screen.
@@ -230,6 +252,32 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       cancelled = true;
     };
   }, [initialDraftId, applyState, router, loadAttempt]);
+
+  // AI is off for this person: as the API last said, else as GET /auth/me
+  // said when the page loaded. Unknown counts as on; the API decides.
+  const aiOff = aiNow ? !aiNow.allowed : user?.ai_allowed === false;
+  // Ask again whenever this tab comes back into view while AI is off: the
+  // person may have fixed it in Settings, in the tab "Fix in Settings"
+  // opened. Starting the AI is offered again as soon as it's on.
+  useEffect(() => {
+    if (!aiOff) return;
+    const recheck = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastAiCheckRef.current < AI_RECHECK_MIN_MS) return;
+      lastAiCheckRef.current = now;
+      void fetchAiAllowed().then((allowed) => {
+        if (allowed === null) return;
+        setAiNow((prev) => (allowed ? { allowed: true, code: null, said: null } : { allowed: false, code: prev?.code ?? null, said: prev?.said ?? null }));
+      });
+    };
+    document.addEventListener("visibilitychange", recheck);
+    window.addEventListener("focus", recheck);
+    return () => {
+      document.removeEventListener("visibilitychange", recheck);
+      window.removeEventListener("focus", recheck);
+    };
+  }, [aiOff]);
 
   // Poll while the AI works in the background.
   const running = isRunning(state?.stage);
@@ -542,12 +590,16 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       setDirty(false);
       const started = Date.now();
       applyState(await processIntake(id, mode), false);
+      // The API let the AI run for this person, so it's on for them now.
+      setAiNow({ allowed: true, code: null, said: null });
       setReadStartedAt(started);
       setAiSkipped(false);
       setStep(2);
     } catch (e) {
-      if (e instanceof IntakeRequestError && e.code === "ai_key_missing") setAiRefused(true);
-      setError(e instanceof Error ? e.message : String(e));
+      // Refused for this person (release P4): the AI-off banner says why
+      // and what to do, and offers to fill the case in by hand.
+      if (e instanceof IntakeRequestError && isAiOffCode(e.code)) setAiNow({ allowed: false, code: e.code, said: e.message });
+      else setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
@@ -761,8 +813,18 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     );
   }
 
-  // AI is off for this account (GET /auth/me), or the API just said so.
-  const aiOff = aiRefused || user?.ai_allowed === false;
+  // Step 2 says why the last run stopped itself (SortStep), with what to do.
+  const failedAiOff = state?.stage === "failed" && isAiOffCode(state.error_code) ? state.error_code : null;
+  // Why AI is off, when known: what the API last said, else the last run's
+  // stop if this person started it. Null: off for a reason not known here
+  // (My AI key says which).
+  const aiOffCode = aiNow?.code ?? (state?.error_mine === false ? null : failedAiOff);
+  const aiOffSaid = aiNow?.code ? aiNow.said : state?.error;
+  // Step 1 as before (P1). Step 2 only when a Retry or Re-read there was
+  // just refused, and not beside SortStep's own word on a stopped run.
+  const showAiOff = aiOff && (step === 1 || (step === 2 && !failedAiOff && aiNow?.code != null));
+  // A Re-read refused on a case the AI read before: nothing to fill by hand.
+  const aiOffReadEarlier = step === 2 && stage === "ready";
 
   let saveStatus: React.ReactNode = null;
   if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
@@ -824,21 +886,36 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         </div>
       )}
 
-      {step === 1 && aiOff && (
+      {showAiOff && (
         <div className="intake-alert info" role="status">
           <Bot style={{ width: 16, height: 16, flexShrink: 0 }} />
-          <div style={{ flex: 1 }}>
-            AI is off for your account, so the photos won&apos;t be sorted or read for you. You can fill the case in by hand.
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            {!aiOffCode ? (
+              <>
+                AI is off for your account, so the photos won&apos;t be sorted or read for you. You can fill the case in by
+                hand.
+              </>
+            ) : aiOffReadEarlier ? (
+              <>{aiOffMessage(aiOffCode, aiOffSaid)} The facts the AI read earlier are kept.</>
+            ) : (
+              <>
+                {aiOffMessage(aiOffCode, aiOffSaid)} The photos won&apos;t be sorted or read for you; you can fill the
+                case in by hand.
+              </>
+            )}{" "}
+            <AiFixLink code={aiOffCode} />
           </div>
-          <button
-            type="button"
-            className="btn-secondary-modern"
-            onClick={fillByHand}
-            disabled={!draftId || !state || uploading || Boolean(busy)}
-            title={!draftId ? "Add the photos first" : undefined}
-          >
-            Fill in by hand
-          </button>
+          {!aiOffReadEarlier && (
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              onClick={fillByHand}
+              disabled={!draftId || !state || uploading || Boolean(busy)}
+              title={!draftId ? "Add the photos first" : undefined}
+            >
+              Fill in by hand
+            </button>
+          )}
         </div>
       )}
 
@@ -886,6 +963,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           }}
           onBack={() => goTo(1)}
           onNext={() => goTo(3)}
+          aiRefused={aiNow && !aiNow.allowed ? aiNow : null}
         />
       )}
 

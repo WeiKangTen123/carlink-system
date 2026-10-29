@@ -21,8 +21,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.ai.keys import AiActor  # noqa: E402
 import app.conversation.flow as flow  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo  # noqa: E402
+
+# build_draft needs to know who pays; the fakes below never look.
+ACTOR = AiActor.cli()
 
 FAILURES: list[str] = []
 
@@ -49,7 +53,7 @@ def _ai(**fields):
     """Stands in for draft_report. Defaults mimic the normal case: the model
     returns nothing for reporter identity, because it cannot see a name or a
     phone number in a photo."""
-    def _call(description, photo_paths, known_facts=None):
+    def _call(description, photo_paths, known_facts=None, **_kw):
         base = dict(
             description="Rear-end collision.",
             category=["Vehicle Collision or Damage"],
@@ -74,7 +78,7 @@ def check(label, got, want):
 def main() -> int:
     print("  first draft -- the typed template is stated ground truth")
     with mock.patch.object(flow, "draft_report", _ai(vehicle_info=VehicleInfo(plate_number="SLJ7948"))):
-        d = flow.build_draft("x", [], _session()).draft
+        d = flow.build_draft("x", [], _session(), actor=ACTOR).draft
         check("reporter_name applied", d.reporter_name, "EK")
         check("reporter_contact applied", d.reporter_contact, "81238123")
         check("location applied", d.location, "Bedok")
@@ -82,7 +86,7 @@ def main() -> int:
 
     print("\n  redraft, AI returns nothing new -- nothing may be lost")
     with mock.patch.object(flow, "draft_report", _ai()):
-        d = flow.build_draft("x", [], _session(pending_edits=["the plate is actually ABC1234"])).draft
+        d = flow.build_draft("x", [], _session(pending_edits=["the plate is actually ABC1234"]), actor=ACTOR).draft
         check("reporter_name survives", d.reporter_name, "EK")
         check("reporter_role survives", d.reporter_role, "Ah Gou/ Car Surveyor 1")
         check("reporter_contact survives", d.reporter_contact, "81238123")
@@ -93,14 +97,14 @@ def main() -> int:
     with mock.patch.object(
         flow, "draft_report", _ai(vehicle_info=VehicleInfo(plate_number="ABC1234"), location="Tampines")
     ):
-        d = flow.build_draft("x", [], _session(pending_edits=["plate is ABC1234, it was Tampines"])).draft
+        d = flow.build_draft("x", [], _session(pending_edits=["plate is ABC1234, it was Tampines"]), actor=ACTOR).draft
         check("corrected plate wins over the stale template", d.vehicle_info.plate_number, "ABC1234")
         check("corrected location wins over the stale template", d.location, "Tampines")
         check("reporter identity preserved alongside", d.reporter_name, "EK")
 
     print("\n  reporter corrects their own name in chat")
     with mock.patch.object(flow, "draft_report", _ai(reporter_name="Ahmad")):
-        d = flow.build_draft("x", [], _session(pending_edits=["actually my name is Ahmad"])).draft
+        d = flow.build_draft("x", [], _session(pending_edits=["actually my name is Ahmad"]), actor=ACTOR).draft
         check("AI-extracted name correction wins", d.reporter_name, "Ahmad")
 
     print()

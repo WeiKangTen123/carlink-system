@@ -20,9 +20,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("STORAGE_DIR", tempfile.mkdtemp(prefix="side-test-"))
 os.environ.setdefault("GEMINI_API_KEY", "unused")
 
+from app.ai.keys import AiActor  # noqa: E402
 import app.conversation.flow as flow  # noqa: E402
 from app.conversation.flow import parse_template_reply, summarize  # noqa: E402
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft  # noqa: E402
+
+# build_draft needs to know who pays; the fakes below never look.
+ACTOR = AiActor.cli()
 
 
 def ok(msg: str) -> None:
@@ -78,24 +82,24 @@ def session(**over):
     return types.SimpleNamespace(**base)
 
 
-def fake_draft(description, photo_paths, known_facts=None):
+def fake_draft(description, photo_paths, known_facts=None, **_kw):
     fake_draft.calls.append(known_facts)
     return SecurityIncidentDraft(description=description)
 
 
 fake_draft.calls = []
 with mock.patch.object(flow, "draft_report", fake_draft):
-    flow.build_draft("scraped", [], session(damaged_side="Right"))
+    flow.build_draft("scraped", [], session(damaged_side="Right"), actor=ACTOR)
     facts = fake_draft.calls[-1]
     assert facts and any(v == "Right" and "side" in k for k, v in facts.items()), facts
     assert "location" not in facts
     ok("first draft: side passed, nothing else echoed back")
 
-    flow.build_draft("scraped", [], session(damaged_side=None))
+    flow.build_draft("scraped", [], session(damaged_side=None), actor=ACTOR)
     assert fake_draft.calls[-1] is None
     ok("first draft without a side: no facts block at all (unchanged behaviour)")
 
-    flow.build_draft("scraped\nthe time was 16:45", [], session(damaged_side="Right", pending_edits=["the time was 16:45"]))
+    flow.build_draft("scraped\nthe time was 16:45", [], session(damaged_side="Right", pending_edits=["the time was 16:45"]), actor=ACTOR)
     facts = fake_draft.calls[-1]
     assert facts["location"] == "Tampines Ave 5" and any(v == "Right" for v in facts.values())
     ok("redraft: side kept alongside the other established facts")

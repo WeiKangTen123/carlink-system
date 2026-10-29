@@ -57,7 +57,6 @@ class FakeInteractions:
 
 
 structured.get_client = lambda key=None: SimpleNamespace(interactions=FakeInteractions())
-structured.available_api_keys = lambda: ["fake"]
 structured.acquire = lambda key=None: 0.0
 
 from fastapi import FastAPI  # noqa: E402
@@ -213,13 +212,41 @@ def main() -> int:
                                qualifications="", license_number="", firm_name="", session_hash="", ai_company_key_allowed=ai)
 
         wa = TestClient(mini)
-        as_user["user"] = current(False)
-        r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": "hello"})
-        assert r.status_code == 409 and r.json()["code"] == "ai_key_missing", r.text
-        as_user["user"] = current(True)
-        r = wa.post("/whatsapp/webhook", data={"From": "whatsapp:+6500000000", "Body": ""})
-        assert r.status_code == 200 and "Send a photo" in r.text, r.text
-        ok("the WhatsApp webhook (mounted only with Twilio credentials) needs the AI tick too")
+        # P4: whoever presses the button pays, and a WhatsApp number has no
+        # account behind it -- so no AI for anyone there, ticked or not.
+        from app.conversation import state as chat_state
+
+        def no_gemini(key=None):
+            raise AssertionError("Gemini was called for WhatsApp")
+
+        import app.channels.whatsapp as whatsapp
+
+        fetched: list[str] = []
+
+        async def no_download(chat_id, url, index):
+            fetched.append(url)
+            raise AssertionError("WhatsApp media was fetched")
+
+        real_get_client, structured.get_client = structured.get_client, no_gemini
+        real_download, whatsapp._download_media = whatsapp._download_media, no_download
+        try:
+            for ticked in (False, True):
+                as_user["user"] = current(ticked)
+                for form in ({"From": "whatsapp:+6500000000", "Body": ""},
+                             {"From": "whatsapp:+6500000000", "Body": "it was scraped"},
+                             # Not Twilio's: before P4 any signed-in account could make the
+                             # api fetch this, with the Twilio SID and token attached.
+                             {"From": "whatsapp:+6500000000", "NumMedia": "1",
+                              "MediaUrl0": "http://169.254.169.254/latest/meta-data/"}):
+                    r = wa.post("/whatsapp/webhook", data=form)
+                    assert r.status_code == 200 and "isn't available over WhatsApp" in r.text, r.text
+            assert not fetched, fetched
+            assert not chat_state.get_session("whatsapp:whatsapp:+6500000000").photo_paths
+        finally:
+            structured.get_client = real_get_client
+            whatsapp._download_media = real_download
+        ok("the WhatsApp webhook (mounted only with Twilio credentials) has no AI for anyone: a polite reply, "
+           "before any media is fetched")
 
         print("sign-off")
         d = signer.c.post("/intake").json()["id"]

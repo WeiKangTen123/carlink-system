@@ -7171,3 +7171,148 @@ html:has(.intake-footer) {
   color: var(--text-muted);
 }
 /* ---- end P3 my AI key ---- */
+
+/* ==========================================================================
+   P4 AI USES YOUR OWN KEY: what to do when the AI is refused for the person
+   who pressed the button (components/AiFixLink.tsx: "Fix in Settings" /
+   "Tell an admin"), where the intake wizard, the edit form and Annex A's
+   "Ask the AI" say so, and My AI key's "AI right now". Theme tokens only, so
+   it follows dark and light mode.
+   ========================================================================== */
+
+/* "Fix in Settings": opens Settings -> My AI key in a new tab. */
+.ai-fix-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ai-fix-link:hover {
+  text-decoration: underline;
+}
+
+/* "Tell an admin": only an admin can put it right. */
+.ai-fix-admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+/* Edit form (ReportForm.tsx): Analyze / Re-analyze refused. */
+.ai-off-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--text-secondary);
+}
+.ai-off-hint > svg {
+  color: var(--badge-amber-text);
+}
+.ai-off-hint strong {
+  color: var(--text-primary);
+}
+
+/* Annex A (AnnexSuggestionsPanel.tsx): "Ask the AI" refused. */
+.ai-off-annex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 0;
+}
+.ai-off-annex > span {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* My AI key: "AI right now" says which key the AI uses; amber when off. */
+.ai-key-now-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.ai-key-now strong {
+  color: var(--text-primary);
+}
+.ai-key-now.off {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+}
+.ai-key-now.off svg {
+  color: var(--badge-amber-text);
+}
+
+/* Edit form (ReportForm.tsx): "Attach photos without AI", and whether the
+   new photos are attached, and how. */
+.ai-attach-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.ai-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.ai-attach-chip.ok {
+  border-color: var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+}
+.ai-attach-chip.warn {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.ai-attach-chip.busy {
+  background: var(--surface-hover);
+  color: var(--text-muted);
+}
+/* Picked, not attached: saving now would leave them out. */
+.photo-preview-grid.ai-attach-pending img {
+  opacity: 0.6;
+}
+.ai-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.ai-attach-row .form-hint {
+  margin: 0;
+}
+.ai-attach-note {
+  margin-top: 8px;
+}
+/* ---- end P4 AI uses your own key ---- */

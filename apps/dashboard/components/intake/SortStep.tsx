@@ -17,8 +17,9 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { fileUrl } from "@/lib/api";
+import { aiOffMessage, fileUrl, isAiOffCode, type AiOffCode } from "@/lib/api";
 import { PHOTO_KIND_LABELS, PHOTO_KINDS, type IntakePhoto, type IntakeState, type PhotoKind } from "@/lib/intake";
+import { AiFixLink } from "@/components/AiFixLink";
 
 type GroupKey = PhotoKind | "all" | "unsorted" | "excluded" | "unread";
 
@@ -41,6 +42,9 @@ type Props = {
   onSkipAi: () => void;
   onBack: () => void;
   onNext: () => void;
+  /** A Retry or Re-read the API just refused for this person (release P4,
+   * AI_OFF_CODES), with its words. */
+  aiRefused?: { code: AiOffCode | null; said: string | null } | null;
 };
 
 function inGroup(p: IntakePhoto, group: GroupKey, readIds: ReadonlySet<string>): boolean {
@@ -86,6 +90,7 @@ export function SortStep({
   onSkipAi,
   onBack,
   onNext,
+  aiRefused = null,
 }: Props) {
   const { photos, stage, progress } = state;
   const [group, setGroup] = useState<GroupKey>("all");
@@ -202,6 +207,15 @@ export function SortStep({
   const canNext = !busy && !running && (stage === "ready" || canContinueByHand);
 
   const openReason = open && hasRead && !readIds.has(open.id) ? unreadReason(open, readIds.size, changedSinceRead) : null;
+  // The last run stopped because the AI was refused for whoever started it.
+  // A Retry refused since then says why it's off now instead.
+  const stoppedAiOff = stage === "failed" && isAiOffCode(state.error_code) ? state.error_code : null;
+  const failedAiOff = stoppedAiOff ? (aiRefused?.code ?? stoppedAiOff) : null;
+  const failedAiOffSaid = aiRefused?.code ? aiRefused.said : state.error;
+  // Someone else started it (an admin and the owner on one draft): their
+  // key, theirs to fix. A Retry here runs on the viewer's own AI. Unless the
+  // viewer's own Retry was refused since, which is theirs again.
+  const stoppedBy = stoppedAiOff && !aiRefused?.code && state.error_mine === false && state.error_by ? state.error_by : null;
 
   return (
     <section className="card intake-panel">
@@ -223,7 +237,37 @@ export function SortStep({
         ) : null}
       </div>
 
-      {stage === "failed" && (
+      {stage === "failed" && failedAiOff ? (
+        // The AI was refused for whoever started the run (release P4): say
+        // why and what to do. Retry stays, for once it's fixed.
+        <div className="intake-alert danger" role="alert">
+          <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            {stoppedBy ? (
+              <>
+                The AI run {stoppedBy.name || `@${stoppedBy.username}`} started stopped: their AI key isn&apos;t working (or AI
+                is off for them).
+              </>
+            ) : (
+              aiOffMessage(failedAiOff, failedAiOffSaid)
+            )}
+            {photos.some((p) => p.kind && p.kind_source === "ai") && " The photos sorted before it stopped are kept."}{" "}
+            {!stoppedBy && <AiFixLink code={failedAiOff} />}
+          </div>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            onClick={onRetry}
+            disabled={busy}
+            title={stoppedBy ? "Runs the AI again on your own AI: your key, or the company key if you may use it" : undefined}
+          >
+            <RotateCcw style={{ width: 13, height: 13 }} /> Retry
+          </button>
+          <button type="button" className="btn-secondary-modern" onClick={onSkipAi} disabled={busy}>
+            Fill in by hand
+          </button>
+        </div>
+      ) : stage === "failed" ? (
         <div className="intake-alert danger">
           <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>{state.error || "AI processing failed."}</div>
@@ -234,7 +278,7 @@ export function SortStep({
             Continue without AI
           </button>
         </div>
-      )}
+      ) : null}
       {regrouped && stage === "ready" && (
         <div className="intake-alert info">
           <Sparkles style={{ width: 16, height: 16, flexShrink: 0 }} />

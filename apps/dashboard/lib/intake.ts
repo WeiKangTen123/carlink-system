@@ -10,6 +10,7 @@
  * it tells SessionGuard, which offers to sign in again without leaving the
  * page -- everything on screen is kept and the failed step can be retried. */
 import {
+  AI_OFF_CODES,
   API_BASE_URL,
   apiFetch,
   refusalMessage,
@@ -90,6 +91,16 @@ export type IntakeState = {
    * the estimate of time left. Null on drafts from before it was recorded. */
   stage_started_at: string | null;
   error: string | null;
+  /** Why the last run stopped, when the AI was refused for the person who
+   * started it (one of AI_OFF_CODES in lib/api.ts); null otherwise, and
+   * cleared on the next start. Absent from an API before release P4. */
+  error_code?: string | null;
+  /** Who started the run that stopped, and whether that was the signed-in
+   * user. The AI runs on the key of whoever presses Start or Retry, so a
+   * stop because of someone else's key is theirs to fix, not the viewer's.
+   * Absent from an API before they were added: read as the viewer's own. */
+  error_by?: { id: string; name: string; username: string } | null;
+  error_mine?: boolean;
   reporter_notes: string;
   read_photo_ids: string[];
   photos: IntakePhoto[];
@@ -105,7 +116,7 @@ export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".hei
 
 /** A failed intake API call. `status` is null when no answer came back at
  * all (offline, connection dropped, or the request timed out). `code` is the
- * API's error code (ai_key_missing, draft_limit, case_limit, disk_full, not_allowed...),
+ * API's error code (AI_OFF_CODES, draft_limit, case_limit, disk_full, not_allowed...),
  * when it sent one; the message is then already in plain words. */
 export class IntakeRequestError extends Error {
   readonly status: number | null;
@@ -136,7 +147,7 @@ const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const PERMANENT_STATUSES = new Set([400, 404, 409, 413, 415, 422]);
 // Refusals that sending again won't fix, whatever their status (disk_full
 // is 507, not_allowed 403).
-const PERMANENT_CODES = new Set(["ai_key_missing", "draft_limit", "case_limit", "disk_full", "not_allowed"]);
+const PERMANENT_CODES = new Set<string>([...AI_OFF_CODES, "draft_limit", "case_limit", "disk_full", "not_allowed"]);
 
 /** No answer, or an answer that says "try again later". */
 export function isTransientFailure(e: unknown): boolean {
@@ -258,6 +269,21 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
 export const createIntake = () => call<{ id: string }>("", { method: "POST" });
 
 export const getIntake = (id: string) => call<IntakeState>(`/${id}`);
+
+/** Whether the AI runs for the signed-in user right now (GET /auth/me
+ * `ai_allowed`), asked fresh: the wizard checks again when its tab comes
+ * back into view, as the person may have fixed their AI key in Settings
+ * meanwhile. Null when it couldn't be told. */
+export async function fetchAiAllowed(): Promise<boolean | null> {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/auth/me`, { cache: "no-store" }, { timeoutMs: 8000 });
+    if (!res.ok) return null;
+    const me = await res.json();
+    return typeof me?.ai_allowed === "boolean" ? me.ai_allowed : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Waits before each automatic retry of an upload that failed transiently
  * (see isTransientFailure): three retries after the first try. */

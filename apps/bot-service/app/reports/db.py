@@ -65,6 +65,9 @@ _ADDED_COLUMNS = [
     ("users", "sees_all_cases", "BOOLEAN"),
     ("users", "ai_company_key_allowed", "BOOLEAN"),
     ("users", "may_sign_off", "BOOLEAN"),
+    # Why an intake run stopped, when the person's AI wasn't available (P4).
+    ("intake_sessions", "error_code", "VARCHAR"),
+    ("intake_sessions", "error_by", "VARCHAR"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

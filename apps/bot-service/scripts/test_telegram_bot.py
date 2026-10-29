@@ -33,6 +33,7 @@ from PIL import Image  # noqa: E402
 from telegram import Chat, Message, MessageEntity, PhotoSize, Update, User  # noqa: E402
 
 import app.channels.telegram as tg  # noqa: E402
+from app.ai.keys import AiActor  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.conversation import state  # noqa: E402
 from app.conversation.flow import DraftResult  # noqa: E402
@@ -152,7 +153,9 @@ RENDER_STARTED = threading.Event()
 RENDER_SECONDS = 0.0
 
 
-def fake_build_draft(description, photo_paths, session=None):
+def fake_build_draft(description, photo_paths, session=None, **_kw):
+    # The bot drafts on the company keys until Telegram is linked to accounts.
+    assert _kw.get("actor") == AiActor.cli(), _kw
     DRAFT_CALLS.append(list(photo_paths))
     for p in photo_paths:  # the real call reads every photo
         assert Path(p).exists(), f"drafted with a missing photo {p}"
@@ -524,7 +527,6 @@ async def run_async_checks() -> None:
     logging.getLogger("app.channels.telegram").setLevel(logging.INFO)
     with mock.patch.object(tg, "build_draft", fake_build_draft), \
             mock.patch.object(tg, "render_pdf", fake_render_pdf), \
-            mock.patch.object(tg, "available_api_keys", lambda: []), \
             mock.patch.object(tg, "estimate_wait", lambda _key=None: 0.0):
         await check_allow_list_load(log)
         await check_allowed_users()

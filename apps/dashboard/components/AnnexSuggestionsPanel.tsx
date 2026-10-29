@@ -2,8 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, ChevronRight, Lightbulb, Plus } from "lucide-react";
-import type { AnnexAPartItem, AnnexSuggestionGroup, AnnexSuggestionLine, AnnexSuggestions } from "@/lib/api";
+import {
+  aiOffMessage,
+  isAiOffCode,
+  type AiOffCode,
+  type AnnexAPartItem,
+  type AnnexSuggestionGroup,
+  type AnnexSuggestionLine,
+  type AnnexSuggestions,
+} from "@/lib/api";
 import { askAiAnnexSuggestionsAction, getAnnexSuggestionsAction } from "@/app/reports/actions";
+import { AiFixLink } from "@/components/AiFixLink";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { formatSgd as money, sameLineKey, shortIsoDate as shortDate } from "@/lib/pastReports";
 
@@ -86,6 +95,9 @@ export function AnnexSuggestionsPanel({
   const [aiGroups, setAiGroups] = useState<AnnexSuggestionGroup[] | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  // Set when the AI was refused for this person (release P4): what to do
+  // about it goes beside the message.
+  const [aiOff, setAiOff] = useState<AiOffCode | null>(null);
 
   async function load() {
     setLoadState("loading");
@@ -115,10 +127,14 @@ export function AnnexSuggestionsPanel({
     if (!data || aiBusy) return;
     setAiBusy(true);
     setAiError(null);
+    setAiOff(null);
     const res = await askAiAnnexSuggestionsAction(reportId, data.without_history.slice(0, 40));
     setAiBusy(false);
     if ("error" in res) {
-      setAiError(res.error);
+      if (isAiOffCode(res.code)) {
+        setAiOff(res.code);
+        setAiError(aiOffMessage(res.code, res.error));
+      } else setAiError(res.error);
       return;
     }
     setAiGroups(res.groups);
@@ -299,7 +315,17 @@ export function AnnexSuggestionsPanel({
                   {aiGroups && aiGroups.length === 0 && (
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>The AI suggested no lines for these.</div>
                   )}
-                  {aiError && <div className="setup-error" style={{ marginTop: 8, marginBottom: 0 }}>{aiError}</div>}
+                  {aiError &&
+                    (aiOff ? (
+                      <div className="setup-error ai-off-annex" role="alert">
+                        <span>
+                          {aiError} You can still add lines to Annex A by hand.
+                        </span>
+                        <AiFixLink code={aiOff} />
+                      </div>
+                    ) : (
+                      <div className="setup-error" style={{ marginTop: 8, marginBottom: 0 }}>{aiError}</div>
+                    ))}
                   {aiShown.map(renderGroup)}
                 </div>
               )}

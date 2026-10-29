@@ -67,6 +67,7 @@ def damaged_parts(case) -> list[str]:
 def ai_lines(make: str, model: str, parts: list[str]) -> list[dict]:
     import json
 
+    from app.ai.keys import AiActor
     from app.ai.structured import call_structured
     from app.api.parts import _AI_SCHEMA, _AI_SYSTEM
 
@@ -75,6 +76,7 @@ def ai_lines(make: str, model: str, parts: list[str]) -> list[dict]:
         input_parts=[{"type": "text", "text": f"Vehicle: {make} {model}, Singapore.\nDamaged parts: {json.dumps(parts)}"}],
         schema=_AI_SCHEMA, parse=json.loads,
         models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"], timeout=60.0,
+        actor=AiActor.cli(),  # the company keys
     )
     return [{"name": ln["name"], "qty": ln.get("qty", 1), "usual_unit_price": None, "cases": 0} for p in out.get("parts") or [] for ln in p.get("lines") or []]
 

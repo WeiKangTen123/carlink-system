@@ -118,6 +118,15 @@ class IntakeSession(Base):
     progress_done: Mapped[int] = mapped_column(Integer, default=0)
     progress_total: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Set when a run stopped because the person's AI isn't available (an
+    # ai/keys.AiUnavailable code, e.g. "ai_key_invalid"), so the wizard can
+    # offer the fix; cleared when the next run starts. (Added later: see
+    # db._ADDED_COLUMNS.)
+    error_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Who started the run that failed (a user id), so the wizard can word
+    # the error for whoever is looking: "your AI key" or someone else's.
+    # Cleared with error_code. (Added later: see db._ADDED_COLUMNS.)
+    error_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     reporter_notes: Mapped[str] = mapped_column(String, default="")
     # Which photos the reading step actually sent to the model, so the
     # review screen can say what the facts were read from.

@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.ai.structured as structured  # noqa: E402
+from app.ai.keys import AiActor, AiKey  # noqa: E402
 
 
 class _Interactions:
@@ -32,15 +33,16 @@ class _Client:
 
 
 def main() -> int:
-    structured.get_client = lambda api_key=None: _Client()
-    structured.available_api_keys = lambda: ["test-key"]
+    structured.get_client = lambda key=None: _Client()
+    # One company key, without asking the database (AiActor.cli()'s keys).
+    structured.resolve_keys = lambda actor: [AiKey("test-key", "test-fingerprint", "company", "company #1")]
     structured.acquire = lambda api_key=None: None
     structured.DEADLINE_MARGIN = 0.5
 
     started = time.monotonic()
     result = structured.call_structured(
         purpose="deadline test", system_instruction="", input_parts=[], schema={},
-        parse=json.loads, models=["hangs", "fails", "answers"], timeout=0.5,
+        parse=json.loads, models=["hangs", "fails", "answers"], timeout=0.5, actor=AiActor.cli(),
     )
     elapsed = time.monotonic() - started
     assert result == {"model": "answers"}, result
@@ -50,7 +52,7 @@ def main() -> int:
     try:
         structured.call_structured(
             purpose="deadline test", system_instruction="", input_parts=[], schema={},
-            parse=json.loads, models=["hangs"], timeout=0.5,
+            parse=json.loads, models=["hangs"], timeout=0.5, actor=AiActor.cli(),
         )
     except RuntimeError as exc:
         assert isinstance(exc.__cause__, TimeoutError), repr(exc.__cause__)

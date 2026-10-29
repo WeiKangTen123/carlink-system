@@ -19,9 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("STORAGE_DIR", tempfile.mkdtemp(prefix="redraft-test-"))
 os.environ.setdefault("GEMINI_API_KEY", "unused")
 
+from app.ai.keys import AiActor  # noqa: E402
 import app.conversation.flow as flow  # noqa: E402
 from app.conversation.flow import edit_mentions_damage  # noqa: E402
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft  # noqa: E402
+
+# build_draft needs to know who pays; the fakes below never look.
+ACTOR = AiActor.cli()
 
 
 def ok(msg: str) -> None:
@@ -78,14 +82,14 @@ print("\n  time-only redraft keeps the findings")
 captured = {}
 
 
-def capture(description, photo_paths, known_facts=None):
+def capture(description, photo_paths, known_facts=None, **_kw):
     captured["facts"] = known_facts
     return thin_redraft()
 
 
 with mock.patch.object(flow, "draft_report", capture):
     s = session(pending_edits=["correction: the time was 16:45 not 08:00"])
-    d = flow.build_draft("scraped\ncorrection: the time was 16:45 not 08:00", [], s).draft
+    d = flow.build_draft("scraped\ncorrection: the time was 16:45 not 08:00", [], s, actor=ACTOR).draft
     assert [i.part for i in d.damage_summary] == ["Right Rear Door", "Right Rear Quarter Panel"], d.damage_summary
     assert d.damage_summary[0].photo_reference == "P01" and d.damage_summary[0].bbox_2d and d.damage_summary[0].ai_confidence == "High"
     assert d.damaged_parts == ["Right Rear Door", "Right Rear Quarter Panel"]
@@ -100,7 +104,7 @@ with mock.patch.object(flow, "draft_report", capture):
 
     print("\n  damage-related redraft lets the model revise, but fills what it left blank")
     s = session(pending_edits=["the quarter panel is not damaged, only the door"])
-    d = flow.build_draft("scraped\nthe quarter panel is not damaged, only the door", [], s).draft
+    d = flow.build_draft("scraped\nthe quarter panel is not damaged, only the door", [], s, actor=ACTOR).draft
     assert [i.part for i in d.damage_summary] == ["Right Rear Door"]
     ok("the model's revised list stands (quarter panel dropped)")
     item = d.damage_summary[0]
@@ -110,7 +114,7 @@ with mock.patch.object(flow, "draft_report", capture):
 
     print("\n  first draft is untouched")
     s = session(pending_edits=[], draft=None)
-    d = flow.build_draft("scraped", [], s).draft
+    d = flow.build_draft("scraped", [], s, actor=ACTOR).draft
     assert [i.part for i in d.damage_summary] == ["Right Rear Door"] and d.severity_level == "Severe"
     assert "damage already identified from the photos" not in (captured["facts"] or {})
     ok("no carry-over and no findings fact on a first draft")

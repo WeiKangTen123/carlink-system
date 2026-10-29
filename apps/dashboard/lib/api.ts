@@ -188,7 +188,8 @@ export type CurrentUser = UserProfile & {
   /** Sees every case (and the My cases / All / Unassigned switch). */
   can_view_all_cases: boolean;
   may_sign_off: boolean;
-  /** May run the AI (admins, and accounts allowed the company AI key). */
+  /** May run the AI right now: admins, accounts allowed the company AI key,
+   * and anyone whose own AI key is working (release P4). */
   ai_allowed: boolean;
 };
 
@@ -254,9 +255,43 @@ export function ownerLabel(owner: Owner | null | undefined): string {
 // kept on the error, and the message is already the plain-words version, so
 // a caller that just shows err.message shows the right thing.
 
+/** AI refused for the person who pressed the button (release P4): no own
+ * key that works, and the company key isn't theirs to use, or their account
+ * is off. The API answers 409 {detail, code} before any AI runs; a
+ * background intake run that stops on one keeps it in `error_code`. */
+export const AI_OFF_CODES = ["ai_key_missing", "ai_key_invalid", "ai_quota_used", "ai_key_unreadable", "ai_account_off"] as const;
+export type AiOffCode = (typeof AI_OFF_CODES)[number];
+
+export function isAiOffCode(code: unknown): code is AiOffCode {
+  return typeof code === "string" && (AI_OFF_CODES as readonly string[]).includes(code);
+}
+
+/** Only an admin can put these right ("Tell an admin"); the rest are fixed
+ * on Settings -> My AI key ("Fix in Settings"). */
+export function aiOffNeedsAdmin(code: string | null | undefined): boolean {
+  return code === "ai_key_unreadable" || code === "ai_account_off";
+}
+
+/** The plain words for each: the API's (bot-service app/ai/keys.py
+ * MESSAGES), for a refusal or a stopped run that came without them. */
+const AI_OFF_MESSAGES: Record<AiOffCode, string> = {
+  ai_key_missing:
+    "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
+  ai_key_invalid: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
+  ai_quota_used:
+    "Your AI key has used up its quota for now. It should work again within about an hour, so try again later, or check billing in Google Cloud.",
+  ai_key_unreadable: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
+  ai_account_off: "AI is off: your account is disabled.",
+};
+
 /** Plain words for the API's error codes. */
 export const ERROR_MESSAGES: Record<string, string> = {
-  ai_key_missing: "AI is off for your account. Ask an admin to allow the company AI key.",
+  // AI_OFF_CODES. ai_key_invalid is further down: My AI key uses that code
+  // too, for a key Google refused while it was being saved.
+  ai_key_missing: AI_OFF_MESSAGES.ai_key_missing,
+  ai_quota_used: AI_OFF_MESSAGES.ai_quota_used,
+  ai_key_unreadable: AI_OFF_MESSAGES.ai_key_unreadable,
+  ai_account_off: AI_OFF_MESSAGES.ai_account_off,
   draft_limit: "You have too many unfinished drafts. Finish or delete one, then try again.",
   case_limit: "You've filed the most cases allowed in 24 hours for an account without staff access. Try again later, or ask an admin.",
   disk_full: "The server is almost out of space, so new photos and cases can't be saved. Please tell an admin.",
@@ -271,6 +306,8 @@ export const ERROR_MESSAGES: Record<string, string> = {
   // (DETAIL_FIRST_CODES); these are only for an answer without them.
   ai_key_format: "That doesn't look like a Gemini API key. It is usually 39 letters and numbers, starting with AIza.",
   billing_not_confirmed: "Tick the box to confirm billing is turned on for this key's Google Cloud project.",
+  // Also an AI run's refusal (AI_OFF_CODES): there the API's words say the
+  // saved key stopped working, and aiOffMessage() has them for none.
   ai_key_invalid: "Google didn't accept this key. Check you copied all of it.",
   ai_key_in_use: "This key can't be used here.",
   rate_limited: "Too many tries. Try again later.",
@@ -310,16 +347,30 @@ export function refusalMessage(code: string | null, detail: unknown): string | n
   return messageForCode(code) || text;
 }
 
-/** A refused API call. `code` is the API's error code, when it sent one. */
+/** What to say when AI was refused with one of AI_OFF_CODES. `said` is the
+ * API's detail, or a message refusalMessage already made of it (an error's
+ * message, an intake run's `error`). The same rule as refusalMessage, except
+ * that an ai_key_invalid with no words of the API's means the saved key
+ * stopped working, not that a key being saved was refused. */
+export function aiOffMessage(code: AiOffCode, said?: unknown): string {
+  const text = typeof said === "string" && said ? said : null;
+  if (text && DETAIL_FIRST_CODES.has(code) && text !== ERROR_MESSAGES[code]) return text;
+  return AI_OFF_MESSAGES[code];
+}
+
+/** A refused API call. `code` is the API's error code, when it sent one;
+ * `detail` its own words, when it sent a sentence. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
+  readonly detail: string | null;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(message: string, status: number, code: string | null = null, detail: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -328,12 +379,22 @@ export function errorCode(err: unknown): string | null {
   return err instanceof ApiError ? err.code : null;
 }
 
+/** For a refusal the API words for the case at hand -- a 409 (the case's
+ * photo limit, a signed-off case) or a 429 (one AI request at a time, too
+ * many photos this hour) -- its own words; otherwise err.message. */
+export function limitMessage(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  if (err instanceof ApiError && (err.status === 409 || err.status === 429) && err.detail) return err.detail;
+  return err.message;
+}
+
 /** An ApiError from a failed response: refusalMessage() for its code and
  * detail, else "<fallback> (<status>)". */
 export async function apiError(res: Response, fallback: string): Promise<ApiError> {
   const body = await res.json().catch(() => null);
   const code = typeof body?.code === "string" ? body.code : null;
-  return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code);
+  const detail = typeof body?.detail === "string" && body.detail ? body.detail : null;
+  return new ApiError(refusalMessage(code, body?.detail) || `${fallback} (${res.status})`, res.status, code, detail);
 }
 
 /** Profile fields a user edits on Settings -> My settings, and an admin on
@@ -426,10 +487,10 @@ export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedU
 // settings (bot-service app/api/ai_keys.py). Only its last 4 characters and
 // a status ever come back, to anyone, admins included.
 //
-// In this release the AI still runs on the company key, for admins and the
-// accounts allowed it; own keys are used from the next release on. `source`
-// and `ai_available` describe that next release, so the screen must not
-// read them as "your AI works now".
+// Since release P4 the AI runs on the key of whoever presses the button:
+// their own key when it works, else the company key if they may use it
+// (admins, and accounts an admin allowed), else no AI. `source` and
+// `ai_available` say which, now.
 
 /** untested: saved, but Google couldn't be reached to check it. ok: Google
  * took it at the last check. invalid: Google refused it. quota: no
@@ -449,9 +510,9 @@ export type MyAiKey = {
   last_error: string | null;
   /** Admins, and accounts ticked "May use the company AI key". */
   company_allowed: boolean;
-  /** Next release: a working own key, or company_allowed. */
+  /** AI runs for this account: a working own key, or company_allowed. */
   ai_available: boolean;
-  /** Next release: what the AI will run on. */
+  /** What the AI runs on for this account now; "none" when it is off. */
   source: "own" | "company" | "none";
 };
 
@@ -1120,6 +1181,24 @@ export async function analyzeExistingReportPhotos(
   if (!res.ok) throw await apiError(res, "AI analysis failed");
   const result = await res.json();
   return { draft: result.draft };
+}
+
+/** Attaches photos to a case without the AI (release P4: for people whose
+ * AI is off). They are saved to the temp dir like analyzeReportPhotos'
+ * and come back as the same temp_photo_paths, which PUT /reports/{id}
+ * then moves into the case on save. Refusals keep their code: disk_full
+ * (507), rate_limited (429, accounts without staff access: a number of
+ * photos an hour), not_allowed (403). */
+export async function uploadReportPhotos(reportId: string, photos: File[]): Promise<{ temp_photo_paths: string[] }> {
+  const formData = new FormData();
+  for (const photo of photos) formData.append("photos", photo);
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/upload-photos`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw await apiError(res, "Failed to attach the photos");
+  const result = await res.json();
+  return { temp_photo_paths: Array.isArray(result?.temp_photo_paths) ? result.temp_photo_paths : [] };
 }
 
 export async function updateReport(

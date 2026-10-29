@@ -265,6 +265,7 @@ DECISIONS = {
     ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", ""),
     ("POST", "/reports/{report_id}/ai-enrich"): ("case-edit", "not a Gemini call"),
     ("PUT", "/reports/{report_id}/annex-a"): ("case-edit", ""),
+    ("POST", "/reports/{report_id}/upload-photos"): ("case-edit", "no AI (P4); 507 disk_full; 60 photos an hour for unvetted accounts (429 rate_limited)"),
     ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_limit; 2 renders at once (B2)"),
     ("POST", "/intake/{report_id}/photos"): ("case-edit", "507 disk_full under 3 GB free (B2)"),
     ("PATCH", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),
@@ -292,7 +293,11 @@ TEMP_PASSWORD_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}
 BASE = "https://carlink.test"
 PASSWORD = "purple tiger lamp bicycle"
 TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
-AI_OFF_DETAIL = "AI is off for your account. Ask an admin to allow the company AI key."
+# P4: no working own key and not allowed the company key (app/ai/keys.py).
+AI_OFF_DETAIL = (
+    "AI is off for your account. Add your own AI key in Settings → My AI key, "
+    "or ask an admin to allow the company key."
+)
 BANNER_WORDS = ("unverified user", "not issued by")
 
 PASSED = {"B1": 0, "B2": 0}
@@ -778,6 +783,10 @@ def b2_ai_allowed() -> None:
     v_draft, v_case = new_draft(V, photos=1), new_case(V, plate="SVA1111A")
     r = V.c.post(f"/intake/{v_draft}/process", json={"mode": "all"})
     check(r.status_code == 200, "V (company AI key tick) starts AI on V's draft", brief(r))
+    # P4: one AI request at a time per person (429 ai_busy) -- let the run end.
+    deadline = time.monotonic() + 30
+    while jd(V.c.get(f"/intake/{v_draft}")).get("stage") in ("sorting", "reading") and time.monotonic() < deadline:
+        time.sleep(0.05)
     r = V.c.post(f"/reports/{v_case}/annex-suggestions/ai", json={"parts": ["Rear Bumper"]})
     check(r.status_code == 200, "V asks the AI for Annex A lines", brief(r))
     r = V.c.post("/reports/analyze-photos", data={"description": "x"}, files=[("photos", ("IMG_1.jpg", jpeg(), "image/jpeg"))])

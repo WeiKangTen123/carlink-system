@@ -1,14 +1,18 @@
 """What an account may spend, beyond which cases it can see (app/auth/
-permissions.py): the company AI key, PDF renders, drafts and new cases, and
-disk. Signup is open to strangers, and the api, the Telegram bot and
-another app share one small VM, so each of these is capped.
+permissions.py): PDF renders, drafts and new cases, and disk. Signup is open
+to strangers, and the api, the Telegram bot and another app share one small
+VM, so each of these is capped. Which AI key a person may use -- their own,
+or the company's for admins and ticked people -- is app/ai/keys.py's, whose
+refusals are 409s with codes too (ai_key_missing, ai_key_invalid, ...).
 
 Every refusal is an ApiError with a code the dashboard explains:
 
-    409 ai_key_missing   AI is only for admins and the "company AI key" tick
     429 render_busy      the server is busy making PDFs, or this person's
                          last one is still being made
     429 render_limit     too many PDFs lately (accounts without staff access)
+    429 rate_limited     too many photos added in an hour (accounts without
+                         staff access)
+    429 ai_busy          this person already has an AI request running
     409 draft_limit      too many open drafts
     409 case_limit       too many new cases today (accounts without staff access)
     507 disk_full        the storage disk is nearly full
@@ -27,21 +31,9 @@ from sqlalchemy import func
 
 from app.auth.core import CurrentUser
 from app.auth.deps import ApiError, not_allowed
-from app.auth.permissions import is_admin, is_staff, may_use_company_key
+from app.auth.permissions import is_admin, is_staff
 from app.reports.models import Report
 from app.storage.files import disk_space_low
-
-# ------------------------------------------------------------------- AI
-
-AI_OFF = "AI is off for your account. Ask an admin to allow the company AI key."
-
-
-def require_ai(user: CurrentUser) -> None:
-    """Before anything that ends in a Gemini call on the company key. Case
-    routes ask after their view (404) and edit (403) gates."""
-    if not may_use_company_key(user):
-        raise ApiError(409, AI_OFF, "ai_key_missing")
-
 
 # ----------------------------------------------------------------- disk
 
@@ -77,9 +69,10 @@ RENDER_LIMIT = "You've made a lot of PDFs in the last few minutes. Wait a few mi
 
 
 class _RenderBudget:
-    """Renders per account over a rolling window. In memory, so per process:
-    the api is one uvicorn process; the Telegram bot's renders have no
-    account and only the renderer's slot limit applies to them."""
+    """Renders per account over a rolling window (and photos added without
+    AI: photo_uploads). In memory, so per process: the api is one uvicorn
+    process; the Telegram bot's renders have no account and only the
+    renderer's slot limit applies to them."""
 
     def __init__(self, limit: int, window_seconds: float):
         self.limit = limit
@@ -87,26 +80,26 @@ class _RenderBudget:
         self._lock = threading.Lock()
         self._times: dict[str, deque] = {}
 
-    def take(self, user_id: str) -> bool:
-        """Counts one render for this account; False (and not counted) if
-        it has had its share for now."""
+    def take(self, user_id: str, count: int = 1) -> bool:
+        """Counts count of them (one render) for this account; False, and
+        none counted, if that would go over its share for now."""
         now = time.monotonic()
         with self._lock:
             times = self._times.setdefault(user_id, deque())
             while times and now - times[0] >= self.window:
                 times.popleft()
-            if len(times) >= self.limit:
+            if len(times) + count > self.limit:
                 return False
-            times.append(now)
+            times.extend([now] * count)
             return True
 
-    def refund(self, user_id: str) -> None:
-        """Gives back the last one counted, for a render that didn't happen.
-        It is that render's own: an account renders one at a time
-        (render_turn)."""
+    def refund(self, user_id: str, count: int = 1) -> None:
+        """Gives back the last count counted, for renders (photos) that
+        didn't happen. They are that request's own: an account renders one
+        at a time (render_turn), and a photo is a photo."""
         with self._lock:
             times = self._times.get(user_id)
-            if times:
+            for _ in range(min(count, len(times or ()))):
                 times.pop()
 
     def reset(self) -> None:
@@ -135,6 +128,57 @@ class _OneAtATime:
 
 renders = _RenderBudget(RENDERS_PER_WINDOW, RENDER_WINDOW_SECONDS)
 rendering_now = _OneAtATime()
+
+# --------------------------------------------------------------- photos
+
+# Photos added on the report form (POST /reports/{id}/upload-photos, and
+# /reports/analyze-photos), for unvetted accounts. Each can be 25 MB of the shared
+# disk in storage/tmp until the case is saved (or the day-old sweep), and a
+# case rarely gets more than a few dozen: 60 an hour leaves room for a big
+# one while stopping a script filling the disk.
+PHOTOS_PER_HOUR = 60
+PHOTO_LIMIT = "You've added a lot of photos in the last hour. Wait a while and try again."
+photo_uploads = _RenderBudget(PHOTOS_PER_HOUR, 60 * 60)
+
+
+def charge_photo_uploads(user: CurrentUser, count: int) -> bool:
+    """Before saving count photos: 429 rate_limited, nothing counted, when
+    an unvetted account would go past PHOTOS_PER_HOUR. Returns whether they
+    were counted (only unvetted accounts' are), so a failed upload can give
+    them back (photo_uploads.refund)."""
+    if not _unvetted(user):
+        return False
+    if not photo_uploads.take(user.id, count):
+        raise ApiError(429, PHOTO_LIMIT, "rate_limited")
+    return True
+
+
+# ------------------------------------------------------------------- AI
+
+# One AI request at a time per account, whoever's case it is for: Analyze
+# photos, Annex A "Ask AI", and an intake run for as long as it runs. Each
+# is up to minutes of Gemini calls on the presser's key (or the company's),
+# holding one of the api's threads; a second one meanwhile is refused at
+# once rather than queued. In memory: the api is one process.
+AI_BUSY = "You already have an AI request running. Wait for it to finish, then try again."
+ai_running = _OneAtATime()
+
+
+def claim_ai_turn(user: CurrentUser) -> None:
+    """Claims this person's one AI request, or 429 ai_busy. Whoever claims
+    releases it (ai_running.release(user.id)) when the request -- or the
+    intake run it starts -- ends; ai_turn does both around a block."""
+    if not ai_running.claim(user.id):
+        raise ApiError(429, AI_BUSY, "ai_busy")
+
+
+@contextmanager
+def ai_turn(user: CurrentUser):
+    claim_ai_turn(user)
+    try:
+        yield
+    finally:
+        ai_running.release(user.id)
 
 
 class RenderRefused(ApiError):

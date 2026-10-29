@@ -81,6 +81,17 @@ export async function changeMyPasswordAction(
 // "this account may not" (403) from the rest. Signed out, or still on a
 // temporary password: lib/api.ts redirects, and unstable_rethrow lets that
 // through to Next.
+//
+// Saving, testing or removing the key can turn the AI on or off for this
+// person (release P4), and GET /auth/me's `ai_allowed` (read by the root
+// layout, for the intake wizard's "AI is off" and Fill in by hand) follows
+// it, so these revalidate everything, not only Settings.
+
+/** Everything under the root layout, so the signed-in user it reads (and
+ * its ai_allowed) is asked for again. */
+function revalidateAiAllowed() {
+  revalidatePath("/", "layout");
+}
 
 export type AiKeyError = { error: string; code: string | null; status: number | null };
 export type AiKeyResult = { key: MyAiKey } | AiKeyError;
@@ -105,8 +116,8 @@ export async function getMyAiKeyAction(): Promise<AiKeyResult> {
 export async function saveMyAiKeyAction(apiKey: string, billingConfirmed: boolean): Promise<AiKeyResult> {
   try {
     const key = await saveMyAiKey(apiKey, billingConfirmed);
-    // The setup checklist on My settings follows the key.
-    revalidatePath("/settings", "layout");
+    // The setup checklist on My settings follows the key, and ai_allowed.
+    revalidateAiAllowed();
     return { key };
   } catch (err) {
     return aiKeyError(err, "Failed to save your AI key");
@@ -116,7 +127,7 @@ export async function saveMyAiKeyAction(apiKey: string, billingConfirmed: boolea
 export async function testMyAiKeyAction(): Promise<AiKeyResult> {
   try {
     const key = await testMyAiKey();
-    revalidatePath("/settings", "layout");
+    revalidateAiAllowed();
     return { key };
   } catch (err) {
     return aiKeyError(err, "Failed to test your AI key");
@@ -131,7 +142,7 @@ export async function deleteMyAiKeyAction(): Promise<AiKeyResult> {
   } catch (err) {
     return aiKeyError(err, "Failed to remove your AI key");
   }
-  revalidatePath("/settings", "layout");
+  revalidateAiAllowed();
   try {
     return { key: await getMyAiKey() };
   } catch (err) {

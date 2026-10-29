@@ -10,6 +10,7 @@ import {
   signOffReport,
   analyzeReportPhotos,
   analyzeExistingReportPhotos,
+  uploadReportPhotos,
   getReport,
   getAnnexSuggestions,
   askAiAnnexSuggestions,
@@ -17,7 +18,9 @@ import {
   listReports,
   listUsers,
   setCaseOwner,
+  ApiError,
   errorCode,
+  limitMessage,
   messageForCode,
   type AnnexAInfo,
   type AnnexAPartItem,
@@ -49,6 +52,22 @@ export async function getReportDetailAction(id: string) {
   }
 }
 
+/** A failed AI call (or photo attach), with the API's error code and status
+ * when it sent them -- so the screen can tell AI being off for this person
+ * (AI_OFF_CODES, release P4) and a limit (409, 429: in the API's own words,
+ * see limitMessage) from the AI failing, and say what to do. */
+export type AiActionError = { error: string; code: string | null; status?: number | null };
+
+function aiActionError(err: unknown, fallback: string): AiActionError {
+  // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+  unstable_rethrow(err);
+  return {
+    error: limitMessage(err) || fallback,
+    code: errorCode(err),
+    status: err instanceof ApiError ? err.status : null,
+  };
+}
+
 /** Runs on the server so the browser never talks to the API's port
  * directly (avoids CORS) -- called imperatively from the client component,
  * not via <form action>, since the result drives React state (auto-filling
@@ -56,15 +75,13 @@ export async function getReportDetailAction(id: string) {
  * Report forms. */
 export async function analyzePhotosAction(
   formData: FormData
-): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | { error: string }> {
+): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | AiActionError> {
   try {
     const description = (formData.get("description") as string) || "";
     const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
     return await analyzeReportPhotos(description, photos);
   } catch (err) {
-    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+    return aiActionError(err, "AI analysis failed");
   }
 }
 
@@ -76,27 +93,50 @@ export async function analyzePhotosAction(
 export async function reanalyzeExistingPhotosAction(
   reportId: string,
   description: string
-): Promise<{ draft: PhotoAnalysisDraft } | { error: string }> {
+): Promise<{ draft: PhotoAnalysisDraft } | AiActionError> {
   try {
     const report = await getReport(reportId);
-    if (!report) return { error: "Report not found" };
-    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze" };
+    if (!report) return { error: "Report not found", code: null };
+    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze", code: null };
     return await analyzeExistingReportPhotos(report.photo_urls, description);
   } catch (err) {
-    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "AI analysis failed" };
+    return aiActionError(err, "AI analysis failed");
   }
 }
 
-export async function updateReportAction(id: string, formData: FormData) {
+/** "Attach photos without AI" on the edit form (release P4), for people
+ * whose AI is off: the photos go to the temp dir with no analysis, and the
+ * temp_photo_paths come back for the form to send on save, exactly as an
+ * analysis's do. A refusal comes back with its code and message (disk_full,
+ * rate_limited...). Same CORS reason as analyzePhotosAction. */
+export async function attachPhotosAction(
+  reportId: string,
+  formData: FormData
+): Promise<{ temp_photo_paths: string[] } | AiActionError> {
+  try {
+    const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
+    if (photos.length === 0) return { error: "Pick the photos to attach first.", code: null };
+    return await uploadReportPhotos(reportId, photos);
+  } catch (err) {
+    return aiActionError(err, "Failed to attach the photos");
+  }
+}
+
+/** Saves the edit form. A 409 or 429 (the case's photo limit, a case
+ * signed off meanwhile, too many requests) comes back as the API's own
+ * words, for the form to show where it is, with nothing typed or attached
+ * lost. */
+export async function updateReportAction(id: string, formData: FormData): Promise<{ error: string } | void> {
   const { payload, tempPhotoPaths } = buildReportPayload(formData);
   try {
     await updateReport(id, payload, tempPhotoPaths);
   } catch (err) {
     unstable_rethrow(err);
-    // A refusal with a code (not_allowed, disk_full, render_busy) goes back
-    // to the form with its message instead of the error page.
+    if (err instanceof ApiError && (err.status === 409 || err.status === 429)) {
+      return { error: limitMessage(err) || "The case couldn't be saved. Try again." };
+    }
+    // A refusal with a code (not_allowed, disk_full) goes back to the form
+    // with its message instead of the error page.
     const code = errorCode(err);
     if (code && messageForCode(code)) redirect(`/reports/${id}/edit?error=${encodeURIComponent(code)}`);
     throw err;
@@ -197,17 +237,17 @@ export async function getAnnexSuggestionsAction(reportId: string): Promise<Annex
   }
 }
 
-/** Spends AI quota -- called only when the surveyor clicks for it. A 503
- * (the AI is unavailable) comes back as its message. */
+/** Spends AI quota (the surveyor's own key, or the company key) -- called
+ * only when the surveyor clicks for it. A 503 (the AI is unavailable) comes
+ * back as its message; AI off for them, with its code too. */
 export async function askAiAnnexSuggestionsAction(
   reportId: string,
   parts: string[]
-): Promise<{ groups: AnnexSuggestionGroup[] } | { error: string }> {
+): Promise<{ groups: AnnexSuggestionGroup[] } | AiActionError> {
   try {
     return await askAiAnnexSuggestions(reportId, parts);
   } catch (err) {
-    unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "The AI couldn't suggest lines" };
+    return aiActionError(err, "The AI couldn't suggest lines");
   }
 }
 

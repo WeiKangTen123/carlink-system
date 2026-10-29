@@ -19,6 +19,7 @@ import {
   FAILING_FIX,
   FAILING_WHAT,
   aiKeyWord,
+  aiRightNowWords,
   isFailingStatus,
   keyFormatProblem,
   maskedKey,
@@ -30,11 +31,10 @@ import { HelpLink, SetupCard, TestResult, type TestState } from "./SetupCard";
  * and a status, and the key typed here is never shown again: the field is
  * cleared once it's saved.
  *
- * Release P3 only stores the key. The AI still runs on the company key, for
- * admins and the people an admin allows; own keys are used from the next
- * update. So nothing here says "your AI works now" because of a key --
- * GET /auth/me/ai-key's `source` and `ai_available` are about that next
- * update and aren't shown. */
+ * Since release P4 the AI runs on the key of whoever presses the button:
+ * this key when it works, else the company key for admins and the people an
+ * admin allows, else no AI. "AI right now" says which, from GET
+ * /auth/me/ai-key's `source` and `ai_available`. */
 
 /** Runs one of the AI key actions. If no answer comes back at all (the
  * connection dropped, the server failed outright), that becomes an error
@@ -58,7 +58,7 @@ function accountRefused(result: AiKeyError): boolean {
 /** What the card shows after something happened. */
 type Notice = { tone: "ok" | "fail"; text: string } | null;
 
-/** After saving: what Google said, and what that means in this release. */
+/** After saving: what Google said, and which key the AI uses now. */
 function savedText(key: MyAiKey): string {
   const google =
     key.status === "ok"
@@ -68,10 +68,13 @@ function savedText(key: MyAiKey): string {
         : key.status === "quota"
           ? "Google accepted it, but it has no allowance left for now."
           : "";
-  const when = key.company_allowed
-    ? "Your key will be used for AI from the next update; until then AI uses the company key, as now."
-    : "Your key will be used for AI from the next update; until then AI uses the company key if an admin allows you.";
-  return ["Saved.", google, when].filter(Boolean).join(" ");
+  const now =
+    key.source === "own"
+      ? "AI uses it from now on."
+      : key.source === "company"
+        ? "Until it works, AI uses the company key."
+        : "AI stays off for you until it works.";
+  return ["Saved.", google, now].filter(Boolean).join(" ");
 }
 
 /** After Test: Google's answer, in a few words. */
@@ -91,7 +94,8 @@ function testedResult(key: MyAiKey): TestState {
 }
 
 /** The same answer, without a key. Used when removing worked but reading
- * the card's state again didn't. */
+ * the card's state again didn't. With no own key, the AI is the company
+ * key's or nothing. */
 function withoutKey(key: MyAiKey): MyAiKey {
   return {
     ...key,
@@ -102,25 +106,22 @@ function withoutKey(key: MyAiKey): MyAiKey {
     added_at: null,
     last_checked_at: null,
     last_error: null,
+    ai_available: key.company_allowed,
+    source: key.company_allowed ? "company" : "none",
   };
 }
 
-/** "AI right now": the truth for this release, whatever key is saved. */
+/** "AI right now": which key the AI uses for this person, as `source` and
+ * `ai_available` say (aiRightNowWords). Whoever presses an AI button pays,
+ * on any case. */
 function AiRightNow({ ai, isAdmin }: { ai: MyAiKey; isAdmin: boolean }) {
-  let text: string;
-  if (isAdmin) {
-    text = "The AI runs on the company key for you: admins can always use it.";
-  } else if (ai.company_allowed) {
-    text = "The AI runs on the company key for you: an admin has allowed it.";
-  } else {
-    text =
-      "The AI buttons are off for you for now: the AI runs on the company key, and an admin hasn't allowed you to use it yet. Admins can let you use the company key; ask one if you need it.";
-  }
+  const { off, which, text } = aiRightNowWords(ai, isAdmin);
   return (
-    <div className="ai-key-now">
+    <div className={`ai-key-now${off ? " off" : ""}`} role="status">
       <Sparkles style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
       <span>
-        <strong>AI right now.</strong> {text} {ai.has_key ? "Your own key takes over from the next update." : "Your own key will be used for AI from the next update."}
+        <span className="ai-key-now-label">AI right now</span>
+        <strong>{which}</strong> {text}
       </span>
     </div>
   );
