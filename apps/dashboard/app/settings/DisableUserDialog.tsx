@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { UserX } from "lucide-react";
 import { personLabel, type OpenCasesChoice, type UserAccount, type UserPatch } from "@/lib/api";
 import { listUsersAction, updateUserAction } from "./actions";
+import { telegramHandle } from "./telegramWords";
 
 /** "Tan Ah Huat", or "@ahhuat" when the name is just the username. */
 export function shortName(u: Pick<UserAccount, "name" | "username">): string {
@@ -91,9 +92,9 @@ export function PersonSelect({
  * off, not an unfinished draft) are moved, unassigned or kept as chosen.
  * The counts are read again when the dialog opens (useFreshCounts).
  *
- * "Also" says their AI key is deleted, when they have one (the same PATCH
- * deletes it). SLOT (P5): "Telegram @x is disconnected. Enabling again
- * won't reconnect." goes in the same list. */
+ * "Also" says their AI key is deleted, when they have one, and that their
+ * Telegram is disconnected, when they connected one (the same PATCH does
+ * both; P3 and P5). */
 export function DisableUserDialog({
   user: rowUser,
   people: rowPeople,
@@ -129,6 +130,9 @@ export function DisableUserDialog({
   const targetPerson = people.find((p) => p.id === target) ?? null;
   // The API deletes it in the same change (P3; agent6 D6).
   const hadAiKey = Boolean(user.ai_key?.has_key);
+  // So is their Telegram link, and any code they have open (P5).
+  const telegram = user.telegram ?? null;
+  const telegramWho = telegram ? telegramHandle(telegram) : "";
   const ready = !checking && (choice !== "move" || Boolean(targetPerson));
 
   const submit = async () => {
@@ -165,7 +169,11 @@ export function DisableUserDialog({
     } else if (choice === "keep") {
       cases = " Their open cases stay under them.";
     }
-    onDone(`${personLabel(user)} is disabled.${cases}${hadAiKey ? " Their AI key was deleted." : ""}`);
+    onDone(
+      `${personLabel(user)} is disabled.${cases}${hadAiKey ? " Their AI key was deleted." : ""}${
+        telegram ? " Their Telegram was disconnected." : ""
+      }`
+    );
   };
 
   const stays = [
@@ -253,13 +261,24 @@ export function DisableUserDialog({
           )}
         </div>
 
-        {/* ALSO: one line per thing that goes with the account. P5 adds
-            "Telegram @x is disconnected. Enabling again won't reconnect." */}
-        {hadAiKey && (
+        {/* ALSO: one line per thing that goes with the account. */}
+        {(hadAiKey || telegram) && (
           <div className="settings-dialog-section">
             <div className="settings-dialog-label">Also</div>
             <ul className="settings-dialog-list">
-              <li>Their AI key is deleted. Enabling them again won&apos;t bring it back.</li>
+              {telegram && (
+                <li>
+                  {telegramWho ? (
+                    <>
+                      Telegram <span className="settings-dialog-tg">{telegramWho}</span>
+                    </>
+                  ) : (
+                    "Their Telegram"
+                  )}
+                  {" is disconnected. Enabling them again won't reconnect it."}
+                </li>
+              )}
+              {hadAiKey && <li>Their AI key is deleted. Enabling them again won&apos;t bring it back.</li>}
             </ul>
           </div>
         )}

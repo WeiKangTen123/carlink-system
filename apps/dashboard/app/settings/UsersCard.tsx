@@ -9,6 +9,7 @@ import { ROLE_LABEL, formatSgt, formatSgtDay } from "@/lib/signup";
 import {
   createResetLinkAction,
   deleteUserAiKeyAction,
+  disconnectUserTelegramAction,
   listAccountLinksAction,
   listUsersAction,
   setSignupsOpenAction,
@@ -19,6 +20,7 @@ import { DisableUserDialog } from "./DisableUserDialog";
 import { EditUserDialog, ticksOf, type EditUserDraft } from "./EditUserDialog";
 import { CreateInviteDialog, LinkReadyDialog, type ReadyLink } from "./LinkDialogs";
 import { MoveCasesDialog } from "./MoveCasesDialog";
+import { telegramHandle, telegramLabel } from "./telegramWords";
 
 type Tab = "users" | "links";
 
@@ -272,6 +274,32 @@ function AiKeyCell({ u }: { u: UserAccount }) {
   );
 }
 
+/** The Telegram column (release P5): "@ahhuat_sg" over "since 12 Nov", or
+ * "–" when none is connected. A long username is cut short here; the
+ * tooltip has all of it. */
+function TelegramCell({ u }: { u: UserAccount }) {
+  const t = u.telegram ?? null;
+  const label = <span className="users-tg-label">Telegram </span>;
+  if (!t) {
+    return (
+      <div className="users-tg-main none" title="No Telegram connected">
+        {label}–
+      </div>
+    );
+  }
+  const handle = telegramHandle(t) || "Connected";
+  const since = t.linked_at ? formatSgtDay(t.linked_at) : "";
+  return (
+    <div title={`Telegram ${telegramLabel(t) || "connected"}${t.linked_at ? `, connected ${formatSgt(t.linked_at)}` : ""}`}>
+      <div className="users-tg-main">
+        {label}
+        {handle}
+      </div>
+      {since && <div className="users-cell-sub">since {since}</div>}
+    </div>
+  );
+}
+
 function UsersTable({
   users,
   currentUserId,
@@ -305,6 +333,7 @@ function UsersTable({
               <th className="col-role">Role</th>
               <th className="col-cases">Cases</th>
               <th className="col-ai">AI key</th>
+              <th className="col-tg">Telegram</th>
               <th className="col-seen">Last sign-in</th>
               <th className="col-status">Status</th>
               <th className="col-actions" aria-label="Actions" />
@@ -337,6 +366,9 @@ function UsersTable({
                     </div>
                     {u.name && u.name !== u.username && <div className="users-person-sub">{u.name}</div>}
                     <div className="users-person-email">{u.email}</div>
+                    {/* Only while the Telegram column is hidden for room
+                        (globals.css, P5 block). */}
+                    {u.telegram && <div className="users-person-tg">Telegram {telegramHandle(u.telegram) || "connected"}</div>}
                   </td>
                   <td className="col-role">
                     <span className={`role-chip ${u.role}`}>{ROLE_LABEL[u.role] ?? u.role}</span>
@@ -347,6 +379,9 @@ function UsersTable({
                   </td>
                   <td className="col-ai">
                     <AiKeyCell u={u} />
+                  </td>
+                  <td className="col-tg">
+                    <TelegramCell u={u} />
                   </td>
                   <td className="col-seen">
                     <div title={u.last_login_at ? formatSgt(u.last_login_at) : undefined}>
@@ -371,8 +406,8 @@ function UsersTable({
         Everything for one person is in the ⋯ menu on their row. To make someone an admin, or change what they may do,
         use Edit. Forgot password? Use Reset password link and send them the link. Users are disabled rather than
         deleted, so the history on their cases still shows who did what. Disable asks what happens to their open cases, and
-        deletes their AI key; Move their cases hands them on at any time. Nobody sees anyone&apos;s AI key, admins
-        included: only its last 4 characters and whether it works.
+        deletes their AI key and disconnects their Telegram; Move their cases hands them on at any time. Nobody sees
+        anyone&apos;s AI key, admins included: only its last 4 characters and whether it works.
       </p>
     </>
   );
@@ -460,6 +495,18 @@ export function UsersCard({
     if ("error" in result) return result.error;
     const fresh = await refresh();
     const row = fresh?.find((x) => x.id === u.id) ?? { ...u, ai_key: null };
+    setUsers((all) => all.map((x) => (x.id === u.id ? row : x)));
+    setEditing((open) => (open && open.id === u.id ? row : open));
+    return null;
+  };
+
+  /** [Disconnect] in the Edit dialog's Telegram row: at once (the dialog
+   * asked first), then the table and the open dialog show it gone. */
+  const disconnectTelegram = async (u: UserAccount): Promise<string | null> => {
+    const result = await disconnectUserTelegramAction(u.id);
+    if ("error" in result) return result.error;
+    const fresh = await refresh();
+    const row = fresh?.find((x) => x.id === u.id) ?? { ...u, telegram: null };
     setUsers((all) => all.map((x) => (x.id === u.id ? row : x)));
     setEditing((open) => (open && open.id === u.id ? row : open));
     return null;
@@ -604,6 +651,7 @@ export function UsersCard({
           onCancel={() => setEditing(null)}
           onSubmit={saveUser}
           onRemoveAiKey={() => removeAiKey(editing)}
+          onDisconnectTelegram={() => disconnectTelegram(editing)}
         />
       )}
 

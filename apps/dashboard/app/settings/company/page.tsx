@@ -35,6 +35,10 @@ export default async function CompanySettingsPage() {
     telegramReports: system.channels.reports_by_channel.telegram ?? 0,
     whatsappReports: system.channels.reports_by_channel.whatsapp ?? 0,
     aiKeyStorage: aiKeyStorageOf(system),
+    // Release P5. Null when the API doesn't say (older than P5).
+    telegramBotUsername: system.telegram?.bot_username || null,
+    telegramAccountsConnected:
+      typeof system.telegram?.accounts_connected === "number" ? system.telegram.accounts_connected : null,
   };
 
   return <CompanyClient settings={settings} setup={setup} />;
