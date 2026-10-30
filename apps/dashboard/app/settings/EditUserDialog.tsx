@@ -6,7 +6,8 @@ import { Trash2, Unlink } from "lucide-react";
 import type { CaseCounts, UserAccount, UserRole, UserTicks } from "@/lib/api";
 import { USERNAME_HINT, formatSgtDay } from "@/lib/signup";
 import { aiKeyWord, maskedKey } from "./aiKeyWords";
-import { telegramLabel } from "./telegramWords";
+import { TelegramWho } from "./TelegramWho";
+import { telegramPlain } from "./telegramWords";
 
 export type EditUserDraft = {
   username: string;
@@ -180,14 +181,13 @@ function TelegramRow({
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const t = user.telegram ?? null;
-  const who = t ? telegramLabel(t) : "";
 
   const disconnect = async () => {
     if (!t) return;
     const whose = isSelf ? "your" : `${user.name && user.name !== user.username ? user.name : `@${user.username}`}'s`;
     if (
       !confirm(
-        `Disconnect ${whose} Telegram${who ? ` (${who})` : ""}? The bot stops filing cases for ${isSelf ? "you" : "them"} at once. ${
+        `Disconnect ${whose} Telegram (${telegramPlain(t)})? The bot stops filing cases for ${isSelf ? "you" : "them"} at once. ${
           isSelf ? "You" : "They"
         } can connect again in Settings.`
       )
@@ -214,8 +214,8 @@ function TelegramRow({
       <div className="user-tg-row">
         {t ? (
           <span className="user-tg-who">
-            {who || "Connected"}
-            {t.linked_at && <span className="user-ai-key-sub"> · since {formatSgtDay(t.linked_at)}</span>}
+            <TelegramWho t={t} variant="inline" />
+            {t.linked_at && <span className="user-ai-key-sub">{` · since ${formatSgtDay(t.linked_at)}`}</span>}
           </span>
         ) : (
           <span style={{ minWidth: 0 }}>

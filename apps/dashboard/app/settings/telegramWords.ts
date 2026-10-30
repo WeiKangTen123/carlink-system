@@ -3,27 +3,35 @@ import type { TelegramIdentity } from "@/lib/api";
 /** How Telegram accounts and the company bot are shown on Settings (My
  * Telegram, Users, Company). Telegram usernames and names are whatever the
  * person chose there, so they are shown as plain text only, and a link is
- * made only from a username in Telegram's own format. */
+ * made only from a username in Telegram's own format.
+ *
+ * The @username and the name are always shown apart, each for what it is,
+ * never merged into one label (security review M1): anyone can copy a name
+ * exactly, and an account with no @username shows nothing else to check,
+ * so neither may pass for the other. */
 
 function cleanUsername(username: string | null | undefined): string {
   return (username || "").trim().replace(/^@/, "");
 }
 
-/** "@ahhuat_sg (Tan Ah Huat)", "@ahhuat_sg", "Tan Ah Huat", or "" when
- * Telegram gave neither. */
-export function telegramLabel(t: TelegramIdentity | null | undefined): string {
+/** "@ahhuat_sg", or "" when the account has no @username. */
+export function telegramUsername(t: TelegramIdentity | null | undefined): string {
   const username = cleanUsername(t?.username);
-  const name = (t?.name || "").trim();
-  if (username && name) return `@${username} (${name})`;
-  if (username) return `@${username}`;
-  return name;
+  return username ? `@${username}` : "";
 }
 
-/** The short form for a table cell or a sentence: "@ahhuat_sg", else the
- * name, else "". */
-export function telegramHandle(t: TelegramIdentity | null | undefined): string {
-  const username = cleanUsername(t?.username);
-  return username ? `@${username}` : (t?.name || "").trim();
+/** The name on the Telegram account, or "". */
+export function telegramName(t: TelegramIdentity | null | undefined): string {
+  return (t?.name || "").trim();
+}
+
+/** Both, labelled, for plain text (a confirm box, a tooltip):
+ * `@ahhuat_sg, name on Telegram "Tan Ah Huat"`, or `no @username, name on
+ * Telegram "Tan Ah Huat"`. */
+export function telegramPlain(t: TelegramIdentity | null | undefined): string {
+  const username = telegramUsername(t) || "no @username";
+  const name = telegramName(t);
+  return name ? `${username}, name on Telegram "${name}"` : username;
 }
 
 /** Telegram's rules for a bot's @username: 5-32 letters, digits and

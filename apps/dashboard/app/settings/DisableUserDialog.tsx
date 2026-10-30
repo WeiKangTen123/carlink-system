@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { UserX } from "lucide-react";
 import { personLabel, type OpenCasesChoice, type UserAccount, type UserPatch } from "@/lib/api";
 import { listUsersAction, updateUserAction } from "./actions";
-import { telegramHandle } from "./telegramWords";
+import { telegramUsername } from "./telegramWords";
 
 /** "Tan Ah Huat", or "@ahhuat" when the name is just the username. */
 export function shortName(u: Pick<UserAccount, "name" | "username">): string {
@@ -132,7 +132,9 @@ export function DisableUserDialog({
   const hadAiKey = Boolean(user.ai_key?.has_key);
   // So is their Telegram link, and any code they have open (P5).
   const telegram = user.telegram ?? null;
-  const telegramWho = telegram ? telegramHandle(telegram) : "";
+  // The @username only: with none, "Their Telegram" (a name alone could be
+  // anyone's; security review M1).
+  const telegramWho = telegram ? telegramUsername(telegram) : "";
   const ready = !checking && (choice !== "move" || Boolean(targetPerson));
 
   const submit = async () => {

@@ -14,7 +14,8 @@ import {
   type TelegramResult,
 } from "./actions";
 import { SetupCard } from "./SetupCard";
-import { apiTime, botHandle, botUrl, countdown, safeDeepLink, sameMoment, sgtDate, telegramLabel } from "./telegramWords";
+import { TelegramWho } from "./TelegramWho";
+import { apiTime, botHandle, botUrl, countdown, safeDeepLink, sameMoment, sgtDate, telegramPlain } from "./telegramWords";
 
 /** Settings -> My settings -> My Telegram (id="my-telegram"): connect your
  * own Telegram, so the Carlink bot files the cases you send it under your
@@ -69,6 +70,12 @@ function refusalText(result: TelegramError, fallback: string): string {
 /** The card itself then says what that means. */
 const CONNECTED_TEXT = "Connected.";
 
+/** A code that was open or waiting went away without the account being
+ * connected: it expired, or the API cancelled it because a second Telegram
+ * answered it (security review M1). The card can't tell which. */
+const CANCELLED_TEXT =
+  "That code was cancelled: it expired, or another Telegram tried to use it. Make a new one if you still want to connect.";
+
 export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
   const [tg, setTg] = useState<MyTelegram | null>(initial);
   const [shown, setShown] = useState<Shown | null>(null);
@@ -104,14 +111,16 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
     setTg(result.telegram);
   };
 
-  /** A poll's answer: what changed since the last one, in words. */
+  /** A fresh read (the poll, or asking again): what changed since the card
+   * last looked, in words. A code that went away without connecting ends
+   * up back at "not connected", saying so. */
   const polled = (result: Ok) => {
     const { tg: before, shown: had } = latest.current;
     const next = result.telegram;
     if (next.connected && !before?.connected) {
       setNotice({ tone: "ok", text: CONNECTED_TEXT });
-    } else if (!next.code && before?.code) {
-      setNotice({ tone: "fail", text: "That code no longer works: it was cancelled or has expired. Make a new one to try again." });
+    } else if (!next.code && before?.code && !next.connected) {
+      setNotice({ tone: "fail", text: CANCELLED_TEXT });
     }
     // A different code (made in another tab): this one's plain code is no
     // use any more.
@@ -156,7 +165,7 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
     if (!code || live) return;
     setTg((t) => (t ? { ...t, code: null } : t));
     setShown(null);
-    setNotice({ tone: "fail", text: "The code expired. Make a new one when you're ready." });
+    setNotice({ tone: "fail", text: CANCELLED_TEXT });
   }, [code, live]);
 
   /** Runs a button's action; polls started before or during it are dropped. */
@@ -170,21 +179,21 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
     return result;
   };
 
-  /** Asks the API again. Dropped if a button was pressed meanwhile. */
-  const reload = async () => {
+  /** Asks the API again; what it said, or null. Dropped if a button was
+   * pressed meanwhile. */
+  const reload = async (): Promise<MyTelegram | null> => {
     setReloading(true);
     const started = ++seq.current;
     const result = await settle(() => getMyTelegramAction());
     setReloading(false);
-    if (started !== seq.current) return;
+    if (started !== seq.current) return null;
     if ("error" in result) {
       setLoadError(result.error || "Couldn't load your Telegram just now.");
-      return;
+      return null;
     }
     setLoadError(null);
-    const next = result.telegram.code;
-    setShown((had) => (had && next && sameMoment(next.expires_at, had.expiresAt) ? had : null));
-    applied(result);
+    polled(result);
+    return result.telegram;
   };
 
   // The page is drawn again on the server after some changes elsewhere on
@@ -233,8 +242,16 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
     const result = await run(accept ? "yes" : "no", () => confirmTelegramAction(accept));
     if ("error" in result) {
       const text = refusalText(result, accept ? "Couldn't connect. Try again." : "Couldn't cancel. Try again.");
-      // Nothing waiting any more: show the card as it now is, then why.
-      if (result.status === 409) await reload();
+      if (result.status === 409) {
+        // Nothing waiting any more: show the card as it now is, then why.
+        // The code gone (expired, or cancelled because another Telegram
+        // answered it) is said the same way as when a poll finds it gone;
+        // a Telegram just taken by another account in the API's words.
+        const now = await reload();
+        const gone = result.code !== "telegram_in_use" && !now?.code;
+        setNotice({ tone: "fail", text: gone ? CANCELLED_TEXT : text });
+        return;
+      }
       setNotice({ tone: "fail", text });
       return;
     }
@@ -251,8 +268,8 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
 
   const disconnect = async () => {
     if (!tg) return;
-    const who = telegramLabel({ username: tg.telegram_username, name: tg.telegram_name });
-    if (!confirm(`Disconnect Telegram${who ? ` ${who}` : ""}? The bot stops filing cases for you until you connect again.`)) return;
+    const who = telegramPlain({ username: tg.telegram_username, name: tg.telegram_name });
+    if (!confirm(`Disconnect your Telegram (${who})? The bot stops filing cases for you until you connect again.`)) return;
     const result = await run("disconnect", () => disconnectMyTelegramAction());
     if ("error" in result) {
       if (result.code !== "done") {
@@ -410,18 +427,16 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
 
       {phase === "waiting" && waiting && (
         <div className="tg-waiting" role="alert">
-          <div className="tg-waiting-title">
-            {telegramLabel(waiting) ? (
-              <>
-                Telegram <strong>{telegramLabel(waiting)}</strong> wants to connect to your account.
-              </>
-            ) : (
-              "A Telegram account wants to connect to your account."
-            )}
-          </div>
-          <p className="setup-note" style={{ margin: "4px 0 0" }}>
-            Only say yes if this is your own Telegram.{timeLeft && <span suppressHydrationWarning> Expires in {timeLeft}.</span>}
+          <div className="tg-waiting-title">A Telegram account wants to connect to your account.</div>
+          <TelegramWho t={waiting} variant="rows" warnMissing />
+          <p className="tg-waiting-check">
+            {"Only tap Yes if this is the Telegram you just used. If you're not sure, tap Not me and make a new code."}
           </p>
+          {timeLeft && (
+            <p className="setup-note" style={{ margin: "4px 0 0" }} suppressHydrationWarning>
+              {`Expires in ${timeLeft}.`}
+            </p>
+          )}
           <div className="tg-actions">
             <button type="button" className="btn-secondary-modern" onClick={() => void answer(false)} disabled={anyBusy}>
               {busy === "no" ? "Cancelling…" : "Not me"}
@@ -438,8 +453,8 @@ export function MyTelegramCard({ initial }: { initial: MyTelegram | null }) {
           <div className="setup-key-row tg-linked-row">
             <Send style={{ width: 15, height: 15, color: "var(--accent-cyan)", flexShrink: 0 }} />
             <span className="tg-linked-who">
-              {telegramLabel({ username: tg.telegram_username, name: tg.telegram_name }) || "Telegram"}
-              {tg.linked_at && sgtDate(tg.linked_at) && <span className="tg-linked-since"> · since {sgtDate(tg.linked_at)}</span>}
+              <TelegramWho t={{ username: tg.telegram_username, name: tg.telegram_name }} variant="inline" />
+              {tg.linked_at && sgtDate(tg.linked_at) && <span className="tg-linked-since">{` · since ${sgtDate(tg.linked_at)}`}</span>}
             </span>
             <button
               type="button"

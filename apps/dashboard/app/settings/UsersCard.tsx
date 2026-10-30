@@ -20,7 +20,7 @@ import { DisableUserDialog } from "./DisableUserDialog";
 import { EditUserDialog, ticksOf, type EditUserDraft } from "./EditUserDialog";
 import { CreateInviteDialog, LinkReadyDialog, type ReadyLink } from "./LinkDialogs";
 import { MoveCasesDialog } from "./MoveCasesDialog";
-import { telegramHandle, telegramLabel } from "./telegramWords";
+import { telegramName, telegramPlain, telegramUsername } from "./telegramWords";
 
 type Tab = "users" | "links";
 
@@ -274,12 +274,14 @@ function AiKeyCell({ u }: { u: UserAccount }) {
   );
 }
 
-/** The Telegram column (release P5): "@ahhuat_sg" over "since 12 Nov", or
- * "–" when none is connected. A long username is cut short here; the
- * tooltip has all of it. */
+/** The Telegram column (release P5): the @username ("no @username" when
+ * the account has none), the name on Telegram under it, then "since 12
+ * Nov"; "–" when none is connected. Each on its own line, never merged
+ * (security review M1). Long ones are cut short here; the tooltip has all
+ * of it. */
 function TelegramCell({ u }: { u: UserAccount }) {
   const t = u.telegram ?? null;
-  const label = <span className="users-tg-label">Telegram </span>;
+  const label = <span className="users-tg-label">{"Telegram "}</span>;
   if (!t) {
     return (
       <div className="users-tg-main none" title="No Telegram connected">
@@ -287,15 +289,17 @@ function TelegramCell({ u }: { u: UserAccount }) {
       </div>
     );
   }
-  const handle = telegramHandle(t) || "Connected";
+  const username = telegramUsername(t);
+  const name = telegramName(t);
   const since = t.linked_at ? formatSgtDay(t.linked_at) : "";
   return (
-    <div title={`Telegram ${telegramLabel(t) || "connected"}${t.linked_at ? `, connected ${formatSgt(t.linked_at)}` : ""}`}>
-      <div className="users-tg-main">
+    <div title={`Telegram ${telegramPlain(t)}${t.linked_at ? `, connected ${formatSgt(t.linked_at)}` : ""}`}>
+      <div className={username ? "users-tg-main" : "users-tg-main missing"}>
         {label}
-        {handle}
+        {username || "no @username"}
       </div>
-      {since && <div className="users-cell-sub">since {since}</div>}
+      {name && <div className="users-tg-name">{name}</div>}
+      {since && <div className="users-cell-sub">{`since ${since}`}</div>}
     </div>
   );
 }
@@ -368,7 +372,13 @@ function UsersTable({
                     <div className="users-person-email">{u.email}</div>
                     {/* Only while the Telegram column is hidden for room
                         (globals.css, P5 block). */}
-                    {u.telegram && <div className="users-person-tg">Telegram {telegramHandle(u.telegram) || "connected"}</div>}
+                    {u.telegram && (
+                      <div className="users-person-tg">
+                        {`Telegram ${telegramUsername(u.telegram) || "no @username"}${
+                          telegramName(u.telegram) ? ` · ${telegramName(u.telegram)}` : ""
+                        }`}
+                      </div>
+                    )}
                   </td>
                   <td className="col-role">
                     <span className={`role-chip ${u.role}`}>{ROLE_LABEL[u.role] ?? u.role}</span>
