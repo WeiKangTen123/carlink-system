@@ -993,15 +993,37 @@ def owner_hint() -> None:
     other = case("telegram", "999999999")
     group = case("telegram", f"-{tg}")
     whatsapp = case("whatsapp", tg)
+    # Hank signed himself up and has no ticks: the hint says so (agent6 L5).
+    linked = link.linked_at
+    unvetted = f"sent from a Telegram now linked to a self-registered account (linked on {linked.day} {linked:%b %Y})"
     r = W.admin.c.get(f"/reports/{mine}")
     so = jd(r).get("suggested_owner") or {}
-    check(r.status_code == 200 and so.get("id") == H.id and so.get("reason") == "sent from their Telegram",
-          "an Unassigned Telegram case from Hank's Telegram suggests Hank, \"sent from their Telegram\"", brief(r))
+    check(r.status_code == 200 and so.get("id") == H.id and so.get("reason") == unvetted,
+          f"an Unassigned Telegram case from Hank's Telegram suggests Hank, unvetted: \"{unvetted}\"", brief(r))
+    check(owners.UNVETTED_TELEGRAM_SENDER.format(date="x") != "sent from their Telegram", "...not \"sent from their Telegram\"")
     check(jd(r).get("owner") is None, "...and it stays Unassigned (nobody claims earlier reports, D5)")
     check(db_do(lambda db: db.get(Report, mine).owner_id) is None, "...in the database too")
     for rid, what in ((other, "another Telegram"), (group, "a group chat id"), (whatsapp, "a WhatsApp case")):
         so = db_do(lambda db, rid=rid: owners.suggested_owner(db, db.get(Report, rid)))
-        check(not so or so.get("reason") != "sent from their Telegram", f"{what}: no Telegram hint", str(so))
+        check(not so or "Telegram" not in (so.get("reason") or ""), f"{what}: no Telegram hint", str(so))
+    r = W.hank.c.get(f"/reports/{mine}")
+    check(r.status_code == 404, "Hank himself can't open the earlier case (it isn't his until an admin assigns it)", brief(r))
+    # Vetted: each tick on its own makes it "sent from their Telegram"; an admin too.
+    for tick in ("may_sign_off", "ai_company_key_allowed", "sees_all_cases"):
+        r = W.admin.c.patch(f"/users/{H.id}", json={tick: True})
+        need(r.status_code == 200, f"the admin ticks {tick} for Hank", brief(r))
+        so = db_do(lambda db: owners.suggested_owner(db, db.get(Report, mine)))
+        check(so and so.get("id") == H.id and so.get("reason") == "sent from their Telegram",
+              f"with {tick}: \"sent from their Telegram\"", str(so))
+        W.admin.c.patch(f"/users/{H.id}", json={tick: False})
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET role = 'admin' WHERE id = :u"), {"u": H.id})
+    so = db_do(lambda db: owners.suggested_owner(db, db.get(Report, mine)))
+    check(so and so.get("reason") == "sent from their Telegram", "an admin's Telegram: \"sent from their Telegram\"", str(so))
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET role = 'user' WHERE id = :u"), {"u": H.id})
+    so = db_do(lambda db: owners.suggested_owner(db, db.get(Report, mine)))
+    check(so and so.get("reason") == unvetted, "no ticks again: the unvetted wording again", str(so))
 
     # Order: who created / finished it comes first; the sender before who signed off or edited.
     def add_audit(rid, uid, action):
@@ -1015,12 +1037,10 @@ def owner_hint() -> None:
     add_audit(created, W.jack.id, "created")
     so = db_do(lambda db: owners.suggested_owner(db, db.get(Report, created)))
     check(so and so.get("id") == W.jack.id and so.get("reason") == "created it", "...after whoever created it", str(so))
-    r = W.hank.c.get(f"/reports/{mine}")
-    check(r.status_code == 404, "Hank himself can't open the earlier case (it isn't his until an admin assigns it)", brief(r))
     # After disconnecting, no hint.
     db_do(lambda db: chat_links.unlink(db, user_id=H.id, actor=None, reason="test"))
     so = db_do(lambda db: owners.suggested_owner(db, db.get(Report, mine)))
-    check(not so or so.get("reason") != "sent from their Telegram", "a disconnected Telegram gives no hint", str(so))
+    check(not so or "Telegram" not in (so.get("reason") or ""), "a disconnected Telegram gives no hint", str(so))
 
 
 def limiter() -> None:
@@ -1155,7 +1175,7 @@ def main() -> int:
         ("disabling ends the link, in the disable's transaction; enabling doesn't reconnect", disable_hook),
         ("password resets and changes end the link; temporary passwords refused", password_hooks),
         ("the cleanup sweep removes day-old codes", sweep),
-        ("suggested_owner: sent from their Telegram", owner_hint),
+        ("suggested_owner: the Telegram hint, worded by whether the account is vetted (L5)", owner_hint),
         ("WrongCodeLimiter: 5 in a row, 15 minutes, the global alarm", limiter),
         ("telling the person on Telegram: failures don't matter, token never logged", telegram_messages),
         ("signed out: 401", signed_out),

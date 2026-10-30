@@ -103,17 +103,71 @@ def _name_key(name: str) -> str:
     return " ".join(visible.split())
 
 
+# Cyrillic and Greek letters that look like Latin ones, so "Wеi Kang" with
+# a Cyrillic "е" reads as "Wei Kang" to the duplicate check. Upper and lower
+# case are kept apart because they differ (Greek capital Eta looks like H,
+# small eta like n). The common look-alikes only, not Unicode's whole
+# confusables table (agent6 H2, L6).
+_LOOKALIKES = str.maketrans({
+    # Cyrillic
+    "А": "A", "а": "a", "В": "B", "Е": "E", "е": "e", "К": "K", "к": "k", "М": "M", "Н": "H",
+    "О": "O", "о": "o", "Р": "P", "р": "p", "С": "C", "с": "c", "Т": "T", "У": "Y", "у": "y",
+    "Х": "X", "х": "x", "Ѕ": "S", "ѕ": "s", "І": "I", "і": "i", "Ј": "J", "ј": "j", "Ԁ": "D",
+    "ԁ": "d", "Ԛ": "Q", "ԛ": "q", "Ԝ": "W", "ԝ": "w", "Һ": "H", "һ": "h", "Ӏ": "I", "ӏ": "l",
+    "Ү": "Y", "ү": "y", "ь": "b",
+    # Greek
+    "Α": "A", "α": "a", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "ι": "i", "Κ": "K",
+    "κ": "k", "Μ": "M", "Ν": "N", "ν": "v", "Ο": "O", "ο": "o", "Ρ": "P", "ρ": "p", "Τ": "T",
+    "Υ": "Y", "υ": "u", "Χ": "X", "χ": "x", "Ϲ": "C", "ϲ": "c", "Ϳ": "J", "ϳ": "j",
+    # Latin dotless i and j
+    "ı": "i", "ȷ": "j",
+})
+
+
+# Characters that show as nothing: Unicode's Default_Ignorable_Code_Point
+# list (zero-width spaces and joiners, direction marks and overrides,
+# variation selectors, the Hangul fillers, tags...) plus the blank Braille
+# pattern. Format (Cf) and control (Cc) characters are caught by category.
+_INVISIBLE_RANGES = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+    (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x2800, 0x2800),
+    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
+)
+
+
+def is_invisible(ch: str) -> bool:
+    """A character a reader can't see (whitespace aside): a format or
+    control character, or one of _INVISIBLE_RANGES."""
+    if ch.isspace():
+        return False
+    if unicodedata.category(ch) in ("Cf", "Cc"):
+        return True
+    code = ord(ch)
+    return any(lo <= code <= hi for lo, hi in _INVISIBLE_RANGES)
+
+
+def _clash_key(name: str) -> str:
+    """_name_key, with invisible characters dropped and Cyrillic and Greek
+    look-alikes read as the Latin letters they look like: two names with
+    the same key can't be told apart on screen."""
+    text = unicodedata.normalize("NFKC", name)
+    text = "".join(ch for ch in text if not is_invisible(ch)).translate(_LOOKALIKES)
+    return _name_key(text)
+
+
 def full_name_problem(db: Session, name: str, exclude_id: str) -> str | None:
     """Why someone can't give themselves this full name: it reads as the
     system or the admins, or it is another account's name. The name is
     printed on sign-offs and shown in the history, so it mustn't let one
-    account pass for another. (Admins can still set any name.)"""
-    key = _name_key(name)
+    account pass for another -- by look-alike letters or invisible
+    characters either (_clash_key). (Admins can still set any name.)"""
+    key = _clash_key(name)
     words = re.split(r"[^a-z0-9]+", key)
     if any(stem in word for word in words for stem in _RESERVED_STEMS):
         return RESERVED_NAME
     for other_id, other_name in db.query(User.id, User.name).filter(User.id != exclude_id).all():
-        if _name_key(other_name or "") == key:
+        if _clash_key(other_name or "") == key:
             return "Another account already uses that name. If it really is yours, ask an admin to set it."
     return None
 

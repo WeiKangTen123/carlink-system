@@ -42,8 +42,11 @@ from app.api.auth import (
     _note_ip_failure,
     _set_session_cookie,
     checked_username,
+    clean_full_name,
     client_ip,
+    username_input,
     username_issue,
+    visible_name,
 )
 from app.auth.chat_links import end_chat_links
 from app.auth.core import (
@@ -55,7 +58,6 @@ from app.auth.core import (
     end_user_sessions,
     me_dict,
     normalize_email,
-    normalize_username,
     record_login,
     token_hash,
     utc_now,
@@ -179,7 +181,7 @@ def signup(body: SignupIn, request: Request, response: Response):
     if body.website:
         raise HTTPException(status_code=400, detail="Couldn't create the account.")
 
-    username = normalize_username(body.username)
+    username = username_input(body.username)
     email = normalize_email(body.email)
     db = SessionLocal()
     try:
@@ -326,7 +328,7 @@ def accept_link(body: LinkAccept, request: Request, response: Response):
                     raise HTTPException(status_code=409, detail=f"There's already an account for {link.email}. Sign in instead.")
                 user = User(
                     # The name the admin typed, if any, for sign-offs.
-                    email=link.email, username=username, name=link.name or username, role=link.role,
+                    email=link.email, username=username, name=visible_name(link.name) or username, role=link.role,
                     password_hash=password_hash, must_change_password=False,
                 )
                 db.add(user)
@@ -411,7 +413,7 @@ def create_invite(body: NewInvite, admin: CurrentUser = Depends(require_admin)) 
         email = _checked_email(db, body.email)
         link, token = new_link(
             db, purpose="invite", email=email, role=body.role, creator=admin,
-            hours=body.expires_hours, name=" ".join(body.name.split()),
+            hours=body.expires_hours, name=clean_full_name(body.name) if body.name.strip() else "",
         )
         audit(db, admin, "invite_created", detail=f"{email} as {body.role}")
         db.commit()
