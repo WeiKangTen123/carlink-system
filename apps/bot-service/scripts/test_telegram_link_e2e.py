@@ -6,6 +6,19 @@ Written from the spec, not from the code under test:
 plans/2026-10-26-roles-ai-telegram/p5_build_brief.md ("Owner decisions in
 force", "Data", "API", "Bot", "Independent tests"; the brief wins on any
 conflict), with agent6_security_report.md H2, M6, D5 and D8 as background.
+Updated for the owner-approved P5 security-review changes (30 Oct):
+- M1: a code answered by one Telegram and then sent from another is
+  cancelled. There's a telegram_code_contested history entry, the web
+  confirm gets 409, and it isn't counted as a wrong code.
+- L5: the owner hint says "sent from their Telegram" for vetted accounts
+  (admin or any tick). For unvetted ones it says "sent from a Telegram now
+  linked to a self-registered account (linked on <date>)".
+- The prompt and the "Filing as" line show the @username first. Unvetted
+  accounts get the line "This is a self-registered account that Carlink
+  hasn't checked".
+- /unlink and [Cancel] withdraw an earlier Yes.
+- The wrong-code count resets only on a successful Yes.
+- A 5 s command throttle applies to linked unvetted accounts only.
 
 What it drives:
 - The real HTTP API, through TestClient, with people made straight in the
@@ -277,7 +290,8 @@ STATUS_KEYS = {"connected", "telegram_username", "telegram_name", "linked_at", "
 CODE_KEYS = {"display", "expires_at", "deep_link", "waiting"}
 AI_OFF = "AI is off for your account"
 HISTORY_DETAIL = "Filed through the Telegram bot"
-HINT_REASON = "sent from their Telegram"
+HINT_REASON = "sent from their Telegram"  # vetted accounts (admin or any tick)
+UNVETTED_HINT = r"sent from a Telegram now linked to a self-registered account \(linked on [^()]*\d[^()]*\)"
 
 PASSED = [0]
 FAILURES: list[tuple[str, str]] = []
@@ -916,9 +930,39 @@ def deliver(update: Update, what: str, chat_id) -> Reply:
     return Reply(FAKE.log[mark:], error, chat_id)
 
 
-def say(t: TgUser, words: str, *, chat=None, forwarded=False) -> Reply:
+VETTING_TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
+COMMAND_GAP = 5.3  # the bot throttles commands from linked unvetted accounts to one per 5 s
+LAST_COMMAND: dict = {}
+
+
+def unvetted(user_id: str) -> bool:
+    """Not an admin and no tick: a self-registered account Carlink hasn't checked."""
+    rows = sql("SELECT * FROM users WHERE id = :i", i=user_id)
+    if not rows:
+        return False
+    u = rows[0]
+    return not (u.get("role") == "admin" or any(u.get(t) for t in VETTING_TICKS))
+
+
+def _linked_unvetted(t: TgUser) -> bool:
+    rows = link_rows(external_id=t.id)
+    return bool(rows) and unvetted(rows[0]["user_id"])
+
+
+def say(t: TgUser, words: str, *, chat=None, forwarded=False, pace=True) -> Reply:
+    """pace: wait out the 5 s command throttle first if this Telegram is
+    linked to an unvetted account, so a check isn't about the throttle by
+    accident. pace=False sends at once."""
     chat = chat or private_chat(t)
-    return deliver(WIRE.message(t, chat=chat, text_=words, forwarded=forwarded), f"{t.label} says {words!r}", chat["id"])
+    command = words.startswith("/")
+    if command and pace:
+        wait = LAST_COMMAND.get(t.id, -1e9) + COMMAND_GAP - time.monotonic()
+        if wait > 0 and _linked_unvetted(t):
+            _real_sleep(wait)
+    rep = deliver(WIRE.message(t, chat=chat, text_=words, forwarded=forwarded), f"{t.label} says {words!r}", chat["id"])
+    if command:
+        LAST_COMMAND[t.id] = time.monotonic()
+    return rep
 
 
 def photo(t: TgUser, *, chat=None, caption=None) -> Reply:
@@ -1023,6 +1067,19 @@ def link_up(p: Person, t: TgUser, what: str = "(setup)") -> None:
 
 def whoami(t: TgUser) -> Reply:
     return say(t, "/whoami")
+
+
+SELF_REGISTERED_WARNING = "this is a self-registered account that carlink hasn't checked"
+
+
+def has_unvetted_warning(said: str) -> bool:
+    return SELF_REGISTERED_WARNING in said.lower().replace("’", "'")
+
+
+def username_first(said: str, p: Person) -> bool:
+    """'@username' shown, and before the full name."""
+    m = re.search("@" + re.escape(p.username) + r"\b", said)
+    return m is not None and said.find(p.name) > m.start()
 
 
 def connected_as(rep: Reply, p: Person) -> bool:
@@ -1274,7 +1331,10 @@ def two_sided_link() -> None:
     need(rep.prompt is not None, "Telegram user T sends /start link-CODE (the deep link): the bot asks to confirm", rep.why())
     prompt_text = rep.text
     raw_text = "\n".join(rep.raw_texts)
-    check("Ann Lim" in prompt_text and "@ann" in prompt_text, "the prompt names the account: Ann Lim (@ann)", prompt_text[:300])
+    check(username_first(prompt_text, ann), "the prompt names the account, @username first: @ann (Ann Lim)", prompt_text[:300])
+    check(has_unvetted_warning(prompt_text),
+          "Ann is unvetted (no tick): the prompt warns 'This is a self-registered account that Carlink hasn't checked'",
+          prompt_text[:300])
     check(ann.masked_email in raw_text, f"the prompt shows the masked email {ann.masked_email}", raw_text[:300])
     check(ann.email not in raw_text and ann.email.split("@")[0] not in raw_text, "and never the full email", raw_text[:300])
     check("cancel" in prompt_text.lower() and "someone sent you" in prompt_text.lower(),
@@ -1337,6 +1397,18 @@ def two_sided_link() -> None:
             check(waiting_of(val) is None and val.status().get("connected") is False,
                   "  [Cancel] in Telegram: nothing waiting, not connected", rep.why())
 
+    print("  a vetted (ticked) account's prompt")
+    vic = Person("Vic Tan", "vic", may_sign_off=True)
+    tv = TgUser("Vince", "Tan", "vincetan")
+    display, _ = make_code(vic, "[link]")
+    rep = say(tv, f"/link {display}")
+    need(rep.prompt is not None, "(the prompt for Vic Tan)", rep.why())
+    check(username_first(rep.text, vic), "@username first: @vic (Vic Tan)", rep.text[:300])
+    check(not has_unvetted_warning(rep.text), "no self-registered warning for a ticked account", rep.text[:300])
+    hit = rep.button(r"cancel")
+    if hit:
+        tap(tv, hit)
+
 
 def refusals() -> None:
     need(W.app is not None, "the bot app is built")
@@ -1362,10 +1434,12 @@ def refusals() -> None:
     check(r.status_code == 409, "waiting, then expired: web confirm -> 409", brief(r))
     check(pat.status().get("connected") is False and not link_rows(user_id=pat.id), "and no link was made")
 
-    print("  a reused code")
-    rob = Person("Rob Chan", "rob")
+    print("  two [Yes] taps on one code")
+    # Rob is ticked (vetted), so the checks that send several commands from
+    # his linked Telegram below aren't slowed by the unvetted 5 s throttle.
+    rob = Person("Rob Chan", "rob", sees_all_cases=True)
     t1, t2, t3 = TgUser("Rae", "One", "raeone"), TgUser("Ray", "Two", "raytwo"), TgUser("Rex", "Three", "rexthree")
-    display, body = make_code(rob, "[reused]")
+    display, body = make_code(rob, "[race]")
     p1 = say(t1, f"/link {display}")
     p2 = say(t2, f"/link {display}")
     need(p1.prompt is not None and p2.prompt is not None, "(two Telegrams both see the prompt: showing it changes nothing)",
@@ -1373,16 +1447,84 @@ def refusals() -> None:
     tap(t1, p1.prompt, "taps")
     rep = tap(t2, p2.prompt, "taps")
     w = waiting_of(rob) or {}
-    check(str(w.get("username") or "").lstrip("@") == "raeone", "two [Yes] taps on one code: only the first counts",
+    check(str(w.get("username") or "").lstrip("@") != "raytwo", "a second [Yes] on a code already answered never makes it wait for that Telegram",
           f"waiting {w!r}; second tap: {rep.why()}")
-    rep = say(t3, f"/link {display}")
-    check(not rep.asked, "a code already waiting can't be used again from another Telegram", rep.why())
+    info(f"after the second tap the code is {'waiting for Rae' if w else 'not waiting (cancelled)'}")
+
+    print("  a contested code: answered by one Telegram, then sent from another (M1)")
+
+    def contest(form: str, contester: TgUser, *, warm_up_wrong: int = 0) -> None:
+        display, body = make_code(rob, "[contested]")
+        telegram_says_yes(rob, t1, display, body, "[contested]")
+        for _ in range(warm_up_wrong):
+            say(contester, f"/link {random_code()}")
+        words = {"/link": f"/link {display}", "deep link": f"/start {start_payload(body, display)}", "bare code": display}[form]
+        mark = audit_mark()
+        rep = say(contester, words)
+        low = rep.text.lower()
+        check("already answered by another telegram" in low and "cancelled" in low and not rep.asked,
+              f"{form} from a different Telegram: 'This code was already answered by another Telegram, so it has been cancelled'",
+              rep.why())
+        check(rob.masked_email not in rep.text, "  without naming the account", rep.why())
+        check(not still_open(code_rows(rob.id)), "  the code is cancelled in the database", str(code_rows(rob.id))[-1:])
+        check(any(e["action"] == "telegram_code_contested" for e in audit_since(mark)),
+              "  a telegram_code_contested history entry", str([e["action"] for e in audit_since(mark)]))
+        r = rob.c.post("/auth/me/telegram/confirm", json={"accept": True})
+        check(r.status_code == 409, "  Rob's web confirm afterwards -> 409", brief(r))
+        check(not link_rows(user_id=rob.id) and not link_rows(external_id=t1.id), "  and nothing is linked")
+
+    display, body = make_code(rob, "[contested]")
+    telegram_says_yes(rob, t1, display, body, "[contested]")
+    say(t1, f"/link {display}")
+    w = waiting_of(rob) or {}
+    check(str(w.get("username") or "").lstrip("@") == "raeone",
+          "the SAME Telegram sending its own answered code again doesn't cancel it", repr(w))
+    contest("/link", t3)
+    contest("deep link", TgUser("Dee", "Contest", "deecontest"))
+    contest("bare code", TgUser("Bo", "Contest", "bocontest"))
+    tc = TgUser("Cass", "Contest", "casscontest")
+    contest("/link", tc, warm_up_wrong=4)
+    cam = Person("Cam Ng", "cam")
+    display, _ = make_code(cam, "[contested]")
+    rep = say(tc, f"/link {display}")
+    check(rep.prompt is not None,
+          "4 wrong codes, then a contested code: not counted as wrong (that Telegram isn't blocked)", rep.why())
+    hit = rep.button(r"cancel")
+    if hit:
+        tap(tc, hit)
+
+    print("  a used code")
+    display, body = make_code(rob, "[used]")
+    telegram_says_yes(rob, t1, display, body, "[used]")
     r = rob.c.post("/auth/me/telegram/confirm", json={"accept": True})
-    check(r.status_code == 200 and jd(r).get("connected") is True, "(Rob confirms Rae's Telegram)", brief(r))
+    need(r.status_code == 200 and jd(r).get("connected") is True, "(Rob confirms Rae's Telegram)", brief(r))
     for who in (t2, t3):
         rep = say(who, f"/link {display}")
         check(not rep.asked and "Rob" not in rep.text, f"the used code from {who.first}: no prompt, nobody named", rep.why())
-    check(len(link_rows(user_id=rob.id)) == 1 and not link_rows(external_id=t2.id), "Rob has one link, to Rae only")
+    check(len(link_rows(user_id=rob.id)) == 1 and str(link_rows(user_id=rob.id)[0]["external_id"]) == str(t1.id),
+          "Rob has one link, to Rae only (others sending the used code don't undo it)")
+    w1, w2 = whoami(t1), say(t1, "/whoami", pace=False)
+    check(connected_as(w1, rob) and connected_as(w2, rob),
+          "a ticked (vetted) account isn't throttled: two /whoami in a row are both answered", w1.why() + " || " + w2.why())
+
+    print("  withdrawing a Yes: [Cancel] or /unlink before the web side confirms")
+    wyn = Person("Wyn Toh", "wyn")
+    for how in ("[Cancel]", "/unlink"):
+        tw_ = TgUser("Wyn", how.strip("[]/").title(), None)
+        display, body = make_code(wyn, "[withdraw]")
+        rep = say(tw_, f"/start {start_payload(body, display)}")
+        need(rep.prompt is not None, f"({how}: the prompt)", rep.why())
+        yes = tap(tw_, rep.prompt, "taps")
+        need(isinstance(waiting_of(wyn), dict), f"({how}: after [Yes] the code waits for Carlink)", yes.why())
+        if how == "[Cancel]":
+            hit = yes.button(r"cancel") or rep.button(r"cancel")
+            need(hit is not None, "(a [Cancel] button to tap)", yes.why())
+            out = tap(tw_, hit, "taps")
+        else:
+            out = say(tw_, "/unlink")
+        check(waiting_of(wyn) is None, f"{how} after [Yes]: nothing is waiting any more", out.why())
+        r = wyn.c.post("/auth/me/telegram/confirm", json={"accept": True})
+        check(r.status_code == 409 and not link_rows(user_id=wyn.id), "  a web confirm afterwards -> 409, no link", brief(r))
 
     print("  an old code after a new one is made")
     pia = Person("Pia Sim", "pia")
@@ -1428,6 +1570,26 @@ def refusals() -> None:
     hit = rep.button(r"cancel")
     if hit:
         tap(t4, hit)
+    say(t4, f"/link {random_code()}")
+    display, body = make_code(wes, "[5 wrong]")
+    rep = say(t4, f"/link {display}")
+    check(not rep.asked,
+          "a valid code that was only shown (then Cancelled) doesn't reset the count: 4 wrong + valid + 1 wrong -> blocked",
+          rep.why())
+    dax = Person("Dax Lee", "dax")
+    t5 = TgUser("Gil", "Reset", "gilreset")
+    for _ in range(4):
+        say(t5, f"/link {random_code()}")
+    display, body = make_code(dax, "[5 wrong]")
+    telegram_says_yes(dax, t5, display, body, "[5 wrong]")
+    for _ in range(4):
+        say(t5, f"/link {random_code()}")
+    display, _ = make_code(wes, "[5 wrong]")
+    rep = say(t5, f"/link {display}")
+    check(rep.prompt is not None, "a successful [Yes] resets the count: 4 wrong, Yes, 4 more wrong -> still not blocked", rep.why())
+    hit = rep.button(r"cancel")
+    if hit:
+        tap(t5, hit)
 
     print("  a forwarded message holding a code")
     fen = Person("Fen Yap", "fen")
@@ -1501,7 +1663,8 @@ def refusals() -> None:
 def who_it_talks_to() -> None:
     need(W.app is not None, "the bot app is built")
     rob_t = None
-    links = sql("SELECT external_id FROM chat_links") if table_exists("chat_links") else []
+    links = sql("SELECT external_id, user_id FROM chat_links") if table_exists("chat_links") else []
+    links.sort(key=lambda row: unvetted(row["user_id"]))  # a vetted one first: no command throttle to wait out
     if links:
         rob_t = TgUser("Linked", "Member", "linkedmember", uid=int(links[0]["external_id"]))
 
@@ -1547,8 +1710,10 @@ def who_it_talks_to() -> None:
     check(not calls_since(mark_calls), "no AI ran", describe(calls_since(mark_calls)))
     rep = whoami(t)
     check(not_connected(rep), "/whoami works without a link: 'Not connected'", rep.why())
-    rep = say(t, "/help")
+    rep = say(t, "/help", pace=False)
     check(bool(rep.texts), "/help works without a link", rep.why())
+    rep = say(t, "/whoami", pace=False)
+    check(not_connected(rep), "unconnected people aren't throttled: a third command at once is still answered", rep.why())
 
     print("  the P0 allow-list is gone")
     past = TgUser("Paul", "Past", "paulpast")
@@ -1587,8 +1752,20 @@ def filing() -> None:
         check(replies[0].downloads >= 1, f"{p.label}'s first photo is downloaded", replies[0].why())
         replies.append(say(t, "Rear-ended at PIE exit 12, rear bumper dented."))
         texts = [x for r in replies for x in r.texts]
-        check(any(re.match(r"\W*Filing as:?\s+" + re.escape(p.name), x) for x in texts),
-              f"the draft summary starts 'Filing as {p.name}'", " | ".join(x[:80] for x in texts[-3:]))
+        summaries = [x for x in texts if re.match(r"\W*Filing as\b", x)]
+        first_line = summaries[-1].strip().splitlines()[0] if summaries else ""
+        check(summaries and re.match(r"\W*Filing as:?\s+@" + re.escape(p.username) + r"\b", first_line)
+              and p.name in first_line,
+              f"the draft summary starts 'Filing as @{p.username} ({p.name})', @username first",
+              first_line or " | ".join(x[:80] for x in texts[-3:]))
+        drafted = "\n".join(texts)
+        if unvetted(p.id):
+            check(has_unvetted_warning(drafted),
+                  f"{p.label} is unvetted: the draft warns 'This is a self-registered account that Carlink hasn't checked'",
+                  (summaries or [""])[-1][:300])
+        else:
+            check(not has_unvetted_warning(drafted), f"{p.label} is ticked: no self-registered warning",
+                  (summaries or [""])[-1][:300])
         for words in typed:
             mark = len(CALLS)
             rep = say(t, words)
@@ -1790,7 +1967,7 @@ def links_ending() -> None:
 
 def pairing() -> None:
     need(W.app is not None, "the bot app is built")
-    pam = Person("Pam Yeo", "pam")
+    pam = Person("Pam Yeo", "pam", may_sign_off=True)  # ticked: pairing isn't about the unvetted throttle
     t1, t2 = TgUser("Pam", "Old Phone", "pamold"), TgUser("Pam", "New Phone", "pamnew")
     link_up(pam, t1, "[pairing]")
 
@@ -1858,20 +2035,27 @@ def pairing() -> None:
 
 
 def earlier_reports() -> None:
+    def telegram_hint(sug) -> bool:
+        return isinstance(sug, dict) and "telegram" in str(sug.get("reason") or "").lower()
+
+    def earlier_case(t: TgUser) -> str:
+        db = SessionLocal()
+        try:
+            old = Report(channel="telegram", reporter_chat_id=str(t.id), data={"description": "old"}, status="confirmed")
+            db.add(old)
+            db.commit()
+            return old.id
+        finally:
+            db.close()
+
+    print("  an unvetted (self-registered, no tick) account")
     erin = Person("Erin Kwok", "erin")
     t = TgUser("Erin", "Phone", "erinphone")
-    db = SessionLocal()
-    try:
-        old = Report(channel="telegram", reporter_chat_id=str(t.id), data={"description": "old"}, status="confirmed")
-        db.add(old)
-        db.commit()
-        old_id = old.id
-    finally:
-        db.close()
+    old_id = earlier_case(t)
     r = W.ada.c.get(f"/reports/{old_id}")
     need(r.status_code == 200, "(the admin opens the earlier Telegram case)", brief(r))
     sug = jd(r).get("suggested_owner")
-    check(not (isinstance(sug, dict) and sug.get("reason") == HINT_REASON), "before T is linked: no Telegram hint", repr(sug))
+    check(not telegram_hint(sug), "before T is linked: no Telegram hint", repr(sug))
     need(W.app is not None, "the bot app is built")
     link_up(erin, t, "[earlier]")
     rep_all = [e for e in FAKE.log if e.chat_id == t.id]
@@ -1888,12 +2072,25 @@ def earlier_reports() -> None:
     body = jd(r)
     sug = body.get("suggested_owner")
     check(body.get("owner") is None, "the admin sees it Unassigned", repr(body.get("owner")))
-    check(isinstance(sug, dict) and sug.get("id") == erin.id and sug.get("reason") == HINT_REASON,
-          f"the admin's GET /reports/{{id}}: suggested_owner = Erin, reason '{HINT_REASON}'", repr(sug))
+    check(isinstance(sug, dict) and sug.get("id") == erin.id
+          and re.fullmatch(UNVETTED_HINT, str(sug.get("reason") or "")) is not None,
+          "the admin's suggested_owner = Erin, reason 'sent from a Telegram now linked to a self-registered account "
+          "(linked on <date>)' (L5)", repr(sug))
     r = erin.c.delete("/auth/me/telegram")
     check(r.status_code == 200, "(Erin disconnects)", brief(r))
     sug = jd(W.ada.c.get(f"/reports/{old_id}")).get("suggested_owner")
-    check(not (isinstance(sug, dict) and sug.get("reason") == HINT_REASON), "once disconnected, the hint goes", repr(sug))
+    check(not telegram_hint(sug), "once disconnected, the hint goes", repr(sug))
+
+    print("  a vetted (ticked) account")
+    eli = Person("Eli Seow", "eli", ai_company_key_allowed=True)
+    te = TgUser("Eli", "Phone", "eliphone")
+    old_id = earlier_case(te)
+    link_up(eli, te, "[earlier]")
+    rows = sql("SELECT owner_id FROM reports WHERE id = :i", i=old_id)
+    check(rows and rows[0]["owner_id"] is None, "linking leaves Eli's earlier case Unassigned too", str(rows))
+    sug = jd(W.ada.c.get(f"/reports/{old_id}")).get("suggested_owner")
+    check(isinstance(sug, dict) and sug.get("id") == eli.id and sug.get("reason") == HINT_REASON,
+          f"the admin's suggested_owner = Eli, reason '{HINT_REASON}' (L5)", repr(sug))
 
 
 def wrong_code_alarm() -> None:

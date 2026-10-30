@@ -535,7 +535,7 @@ async def check_drafting_as_the_person() -> None:
     state.reset_session(str(ANN_TG))
     await ready_to_confirm(ANN_TG, out)
     assert ACTORS[-1] == AiActor.for_user(P.ann, "telegram"), ACTORS[-1]
-    assert out.texts[-1].startswith("👤 Filing as Ann Lim (@ann)\n\nDraft summary"), out.texts[-1]
+    assert out.texts[-1].startswith("👤 Filing as @ann (Ann Lim)\n\nDraft summary"), out.texts[-1]
     ok("drafting runs on the linked person's AI (AiActor.for_user), and the summary starts 'Filing as Name'")
 
     out = Outbox()
@@ -653,7 +653,7 @@ async def check_confirm_rechecks() -> None:
     # AI on for him here: the cap is what's being checked.
     with mock.patch.object(tg, "ensure_ai_ready", lambda actor: None):
         await ready_to_confirm(chat, out)
-    assert out.texts[-1].startswith(f"👤 Filing as Uri Goh (@uri)\n{tg.UNVETTED_WARNING}\n\n"), out.texts[-1]
+    assert out.texts[-1].startswith(f"👤 Filing as @uri (Uri Goh)\n{tg.UNVETTED_WARNING}\n\n"), out.texts[-1]
     before, folders = len(cases_for(chat)), incident_dirs()
     await tg.handle_callback(tap(chat, out), None)
     assert len(cases_for(chat)) == before and incident_dirs() == folders

@@ -201,6 +201,9 @@ class Linked:
     label: str  # "Name (@username)", cleaned (_account_names)
     staff: bool  # an admin or "May sign off": their PDFs carry no unverified banner
     unvetted: bool  # no admin role and no ticks: the dashboard's limits apply
+    # "@username (Name)" for "Filing as": the unique @username first, as in
+    # the link prompt (review M2). Empty falls back to label.
+    filing_label: str = ""
 
     @property
     def actor(self) -> AiActor:
@@ -298,7 +301,8 @@ def _lookup(external_id, username, name) -> Linked | None:
         user = linked_user(db, external_id, username=username, name=name)
         found = None
         if user is not None:
-            found = Linked(id=user.id, label=_filing_label(user), staff=is_staff(user), unvetted=limits._unvetted(user))
+            found = Linked(id=user.id, label=_filing_label(user), staff=is_staff(user), unvetted=limits._unvetted(user),
+                           filing_label=_prompt_label(user))
         _commit_quietly(db)
         return found
     finally:
@@ -1085,14 +1089,15 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
         # The account is named, and an unchecked one said to be so (M2):
         # filing into a look-alike signup is what a phished link is for.
         warning = f"\n{UNVETTED_WARNING}" if user.unvetted else ""
+        filing_as = user.filing_label or user.label
         try:
             await msg_target.reply_text(
-                f"👤 Filing as {escape_markdown(user.label)}{warning}\n\n{result.summary_text}",
+                f"👤 Filing as {escape_markdown(filing_as)}{warning}\n\n{result.summary_text}",
                 parse_mode="Markdown", reply_markup=keyboard,
             )
         except BadRequest:
             logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
-            await msg_target.reply_text(f"👤 Filing as {user.label}{warning}\n\n{result.summary_text}", reply_markup=keyboard)
+            await msg_target.reply_text(f"👤 Filing as {filing_as}{warning}\n\n{result.summary_text}", reply_markup=keyboard)
 
 
 # ------------------------------------------------------- buttons and Confirm
