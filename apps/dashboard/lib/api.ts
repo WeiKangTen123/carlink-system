@@ -213,6 +213,9 @@ export type UserAccount = UserProfile & {
   /** Their own AI key (Settings -> My AI key), or null for none. Last 4
    * characters and a status only, never the key. */
   ai_key: UserAiKeySummary | null;
+  /** The Telegram they connected (release P5), or null for none. Absent
+   * from an API older than P5. */
+  telegram?: UserTelegramSummary | null;
 };
 
 /** The three ticks on Settings -> Users. */
@@ -569,6 +572,90 @@ export async function deleteMyAiKey(): Promise<void> {
 export async function deleteUserAiKey(id: string): Promise<void> {
   const res = await apiFetch(`${API_BASE_URL}/users/${id}/ai-key`, { method: "DELETE" }, { timeoutMs: 8000 });
   if (!res.ok) throw await apiError(res, "Failed to remove their AI key");
+}
+
+// ---------------------------------------------------------------------------
+// My Telegram (release P5): each person connects their own Telegram on
+// Settings -> My settings, so the Telegram bot files cases under their
+// account (bot-service app/api/telegram_link.py, app/auth/chat_links.py).
+//
+// Linking takes both sides: Carlink makes a one-time code (10 minutes,
+// shown once), the person sends it to the bot and taps Yes there, then
+// confirms here ("Yes, connect"). The API keeps only the code's hash, so
+// the plain code (and the deep link, which carries it) come back only from
+// POST .../code; GET may leave them out.
+
+/** Telegram usernames and names are optional and the person's own choice:
+ * display only, never trusted for anything. */
+export type TelegramIdentity = { username: string | null; name: string | null };
+
+/** The open link code, if any. */
+export type TelegramCode = {
+  /** "K7M4-QX9P": the plain code, only in POST .../code's answer. */
+  display: string | null;
+  expires_at: string;
+  /** t.me/<bot>?start=link-<code>, when the bot's @username is known. Like
+   * the code, only in POST .../code's answer. */
+  deep_link: string | null;
+  /** Someone tapped "Yes, that's me" in Telegram with this code, and it now
+   * waits for "Yes, connect" or "Not me" here. */
+  waiting: TelegramIdentity | null;
+};
+
+/** GET /auth/me/telegram, and the answer of POST .../code and .../confirm. */
+export type MyTelegram = {
+  connected: boolean;
+  telegram_username: string | null;
+  telegram_name: string | null;
+  linked_at: string | null;
+  code: TelegramCode | null;
+  /** The company bot's @username (without the @), once the bot has started;
+   * null before that, or with no bot. */
+  bot_username: string | null;
+};
+
+/** The telegram of a GET /users row. */
+export type UserTelegramSummary = { username: string | null; name: string | null; linked_at: string | null };
+
+export async function getMyTelegram(): Promise<MyTelegram> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/telegram`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load your Telegram");
+  return res.json();
+}
+
+/** A new code (any older open one is cancelled). 429 after 10 an hour. */
+export async function createTelegramCode(): Promise<MyTelegram> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/telegram/code`, { method: "POST" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to make a code");
+  return res.json();
+}
+
+export async function cancelTelegramCode(): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/telegram/code`, { method: "DELETE" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to cancel the code");
+}
+
+/** "Yes, connect" (accept) or "Not me" for the Telegram that is waiting.
+ * 409 when nothing is waiting any more, or the code has expired. */
+export async function confirmTelegram(accept: boolean): Promise<MyTelegram> {
+  const res = await apiFetch(
+    `${API_BASE_URL}/auth/me/telegram/confirm`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accept }) },
+    { timeoutMs: 8000 }
+  );
+  if (!res.ok) throw await apiError(res, accept ? "Failed to connect your Telegram" : "Failed to cancel");
+  return res.json();
+}
+
+export async function disconnectMyTelegram(): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/auth/me/telegram`, { method: "DELETE" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to disconnect your Telegram");
+}
+
+/** Admin: disconnect someone's Telegram (a lost phone, a leaver). */
+export async function disconnectUserTelegram(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/users/${id}/telegram`, { method: "DELETE" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to disconnect their Telegram");
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,6 +1545,10 @@ export type SystemInfo = {
    * seals them). `detail` says what's wrong and how to fix it. Absent from
    * an API older than release P3's security follow-up. */
   ai_key_storage?: AiKeyStorage;
+  /** The company bot's @username (null until the bot has started) and how
+   * many accounts have connected their Telegram. Absent from an API older
+   * than release P5. */
+  telegram?: { bot_username: string | null; accounts_connected: number };
 };
 
 /** "ok", or why people's own AI keys can't be read right now. Kept open

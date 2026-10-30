@@ -19,6 +19,7 @@ service: admins send links themselves.
 import re
 import threading
 import time
+import unicodedata
 from collections import deque
 from typing import Literal, Optional
 
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from app.ai import keys
+from app.auth.chat_links import end_chat_links
 from app.auth.core import (
     LOCKOUT,
     MAX_FAILED_LOGINS,
@@ -38,6 +40,7 @@ from app.auth.core import (
     end_session,
     end_user_sessions,
     full_name_problem,
+    is_invisible,
     locked_for,
     max_age,
     me_dict,
@@ -174,10 +177,11 @@ class LoginRequest(BaseModel):
 def find_by_login(db, login: str) -> tuple[User | None, str]:
     """The account an email or username belongs to, and the normalized
     form (the key unknown names are locked out under)."""
+    login = unicodedata.normalize("NFKC", login)
     if "@" in login:
         email = normalize_email(login)
         return db.query(User).filter(User.email == email).first(), email
-    username = normalize_username(login)
+    username = username_input(login)
     return db.query(User).filter(User.username == username).first(), username
 
 
@@ -265,9 +269,53 @@ class ProfileFields(BaseModel):
     firm_name: Optional[str] = Field(default=None, max_length=160)
 
 
+INVISIBLE_NAME = (
+    "Names can't have invisible characters in them (such as a right-to-left mark). "
+    "Type the name again without them."
+)
+INVISIBLE_USERNAME = "Usernames can't have invisible characters in them. Type it again without them."
+
+
+def has_invisible(text: str) -> bool:
+    """Whether text holds a character a reader can't see (core.is_invisible):
+    a zero-width space, a direction mark or override, a filler letter..."""
+    return any(is_invisible(ch) for ch in text)
+
+
+def username_input(text: str) -> str:
+    """A username as typed, in the form it is stored and looked up: NFKC
+    (full-width and other compatibility letters become the plain ones),
+    trimmed, lower case. Then username_issue decides whether it's allowed."""
+    return normalize_username(unicodedata.normalize("NFKC", text))
+
+
+def clean_full_name(text: str) -> str:
+    """A full name as it is saved: NFKC, spaces collapsed. A plain 400 if
+    it is empty or holds an invisible character -- a right-to-left mark can
+    make one name read as another, in the history, on sign-offs and in the
+    Telegram bot's "is this you?" prompt (agent6 L6). Accents, CJK and every
+    other visible script are fine."""
+    name = " ".join(unicodedata.normalize("NFKC", text).split())
+    if has_invisible(name):
+        raise HTTPException(status_code=400, detail=INVISIBLE_NAME)
+    if not name:
+        raise HTTPException(status_code=400, detail="Name can't be empty.")
+    return name
+
+
+def visible_name(text: str) -> str:
+    """A name saved before clean_full_name existed (an older invite's), made
+    safe without asking anyone: NFKC, invisible characters dropped, spaces
+    collapsed."""
+    text = unicodedata.normalize("NFKC", text or "")
+    return " ".join("".join(ch for ch in text if not is_invisible(ch)).split())
+
+
 def username_issue(db, username: str, exclude_id: str | None = None, *, self_chosen: bool = True) -> tuple[int, str] | None:
     """(status, message) if a normalized username can't be used, else None.
     self_chosen=False only when an admin sets it."""
+    if has_invisible(username):
+        return 400, INVISIBLE_USERNAME
     problem = username_problem(username, self_chosen=self_chosen)
     if problem:
         return 400, problem
@@ -292,7 +340,7 @@ def _commit_or_taken(db, *, flush_only: bool = False) -> None:
 
 def checked_username(db, username: str, exclude_id: str | None = None, *, self_chosen: bool = True) -> str:
     """The normalized username, or a 400/409 saying why it can't be used."""
-    username = normalize_username(username)
+    username = username_input(username)
     issue = username_issue(db, username, exclude_id, self_chosen=self_chosen)
     if issue:
         raise HTTPException(status_code=issue[0], detail=issue[1])
@@ -315,15 +363,13 @@ def _apply_profile(db, row: User, body: ProfileFields, *, by_admin: bool) -> Non
     """by_admin: an admin editing an account may use reserved words and
     any full name; people naming themselves may not (core.full_name_problem)."""
     if body.username is not None:
-        new = normalize_username(body.username)
+        new = username_input(body.username)
         if new != (row.username or ""):
             if not by_admin and not _username_change_allowed(row.id):
                 raise HTTPException(status_code=429, detail="Too many username changes. Try again in an hour.")
             row.username = checked_username(db, new, exclude_id=row.id, self_chosen=not by_admin)
     if body.name is not None:
-        name = " ".join(body.name.split())
-        if not name:
-            raise HTTPException(status_code=400, detail="Name can't be empty.")
+        name = clean_full_name(body.name)
         if not by_admin and name != row.name:
             problem = full_name_problem(db, name, exclude_id=row.id)
             if problem:
@@ -389,6 +435,9 @@ def change_password(body: PasswordChange, user: CurrentUser = Depends(current_us
         # Signs out every other browser, e.g. one that has the old password.
         end_user_sessions(db, row.id, keep_hash=user.session_hash)
         audit(db, user, "password_changed", detail=row.email)
+        # And disconnects Telegram: whoever knew the old password may have
+        # connected their own (agent6 H2). Connecting again takes a minute.
+        end_chat_links(db, row.id, user, reason="password changed")
         db.commit()
         return {"ok": True}
     finally:
@@ -495,6 +544,9 @@ def _disable(db, row: User, admin: CurrentUser, open_cases: str, recipient: User
     # Their own AI key goes too, in this same transaction: a disabled
     # account's key is never used, and isn't kept for later.
     keys.delete_user_key(db, row.id, admin, action="ai_key_removed_by_admin", reason="account disabled")
+    # So do their Telegram link and any open code: enabling the account
+    # again doesn't reconnect it.
+    end_chat_links(db, row.id, admin, reason="account disabled")
     audit(db, admin, "user_disabled", detail="; ".join(filter(None, [row.email, outcome])))
     return moved
 
@@ -616,6 +668,7 @@ def reset_password(user_id: str, admin: CurrentUser = Depends(require_admin)) ->
         row.locked_until = None
         end_user_sessions(db, row.id)
         audit(db, admin, "password_reset", detail=row.email)
+        end_chat_links(db, row.id, admin, reason="password reset by an admin")
         db.commit()
         db.refresh(row)
         return {"user": user_dicts(db, [row])[0], "temporary_password": password}

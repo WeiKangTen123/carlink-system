@@ -1,16 +1,24 @@
-"""Tests for the Telegram bot's safety fixes (app/channels/telegram.py): the
-allow-list, one case per Confirm, temp photos, stale drafts, photo limits,
-and handlers that only take new messages.
+"""Tests for the Telegram bot (app/channels/telegram.py): who it works for
+(P5: a Telegram connected to an active account, in a private chat), the
+linking rules on the bot's side, filing as the linked person, one case per
+Confirm, temp photos, stale drafts, photo limits, and handlers that only
+take new messages. Then the fixes from the P5 review: a code answered first
+by another Telegram (M1), look-alike names and unchecked accounts (M2,
+L6), the wrong-code count (L1), taking a Yes back (L2), the save's write
+lock and daily cap (L3), sign-off and Our Ref (L4), and the dashboard's
+limits for unvetted accounts (L7).
 
     python scripts/test_telegram_bot.py
 
 Offline: fake Telegram updates and downloads, no AI call, no PDF render, a
-temporary database and storage folder.
+temporary database and storage folder. scripts/test_telegram_link_e2e.py
+drives the whole link through the real handlers and the API.
 """
 import asyncio
 import logging
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -24,34 +32,109 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 _tmp = tempfile.mkdtemp(prefix="telegram-test-")
 os.environ["STORAGE_DIR"] = _tmp
+os.environ["SECRETS_DIR"] = str(Path(_tmp, "secrets"))
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmp, 'test.db').as_posix()}"
-os.environ.setdefault("GEMINI_API_KEY", "fake")
+os.environ["GEMINI_API_KEY"] = "fake-company-key"
 os.environ["TELEGRAM_BOT_TOKEN"] = "123456:fake-token-for-tests"
-os.environ["TELEGRAM_ALLOWED_IDS"] = " 1001, 1002 ,"
+os.environ["PUBLIC_BASE_URL"] = "https://carlink.test/"
+# The disk guard has its own test (test_abuse_limits.py).
+os.environ["MIN_FREE_DISK_GB"] = "0"
 
 from PIL import Image  # noqa: E402
-from telegram import Chat, Message, MessageEntity, PhotoSize, Update, User  # noqa: E402
+from telegram import Chat, Message, MessageEntity, PhotoSize, Update, User as TgUser  # noqa: E402
 
 import app.channels.telegram as tg  # noqa: E402
 from app.ai.keys import AiActor  # noqa: E402
+from app.api import limits  # noqa: E402
+from app.auth import chat_links  # noqa: E402
+from app.auth.chat_links import confirm_from_web, new_code, wrong_codes  # noqa: E402
+from app.auth.core import utc_now  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.conversation import state  # noqa: E402
 from app.conversation.flow import DraftResult  # noqa: E402
 from app.conversation.state import Stage  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
-from app.reports.models import Report  # noqa: E402
-from app.reports.schema import SecurityIncidentDraft  # noqa: E402
+from app.reports.models import AuditEntry, ChatLink, ChatLinkCode, Report, User  # noqa: E402
+from app.reports.schema import SecurityIncidentDraft, SignOffInfo  # noqa: E402
 from app.storage.files import tmp_dir  # noqa: E402
 
-ALLOWED = 1001  # in TELEGRAM_ALLOWED_IDS above
-PAST_REPORTER = 777  # filed a case before; allowed via the database
+BASE = "https://carlink.test"
+# Telegram user ids; in a private chat the chat id is the same.
+ANN_TG, BEN_TG, HANA_TG, URI_TG = 1001, 1002, 1003, 1004
+PAST_REPORTER = 777  # filed a case before P5, never connected
 STRANGER = 5555
 _photo_bytes = Path(_tmp, "sample.jpg")
 Image.new("RGB", (64, 48), (200, 30, 30)).save(_photo_bytes, "JPEG")
+P = SimpleNamespace()  # account ids, filled by make_people()
 
 
 def ok(label: str) -> None:
     print(f"    ok   {label}")
+
+
+# --- people and links ----------------------------------------------------------
+
+def make_user(name: str, username: str, **ticks) -> str:
+    db = SessionLocal()
+    try:
+        user = User(email=f"{username}@example.com", username=username, name=name, role="user", password_hash="!", **ticks)
+        db.add(user)
+        db.commit()
+        return user.id
+    finally:
+        db.close()
+
+
+def link_tg(user_id: str, tg_id: int) -> None:
+    db = SessionLocal()
+    try:
+        db.add(ChatLink(channel="telegram", external_id=str(tg_id), user_id=user_id, linked_at=utc_now()))
+        db.commit()
+    finally:
+        db.close()
+
+
+def unlink_tg(tg_id: int) -> None:
+    db = SessionLocal()
+    try:
+        db.query(ChatLink).filter(ChatLink.external_id == str(tg_id)).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
+def relink_tg(tg_id: int, user_id: str) -> None:
+    db = SessionLocal()
+    try:
+        db.query(ChatLink).filter(ChatLink.external_id == str(tg_id)).update({"user_id": user_id})
+        db.commit()
+    finally:
+        db.close()
+
+
+def make_code(user_id: str) -> str:
+    db = SessionLocal()
+    try:
+        plain, _ = new_code(db, db.get(User, user_id))
+        db.commit()
+        return f"{plain[:4]}-{plain[4:]}"
+    finally:
+        db.close()
+
+
+def make_people() -> None:
+    # Ticked for the company key (GEMINI_API_KEY above), so AI is on.
+    P.ann = make_user("Ann Lim", "ann", ai_company_key_allowed=True)
+    P.ben = make_user("Ben Tan", "ben", ai_company_key_allowed=True, may_sign_off=True)
+    P.cal = make_user("Cal Ong", "cal", ai_company_key_allowed=True)
+    # No key of her own and no tick: AI is off for her.
+    P.hana = make_user("Hana Lee", "hana")
+    # No ticks at all: held to the daily case cap (api/limits.py).
+    P.uri = make_user("Uri Goh", "uri")
+    P.dot = make_user("Dot Lee", "dot")
+    P.eve = make_user("Eve Sim", "eve")
+    for user_id, tg_id in ((P.ann, ANN_TG), (P.ben, BEN_TG), (P.hana, HANA_TG), (P.uri, URI_TG)):
+        link_tg(user_id, tg_id)
 
 
 # --- fakes -----------------------------------------------------------------
@@ -61,21 +144,28 @@ class Outbox:
 
     def __init__(self):
         self.texts: list[str] = []
+        self.markups: list = []
         self.documents: list[tuple[str, bytes]] = []
         self.downloads: list[str] = []
 
+    def buttons(self, index: int = -1) -> dict[str, str]:
+        markup = self.markups[index]
+        return {b.text: b.callback_data for row in (markup.inline_keyboard if markup else ()) for b in row}
+
 
 class FakeMessage:
-    def __init__(self, outbox: Outbox, text=None, caption=None, photo=False, document=None):
+    def __init__(self, outbox: Outbox, text=None, caption=None, photo=False, document=None, forwarded=False):
         self.outbox = outbox
         self.text = text
         self.caption = caption
         self.photo = [FakePhoto(outbox)] if photo else []
         self.document = document
+        self.forward_origin = SimpleNamespace(type="user") if forwarded else None
 
-    async def reply_text(self, text, **_kw):
+    async def reply_text(self, text, **kw):
         await asyncio.sleep(0)  # a real reply is a network round trip
         self.outbox.texts.append(text)
+        self.outbox.markups.append(kw.get("reply_markup"))
 
     async def reply_document(self, document=None, filename=None, **_kw):
         self.outbox.documents.append((filename, document.read()))
@@ -110,60 +200,84 @@ class FakeQuery:
         self.data = data
         self.message = message
         self.answers: list = []
+        self.buttons_removed = False
 
     async def answer(self, text=None, **_kw):
         await asyncio.sleep(0)
         self.answers.append(text)
 
+    async def edit_message_reply_markup(self, reply_markup=None, **_kw):
+        self.buttons_removed = reply_markup is None
 
-def message_update(chat_id: int, outbox: Outbox, user_id=None, **message_kw):
+
+# Telegram users with their own @username and name (default: tg<id>, "Phone <id>").
+SENDERS: dict[int, SimpleNamespace] = {}
+
+
+def sender(user_id: int):
+    return SENDERS.get(user_id) or SimpleNamespace(
+        id=user_id, username=f"tg{user_id}", full_name=f"Phone {user_id}", first_name="Phone"
+    )
+
+
+def message_update(chat_id: int, outbox: Outbox, user_id=None, chat_type="private", **message_kw):
     msg = FakeMessage(outbox, **message_kw)
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id or chat_id),
-        effective_chat=SimpleNamespace(id=chat_id),
+        effective_user=sender(user_id or chat_id),
+        effective_chat=SimpleNamespace(id=chat_id, type=chat_type),
         effective_message=msg,
         message=msg,
         callback_query=None,
     )
 
 
-def tap(chat_id: int, outbox: Outbox, data: str = "confirm", user_id=None):
+def tap(chat_id: int, outbox: Outbox, data: str = "confirm", user_id=None, chat_type="private"):
     query = FakeQuery(data, FakeMessage(outbox))
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id or chat_id),
-        effective_chat=SimpleNamespace(id=chat_id),
+        effective_user=sender(user_id or chat_id),
+        effective_chat=SimpleNamespace(id=chat_id, type=chat_type),
         effective_message=query.message,
         message=None,
         callback_query=query,
     )
 
 
-async def send_photo(chat_id: int, outbox: Outbox, user_id=None):
-    await tg.handle_photo(message_update(chat_id, outbox, user_id, photo=True), None)
+async def send_photo(chat_id: int, outbox: Outbox, user_id=None, chat_type="private"):
+    await tg.handle_photo(message_update(chat_id, outbox, user_id, chat_type, photo=True), None)
 
 
-async def send_text(chat_id: int, outbox: Outbox, text: str, user_id=None):
-    await tg.handle_text(message_update(chat_id, outbox, user_id, text=text), None)
+async def send_text(chat_id: int, outbox: Outbox, text: str, user_id=None, chat_type="private", forwarded=False):
+    await tg.handle_text(message_update(chat_id, outbox, user_id, chat_type, text=text, forwarded=forwarded), None)
+
+
+async def command(handler, chat_id: int, outbox: Outbox, *args: str):
+    words = " ".join(args)
+    await handler(message_update(chat_id, outbox, text=f"/x {words}".strip()), SimpleNamespace(args=list(args)))
 
 
 # --- patched AI and PDF ------------------------------------------------------
 
 DRAFT_CALLS: list[list[str]] = []
+ACTORS: list = []
+RENDERS: list = []  # the unverified flag of each render
+DURING_RENDER: list = []  # callables run while the "PDF" renders
 RENDER_STARTED = threading.Event()
 RENDER_SECONDS = 0.0
 
 
-def fake_build_draft(description, photo_paths, session=None, **_kw):
-    # The bot drafts on the company keys until Telegram is linked to accounts.
-    assert _kw.get("actor") == AiActor.cli(), _kw
+def fake_build_draft(description, photo_paths, session=None, **kw):
+    ACTORS.append(kw.get("actor"))
     DRAFT_CALLS.append(list(photo_paths))
     for p in photo_paths:  # the real call reads every photo
         assert Path(p).exists(), f"drafted with a missing photo {p}"
     return DraftResult(draft=SecurityIncidentDraft(description=description), summary_text="Draft summary")
 
 
-def fake_render_pdf(data, photo_paths, output_path, report_id=None, slot_wait=None):
+def fake_render_pdf(data, photo_paths, output_path, report_id=None, unverified=None, slot_wait=None):
+    RENDERS.append(unverified)
     RENDER_STARTED.set()
+    while DURING_RENDER:
+        DURING_RENDER.pop()()
     time.sleep(RENDER_SECONDS)
     Path(output_path).write_bytes(b"%PDF-1.4 fake")
 
@@ -176,13 +290,18 @@ def cases_for(chat_id: int) -> list[Report]:
         db.close()
 
 
-def add_case(chat_id: str, channel: str) -> None:
+def add_case(chat_id: str, channel: str, owner_id=None) -> None:
     db = SessionLocal()
     try:
-        db.add(Report(channel=channel, reporter_chat_id=chat_id, data={}, status="confirmed"))
+        db.add(Report(channel=channel, reporter_chat_id=chat_id, data={}, status="confirmed", owner_id=owner_id))
         db.commit()
     finally:
         db.close()
+
+
+def incident_dirs() -> set[str]:
+    root = Path(_tmp, "incidents")
+    return {p.name for p in root.glob("*/*/*")} if root.is_dir() else set()
 
 
 async def ready_to_confirm(chat_id: int, outbox: Outbox, photos: int = 1):
@@ -190,7 +309,7 @@ async def ready_to_confirm(chat_id: int, outbox: Outbox, photos: int = 1):
         await send_photo(chat_id, outbox)
     await send_text(chat_id, outbox, "Rear-ended at PIE exit 12")
     session = state.get_session(str(chat_id))
-    assert session.stage == Stage.AWAITING_CONFIRMATION and session.draft is not None
+    assert session.stage == Stage.AWAITING_CONFIRMATION and session.draft is not None, outbox.texts[-3:]
     return session
 
 
@@ -206,84 +325,258 @@ class LogCapture(logging.Handler):
         return [r.getMessage() for r in self.records if r.levelno == level]
 
 
-# --- checks --------------------------------------------------------------------
+# --- who may use the bot -------------------------------------------------------
 
-async def check_allow_list_load(log: LogCapture) -> None:
-    print("allow-list")
-    with mock.patch.object(settings, "telegram_allowed_ids", ""):
-        await tg._post_init(SimpleNamespace(bot=mock.AsyncMock()))
-    assert not tg._allowed_ids
-    assert any("allow-list is empty" in m for m in log.messages(logging.WARNING)), log.messages(logging.WARNING)
-    ok("no ids at all: start-up warns, and the set is empty (everyone refused)")
-
-    add_case(str(PAST_REPORTER), "telegram")
-    add_case("dashboard", "manual")
-    add_case("whatsapp:+6590000000", "whatsapp")
-    await tg._post_init(SimpleNamespace(bot=mock.AsyncMock()))
-    assert tg._allowed_ids == {"1001", "1002", str(PAST_REPORTER)}, tg._allowed_ids
-    assert any("3 id(s)" in m for m in log.messages()), log.messages()
-    ok("TELEGRAM_ALLOWED_IDS plus past Telegram reporters only; start-up logs the count")
-
-
-async def check_allowed_users() -> None:
-    out = Outbox()
-    await send_photo(-4242, out, user_id=ALLOWED)  # a group chat, allowed by the user's id
-    assert len(out.downloads) == 1 and str(-4242) in state._sessions, out.texts
-    ok("a user id from TELEGRAM_ALLOWED_IDS is served, even in an unlisted group chat")
-
-    out = Outbox()
-    await send_photo(PAST_REPORTER, out)
-    assert len(out.downloads) == 1 and str(PAST_REPORTER) in state._sessions
-    ok("a chat that filed a Telegram case before is served")
-
-    out = Outbox()
-    await send_photo(1002, out, user_id=999)  # chat listed, user not
-    assert len(out.downloads) == 1
-    ok("a listed chat id is served whoever sends the message")
-
-
-async def check_stranger_refused(log: LogCapture) -> None:
+async def check_not_connected(log: LogCapture) -> None:
+    print("who may use the bot")
+    assert not hasattr(settings, "telegram_allowed_ids")
+    assert not any(hasattr(tg, name) for name in ("_staff_only", "_allowed_ids", "_load_allowed_ids", "REFUSAL_TEXT"))
     out = Outbox()
     secret = "my plate is SECRET123"
     before = len(cases_for(STRANGER))
-    with mock.patch.object(tg, "build_draft", side_effect=AssertionError("AI called for a stranger")):
+    with mock.patch.object(tg, "build_draft", side_effect=AssertionError("AI called for someone not connected")):
         await send_photo(STRANGER, out)
         await send_text(STRANGER, out, secret)
         await tg.handle_callback(tap(STRANGER, out), None)
-        await tg.start(message_update(STRANGER, out, text="/start"), None)
-    assert out.texts == [tg.REFUSAL_TEXT], out.texts
+        await tg.handle_document(message_update(STRANGER, out, document=FakeDocument(out, "image/png", "scan.png")), None)
+        await tg.cancel_command(message_update(STRANGER, out, text="/cancel"), None)
+    assert len(out.texts) == 1 and "connect" in out.texts[0].lower(), out.texts
+    assert f"{BASE}/settings#my-telegram" in out.texts[0], out.texts[0]
     assert out.downloads == [] and str(STRANGER) not in state._sessions
-    assert str(STRANGER) not in tg._chat_locks
     assert len(cases_for(STRANGER)) == before
-    refused = [m for m in log.messages() if "Refused" in m]
-    assert len(refused) == 1 and str(STRANGER) in refused[0], refused
+    told = [m for m in log.messages() if "connect first" in m]
+    assert len(told) == 1 and str(STRANGER) in told[0], told
     assert not any("SECRET123" in r.getMessage() for r in log.records)
-    ok("a stranger gets one refusal, no download, no session, no AI, no case; ids logged, not the text")
+    ok("not connected: one 'connect first' with the Settings link; no download, session, AI or case; ids logged, not the text")
 
-    tg._refused_at[str(STRANGER)] -= tg.REFUSAL_EVERY_SECONDS + 1
+    await tg.start(message_update(STRANGER, out, text="/start"), None)
+    await tg.help_command(message_update(STRANGER, out, text="/help"), None)
+    assert len(out.texts) == 3 and all(f"{BASE}/settings#my-telegram" in t for t in out.texts[1:]), out.texts
+    assert str(STRANGER) not in state._sessions
+    ok("/start and /help always answer, with how to connect")
+
+    tg._told_at[f"connect:{STRANGER}"] -= tg.REPLY_EVERY_SECONDS + 1
     await send_text(STRANGER, out, "hello?")
-    assert out.texts == [tg.REFUSAL_TEXT] * 2
-    ok("refused again only once the hour has passed")
+    assert len(out.texts) == 4 and "connect" in out.texts[-1].lower()
+    ok("told again only once the hour has passed")
+
+    add_case(str(PAST_REPORTER), "telegram")
+    await tg._post_init(SimpleNamespace(bot=mock.AsyncMock()))
+    out = Outbox()
+    await send_photo(PAST_REPORTER, out)
+    assert out.downloads == [] and "connect" in out.texts[-1].lower() and str(PAST_REPORTER) not in state._sessions
+    ok("no allow-list: a chat that filed a case before P5 isn't served until it connects")
+
+
+async def check_group_chat() -> None:
+    out = Outbox()
+    for _ in range(2):
+        await send_photo(-4242, out, user_id=ANN_TG, chat_type="group")
+        await send_text(-4242, out, "rear-ended at PIE", user_id=ANN_TG, chat_type="supergroup")
+    await tg.link_command(message_update(-4242, out, ANN_TG, "group", text="/link ABCD-2345"), SimpleNamespace(args=["ABCD-2345"]))
+    group_tap = tap(-4242, out, user_id=ANN_TG, chat_type="group")
+    await tg.handle_callback(group_tap, None)
+    assert len(out.texts) == 1 and "private chat" in out.texts[0], out.texts
+    assert out.downloads == [] and "-4242" not in state._sessions and "-4242" not in tg._chat_locks
+    assert group_tap.callback_query.answers == [None]
+    ok("a group chat, even from a connected person: one 'private chat only' an hour; no download, session or lock")
+
+
+async def check_link_ends_mid_draft() -> None:
+    out = Outbox()
+    session = await ready_to_confirm(ANN_TG, out)
+    temp = list(session.photo_paths)
+    unlink_tg(ANN_TG)
+    before = len(cases_for(ANN_TG))
+    await tg.handle_callback(tap(ANN_TG, out), None)
+    assert len(cases_for(ANN_TG)) == before
+    assert "connect" in out.texts[-1].lower(), out.texts[-1]
+    assert str(ANN_TG) not in state._sessions and not any(Path(p).exists() for p in temp)
+    link_tg(P.ann, ANN_TG)
+    ok("the link ends mid-draft: Confirm files nothing; the draft and its photos are thrown away")
+
+    session = await ready_to_confirm(BEN_TG, out)
+    temp = list(session.photo_paths)
+    relink_tg(BEN_TG, P.cal)
+    before = len(cases_for(BEN_TG))
+    await tg.handle_callback(tap(BEN_TG, out), None)
+    assert len(cases_for(BEN_TG)) == before
+    assert "discarded" in out.texts[-1] and "Cal Ong (@cal)" in out.texts[-1], out.texts[-1]
+    fresh = state.get_session(str(BEN_TG))
+    assert fresh.draft is None and fresh.photo_paths == [] and fresh.carlink_user_id == P.cal
+    assert not any(Path(p).exists() for p in temp)
+    relink_tg(BEN_TG, P.ben)
+    state.reset_session(str(BEN_TG))
+    ok("connected to another account mid-draft: the old draft and its photos are thrown away, not filed as the new one")
+
+
+# --- linking -------------------------------------------------------------------
+
+def code_row(user_id: str) -> ChatLinkCode | None:
+    db = SessionLocal()
+    try:
+        return db.query(ChatLinkCode).filter(ChatLinkCode.user_id == user_id).order_by(ChatLinkCode.created_at.desc()).first()
+    finally:
+        db.close()
+
+
+async def check_linking() -> None:
+    print("linking")
+    wrong_codes.reset()
+    dot_tg = 2001
+    code = make_code(P.dot)
+    out = Outbox()
+    for words in ("SJB8762M", "STANDARD", "GBH 2345 K", "sjb8-762"):
+        await send_text(dot_tg, out, words)
+    assert len(out.texts) == 1 and "connect" in out.texts[0].lower(), out.texts
+    await send_text(dot_tg, out, code, forwarded=True)
+    assert len(out.texts) == 1, out.texts[-1]  # just more text from someone not connected
+    forwarded_link = message_update(dot_tg, out, text=f"/link {code}", forwarded=True)
+    await tg.link_command(forwarded_link, SimpleNamespace(args=[code]))
+    assert "forwarded" in out.texts[-1] and not out.buttons(), out.texts[-1]
+    assert code_row(P.dot).waiting_since is None
+    ok("plates and words aren't codes; a code in a forwarded message (bare or /link) is ignored")
+
+    for _ in range(4):
+        await command(tg.link_command, dot_tg, out, "ZZZZ-ZZZZ")
+    assert "1 try left" in out.texts[-1], out.texts[-1]
+    await send_text(dot_tg, out, code)
+    prompt = out.texts[-1]
+    assert "Connect this Telegram to <b>@dot (Dot Lee)</b>, d***@example.com?" in prompt, prompt
+    assert tg.UNVETTED_WARNING in prompt  # Dot has no ticks
+    assert "If someone sent you this code, tap Cancel" in prompt
+    old_buttons = out.buttons()
+    assert set(old_buttons) == {"✅ Yes, that's me", "Cancel"}, old_buttons
+    assert not any(code.replace("-", "") in (data or "") or code in (data or "") for data in old_buttons.values())
+    ok("4 wrong then a bare code: the prompt names @username (Name) and the masked email, says the account is "
+       "unchecked; the code isn't in the buttons")
+
+    await command(tg.start, dot_tg, out, f"link-{code.replace('-', '')}")
+    new_buttons = out.buttons()
+    assert "Connect this Telegram to <b>@dot (Dot Lee)" in out.texts[-1] and new_buttons != old_buttons
+    stale = tap(dot_tg, out, old_buttons["✅ Yes, that's me"])
+    await tg.handle_callback(stale, None)
+    assert out.texts[-1] == tg.PROMPT_EXPIRED and stale.callback_query.buttons_removed
+    assert code_row(P.dot).waiting_since is None
+    ok("the deep link prompts too; [Yes] on the older prompt does nothing")
+
+    await tg.handle_callback(tap(dot_tg, out, new_buttons["✅ Yes, that's me"]), None)
+    assert out.texts[-1].startswith("Almost done: confirm in Carlink → Settings → My Telegram"), out.texts[-1]
+    row = code_row(P.dot)
+    assert row.waiting_since is not None and row.used_by_external_id == str(dot_tg)
+    assert row.used_by_username == f"tg{dot_tg}" and row.used_by_name == f"Phone {dot_tg}"
+    await command(tg.whoami_command, dot_tg, out)
+    assert out.texts[-1].startswith("Not connected"), out.texts[-1]
+    ok("[Yes]: 'Almost done', the code waits for Carlink with the Telegram's id and names; not connected yet")
+
+    db = SessionLocal()
+    try:
+        confirm_from_web(db, db.get(User, P.dot), True)
+        db.commit()
+    finally:
+        db.close()
+    await command(tg.whoami_command, dot_tg, out)
+    assert out.texts[-1].startswith("Connected as Dot Lee (@dot)."), out.texts[-1]
+    eve_code = make_code(P.eve)
+    await send_text(dot_tg, out, eve_code)
+    assert "photo" in out.texts[-1] and not out.buttons(), out.texts[-1]
+    said = len(out.texts)
+    await command(tg.link_command, dot_tg, out, eve_code)  # within 5 s of /whoami, from an unvetted account
+    assert len(out.texts) == said, out.texts[-1]
+    tg._told_at[f"command:{dot_tg}"] -= tg.COMMAND_EVERY_SECONDS
+    await command(tg.link_command, dot_tg, out, eve_code)
+    assert "already connected to Dot Lee (@dot)" in out.texts[-1] and "/unlink" in out.texts[-1]
+    assert code_row(P.eve).waiting_since is None
+    ok("once connected (web side too): /whoami names the account; another code is refused (not within 5 s of the "
+       "last command: Dot is unvetted), a bare one is just text")
+
+    await send_photo(dot_tg, out)  # Dot has no AI: nothing downloaded, but a session exists
+    await command(tg.unlink_command, dot_tg, out)
+    assert out.texts[-1].startswith("Disconnected: this Telegram no longer files reports as Dot Lee (@dot)."), out.texts[-1]
+    assert str(dot_tg) not in state._sessions
+    db = SessionLocal()
+    try:
+        assert db.query(ChatLink).filter(ChatLink.external_id == str(dot_tg)).count() == 0
+        last = db.query(AuditEntry).filter(AuditEntry.action == "telegram_unlinked").order_by(AuditEntry.id.desc()).first()
+        assert last.user_id == P.dot and "/unlink" in last.detail, (last.user_id, last.detail)
+    finally:
+        db.close()
+    await command(tg.unlink_command, dot_tg, out)
+    assert out.texts[-1] == "This Telegram isn't connected to a Carlink account."
+    ok("/unlink: 'Disconnected', the link gone with a history entry, the chat's session dropped")
+
+    # A bare code from a Telegram with a draft still open (its link ended
+    # mid-draft) is part of that draft, not a code.
+    out = Outbox()
+    link_tg(P.eve, 2002)
+    db = SessionLocal()
+    try:
+        db.query(User).filter(User.id == P.eve).update({"ai_company_key_allowed": True})
+        db.commit()
+    finally:
+        db.close()
+    await send_photo(2002, out)
+    unlink_tg(2002)
+    fresh_code = make_code(P.eve)
+    await send_text(2002, out, fresh_code)
+    assert not out.buttons() and "connect" in out.texts[-1].lower(), out.texts[-1]
+    await send_text(2002, out, fresh_code)
+    assert "Connect this Telegram to <b>@eve (Eve Sim)" in out.texts[-1], out.texts[-1]
+    await tg.handle_callback(tap(2002, out, out.buttons()["Cancel"]), None)
+    assert out.texts[-1] == tg.LINK_CANCELLED and code_row(P.eve).waiting_since is None
+    ok("a bare code isn't taken while a draft is open; [Cancel] connects nothing")
+
+
+# --- filing ---------------------------------------------------------------------
+
+async def check_drafting_as_the_person() -> None:
+    print("filing")
+    out = Outbox()
+    state.reset_session(str(ANN_TG))
+    await ready_to_confirm(ANN_TG, out)
+    assert ACTORS[-1] == AiActor.for_user(P.ann, "telegram"), ACTORS[-1]
+    assert out.texts[-1].startswith("👤 Filing as @ann (Ann Lim)\n\nDraft summary"), out.texts[-1]
+    ok("drafting runs on the linked person's AI (AiActor.for_user), and the summary starts 'Filing as Name'")
+
+    out = Outbox()
+    for _ in range(3):  # an album
+        await send_photo(HANA_TG, out)
+    assert out.downloads == [] and len(out.texts) == 1, out.texts
+    assert out.texts[0].startswith("AI is off for your account – add your key in Carlink → Settings → My AI key")
+    assert f"{BASE}/settings#my-ai-key" in out.texts[0]
+    assert state.get_session(str(HANA_TG)).photo_paths == []
+    ok("AI off for the person: one plain 'add your key' message for an album, nothing downloaded")
 
 
 async def check_one_confirm() -> None:
     out = Outbox()
-    chat = 1001
+    chat = ANN_TG
+    state.reset_session(str(chat))
     session = await ready_to_confirm(chat, out, photos=2)
     temp_files = list(session.photo_paths)
     assert all(re.fullmatch(r"tg-[0-9a-f]{32}\.jpg", Path(p).name) for p in temp_files), temp_files
     assert all(Path(p).parent == tmp_dir() for p in temp_files)
     ok("temp photos are named storage/tmp/tg-<uuid4 hex>.jpg")
 
-    query_update = tap(chat, out)
-    await tg.handle_callback(query_update, None)
-    cases = cases_for(chat)
-    assert len(cases) == 1, cases
-    assert len(out.documents) == 1 and out.documents[0][1].startswith(b"%PDF")
-    assert out.documents[0][0] == f"CIR_{cases[0].id[:8].upper()}.pdf"
-    assert any("finalized and saved" in t for t in out.texts)
-    assert len(cases[0].photo_paths) == 2 and all(Path(p).exists() for p in cases[0].photo_paths)
-    ok("one Confirm saves exactly one case and sends its PDF")
+    earlier = {r.id for r in cases_for(chat)}
+    RENDERS.clear()
+    await tg.handle_callback(tap(chat, out), None)
+    new = [r for r in cases_for(chat) if r.id not in earlier]
+    assert len(new) == 1, new
+    case = new[0]
+    assert case.owner_id == P.ann and case.channel == "telegram" and case.reporter_chat_id == str(ANN_TG)
+    db = SessionLocal()
+    try:
+        history = [(e.action, e.user_id, e.user_name, e.detail) for e in db.query(AuditEntry).filter(AuditEntry.report_id == case.id)]
+    finally:
+        db.close()
+    assert history == [("created", P.ann, "Ann Lim (@ann)", "Filed through the Telegram bot")], history
+    assert out.documents == []
+    assert "saved to your cases" in out.texts[-1] and f"\n{BASE}/reports/{case.id}\n" in out.texts[-1], out.texts[-1]
+    assert len(case.photo_paths) == 2 and all(Path(p).exists() for p in case.photo_paths)
+    assert case.pdf_path and Path(case.pdf_path).exists() and RENDERS == [True]
+    ok("one Confirm saves one case as Ann's ('created - Filed through the Telegram bot' by her) and replies "
+       "with its link, no PDF file; her PDF has the unverified banner")
 
     assert not any(Path(p).exists() for p in temp_files), [p for p in temp_files if Path(p).exists()]
     fresh = state.get_session(str(chat))
@@ -294,14 +587,16 @@ async def check_one_confirm() -> None:
 async def check_double_confirm() -> None:
     global RENDER_SECONDS
     out = Outbox()
-    chat = 1002
+    chat = BEN_TG
     state.reset_session(str(chat))
     await ready_to_confirm(chat, out)
+    RENDERS.clear()
     first, second = tap(chat, out), tap(chat, out)
     await asyncio.gather(tg.handle_callback(first, None), tg.handle_callback(second, None))
     assert len(cases_for(chat)) == 1, cases_for(chat)
-    assert len(out.documents) == 1
+    assert sum("saved to your cases" in t for t in out.texts) == 1
     assert second.callback_query.answers == ["Already saving this report -- one moment."], second.callback_query.answers
+    assert RENDERS == [False]  # Ben may sign off: no unverified banner
     ok("two concurrent Confirm taps save one case; the second is just answered")
 
     # A tap that comes while the first one is rendering the PDF.
@@ -331,11 +626,11 @@ async def check_double_confirm() -> None:
 
 async def check_failed_save_can_retry() -> None:
     out = Outbox()
-    chat = PAST_REPORTER
+    chat = ANN_TG
     state.reset_session(str(chat))
     await ready_to_confirm(chat, out)
-    before = len(cases_for(chat))
-    with mock.patch.object(tg, "SessionLocal", side_effect=RuntimeError("disk full")):
+    before, folders = len(cases_for(chat)), incident_dirs()
+    with mock.patch.object(tg, "audit", side_effect=RuntimeError("disk full")):
         try:
             await tg.handle_callback(tap(chat, out), None)
             raise AssertionError("save error was swallowed")
@@ -344,14 +639,329 @@ async def check_failed_save_can_retry() -> None:
     session = state.get_session(str(chat))
     assert not session.finalizing and session.draft is not None
     assert all(Path(p).exists() for p in session.photo_paths)
+    assert len(cases_for(chat)) == before and incident_dirs() == folders
     await tg.handle_callback(tap(chat, out), None)
     assert len(cases_for(chat)) == before + 1
-    ok("a save that fails clears the flag and keeps the draft and photos, so a retry works")
+    ok("a save that fails leaves no case or files behind, clears the flag and keeps the draft, so a retry works")
+
+
+async def check_confirm_rechecks() -> None:
+    out = Outbox()
+    chat = URI_TG
+    for _ in range(limits.MAX_NEW_CASES_PER_DAY):
+        add_case("dashboard", "manual", owner_id=P.uri)
+    # AI on for him here: the cap is what's being checked.
+    with mock.patch.object(tg, "ensure_ai_ready", lambda actor: None):
+        await ready_to_confirm(chat, out)
+    assert out.texts[-1].startswith(f"👤 Filing as @uri (Uri Goh)\n{tg.UNVETTED_WARNING}\n\n"), out.texts[-1]
+    before, folders = len(cases_for(chat)), incident_dirs()
+    await tg.handle_callback(tap(chat, out), None)
+    assert len(cases_for(chat)) == before and incident_dirs() == folders
+    assert f"{limits.MAX_NEW_CASES_PER_DAY} cases in the last 24 hours" in out.texts[-1], out.texts[-1]
+    assert state.get_session(str(chat)).draft is not None
+    ok("an account without staff ticks past its daily case cap: told so, nothing saved, the draft kept")
+
+    out = Outbox()
+    session = await ready_to_confirm(ANN_TG, out)
+    temp = list(session.photo_paths)
+    before, folders = len(cases_for(ANN_TG)), incident_dirs()
+    DURING_RENDER.append(lambda: unlink_tg(ANN_TG))
+    await tg.handle_callback(tap(ANN_TG, out), None)
+    assert len(cases_for(ANN_TG)) == before and incident_dirs() == folders
+    assert out.texts[-1] == tg.NO_LONGER_CONNECTED, out.texts[-1]
+    assert str(ANN_TG) not in state._sessions and not any(Path(p).exists() for p in temp)
+    link_tg(P.ann, ANN_TG)
+    ok("the link ends while the PDF renders: nothing filed, the case's files removed, the draft dropped")
+
+
+# --- the P5 review's fixes -------------------------------------------------------
+
+def telegram_status(user_id: str) -> dict:
+    db = SessionLocal()
+    try:
+        return chat_links.telegram_status(db, user_id)
+    finally:
+        db.close()
+
+
+def web_confirm(user_id: str) -> str:
+    """Settings' [Yes, connect]: "linked", or the refusal's code."""
+    db = SessionLocal()
+    try:
+        try:
+            chat_links.confirm_from_web(db, db.get(User, user_id), True)
+            return "linked"
+        except chat_links.ChatLinkError as exc:
+            return exc.code
+        finally:
+            db.commit()
+    finally:
+        db.close()
+
+
+async def say_yes(tg_id: int, out: Outbox) -> None:
+    await tg.handle_callback(tap(tg_id, out, out.buttons()["✅ Yes, that's me"]), None)
+
+
+async def check_names() -> None:
+    clean = chat_links.clean_name
+    assert clean("＠weikang (Wei Kang)") == "weikang (Wei Kang)"
+    assert clean("﹫Ada​ T") == "Ada T"
+    assert clean("ｗｅｉ‮kang") == "weikang"
+    assert clean("Tom @ Work") == "Tom Work"
+    assert chat_links.telegram_label("ada_tg", "Ada T") == "@ada_tg · Ada T"
+    assert chat_links.telegram_label(None, "＠weikang (Wei Kang)") == "no @username · weikang (Wei Kang)"
+    assert chat_links.telegram_label("ada_tg", None) == "@ada_tg"
+    assert chat_links.telegram_label(None, None) == "a Telegram account"
+    ok("M1: names are NFKC-normalised and lose every @-like and invisible character; a label keeps @username "
+       "and name apart")
+
+    zed = make_user("Zed‮ Ong＠", "zed")
+    out = Outbox()
+    await command(tg.link_command, 3001, out, make_code(zed))
+    assert "Connect this Telegram to <b>@zed (Zed Ong)</b>" in out.texts[-1], out.texts[-1]
+    await tg.handle_callback(tap(3001, out, out.buttons()["Cancel"]), None)
+    await command(tg.link_command, 3002, out, make_code(P.ann))
+    assert "Connect this Telegram to <b>@ann (Ann Lim)</b>" in out.texts[-1], out.texts[-1]
+    assert tg.UNVETTED_WARNING not in out.texts[-1]
+    await tg.handle_callback(tap(3002, out, out.buttons()["Cancel"]), None)
+    ok("L6/M2: the account in the prompt is cleaned too, @username first; no warning for a ticked account")
+
+
+async def check_contested_code() -> None:
+    victim = make_user("Wei Kang", "weikang")
+    flat = make_code(victim).replace("-", "")
+    look_alike = "＠weikang (Wei Kang)"
+    SENDERS[9001] = SimpleNamespace(id=9001, username=None, full_name=look_alike, first_name=look_alike)
+    attacker, owner = Outbox(), Outbox()
+    await command(tg.start, 9001, attacker, f"link-{flat}")
+    await say_yes(9001, attacker)
+    row = code_row(victim)
+    assert row.used_by_external_id == "9001" and row.used_by_username is None and row.used_by_name == "weikang (Wei Kang)"
+    waiting = telegram_status(victim)["code"]["waiting"]
+    assert waiting == {"username": None, "name": "weikang (Wei Kang)"}, waiting
+    ok("M1: a look-alike first name is stored without its ＠, and with no @username")
+
+    await command(tg.start, 9002, owner, f"link-{flat}")
+    assert owner.texts[-1] == tg.CODE_CONTESTED and not owner.buttons(), owner.texts[-1]
+    assert code_row(victim).revoked_at is not None and telegram_status(victim)["code"] is None
+    assert web_confirm(victim) == "nothing_waiting"
+    db = SessionLocal()
+    try:
+        entry = (db.query(AuditEntry).filter(AuditEntry.action == "telegram_code_contested")
+                 .order_by(AuditEntry.id.desc()).first())
+    finally:
+        db.close()
+    assert entry and "weikang@example.com" in entry.detail and "9002" in entry.detail, entry and entry.detail
+    assert "Telegram no @username · weikang (Wei Kang), id 9001" in entry.detail, entry.detail
+    for _ in range(4):
+        await command(tg.link_command, 9002, owner, "ZZZZ-ZZZZ")
+    assert "1 try left" in owner.texts[-1], owner.texts[-1]
+    ok("M1: the code then sent from another Telegram is cancelled (history entry; Settings shows nothing "
+       "waiting and can't connect), and that isn't counted as a wrong code")
+
+    code = make_code(victim)
+    out = Outbox()
+    await command(tg.link_command, 9003, out, code)
+    await say_yes(9003, out)
+    await command(tg.link_command, 9003, out, code)
+    assert "didn't work" in out.texts[-1] and code_row(victim).revoked_at is None, out.texts[-1]
+    db = SessionLocal()
+    try:
+        assert chat_links.contest_code(db, code, 9003) is False
+        assert chat_links.contest_code(db, code, 9004) is True
+        db.commit()
+    finally:
+        db.close()
+    ok("M1: the Telegram that said Yes sending it again cancels nothing; contest_code needs a different Telegram")
+
+
+async def check_wrong_count_resets_on_yes() -> None:
+    wrong_codes.reset()
+    gil = make_user("Gil Tan", "gil")
+    out = Outbox()
+    for _ in range(4):
+        await command(tg.link_command, 3100, out, "ZZZZ-ZZZZ")
+    await command(tg.link_command, 3100, out, make_code(gil))
+    assert "Connect this Telegram" in out.texts[-1], out.texts[-1]
+    await command(tg.link_command, 3100, out, "ZZZZ-ZZZZ")
+    assert out.texts[-1].startswith("Too many wrong codes"), out.texts[-1]
+    ok("L1: a good code shown in between doesn't reset the count: the 5th wrong one still blocks")
+
+    hal = make_user("Hal Lim", "hal")
+    out = Outbox()
+    for _ in range(4):
+        await command(tg.link_command, 3101, out, "ZZZZ-ZZZZ")
+    await command(tg.link_command, 3101, out, make_code(hal))
+    await say_yes(3101, out)
+    assert out.texts[-1].startswith("Almost done"), out.texts[-1]
+    for _ in range(4):
+        await command(tg.link_command, 3101, out, "ZZZZ-ZZZZ")
+    assert "1 try left" in out.texts[-1], out.texts[-1]
+    ok("L1: a Yes that goes through starts the count again")
+
+
+async def check_withdraw_yes() -> None:
+    fay = make_user("Fay Ng", "fay")
+    out = Outbox()
+    await command(tg.link_command, 3200, out, make_code(fay))
+    await say_yes(3200, out)
+    await command(tg.unlink_command, 3200, out)
+    assert out.texts[-1] == "This Telegram isn't connected to a Carlink account.\n" + tg.YES_WITHDRAWN, out.texts[-1]
+    assert code_row(fay).revoked_at is not None and web_confirm(fay) == "nothing_waiting"
+    ok("L2: /unlink takes back a Yes still waiting for Carlink")
+
+    await command(tg.link_command, 3200, out, make_code(fay))
+    await say_yes(3200, out)
+    kim = make_user("Kim Wu", "kimwu")
+    other = make_code(kim)
+    await command(tg.link_command, 3200, out, other)
+    older = out.buttons()
+    await command(tg.link_command, 3200, out, other)
+    await tg.handle_callback(tap(3200, out, older["Cancel"]), None)  # the older prompt's [Cancel]
+    assert out.texts[-1] == f"{tg.LINK_CANCELLED} {tg.YES_WITHDRAWN}", out.texts[-1]
+    assert code_row(fay).revoked_at is not None and web_confirm(fay) == "nothing_waiting"
+    assert code_row(kim).revoked_at is None and code_row(kim).waiting_since is None
+    ok("L2: [Cancel], even on an older prompt, takes it back too; the code the prompt was about stays open")
+
+
+async def check_save_takes_the_lock_first() -> None:
+    seen = []
+    real = tg._may_file
+
+    def spy(db, external_id, user_id):
+        drafts = db.query(Report.id).filter(Report.reporter_chat_id == str(external_id), Report.status == "intake").count()
+        other = sqlite3.connect(str(Path(_tmp, "test.db")), timeout=0, isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            locked = False
+        except sqlite3.OperationalError:
+            locked = True
+        finally:
+            other.close()
+        seen.append((drafts, locked))
+        return real(db, external_id, user_id)
+
+    out = Outbox()
+    state.reset_session(str(ANN_TG))
+    await ready_to_confirm(ANN_TG, out)
+    with mock.patch.object(tg, "_may_file", spy):
+        await tg.handle_callback(tap(ANN_TG, out), None)
+    assert seen == [(0, False), (1, True)], seen
+    assert "saved to your cases" in out.texts[-1], out.texts[-1]
+    ok("L3: the case row goes in first (as a draft), so the last check of the link and the cap holds SQLite's "
+       "write lock until the commit")
+
+    ivy = make_user("Ivy Tay", "ivy")
+    link_tg(ivy, 3300)
+    for _ in range(limits.MAX_NEW_CASES_PER_DAY - 1):
+        add_case("dashboard", "manual", owner_id=ivy)
+    out = Outbox()
+    with mock.patch.object(tg, "ensure_ai_ready", lambda actor: None):
+        await ready_to_confirm(3300, out)
+        await tg.handle_callback(tap(3300, out), None)
+        assert "saved to your cases" in out.texts[-1], out.texts[-1]
+        await ready_to_confirm(3300, out)
+        await tg.handle_callback(tap(3300, out), None)
+    assert f"{limits.MAX_NEW_CASES_PER_DAY} cases in the last 24 hours" in out.texts[-1], out.texts[-1]
+    ok("L3: the day's last allowed case is still filed (the cap counts the cases before it); the next isn't")
+
+
+async def check_save_guards() -> None:
+    for chat, staff in ((ANN_TG, False), (BEN_TG, True)):
+        out = Outbox()
+        state.reset_session(str(chat))
+        session = await ready_to_confirm(chat, out)
+        session.draft.report_id = "CL-12345"
+        session.draft.sign_off = SignOffInfo(status="Signed Off", prepared_by="Mallory", approved_by="Mallory")
+        earlier = {r.id for r in cases_for(chat)}
+        await tg.handle_callback(tap(chat, out), None)
+        case = next(r for r in cases_for(chat) if r.id not in earlier)
+        assert case.data["sign_off"] == SignOffInfo().model_dump(), case.data["sign_off"]
+        assert case.data["report_id"] == ("CL-12345" if staff else None), case.data["report_id"]
+    ok("L4: a filed case is never signed off, and keeps an Our Ref only from staff (as POST /reports)")
+
+
+async def check_dashboard_limits() -> None:
+    with mock.patch.object(tg, "ensure_ai_ready", lambda actor: None):
+        limits.photo_uploads.reset()
+        out = Outbox()
+        state.reset_session(str(URI_TG))
+        assert limits.photo_uploads.take(P.uri, limits.PHOTOS_PER_HOUR - 1)
+        await send_photo(URI_TG, out)
+        await send_photo(URI_TG, out)
+        assert len(out.downloads) == 1 and out.texts[-1] == limits.PHOTO_LIMIT, out.texts[-1]
+        limits.photo_uploads.reset()
+        assert limits.photo_uploads.take(P.uri, limits.PHOTOS_PER_HOUR - 1)
+
+        async def broken():
+            raise RuntimeError("Telegram is down")
+
+        failing = message_update(URI_TG, out, photo=True)
+        failing.message.photo = [SimpleNamespace(get_file=broken)]
+        try:
+            await tg.handle_photo(failing, None)
+            raise AssertionError("the failed download was swallowed")
+        except RuntimeError:
+            pass
+        await send_photo(URI_TG, out)
+        assert len(out.downloads) == 2, out.texts[-1]
+        ok("L7: an unvetted account's photos count toward the dashboard's hourly budget (past it: refused, "
+           "unread); a failed download is given back")
+
+        assert limits.photo_uploads.take(P.ann, limits.PHOTOS_PER_HOUR)
+        out = Outbox()
+        state.reset_session(str(ANN_TG))
+        await send_photo(ANN_TG, out)
+        assert len(out.downloads) == 1
+        limits.photo_uploads.reset()
+        ok("L7: ...a ticked account has no photo budget")
+
+        out = Outbox()
+        state.reset_session(str(URI_TG))
+        await send_photo(URI_TG, out)
+        drafts = len(DRAFT_CALLS)
+        assert limits.ai_running.claim(P.uri)
+        try:
+            await send_text(URI_TG, out, "Scraped at the carpark")
+            assert out.texts[-1] == tg.STILL_DRAFTING and len(DRAFT_CALLS) == drafts, out.texts[-1]
+        finally:
+            limits.ai_running.release(P.uri)
+        await send_text(URI_TG, out, "Scraped at the carpark")
+        assert len(DRAFT_CALLS) == drafts + 1 and limits.ai_running.claim(P.uri)
+        limits.ai_running.release(P.uri)
+        assert limits.ai_running.claim(P.ann)
+        try:
+            out = Outbox()
+            state.reset_session(str(ANN_TG))
+            await ready_to_confirm(ANN_TG, out)
+        finally:
+            limits.ai_running.release(P.ann)
+        ok("L7: an unvetted account gets one AI request at a time ('still being drafted'), released afterwards; "
+           "a ticked one isn't held to it")
+
+    out = Outbox()
+    for _ in range(2):
+        await command(tg.whoami_command, URI_TG, out)
+    assert len(out.texts) == 1 and out.texts[0].startswith("Connected as Uri Goh (@uri)"), out.texts
+    await command(tg.help_command, URI_TG, out)
+    assert len(out.texts) == 1
+    tg._told_at[f"command:{URI_TG}"] -= tg.COMMAND_EVERY_SECONDS
+    await command(tg.help_command, URI_TG, out)
+    assert len(out.texts) == 2
+    ann, stranger = Outbox(), Outbox()
+    for _ in range(2):
+        await command(tg.whoami_command, ANN_TG, ann)
+        await command(tg.help_command, 3999, stranger)
+    assert len(ann.texts) == 2 and len(stranger.texts) == 2
+    ok("L7: an unvetted account's /start, /help, /whoami and /link get an answer at most every 5 s; ticked "
+       "accounts and people not connected aren't held back")
 
 
 async def check_handlers_share_the_lock() -> None:
     out = Outbox()
-    chat = 1001
+    chat = ANN_TG
     state.reset_session(str(chat))
     await send_photo(chat, out)
     temp = state.get_session(str(chat)).photo_paths[0]
@@ -361,12 +971,13 @@ async def check_handlers_share_the_lock() -> None:
         cancel = asyncio.create_task(tg.cancel_command(message_update(chat, out, text="/cancel"), None))
         # An unknown insurer button: takes the lock, then does nothing.
         button = asyncio.create_task(tg.handle_callback(tap(chat, out, data="ins_unknown"), None))
+        whoami = asyncio.create_task(tg.whoami_command(message_update(chat, out, text="/whoami"), None))
         await asyncio.sleep(0.05)
-        assert not cancel.done() and not button.done()
+        assert not cancel.done() and not button.done() and not whoami.done()
         assert Path(temp).exists() and state.get_session(str(chat)).photo_paths == [temp]
     finally:
         lock.release()
-    await asyncio.gather(cancel, button)
+    await asyncio.gather(cancel, button, whoami)
     assert not Path(temp).exists()
     ok("commands and button taps wait for the chat lock; /cancel deletes the draft's temp files")
 
@@ -379,7 +990,7 @@ async def check_handlers_share_the_lock() -> None:
 
 async def check_photo_limit() -> None:
     out = Outbox()
-    chat = 1001
+    chat = ANN_TG
     state.reset_session(str(chat))
     for _ in range(tg.MAX_PHOTOS_PER_DRAFT):
         await send_photo(chat, out)
@@ -406,7 +1017,7 @@ async def check_photo_limit() -> None:
 
 async def check_stale_draft() -> None:
     out = Outbox()
-    chat = 1002
+    chat = BEN_TG
     state.reset_session(str(chat))
     session = await ready_to_confirm(chat, out)
     temp = list(session.photo_paths)
@@ -444,13 +1055,13 @@ async def check_stale_draft() -> None:
     session = await ready_to_confirm(chat, out)
     session.last_active -= tg.SESSION_MAX_IDLE_SECONDS - 3600
     await tg.handle_callback(tap(chat, out), None)
-    assert any("finalized and saved" in t for t in out.texts[-2:])
+    assert any("saved to your cases" in t for t in out.texts[-2:])
     ok("a draft idle for under 24h still confirms")
 
 
 async def check_live_draft_keeps_photos() -> None:
     out = Outbox()
-    chat = 1002
+    chat = BEN_TG
     state.reset_session(str(chat))
     session = await ready_to_confirm(chat, out, photos=2)
     day_old = time.time() - 23 * 3600
@@ -465,7 +1076,7 @@ async def check_live_draft_keeps_photos() -> None:
 
 async def check_missing_temp_file() -> None:
     out = Outbox()
-    chat = 1001
+    chat = ANN_TG
     state.reset_session(str(chat))
     session = await ready_to_confirm(chat, out, photos=3)
     Path(session.photo_paths[1]).unlink()
@@ -496,8 +1107,8 @@ def check_new_messages_only() -> None:
     print("handler filters")
     app = tg.build_app()
     handlers = app.handlers[0]
-    user = User(id=ALLOWED, first_name="Tester", is_bot=False)
-    chat = Chat(id=ALLOWED, type="private")
+    user = TgUser(id=ANN_TG, first_name="Tester", is_bot=False)
+    chat = Chat(id=ANN_TG, type="private")
     now = datetime.now(timezone.utc)
 
     def message(**kw) -> Message:
@@ -506,9 +1117,15 @@ def check_new_messages_only() -> None:
         msg.set_bot(SimpleNamespace(username="carlink_test_bot"))
         return msg
 
+    def command_message(text: str) -> Message:
+        return message(text=text, entities=[MessageEntity(type="bot_command", offset=0, length=len(text.split()[0]))])
+
     samples = {
         "text": message(text="rear-ended at PIE"),
-        "command": message(text="/start", entities=[MessageEntity(type="bot_command", offset=0, length=6)]),
+        "command": command_message("/start"),
+        "/link": command_message("/link K7M4-QX9P"),
+        "/whoami": command_message("/whoami"),
+        "/unlink": command_message("/unlink"),
         "photo": message(photo=[PhotoSize(file_id="f", file_unique_id="u", width=10, height=10)]),
     }
     for name, msg in samples.items():
@@ -518,7 +1135,7 @@ def check_new_messages_only() -> None:
     channel = Chat(id=-100500, type="channel")
     post = Update(update_id=3, channel_post=message(chat=channel, text="news"))
     assert not any(h.check_update(post) for h in handlers), "channel post reached a handler"
-    ok("edited messages and channel posts reach no handler; new ones still do")
+    ok("edited messages and channel posts reach no handler; new ones (and the link commands) still do")
 
 
 async def run_async_checks() -> None:
@@ -528,13 +1145,16 @@ async def run_async_checks() -> None:
     with mock.patch.object(tg, "build_draft", fake_build_draft), \
             mock.patch.object(tg, "render_pdf", fake_render_pdf), \
             mock.patch.object(tg, "estimate_wait", lambda _key=None: 0.0):
-        await check_allow_list_load(log)
-        await check_allowed_users()
-        await check_stranger_refused(log)
+        await check_not_connected(log)
+        await check_group_chat()
+        await check_link_ends_mid_draft()
+        await check_linking()
+        await check_drafting_as_the_person()
         print("confirm")
         await check_one_confirm()
         await check_double_confirm()
         await check_failed_save_can_retry()
+        await check_confirm_rechecks()
         await check_handlers_share_the_lock()
         print("photos")
         await check_photo_limit()
@@ -542,10 +1162,19 @@ async def run_async_checks() -> None:
         await check_stale_draft()
         await check_live_draft_keeps_photos()
         await check_missing_temp_file()
+        print("review fixes")
+        await check_names()
+        await check_contested_code()
+        await check_wrong_count_resets_on_yes()
+        await check_withdraw_yes()
+        await check_save_takes_the_lock_first()
+        await check_save_guards()
+        await check_dashboard_limits()
 
 
 def main() -> int:
     init_db()
+    make_people()
     asyncio.run(run_async_checks())
     check_new_messages_only()
     print("\nALL TELEGRAM BOT CHECKS PASSED")

@@ -7316,3 +7316,326 @@ html:has(.intake-footer) {
   margin-top: 8px;
 }
 /* ---- end P4 AI uses your own key ---- */
+
+/* ==========================================================================
+   P5 TELEGRAM CONNECT: the My Telegram card on My settings
+   (MyTelegramCard.tsx), the Telegram column on Users, the Telegram row in
+   the Edit user dialog (EditUserDialog.tsx), the Telegram line in the
+   Disable dialog, and the bot's name on Company (CompanyClient.tsx). Theme
+   tokens only, so it follows dark and light mode.
+   ========================================================================== */
+
+/* My Telegram: the buttons under each state. */
+.tg-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.tg-actions:first-child {
+  margin-top: 0;
+}
+
+/* Code open: the code itself, big, and how long it has left. */
+.tg-code-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--border-hover);
+  background: var(--surface-hover);
+  text-align: center;
+}
+.tg-code-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.tg-code {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.2;
+  color: var(--text-primary);
+  /* One click selects all of it, for copying. */
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.tg-code-expiry {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.tg-steps {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.tg-steps strong {
+  color: var(--text-primary);
+}
+.tg-inline-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+/* "Only enter this code in your own Telegram..." */
+.tg-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.tg-warning svg {
+  color: var(--badge-amber-text);
+}
+
+/* Waiting: someone said yes in Telegram; yes or no here. */
+.tg-waiting {
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--accent-primary);
+  background: var(--surface-hover);
+}
+.tg-waiting-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+/* "Only tap Yes if this is the Telegram you just used..." */
+.tg-waiting-check {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* Who a Telegram is (TelegramWho.tsx): the @username and the name on
+   Telegram apart, never one label (security review M1). The @username in a
+   fixed-width font, so look-alike letters stand out. */
+.tg-who-rows {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card);
+}
+.tg-who-rows > div {
+  display: flex;
+  align-items: baseline;
+  gap: 4px 12px;
+  flex-wrap: wrap;
+}
+.tg-who-rows dt {
+  flex: 0 0 128px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.tg-who-rows dd {
+  flex: 1 1 160px;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.tg-who-username {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.tg-who-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tg-who-missing {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.tg-who-missing.warn {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--badge-amber-text);
+}
+.tg-who-inline {
+  overflow-wrap: anywhere;
+}
+.tg-who-inline .tg-who-username {
+  font-size: 12.5px;
+}
+.tg-who-sep,
+.tg-who-key {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Connected: who, since when, and [Disconnect]. */
+.tg-linked-row {
+  gap: 8px 10px;
+}
+.tg-linked-who {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.tg-linked-since {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+/* In red (.btn-secondary-modern's colour is !important). */
+.tg-linked-row .btn-secondary-modern.danger,
+.user-tg-row .btn-secondary-modern.danger {
+  color: var(--badge-red-text) !important;
+}
+
+/* Users: the Telegram column, "@ahhuat_sg" over the name on Telegram over
+   "since 12 Nov". Kept narrow so the table still fits the Settings column
+   at 1280 px; long ones are cut short (the tooltip has all of it). */
+.users-people-table .col-tg {
+  white-space: nowrap;
+}
+.users-tg-main,
+.users-tg-name {
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.users-tg-main {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.users-tg-main.none {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-tg-main.missing {
+  font-family: inherit;
+  font-style: italic;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.users-tg-name {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.users-tg-label {
+  display: none;
+  font-family: var(--font-sans);
+  font-style: normal;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+/* Between the full table and the small cards (P2: 640 px and under) the
+   card is too narrow for every column, and it clips what doesn't fit (the
+   "⋯" menu first). There the Telegram column goes, and the username shows
+   under the email instead. */
+.users-person-tg {
+  display: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+@container users-table (640px < width <= 830px) {
+  .users-people-table .col-tg {
+    display: none;
+  }
+  .users-person-tg {
+    display: block;
+  }
+}
+@container users-table (max-width: 640px) {
+  .users-tg-label {
+    display: inline;
+  }
+  .users-tg-main,
+  .users-tg-name {
+    max-width: none;
+  }
+  /* After the AI key at the end of the small card (P3 gives that order 1),
+     so the two sit side by side. */
+  .users-people-table .col-tg {
+    order: 1;
+    min-width: 0;
+  }
+}
+
+/* Edit user: the Telegram row and [Disconnect]. */
+.user-tg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.user-tg-who {
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.user-tg-who .user-ai-key-sub {
+  font-weight: 400;
+}
+
+/* Disable: the Telegram line under Also. */
+.settings-dialog-tg {
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* Company: the bot's @username. */
+.company-tg-bot {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.company-tg-bot:hover {
+  text-decoration: underline;
+}
+.company-tg-unknown {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+/* ---- end P5 telegram connect ---- */

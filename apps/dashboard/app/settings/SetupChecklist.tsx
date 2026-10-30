@@ -1,5 +1,5 @@
 import { CheckCircle2, Circle, ListChecks } from "lucide-react";
-import { aiKeyWorking, type CurrentUser, type MyAiKey } from "@/lib/api";
+import { aiKeyWorking, type CurrentUser, type MyAiKey, type MyTelegram } from "@/lib/api";
 
 /** One thing to set up on My settings. `href` is the card it's done on;
  * `action` the link's words (default "Add it"). */
@@ -10,7 +10,7 @@ export type SetupItem = { key: string; label: string; hint: string; done: boolea
  * Later releases add their own items here, reading the same state their
  * card shows ("Working" / "Not set up" / "Failing"):
  *   - "AI key" (P3): aiKeySetupItem below.
- *   - SLOT (P5): "Telegram" -> #my-telegram, done once connected. */
+ *   - "Telegram" (P5): telegramSetupItem below. */
 export function profileSetupItems(me: CurrentUser): SetupItem[] {
   const items: SetupItem[] = [
     {
@@ -59,6 +59,21 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
     hint: "Add your own Gemini key on My AI key, so the AI runs on it, or ask an admin to let you use the company key.",
     done,
     href: "#my-ai-key",
+  };
+}
+
+/** "Telegram" -> #my-telegram, done once connected. Left out while the
+ * company has no bot running (its @username isn't known yet): there would
+ * be nothing to connect to. */
+export function telegramSetupItem(tg: MyTelegram): SetupItem | null {
+  if (!tg.connected && !tg.bot_username) return null;
+  return {
+    key: "telegram",
+    label: "Connect your Telegram",
+    hint: "So you can file cases by sending photos to the Carlink bot on Telegram.",
+    done: tg.connected,
+    href: "#my-telegram",
+    action: "Connect",
   };
 }
 

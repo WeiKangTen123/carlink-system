@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { unstable_rethrow } from "next/navigation";
-import { Trash2 } from "lucide-react";
+import { Trash2, Unlink } from "lucide-react";
 import type { CaseCounts, UserAccount, UserRole, UserTicks } from "@/lib/api";
 import { USERNAME_HINT, formatSgtDay } from "@/lib/signup";
 import { aiKeyWord, maskedKey } from "./aiKeyWords";
+import { TelegramWho } from "./TelegramWho";
+import { telegramPlain } from "./telegramWords";
 
 export type EditUserDraft = {
   username: string;
@@ -161,20 +163,98 @@ function AiKeyRow({
   );
 }
 
+/** The Telegram row of the Edit dialog (release P5): the Telegram they
+ * connected, with [Disconnect], which acts at once after a confirm like
+ * [Remove their key]. Only they can connect one, from their own Settings. */
+function TelegramRow({
+  user,
+  isSelf,
+  disabled,
+  onDisconnect,
+}: {
+  user: UserAccount;
+  isSelf: boolean;
+  disabled: boolean;
+  onDisconnect: () => Promise<string | null>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const t = user.telegram ?? null;
+
+  const disconnect = async () => {
+    if (!t) return;
+    const whose = isSelf ? "your" : `${user.name && user.name !== user.username ? user.name : `@${user.username}`}'s`;
+    if (
+      !confirm(
+        `Disconnect ${whose} Telegram (${telegramPlain(t)})? The bot stops filing cases for ${isSelf ? "you" : "them"} at once. ${
+          isSelf ? "You" : "They"
+        } can connect again in Settings.`
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    let problem: string | null;
+    try {
+      problem = await onDisconnect();
+    } catch (err) {
+      // Next's redirects (signed out) go through; anything else is shown.
+      unstable_rethrow(err);
+      problem = "Couldn't reach Carlink just now. Check your connection and try again.";
+    }
+    setBusy(false);
+    if (problem) setError(problem);
+    else setDone(true);
+  };
+
+  return (
+    <div style={{ gridColumn: "1 / -1" }}>
+      <span className="detail-field-label">Telegram</span>
+      <div className="user-tg-row">
+        {t ? (
+          <span className="user-tg-who">
+            <TelegramWho t={t} variant="inline" />
+            {t.linked_at && <span className="user-ai-key-sub">{` · since ${formatSgtDay(t.linked_at)}`}</span>}
+          </span>
+        ) : (
+          <span style={{ minWidth: 0 }}>
+            {done ? "Disconnected. " : "Not connected. "}
+            <span className="user-ai-key-sub">
+              {isSelf ? "You connect it in My settings → My Telegram." : "Only they can connect it, in their own Settings."}
+            </span>
+          </span>
+        )}
+        {t && (
+          <button
+            type="button"
+            className="btn-secondary-modern users-action danger"
+            onClick={() => void disconnect()}
+            disabled={disabled || busy}
+          >
+            <Unlink style={{ width: 12, height: 12 }} /> {busy ? "Disconnecting…" : "Disconnect"}
+          </button>
+        )}
+      </div>
+      {error && <div className="setup-error" style={{ margin: "8px 0 0" }}>{error}</div>}
+    </div>
+  );
+}
+
 /** Settings -> Users -> Edit. On your own account the role can't change
  * (the API refuses it too, 403 not_allowed), so the role choice is greyed
  * out with a note.
  *
- * The AI key row's [Remove their key] acts at once after a confirm, between
- * Access and Cases (agent5 §9 layout); Save covers the rest.
- * SLOT (P5): a "Telegram" row with [Disconnect], working the same way,
- * after the AI key row. */
+ * The AI key row's [Remove their key] and the Telegram row's [Disconnect]
+ * act at once after a confirm, between Access and Cases (agent5 §9
+ * layout); Save covers the rest. */
 export function EditUserDialog({
   user,
   isSelf,
   onCancel,
   onSubmit,
   onRemoveAiKey,
+  onDisconnectTelegram,
 }: {
   user: UserAccount;
   isSelf: boolean;
@@ -182,6 +262,8 @@ export function EditUserDialog({
   onSubmit: (draft: EditUserDraft) => Promise<string | null>;
   /** DELETE /users/{id}/ai-key, then the dialog's `user` is read again. */
   onRemoveAiKey: () => Promise<string | null>;
+  /** DELETE /users/{id}/telegram, then the dialog's `user` is read again. */
+  onDisconnectTelegram: () => Promise<string | null>;
 }) {
   const initial = draftOf(user);
   const [draft, setDraft] = useState<EditUserDraft>(initial);
@@ -290,6 +372,7 @@ export function EditUserDialog({
             )}
           </div>
           <AiKeyRow user={user} isSelf={isSelf} disabled={saving} onRemove={onRemoveAiKey} />
+          <TelegramRow user={user} isSelf={isSelf} disabled={saving} onDisconnect={onDisconnectTelegram} />
           <div style={{ gridColumn: "1 / -1" }}>
             <span className="detail-field-label">Cases</span>
             <div style={{ fontSize: 13, marginTop: 6 }}>

@@ -7,6 +7,7 @@ import { updateSettingsAction } from "./actions";
 import { AiKeyStorageStatus, type AiKeyStorageView } from "./AiKeyStorageStatus";
 import { CompanyAiKeysCard } from "./CompanyAiKeysCard";
 import { SetupCard } from "./SetupCard";
+import { botHandle, botUrl } from "./telegramWords";
 
 /** Only the facts this page actually displays. Deliberately not the full
  * SystemInfo -- see the note in company/page.tsx about not shipping
@@ -19,6 +20,10 @@ export interface SetupStatus {
   whatsappReports: number;
   /** Whether people's own AI keys can be read here; null when unknown. */
   aiKeyStorage: AiKeyStorageView | null;
+  /** The bot's @username (without the @), once the bot has started. */
+  telegramBotUsername: string | null;
+  /** How many accounts have connected their Telegram; null when unknown. */
+  telegramAccountsConnected: number | null;
 }
 
 /** Report branding, saved on its own (there is no page-wide save bar: each
@@ -89,19 +94,23 @@ function BrandingCard({ initial }: { initial: AppSettings }) {
 /** Settings -> Company (admins): whether people's own AI keys can be read,
  * the company AI key, the Telegram bot, WhatsApp and report branding. */
 export function CompanyClient({ settings, setup }: { settings: AppSettings; setup: SetupStatus }) {
+  const bot = botHandle(setup.telegramBotUsername);
+  const botLink = botUrl(setup.telegramBotUsername);
+  const connected = setup.telegramAccountsConnected;
+
   return (
     <>
       <AiKeyStorageStatus storage={setup.aiKeyStorage} />
 
       <CompanyAiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 
-      {/* SLOT (P5): bot name and "accounts connected" from GET /system/info
-          go in this card. */}
+      {/* The bot's name and how many accounts are connected (release P5,
+          GET /system/info). */}
       <SetupCard
         id="telegram-bot"
         icon={<Send style={{ width: 22, height: 22, color: "var(--accent-cyan)" }} />}
         title="Telegram bot (company)"
-        subtitle="Lets people file incident reports by chat"
+        subtitle="People file cases by chat once they connect their Telegram in My settings"
         helpUrl="https://t.me/BotFather"
         helpLabel="Create a bot and get a token from @BotFather"
         testKey="telegram"
@@ -119,6 +128,24 @@ export function CompanyClient({ settings, setup }: { settings: AppSettings; setu
             )}
           </span>
         </div>
+        {setup.telegramConfigured && (
+          <div className="settings-info-row">
+            <span className="settings-info-label">Bot</span>
+            {bot && botLink ? (
+              <a href={botLink} target="_blank" rel="noopener noreferrer" className="company-tg-bot">
+                {bot}
+              </a>
+            ) : (
+              <span className="company-tg-unknown">Not known yet. It shows once the bot has started.</span>
+            )}
+          </div>
+        )}
+        {connected !== null && (
+          <div className="settings-info-row">
+            <span className="settings-info-label">Accounts connected</span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600 }}>{connected}</span>
+          </div>
+        )}
         <div className="settings-info-row">
           <span className="settings-info-label">Reports filed via Telegram</span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600 }}>{setup.telegramReports}</span>

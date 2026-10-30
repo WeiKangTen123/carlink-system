@@ -23,6 +23,12 @@ import {
   testMyAiKey,
   deleteMyAiKey,
   deleteUserAiKey,
+  getMyTelegram,
+  createTelegramCode,
+  cancelTelegramCode,
+  confirmTelegram,
+  disconnectMyTelegram,
+  disconnectUserTelegram,
   ApiError,
   errorCode,
   type AccountLinkRow,
@@ -32,6 +38,7 @@ import {
   type LinkLifetime,
   type LlmKey,
   type MyAiKey,
+  type MyTelegram,
   type ProfileFields,
   type UserAccount,
   type UpdatedUser,
@@ -149,6 +156,92 @@ export async function deleteMyAiKeyAction(): Promise<AiKeyResult> {
     unstable_rethrow(err);
     // Removed; only the read after it failed. The card works out the rest.
     return { error: "", code: "removed", status: null };
+  }
+}
+
+// My Telegram (everyone, their own; /auth/me/telegram, release P5). Errors
+// keep the API's code and status like My AI key's, so the card can tell a
+// 409 (nothing waiting any more, or expired) and a 429 (10 codes an hour)
+// from the rest. Every answer also carries this server's clock (`now`), so
+// the card's countdown follows the server's, not a phone's wrong time.
+//
+// Connecting or disconnecting ticks or unticks the setup checklist on My
+// settings, so those revalidate /settings. The 3-second poll doesn't.
+
+export type TelegramError = { error: string; code: string | null; status: number | null };
+export type TelegramResult = { telegram: MyTelegram; now: number } | TelegramError;
+
+function telegramError(err: unknown, fallback: string): TelegramError {
+  unstable_rethrow(err);
+  return {
+    error: err instanceof Error ? err.message : fallback,
+    code: errorCode(err),
+    status: err instanceof ApiError ? err.status : null,
+  };
+}
+
+function telegramResult(telegram: MyTelegram): TelegramResult {
+  return { telegram, now: Date.now() };
+}
+
+/** Also the card's poll while a code is open. */
+export async function getMyTelegramAction(): Promise<TelegramResult> {
+  try {
+    return telegramResult(await getMyTelegram());
+  } catch (err) {
+    return telegramError(err, "Failed to load your Telegram");
+  }
+}
+
+export async function createTelegramCodeAction(): Promise<TelegramResult> {
+  try {
+    return telegramResult(await createTelegramCode());
+  } catch (err) {
+    return telegramError(err, "Failed to make a code");
+  }
+}
+
+/** Cancels the open code, then reads what is left. code "done": cancelled,
+ * only the read after it failed. */
+export async function cancelTelegramCodeAction(): Promise<TelegramResult> {
+  try {
+    await cancelTelegramCode();
+  } catch (err) {
+    return telegramError(err, "Failed to cancel the code");
+  }
+  try {
+    return telegramResult(await getMyTelegram());
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: "", code: "done", status: null };
+  }
+}
+
+/** "Yes, connect" (accept) or "Not me". */
+export async function confirmTelegramAction(accept: boolean): Promise<TelegramResult> {
+  try {
+    const telegram = await confirmTelegram(accept);
+    revalidatePath("/settings");
+    return telegramResult(telegram);
+  } catch (err) {
+    return telegramError(err, accept ? "Failed to connect your Telegram" : "Failed to cancel");
+  }
+}
+
+/** Disconnects, then reads what is left. code "done": disconnected, only
+ * the read after it failed. */
+export async function disconnectMyTelegramAction(): Promise<TelegramResult> {
+  try {
+    await disconnectMyTelegram();
+  } catch (err) {
+    return telegramError(err, "Failed to disconnect your Telegram");
+  }
+  revalidatePath("/settings");
+  try {
+    return telegramResult(await getMyTelegram());
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: "", code: "done", status: null };
   }
 }
 
@@ -275,6 +368,21 @@ export async function deleteUserAiKeyAction(id: string): Promise<{ ok: true } | 
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to remove their AI key" };
+  }
+}
+
+/** "Disconnect" in the Telegram row of Settings -> Users -> Edit (DELETE
+ * /users/{id}/telegram). The bot stops filing for them at once; they can
+ * connect again from their own Settings. */
+export async function disconnectUserTelegramAction(id: string): Promise<{ ok: true } | { error: string }> {
+  try {
+    await disconnectUserTelegram(id);
+    // Your own Telegram, if it was yours, is on My settings.
+    revalidatePath("/settings", "layout");
+    return { ok: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to disconnect their Telegram" };
   }
 }
 

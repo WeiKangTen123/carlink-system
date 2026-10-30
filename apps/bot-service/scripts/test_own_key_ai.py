@@ -1263,14 +1263,11 @@ def channels() -> None:
     import app.channels.telegram as tg
     from app.conversation import state as conv
 
-    print("  Telegram: drafting as the bot does it (draft_and_reply -> build_draft)")
+    print("  Telegram: drafting as the bot does it (draft_and_reply -> build_draft), for the linked person (P5)")
     colour = new_colour("telegram")
     photo = tmp_dir() / f"tg-{uuid.uuid4().hex}.jpg"
     photo.write_bytes(photo_bytes(colour, 0))
     chat = "990001"
-    conv.reset_session(chat)
-    session = conv.get_session(chat)
-    session.photo_paths.append(str(photo))
 
     class _Message:
         async def reply_text(self, text_, **_kw):
@@ -1278,15 +1275,23 @@ def channels() -> None:
 
     msg = _Message()
     update = SimpleNamespace(message=msg, callback_query=None, effective_message=msg,
-                             effective_chat=SimpleNamespace(id=int(chat)), effective_user=SimpleNamespace(id=int(chat)))
-    mark = len(snapshot())
-    texts_before = len(BOT_TEXTS)
-    asyncio.run(tg.draft_and_reply(update, session, "Rear-ended at PIE exit 12, rear bumper dented."))
-    calls = snapshot(mark)
-    replies = BOT_TEXTS[texts_before:]
-    check(session.draft is not None and not any("went wrong" in t for t in replies),
-          "the bot drafted the report", " | ".join(replies)[:200])
-    check(all_on(calls, COMPANY), "every call used the company keys (AiActor.cli(): as today, until P5)", off_key(calls, COMPANY))
+                             effective_chat=SimpleNamespace(id=int(chat), type="private"),
+                             effective_user=SimpleNamespace(id=int(chat)))
+    for who, allowed, what in ((W.alice, {W.alice.key}, "her own key"), (W.tia, COMPANY, "the company keys")):
+        conv.reset_session(chat)
+        session = conv.get_session(chat)
+        session.photo_paths.append(str(photo))
+        mark = len(snapshot())
+        texts_before = len(BOT_TEXTS)
+        # Alice has no ticks (unvetted); Tia is ticked for the company key.
+        linked = tg.Linked(id=who.id, label=who.label, staff=False, unvetted=who is W.alice)
+        asyncio.run(tg.draft_and_reply(update, session, "Rear-ended at PIE exit 12, rear bumper dented.", user=linked))
+        calls = snapshot(mark)
+        replies = BOT_TEXTS[texts_before:]
+        check(session.draft is not None and not any("went wrong" in t for t in replies),
+              f"the bot drafted {who.label}'s report", " | ".join(replies)[:200])
+        check(all_on(calls, allowed), f"every call used {what} (AiActor.for_user: whoever the Telegram is linked to)",
+              off_key(calls, allowed))
 
     print("  WhatsApp: no linked account, so no AI")
     wa_photo = tmp_dir() / f"wa-{uuid.uuid4().hex}.jpg"

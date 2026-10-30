@@ -18,9 +18,10 @@ import argparse
 from sqlalchemy import func, text, update
 from sqlalchemy.orm import Session
 
+from app.auth.chat_links import telegram_sender
 from app.auth.core import audit
 from app.auth.permissions import case_permissions, is_admin
-from app.reports.models import AuditEntry, Report, User, iso_utc
+from app.reports.models import AuditEntry, ChatLink, Report, User, iso_utc
 
 # The three ticks an admin sets on an account (models.User).
 TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
@@ -149,11 +150,49 @@ def _candidates(report_id: str, data: dict | None, first: dict, edits: dict) -> 
     return found
 
 
+TELEGRAM_SENDER = "sent from their Telegram"
+# The same hint for an account nobody has vetted: whoever links a Telegram
+# now isn't necessarily who sent from it then (a phone changing hands, a
+# stolen Telegram), so the admin is told to check (agent6 L5).
+UNVETTED_TELEGRAM_SENDER = "sent from a Telegram now linked to a self-registered account (linked on {date})"
+
+
+def _vetted(user) -> bool:
+    """An admin, or an account with any of the ticks: someone an admin has
+    looked at (api/limits._unvetted is the opposite)."""
+    return user.role == "admin" or any(getattr(user, tick, None) for tick in TICKS)
+
+
+def _telegram_reason(db: Session, user_id: str) -> str:
+    """Why the Telegram sender is suggested, worded by whether the account
+    it is linked to now has been vetted."""
+    user = db.query(User.role, *(getattr(User, tick) for tick in TICKS)).filter(User.id == user_id).first()
+    if user is not None and _vetted(user):
+        return TELEGRAM_SENDER
+    linked_at = (
+        db.query(ChatLink.linked_at)
+        .filter(ChatLink.channel == "telegram", ChatLink.user_id == user_id)
+        .scalar()
+    )
+    date = f"{linked_at.day} {linked_at:%b %Y}" if linked_at else "an unknown date"
+    return UNVETTED_TELEGRAM_SENDER.format(date=date)
+
+
 def suggested_owner(db: Session, report: Report) -> dict | None:
     """For an admin assigning an Unassigned case: the first active account
-    its history points to, or None."""
+    its history points to, or None. A Telegram case sent from a Telegram
+    that is now connected to an account suggests that account after
+    whoever created or finished it, before who signed it off or edited it:
+    "sent from their Telegram" for a vetted account (an admin, or any
+    tick), otherwise UNVETTED_TELEGRAM_SENDER, so the admin checks first.
+    The person never claims these themselves (agent6 D5); an admin assigns
+    them."""
     first, edits = _history_accounts(db, report.id)
     candidates = _candidates(report.id, report.data, first, edits)
+    sender = telegram_sender(db, report)
+    if sender:
+        made = sum(1 for _, why in candidates if why in ("created it", "finished its intake"))
+        candidates.insert(made, (sender, _telegram_reason(db, sender)))
     accounts = owners_by_id(db, [uid for uid, _ in candidates])
     for uid, why in candidates:
         user = accounts.get(uid)

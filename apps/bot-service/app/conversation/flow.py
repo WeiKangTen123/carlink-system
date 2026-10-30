@@ -84,7 +84,7 @@ def _carry_over_damage(draft: SecurityIncidentDraft, previous: SecurityIncidentD
 
 def build_draft(description: str, photo_paths: list[str], session=None, *, actor: AiActor) -> DraftResult:
     """The draft and its chat summary. actor: who pays for the drafting call
-    (the Telegram bot: AiActor.cli())."""
+    (the Telegram bot: the linked person, AiActor.for_user(id, "telegram"))."""
     # Hand the model what the reporter already told us, so a partial
     # correction ("the time was 16:45 not 08:00") has something to be applied
     # TO. Only on a redraft: on the first pass these values are what the
