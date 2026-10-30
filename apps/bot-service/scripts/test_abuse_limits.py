@@ -483,7 +483,7 @@ def main() -> int:
             db.commit()
         finally:
             db.close()
-        linked = tg.Linked(id=filer.id, label="Bo Bot", staff=False)
+        linked = tg.Linked(id=filer.id, label="Bo Bot", staff=False, unvetted=False)
         photo = Path(_tmp, "tg-photo.jpg")
         photo.write_bytes(jpeg())
         session = tg.get_session("4343")

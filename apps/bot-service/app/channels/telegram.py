@@ -18,12 +18,19 @@ this order:
      and no AI runs (_connect_first).
   5. A draft started for another account is thrown away (_current_session).
   6. A draft's first photo: the photo cap, the disk guard, then AI on for
-     this person (ensure_ai_ready), and only then the download.
-  7. Drafting on this person's AI (Linked.actor); the summary starts
+     this person (ensure_ai_ready); every photo: the dashboard's hourly
+     photo budget for unvetted accounts; and only then the download.
+  7. Drafting on this person's AI (Linked.actor), one request at a time
+     for unvetted accounts, as on the dashboard; the summary starts
      "Filing as Name".
-  8. Confirm, under the lock with the finalizing flag: the link again and
-     the daily case cap, then the case is saved as theirs, and the chat
+  8. Confirm, under the lock with the finalizing flag: the case row takes
+     SQLite's write lock, then the link and the daily case cap are checked
+     again in that transaction, and the case is saved as theirs. The chat
      gets its link -- not the PDF, which stays behind sign-in (agent6 D8).
+
+"Unvetted": no admin role and none of the three ticks, a fresh self-signup
+(api/limits._unvetted). Their prompts and drafts say so, and their
+/start, /help, /whoami and /link get an answer at most every 5 seconds.
 """
 import asyncio
 import functools
@@ -47,11 +54,13 @@ from telegram.helpers import escape_markdown
 from app.config import settings
 from app.ai.keys import AI_KEY_MISSING, AiActor, AiUnavailable, ensure_ai_ready, resolve_keys
 from app.ai.rate_limit import estimate_wait
-from app.api.limits import check_new_cases_today
+from app.api import limits
 from app.auth.chat_links import (
     CODE_TTL,
     DEEP_LINK_PREFIX,
+    clean_name,
     code_from_start_payload,
+    contest_code,
     linked_user,
     looks_like_code,
     masked_email,
@@ -59,15 +68,17 @@ from app.auth.chat_links import (
     peek_code,
     telegram_said_yes,
     unlink,
+    withdraw_yes,
     wrong_codes,
 )
-from app.auth.core import audit, display_name
+from app.auth.core import audit
 from app.auth.deps import ApiError
 from app.auth.permissions import is_staff
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, drop_session, find_session, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
 from app.reports.models import Report, gen_id
+from app.reports.schema import SignOffInfo
 from app.rendering.renderer import BOT_RENDER_SLOT_WAIT_SECONDS, render_pdf
 from app.storage.files import disk_space_low, remove_incident_dirs, report_pdf_path, save_photo, tmp_dir
 
@@ -101,6 +112,8 @@ CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 REPLY_EVERY_SECONDS = 60 * 60
 # "AI is off": an album's photos arrive as separate updates.
 AI_OFF_EVERY_SECONDS = 60
+# /start, /help, /whoami and /link from an unvetted account.
+COMMAND_EVERY_SECONDS = 5
 # The api's cleanup deletes storage/tmp files after a day (intake/cleanup.py
 # TMP_MAX_AGE), so a draft idle longer than that may have lost its photos.
 SESSION_MAX_IDLE_SECONDS = 24 * 60 * 60
@@ -136,9 +149,18 @@ FORWARDED_CODE = (
     "I don't take codes from forwarded messages. If it's your own code, type it in yourself, "
     "or tap Open Telegram in Carlink → Settings → My Telegram."
 )
+CODE_CONTESTED = (
+    "This code was already answered by another Telegram, so it has been cancelled to keep your account safe. "
+    "Make a new code in Carlink → Settings → My Telegram."
+)
 PROMPT_EXPIRED = "That question has expired. Please send the code again."
 LINK_CANCELLED = "Cancelled: nothing was connected."
+YES_WITHDRAWN = "Your earlier Yes is withdrawn."
 NO_LONGER_CONNECTED = "This Telegram isn't connected to that Carlink account any more, so the report wasn't saved."
+# On the link prompt and the draft, for an unvetted account (review M2): a
+# look-alike signup is how someone would be talked into connecting to it.
+UNVETTED_WARNING = "⚠ This is a self-registered account that Carlink hasn't checked. Only continue if it's yours."
+STILL_DRAFTING = "Your earlier report is still being drafted. Wait for it to finish, then try again."
 
 
 def _base_url() -> str:
@@ -176,12 +198,37 @@ class Linked:
     update (_who). Plain values, so no database session is held across an
     await or an AI call."""
     id: str
-    label: str  # "Name (@username)", as the case history names them
+    label: str  # "Name (@username)", cleaned (_account_names)
     staff: bool  # an admin or "May sign off": their PDFs carry no unverified banner
+    unvetted: bool  # no admin role and no ticks: the dashboard's limits apply
 
     @property
     def actor(self) -> AiActor:
         return AiActor.for_user(self.id, "telegram")
+
+
+def _account_names(user) -> tuple[str | None, str | None]:
+    """(name, @username without the "@") of a Carlink account, cleaned the
+    way Telegram names are (chat_links.clean_name): signup lets anyone type
+    a name, look-alike and invisible characters included (review L6)."""
+    return clean_name(user.name), clean_name(getattr(user, "username", None), 64)
+
+
+def _filing_label(user) -> str:
+    """"Name (@username)", as /whoami and "Filing as" say it."""
+    name, username = _account_names(user)
+    if name and username:
+        return f"{name} (@{username})"
+    return name or (f"@{username}" if username else "a Carlink account")
+
+
+def _prompt_label(user) -> str:
+    """"@username (Name)" for the link prompt: the @username, which is
+    unique, first (review M2); the name anyone can copy after it."""
+    name, username = _account_names(user)
+    if name and username:
+        return f"@{username} ({name})"
+    return f"@{username}" if username else (name or "a Carlink account")
 
 
 @dataclass
@@ -249,19 +296,34 @@ def _lookup(external_id, username, name) -> Linked | None:
     db = SessionLocal()
     try:
         user = linked_user(db, external_id, username=username, name=name)
-        found = Linked(id=user.id, label=display_name(user), staff=is_staff(user)) if user is not None else None
+        found = None
+        if user is not None:
+            found = Linked(id=user.id, label=_filing_label(user), staff=is_staff(user), unvetted=limits._unvetted(user))
         _commit_quietly(db)
         return found
     finally:
         db.close()
 
 
-def _peek(code: str) -> tuple[str, str] | None:
-    """(the account's "Name (@username)", its masked email) for an open code."""
+def _peek(code: str) -> tuple[str, str, bool] | None:
+    """(the account's "@username (Name)", its masked email, whether it is
+    unvetted) for an open code."""
     db = SessionLocal()
     try:
         user = peek_code(db, code)
-        return (display_name(user), masked_email(user.email)) if user is not None else None
+        if user is None:
+            return None
+        return _prompt_label(user), masked_email(user.email), limits._unvetted(user)
+    finally:
+        db.close()
+
+
+def _contest(code: str, external_id: str) -> bool:
+    db = SessionLocal()
+    try:
+        contested = contest_code(db, code, external_id)
+        db.commit()
+        return contested
     finally:
         db.close()
 
@@ -276,15 +338,27 @@ def _said_yes(code: str, external_id: str, username, name) -> bool:
         db.close()
 
 
-def _unlink_telegram(external_id: str) -> tuple[bool, str | None]:
-    """/unlink: (whether a link was removed, the account it was to)."""
+def _withdraw(external_id: str) -> int:
+    db = SessionLocal()
+    try:
+        withdrawn = withdraw_yes(db, external_id)
+        db.commit()
+        return withdrawn
+    finally:
+        db.close()
+
+
+def _unlink_telegram(external_id: str) -> tuple[bool, str | None, int]:
+    """/unlink: (whether a link was removed, the account it was to, how many
+    Yes answers to open codes were withdrawn)."""
     db = SessionLocal()
     try:
         user = linked_user(db, external_id)
-        label = display_name(user) if user is not None else None
+        label = _filing_label(user) if user is not None else None
         gone = unlink(db, external_id=external_id, actor=user, reason="with /unlink in Telegram")
+        withdrawn = withdraw_yes(db, external_id)
         db.commit()
-        return gone, label
+        return gone, label, withdrawn
     finally:
         db.close()
 
@@ -298,7 +372,7 @@ def _may_file(db, external_id: str, user_id: str):
     if user is None or user.id != user_id:
         return None, NO_LONGER_CONNECTED
     try:
-        check_new_cases_today(db, user)
+        limits.check_new_cases_today(db, user)
     except ApiError as exc:
         return user, exc.detail
     return user, None
@@ -315,26 +389,35 @@ def _check_filing(external_id: str, user_id: str) -> tuple[bool, str | None]:
 
 
 def _save_case(report_id: str, external_id: str, user_id: str, data: dict, photos: list[str], pdf_path) -> tuple[bool, str | None]:
-    """Saves the case as this person's, after step 8's check once more in
-    the same transaction: a long render could outlast the link."""
+    """Saves the case as this person's, with step 8's check made once more
+    inside the same transaction: a long render could outlast the link.
+
+    The row goes in first, which takes SQLite's write lock (as api/auth.
+    recipient_still_active relies on): nothing -- a disable, an unlink,
+    another case -- can commit between the check and this commit (review
+    L3). It goes in as a draft ("intake"), so the daily cap counts only the
+    cases before it, and is filed once the check passes."""
     db = SessionLocal()
     try:
-        owner, problem = _may_file(db, external_id, user_id)
-        if problem:
-            db.rollback()
-            return owner is not None, problem
-        db.add(Report(
+        report = Report(
             id=report_id,
             channel="telegram",
             # The Telegram USER id, which is what links name (in a private
             # chat it is also the chat id).
             reporter_chat_id=str(external_id),
             data=data,
-            status="confirmed",
+            status="intake",
             photo_paths=photos,
             pdf_path=pdf_path,
-            owner_id=owner.id,
-        ))
+            owner_id=user_id,
+        )
+        db.add(report)
+        db.flush()
+        owner, problem = _may_file(db, external_id, user_id)
+        if problem:
+            db.rollback()
+            return owner is not None, problem
+        report.status = "confirmed"
         audit(db, owner, "created", report_id, detail=FILED_VIA_TELEGRAM)
         db.commit()
         return True, None
@@ -513,6 +596,34 @@ async def _ai_ready(update: Update, chat_id: str, user: Linked) -> bool:
         return False
 
 
+async def _photo_budget_spent(update: Update, user: Linked) -> bool:
+    """Before each download from an unvetted account: the dashboard's
+    hourly photo budget (api/limits.charge_photo_uploads; this process's
+    own count). Counted here, given back if the download fails."""
+    if not user.unvetted or limits.photo_uploads.take(user.id):
+        return False
+    await update.message.reply_text(limits.PHOTO_LIMIT)
+    return True
+
+
+async def _download(source, dest: Path, user: Linked) -> None:
+    """source: the message's PhotoSize or Document."""
+    try:
+        file = await source.get_file()
+        await file.download_to_drive(str(dest))
+    except BaseException:
+        if user.unvetted:
+            limits.photo_uploads.refund(user.id)
+        raise
+
+
+def _too_soon(chat_id: str, user: Linked | None) -> bool:
+    """/start, /help, /whoami and /link from an unvetted account: answered
+    at most every COMMAND_EVERY_SECONDS per chat; anything sooner is
+    dropped."""
+    return user is not None and user.unvetted and not _first_in(f"command:{chat_id}", COMMAND_EVERY_SECONDS)
+
+
 # --------------------------------------------------------------- linking
 
 
@@ -540,6 +651,12 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
         return
     owner = await asyncio.to_thread(_peek, code)
     if owner is None:
+        if await asyncio.to_thread(_contest, code, ext):
+            # Another Telegram said Yes to it first (review M1). Not a
+            # wrong code: this one had it too.
+            logger.info("Telegram user %s sent a code another Telegram had said Yes to: the code is cancelled", ext)
+            await message.reply_text(CODE_CONTESTED, link_preview_options=NO_PREVIEW)
+            return
         left = wrong_codes.wrong(ext)
         if left == 0:
             logger.info("Telegram user %s is blocked for a while after too many wrong link codes", ext)
@@ -550,8 +667,10 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
                 f"make a new one in Carlink → Settings → My Telegram. ({left} {'try' if left == 1 else 'tries'} left)"
             )
         return
-    wrong_codes.right(ext)
-    label, masked = owner
+    # The wrong-code count starts again only once a Yes goes through
+    # (_link_tap), not here: a stranger mixing their own good code in with
+    # guesses would never be blocked otherwise (review L1).
+    label, masked, unvetted = owner
     now = time.monotonic()
     for old in [k for k, p in _prompts.items() if now - p.at > PROMPT_SECONDS]:
         del _prompts[old]
@@ -565,7 +684,8 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
     ]])
     await message.reply_text(
         f"Connect this Telegram to <b>{html.escape(label)}</b>, {html.escape(masked)}?\n\n"
-        "Only tap Yes if this is your own Carlink account. If someone sent you this code, tap Cancel.",
+        + (f"{UNVETTED_WARNING}\n\n" if unvetted else "")
+        + "Only tap Yes if this is your own Carlink account. If someone sent you this code, tap Cancel.",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -581,21 +701,27 @@ async def _remove_buttons(query) -> None:
 async def _link_tap(update: Update, data: str) -> None:
     """[Yes, that's me] / [Cancel] on a link prompt. Yes marks the code
     "waiting for Carlink" (telegram_said_yes, atomic); the link is made
-    only once the person confirms in Settings too (agent6 H2)."""
+    only once the person confirms in Settings too (agent6 H2). Cancel, on
+    any prompt however old, also takes back a Yes this Telegram gave to a
+    code that is still open (review L2)."""
     query = update.callback_query
     tg_user = update.effective_user
     ext = str(tg_user.id)
     target = _reply_target(update)
     nonce = data.split(":", 1)[1]
     prompt = _prompts.get(ext)
+    current = prompt is not None and prompt.nonce == nonce and time.monotonic() - prompt.at <= PROMPT_SECONDS
     await _remove_buttons(query)
-    if prompt is None or prompt.nonce != nonce or time.monotonic() - prompt.at > PROMPT_SECONDS:
+    if data.startswith(LINK_NO):
+        if current:
+            del _prompts[ext]
+        withdrawn = await asyncio.to_thread(_withdraw, ext)
+        await target.reply_text(LINK_CANCELLED + (f" {YES_WITHDRAWN}" if withdrawn else ""))
+        return
+    if not current:
         await target.reply_text(PROMPT_EXPIRED)
         return
     del _prompts[ext]
-    if data.startswith(LINK_NO):
-        await target.reply_text(LINK_CANCELLED)
-        return
     user = await _who(update)
     if user is not None:
         await target.reply_text(
@@ -605,6 +731,7 @@ async def _link_tap(update: Update, data: str) -> None:
     if not await asyncio.to_thread(_said_yes, prompt.code, ext, getattr(tg_user, "username", None), _telegram_name(tg_user)):
         await target.reply_text(CODE_GONE)
         return
+    wrong_codes.right(ext)
     await target.reply_text(
         f"Almost done: confirm in Carlink → Settings → My Telegram.\n{_settings_url()}", link_preview_options=NO_PREVIEW
     )
@@ -619,6 +746,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with _lock_for(chat_id):
         args = _args(context)
         user = await _who(update)
+        if _too_soon(chat_id, user):
+            return
         if args and args[0].startswith(DEEP_LINK_PREFIX):
             # The deep link from Settings: t.me/<bot>?start=link-K7M4QX9P.
             await _offer_link(update, code_from_start_payload(args[0]), user)
@@ -638,12 +767,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     async with _lock_for(chat_id):
-        if await _who(update) is None:
+        user = await _who(update)
+        if user is None:
             _told_at[f"connect:{chat_id}"] = time.monotonic()
             await update.message.reply_text(
                 _connect_text() + "\n\nCommands: /link CODE to connect, /whoami to check, /help for this message.",
                 link_preview_options=NO_PREVIEW,
             )
+            return
+        if _too_soon(chat_id, user):
             return
         await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
 
@@ -661,9 +793,12 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @_private_only
 async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    async with _lock_for(str(update.effective_chat.id)):
+    chat_id = str(update.effective_chat.id)
+    async with _lock_for(chat_id):
         typed = " ".join(_args(context)).strip()
         user = await _who(update)
+        if _too_soon(chat_id, user):
+            return
         if not typed and user is None:
             await update.message.reply_text(
                 "Send me your code like this: /link K7M4-QX9P\n"
@@ -678,14 +813,16 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def unlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     async with _lock_for(chat_id):
-        gone, label = await asyncio.to_thread(_unlink_telegram, str(update.effective_user.id))
+        # Also takes back a Yes to a code still waiting for Carlink (L2).
+        gone, label, withdrawn = await asyncio.to_thread(_unlink_telegram, str(update.effective_user.id))
         # Any draft was that account's.
         _drop(chat_id)
+        withdrawn_note = f"\n{YES_WITHDRAWN}" if withdrawn else ""
         if not gone:
-            await update.message.reply_text("This Telegram isn't connected to a Carlink account.")
+            await update.message.reply_text("This Telegram isn't connected to a Carlink account." + withdrawn_note)
             return
         await update.message.reply_text(
-            f"Disconnected: this Telegram no longer files reports{f' as {label}' if label else ''}.\n"
+            f"Disconnected: this Telegram no longer files reports{f' as {label}' if label else ''}.{withdrawn_note}\n"
             f"To connect again, open Carlink → Settings → My Telegram:\n{_settings_url()}",
             link_preview_options=NO_PREVIEW,
         )
@@ -693,8 +830,11 @@ async def unlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @_private_only
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    async with _lock_for(str(update.effective_chat.id)):
+    chat_id = str(update.effective_chat.id)
+    async with _lock_for(chat_id):
         user = await _who(update)
+        if _too_soon(chat_id, user):
+            return
         if user is None:
             await update.message.reply_text(
                 f"Not connected to a Carlink account.\nTo connect, open Carlink → Settings → My Telegram:\n{_settings_url()}",
@@ -753,11 +893,11 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if not session.photo_paths and not await _ai_ready(update, chat_id, user):
         return
+    if await _photo_budget_spent(update, user):
+        return
 
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
     dest = _new_temp_path(".jpg")
-    await file.download_to_drive(str(dest))
+    await _download(update.message.photo[-1], dest, user)
     session.photo_paths.append(str(dest))
 
     caption = (update.message.caption or "").strip()
@@ -812,9 +952,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if not session.photo_paths and not await _ai_ready(update, chat_id, user):
             return
-        file = await doc.get_file()
+        if await _photo_budget_spent(update, user):
+            return
         dest = _new_temp_path(ext)
-        await file.download_to_drive(str(dest))
+        await _download(doc, dest, user)
         session.photo_paths.append(str(dest))
 
         caption = (update.message.caption or "").strip()
@@ -893,10 +1034,16 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def draft_and_reply(update: Update, session, description: str, redrafting: bool = False, *, user: Linked) -> None:
     """Step 7: drafts on this person's AI (user.actor: their own key, or the
-    company's if they may use it)."""
+    company's if they may use it). An unvetted account gets one AI request
+    at a time, as on the dashboard (api/limits.ai_running, this process's
+    own record: the chat lock already keeps one Telegram to one at a time)."""
     notice = "Redrafting with your changes..." if redrafting else "Drafting your report..."
     msg_target = _reply_target(update)
     actor = user.actor
+    if user.unvetted and not limits.ai_running.claim(user.id):
+        if msg_target:
+            await msg_target.reply_text(STILL_DRAFTING)
+        return
 
     def _queued_seconds() -> float:
         try:
@@ -905,14 +1052,13 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
             return 0.0  # no key at all: the drafting call below says so
         return estimate_wait(first.rate_limit_id)
 
-    queued = await asyncio.to_thread(_queued_seconds)
-    if msg_target:
-        if queued >= 5:
-            await msg_target.reply_text(f"{notice} (busy right now -- about {round(queued)}s in queue)")
-        else:
-            await msg_target.reply_text(notice)
-
     try:
+        queued = await asyncio.to_thread(_queued_seconds)
+        if msg_target:
+            if queued >= 5:
+                await msg_target.reply_text(f"{notice} (busy right now -- about {round(queued)}s in queue)")
+            else:
+                await msg_target.reply_text(notice)
         result = await asyncio.to_thread(build_draft, description, session.photo_paths, session, actor=actor)
     except AiUnavailable as exc:
         # Their AI went off mid-draft (key removed or failing, tick taken
@@ -927,19 +1073,26 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
                 "Something went wrong while drafting the report. Please try again."
             )
         return
+    finally:
+        if user.unvetted:
+            limits.ai_running.release(user.id)
 
     session.draft = result.draft
     session.stage = Stage.AWAITING_CONFIRMATION
     keyboard = _build_inline_keyboard(session)
 
     if msg_target:
+        # The account is named, and an unchecked one said to be so (M2):
+        # filing into a look-alike signup is what a phished link is for.
+        warning = f"\n{UNVETTED_WARNING}" if user.unvetted else ""
         try:
             await msg_target.reply_text(
-                f"👤 Filing as {escape_markdown(user.label)}\n\n{result.summary_text}", parse_mode="Markdown", reply_markup=keyboard
+                f"👤 Filing as {escape_markdown(user.label)}{warning}\n\n{result.summary_text}",
+                parse_mode="Markdown", reply_markup=keyboard,
             )
         except BadRequest:
             logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
-            await msg_target.reply_text(f"👤 Filing as {user.label}\n\n{result.summary_text}", reply_markup=keyboard)
+            await msg_target.reply_text(f"👤 Filing as {user.label}{warning}\n\n{result.summary_text}", reply_markup=keyboard)
 
 
 # ------------------------------------------------------- buttons and Confirm
@@ -1063,6 +1216,11 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
     # render, and every other writer (dashboard uploads, autosaves) failed
     # with "database is locked" meanwhile.
     data = session.draft.model_dump()
+    # As POST /reports does (api/main.blank_sign_off, limits.checked_our_ref):
+    # filing signs nothing off, and Our Ref is staff's to set (review L4).
+    data["sign_off"] = SignOffInfo().model_dump()
+    if not user.staff:
+        data["report_id"] = None
     report_id = gen_id()
     stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
     pdf_path: str | None = report_pdf_path(report_id)

@@ -16,7 +16,9 @@ Connecting needs both sides (agent6 H2):
      K7M4QX9P, "/link K7M4-QX9P", or the bare code from a Telegram that
      isn't connected). peek_code() names the account for the "Is this
      you?" prompt; [Yes, that's me] calls telegram_said_yes(), and the code
-     is "waiting for Carlink".
+     is "waiting for Carlink". The same code then sent from another
+     Telegram cancels it (contest_code); /unlink and [Cancel] take a Yes
+     back (withdraw_yes).
   3. Settings shows "Telegram @x (Name) wants to connect": [Yes, connect]
      calls confirm_from_web(accept=True), which makes the link; [Not me]
      revokes the code.
@@ -142,23 +144,41 @@ def masked_email(email: str | None) -> str:
 
 
 def telegram_label(username: str | None, name: str | None) -> str:
-    """"@x (Name)", "@x", "Name", or "a Telegram account"."""
+    """How a Telegram is named in the history: the @username and the name
+    as separate parts -- "@ada_tg · Ada T", "@ada_tg", "no @username · Ada
+    T", or "a Telegram account" -- so a name can't pass for an @username."""
+    username, name = _clean(username, 64), _clean(name, 128)
     if username and name:
-        return f"@{username} ({name})"
+        return f"@{username} · {name}"
     if username:
         return f"@{username}"
-    return name or "a Telegram account"
+    if name:
+        return f"no @username · {name}"
+    return "a Telegram account"
+
+
+# Characters that read as "@". A Telegram first name "＠weikang (Wei Kang)"
+# (full-width ＠) passed for an @username (review M1).
+_AT_SIGNS = "@＠﹫"
 
 
 def _clean(value, limit: int) -> str | None:
-    """A Telegram @username or name as shown: no "@", no invisible or
-    control characters (a right-to-left mark could make one read as
+    """A Telegram @username or name, or a Carlink account's, as shown:
+    NFKC-normalised (full-width and other compatibility forms become plain
+    letters), no "@" anywhere, no invisible, format or control characters
+    (a right-to-left mark or a zero-width space could make one read as
     another), spaces collapsed, at most limit characters."""
     if value is None:
         return None
-    visible = "".join(ch for ch in str(value) if unicodedata.category(ch)[0] != "C")
-    text = " ".join(visible.split()).lstrip("@")[:limit].strip()
+    text = unicodedata.normalize("NFKC", str(value))
+    visible = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C" and ch not in _AT_SIGNS)
+    text = " ".join(visible.split())[:limit].strip()
     return text or None
+
+
+def clean_name(value, limit: int = 128) -> str | None:
+    """_clean, for the bot: an account's name or @username in its prompts."""
+    return _clean(value, limit)
 
 
 # ------------------------------------------------------------ bot @username
@@ -295,6 +315,58 @@ def telegram_said_yes(db: Session, code, external_id, username=None, name=None) 
     if claimed is None:
         return None
     return db.get(User, claimed.user_id)
+
+
+def contest_code(db: Session, code, external_id) -> bool:
+    """A code sent from this Telegram after a DIFFERENT Telegram has said
+    Yes to it: more than one Telegram has the code, so the first to answer
+    may be someone it leaked to, perhaps named to look like the owner
+    (review M1). In one statement the code is revoked if it is still
+    waiting and was answered by another Telegram -- neither can connect
+    with it, and Settings stops showing the other one. True if revoked
+    (with a history entry). The bot asks when peek_code finds nothing."""
+    canonical = normalize_code(code)
+    if canonical is None or external_id is None:
+        return False
+    ext = str(external_id)
+    now = utc_now()
+    revoked = db.execute(
+        update(ChatLinkCode)
+        .where(
+            ChatLinkCode.code_hash == token_hash(canonical),
+            ChatLinkCode.waiting_since.isnot(None),
+            ChatLinkCode.used_by_external_id.isnot(None),
+            ChatLinkCode.used_by_external_id != ext,
+            *_open(now),
+        )
+        .values(revoked_at=now)
+        .returning(ChatLinkCode.user_id, ChatLinkCode.used_by_external_id, ChatLinkCode.used_by_username, ChatLinkCode.used_by_name)
+        .execution_options(synchronize_session=False)
+    ).first()
+    if revoked is None:
+        return False
+    owner = db.get(User, revoked.user_id)
+    first = f"Telegram {telegram_label(revoked.used_by_username, revoked.used_by_name)}, id {revoked.used_by_external_id}"
+    audit(db, None, "telegram_code_contested",
+          detail=f"{owner.email if owner else revoked.user_id}: {first} had said Yes to a code that Telegram id {ext} "
+                 "then sent too; the code was cancelled")
+    return True
+
+
+def withdraw_yes(db: Session, external_id) -> int:
+    """Revokes the open codes this Telegram has said Yes to, so Settings
+    can't connect it after all: on /unlink and [Cancel] in Telegram (review
+    L2). Returns how many."""
+    if external_id is None:
+        return 0
+    now = utc_now()
+    result = db.execute(
+        update(ChatLinkCode)
+        .where(ChatLinkCode.used_by_external_id == str(external_id), *_open(now))
+        .values(revoked_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount or 0
 
 
 def confirm_from_web(db: Session, user, accept: bool) -> ChatLink | None:

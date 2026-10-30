@@ -1283,7 +1283,8 @@ def channels() -> None:
         session.photo_paths.append(str(photo))
         mark = len(snapshot())
         texts_before = len(BOT_TEXTS)
-        linked = tg.Linked(id=who.id, label=who.label, staff=False)
+        # Alice has no ticks (unvetted); Tia is ticked for the company key.
+        linked = tg.Linked(id=who.id, label=who.label, staff=False, unvetted=who is W.alice)
         asyncio.run(tg.draft_and_reply(update, session, "Rear-ended at PIE exit 12, rear bumper dented.", user=linked))
         calls = snapshot(mark)
         replies = BOT_TEXTS[texts_before:]
