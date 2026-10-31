@@ -212,6 +212,8 @@ DECISIONS = {
     ("POST", "/auth/signup"): ("public", "new accounts start with all three ticks off"),
     ("POST", "/auth/links/lookup"): ("public", ""),
     ("POST", "/auth/links/accept"): ("public", ""),
+    # P6: the privacy notice's two contacts (tested in scripts/test_public_inbox.py).
+    ("GET", "/privacy/contact"): ("public", "P6: {dpo_contact, public_contact_phone} only"),
 
     ("GET", "/auth/me"): ("self", "adds can_view_all_cases, may_sign_off, ai_allowed; open to temporary-password users"),
     ("PUT", "/auth/me"): ("self", "profile only: never role or ticks"),
@@ -233,7 +235,7 @@ DECISIONS = {
     ("POST", "/intake"): ("signed-in", "owner = caller; 5 open drafts per person, staff exempt from the shared 30 (B2)"),
     ("GET", "/analytics/summary"): ("signed-in", "follows the list scope"),
     ("GET", "/taxonomy"): ("signed-in", "follows the list scope; skips drafts"),
-    ("GET", "/settings"): ("signed-in", "company name"),
+    ("GET", "/settings"): ("signed-in", "company name; P6's public_contact_phone, dpo_contact, company_key_billed to admins only"),
     ("GET", "/parts-history"): ("special", "signed-in; plates and file names admin only; prices admin or sees_all_cases (B2)"),
     ("POST", "/reports/analyze-photos"): ("special", "signed-in; AI allowed (409 ai_key_missing) before any file is saved (B2)"),
 
@@ -283,8 +285,24 @@ DECISIONS = {
     ("DELETE", "/reports/{report_id}"): ("special", "case-view; a draft: owner or admin; a filed case: admin only"),
     ("POST", "/reports/{report_id}/reopen"): ("special", "case-view; the signer or an admin"),
     ("POST", "/reports/{report_id}/sign-off"): ("special", "case-edit; admin or may_sign_off (B2)"),
-    ("POST", "/intake/{report_id}/process"): ("special", "case-edit; then AI allowed (409 ai_key_missing, B2)"),
-    ("POST", "/reports/{report_id}/annex-suggestions/ai"): ("special", "case-edit; then AI allowed (409 ai_key_missing, B2)"),
+    ("POST", "/intake/{report_id}/process"): ("special", "case-edit; then AI allowed (409 ai_key_missing, B2); "
+                                                         "a public report: own billed key only until company_key_billed (P6)"),
+    ("POST", "/reports/{report_id}/annex-suggestions/ai"): ("special", "case-edit; then AI allowed (409 ai_key_missing, B2); "
+                                                                       "public cases as /process (P6)"),
+
+    # P6 Public Inbox (app/api/inbox.py; tested in scripts/test_public_inbox.py).
+    # Untaken public reports are no one's to edit or delete (403 on the case-edit
+    # rows above and on DELETE /reports/{id}, admins too) until taken.
+    ("GET", "/inbox"): ("special", "P6: admin or see-all (else 403 not_allowed); ?view=new|taken; phone masked"),
+    ("GET", "/inbox/count"): ("special", "P6: admin or see-all (else 403 not_allowed)"),
+    ("GET", "/inbox/{report_id}"): ("case-view", "P6: a public report (else 404 inbox_gone); the phone in full"),
+    ("POST", "/inbox/{report_id}/take"): ("special", "P6: case-view; admin or see-all; 409 inbox_taken / inbox_filed / draft_limit"),
+    ("POST", "/inbox/{report_id}/assign"): ("special", "P6: case-view; admin; untaken only; to an active vetted account "
+                                                       "(409 owner_unvetted / owner_inactive / draft_limit / inbox_taken)"),
+    ("POST", "/inbox/{report_id}/release"): ("special", "P6: case-view; the owner or an admin; 409 ai_running / "
+                                                        "inbox_finalizing / inbox_changed"),
+    ("POST", "/inbox/{report_id}/discard"): ("special", "P6: case-view; untaken: admin or see-all; taken: the owner or an "
+                                                        "admin; 422 no reason; 409 inbox_filed / inbox_changed / ai_running"),
 }
 # Not in the OpenAPI document, so listed by hand.
 HAND_LISTED = {

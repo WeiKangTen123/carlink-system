@@ -394,7 +394,11 @@ def report_history(db: Session, report: Report) -> list[dict]:
         for e in rows
     ]
     if not any(e["action"] == "created" for e in history):
-        via = {"telegram": "Filed through the Telegram bot", "whatsapp": "Filed through WhatsApp"}.get(report.channel)
+        via = {
+            "telegram": "Filed through the Telegram bot",
+            "telegram_public": "Sent by the public through the Telegram bot",
+            "whatsapp": "Filed through WhatsApp",
+        }.get(report.channel)
         history.insert(0, {
             "action": "created",
             "user_name": None,

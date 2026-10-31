@@ -29,6 +29,9 @@ PUBLIC_PATHS = {
     "/auth/signup",
     "/auth/links/lookup",
     "/auth/links/accept",
+    # The public privacy notice's contacts (P6, api/main.privacy_contact):
+    # the data-protection contact and the public line, nothing else.
+    "/privacy/contact",
 }
 # What a user who must change their password can still do.
 PASSWORD_CHANGE_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}

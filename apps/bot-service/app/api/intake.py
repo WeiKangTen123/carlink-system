@@ -22,15 +22,16 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, or_, update
+from sqlalchemy import exists, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
 from app.ai import keys as ai_keys
 from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
-from app.auth.deps import current_user, editable_case, visible_case
-from app.intake import pipeline
+from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
+from app.auth.permissions import PUBLIC_CHANNEL, in_inbox
+from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
     intake_dir,
@@ -71,13 +72,17 @@ def _load_draft(db, report_id: str, *, mutating: bool = False, block_while_runni
     an upload or autosave landing then would write into a folder finalize
     is about to delete, or overwrite the finished case's data.
     block_while_running: also refuse while the AI is working, whose result
-    is merged into the form when it finishes (pipeline.merge_redraft)."""
+    is merged into the form when it finishes (pipeline.merge_redraft).
+    mutating also refuses a public report back in the inbox since the
+    route's edit check (released a moment ago): nobody changes those."""
     report = db.get(Report, report_id)
     session = db.get(IntakeSession, report_id)
     if report is None or session is None:
         raise HTTPException(status_code=404, detail="Intake draft not found")
     if report.status != "intake":
         raise HTTPException(status_code=409, detail="This intake has already been turned into a case")
+    if mutating and in_inbox(report):
+        raise not_allowed(BACK_IN_INBOX)
     if mutating and session.stage == "finalizing":
         raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
     if block_while_running and session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
@@ -85,17 +90,47 @@ def _load_draft(db, report_id: str, *, mutating: bool = False, block_while_runni
     return report, session
 
 
-def _claim_stage(db, report_id: str, new_stage: str) -> bool:
+def _claim_stage(db, report_id: str, new_stage: str, seen_owner: str | None) -> bool:
     """Atomically moves the draft to new_stage unless finalize already holds
     it. A plain read-then-write let two finalizes (two tabs, a client retry)
-    both proceed; the second then created the case with no photos."""
+    both proceed; the second then created the case with no photos.
+
+    Also only while the draft is still seen_owner's (as _load_draft read
+    it) and not in the Public Inbox: a public draft released (POST
+    /inbox/{id}/release) between the route's checks and here gets no AI run
+    and isn't filed (review M4). Release refuses once this has committed."""
+    owner_is = Report.owner_id.is_(None) if seen_owner is None else Report.owner_id == seen_owner
     result = db.execute(
         update(IntakeSession)
-        .where(IntakeSession.report_id == report_id, IntakeSession.stage != "finalizing")
+        .where(
+            IntakeSession.report_id == report_id,
+            IntakeSession.stage != "finalizing",
+            exists().where(Report.id == report_id, owner_is, public.not_untaken_clause()),
+        )
         .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None, error_by=None)
     )
     db.commit()
     return result.rowcount == 1
+
+
+# A public draft put back in the inbox (or given to someone else) after the
+# route's checks: _load_draft and _claim_refused.
+BACK_IN_INBOX = "This report is back in the Public Inbox: take it again to work on it."
+CHANGED_HANDS = "This draft changed hands a moment ago. Reload it."
+
+
+def _claim_refused(db, report_id: str, busy: str) -> HTTPException:
+    """Why _claim_stage changed nothing: busy (finalize holds it), 404 (it
+    is gone), or 409 inbox_changed (released or taken over meanwhile)."""
+    db.rollback()
+    # Columns, not the rows _load_draft loaded (one may be gone by now).
+    report = db.query(Report.status, Report.channel, Report.owner_id).filter(Report.id == report_id).first()
+    session = db.query(IntakeSession.stage).filter(IntakeSession.report_id == report_id).first()
+    if report is None or session is None:
+        return HTTPException(status_code=404, detail="Intake draft not found")
+    if session.stage == "finalizing" or report.status != "intake":
+        return HTTPException(status_code=409, detail=busy)
+    return ApiError(409, BACK_IN_INBOX if in_inbox(report) else CHANGED_HANDS, "inbox_changed")
 
 
 def _error_by(db, user_id: str | None) -> dict | None:
@@ -139,18 +174,24 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         "data": report.data or {},
         "limits": {"max_photos": MAX_PHOTOS_PER_CASE, "max_photo_bytes": MAX_PHOTO_SIZE_BYTES},
         **owners.access_fields(db, report, user),
+        # Who sent it, on a report from the public (P6); else None. The
+        # wizard sends an untaken one (no owner) to /inbox/{id}.
+        "public_submission": public.submission_info(db, report),
     }
 
 
 def _shared_open_drafts(db) -> int:
     """Open drafts that count toward MAX_OPEN_DRAFTS: all but those owned by
-    admins and ticked staff (limits.counts_toward_shared_drafts, in SQL)."""
+    admins and ticked staff (limits.counts_toward_shared_drafts, in SQL),
+    and never public reports nobody has taken: up to public.MAX_OPEN of
+    those would otherwise stop every plain user's New Intake (review H2).
+    NULL-safe, so an older row with no channel still counts."""
     staff = or_(User.role == "admin", User.sees_all_cases.is_(True), User.may_sign_off.is_(True))
     return (
         db.query(func.count(IntakeSession.report_id))
         .outerjoin(Report, Report.id == IntakeSession.report_id)
         .outerjoin(User, User.id == Report.owner_id)
-        .filter(or_(User.id.is_(None), ~staff))
+        .filter(or_(User.id.is_(None), ~staff), public.not_untaken_clause())
         .scalar()
     )
 
@@ -388,12 +429,14 @@ class ProcessRequest(BaseModel):
 
 @router.post("/{report_id}/process")
 def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Depends(editable_case)) -> dict:
-    # Whoever presses Start or Retry pays -- not the draft's owner -- and the
-    # run keeps who that was, not a key (intake/pipeline.py).
-    actor = AiActor.for_user(user.id, "dashboard")
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True)
+        # Whoever presses Start or Retry pays -- not the draft's owner -- and
+        # the run keeps who that was, not a key (intake/pipeline.py). On a
+        # public report the actor carries the stricter key rule
+        # (ai/keys.resolve_keys, public_case) to every call of the run.
+        actor = AiActor.for_user(user.id, "dashboard", public_case=report.channel == PUBLIC_CHANNEL)
         if db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).count() == 0 and not session.reporter_notes.strip():
             raise HTTPException(status_code=400, detail="Upload photos or describe what happened first.")
         # After the view (404), edit (403) and input (400) checks, before
@@ -411,8 +454,9 @@ def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Dep
             # for the whole run and given back when it ends (on_done).
             limits.claim_ai_turn(user)
             claimed = True
-            if not _claim_stage(db, report_id, "sorting" if body.mode == "all" else "reading"):
-                raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
+            seen_owner = report.owner_id
+            if not _claim_stage(db, report_id, "sorting" if body.mode == "all" else "reading", seen_owner):
+                raise _claim_refused(db, report_id, "This intake is being turned into a case.")
             pipeline.start_reserved(report_id, body.mode, actor, on_done=lambda: limits.ai_running.release(user.id))
         except Exception:
             pipeline.release(report_id)
@@ -456,8 +500,9 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
         # claimed, so it stays as it was and Finish can be tried again.
         limits.require_disk_space()
         prior_stage = session.stage
-        if not _claim_stage(db, report_id, "finalizing"):
-            raise HTTPException(status_code=409, detail="This intake is already being turned into a case.")
+        seen_owner = report.owner_id
+        if not _claim_stage(db, report_id, "finalizing", seen_owner):
+            raise _claim_refused(db, report_id, "This intake is already being turned into a case.")
         try:
             _finalize_claimed(db, report_id, body, user)
         except Exception:
@@ -534,15 +579,23 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     report.pdf_path = None
     db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
     db.delete(session)
-    audit(db, user, "finalized", report_id)
+    # A public report: filed_at, the sender's Telegram details forgotten,
+    # reporter_chat_id "public" (public.on_finalize). None otherwise.
+    reference = public.on_finalize(db, report_id)
+    audit(db, user, "finalized", report_id, detail=reference or "")
     db.commit()
 
 
-def delete_intake_files(db, report_id: str) -> None:
+def delete_intake_files(db, report_id: str) -> str | None:
     """Called by DELETE /reports/{id} for a draft, whose photos live under
-    storage/intake/ rather than the incident folder that route removes."""
+    storage/intake/ rather than the incident folder that route removes.
+    Also deletes a public report's submission row (the sender's details);
+    returns its reference for the history entry, else None. (A taken public
+    draft goes through public.delete_submission instead.)"""
     db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
     session = db.get(IntakeSession, report_id)
     if session:
         db.delete(session)
+    reference = public.delete_row(db, report_id)
     remove_intake_dir(report_id)
+    return reference
