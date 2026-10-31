@@ -1,15 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { InboxCount } from "@/lib/api";
+import { countInbox, type InboxCount } from "@/lib/api";
 import { INBOX_CHANGED_EVENT } from "@/lib/inbox";
-import { countInboxAction } from "@/app/inbox/actions";
 
 /** The Public Inbox count (GET /inbox/count), for people who see all cases.
  * Asked when `enabled` turns on and whenever `refreshKey` changes (the
  * sidebar passes the path, so every route change asks again), when a take,
  * release or discard here announces a change, and -- with `pollMs` -- on a
- * timer while the tab is in view. Null until known, or when it can't be. */
+ * timer while the tab is in view. Null until known, or when it can't be.
+ *
+ * Asked straight from the browser, not through a server action: Next runs
+ * server actions in the same queue as navigation, so one fired on a timer
+ * or right after a take/discard could swallow the page change. */
 export function useInboxCount(enabled: boolean, opts: { pollMs?: number; refreshKey?: unknown } = {}): InboxCount | null {
   const { pollMs, refreshKey } = opts;
   const [count, setCount] = useState<InboxCount | null>(null);
@@ -21,9 +24,9 @@ export function useInboxCount(enabled: boolean, opts: { pollMs?: number; refresh
     const load = () => {
       if (document.visibilityState !== "visible" || inFlight) return;
       inFlight = true;
-      countInboxAction()
+      countInbox()
         .then((c) => {
-          if (live && c) setCount(c);
+          if (live) setCount(c);
         })
         .catch(() => {
           // Keep the last count; the next poll tries again.

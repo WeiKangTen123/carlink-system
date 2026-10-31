@@ -5,14 +5,12 @@ import { unstable_rethrow } from "next/navigation";
 import {
   ApiError,
   assignSubmission,
-  countInbox,
   discardSubmission,
   errorCode,
   listUsers,
   releaseSubmission,
   takeSubmission,
   type DiscardRequest,
-  type InboxCount,
   type Owner,
 } from "@/lib/api";
 import type { AssignableUser } from "@/app/reports/actions";
@@ -40,17 +38,6 @@ function revalidateInbox(id?: string) {
   if (id) revalidatePath(`/inbox/${id}`);
   revalidatePath("/reports");
   revalidatePath("/");
-}
-
-/** For the sidebar badge, the Cases chip and the Command Center card. Null
- * when it couldn't be counted (or this account may not see the inbox). */
-export async function countInboxAction(): Promise<InboxCount | null> {
-  try {
-    return await countInbox();
-  } catch (err) {
-    unstable_rethrow(err);
-    return null;
-  }
 }
 
 export async function takeSubmissionAction(id: string): Promise<{ owner: Owner | null } | InboxActionError> {
