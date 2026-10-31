@@ -136,8 +136,9 @@ export function PublicSenderCard({
           onMoved={() => router.refresh()}
           onReleased={() => {
             announceInboxChanged();
+            // No router.refresh() after this: it cancels the push. The
+            // action's revalidatePath already makes the page fresh.
             router.push(`/inbox/${reportId}`);
-            router.refresh();
           }}
         />
       )}

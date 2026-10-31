@@ -527,10 +527,26 @@ def _temp_prefix(user: CurrentUser) -> str:
     return f"u{user.id}-"
 
 
+def _analysis_is_public(report_id: str, user: CurrentUser) -> bool:
+    """analyze-photos for one case (its edit form): editable_case's answers
+    -- 404 unless the user may see it, 403 not_allowed unless they may
+    change it (an untaken public report: no one) -- then whether the public
+    sent it (P6, filed ones too), whose AI takes the stricter key rule
+    (ai/keys.resolve_keys, public_case)."""
+    editable_case(report_id, user)
+    db = SessionLocal()
+    try:
+        channel = db.query(Report.channel).filter(Report.id == report_id).scalar()
+    finally:
+        db.close()
+    return channel == PUBLIC_CHANNEL
+
+
 @app.post("/reports/analyze-photos")
 async def analyze_report_photos(
     description: str = Form(""),
     photos: list[UploadFile] = File(default=[]),
+    report_id: Optional[str] = Form(None),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     """Dashboard equivalent of the Telegram bot's photo+text drafting step:
@@ -540,13 +556,19 @@ async def analyze_report_photos(
     temp_photo_paths get passed back in on POST /reports if the reporter
     goes on to save the report, so the photos are only ever attached to a
     report the reporter actually confirmed.
+
+    report_id: the case the edit form is for (its Re-analyze, or photos
+    added to it). Gated as the other routes about one case (404, 403), and
+    a case the public sent takes only the presser's own billed key until
+    company_key_billed (409 ai_key_missing). Left out by the New Report form.
     """
-    # No case to gate on: the photos go to a case later, through PUT
-    # /reports/{id}'s checks. AI first (the presser pays: 409 {detail,
-    # code} when theirs isn't available; one request at a time, 429
-    # ai_busy), then room on the disk, the file types and the hourly photo
-    # count, before any photo is saved.
-    actor = AiActor.for_user(user.id, "dashboard")
+    # The case first, when there is one (the photos still go to it later,
+    # through PUT /reports/{id}'s checks). Then AI (the presser pays: 409
+    # {detail, code} when theirs isn't available; one request at a time,
+    # 429 ai_busy), then room on the disk, the file types and the hourly
+    # photo count, before any photo is saved.
+    public_case = await asyncio.to_thread(_analysis_is_public, report_id, user) if report_id else False
+    actor = AiActor.for_user(user.id, "dashboard", public_case=public_case)
     await asyncio.to_thread(own_keys.ensure_ai_ready, actor)
     limits.claim_ai_turn(user)
     try:

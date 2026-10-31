@@ -358,8 +358,9 @@ export function InboxDetailClient({ item, renderedAt }: { item: InboxDetail; ren
           onMoved={moved}
           onDiscarded={() => {
             announceInboxChanged();
+            // No router.refresh() after this: it cancels the push. The
+            // action's revalidatePath already makes the list fresh.
             router.push(`/inbox?discarded=${encodeURIComponent(item.reference)}`);
-            router.refresh();
           }}
         />
       )}

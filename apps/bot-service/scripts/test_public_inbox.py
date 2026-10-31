@@ -19,7 +19,9 @@ p6_decisions.md (the settings, the billing rule). What it checks:
 - DELETE /reports/{id} of a taken public draft and of a filed public case;
 - Start on a public draft: the presser's own billed key only until
   company_key_billed, then the company key; the name and phone in no
-  request; the same rule for annex AI on the filed case;
+  request; the same rule for annex AI on the filed case, and for the edit
+  form's analyze-photos given its report_id (404 / 403 first; a case not
+  from the public, or no report_id, as before);
 - finalize: filed_at, telegram_* cleared, reporter_chat_id "public",
   public_reference in GET /reports, public_submission on the case, the name
   escaped in the PDF, the inbox routes answering inbox_filed;
@@ -257,7 +259,7 @@ from app.intake import cleanup, public  # noqa: E402
 from app.reports.db import SessionLocal, engine  # noqa: E402
 from app.reports.models import IntakePhoto, IntakeSession, PublicSubmission, Report, User, gen_id  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
-from app.storage.files import generate_preview, generate_thumbnail  # noqa: E402
+from app.storage.files import generate_preview, generate_thumbnail, tmp_dir  # noqa: E402
 
 BASE = "https://carlink.test"
 ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -1151,6 +1153,106 @@ def finalize_section() -> None:
     check(len(entry) == 1 and entry[0]["detail"].startswith(s["ref"]), "  history: 'deleted' with the ref", str(entry))
 
 
+def _analyze(p: Person, rid: str | None, photos: int = 1):
+    """POST /reports/analyze-photos as the dashboard sends it: the edit form
+    with report_id (Analyze on new photos, Re-analyze on the saved ones),
+    New Report without."""
+    form = {"description": "Scraped in a carpark."}
+    if rid is not None:
+        form["report_id"] = rid
+    files = [("photos", (f"p{i}.jpg", _photo_bytes(f"analyze-{i}"), "image/jpeg")) for i in range(photos)]
+    return p.c.post("/reports/analyze-photos", data=form, files=files)
+
+
+def _temp_photos(p: Person) -> list[str]:
+    """This person's uploads waiting in storage/tmp (main._temp_prefix)."""
+    return sorted(x.name for x in tmp_dir().glob(f"u{p.id}-*"))
+
+
+def _manual_case(owner_id: str) -> str:
+    """A filed case typed in on the dashboard: not from the public."""
+    db = SessionLocal()
+    try:
+        data = SecurityIncidentDraft(description="Rear-ended.", category=["Vehicle Collision or Damage"]).model_dump()
+        report = Report(channel="manual", reporter_chat_id="dashboard", status="confirmed", owner_id=owner_id, data=data)
+        db.add(report)
+        db.commit()
+        return report.id
+    finally:
+        db.close()
+
+
+def analyze_section() -> None:
+    """The edit form's AI on a case the public sent (security review): the
+    same billing rule as Start and annex AI, for new photos and Re-analyze."""
+    rid = seed(photos=1, label="analyze")
+    gil = staff("Gil", ai_company_key_allowed=True)
+    need(take(gil, rid).status_code == 200, "(Gil takes one)")
+    data = jd(gil.c.get(f"/intake/{rid}")).get("data") or {}
+    need(data, "(Gil reads the draft)")
+    r = gil.c.post(f"/intake/{rid}/finalize", json={"data": data})
+    need(r.status_code == 200 and report_row(rid).get("channel") == PUBLIC_CHANNEL, "(Gil files it: a filed public case)",
+         brief(r))
+
+    set_billed(False)
+    before = _temp_photos(gil)
+    mark = len(CALLS)
+    r = _analyze(gil, rid, photos=2)
+    check(r.status_code == 409 and code_of(r) == "ai_key_missing" and jd(r).get("detail") == PUBLIC_KEY_ONLY,
+          "company_key_billed false: Gil (company tick, no own key) analyzes photos for the filed public case -> 409 "
+          "ai_key_missing, the decision's words", brief(r))
+    check(not calls_since(mark), "  no Gemini call", describe(calls_since(mark)))
+    check(_temp_photos(gil) == before, "  no photo kept", str(_temp_photos(gil)))
+
+    gil.save_key()
+    mark = len(CALLS)
+    r = _analyze(gil, rid)
+    calls = calls_since(mark)
+    check(r.status_code == 200 and "draft" in jd(r) and calls and all(c["key"] == gil.key for c in calls),
+          "with an own billed key -> 200, every call on Gil's own key", f"{brief(r)}; {describe(calls)}")
+    gil.drop_key()
+
+    set_billed(True)
+    mark = len(CALLS)
+    r = _analyze(gil, rid)
+    calls = calls_since(mark)
+    check(r.status_code == 200 and calls and all(c["key"] == COMPANY_KEY for c in calls),
+          "company_key_billed true: Gil (company tick, no own key) -> 200 on the company key", f"{brief(r)}; {describe(calls)}")
+    set_billed(False)
+
+    print("  a case not from the public, and no report_id: as before")
+    case = _manual_case(gil.id)
+    mark = len(CALLS)
+    r = _analyze(gil, case)
+    calls = calls_since(mark)
+    check(r.status_code == 200 and calls and all(c["key"] == COMPANY_KEY for c in calls),
+          "company_key_billed false, Gil's own (manual) case -> 200 on the company key", f"{brief(r)}; {describe(calls)}")
+    mark = len(CALLS)
+    r = _analyze(gil, None)
+    calls = calls_since(mark)
+    check(r.status_code == 200 and calls and all(c["key"] == COMPANY_KEY for c in calls) and jd(r).get("temp_photo_paths"),
+          "no report_id (New Report) -> 200 on the company key, the photos kept for the save", f"{brief(r)}; {describe(calls)}")
+
+    print("  a case they can't see, or can't change")
+    untaken = seed(label="analyzeinbox")
+    before = _temp_photos(W.pat)
+    mark = len(CALLS)
+    r = _analyze(W.pat, rid)
+    check(r.status_code == 404 and jd(r).get("detail") == "Case not found.",
+          "a plain user (no AI either) with Gil's case -> 404, before any AI check", brief(r))
+    check(_temp_photos(W.pat) == before, "  no photo kept")
+    r = _analyze(gil, "nosuchcase00")
+    check(r.status_code == 404 and jd(r).get("detail") == "Case not found.", "a made-up report_id -> 404", brief(r))
+    for p, who in ((W.vera, "see-all staff"), (W.ada, "an admin")):
+        r = _analyze(p, untaken)
+        check(r.status_code == 403 and code_of(r) == "not_allowed",
+              f"{who} with an untaken public report -> 403 not_allowed (no AI on one in the inbox)", brief(r))
+    _real_sleep(0.3)
+    check(not calls_since(mark), "  no Gemini call for any of those", describe(calls_since(mark)))
+    r = W.vera.c.post(f"/inbox/{untaken}/discard", json={"reason": "test"})
+    need(r.status_code == 200, "(the untaken one is discarded again)", brief(r))
+
+
 def caps_section() -> None:
     ids = [seed(photos=0, label=f"cap{i}") for i in range(30)]
     r = W.pat.c.post("/intake")
@@ -1256,6 +1358,7 @@ def main() -> int:
         ("5. discard, spam block", discard_section),
         ("DELETE /reports/{id} of a public draft", delete_section),
         ("9. finalize; annex AI on the filed case", finalize_section),
+        ("9b. analyze-photos for one case (report_id): the billing rule", analyze_section),
         ("7. caps; a NULL-channel draft", caps_section),
         ("8. sweep", sweep_section),
         ("history wording", history_wording),

@@ -1270,12 +1270,18 @@ export type PhotoAnalysisDraft = Pick<
   "accident_type" | "severity_level" | "damaged_parts" | "category" | "description" | "damage_summary" | "vehicle_info"
 >;
 
+/** `reportId`: the case the edit form is for (left out on New Report). The
+ * API checks it may be seen and changed (404, 403), and on a case the public
+ * sent (release P6) uses only the presser's own billed AI key until an admin
+ * confirms the company key is billed (409 ai_key_missing). */
 export async function analyzeReportPhotos(
   description: string,
-  photos: File[]
+  photos: File[],
+  reportId?: string
 ): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] }> {
   const formData = new FormData();
   formData.set("description", description);
+  if (reportId) formData.set("report_id", reportId);
   for (const photo of photos) formData.append("photos", photo);
 
   const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
@@ -1290,13 +1296,16 @@ export async function analyzeReportPhotos(
  * has saved rather than freshly-picked files -- must run server-side (this
  * is only ever called from a server action) since it re-fetches each photo
  * from the API's /files/ route directly, which has no CORS headers and
- * fails if a browser calls it. */
+ * fails if a browser calls it. `reportId`: the case they are from, as for
+ * analyzeReportPhotos (its key rule, on a case the public sent). */
 export async function analyzeExistingReportPhotos(
+  reportId: string,
   photoPaths: string[],
   description: string
 ): Promise<{ draft: PhotoAnalysisDraft }> {
   const formData = new FormData();
   formData.set("description", description);
+  formData.set("report_id", reportId);
   for (let i = 0; i < photoPaths.length; i++) {
     const path = photoPaths[i];
     const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
