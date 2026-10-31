@@ -19,6 +19,15 @@ use AiActor.cli(): the company keys, as before P4. No HTTP route ever does,
 nor the Telegram bot, which drafts for the account its Telegram is linked
 to (AiActor.for_user(id, "telegram")).
 
+Public reports (P6, channel "telegram_public"): until an admin ticks
+"The company AI key is on a Google Cloud project with billing turned on"
+(app_settings company_key_billed, intake/public.company_key_billed), an AI
+call for one uses ONLY the presser's own key -- working (ok or untested)
+and saved with billing confirmed -- and never a company key; with none,
+ai_key_missing with PUBLIC_KEY_ONLY. Once ticked, the order above. The
+actor carries it (AiActor.for_user(..., public_case=True)), so every call
+of a background run keeps the rule, not just the check before it.
+
 One key per person and one person per key: a key someone else has saved,
 or one of the company's, is refused. The key is sealed the moment it
 arrives (ai/secretbox.py) and never leaves the server again. Everyone,
@@ -364,6 +373,12 @@ MESSAGES = {
     AI_KEY_UNREADABLE: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     AI_ACCOUNT_OFF: "AI is off: this account is disabled.",
 }
+# ai_key_missing's words for a public report while the company key's
+# billing isn't confirmed (the top of this file).
+PUBLIC_KEY_ONLY = (
+    "Public reports can only use your own (billed) AI key until an admin confirms the company key is billed. "
+    "You can still fill it in by hand."
+)
 # A stored status that keeps an own key out, and the code it means when
 # nothing else is left.
 _STATUS_CODES = {"invalid": AI_KEY_INVALID, "quota": AI_QUOTA_USED}
@@ -404,14 +419,17 @@ class AiActor:
     don't reach plain threads or ThreadPoolExecutor workers, so an intake
     run and each of its sorting workers would lose the person.
 
-    cli: AiActor.cli(), for scripts."""
+    cli: AiActor.cli(), for scripts. public_case: the call is for a public
+    report (P6), whose key rule is stricter while the company key's
+    billing isn't confirmed (the top of this file)."""
     user_id: str | None
     channel: str
     cli: bool = False
+    public_case: bool = False
 
     @classmethod
-    def for_user(cls, user_id: str | None, channel: str) -> "AiActor":
-        return cls(user_id=user_id, channel=channel)
+    def for_user(cls, user_id: str | None, channel: str, *, public_case: bool = False) -> "AiActor":
+        return cls(user_id=user_id, channel=channel, public_case=public_case)
 
 
 def _cli_actor(cls) -> AiActor:
@@ -511,20 +529,54 @@ def _own_key(row: UserAiKey) -> tuple[AiKey | None, str | None]:
     ), None
 
 
-def resolve_keys(actor: AiActor) -> list[AiKey]:
+def _company_billed(db) -> bool:
+    """app_settings company_key_billed (intake/public.py reads it; imported
+    here, as public imports half the app)."""
+    from app.intake.public import company_key_billed
+
+    return company_key_billed(db)
+
+
+def _public_own_key(row: UserAiKey | None) -> list[AiKey]:
+    """A public report while the company key's billing isn't confirmed: the
+    presser's own key alone -- working (ok or untested, so not one being
+    retried after running out of quota) and saved with billing confirmed --
+    or AiUnavailable(ai_key_missing, PUBLIC_KEY_ONLY)."""
+    if row is not None and row.billing_confirmed and row.status in WORKING:
+        own, _ = _own_key(row)
+        if own is not None:
+            return [own]
+    raise AiUnavailable(AI_KEY_MISSING, PUBLIC_KEY_ONLY)
+
+
+def resolve_keys(actor: AiActor, *, public_case: bool = False) -> list[AiKey]:
     """The keys a call for this person tries, in order (the top of this
     file). Read afresh every time: one small query, and the company keys
     only for those allowed them. Raises AiUnavailable when there are none:
     a disabled or missing account (ai_account_off), else why their own key
-    can't be used (ai_key_missing when they have none)."""
+    can't be used (ai_key_missing when they have none).
+
+    public_case (or actor.public_case): the call is for a public report,
+    which takes only the presser's own billed key until company_key_billed
+    is ticked."""
+    public = public_case or actor.public_case
+    from app.reports.db import SessionLocal
+
     if actor.cli:
+        if public:
+            db = SessionLocal()
+            try:
+                billed = _company_billed(db)
+            finally:
+                db.close()
+            if not billed:
+                raise AiUnavailable(AI_KEY_MISSING, PUBLIC_KEY_ONLY)
         found = company_keys()
         if not found:
             raise AiUnavailable(AI_KEY_MISSING)
         return found
     if not actor.user_id:
         raise AiUnavailable(AI_ACCOUNT_OFF)
-    from app.reports.db import SessionLocal
 
     db = SessionLocal()
     try:
@@ -534,11 +586,14 @@ def resolve_keys(actor: AiActor) -> list[AiKey]:
             .filter(User.id == actor.user_id)
             .first()
         )
+        billed = _company_billed(db) if public and found is not None else True
     finally:
         db.close()
     if found is None or not found[0].active:
         raise AiUnavailable(AI_ACCOUNT_OFF)
     user, row = found
+    if not billed:
+        return _public_own_key(row)
     own, problem = _own_key(row) if row is not None else (None, AI_KEY_MISSING)
     keys = [own] if own else []
     if may_use_company_key(user):
@@ -548,11 +603,12 @@ def resolve_keys(actor: AiActor) -> list[AiKey]:
     return keys
 
 
-def ensure_ai_ready(actor: AiActor) -> None:
+def ensure_ai_ready(actor: AiActor, *, public_case: bool = False) -> None:
     """resolve_keys' check, spending nothing, before anything that ends in a
     Gemini call. The routes ask after their view (404), edit (403) and
-    input (400) checks, and before reserving a run or saving a file."""
-    resolve_keys(actor)
+    input (400) checks, and before reserving a run or saving a file.
+    public_case: as resolve_keys'."""
+    resolve_keys(actor, public_case=public_case)
 
 
 def ai_allowed(user) -> bool:

@@ -57,6 +57,21 @@ def ai_input_path(photo_path: str) -> str:
     return str(preview) if preview.exists() else photo_path
 
 
+def is_readable_image(path) -> bool:
+    """Whether Pillow can open this file as an image and its data checks
+    out (Image.verify). Extension checks alone let anything through under a
+    .jpg name. Used for dashboard uploads (api/intake.py) and public
+    Telegram reports (intake/public.py)."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
 def serialize_photo(photo: IntakePhoto, label: str) -> dict:
     return {
         "id": photo.id,

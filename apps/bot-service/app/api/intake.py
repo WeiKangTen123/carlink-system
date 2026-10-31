@@ -34,6 +34,7 @@ from app.intake import pipeline
 from app.intake.photos import (
     copy_into_case,
     intake_dir,
+    is_readable_image,
     ordered_photos,
     photo_label,
     remove_intake_dir,
@@ -298,15 +299,8 @@ def upload_intake_photo(
         db.close()
 
 
-def _is_readable_image(path: Path) -> bool:
-    try:
-        from PIL import Image
-
-        with Image.open(path) as im:
-            im.verify()
-        return True
-    except Exception:
-        return False
+# Moved to intake/photos.py (P6: public Telegram reports use it too).
+_is_readable_image = is_readable_image
 
 
 def _remove_photo_files(photo_path: str) -> None:
