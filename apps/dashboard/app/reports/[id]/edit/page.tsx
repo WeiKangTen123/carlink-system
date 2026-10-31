@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { getReport, messageForCode } from "@/lib/api";
+import { getReport, isUntakenPublic, messageForCode } from "@/lib/api";
 import { ReportForm } from "../../ReportForm";
 import { updateReportAction } from "../../actions";
 import { ReopenButton } from "./ReopenButton";
@@ -15,6 +15,8 @@ export default async function EditReportPage({
   const { error } = await searchParams;
   const report = await getReport(id);
   if (!report) notFound();
+  // Not taken from the Public Inbox yet (release P6): read-only there.
+  if (isUntakenPublic(report)) redirect(`/inbox/${id}`);
   if (report.status === "intake") redirect(`/reports/new?draft=${id}`);
 
   if (report.status === "Signed Off") {

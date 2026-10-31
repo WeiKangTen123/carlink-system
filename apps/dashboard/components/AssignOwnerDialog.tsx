@@ -4,23 +4,36 @@ import { useEffect, useMemo, useState } from "react";
 import { Lightbulb, Search, UserRound } from "lucide-react";
 import { ownerLabel, personLabel, type Owner, type SuggestedOwner } from "@/lib/api";
 import { listAssignableUsersAction, setCaseOwnerAction, type AssignableUser } from "@/app/reports/actions";
+import { assignSubmissionAction, listVettedUsersAction } from "@/app/inbox/actions";
 
 /** Admin: give a case to someone, or make it Unassigned. Opens on the
  * suggested owner when the case has none (GET /reports/{id} sends
- * suggested_owner to admins on Unassigned cases), and says why. */
+ * suggested_owner to admins on Unassigned cases), and says why.
+ *
+ * mode "inbox" (release P6): give a report from the Public Inbox to
+ * someone. Only vetted accounts are listed (admins, and accounts with one of
+ * the ticks on Settings -> Users), there is no Unassigned, and it goes
+ * through POST /inbox/{id}/assign. `onError` gets the API's code too, so the
+ * page can reload when the report changed meanwhile. */
 export function AssignOwnerDialog({
   reportId,
   owner,
   suggested,
   onClose,
   onAssigned,
+  mode = "case",
+  reference,
 }: {
   reportId: string;
   owner: Owner | null;
   suggested?: SuggestedOwner | null;
   onClose: () => void;
   onAssigned: (owner: Owner | null) => void;
+  mode?: "case" | "inbox";
+  /** The public report's reference, for the title (mode "inbox"). */
+  reference?: string;
 }) {
+  const inbox = mode === "inbox";
   const [users, setUsers] = useState<AssignableUser[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -36,7 +49,7 @@ export function AssignOwnerDialog({
   useEffect(() => {
     let cancelled = false;
     setLoadError(null);
-    listAssignableUsersAction().then((res) => {
+    (inbox ? listVettedUsersAction() : listAssignableUsersAction()).then((res) => {
       if (cancelled) return;
       if ("error" in res) {
         setLoadError(res.error);
@@ -50,7 +63,7 @@ export function AssignOwnerDialog({
     return () => {
       cancelled = true;
     };
-  }, [attempt, ownerId, suggestedId]);
+  }, [attempt, ownerId, suggestedId, inbox]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -78,7 +91,7 @@ export function AssignOwnerDialog({
   async function save() {
     setSaving(true);
     setError(null);
-    const res = await setCaseOwnerAction(reportId, picked || null);
+    const res = inbox ? await assignSubmissionAction(reportId, picked) : await setCaseOwnerAction(reportId, picked || null);
     setSaving(false);
     if ("error" in res) {
       setError(res.error);
@@ -98,11 +111,18 @@ export function AssignOwnerDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id="assign-owner-title" style={{ fontSize: 16, fontWeight: 800, margin: "0 0 4px" }}>
-          Assign this case
+          {inbox ? <>Assign {reference || "this public report"}</> : "Assign this case"}
         </h3>
-        <p className="setup-note" style={{ margin: "0 0 12px" }}>
-          Now: <strong>{ownerLabel(owner)}</strong>. The owner sees the case under My cases and works on it.
-        </p>
+        {inbox ? (
+          <p className="setup-note" style={{ margin: "0 0 12px" }}>
+            It becomes their draft, and leaves the inbox. Only admins and people an admin has given access to (a tick on
+            Settings → Users) can be picked: the report holds a member of the public&apos;s details.
+          </p>
+        ) : (
+          <p className="setup-note" style={{ margin: "0 0 12px" }}>
+            Now: <strong>{ownerLabel(owner)}</strong>. The owner sees the case under My cases and works on it.
+          </p>
+        )}
 
         {suggested && !owner && (
           <div className="assign-owner-hint">
@@ -140,7 +160,7 @@ export function AssignOwnerDialog({
             </div>
 
             <div className="assign-owner-list" role="radiogroup" aria-label="Owner">
-              {!needle && (
+              {!needle && !inbox && (
                 <label className={`assign-owner-row ${picked === "" ? "picked" : ""}`}>
                   <input type="radio" name="assign-owner" checked={picked === ""} onChange={() => setPicked("")} />
                   <span style={{ flex: 1, minWidth: 0 }}>
@@ -161,7 +181,11 @@ export function AssignOwnerDialog({
                   {u.cases && <span className="assign-owner-sub" style={{ flexShrink: 0 }}>{u.cases.open} open</span>}
                 </label>
               ))}
-              {shown.length === 0 && <p className="setup-note" style={{ margin: "8px 4px" }}>Nobody matches “{query.trim()}”.</p>}
+              {shown.length === 0 && (
+                <p className="setup-note" style={{ margin: "8px 4px" }}>
+                  {needle ? <>Nobody matches “{query.trim()}”.</> : "Nobody can be picked yet: no other admin or vetted account is active."}
+                </p>
+              )}
             </div>
           </>
         )}
@@ -172,8 +196,13 @@ export function AssignOwnerDialog({
           <button type="button" className="btn-secondary-modern" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="button" className="btn-primary-modern" onClick={() => void save()} disabled={saving || unchanged || users === null}>
-            {saving ? "Saving…" : picked ? "Assign" : "Make unassigned"}
+          <button
+            type="button"
+            className="btn-primary-modern"
+            onClick={() => void save()}
+            disabled={saving || unchanged || users === null || (inbox && !picked)}
+          >
+            {saving ? "Saving…" : picked || inbox ? "Assign" : "Make unassigned"}
           </button>
         </div>
       </div>

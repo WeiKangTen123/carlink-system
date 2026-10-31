@@ -6,6 +6,7 @@ import type { AppSettings } from "@/lib/api";
 import { updateSettingsAction } from "./actions";
 import { AiKeyStorageStatus, type AiKeyStorageView } from "./AiKeyStorageStatus";
 import { CompanyAiKeysCard } from "./CompanyAiKeysCard";
+import { PublicReportsCard } from "./PublicReportsCard";
 import { SetupCard } from "./SetupCard";
 import { botHandle, botUrl } from "./telegramWords";
 
@@ -92,7 +93,8 @@ function BrandingCard({ initial }: { initial: AppSettings }) {
 }
 
 /** Settings -> Company (admins): whether people's own AI keys can be read,
- * the company AI key, the Telegram bot, WhatsApp and report branding. */
+ * the company AI key, the Telegram bot, reports from the public (release
+ * P6), WhatsApp and report branding. */
 export function CompanyClient({ settings, setup }: { settings: AppSettings; setup: SetupStatus }) {
   const bot = botHandle(setup.telegramBotUsername);
   const botLink = botUrl(setup.telegramBotUsername);
@@ -151,6 +153,8 @@ export function CompanyClient({ settings, setup }: { settings: AppSettings; setu
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600 }}>{setup.telegramReports}</span>
         </div>
       </SetupCard>
+
+      <PublicReportsCard initial={settings} />
 
       <SetupCard
         id="whatsapp"

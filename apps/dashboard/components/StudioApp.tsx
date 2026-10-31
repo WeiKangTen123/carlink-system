@@ -14,7 +14,7 @@ import {
   Lock,
   UserRound,
 } from "lucide-react";
-import { ownerLabel, personLabel, type ReportDetail, type DamageSummaryItem, type Owner } from "@/lib/api";
+import { ownerLabel, personLabel, PUBLIC_CHANNEL, type ReportDetail, type DamageSummaryItem, type Owner } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
 import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
@@ -23,6 +23,7 @@ import { CaseInspectionTab } from "@/components/CaseInspectionTab";
 import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
 import { AssignOwnerDialog } from "@/components/AssignOwnerDialog";
+import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import { useCurrentUser } from "@/components/CurrentUser";
 import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
@@ -155,7 +156,11 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           <div className="step-circle">✓</div>
           <div>
             <div className="step-title">1. Filed</div>
-            <div className="step-desc" style={{ textTransform: "capitalize" }}>{report.channel} intake</div>
+            {report.channel === PUBLIC_CHANNEL ? (
+              <div className="step-desc">Telegram (public) intake</div>
+            ) : (
+              <div className="step-desc" style={{ textTransform: "capitalize" }}>{report.channel} intake</div>
+            )}
           </div>
         </div>
         <div className={`step-node ${isSignedOff ? "completed" : "active"}`}>
@@ -239,6 +244,14 @@ export function StudioApp({ report }: { report: ReportDetail }) {
           )}
         </div>
       </div>
+
+      {/* Who sent it, on a report from the public (release P6). Filed, so
+          it can't go back to the inbox from here. */}
+      {report.public_submission && (
+        <div style={{ marginBottom: 16 }}>
+          <PublicSenderCard reportId={report.id} info={report.public_submission} showAiCheck={!isSignedOff} />
+        </div>
+      )}
 
       {/* AI-Drafted Summary -- context you read once when opening the case,
           not something cross-referenced item-by-item, so it sits as a strip

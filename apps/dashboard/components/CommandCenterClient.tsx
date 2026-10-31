@@ -24,8 +24,9 @@ import {
   Navigation,
   X,
   Filter,
+  Inbox,
 } from "lucide-react";
-import type { ReportSummary, AnalyticsSummary } from "@/lib/api";
+import type { ReportSummary, AnalyticsSummary, InboxCount } from "@/lib/api";
 import { useCurrentUser } from "@/components/CurrentUser";
 import { fileUrl } from "@/lib/api";
 import {
@@ -49,6 +50,20 @@ type QuickFilter = "all" | "urgent_sla" | "strip_down" | "sje_court" | "severe" 
 interface Props {
   initialReports: ReportSummary[];
   analytics: AnalyticsSummary;
+  /** The Public Inbox count (release P6); null for people who don't see
+   * all cases, or when it couldn't be counted. */
+  inbox?: InboxCount | null;
+}
+
+/** "3 days", "5 hours": how long the oldest untaken report has waited. */
+function waitedFor(iso: string | null): string | null {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return null;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 24) return hours <= 1 ? "under 2 hours" : `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 // Singapore Automotive Industrial Clusters for Loss Adjuster Physical Dispatch
@@ -136,7 +151,7 @@ function LiveSgtClock() {
   );
 }
 
-export function CommandCenterClient({ initialReports, analytics }: Props) {
+export function CommandCenterClient({ initialReports, analytics, inbox = null }: Props) {
   const user = useCurrentUser();
   const [selectedSwimlane, setSelectedSwimlane] = useState<Swimlane>("all");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
@@ -480,6 +495,33 @@ export function CommandCenterClient({ initialReports, analytics }: Props) {
             Court evidence & crash cushions
           </div>
         </div>
+
+        {/* Public Inbox (release P6): reports from the public nobody has
+            taken yet. Only for people who see all cases. */}
+        {inbox && (
+          <Link
+            href="/inbox"
+            prefetch={false}
+            className="kpi-card-command inbox-kpi-card"
+            style={{ "--kpi-border": inbox.new ? "var(--badge-amber-text)" : "var(--border-color)" } as React.CSSProperties}
+          >
+            <div>
+              <div className="kpi-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Inbox style={{ width: 13, height: 13, color: "var(--badge-amber-text)" }} /> Public Inbox
+              </div>
+              <div className="kpi-val" style={{ color: inbox.new ? "var(--badge-amber-text)" : "var(--text-primary)", marginTop: 4 }}>
+                {inbox.new} <span style={{ fontSize: 13, fontWeight: 600 }}>New</span>
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: inbox.expiring_soon ? "var(--badge-red-text)" : "var(--text-muted)", marginTop: 6 }} suppressHydrationWarning>
+              {inbox.expiring_soon
+                ? `${inbox.expiring_soon} close to being deleted (30 days)`
+                : inbox.new
+                  ? `Oldest waiting ${waitedFor(inbox.oldest_submitted_at) ?? "—"}`
+                  : "Sent by the public through Telegram"}
+            </div>
+          </Link>
+        )}
       </div>
 
       {/* 4. Triage Swimlanes & Quick Triage Filter Chips Bar */}

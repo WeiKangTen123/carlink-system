@@ -9,11 +9,21 @@ import {
   BookOpen,
   Settings,
   CarFront,
+  Inbox,
 } from "lucide-react";
+import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
+import { useInboxCount } from "@/components/inbox/useInboxCount";
+
+// How often the Public Inbox badge asks for its count while the tab is in
+// view (release P6); every route change asks too.
+const INBOX_POLL_MS = 60_000;
 
 const NAV_ITEMS = [
   { href: "/", label: "Command Center", icon: LayoutDashboard },
   { href: "/reports", label: "Cases Repository", icon: FolderArchive },
+  // Release P6: reports the public sends through the Telegram bot. Only for
+  // people who see all cases (admins and staff ticked for it).
+  { href: "/inbox", label: "Public Inbox", icon: Inbox, seeAllOnly: true },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
   // Everyone: My settings (profile, password). Admins also get the Users
@@ -34,7 +44,10 @@ function isActiveLink(pathname: string, href: string): boolean {
  * would only bounce back (see AppShell). */
 export function Sidebar({ locked = false }: { locked?: boolean }) {
   const pathname = usePathname();
-  const items = locked ? [] : NAV_ITEMS;
+  const user = useCurrentUser();
+  const seesAll = canViewAllCases(user);
+  const items = locked ? [] : NAV_ITEMS.filter((item) => !item.seeAllOnly || seesAll);
+  const inbox = useInboxCount(seesAll && !locked, { pollMs: INBOX_POLL_MS, refreshKey: pathname });
 
   return (
     <aside className="sidebar">
@@ -60,6 +73,17 @@ export function Sidebar({ locked = false }: { locked?: boolean }) {
             >
               <Icon style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span>{item.label}</span>
+              {item.href === "/inbox" && inbox && inbox.new > 0 && (
+                <span
+                  className={`sidebar-inbox-badge ${inbox.expiring_soon > 0 ? "expiring" : ""}`}
+                  title={
+                    `${inbox.new} new report${inbox.new === 1 ? "" : "s"} from the public` +
+                    (inbox.expiring_soon > 0 ? `, ${inbox.expiring_soon} close to being deleted` : "")
+                  }
+                >
+                  {inbox.new > 99 ? "99+" : inbox.new}
+                </span>
+              )}
             </Link>
           );
         })}

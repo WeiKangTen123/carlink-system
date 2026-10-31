@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Bot, Check, Lock, Save, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bot, Check, Lock, Save, Send, X } from "lucide-react";
 import { aiOffMessage, isAiOffCode, ownerLabel, type AiOffCode, type ReportData, type Taxonomy } from "@/lib/api";
 import { AiFixLink } from "@/components/AiFixLink";
 import { CaseNotFound } from "@/components/CaseNotFound";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
+import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   IntakeRequestError,
@@ -108,6 +109,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   // The API said 404: no such draft, or not one this account may open.
   const [missing, setMissing] = useState(false);
+  // A report from the public nobody has taken yet (release P6): it opens in
+  // the Public Inbox, read-only, until someone takes it.
+  const [toInbox, setToInbox] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Null until something newer than the page's signed-in user says whether
   // the AI runs for this person (see AiNow). Off: offer to fill the case in
@@ -232,6 +236,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     getIntake(initialDraftId)
       .then((s) => {
         if (cancelled) return;
+        if (s.public_submission && !s.owner) {
+          // Never loaded into the form: nothing here may autosave it.
+          setToInbox(true);
+          router.replace(`/inbox/${initialDraftId}`);
+          return;
+        }
         applyState(s, true);
         setStep(stepFor(s));
       })
@@ -750,6 +760,13 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     }
   }
 
+  /** Before a public report goes back to the inbox (release P6): what is on
+   * screen is saved first, so it stays with the report. */
+  async function releaseSave(): Promise<boolean> {
+    if (!(await flushDeletes())) return false;
+    return save();
+  }
+
   async function saveAndExit() {
     if (!(await flushDeletes())) return;
     if (await save()) router.push("/reports");
@@ -768,6 +785,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     () => new Set([...changedAt].filter(([, at]) => at > readStartedAt).map(([photoId]) => photoId)),
     [changedAt, readStartedAt]
   );
+
+  if (toInbox) {
+    return <div className="intake-shell"><div className="card intake-panel intake-muted">Opening it in the Public Inbox…</div></div>;
+  }
 
   if (loading) {
     return <div className="intake-shell"><div className="card intake-panel intake-muted">Loading draft…</div></div>;
@@ -791,6 +812,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     );
   }
 
+  // A report from the public (release P6), when there is one.
+  const publicInfo = state?.public_submission ?? null;
+
   // Someone else's unfinished draft: staff who see all cases can open it,
   // but only its owner or an admin may work on it.
   if (state && !state.permissions.edit) {
@@ -799,13 +823,20 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         <div className="card intake-panel intake-view-only">
           <Lock style={{ width: 20, height: 20, color: "var(--text-muted)", flexShrink: 0 }} />
           <div style={{ minWidth: 0 }}>
-            <h1 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 6px" }}>Unfinished draft</h1>
+            <h1 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 6px" }}>
+              {publicInfo ? <>Public report {publicInfo.reference}</> : "Unfinished draft"}
+            </h1>
             <p className="form-hint" style={{ margin: "0 0 12px" }}>
-              Owner: <strong>{ownerLabel(state.owner)}</strong>. Only its owner or an admin can work on a draft. You can open
-              it once it is filed as a case.
+              {publicInfo ? "Taken from the Public Inbox by" : "Owner:"} <strong>{ownerLabel(state.owner)}</strong>. Only its
+              owner or an admin can work on a draft. You can open it once it is filed as a case.
             </p>
-            <Link href="/reports" prefetch={false} className="btn-secondary-modern" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <ArrowLeft style={{ width: 13, height: 13 }} /> Back to cases
+            <Link
+              href={publicInfo ? `/inbox/${state.id}` : "/reports"}
+              prefetch={false}
+              className="btn-secondary-modern"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              <ArrowLeft style={{ width: 13, height: 13 }} /> {publicInfo ? "See it in the Public Inbox" : "Back to cases"}
             </Link>
           </div>
         </div>
@@ -825,6 +856,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const showAiOff = aiOff && (step === 1 || (step === 2 && !failedAiOff && aiNow?.code != null));
   // A Re-read refused on a case the AI read before: nothing to fill by hand.
   const aiOffReadEarlier = step === 2 && stage === "ready";
+  // Public reports (release P6) may be kept off the company AI key; the AI-off
+  // words say so when the API's own didn't come with the refusal.
+  const publicCase = Boolean(publicInfo);
 
   let saveStatus: React.ReactNode = null;
   if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
@@ -846,6 +880,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         </div>
         <div className="intake-header-actions">
           {draftId && <span className="intake-chip">Draft {draftId.slice(0, 6).toUpperCase()}</span>}
+          {publicInfo && (
+            <span className="intake-chip public-chip" title="Sent by a member of the public through the Telegram bot">
+              <Send style={{ width: 11, height: 11 }} /> Public · {publicInfo.reference}
+            </span>
+          )}
           {/* Only someone who sees other people's cases needs telling whose
               draft this is. Drafts can't be reassigned (owner_draft). */}
           {state && canViewAllCases(user) && (
@@ -896,11 +935,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
                 hand.
               </>
             ) : aiOffReadEarlier ? (
-              <>{aiOffMessage(aiOffCode, aiOffSaid)} The facts the AI read earlier are kept.</>
+              <>{aiOffMessage(aiOffCode, aiOffSaid, { publicCase })} The facts the AI read earlier are kept.</>
             ) : (
               <>
-                {aiOffMessage(aiOffCode, aiOffSaid)} The photos won&apos;t be sorted or read for you; you can fill the
-                case in by hand.
+                {aiOffMessage(aiOffCode, aiOffSaid, { publicCase })} The photos won&apos;t be sorted or read for you; you
+                can fill the case in by hand.
               </>
             )}{" "}
             <AiFixLink code={aiOffCode} />
@@ -917,6 +956,24 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
             </button>
           )}
         </div>
+      )}
+
+      {publicInfo && state && (step === 1 || step === 4) && (
+        <PublicSenderCard
+          reportId={state.id}
+          info={publicInfo}
+          canRelease={Boolean(state.permissions.release)}
+          releaseBlocked={
+            uploading
+              ? "Wait for the photos to finish uploading"
+              : running
+                ? "Wait for the AI to finish reading"
+                : busy
+                  ? "Wait a moment"
+                  : null
+          }
+          beforeRelease={releaseSave}
+        />
       )}
 
       {step === 1 && (
@@ -964,6 +1021,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onBack={() => goTo(1)}
           onNext={() => goTo(3)}
           aiRefused={aiNow && !aiNow.allowed ? aiNow : null}
+          publicCase={publicCase}
         />
       )}
 
