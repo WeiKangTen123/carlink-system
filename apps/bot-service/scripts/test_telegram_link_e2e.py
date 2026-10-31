@@ -1693,18 +1693,26 @@ def who_it_talks_to() -> None:
           "another group, two people: at most one reply there too", " | ".join(texts)[:300])
     bea.c.delete("/auth/me/telegram/code")
 
+    # P6: someone not connected gets the public report form's welcome and
+    # consent instead of "connect first" (scripts/test_telegram_public.py
+    # and test_public_e2e.py take the form further). Until they agree,
+    # nothing is still fetched or kept.
     print("  an unconnected person")
     t = TgUser("Uma", "Unlinked", "umaunlinked")
     mark_calls, before_reports, before_tmp = len(CALLS), report_ids(), tmp_files()
     replies = [photo(t), say(t, "Rear-ended at PIE, plate SBA1234A"), photo(t, caption="more"),
                document(t, "image/png", "scan.png")]
     texts = [x for r in replies for x in r.texts]
-    check(len(texts) == 1 and "connect" in texts[0].lower(),
-          "photo, text, photo, image file: one polite 'connect first' (once an hour per chat)", " | ".join(texts)[:400] or "nothing")
+    check(len(texts) == 1 and replies[0].button(r"\bagree\b") is not None and replies[0].button(r"no,? thanks"),
+          "photo, text, photo, image file: one public welcome with [I agree, start] [No thanks] (at most every 5 s "
+          "per chat)", " | ".join(texts)[:400] or "nothing")
+    check(replies[0].prompt is None and not any(r.code_talk for r in replies), "  and no link prompt or code talk",
+          replies[0].why())
     urls = [u for r in replies for u in r.urls()]
-    check(any(u.startswith(PUBLIC_BASE_URL) for u in urls), f"it links to Carlink Settings at {PUBLIC_BASE_URL}", str(urls))
+    check(urls and all(u.startswith(f"{PUBLIC_BASE_URL}/privacy#public-reports") for u in urls),
+          f"its only link is the privacy notice, {PUBLIC_BASE_URL}/privacy#public-reports", str(urls))
     check(sum(r.downloads for r in replies) == 0, "nothing was downloaded", next((r.why() for r in replies if r.downloads), ""))
-    check(not sessions_for(t.id), "no session was kept", str(sessions_for(t.id)))
+    check(not sessions_for(t.id), "no session was kept (nothing before consent)", str(sessions_for(t.id)))
     check(report_ids() == before_reports, "no case")
     check(tmp_files() == before_tmp, "no temp file")
     check(not calls_since(mark_calls), "no AI ran", describe(calls_since(mark_calls)))
@@ -1732,7 +1740,8 @@ def who_it_talks_to() -> None:
                      (TgUser("Al", "Listed", "allisted", uid=OLD_ALLOWED_ID), "an id in the old TELEGRAM_ALLOWED_IDS")):
         before_reports = report_ids()
         rep = photo(who)
-        check(rep.downloads == 0 and "connect" in rep.text.lower(), f"{why}: 'connect first', no download", rep.why())
+        check(rep.downloads == 0 and rep.button(r"\bagree\b") is not None,
+              f"{why}: the public welcome (P6), no download", rep.why())
         check(not sessions_for(who.id) and report_ids() == before_reports, "  no session, no case")
 
 
