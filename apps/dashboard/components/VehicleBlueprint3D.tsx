@@ -16,9 +16,11 @@ if (typeof window !== "undefined") {
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { clone as cloneWithSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import type { DamageSummaryItem } from "@/lib/api";
 import { resolveZones, groupByZone, type ZoneResolution } from "@/lib/vehicleZones";
+import { CAR_PARTS_REAL, isExcludedMesh, meshNamesMatch } from "@/lib/vehicleMeshRules";
 import { severityClass } from "@/lib/caseFields";
 
 /** Reads a CSS custom property off <html> and keeps it live across the
@@ -48,99 +50,60 @@ function severityColor(severity?: string | null): string | null {
 }
 const SEVERITY_RANK: Record<string, number> = { minor: 1, moderate: 2, severe: 3 };
 
-// =============================================================================
-// Zone key -> real mesh names in the sedan model.
-//
-// "Generic Sedan Car" by MMC Works (CC-BY 4.0, credited in
-// public/assets/vehicles/CREDIT.txt) -- 124 separate real meshes
-// (bumper-front, door-front-l, headlight-projector-l, etc), not a merged
-// blob, so damage highlighting recolors the actual named part. The
-// free-text-part -> zone-key mapping itself lives in lib/vehicleZones.ts,
-// shared with the Damage & Parts Checklist table so both always agree on
-// numbering.
-//
-// Sketchfab's Blender->glTF export puts the descriptive name on a wrapper
-// Group one level up from the mesh itself (mesh nodes are generically
-// named "Object_N") -- confirmed by inspecting the raw glTF node list
-// directly. Every lookup here goes through the mesh's parent.
-// =============================================================================
-const CAR_EXCLUDE = /interior|dashboard|seat|steering-wheel|column-wheel|center-console|engine|escape-pipes|radiator|brake-|shock-absorber|spring|suspension-|frame-front|frame-middle|frame-rear|roof-pillars-interior/i;
+// Zone key -> real mesh names inside the five models (CAR_PARTS_REAL) and
+// the interior/mechanical clutter kept hidden (CAR_EXCLUDE) live in
+// lib/vehicleMeshRules.ts, shared with scripts/check-vehicle-mesh-rules.mjs,
+// which checks every rule against the real model files. The free-text
+// part -> zone-key mapping itself lives in lib/vehicleZones.ts.
 
-const CAR_PARTS_REAL: { key: string; label: string; match: RegExp[] }[] = [
-  { key: "front_bumper", label: "Front Bumper", match: [/^bumper-front/i, /^bumper.*front/i, /bumpers?\.smd/i] },
-  { key: "rear_bumper", label: "Rear Bumper", match: [/^bumper-rear/i, /^bumper.*rear/i] },
-  { key: "bonnet", label: "Bonnet/Hood", match: [/^hood/i, /^bonnet/i] },
-  { key: "windscreen", label: "Windscreen", match: [/^windshield/i, /^windscreen/i, /^glass-windshield/i] },
-  { key: "roof", label: "Roof", match: [/^roof/i, /^sedan-unibody/i, /^chassis-sunroof/i] },
-  { key: "rear_glass", label: "Rear Glass", match: [/^glass-rear/i, /^rear.*glass/i] },
-  { key: "tailgate", label: "Trunk / Tailgate", match: [/^trunk/i, /^tailgate/i, /^boot/i] },
-  { key: "l_headlamp", label: "Left Headlamp", match: [/^headlights?-.*-l[_.]/i, /^headlight.*-(?:l_|left|l\b)/i, /^headlight.*left/i] },
-  { key: "r_headlamp", label: "Right Headlamp", match: [/^headlights?-.*-r[_.]/i, /^headlight.*-(?:r_|right|r\b)/i, /^headlight.*right/i] },
-  { key: "l_taillamp", label: "Left Taillamp", match: [/^taillight-.*-l[_.]/i, /^taillight.*-(?:l_|left|l\b)/i, /^taillight.*left/i] },
-  { key: "r_taillamp", label: "Right Taillamp", match: [/^taillight-.*-r[_.]/i, /^taillight.*-(?:r_|right|r\b)/i, /^taillight.*right/i] },
-  { key: "l_door_front", label: "Left Front Door", match: [/^door-front-(?:l_|left)/i, /^door.*front.*left/i] },
-  { key: "r_door_front", label: "Right Front Door", match: [/^door-front-(?:r_|right)/i, /^door.*front.*right/i] },
-  { key: "l_door_rear", label: "Left Rear Door", match: [/^door-rear-(?:l_|left)/i, /^door.*rear.*left/i] },
-  { key: "r_door_rear", label: "Right Rear Door", match: [/^door-rear-(?:r_|right)/i, /^door.*rear.*right/i] },
-  { key: "l_fender", label: "Left Fender", match: [/^fender-front-(?:l_|left)/i, /^wheel-fender-l_/i, /fender.*left/i, /SM_Fender.*F.*101/i] },
-  { key: "r_fender", label: "Right Fender", match: [/^fender-front-(?:r_|right)/i, /^wheel-fender-r_/i, /fender.*right/i] },
-  { key: "l_mirror", label: "Left Mirror", match: [/(?:side-)?mirror-(?:l|left)/i, /mirror.*left/i] },
-  { key: "r_mirror", label: "Right Mirror", match: [/(?:side-)?mirror-(?:r|right)/i, /mirror.*right/i] },
-  { key: "front_grill", label: "Front Grille", match: [/^front-grill/i, /^honeycomb-grill/i, /^bumper-front-grill-frame/i, /grill\.smd/i] },
-  { key: "l_door_glass_front", label: "Left Front Door Glass", match: [/^door-front-window-glass-l_/i, /^glass-door-front-left/i] },
-  { key: "r_door_glass_front", label: "Right Front Door Glass", match: [/^door-front-window-glass-r_/i, /^glass-door-front-right/i] },
-  { key: "l_door_glass_rear", label: "Left Rear Door Glass", match: [/^door-rear-window-glass-l_/i, /^door-rear-trim-glass-l_/i, /^glass-door-rear-left/i] },
-  { key: "r_door_glass_rear", label: "Right Rear Door Glass", match: [/^door-rear-trim-glass-r_/i, /^door-rear-window-glass-r_/i, /^glass-door-rear-right/i] },
-  { key: "underbody", label: "Underbody / Chassis", match: [/^frame-front/i, /^frame-middle/i, /^frame-rear/i] },
-  { key: "l_wheel_front", label: "Left Front Wheel", match: [/^Name-Wheel\.Ft\.L/i, /wheel.*fl/i, /wheel.*front.*left/i, /wheel-fl/i, /tire-low-fl/i, /hiace_wheel\.smd$/i] },
-  { key: "r_wheel_front", label: "Right Front Wheel", match: [/^Name-Wheel\.Ft\.R/i, /wheel.*fr/i, /wheel.*front.*right/i, /wheel-fr/i, /tire-low-fr/i, /hiace_wheel\.smd\.001/i] },
-  { key: "l_wheel_rear", label: "Left Rear Wheel", match: [/^Name-Wheel\.Bk\.L/i, /wheel.*rl/i, /wheel.*rear.*left/i, /wheel-rl/i, /tire-low-rl/i, /hiace_wheel\.smd\.002/i] },
-  { key: "r_wheel_rear", label: "Right Rear Wheel", match: [/^Name-Wheel\.Bk\.R/i, /wheel.*rr/i, /wheel.*rear.*right/i, /wheel-rr/i, /tire-low-rr/i, /hiace_wheel\.smd\.003/i] },
-];
-
-// Fallback normalized 3D anchors (-1 to 1) for models where some panel meshes are joined
+// Fallback normalized 3D anchors (-1 to 1) for zones no mesh rule matched
+// (joined panels, or the MPV's generically named meshes). Axes as measured
+// in every model file: +Z = front, -Z = rear, +X = the car's LEFT (LH)
+// side, +Y = up. X/Z are scaled by the model's box in markers below.
 const ZONE_ANCHORS_NORMALIZED: Record<string, [number, number, number]> = {
-  front_bumper: [0, 0.28, -0.98],
-  bonnet: [0, 0.65, -0.65],
-  windscreen: [0, 0.88, -0.35],
-  roof: [0, 0.98, 0.05],
-  rear_glass: [0, 0.88, 0.45],
-  tailgate: [0, 0.65, 0.95],
-  rear_bumper: [0, 0.28, 0.98],
-  l_door_front: [-0.96, 0.55, -0.25],
-  r_door_front: [0.96, 0.55, -0.25],
-  l_door_rear: [-0.96, 0.55, 0.3],
-  r_door_rear: [0.96, 0.55, 0.3],
-  underbody: [0, 0.1, 0.0],
-  front_grill: [0, 0.42, -0.98],
-  l_headlamp: [-0.68, 0.52, -0.92],
-  r_headlamp: [0.68, 0.52, -0.92],
-  l_taillamp: [-0.68, 0.65, 0.92],
-  r_taillamp: [0.68, 0.65, 0.92],
-  l_wheel_front: [-0.95, 0.25, -0.65],
-  r_wheel_front: [0.95, 0.25, -0.65],
-  l_wheel_rear: [-0.95, 0.25, 0.65],
-  r_wheel_rear: [0.95, 0.25, 0.65],
-  l_fender: [-0.95, 0.55, -0.65],
-  r_fender: [0.95, 0.55, -0.65],
-  l_mirror: [-1.02, 0.75, -0.4],
-  r_mirror: [1.02, 0.75, -0.4],
-  l_door_glass_front: [-0.95, 0.8, -0.25],
-  r_door_glass_front: [0.95, 0.8, -0.25],
-  l_door_glass_rear: [-0.95, 0.8, 0.3],
-  r_door_glass_rear: [0.95, 0.8, 0.3],
+  front_bumper: [0, 0.28, 0.98],
+  bonnet: [0, 0.65, 0.65],
+  windscreen: [0, 0.88, 0.35],
+  roof: [0, 0.98, -0.05],
+  rear_glass: [0, 0.88, -0.45],
+  tailgate: [0, 0.65, -0.95],
+  rear_bumper: [0, 0.28, -0.98],
+  l_door_front: [0.96, 0.55, 0.25],
+  r_door_front: [-0.96, 0.55, 0.25],
+  l_door_rear: [0.96, 0.55, -0.3],
+  r_door_rear: [-0.96, 0.55, -0.3],
+  underbody: [0, 0.1, 0],
+  front_grill: [0, 0.42, 0.98],
+  l_headlamp: [0.68, 0.52, 0.92],
+  r_headlamp: [-0.68, 0.52, 0.92],
+  l_taillamp: [0.68, 0.65, -0.92],
+  r_taillamp: [-0.68, 0.65, -0.92],
+  l_wheel_front: [0.95, 0.25, 0.65],
+  r_wheel_front: [-0.95, 0.25, 0.65],
+  l_wheel_rear: [0.95, 0.25, -0.65],
+  r_wheel_rear: [-0.95, 0.25, -0.65],
+  l_fender: [0.95, 0.55, 0.65],
+  r_fender: [-0.95, 0.55, 0.65],
+  l_mirror: [1.02, 0.75, 0.4],
+  r_mirror: [-1.02, 0.75, 0.4],
+  l_door_glass_front: [0.95, 0.8, 0.25],
+  r_door_glass_front: [-0.95, 0.8, 0.25],
+  l_door_glass_rear: [0.95, 0.8, -0.3],
+  r_door_glass_rear: [-0.95, 0.8, -0.3],
 };
 
-function partName(mesh: THREE.Object3D): string {
-  return mesh.parent ? mesh.parent.name : mesh.name;
+/** The three names a rule can match for one mesh: its own, its parent's
+ * and its grandparent's. The models differ in where the descriptive name
+ * sits -- the SUV names the mesh itself (parent unnamed), Sketchfab exports
+ * name a wrapper Group one level up ("Object_N" meshes under
+ * "door-front-l_16"), and the sedan's wheel corner sits two levels up.
+ * Empty strings where a level is missing. */
+function meshNames(obj: THREE.Object3D): string[] {
+  return [obj.name || "", obj.parent?.name || "", obj.parent?.parent?.name || ""];
 }
 
-/** The wheel groups carry their corner ("Name-Wheel.Ft.L") one level above
- * the mesh's own parent, so lookups test the grandparent too. Every
- * pattern above is anchored with ^, so widening the search this way can't
- * make an existing body-panel rule match something new by accident. */
-function partGroupName(mesh: THREE.Object3D): string {
-  return mesh.parent?.parent ? mesh.parent.parent.name : "";
+function isExcluded(obj: THREE.Object3D): boolean {
+  return isExcludedMesh(meshNames(obj));
 }
 
 function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden = false): THREE.Mesh[] {
@@ -149,11 +112,47 @@ function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden =
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
     if (!mesh.visible && !includeHidden) return;
-    const name = partName(mesh);
-    const group = partGroupName(mesh);
-    if (patterns.some((re) => re.test(name) || (group && re.test(group)))) found.push(mesh);
+    if (meshNamesMatch(meshNames(mesh), patterns)) found.push(mesh);
   });
   return found;
+}
+
+/** World-space box of one mesh, measured the way it is drawn.
+ *
+ * A skinned mesh (the van) is drawn where its bones put it, not where its
+ * own node sits, and the compressed van file keeps its real size in the
+ * bind matrices: its raw vertices only span a unit cube. So the bones are
+ * posed from the current transforms first (Skeleton.update() is otherwise
+ * only run by the renderer, and its matrices are all zero before the first
+ * frame) and three.js then runs every vertex through them. */
+function meshWorldBox(mesh: THREE.Mesh, target: THREE.Box3): THREE.Box3 {
+  const skinned = mesh as THREE.SkinnedMesh;
+  if (skinned.isSkinnedMesh) {
+    skinned.skeleton.update();
+    skinned.computeBoundingBox();
+    return target.copy(skinned.boundingBox as THREE.Box3).applyMatrix4(mesh.matrixWorld);
+  }
+  const geo = mesh.geometry;
+  if (geo.boundingBox === null) geo.computeBoundingBox();
+  return target.copy(geo.boundingBox as THREE.Box3).applyMatrix4(mesh.matrixWorld);
+}
+
+function boxOfMeshes(meshes: THREE.Mesh[]): THREE.Box3 {
+  const box = new THREE.Box3();
+  const tmp = new THREE.Box3();
+  meshes.forEach((m) => box.union(meshWorldBox(m, tmp)));
+  return box;
+}
+
+/** Bounds of everything currently drawn (hidden interior clutter left out). */
+function measureVisible(root: THREE.Object3D): THREE.Box3 {
+  root.updateMatrixWorld(true);
+  const shown: THREE.Mesh[] = [];
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.isMesh && mesh.visible && mesh.geometry) shown.push(mesh);
+  });
+  return boxOfMeshes(shown);
 }
 
 export type VehicleArchetype = "suv" | "sedan" | "van" | "mpv" | "hatchback";
@@ -171,6 +170,24 @@ export const MODEL_PATHS: Record<VehicleArchetype, string> = {
   mpv: "/assets/vehicles/mpv.v2.glb",
   hatchback: "/assets/vehicles/hatchback.v2.glb",
 };
+
+// Real length, in metres, each model is scaled to. The files use whatever
+// unit their author exported -- measured bumper to bumper: sedan 4.98
+// (metres), suv 419 (centimetres), hatchback 0.04, mpv 122, van 3.74 --
+// so a file's own numbers can't be drawn as they are: the SUV put the
+// camera inside a 400 m long car, the hatchback was an invisible dot.
+const TARGET_LENGTH_M: Record<VehicleArchetype, number> = {
+  sedan: 4.8,
+  suv: 4.5,
+  hatchback: 4.0,
+  mpv: 4.8,
+  van: 4.9,
+};
+
+// Yaw that turns a model so its front faces +Z like the other four
+// (measured from where each file keeps its front bumper / grille). Only
+// the van is exported nose-along-+X.
+const MODEL_YAW: Partial<Record<VehicleArchetype, number>> = { van: -Math.PI / 2 };
 
 export function detectBodyType(vehicleText: string, statedBodyType?: string | null): VehicleArchetype {
   const norm = (statedBodyType || "").trim().toLowerCase();
@@ -239,6 +256,7 @@ function CameraRig({
 
 function VehicleModel({
   modelUrl,
+  archetype,
   color,
   damageEntries,
   zoneResolutions,
@@ -249,6 +267,7 @@ function VehicleModel({
   onFocusRequest,
 }: {
   modelUrl: string;
+  archetype: VehicleArchetype;
   color: string;
   damageEntries: DamageSummaryItem[];
   zoneResolutions: (ZoneResolution | null)[];
@@ -260,23 +279,31 @@ function VehicleModel({
 }) {
   const gltf = useGLTF(modelUrl);
 
-  // Filter interior/mechanical clutter, center on the ground plane, and
-  // clone once per mount -- computed from the actual loaded geometry via
-  // Box3, never a hand-typed offset.
+  // One clone per mount, normalized from the loaded geometry itself (never
+  // a hand-typed offset): hide interior clutter, turn the front to +Z, scale
+  // to the archetype's real length, centre on x/z and sit the wheels on the
+  // ground. cloneWithSkeleton() keeps the van's bones with its skinned
+  // meshes; a plain clone() leaves them on the cached original, and a
+  // skinned mesh draws where its bones are, so the van would ignore every
+  // transform applied here.
   const { root, box } = useMemo(() => {
-    const clone = gltf.scene.clone(true);
+    const clone = cloneWithSkeleton(gltf.scene);
     clone.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
-      if (CAR_EXCLUDE.test(partName(mesh))) mesh.visible = false;
+      if (isExcluded(mesh)) mesh.visible = false;
+      // A skinned mesh's culling sphere comes from bone state; never cull it.
+      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) mesh.frustumCulled = false;
     });
-    const rawBox = new THREE.Box3().setFromObject(clone);
-    const center = rawBox.getCenter(new THREE.Vector3());
-    clone.position.set(-center.x, -rawBox.min.y, -center.z);
-    const normalizedBox = new THREE.Box3().setFromObject(clone);
-    return { root: clone, box: normalizedBox };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gltf]);
+    clone.rotation.set(0, MODEL_YAW[archetype] ?? 0, 0);
+    const raw = measureVisible(clone);
+    const rawLength = raw.max.z - raw.min.z;
+    if (rawLength > 1e-6) clone.scale.setScalar(TARGET_LENGTH_M[archetype] / rawLength);
+    const scaled = measureVisible(clone);
+    const center = scaled.getCenter(new THREE.Vector3());
+    clone.position.set(-center.x, -scaled.min.y, -center.z);
+    return { root: clone, box: measureVisible(clone) };
+  }, [gltf, archetype]);
 
   // Zone key -> worst severity among the real damage_summary items that
   // resolved to it. The mesh itself can only be one colour, so a zone
@@ -293,37 +320,56 @@ function VehicleModel({
     return severity;
   }, [damageEntries, zoneResolutions]);
 
+  // Where a zone sits on this model: the box of its real meshes, or -- for
+  // zones no rule maps here (most of the MPV's and the van's generically
+  // named meshes) -- the normalized anchor scaled into the model's box, so
+  // badges and zoom-to-part still land in roughly the right place. Same
+  // identity for the life of the clone: the zoom effects below list it.
+  const zonePlacement = useCallback(
+    (zoneKey: string): { center: THREE.Vector3; size: THREE.Vector3; fromMesh: boolean } | null => {
+      const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
+      if (!zone) return null;
+      const meshes = findCarMeshes(root, zone.match, true);
+      if (meshes.length) {
+        const partBox = boxOfMeshes(meshes);
+        const center = partBox.getCenter(new THREE.Vector3());
+        if (zoneKey === "roof") {
+          center.y = Math.max(center.y, partBox.max.y - 0.05);
+        }
+        return { center, size: partBox.getSize(new THREE.Vector3()), fromMesh: true };
+      }
+      const normAnchor = ZONE_ANCHORS_NORMALIZED[zoneKey] || [0, 0.5, 0];
+      const bCenter = box.getCenter(new THREE.Vector3());
+      const bSize = box.getSize(new THREE.Vector3());
+      const center = new THREE.Vector3(
+        bCenter.x + normAnchor[0] * bSize.x * 0.46,
+        box.min.y + normAnchor[1] * bSize.y,
+        bCenter.z + normAnchor[2] * bSize.z * 0.46,
+      );
+      return { center, size: new THREE.Vector3(0.4, 0.3, 0.4), fromMesh: false };
+    },
+    [root, box],
+  );
+
+  // An anchored zone has no mesh box to frame; pull back to about a quarter
+  // of the car instead of a 1 m close-up of unnamed wireframe.
+  const focusOnZone = useCallback(
+    (zoneKey: string) => {
+      const placed = zonePlacement(zoneKey);
+      if (!placed) return;
+      onFocusRequest(placed.center, placed.fromMesh ? placed.size : new THREE.Vector3(1.1, 1.1, 1.1));
+    },
+    [zonePlacement, onFocusRequest],
+  );
+
   const markers = useMemo(() => {
     const byZone = groupByZone(zoneResolutions);
     const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
 
     byZone.forEach((itemIdxs, zoneKey) => {
-      const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
-      if (!zone) return;
-      const meshes = findCarMeshes(root, zone.match, true);
-      let center: THREE.Vector3;
-      let size: THREE.Vector3;
-
-      if (meshes.length) {
-        const partBox = new THREE.Box3();
-        meshes.forEach((m) => partBox.expandByObject(m));
-        center = partBox.getCenter(new THREE.Vector3());
-        if (zoneKey === "roof") {
-          center.y = Math.max(center.y, partBox.max.y - 0.05);
-        }
-        size = partBox.getSize(new THREE.Vector3());
-      } else {
-        // Fallback for models with joined meshes: use normalized anchor scaled to bounding box
-        const normAnchor = ZONE_ANCHORS_NORMALIZED[zoneKey] || [0, 0.5, 0];
-        const bCenter = box.getCenter(new THREE.Vector3());
-        const bSize = box.getSize(new THREE.Vector3());
-        center = new THREE.Vector3(
-          bCenter.x + (normAnchor[0] * bSize.x) * 0.46,
-          box.min.y + normAnchor[1] * bSize.y,
-          bCenter.z + (normAnchor[2] * bSize.z) * 0.46
-        );
-        size = new THREE.Vector3(0.4, 0.3, 0.4);
-      }
+      const placed = zonePlacement(zoneKey);
+      if (!placed) return;
+      const { center, size } = placed;
 
       const spread = Math.max(Math.min(size.x, size.z) * 0.32, 0.09);
 
@@ -348,7 +394,7 @@ function VehicleModel({
       });
     });
     return out;
-  }, [damageEntries, zoneResolutions, root, box]);
+  }, [damageEntries, zoneResolutions, zonePlacement]);
 
   useEffect(() => {
     // Re-assert the base hidden/visible state first. Without this, a zone
@@ -369,7 +415,7 @@ function VehicleModel({
     root.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
-      mesh.visible = !CAR_EXCLUDE.test(partName(mesh));
+      mesh.visible = !isExcluded(mesh);
       if (mesh.visible) {
         mesh.material = baseMat;
       }
@@ -416,18 +462,8 @@ function VehicleModel({
     lastHandledRef.current = highlightedIdx;
     const res = zoneResolutions[highlightedIdx];
     if (!res) return;
-    const zone = CAR_PARTS_REAL.find((z) => z.key === res.key);
-    if (!zone) return;
-    const meshes = findCarMeshes(root, zone.match, true);
-    if (!meshes.length) return;
-    const partBox = new THREE.Box3();
-    meshes.forEach((m) => partBox.expandByObject(m));
-    const center = partBox.getCenter(new THREE.Vector3());
-    if (zone.key === "roof") {
-      center.y = Math.max(center.y, partBox.max.y - 0.05);
-    }
-    onFocusRequest(center, partBox.getSize(new THREE.Vector3()));
-  }, [highlightedIdx, zoneResolutions, root, onFocusRequest]);
+    focusOnZone(res.key);
+  }, [highlightedIdx, zoneResolutions, focusOnZone]);
 
   // Synchronize 3D camera when an automotive zone is selected from the evidence strip.
   // Guarded like highlightedIdx above: zoom once per new selection, not on
@@ -447,16 +483,8 @@ function VehicleModel({
     if (selectedZone === "boot_floor") targetKey = "tailgate";
     const zone = CAR_PARTS_REAL.find((z) => z.key === targetKey || z.key.includes(targetKey));
     if (!zone) return;
-    const meshes = findCarMeshes(root, zone.match, true);
-    if (!meshes.length) return;
-    const partBox = new THREE.Box3();
-    meshes.forEach((m) => partBox.expandByObject(m));
-    const center = partBox.getCenter(new THREE.Vector3());
-    if (zone.key === "roof") {
-      center.y = Math.max(center.y, partBox.max.y - 0.05);
-    }
-    onFocusRequest(center, partBox.getSize(new THREE.Vector3()));
-  }, [selectedZone, root, onFocusRequest]);
+    focusOnZone(zone.key);
+  }, [selectedZone, focusOnZone]);
 
   const zoneIdxLookup = useMemo(() => {
     const map = new Map<string, number>();
@@ -468,9 +496,8 @@ function VehicleModel({
 
   const handleClick = (e: any) => {
     e.stopPropagation();
-    const name = partName(e.object);
-    const group = partGroupName(e.object);
-    const zone = CAR_PARTS_REAL.find((z) => z.match.some((re) => re.test(name) || (group && re.test(group))));
+    const names = meshNames(e.object);
+    const zone = CAR_PARTS_REAL.find((z) => meshNamesMatch(names, z.match));
     if (!zone) return;
     onZoneSelect?.(zone.key);
     const idx = zoneIdxLookup.get(zone.key);
@@ -492,10 +519,11 @@ function VehicleModel({
           </button>
         </Html>
       ))}
-      <Html position={[0, 0.05, -box.getSize(new THREE.Vector3()).z / 2 - 0.35]} center distanceFactor={8} occlude={false}>
+      {/* +Z is the front in every model (the front bumper sits at +Z after normalizing). */}
+      <Html position={[0, 0.05, box.getSize(new THREE.Vector3()).z / 2 + 0.35]} center distanceFactor={8} occlude={false}>
         <span className="blueprint-3d-axis-label">FRONT</span>
       </Html>
-      <Html position={[0, 0.05, box.getSize(new THREE.Vector3()).z / 2 + 0.35]} center distanceFactor={8} occlude={false}>
+      <Html position={[0, 0.05, -box.getSize(new THREE.Vector3()).z / 2 - 0.35]} center distanceFactor={8} occlude={false}>
         <span className="blueprint-3d-axis-label">REAR</span>
       </Html>
     </>
@@ -780,6 +808,7 @@ export function VehicleBlueprint3D({
         >
           <VehicleModel
             key={archetype}
+            archetype={archetype}
             modelUrl={modelUrl}
             color={accent}
             damageEntries={damageEntries}
