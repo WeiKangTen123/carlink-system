@@ -1,7 +1,8 @@
 """The public report form (P6): a car accident or damage report from someone
 with no Carlink account, sent through the same bot. channels/telegram.py
 routes every update from a Telegram that isn't connected here, after its
-gate (review H1), under the chat's lock; this module never sees staff.
+gate (review H1), under the chat's lock, having looked the sender up again
+under it; this module never sees staff.
 
     anything (no form)  -> the welcome and consent, at most every 5 s;
                            a blocked sender: "can't take reports" once a day
@@ -17,7 +18,9 @@ What is kept, and where:
   - before consent, after [No thanks] or /cancel: nothing. Photos sent
     before consent are never fetched.
   - the form: in memory (Session.public) and its photos as tg-<uuid> temp
-    files, until Submit, cancel or 24 hours idle.
+    files, until Submit, cancel or 24 hours idle. An idle form is closed
+    within the hour after that, whether or not its sender writes again
+    (_prune_idle_forms, on a timer: start_pruning).
   - after Submit: the intake draft save_submission writes (it copies the
     photos; the temp files are deleted here).
 
@@ -71,7 +74,6 @@ from app.channels.tg_common import (
     _first_in,
     _forwarded,
     _keep_temp_files,
-    _lock_for,
     _new_temp_path,
     _reply_target,
     _telegram_name,
@@ -97,6 +99,9 @@ FILE_EVERY_SECONDS = 10
 # temp files, and all of them together at most MAX_TEMP_BYTES).
 MAX_FORMS = 300
 MAX_TEMP_BYTES = 1024**3
+# Forms idle past SESSION_MAX_IDLE_SECONDS are closed this often, even if
+# their sender never writes again (start_pruning).
+PRUNE_EVERY_SECONDS = 60 * 60
 MAX_DOWNLOADS = 3
 PHOTOS_PER_SENDER_HOUR = 30
 PHOTOS_PER_HOUR = 300
@@ -310,6 +315,55 @@ def _download_slots() -> asyncio.Semaphore:
 
 def _temp_bytes() -> int:
     return sum(s.public.photo_bytes for _, s in public_sessions())
+
+
+def _prune_idle_forms() -> int:
+    """Closes every form idle past SESSION_MAX_IDLE_SECONDS, with its temp
+    files (_drop): the name, phone and statement are kept no longer than
+    the 24 hours promised, and photos nobody will send stop counting
+    against MAX_TEMP_BYTES and MAX_FORMS (the api's day-old tmp sweep
+    deletes the files, but only this frees their bytes here). The chat is
+    told at its next update (_begin). Returns how many were closed."""
+    now = time.monotonic()
+    idle = [chat_id for chat_id, s in public_sessions() if now - s.last_active > SESSION_MAX_IDLE_SECONDS]
+    for chat_id in idle:
+        _drop(chat_id)
+        _remember(_closed, chat_id, now)
+    if idle:
+        logger.info("Closed %d public report form(s) idle for over 24 hours", len(idle))
+    return len(idle)
+
+
+_pruning: tuple | None = None  # (event loop, its timer)
+
+
+def start_pruning() -> None:
+    """_prune_idle_forms every PRUNE_EVERY_SECONDS on this event loop, from
+    telegram.py's post_init until stop_pruning at shutdown. A timer on the
+    loop: PTB's JobQueue needs the APScheduler extra, which this install
+    doesn't have, and a timer leaves no task pending when a loop is closed
+    without a shutdown (the tests' loops)."""
+    global _pruning
+    loop = asyncio.get_running_loop()
+    if _pruning is not None and _pruning[0] is loop:
+        return  # running already
+
+    def tick() -> None:
+        global _pruning
+        try:
+            _prune_idle_forms()
+        except Exception as exc:
+            logger.error("Closing idle public report forms failed (%s)", type(exc).__name__)
+        _pruning = (loop, loop.call_later(PRUNE_EVERY_SECONDS, tick))
+
+    _pruning = (loop, loop.call_later(PRUNE_EVERY_SECONDS, tick))
+
+
+def stop_pruning() -> None:
+    global _pruning
+    if _pruning is not None:
+        _pruning[1].cancel()
+    _pruning = None
 
 
 # ------------------------------------------------------ database (threads)
@@ -527,6 +581,8 @@ class _Offer:
 # Telegram user id -> (the welcome's nonce, when) and their /withdraw question.
 _welcomes: dict[str, tuple[str, float]] = {}
 _offers: dict[str, _Offer] = {}
+# Chat id -> when _prune_idle_forms closed its form: told at its next update.
+_closed: dict[str, float] = {}
 
 
 def _remember(table: dict, key: str, value) -> None:
@@ -559,14 +615,8 @@ async def _welcome(update: Update, chat_id: str, ext: str, *, after_photo: bool 
 
 
 def _room_for_a_form() -> bool:
-    """Under MAX_FORMS open, once forms idle past a day are dropped."""
-    forms = public_sessions()
-    if len(forms) < MAX_FORMS:
-        return True
-    now = time.monotonic()
-    for chat_id, session in forms:
-        if now - session.last_active > SESSION_MAX_IDLE_SECONDS:
-            _drop(chat_id)
+    """Under MAX_FORMS open, once forms idle past a day are closed."""
+    _prune_idle_forms()
     return len(public_sessions()) < MAX_FORMS
 
 
@@ -598,7 +648,8 @@ async def _begin(update: Update):
     """(chat id, Telegram id, the chat's session or None, stale). Under the
     chat lock, before anything else: a staff draft left from when this
     Telegram was connected is thrown away (stale: the update was meant for
-    it), and so is a form idle past a day."""
+    it), and so is a form idle past a day (or said to be, if
+    _prune_idle_forms closed it already)."""
     chat_id = str(update.effective_chat.id)
     ext = str(update.effective_user.id)
     session = find_session(chat_id)
@@ -613,6 +664,10 @@ async def _begin(update: Update):
         session = None
     if session is not None and time.monotonic() - session.last_active > SESSION_MAX_IDLE_SECONDS:
         _drop(chat_id)
+        _closed.pop(chat_id, None)
+        await _say(target, EXPIRED)
+        return chat_id, ext, None, True
+    if session is None and _closed.pop(chat_id, None) is not None:
         await _say(target, EXPIRED)
         return chat_id, ext, None, True
     if session is not None:
@@ -896,6 +951,9 @@ async def _take_photo(update: Update, chat_id: str, ext: str, session) -> str | 
     expected = size.file_size or public.MAX_PHOTO_BYTES
     if form.photo_bytes + expected > public.MAX_REPORT_BYTES:
         return REPORT_FULL
+    # Forms nobody will finish don't hold the space (the timer may be up to
+    # an hour behind).
+    _prune_idle_forms()
     if _temp_bytes() + expected > MAX_TEMP_BYTES or disk_space_low(public.DISK_HEADROOM_GB):
         logger.info("Public photo from Telegram user %s not taken: temp space or disk headroom", ext)
         return NO_SPACE
@@ -964,7 +1022,8 @@ def _parse(data: str):
 
 
 def _index(arg) -> int | None:
-    return int(arg) if isinstance(arg, str) and arg.isdigit() and len(arg) <= 2 else None
+    # ASCII only: "²".isdigit() is True, but int("²") raises.
+    return int(arg) if isinstance(arg, str) and arg.isascii() and arg.isdigit() and len(arg) <= 2 else None
 
 
 def _offer_for(ext: str, nonce: str) -> _Offer | None:
@@ -1009,20 +1068,29 @@ def claim_submit(update: Update):
     return None, release
 
 
-async def on_callback(update: Update, context=None) -> None:
-    """A pub: button from someone not connected (a Submit already claimed:
-    claim_submit)."""
+async def answer_callback(update: Update) -> None:
+    """A pub: tap's answer, before the chat lock, so its spinner stops while
+    it waits: "That button has expired" if its welcome, question or form is
+    gone."""
     query = update.callback_query
-    chat_id = str(update.effective_chat.id)
-    ext = str(update.effective_user.id)
     parsed = _parse(query.data)
     if parsed is None:
         await answer_tap(query)
         return
+    nonce, action, _ = parsed
+    current = _current(str(update.effective_chat.id), str(update.effective_user.id), nonce, action)
+    await answer_tap(query, None if current else BUTTON_EXPIRED)
+
+
+async def on_callback(update: Update, context=None) -> None:
+    """A pub: button from someone not connected, under the chat lock like
+    every other update here (answered already: answer_callback; a Submit
+    already claimed: claim_submit)."""
+    parsed = _parse(update.callback_query.data)
+    if parsed is None:
+        return
     nonce, action, arg = parsed
-    await answer_tap(query, None if _current(chat_id, ext, nonce, action) else BUTTON_EXPIRED)
-    async with _lock_for(chat_id):
-        await _tap(update, chat_id, ext, nonce, action, arg)
+    await _tap(update, str(update.effective_chat.id), str(update.effective_user.id), nonce, action, arg)
 
 
 async def _tap(update: Update, chat_id: str, ext: str, nonce: str, action: str, arg) -> None:
@@ -1262,6 +1330,7 @@ def reset_limits() -> None:
         budget.reset()
     _welcomes.clear()
     _offers.clear()
+    _closed.clear()
     _contact["at"] = None
     for key in [k for k in _told_at if k.startswith("pub-")]:
         del _told_at[key]

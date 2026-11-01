@@ -15,16 +15,22 @@ through the same checks, in this order:
      concurrent_updates slots while a handler waits for the chat lock, so
      a stranger's flood could stall staff): a token bucket per Telegram
      user (burst BURST, BURST_LINKED for staff, refilled REFILL_PER_SECOND),
-     at most CHAT_IN_FLIGHT updates in flight per chat, then linked_user()
-     read fresh (_who: once per update), and for someone not connected at
-     most PUBLIC_IN_FLIGHT public updates in flight from everyone. Over a
-     limit the update is dropped; "please slow down" at most every 10
-     minutes, within the public reply budget.
-  3. The chat's lock, held by every handler (_lock_for).
+     at most CHAT_IN_FLIGHT updates in flight per chat, then an early look
+     at linked_user(), and for someone not connected at most
+     PUBLIC_CHAT_IN_FLIGHT updates in flight per chat and PUBLIC_IN_FLIGHT
+     from everyone. Over a limit the update is dropped; "please slow down"
+     at most every 10 minutes, within the public reply budget. The early
+     answer only picks these limits and budgets (_seen).
+  3. The chat's lock, held by every handler (_lock_for), then linked_user()
+     read again under it (_who: once per update), as before P6: an update
+     can wait there a long time, and a link made or ended meanwhile counts.
   4. The linking commands, which need no link: /start link-CODE (the deep
      link from Settings), /link CODE, a bare code (strict, and only with no
      draft or public form open: _handle_text), the [Yes, that's me]/
-     [Cancel] taps, /unlink, /whoami and /help.
+     [Cancel] taps, /unlink, /whoami and /help. Every answer to someone not
+     connected comes out of the public reply budget (_tell), and their
+     /whoami, /link and /unlink are answered at most every 5 seconds
+     (_too_soon), a code notice that changes nothing at most every minute.
   4b. Nobody linked -> telegram_public, which never reaches steps 5-8.
   5. A draft started for another account is thrown away, and so is a
      public form from before this Telegram was connected, with its photos
@@ -89,6 +95,7 @@ from app.channels.tg_common import (  # noqa: F401
     _told_at,
 )
 from app.auth.chat_links import (
+    CHANNEL,
     CODE_TTL,
     DEEP_LINK_PREFIX,
     clean_name,
@@ -110,7 +117,7 @@ from app.auth.permissions import is_staff
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, find_session, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
-from app.reports.models import Report, gen_id
+from app.reports.models import ChatLink, ChatLinkCode, Report, gen_id
 from app.reports.schema import SignOffInfo
 from app.rendering.renderer import BOT_RENDER_SLOT_WAIT_SECONDS, render_pdf
 from app.storage.files import disk_space_low, remove_incident_dirs, report_pdf_path, save_photo
@@ -142,8 +149,12 @@ CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 
 # "AI is off": an album's photos arrive as separate updates.
 AI_OFF_EVERY_SECONDS = 60
-# /start, /help, /whoami and /link from an unvetted account.
+# /start, /help, /whoami and /link from an unvetted account; /whoami, /link
+# and /unlink from someone not connected.
 COMMAND_EVERY_SECONDS = 5
+# To someone not connected, a code notice that changes nothing (forwarded,
+# not a code, "too many wrong codes" while blocked).
+CODE_NOTICE_EVERY_SECONDS = 60
 MAX_PHOTOS_PER_DRAFT = 40
 # Documents the drafting flow can use: they go to Gemini as images and into
 # the PDF's photo pages, so only image types both handle (the dashboard's
@@ -329,9 +340,23 @@ def _said_yes(code: str, external_id: str, username, name) -> bool:
         db.close()
 
 
+def _yes_standing(db, external_id: str) -> bool:
+    """Whether this Telegram said Yes to a code that is neither used nor
+    revoked: what withdraw_yes would revoke, and expired ones too, so it
+    never misses one. Read first, so a Telegram with none writes nothing."""
+    return db.query(ChatLinkCode.id).filter(
+        ChatLinkCode.channel == CHANNEL,
+        ChatLinkCode.used_by_external_id == str(external_id),
+        ChatLinkCode.linked_at.is_(None),
+        ChatLinkCode.revoked_at.is_(None),
+    ).first() is not None
+
+
 def _withdraw(external_id: str) -> int:
     db = SessionLocal()
     try:
+        if not _yes_standing(db, external_id):
+            return 0
         withdrawn = withdraw_yes(db, external_id)
         db.commit()
         return withdrawn
@@ -341,9 +366,15 @@ def _withdraw(external_id: str) -> int:
 
 def _unlink_telegram(external_id: str) -> tuple[bool, str | None, int]:
     """/unlink: (whether a link was removed, the account it was to, how many
-    Yes answers to open codes were withdrawn)."""
+    Yes answers to open codes were withdrawn). With no link and no Yes
+    standing -- anyone not connected -- it only reads: no write, no commit."""
     db = SessionLocal()
     try:
+        has_link = db.query(ChatLink.id).filter(
+            ChatLink.channel == CHANNEL, ChatLink.external_id == str(external_id)
+        ).first() is not None
+        if not has_link and not _yes_standing(db, external_id):
+            return False, None, 0
         user = linked_user(db, external_id)
         label = _filing_label(user) if user is not None else None
         gone = unlink(db, external_id=external_id, actor=user, reason="with /unlink in Telegram")
@@ -416,8 +447,18 @@ def _save_case(report_id: str, external_id: str, user_id: str, data: dict, photo
         db.close()
 
 
-# The update the gate looked its sender up for, and the answer: handlers
-# use it rather than ask the database twice (_who).
+@dataclass
+class _Seen:
+    """Who an update's sender is: the gate's early answer, for its limits
+    and budgets only, and then the one read under the chat lock (_who),
+    which every decision about them uses."""
+    update: object
+    early: Linked | None
+    now: Linked | None = None
+    looked: bool = False  # whether _who has read it under the lock
+
+
+# The update the gate is running, and who its sender was found to be.
 _gate_seen: ContextVar = ContextVar("telegram_gate_seen", default=None)
 
 
@@ -429,21 +470,29 @@ async def _lookup_who(update: Update) -> Linked | None:
 
 
 async def _who(update: Update) -> Linked | None:
-    """Step 2: who this Telegram user files as, from the database for every
-    update -- the only check of who someone is. Read by the gate; a handler
-    asking again for the same update gets that answer."""
+    """Step 3: who this Telegram user files as, read from the database under
+    the chat lock -- the only check of who someone is, as before P6. The
+    gate's early answer can be stale by then: an update may wait behind
+    the lock a long time (a draft being written), while a link is made or
+    an admin ends one. Asked again for the same update, the same answer,
+    without another read."""
     seen = _gate_seen.get()
-    if seen is not None and seen[0] is update:
-        return seen[1]
-    return await _lookup_who(update)
+    mine = seen is not None and seen.update is update
+    if mine and seen.looked:
+        return seen.now
+    user = await _lookup_who(update)
+    if mine:
+        seen.now, seen.looked = user, True
+    return user
 
 
 def _seen(update: Update) -> tuple[bool, Linked | None]:
     """(whether the gate looked this update's sender up, who it found),
-    without waiting: for decisions made before a handler's first await."""
+    without waiting: only for which limits and budgets apply, before the
+    chat lock. Who they are is _who's answer."""
     seen = _gate_seen.get()
-    if seen is not None and seen[0] is update:
-        return True, seen[1]
+    if seen is not None and seen.update is update:
+        return True, seen.early
     return False, None
 
 
@@ -451,7 +500,7 @@ def _seen(update: Update) -> tuple[bool, Linked | None]:
 
 # Step 2, the gate (review H1). Per Telegram user: a token bucket.
 # Every photo in an album is its own update, and these limits are checked
-# before _who knows whether the sender is staff -- so both sit above a
+# before the gate knows whether the sender is staff -- so both sit above a
 # staff draft's MAX_PHOTOS_PER_DRAFT (40), or a staff member's first big
 # send after a restart would lose photos. Strangers are held tighter once
 # known (PUBLIC_CHAT_IN_FLIGHT, PUBLIC_IN_FLIGHT, the public budgets).
@@ -460,9 +509,14 @@ BURST_LINKED = 60  # a staff member's few albums at once
 REFILL_PER_SECOND = 1.0
 # In flight (handled now, or waiting for the chat lock): per chat, and
 # public updates from everyone, out of the 64 PTB runs at once
-# (build_app), so staff always find a free one.
+# (build_app), so staff always find a free one. One stranger gets at most
+# half the public ones, so a single sender can't hold them all. Telegram
+# sends at most 10 photos in an album, so one album always fits; a second
+# sent straight after it may be partly dropped with "please slow down",
+# and the form's "Got N photos" reply tells them what arrived, so they can
+# send the rest again.
 CHAT_IN_FLIGHT = 48
-PUBLIC_CHAT_IN_FLIGHT = 24  # a public form takes at most 20 photos
+PUBLIC_CHAT_IN_FLIGHT = 12
 PUBLIC_IN_FLIGHT = 24
 CONCURRENT_UPDATES = 64
 DEFAULT_THREADS = 32
@@ -547,7 +601,7 @@ async def _gated(handler, update: Update, context, claim=None) -> None:
                 return
             _public_in_flight[0] += 1
             public = True
-        seen = _gate_seen.set((update, user))
+        seen = _gate_seen.set(_Seen(update, user))
         await handler(update, context)
     finally:
         if release is not None:
@@ -583,8 +637,17 @@ def _private_only(handler=None, *, claim=None):
                 await update.callback_query.answer()
             except Exception:
                 pass
-        if chat is None or not _first_in(f"group:{chat.id}", REPLY_EVERY_SECONDS):
+        if chat is None:
             return
+        said = _told_at.get(f"group:{chat.id}")
+        if said is not None and time.monotonic() - said < REPLY_EVERY_SECONDS:
+            return
+        # A group is nobody's linked chat: its notice comes out of the public
+        # reply budget, and while that is spent, the group's next message
+        # tries again.
+        if update.effective_message and not tg_public.replies.try_take():
+            return
+        _first_in(f"group:{chat.id}", REPLY_EVERY_SECONDS)
         logger.info("Ignored %s chat %s: the bot works in private chats only", chat.type, chat.id)
         if update.effective_message:
             bot_name = getattr(getattr(context, "bot", None), "username", None)
@@ -706,24 +769,53 @@ async def _download(source, dest: Path, user: Linked) -> None:
 
 
 def _too_soon(chat_id: str, user: Linked | None) -> bool:
-    """/start, /help, /whoami and /link from an unvetted account: answered
-    at most every COMMAND_EVERY_SECONDS per chat; anything sooner is
-    dropped."""
-    return user is not None and user.unvetted and not _first_in(f"command:{chat_id}", COMMAND_EVERY_SECONDS)
+    """/start, /help, /whoami and /link from an unvetted account, and
+    /whoami, /link and /unlink from someone not connected (user None: a few
+    free accounts flooding them could use up the send limit staff need):
+    answered at most every COMMAND_EVERY_SECONDS per chat; anything sooner
+    is dropped. A stranger's /start link-CODE and bare code aren't held to
+    it, so a staff member's first one always gets its prompt: _offer_link
+    has their limits."""
+    if user is None:
+        return not _first_in(f"pub-command:{chat_id}", COMMAND_EVERY_SECONDS)
+    return user.unvetted and not _first_in(f"command:{chat_id}", COMMAND_EVERY_SECONDS)
+
+
+async def _tell(target, user: Linked | None, text: str, **kw) -> None:
+    """A reply. To someone not connected (user None), from the public reply
+    budget (tg_public._say, review M3: the bot's Telegram send limit is
+    shared with staff); to staff, at once."""
+    if user is None:
+        await tg_public._say(target, text, **kw)
+    elif target is not None:
+        await target.reply_text(text, **kw)
 
 
 # --------------------------------------------------------------- linking
 
 
+async def _code_notice(message, chat_id: str, user: Linked | None, text: str, **kw) -> None:
+    """A reply about a code that changes nothing: forwarded, not a code, or
+    "too many wrong codes" while blocked. Someone not connected gets it at
+    most every CODE_NOTICE_EVERY_SECONDS: sending again only repeated it."""
+    if user is None and not _first_in(f"pub-code:{chat_id}", CODE_NOTICE_EVERY_SECONDS):
+        return
+    await _tell(message, user, text, **kw)
+
+
 async def _offer_link(update: Update, code: str | None, user: Linked | None) -> None:
     """A code sent from Telegram (/start link-CODE, /link CODE, a bare
     code): the "Is this you?" prompt for its account, which [Yes, that's
-    me] answers (_link_tap). user is who this Telegram files as already."""
+    me] answers (_link_tap). user is who this Telegram files as already;
+    someone not connected is answered from the public reply budget. Wrong
+    codes are limited by wrong_codes (a block after MAX_WRONG), notices
+    that change nothing by _code_notice."""
     message = update.effective_message
+    chat_id = str(update.effective_chat.id)
     ext = str(update.effective_user.id)
     if _forwarded(message):
         # Someone else's code passed along is how a link gets phished (H2).
-        await message.reply_text(FORWARDED_CODE, link_preview_options=NO_PREVIEW)
+        await _code_notice(message, chat_id, user, FORWARDED_CODE, link_preview_options=NO_PREVIEW)
         return
     if user is not None:
         await message.reply_text(
@@ -732,10 +824,10 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
         return
     blocked = wrong_codes.blocked_for(ext)
     if blocked:
-        await message.reply_text(f"Too many wrong codes. Try again in {math.ceil(blocked / 60)} minutes.")
+        await _code_notice(message, chat_id, None, f"Too many wrong codes. Try again in {math.ceil(blocked / 60)} minutes.")
         return
     if code is None:
-        await message.reply_text(NOT_A_CODE)
+        await _code_notice(message, chat_id, None, NOT_A_CODE)
         return
     owner = await asyncio.to_thread(_peek, code)
     if owner is None:
@@ -743,16 +835,18 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
             # Another Telegram said Yes to it first (review M1). Not a
             # wrong code: this one had it too.
             logger.info("Telegram user %s sent a code another Telegram had said Yes to: the code is cancelled", ext)
-            await message.reply_text(CODE_CONTESTED, link_preview_options=NO_PREVIEW)
+            await _tell(message, None, CODE_CONTESTED, link_preview_options=NO_PREVIEW)
             return
         left = wrong_codes.wrong(ext)
         if left == 0:
             logger.info("Telegram user %s is blocked for a while after too many wrong link codes", ext)
-            await message.reply_text(f"Too many wrong codes. Try again in {wrong_codes.BLOCK // 60} minutes.")
+            _first_in(f"pub-code:{chat_id}", 0)  # said now: the blocked notice waits its turn
+            await _tell(message, None, f"Too many wrong codes. Try again in {wrong_codes.BLOCK // 60} minutes.")
         else:
-            await message.reply_text(
+            await _tell(
+                message, None,
                 "That code didn't work. Codes work once and only for 10 minutes, and a new one replaces the last: "
-                f"make a new one in Carlink → Settings → My Telegram. ({left} {'try' if left == 1 else 'tries'} left)"
+                f"make a new one in Carlink → Settings → My Telegram. ({left} {'try' if left == 1 else 'tries'} left)",
             )
         return
     # The wrong-code count starts again only once a Yes goes through
@@ -770,7 +864,8 @@ async def _offer_link(update: Update, code: str | None, user: Linked | None) -> 
         InlineKeyboardButton("✅ Yes, that's me", callback_data=LINK_YES + prompt.nonce),
         InlineKeyboardButton("Cancel", callback_data=LINK_NO + prompt.nonce),
     ]])
-    await message.reply_text(
+    await _tell(
+        message, None,
         f"Connect this Telegram to <b>{html.escape(label)}</b>, {html.escape(masked)}?\n\n"
         + (f"{UNVETTED_WARNING}\n\n" if unvetted else "")
         + "Only tap Yes if this is your own Carlink account. If someone sent you this code, tap Cancel.",
@@ -791,7 +886,8 @@ async def _link_tap(update: Update, data: str) -> None:
     "waiting for Carlink" (telegram_said_yes, atomic); the link is made
     only once the person confirms in Settings too (agent6 H2). Cancel, on
     any prompt however old, also takes back a Yes this Telegram gave to a
-    code that is still open (review L2)."""
+    code that is still open (review L2). Someone not connected is answered
+    from the public reply budget."""
     query = update.callback_query
     tg_user = update.effective_user
     ext = str(tg_user.id)
@@ -799,29 +895,30 @@ async def _link_tap(update: Update, data: str) -> None:
     nonce = data.split(":", 1)[1]
     prompt = _prompts.get(ext)
     current = prompt is not None and prompt.nonce == nonce and time.monotonic() - prompt.at <= PROMPT_SECONDS
+    user = await _who(update)
     await _remove_buttons(query)
     if data.startswith(LINK_NO):
         if current:
             del _prompts[ext]
         withdrawn = await asyncio.to_thread(_withdraw, ext)
-        await target.reply_text(LINK_CANCELLED + (f" {YES_WITHDRAWN}" if withdrawn else ""))
+        await _tell(target, user, LINK_CANCELLED + (f" {YES_WITHDRAWN}" if withdrawn else ""))
         return
     if not current:
-        await target.reply_text(PROMPT_EXPIRED)
+        await _tell(target, user, PROMPT_EXPIRED)
         return
     del _prompts[ext]
-    user = await _who(update)
     if user is not None:
         await target.reply_text(
             f"This Telegram is already connected to {user.label}. To connect a different account, send /unlink first."
         )
         return
     if not await asyncio.to_thread(_said_yes, prompt.code, ext, getattr(tg_user, "username", None), _telegram_name(tg_user)):
-        await target.reply_text(CODE_GONE)
+        await _tell(target, None, CODE_GONE)
         return
     wrong_codes.right(ext)
-    await target.reply_text(
-        f"Almost done: confirm in Carlink → Settings → My Telegram.\n{_settings_url()}", link_preview_options=NO_PREVIEW
+    await _tell(
+        target, None,
+        f"Almost done: confirm in Carlink → Settings → My Telegram.\n{_settings_url()}", link_preview_options=NO_PREVIEW,
     )
 
 
@@ -834,7 +931,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with _lock_for(chat_id):
         args = _args(context)
         user = await _who(update)
-        if _too_soon(chat_id, user):
+        # Not for someone not connected: the welcome has its own 5 s, and a
+        # deep link's prompt must always come (_too_soon).
+        if user is not None and _too_soon(chat_id, user):
             return
         if args and args[0].startswith(DEEP_LINK_PREFIX):
             # The deep link from Settings: t.me/<bot>?start=link-K7M4QX9P.
@@ -893,7 +992,8 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if _too_soon(chat_id, user):
             return
         if not typed and user is None:
-            await update.message.reply_text(
+            await _tell(
+                update.message, None,
                 "Send me your code like this: /link K7M4-QX9P\n"
                 f"Make one in Carlink → Settings → My Telegram:\n{_settings_url()}",
                 link_preview_options=NO_PREVIEW,
@@ -906,13 +1006,21 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def unlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     async with _lock_for(chat_id):
+        # Someone not connected, as the gate found: at most every 5 s,
+        # before the database is asked anything.
+        _, early = _seen(update)
+        if early is None and _too_soon(chat_id, None):
+            return
         # Also takes back a Yes to a code still waiting for Carlink (L2).
         gone, label, withdrawn = await asyncio.to_thread(_unlink_telegram, str(update.effective_user.id))
-        # Any draft was that account's.
-        _drop(chat_id)
+        # A staff draft was that account's; a public form someone not
+        # connected is filling in isn't, and stays.
+        session = find_session(chat_id)
+        if gone or (session is not None and session.public is None):
+            _drop(chat_id)
         withdrawn_note = f"\n{YES_WITHDRAWN}" if withdrawn else ""
         if not gone:
-            await update.message.reply_text("This Telegram isn't connected to a Carlink account." + withdrawn_note)
+            await _tell(update.message, None, "This Telegram isn't connected to a Carlink account." + withdrawn_note)
             return
         await update.message.reply_text(
             f"Disconnected: this Telegram no longer files reports{f' as {label}' if label else ''}.{withdrawn_note}\n"
@@ -929,7 +1037,8 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if _too_soon(chat_id, user):
             return
         if user is None:
-            await update.message.reply_text(
+            await _tell(
+                update.message, None,
                 f"Not connected to a Carlink account.\nTo connect, open Carlink → Settings → My Telegram:\n{_settings_url()}",
                 link_preview_options=NO_PREVIEW,
             )
@@ -1250,21 +1359,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     chat_id = str(update.effective_chat.id)
     data = query.data or ""
-    looked, user = _seen(update)
+    looked, early = _seen(update)
+    public = looked and early is None
     # Buttons are untrusted: a public form's (pub:...) do something only for
-    # someone not connected, and staff drafts' only for staff.
+    # someone not connected, and staff drafts' only for staff -- as _who
+    # finds under the chat lock. The gate's early answer only picks whose
+    # budget answers the tap, before the lock.
     if data.startswith(tg_public.CALLBACK_PREFIX):
-        if looked and user is None:
-            await tg_public.on_callback(update, context)
-        else:
+        if not public:
             await _answer_quietly(query)
-        return
-    if looked and user is None and not data.startswith((LINK_YES, LINK_NO)):
-        await tg_public.answer_tap(query)
+            return
+        await tg_public.answer_callback(update)
         async with _lock_for(chat_id):
-            await tg_public.on_staff_button(update, context)
+            if await _who(update) is None:
+                await tg_public.on_callback(update, context)
         return
-    await query.answer()
+    if public:
+        await tg_public.answer_tap(query)
+    else:
+        await query.answer()
     async with _lock_for(chat_id):
         await _handle_callback(update, context)
 
@@ -1433,6 +1546,9 @@ async def _post_init(app: Application) -> None:
     asyncio.get_running_loop().set_default_executor(
         ThreadPoolExecutor(max_workers=DEFAULT_THREADS, thread_name_prefix="telegram")
     )
+    # Public forms idle past a day are closed every hour, even if their
+    # sender never writes again; stopped by _post_shutdown.
+    tg_public.start_pruning()
     # Settings > My Telegram's "Open Telegram" deep link needs the bot's
     # @username, which only the bot knows (initialize() ran getMe).
     try:
@@ -1461,6 +1577,10 @@ async def _post_init(app: Application) -> None:
         ])
     except Exception as exc:
         logger.warning("Failed to set bot profile info (%s)", type(exc).__name__)
+
+
+async def _post_shutdown(app: Application) -> None:
+    tg_public.stop_pruning()
 
 
 def _update_kind(update) -> str:
@@ -1501,6 +1621,7 @@ def build_app() -> Application:
         .token(settings.telegram_bot_token)
         .concurrent_updates(CONCURRENT_UPDATES)
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
     # New messages only. Edited messages and channel posts matched these

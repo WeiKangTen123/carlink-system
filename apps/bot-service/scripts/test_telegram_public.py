@@ -43,6 +43,7 @@ os.environ["PUBLIC_BASE_URL"] = "https://carlink.test/"
 os.environ["MIN_FREE_DISK_GB"] = "0"
 
 from PIL import Image  # noqa: E402
+from sqlalchemy import event  # noqa: E402
 from telegram import Update  # noqa: E402
 
 import app.channels.telegram as tg  # noqa: E402
@@ -53,7 +54,7 @@ from app.auth.core import utc_now  # noqa: E402
 from app.conversation import state  # noqa: E402
 from app.conversation.state import PublicForm, PublicStep  # noqa: E402
 from app.intake import public  # noqa: E402
-from app.reports.db import SessionLocal, init_db  # noqa: E402
+from app.reports.db import SessionLocal, engine, init_db  # noqa: E402
 from app.reports.models import (  # noqa: E402
     AuditEntry,
     ChatLink,
@@ -108,6 +109,44 @@ def link_tg(user_id: str, tg_id: int) -> None:
         db.commit()
     finally:
         db.close()
+
+
+def unlink_tg(tg_id: int) -> None:
+    db = SessionLocal()
+    try:
+        db.query(ChatLink).filter(ChatLink.external_id == str(tg_id)).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
+def link_code(name: str, username: str) -> str:
+    """A new account's open link code, plain (K7M4QX9P)."""
+    user_id = make_user(name, username, ai_company_key_allowed=True)
+    db = SessionLocal()
+    try:
+        plain, _ = new_code(db, db.get(User, user_id))
+        db.commit()
+        return plain
+    finally:
+        db.close()
+
+
+class Writes:
+    """The INSERT, UPDATE and DELETE statements sent to the database while
+    it is open (any thread)."""
+
+    def __enter__(self):
+        self.statements: list[str] = []
+        event.listen(engine, "before_cursor_execute", self._sent)
+        return self
+
+    def _sent(self, _conn, _cursor, statement, *_args):
+        if statement.lstrip().split(None, 1)[0].upper() in ("INSERT", "UPDATE", "DELETE"):
+            self.statements.append(statement.split("\n", 1)[0])
+
+    def __exit__(self, *_exc):
+        event.remove(engine, "before_cursor_execute", self._sent)
 
 
 def submissions(tg_id=None) -> list[PublicSubmission]:
@@ -1006,13 +1045,16 @@ async def check_withdraw() -> None:
     mine = set(mal.out.buttons().values())
     before = {s.report_id for s in submissions()}
     nonce = mine.pop().split(":")[1]
+    # "²" and "٣" are digits to str.isdigit(), but int() can't read "²".
+    assert tp._index("²") is None and tp._index("٣") is None and tp._index("１") is None and tp._index("1") == 1
     for data in (victim_yes, f"pub:{nonce}:wdy:{v.rid}", f"pub:{nonce}:wd:{v.ref}", f"pub:{nonce}:wd:yes:{v.rid}",
-                 f"pub:{nonce}:wdy:5", f"pub:{nonce}:wdy:-1", f"pub:{nonce}:wd:1", f"pub:{nonce}:wd:0"):
+                 f"pub:{nonce}:wdy:5", f"pub:{nonce}:wdy:-1", f"pub:{nonce}:wd:²", f"pub:{nonce}:wdy:²",
+                 f"pub:{nonce}:wdy:٣", f"pub:{nonce}:wd:1", f"pub:{nonce}:wd:0"):
         await mal.tap(data=data)
     assert {s.report_id for s in submissions()} == before and held(v.rid)
     assert mal.out.texts[-1].startswith(f"Take back report {mal.ref}")  # wd:0 only asks again, about her own
-    ok("forged withdraw buttons (the victim's own, made-up indices, a report id or ref in the data) delete nothing; "
-       "wd:<n> only asks, and only about the sender's own reports")
+    ok("forged withdraw buttons (the victim's own, made-up indices, '²' and other non-ASCII digits, a report id or "
+       "ref in the data) delete nothing and raise nothing; wd:<n> only asks, and only about the sender's own reports")
 
     await v.tap("Keep it")
     assert v.out.texts[-1] == tp.KEPT and by_ref(v.ref) is not None
@@ -1076,21 +1118,28 @@ async def check_gate() -> None:
     assert len(s.out.texts) == tg.BURST + 15 and tp.SLOW_DOWN not in s.out.texts
     ok(f"linked staff: a burst of {tg.BURST_LINKED} ({tg.BURST + 15} commands all answered)")
 
+    # One stranger gets at most half the public slots, and one album (10
+    # photos at most, in Telegram) always fits.
+    assert tg.PUBLIC_CHAT_IN_FLIGHT == 12 and 10 <= tg.PUBLIC_CHAT_IN_FLIGHT <= tg.PUBLIC_IN_FLIGHT // 2
+    assert (tg.BURST, tg.BURST_LINKED, tg.CHAT_IN_FLIGHT, tg.PUBLIC_IN_FLIGHT) == (45, 60, 48, 24)
     q = Person("Queue Person", "+6589990002")
+    other = Person("Other Person", "+6589990003")
     lock = tg._lock_for(str(q.uid))
     await lock.acquire()
     try:
-        tasks = [asyncio.create_task(q.text("x")) for _ in range(tg.PUBLIC_CHAT_IN_FLIGHT + 10)]
+        tasks = [asyncio.create_task(q.text("x")) for _ in range(tg.PUBLIC_IN_FLIGHT + 6)]
         await asyncio.sleep(0.3)
         held = tg._in_flight.get(str(q.uid), 0)
-        assert 0 < held <= tg.PUBLIC_CHAT_IN_FLIGHT, held
+        assert held == tg.PUBLIC_CHAT_IN_FLIGHT == tg._public_in_flight[0], (held, tg._public_in_flight[0])
         assert sum(t.done() for t in tasks) == len(tasks) - held
+        await asyncio.wait_for(other.welcome(), 2)  # while q still holds all of theirs
+        assert any("Do you agree?" in t for t in other.out.texts), other.out.texts
     finally:
         lock.release()
     await asyncio.gather(*tasks)
-    assert str(q.uid) not in tg._in_flight
-    ok(f"a stranger: at most {tg.PUBLIC_CHAT_IN_FLIGHT} updates in flight per chat (waiting for its lock); "
-       "the rest dropped at once")
+    assert str(q.uid) not in tg._in_flight and tg._public_in_flight[0] == 0
+    ok(f"a stranger: at most {tg.PUBLIC_CHAT_IN_FLIGHT} updates in flight per chat (waiting for its lock), half "
+       f"the {tg.PUBLIC_IN_FLIGHT} public slots; the rest dropped at once, and another stranger still gets in")
 
     # Every photo in an album is its own update, and the gate runs before
     # it knows who's staff: a linked staff member's 40-photo send right
@@ -1141,6 +1190,217 @@ async def check_gate() -> None:
        f"{slowed} told to slow down), and {len(times)} replies in {times[-1] - t0:.1f}s never beat "
        f"{tp.REPLY_BURST} + {tp.REPLIES_PER_SECOND}/s")
     fresh()
+
+
+# --- strangers' linking commands: the public budget, and their own throttle -------------------
+
+async def check_strangers_link_commands() -> None:
+    print("strangers' /whoami, /link, /unlink and link codes: the public reply budget, throttled")
+    fresh()
+    tp.replies.rate, tp.replies.burst = tp.REPLIES_PER_SECOND, tp.REPLY_BURST
+    tp.replies.reset()
+    taken = []
+    real_take = tp.replies.try_take
+
+    def counted() -> bool:
+        got = real_take()
+        taken.append(got)
+        return got
+
+    with mock.patch.object(tp.replies, "try_take", counted):
+        crowd = [Person(f"Whoami {i}", f"+65877700{i:02d}") for i in range(3)]
+        await asyncio.gather(*(c.command(tg.whoami_command, "/whoami") for c in crowd for _ in range(tg.BURST)))
+        sent = sum(len(c.out.texts) for c in crowd)
+        assert all(sum(t.startswith("Not connected") for t in c.out.texts) == 1 for c in crowd), \
+            [c.out.texts for c in crowd]
+        assert sent <= 2 * len(crowd) and sum(taken) == sent, (sent, sum(taken))
+        ok(f"3 strangers sending {tg.BURST} /whoami each at once: {sent} replies (one 'Not connected' each, and "
+           f"'slow down'), every one taken from the public reply budget")
+
+        for handler, words, expect in ((tg.whoami_command, "/whoami", "Not connected"),
+                                       (tg.link_command, "/link", "Send me your code like this"),
+                                       (tg.unlink_command, "/unlink", "This Telegram isn't connected")):
+            s = Person()
+            del taken[:]
+            for _ in range(10):
+                await s.command(handler, words)
+            assert len(s.out.texts) == 1 and s.out.texts[0].startswith(expect), s.out.texts
+            assert sum(taken) == 1
+            tg._told_at[f"pub-command:{s.uid}"] -= tg.COMMAND_EVERY_SECONDS
+            await s.command(handler, words)
+            assert len(s.out.texts) == 2, s.out.texts
+        ok("a stranger's /whoami, /link and /unlink: answered at most every 5 s (like an unvetted account's "
+           "commands), from the budget; 10 at once get one answer")
+
+        w = Person()
+        for i in range(5):
+            await w.text("ZZZZ-ZZZ" + "23456"[i])
+        assert w.out.texts[-1] == "Too many wrong codes. Try again in 15 minutes.", w.out.texts[-2:]
+        assert sum("didn't work" in t for t in w.out.texts) == 4, w.out.texts
+        said = len(w.out.texts)
+        for _ in range(10):
+            await w.text("ZZZZ-ZZZ7")
+            await w.command(tg.start, "/start link-ZZZZZZZ8", "link-ZZZZZZZ8")
+        assert len(w.out.texts) == said, w.out.texts[said:]
+        tg._told_at[f"pub-code:{w.uid}"] -= tg.CODE_NOTICE_EVERY_SECONDS
+        for _ in range(3):
+            await w.text("ZZZZ-ZZZ9")
+        assert w.out.texts[said:] == ["Too many wrong codes. Try again in 15 minutes."], w.out.texts[said:]
+        g = Person()
+        for _ in range(5):
+            await g.command(tg.start, "/start link-garbage", "link-garbage")
+        assert g.out.texts == [tg.NOT_A_CODE], g.out.texts
+        ok("wrong codes: 4 'didn't work', then 'Too many wrong codes' once; while blocked, bare codes and deep links "
+           "get that notice at most once a minute (and 'not a code' likewise), not once per message")
+
+        # A staff member about to link: their first deep link, even right
+        # after a /whoami, and with the budget just drained by a flood.
+        k = Person()
+        plain = link_code("Kai Staff", "kaistaff")
+        await k.command(tg.whoami_command, "/whoami")
+        tp.replies._tokens, tp.replies._at = 0.0, time.monotonic()
+        del taken[:]
+        t0 = time.monotonic()
+        await k.command(tg.start, f"/start link-{plain}", f"link-{plain}")
+        took = time.monotonic() - t0
+        assert "Connect this Telegram to <b>@kaistaff (Kai Staff)</b>" in k.out.texts[-1], k.out.texts
+        assert took < 1.0 and any(taken), took
+        b = Person()
+        plain = link_code("Bea Staff", "beastaff")
+        await b.text(f"{plain[:4]}-{plain[4:]}")
+        assert "Connect this Telegram to <b>@beastaff (Bea Staff)</b>" in b.out.texts[-1], b.out.texts
+        await b.tap("✅ Yes, that's me")
+        assert b.out.texts[-1].startswith("Almost done"), b.out.texts[-1]
+        ok(f"a staff member's first /start link-CODE gets its prompt from the budget in {took:.2f}s (just after "
+           "their /whoami, the budget empty); a bare code too, and [Yes] -> 'Almost done'")
+
+    # /unlink and [Cancel] read before they write: nothing to undo, nothing
+    # written.
+    fresh()
+    u = Person()
+    with Writes() as writes:
+        await u.command(tg.unlink_command, "/unlink")
+        await u.tap(data="link_no:deadbeef")
+    assert u.out.texts == ["This Telegram isn't connected to a Carlink account.", tg.LINK_CANCELLED], u.out.texts
+    assert writes.statements == [], writes.statements
+    with Writes() as writes:  # b said Yes above: /unlink takes it back
+        await b.command(tg.unlink_command, "/unlink")
+    assert b.out.texts[-1] == "This Telegram isn't connected to a Carlink account.\n" + tg.YES_WITHDRAWN, b.out.texts[-1]
+    assert any(s.startswith("UPDATE chat_link_codes") for s in writes.statements), writes.statements
+    m = Person("Mid Form", "+6587770077")
+    await m.agree()
+    await m.text(m.name)
+    await m.command(tg.unlink_command, "/unlink")
+    assert m.form is not None and m.form.name == m.name, m.out.texts[-1]
+    await m.command(tg.cancel_command, "/cancel")
+    ok("a stranger's /unlink and [Cancel] with nothing linked or waiting write nothing to the database; with a Yes "
+       "waiting it's still taken back; a public form being filled in isn't thrown away by /unlink")
+
+
+# --- idle forms are closed, and their bytes freed --------------------------------------------
+
+async def check_idle_forms() -> None:
+    print("idle public forms are closed, on a timer too")
+    fresh()
+    for chat, _ in state.public_sessions():
+        tg_common._drop(chat)
+    # The new sender first: consent itself closes idle forms (_room_for_a_form).
+    p = Person("Fresh Sender", "+6587771100")
+    await p.fill(photos=0)
+    await p.tap("Edit something")
+    await p.tap("Photos")
+    idle = [Person(f"Idle {i}", f"+65877710{i:02d}") for i in range(2)]
+    files = []
+    for x in idle:
+        await x.agree()
+        await x.text(x.name)
+        path = tg_common._new_temp_path(".jpg")
+        path.write_bytes(b"\xff" * 1000)
+        x.session.photo_paths.append(str(path))
+        x.form.photo_bytes = 30 * 1024 * 1024  # what Telegram said they were
+        x.session.last_active -= tg.SESSION_MAX_IDLE_SECONDS + 60
+        files.append(path)
+    # Room for one more photo, but not with the idle forms' bytes counted.
+    with mock.patch.object(tp, "MAX_TEMP_BYTES", 60 * 1024 * 1024):
+        await p.photo()
+    await settle()
+    assert len(p.form.photo_ids) == 1, p.out.texts[-1]
+    assert all(x.session is None for x in idle) and not any(f.exists() for f in files)
+    assert tp._temp_bytes() == p.form.photo_bytes
+    ok("forms idle over 24 hours (60 MB between them) are closed before the temp-space check: their files deleted, "
+       "their bytes freed, a new sender's photo taken")
+
+    x = idle[0]
+    await x.text("hello again")
+    assert x.out.texts[-1] == tp.EXPIRED, x.out.texts[-1]
+    tg._told_at.pop(f"pub-welcome:{x.uid}", None)
+    await x.text("hello again")
+    assert "Do you agree?" in x.out.texts[-1] and x.out.texts.count(tp.EXPIRED) == 1
+    ok("the sender of a form closed that way is told it was closed after 24 hours, once, at their next message")
+
+    with mock.patch.object(tp, "start_pruning", wraps=tp.start_pruning) as started:
+        await tg._post_init(SimpleNamespace(bot=mock.AsyncMock()))
+    loop = asyncio.get_running_loop()
+    assert started.call_count == 1 and tp._pruning is not None and tp._pruning[0] is loop
+    assert 0 < tp._pruning[1].when() - loop.time() <= tp.PRUNE_EVERY_SECONDS
+    app = tg.build_app()
+    assert app.post_init is tg._post_init and app.post_shutdown is tg._post_shutdown
+    await app.post_shutdown(app)
+    assert tp._pruning is None
+    with mock.patch.object(tp, "PRUNE_EVERY_SECONDS", 0.05):
+        tp.start_pruning()
+        y = Person("Idle Again", "+6587771101")
+        await y.agree()
+        y.session.last_active -= tg.SESSION_MAX_IDLE_SECONDS + 60
+        await asyncio.sleep(0.2)
+        assert y.session is None and tp._pruning is not None and not tp._pruning[1].cancelled()
+        tp.stop_pruning()
+    assert tp._pruning is None
+    await p.command(tg.cancel_command, "/cancel")
+    ok(f"post_init starts a timer on the bot's loop that closes idle forms every {tp.PRUNE_EVERY_SECONDS // 60} "
+       "minutes, whether or not anyone writes (no JobQueue here: PTB's needs APScheduler); post_shutdown stops it")
+
+
+# --- who someone is: read again under the chat lock ------------------------------------------
+
+async def until_waiting(lock: asyncio.Lock) -> None:
+    """Until an update is past the gate and waiting for the chat lock."""
+    for _ in range(200):
+        if getattr(lock, "_waiters", None):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the update never reached the chat lock")
+
+
+async def check_lookup_under_the_lock() -> None:
+    print("who someone is: read again under the chat lock")
+    fresh()
+
+    async def queued(person: Person, meanwhile) -> None:
+        lock = tg._lock_for(str(person.uid))
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(person.command(tg.whoami_command, "/whoami"))
+            await until_waiting(lock)
+            meanwhile()
+        finally:
+            lock.release()
+        await task
+
+    lou = make_user("Lou Staff", "loustaff", ai_company_key_allowed=True)
+    s = Person(uid=next(_ids) + 700000)
+    STAFF_CHATS.add(s.uid)
+    link_tg(lou, s.uid)
+    await queued(s, lambda: unlink_tg(s.uid))
+    assert len(s.out.texts) == 1 and s.out.texts[0].startswith("Not connected"), s.out.texts
+    ok("an admin ends a link while the sender's update waits for the chat lock: it's handled as someone not "
+       "connected, not as staff")
+
+    r = Person()
+    await queued(r, lambda: link_tg(lou, r.uid))
+    assert r.out.texts[-1].startswith("Connected as Lou Staff"), r.out.texts
+    unlink_tg(r.uid)
+    ok("and a link made meanwhile counts too: the update is handled as staff")
 
 
 # --- 9. the flood, on a real concurrent_updates app ------------------------------------------
@@ -1301,6 +1561,9 @@ async def run_async_checks() -> None:
     await check_commands()
     await check_withdraw()
     await check_gate()
+    await check_strangers_link_commands()
+    await check_idle_forms()
+    await check_lookup_under_the_lock()
     await check_flood()
 
 

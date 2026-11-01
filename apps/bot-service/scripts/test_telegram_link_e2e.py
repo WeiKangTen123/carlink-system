@@ -18,7 +18,9 @@ Updated for the owner-approved P5 security-review changes (30 Oct):
   hasn't checked".
 - /unlink and [Cancel] withdraw an earlier Yes.
 - The wrong-code count resets only on a successful Yes.
-- A 5 s command throttle applies to linked unvetted accounts only.
+- A 5 s command throttle applies to linked unvetted accounts. Since the
+  P6 security review it also applies to /whoami, /link and /unlink from a
+  Telegram not linked at all (say() paces those).
 
 What it drives:
 - The real HTTP API, through TestClient, with people made straight in the
@@ -949,16 +951,25 @@ def _linked_unvetted(t: TgUser) -> bool:
     return bool(rows) and unvetted(rows[0]["user_id"])
 
 
+# Throttled the same way from a Telegram not linked at all (the P6 review).
+UNLINKED_THROTTLED = ("/whoami", "/link", "/unlink")
+
+
 def say(t: TgUser, words: str, *, chat=None, forwarded=False, pace=True) -> Reply:
     """pace: wait out the 5 s command throttle first if this Telegram is
     linked to an unvetted account, so a check isn't about the throttle by
-    accident. pace=False sends at once."""
+    accident. From a Telegram not linked at all, /whoami, /link and /unlink
+    are throttled too; this file sends dozens of them (wrong codes, mostly),
+    so rather than wait 5 s of real time each, the bot's own stamp for the
+    chat is moved back. pace=False sends at once."""
     chat = chat or private_chat(t)
     command = words.startswith("/")
     if command and pace:
         wait = LAST_COMMAND.get(t.id, -1e9) + COMMAND_GAP - time.monotonic()
         if wait > 0 and _linked_unvetted(t):
             _real_sleep(wait)
+        elif words.split()[0] in UNLINKED_THROTTLED and getattr(W, "tg", None) and not link_rows(external_id=t.id):
+            W.tg._told_at.pop(f"pub-command:{chat['id']}", None)
     rep = deliver(WIRE.message(t, chat=chat, text_=words, forwarded=forwarded), f"{t.label} says {words!r}", chat["id"])
     if command:
         LAST_COMMAND[t.id] = time.monotonic()
@@ -1721,7 +1732,9 @@ def who_it_talks_to() -> None:
     rep = say(t, "/help", pace=False)
     check(bool(rep.texts), "/help works without a link", rep.why())
     rep = say(t, "/whoami", pace=False)
-    check(not_connected(rep), "unconnected people aren't throttled: a third command at once is still answered", rep.why())
+    check(not rep.texts,
+          "an unconnected person's /whoami is throttled like an unvetted account's (P6 review): a second one at once "
+          "gets no answer", rep.why())
 
     print("  the P0 allow-list is gone")
     past = TgUser("Paul", "Past", "paulpast")

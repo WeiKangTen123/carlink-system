@@ -252,7 +252,13 @@ async def send_text(chat_id: int, outbox: Outbox, text: str, user_id=None, chat_
     await tg.handle_text(message_update(chat_id, outbox, user_id, chat_type, text=text, forwarded=forwarded), None)
 
 
-async def command(handler, chat_id: int, outbox: Outbox, *args: str):
+async def command(handler, chat_id: int, outbox: Outbox, *args: str, pace: bool = True):
+    """pace: someone not connected gets /whoami, /link and /unlink answered
+    at most every 5 s (tg._too_soon): that wait is let pass first, as a
+    person typing would, unless the check is about it. Linked unvetted
+    accounts' own 5 s (command:<chat>) is never skipped here."""
+    if pace:
+        tg._told_at.pop(f"pub-command:{chat_id}", None)
     words = " ".join(args)
     await handler(message_update(chat_id, outbox, text=f"/x {words}".strip()), SimpleNamespace(args=list(args)))
 
@@ -972,7 +978,46 @@ async def check_dashboard_limits() -> None:
         await command(tg.help_command, 3999, stranger)
     assert len(ann.texts) == 2 and len(stranger.texts) == 2
     ok("L7: an unvetted account's /start, /help, /whoami and /link get an answer at most every 5 s; ticked "
-       "accounts and people not connected aren't held back")
+       "accounts aren't held back, nor is /help from people not connected (their /whoami, /link and /unlink are: "
+       "test_telegram_public.py)")
+
+
+async def until_waiting(lock: asyncio.Lock, waiters: int = 1) -> None:
+    """Until that many updates are past the gate and waiting for the lock."""
+    for _ in range(200):
+        if len(getattr(lock, "_waiters", None) or ()) >= waiters:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{waiters} update(s) never reached the chat lock")
+
+
+async def check_link_made_while_queued() -> None:
+    """The gate looks the sender up before the chat lock; a handler looks
+    again under it. An album's photo the gate saw from someone not
+    connected, still waiting while their link is made, joins the staff
+    draft -- it doesn't take the public path and throw that draft away."""
+    nia = make_user("Nia Tan", "nia", ai_company_key_allowed=True)
+    chat = 4100
+    out = Outbox()
+    lock = tg._lock_for(str(chat))
+    await lock.acquire()
+    try:
+        first = asyncio.create_task(send_photo(chat, out))
+        await until_waiting(lock)  # looked up as not connected, now queued
+        link_tg(nia, chat)  # Settings confirms the link meanwhile
+        second = asyncio.create_task(send_photo(chat, out))
+        await until_waiting(lock, 2)
+    finally:
+        lock.release()
+    await asyncio.gather(first, second)
+    session = state.find_session(str(chat))
+    assert session is not None and session.public is None and session.carlink_user_id == nia
+    assert len(session.photo_paths) == 2 and len(out.downloads) == 2, (session.photo_paths, out.texts)
+    assert not any(f"{BASE}/privacy" in t for t in out.texts), out.texts
+    unlink_tg(chat)
+    tg._drop(str(chat))
+    ok("a photo the gate saw before the link was made, handled after it: looked up again under the lock, both "
+       "photos join the staff draft (no public welcome, nothing thrown away)")
 
 
 async def check_handlers_share_the_lock() -> None:
@@ -1183,6 +1228,7 @@ async def run_async_checks() -> None:
         await check_failed_save_can_retry()
         await check_confirm_rechecks()
         await check_handlers_share_the_lock()
+        await check_link_made_while_queued()
         print("photos")
         await check_photo_limit()
         print("stale drafts")
