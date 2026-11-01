@@ -16,6 +16,7 @@ import {
   TRAFFIC_OPTIONS,
   CLAIM_TYPE_OPTIONS,
   fileUrl,
+  PUBLIC_AI_KEY_MISSING,
   type PhotoAnalysisDraft,
   type ReportData,
   type AiOffCode,
@@ -154,6 +155,9 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
     setAiApplied(false);
     const fd = new FormData();
     fd.set("description", currentDescription);
+    // Editing a case: which one, so the API applies its AI key rule (a case
+    // the public sent takes only the presser's own billed key, release P6).
+    if (reportId) fd.set("report_id", reportId);
     for (const p of currentPhotos) fd.append("photos", p);
     const result = await analyzePhotosAction(fd);
     // Other photos were picked meanwhile: this result is for the old ones.
@@ -455,7 +459,10 @@ export function ReportForm({ mode, initialData, existingPhotoUrls = [], existing
               <strong>{analyzeError.text}</strong>{" "}
               {analyzeError.newPhotos && reportId && !attached
                 ? "You can attach the new photos without AI (above) and fill in the fields below by hand."
-                : "You can still fill in the fields below by hand."}{" "}
+                : // The public-report refusal (release P6) says this itself.
+                  analyzeError.text === PUBLIC_AI_KEY_MISSING
+                  ? ""
+                  : "You can still fill in the fields below by hand."}{" "}
               <AiFixLink code={analyzeError.aiOff} />
             </span>
           </div>

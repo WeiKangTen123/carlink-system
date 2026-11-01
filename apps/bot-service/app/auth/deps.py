@@ -44,10 +44,15 @@ def require_admin(user: CurrentUser = Depends(current_user)) -> CurrentUser:
 
 def _case_access(report_id: str):
     """Just what the rules look at (not the case data, which can be large:
-    /files asks this for every photo on a page)."""
+    /files asks this for every photo on a page). channel too: the rules
+    read it for public reports (permissions.in_inbox), and fail without it."""
     db = SessionLocal()
     try:
-        return db.query(Report.id, Report.owner_id, Report.status).filter(Report.id == report_id).first()
+        return (
+            db.query(Report.id, Report.owner_id, Report.status, Report.channel)
+            .filter(Report.id == report_id)
+            .first()
+        )
     finally:
         db.close()
 

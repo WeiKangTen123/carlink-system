@@ -27,6 +27,7 @@ import {
   SlidersHorizontal,
   ExternalLink,
   UserX,
+  Inbox,
 } from "lucide-react";
 import {
   type ReportSummary,
@@ -34,9 +35,11 @@ import {
   type AnalyticsSummary,
   type CaseScope,
   type DamageSummaryItem,
+  channelLabel,
   fileUrl,
   ownerLabel,
 } from "@/lib/api";
+import { useInboxCount } from "@/components/inbox/useInboxCount";
 import { DeleteButton } from "@/components/DeleteButton";
 import { canViewAllCases, isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
@@ -128,14 +131,6 @@ const SEVERITY_CHIP: Record<ReturnType<typeof severityClass>, { bg: string; fg: 
   minor: { bg: "var(--badge-green-bg)", fg: "var(--badge-green-text)" },
   unrated: { bg: "var(--surface-hover)", fg: "var(--text-muted)" },
 };
-
-/** Where the case came in from (ReportSummary.channel). */
-function channelLabel(channel?: string | null): string {
-  if (channel === "telegram") return "Telegram Bot (@carlink_bot)";
-  if (channel === "whatsapp") return "WhatsApp";
-  if (channel === "manual") return "Surveyor Console";
-  return channel || NOT_RECORDED;
-}
 
 /** A recorded SGD amount for display, or null when none is recorded. */
 function formatRecordedSGD(value?: string | null): string | null {
@@ -309,6 +304,10 @@ export function ReportsClient({ initialReports, scope = null, notice = null }: P
       live = false;
     };
   }, [admin, activeScope, initialReports]);
+  // The Public Inbox chip (release P6): reports from the public nobody has
+  // taken, for people who see all cases. Asked again with every new list.
+  const inboxCount = useInboxCount(showOwner, { refreshKey: initialReports });
+
   const unassignedCount = useMemo(() => {
     if (activeScope === "unassigned") return reportsList.length;
     if (activeScope === "all") return reportsList.filter((r) => !r.owner).length;
@@ -340,7 +339,8 @@ export function ReportsClient({ initialReports, scope = null, notice = null }: P
         workshop,
         filedAt: formatSgtDateTime(r.created_at),
         owner: ownerLabel(r.owner),
-        searchText: `${r.id} ${ref} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make} ${ownerText}`.toLowerCase(),
+        // public_reference: "TG-261030-K7M4", for a case sent by the public (release P6).
+        searchText: `${r.id} ${ref} ${r.plate_number || ""} ${vehicle} ${r.location || ""} ${insurer} ${workshop} ${body} ${make} ${ownerText} ${r.public_reference || ""}`.toLowerCase(),
       });
     }
     return map;
@@ -605,6 +605,17 @@ export function ReportsClient({ initialReports, scope = null, notice = null }: P
               >
                 <UserX style={{ width: 11, height: 11 }} />
                 <strong>{unassignedCount ?? "—"}</strong> Unassigned
+              </Link>
+            )}
+            {showOwner && (
+              <Link
+                href="/inbox"
+                prefetch={false}
+                className={`kpi-chip-compact case-unassigned-chip ${inboxCount?.new ? "has-cases" : ""}`}
+                title="Reports the public sent through the Telegram bot that nobody has taken yet"
+              >
+                <Inbox style={{ width: 11, height: 11 }} />
+                Inbox <strong>{inboxCount ? inboxCount.new : "—"}</strong>
               </Link>
             )}
           </div>
@@ -1090,6 +1101,7 @@ export function ReportsClient({ initialReports, scope = null, notice = null }: P
                     </span>
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
                       Origin: {channelLabel(selectedSummary.channel)}
+                      {selectedSummary.public_reference ? ` · ${selectedSummary.public_reference}` : ""}
                     </span>
                   </div>
 

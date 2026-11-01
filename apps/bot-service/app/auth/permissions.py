@@ -3,7 +3,8 @@ database, so the API (app/auth/deps.py), the bot and the tests all ask the
 same questions.
 
 `user` is a CurrentUser or a User row; `report` is anything with
-.owner_id and .status (a Report row, or a row of just those columns).
+.owner_id, .status and .channel (a Report row, or a row of just those
+columns: deps._case_access).
 
     admin                 everything
     "see all cases" tick  every case, Unassigned ones too; works on them,
@@ -13,9 +14,16 @@ same questions.
 A case someone can't see is "not found" to them (404, the same answer as a
 made-up id), so a stranger can't even confirm it exists. 403 is only for
 "you can see it, but this needs someone else".
+
+Public reports (P6, app/intake/public.py) are drafts sent by strangers
+through the Telegram bot. While one is in the inbox (no owner yet) nobody
+changes it, admins included -- no autosave, no AI on an unowned draft --
+until someone takes it; it leaves only through Discard, with a reason.
 """
 
 SCOPES = ("mine", "all", "unassigned")
+# Report.channel of a report sent by the public through the Telegram bot.
+PUBLIC_CHANNEL = "telegram_public"
 
 
 def is_admin(user) -> bool:
@@ -52,14 +60,46 @@ def owns(user, report) -> bool:
     return report.owner_id is not None and report.owner_id == user.id
 
 
+def is_public(report) -> bool:
+    """A public report not yet filed: in the inbox, or taken and still a
+    draft. Reads .channel directly: a row without it raises rather than
+    passing for a staff draft (review M8)."""
+    return report.channel == PUBLIC_CHANNEL and report.status == "intake"
+
+
+def in_inbox(report) -> bool:
+    """A public report nobody has taken (or one released back). Fails
+    closed: no .channel raises, never answers False."""
+    return is_public(report) and report.owner_id is None
+
+
+def can_take(user, report) -> bool:
+    """Take it as their own draft (POST /inbox/{id}/take)."""
+    return in_inbox(report) and can_view_all_cases(user)
+
+
+def can_discard(user, report) -> bool:
+    """Throw a public report away, with a reason: anyone who may take it
+    while it is in the inbox; once taken, its owner or an admin."""
+    if in_inbox(report):
+        return can_view_all_cases(user)
+    return is_public(report) and (is_admin(user) or owns(user, report))
+
+
+def can_release(user, report) -> bool:
+    """Give a taken public draft back to the inbox: its owner or an admin."""
+    return is_public(report) and report.owner_id is not None and (is_admin(user) or owns(user, report))
+
+
 def can_view_case(user, report) -> bool:
     return can_view_all_cases(user) or owns(user, report)
 
 
 def can_edit_case(user, report) -> bool:
     """A draft is its owner's until it is filed: "see all" staff may look,
-    not change it."""
-    if not can_view_case(user, report):
+    not change it. A public report in the inbox is nobody's: no one
+    changes it -- admins neither -- until it is taken."""
+    if in_inbox(report) or not can_view_case(user, report):
         return False
     return is_admin(user) or owns(user, report) or not is_draft(report)
 
@@ -80,7 +120,10 @@ def can_reopen(user, report) -> bool:
 
 def can_delete_case(user, report) -> bool:
     """People throw away their own unfinished drafts; deleting a filed case
-    is for admins."""
+    is for admins. A public report in the inbox leaves only through
+    Discard, with a reason (can_discard)."""
+    if in_inbox(report):
+        return False
     return is_admin(user) or (is_draft(report) and owns(user, report))
 
 
@@ -97,6 +140,8 @@ def case_permissions(user, report) -> dict:
         "reopen": can_reopen(user, report),
         "delete": can_delete_case(user, report),
         "assign": can_assign(user),
+        # Give a taken public draft back to the inbox.
+        "release": can_release(user, report),
     }
 
 

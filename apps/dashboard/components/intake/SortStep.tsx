@@ -45,6 +45,9 @@ type Props = {
   /** A Retry or Re-read the API just refused for this person (release P4,
    * AI_OFF_CODES), with its words. */
   aiRefused?: { code: AiOffCode | null; said: string | null } | null;
+  /** A report from the public (release P6): the AI may be kept off the
+   * company key for it, which the AI-off words then say. */
+  publicCase?: boolean;
 };
 
 function inGroup(p: IntakePhoto, group: GroupKey, readIds: ReadonlySet<string>): boolean {
@@ -91,6 +94,7 @@ export function SortStep({
   onBack,
   onNext,
   aiRefused = null,
+  publicCase = false,
 }: Props) {
   const { photos, stage, progress } = state;
   const [group, setGroup] = useState<GroupKey>("all");
@@ -249,7 +253,7 @@ export function SortStep({
                 is off for them).
               </>
             ) : (
-              aiOffMessage(failedAiOff, failedAiOffSaid)
+              aiOffMessage(failedAiOff, failedAiOffSaid, { publicCase })
             )}
             {photos.some((p) => p.kind && p.kind_source === "ai") && " The photos sorted before it stopped are kept."}{" "}
             {!stoppedBy && <AiFixLink code={failedAiOff} />}

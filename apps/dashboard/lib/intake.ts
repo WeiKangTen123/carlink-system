@@ -17,6 +17,7 @@ import {
   type CasePermissions,
   type DamageSummaryItem,
   type Owner,
+  type PublicSubmissionInfo,
   type ReportData,
 } from "./api";
 
@@ -110,6 +111,10 @@ export type IntakeState = {
   owner: Owner | null;
   /** What the signed-in user may do with this draft; the API checks again. */
   permissions: CasePermissions;
+  /** Who sent it, on a report from the public (release P6); null or absent
+   * otherwise. With no owner it is still in the Public Inbox, and the
+   * wizard sends the browser there (/inbox/{id}). */
+  public_submission?: PublicSubmissionInfo | null;
 };
 
 export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic"];

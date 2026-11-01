@@ -226,8 +226,17 @@ export type UserTicks = Pick<UserAccount, "sees_all_cases" | "ai_company_key_all
 export type Owner = { id: string; name: string; username: string; active: boolean };
 
 /** What the signed-in user may do on one case, as the API worked it out
- * (GET /reports/{id}, GET /intake/{id}). The API checks again on every call. */
-export type CasePermissions = { edit: boolean; sign_off: boolean; reopen: boolean; delete: boolean; assign: boolean };
+ * (GET /reports/{id}, GET /intake/{id}). The API checks again on every call.
+ * `release`: put a public report someone has taken back in the Public Inbox
+ * (release P6; its owner or an admin); absent from an older API. */
+export type CasePermissions = {
+  edit: boolean;
+  sign_off: boolean;
+  reopen: boolean;
+  delete: boolean;
+  assign: boolean;
+  release?: boolean;
+};
 
 /** Admins only, on an Unassigned case: who probably owns it, and why. */
 export type SuggestedOwner = { id: string; name: string; username: string; reason: string };
@@ -317,6 +326,17 @@ export const ERROR_MESSAGES: Record<string, string> = {
   ai_key_storage_off: "Saving AI keys is off on this server right now. Please tell your admin.",
   no_ai_key: "There is no AI key saved for this account.",
   ai_key_check_failed: "Couldn't reach Google to check the key. Try again in a minute.",
+  // Public Inbox (release P6). inbox_taken comes with the API's own words
+  // ("Taken by S. Lee just now"); this is for an answer without them.
+  inbox_taken: "Someone else took this report just now.",
+  inbox_gone:
+    "This report isn't in the inbox any more. It may have been discarded, withdrawn by the sender, or deleted after 30 days.",
+  inbox_changed: "This report changed while you were looking at it. Reload the page to see where it is now.",
+  inbox_filed: "This report has already been filed as a case.",
+  inbox_finalizing: "This report is being filed as a case right now, so it can't go back to the inbox.",
+  owner_unvetted:
+    "Public reports can only go to an admin, or to someone an admin has given access to (a tick on Settings → Users).",
+  ai_running: "The AI is reading this report right now. Wait for it to finish, then try again.",
 };
 
 /** The plain-words message for an error code, if it has one. */
@@ -330,6 +350,12 @@ export function messageForCode(code: string | null | undefined): string | null {
  * whole firm has used up the day's saves. */
 const DETAIL_FIRST_CODES = new Set([
   "not_allowed",
+  // The API's usual words for this are the same as AI_OFF_MESSAGES'; on a
+  // public report (release P6) they say only the presser's own billed key
+  // may be used there (PUBLIC_AI_KEY_MISSING), which must not be replaced.
+  "ai_key_missing",
+  // "Taken by S. Lee just now": who, which the plain words can't say.
+  "inbox_taken",
   "ai_key_format",
   "billing_not_confirmed",
   "ai_key_invalid",
@@ -355,11 +381,21 @@ export function refusalMessage(code: string | null, detail: unknown): string | n
  * message, an intake run's `error`). The same rule as refusalMessage, except
  * that an ai_key_invalid with no words of the API's means the saved key
  * stopped working, not that a key being saved was refused. */
-export function aiOffMessage(code: AiOffCode, said?: unknown): string {
+export function aiOffMessage(code: AiOffCode, said?: unknown, opts: { publicCase?: boolean } = {}): string {
   const text = typeof said === "string" && said ? said : null;
   if (text && DETAIL_FIRST_CODES.has(code) && text !== ERROR_MESSAGES[code]) return text;
+  // A public report with no words of the API's: the company key is kept
+  // off it until an admin confirms it is billed (release P6).
+  if (opts.publicCase && code === "ai_key_missing") return PUBLIC_AI_KEY_MISSING;
   return AI_OFF_MESSAGES[code];
 }
+
+/** ai_key_missing on a report sent by the public (release P6): until an admin
+ * ticks "The company AI key is on a Google Cloud project with billing turned
+ * on" (Settings -> Company), AI on public reports runs only on the presser's
+ * own key, saved with billing confirmed. The API's words for it. */
+export const PUBLIC_AI_KEY_MISSING =
+  "Public reports can only use your own (billed) AI key until an admin confirms the company key is billed. You can still fill it in by hand.";
 
 /** A refused API call. `code` is the API's error code, when it sent one;
  * `detail` its own words, when it sent a sentence. */
@@ -1031,6 +1067,9 @@ export type ReportSummary = {
   incident_datetime?: string | null;
   /** Null when the case is Unassigned. */
   owner: Owner | null;
+  /** "TG-261030-K7M4" on a case a member of the public sent through the
+   * Telegram bot (release P6); null or absent otherwise. */
+  public_reference?: string | null;
 };
 
 export type ReportData = {
@@ -1099,10 +1138,16 @@ export type ReportDetail = {
   permissions: CasePermissions;
   /** Sent to admins only, and only while the case is Unassigned. */
   suggested_owner?: SuggestedOwner | null;
+  /** Who sent it, on a report from the public (release P6); null or absent
+   * otherwise. */
+  public_submission?: PublicSubmissionInfo | null;
 };
 
 export type HistoryEntry = {
-  /** "assigned": the owner changed; detail is "Assigned to Name (@username)" or "Unassigned". */
+  /** "assigned": the owner changed; detail is "Assigned to Name (@username)" or "Unassigned".
+   * Public reports (release P6) add taken, returned_to_inbox, discarded,
+   * expired, withdrawn and withdraw_requested; their detail carries the
+   * reference, never a name or phone. */
   action: "created" | "edited" | "finalized" | "signed_off" | "reopened" | "assigned" | string;
   /** Null for entries with no account behind them (Telegram, or before sign-in). */
   user_name: string | null;
@@ -1225,12 +1270,18 @@ export type PhotoAnalysisDraft = Pick<
   "accident_type" | "severity_level" | "damaged_parts" | "category" | "description" | "damage_summary" | "vehicle_info"
 >;
 
+/** `reportId`: the case the edit form is for (left out on New Report). The
+ * API checks it may be seen and changed (404, 403), and on a case the public
+ * sent (release P6) uses only the presser's own billed AI key until an admin
+ * confirms the company key is billed (409 ai_key_missing). */
 export async function analyzeReportPhotos(
   description: string,
-  photos: File[]
+  photos: File[],
+  reportId?: string
 ): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] }> {
   const formData = new FormData();
   formData.set("description", description);
+  if (reportId) formData.set("report_id", reportId);
   for (const photo of photos) formData.append("photos", photo);
 
   const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
@@ -1245,13 +1296,16 @@ export async function analyzeReportPhotos(
  * has saved rather than freshly-picked files -- must run server-side (this
  * is only ever called from a server action) since it re-fetches each photo
  * from the API's /files/ route directly, which has no CORS headers and
- * fails if a browser calls it. */
+ * fails if a browser calls it. `reportId`: the case they are from, as for
+ * analyzeReportPhotos (its key rule, on a case the public sent). */
 export async function analyzeExistingReportPhotos(
+  reportId: string,
   photoPaths: string[],
   description: string
 ): Promise<{ draft: PhotoAnalysisDraft }> {
   const formData = new FormData();
   formData.set("description", description);
+  formData.set("report_id", reportId);
   for (let i = 0; i < photoPaths.length; i++) {
     const path = photoPaths[i];
     const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
@@ -1346,6 +1400,292 @@ export async function renderReportPdf(id: string): Promise<{ id: string; status:
   });
   if (!res.ok) throw await apiError(res, "Failed to render PDF");
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Public Inbox (release P6): reports members of the public send through the
+// company Telegram bot (bot-service app/api/inbox.py, app/intake/public.py).
+// Each is a draft with no owner (channel "telegram_public", status "intake")
+// until someone takes it; nobody can edit it or run AI on it before then.
+// Reports nobody takes are deleted 30 days after they were sent.
+//
+// What the sender typed is their own words and was not checked: show it as
+// plain text, marked "as given", never as links or HTML. The phone number is
+// the one exception: it came from a contact shared from their own Telegram.
+
+export const PUBLIC_CHANNEL = "telegram_public";
+
+/** Where a case came in from (Report.channel), in words. */
+export function channelLabel(channel?: string | null): string {
+  if (channel === "telegram") return "Telegram Bot (@carlink_bot)";
+  if (channel === PUBLIC_CHANNEL) return "Telegram (public)";
+  if (channel === "whatsapp") return "WhatsApp";
+  if (channel === "manual") return "Surveyor Console";
+  return channel || "Not recorded";
+}
+
+/** A report from the public that nobody has taken yet: it lives in the
+ * inbox (/inbox/{id}), not in the wizard or on a case page. */
+export function isUntakenPublic(r: { channel?: string | null; status: string; owner: Owner | null }): boolean {
+  return r.channel === PUBLIC_CHANNEL && r.status === "intake" && !r.owner;
+}
+
+/** new: nobody has taken it. taken: someone has, and it isn't filed yet.
+ * filed: it is a case now. Worked out by the API from the report's owner
+ * and status. */
+export type InboxState = "new" | "taken" | "filed";
+export type InboxView = "new" | "taken";
+
+/** sg_mobile: +65 8/9xxx xxxx. sg_other: another +65 number (a landline).
+ * foreign: anything else. */
+export type PhoneKind = "sg_mobile" | "sg_other" | "foreign";
+
+/** What the sender said they are. */
+export type PublicRole = "driver" | "owner" | "workshop" | "other";
+
+export const PUBLIC_ROLE_LABELS: Record<PublicRole, string> = {
+  driver: "Driver",
+  owner: "Car owner",
+  workshop: "Workshop",
+  other: "Someone else",
+};
+
+/** The API's own words for the role (role_label) when it sent them; else
+ * "Driver" for "driver", and anything else as sent. */
+export function publicRoleLabel(sender: { role?: string | null; role_label?: string | null } | null | undefined): string {
+  if (sender?.role_label) return sender.role_label;
+  const role = sender?.role;
+  if (!role) return "";
+  return (PUBLIC_ROLE_LABELS as Record<string, string>)[role] ?? role;
+}
+
+/** A row of GET /inbox: the phone masked ("+65 •••• 4567"). */
+export type InboxSenderSummary = {
+  name: string;
+  role: PublicRole | (string & {});
+  /** "Car owner": the role in words. */
+  role_label?: string;
+  phone_masked: string;
+  phone_kind: PhoneKind | (string & {});
+  telegram_username: string | null;
+};
+
+export type InboxItem = {
+  id: string;
+  /** "TG-261030-K7M4". */
+  reference: string;
+  submitted_at: string;
+  /** When it is deleted if nobody has taken it (submitted_at + 30 days). */
+  expires_at: string;
+  sender: InboxSenderSummary;
+  /** Null when the sender wasn't sure. */
+  plate: string | null;
+  photo_count: number;
+  statement_preview: string;
+  /** The sender sent /withdraw after it was taken. */
+  withdraw_requested: boolean;
+  /** Who took it (Taken tab); null on the New tab. */
+  owner: Owner | null;
+  taken_at: string | null;
+};
+
+export type InboxList = {
+  items: InboxItem[];
+  counts: { new: number; taken: number };
+  /** max_open: how many untaken reports the bot takes in all. accepting:
+   * false while the inbox is full, so the bot is turning the public away. */
+  limits: { max_open: number; accepting: boolean };
+};
+
+/** GET /inbox/count: for the sidebar badge, the Cases chip and the Command
+ * Center card. expiring_soon: untaken reports close to their 30 days. */
+export type InboxCount = { new: number; oldest_submitted_at: string | null; expiring_soon: number };
+
+/** The sender in full (GET /inbox/{id}, and a case's public_submission).
+ * phone is E.164 ("+6591234567"); phone_display is for reading
+ * ("+65 9123 4567"). The telegram_* fields are cleared once the case is
+ * filed. */
+export type PublicSender = {
+  name: string;
+  role: PublicRole | (string & {});
+  role_label?: string;
+  phone: string;
+  phone_display: string;
+  phone_kind: PhoneKind | (string & {});
+  telegram_username?: string | null;
+  telegram_name?: string | null;
+};
+
+/** A photo the sender sent (the intake photo's URLs, see lib/intake.ts). */
+export type InboxPhoto = {
+  id: string;
+  label?: string;
+  name?: string;
+  size_bytes?: number;
+  url: string;
+  thumb_url: string;
+  preview_url: string;
+};
+
+/** The account that took a report: an account, or its name already in words. */
+export type TakenBy = Pick<Owner, "id" | "name" | "username"> | string;
+
+export function takenByLabel(by: TakenBy | null | undefined): string | null {
+  if (!by) return null;
+  if (typeof by === "string") return by;
+  return personLabel(by);
+}
+
+/** What the signed-in user may do with one inbox report, as the API worked
+ * it out; it checks again on every call. */
+export type InboxPermissions = { take: boolean; assign: boolean; release: boolean; discard: boolean };
+
+/** GET /inbox/{id}. */
+export type InboxDetail = {
+  id: string;
+  reference: string;
+  state: InboxState;
+  submitted_at: string;
+  expires_at: string;
+  sender: PublicSender;
+  plate: string | null;
+  /** In their words, or "Location pin: 1.3521, 103.8198". */
+  when_where: string | null;
+  /** Their own words, verbatim. */
+  statement: string;
+  photos: InboxPhoto[];
+  /** How many of the photos were forwarded from another chat. */
+  forwarded_count?: number;
+  /** When the sender sent /withdraw on it after it was taken; null if not. */
+  withdraw_requested_at: string | null;
+  /** Their other reports still here (by Telegram account or phone). */
+  same_sender: { id: string; reference: string; state: InboxState }[];
+  owner: Owner | null;
+  taken_at?: string | null;
+  taken_by?: TakenBy | null;
+  permissions: InboxPermissions;
+};
+
+/** A case's public_submission (GET /intake/{id}, GET /reports/{id}): who sent
+ * it, kept with the case. The same fields as GET /inbox/{id}'s, less the
+ * photos (the case has them) and the actions. */
+export type PublicSubmissionInfo = {
+  reference: string;
+  state?: InboxState;
+  submitted_at: string;
+  expires_at?: string | null;
+  sender: PublicSender;
+  plate?: string | null;
+  when_where?: string | null;
+  statement?: string | null;
+  forwarded_count?: number;
+  withdraw_requested_at?: string | null;
+  taken_at?: string | null;
+  taken_by?: TakenBy | null;
+  filed_at?: string | null;
+};
+
+export const DISCARD_REASONS = ["spam", "duplicate", "test", "not_vehicle", "other"] as const;
+export type DiscardReason = (typeof DISCARD_REASONS)[number];
+
+export const DISCARD_REASON_LABELS: Record<DiscardReason, string> = {
+  spam: "Spam",
+  duplicate: "Duplicate",
+  test: "Test",
+  not_vehicle: "Not a vehicle report",
+  other: "Other",
+};
+
+/** The note goes in the case history: a few words, no personal details. */
+export const DISCARD_NOTE_MAX = 120;
+
+export type DiscardRequest = {
+  reason: DiscardReason;
+  /** "TG-261029-Q8T2", with reason "duplicate". */
+  duplicate_of?: string;
+  note?: string;
+  /** Block the sender's Telegram account for 90 days (on by default for spam). */
+  block_sender?: boolean;
+};
+
+/** Phone links for an E.164 number: tel: for Call, wa.me for WhatsApp (not
+ * offered for a Singapore landline). Null for anything that isn't a plain
+ * +digits number, so a stored value is never turned into some other link. */
+export function phoneLinks(phone: string | null | undefined, kind?: string | null): { tel: string; whatsapp: string | null } | null {
+  const e164 = (phone || "").replace(/[\s-]/g, "");
+  if (!/^\+[1-9]\d{6,14}$/.test(e164)) return null;
+  return {
+    tel: `tel:${e164}`,
+    whatsapp: kind === "sg_other" ? null : `https://wa.me/${e164.slice(1)}`,
+  };
+}
+
+/** The view to list (default New). Refused for anyone who doesn't see all
+ * cases (403 not_allowed). */
+export async function listInbox(view: InboxView = "new"): Promise<InboxList> {
+  const res = await apiFetch(`${API_BASE_URL}/inbox?view=${view}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load the inbox");
+  const body = await res.json();
+  return {
+    items: Array.isArray(body?.items) ? body.items : [],
+    counts: { new: Number(body?.counts?.new) || 0, taken: Number(body?.counts?.taken) || 0 },
+    limits: { max_open: Number(body?.limits?.max_open) || 0, accepting: body?.limits?.accepting !== false },
+  };
+}
+
+export async function countInbox(): Promise<InboxCount> {
+  const res = await apiFetch(`${API_BASE_URL}/inbox/count`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to count the inbox");
+  const body = await res.json();
+  return {
+    new: Number(body?.new) || 0,
+    oldest_submitted_at: typeof body?.oldest_submitted_at === "string" ? body.oldest_submitted_at : null,
+    expiring_soon: Number(body?.expiring_soon) || 0,
+  };
+}
+
+/** Null for 404: no such report, not a public one (inbox_gone), or not one
+ * this account may open. */
+export async function getInboxItem(id: string): Promise<InboxDetail | null> {
+  const res = await apiFetch(`${API_BASE_URL}/inbox/${encodeURIComponent(id)}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await apiError(res, "Failed to load the report");
+  return res.json();
+}
+
+async function inboxPost<T>(id: string, action: string, body: unknown, fallback: string): Promise<T> {
+  const res = await apiFetch(`${API_BASE_URL}/inbox/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) throw await apiError(res, fallback);
+  return res.json();
+}
+
+/** Takes it as your own draft. 409 inbox_taken (someone was quicker),
+ * draft_limit, inbox_filed; 404 inbox_gone. */
+export function takeSubmission(id: string): Promise<{ id: string; owner: Owner | null }> {
+  return inboxPost(id, "take", {}, "Failed to take the report");
+}
+
+/** Admin: gives an untaken report to someone vetted. 409 owner_inactive,
+ * owner_unvetted, draft_limit, inbox_taken. */
+export function assignSubmission(id: string, ownerId: string): Promise<{ id: string; owner: Owner | null }> {
+  return inboxPost(id, "assign", { owner_id: ownerId }, "Failed to assign the report");
+}
+
+/** Back to the inbox (its owner or an admin). Its 30 days don't restart.
+ * 409 ai_running, inbox_finalizing, inbox_changed. */
+export function releaseSubmission(id: string): Promise<{ id: string; owner: null }> {
+  return inboxPost(id, "release", {}, "Failed to return the report to the inbox");
+}
+
+/** Deletes it with its photos and the sender's details for good; the case
+ * history keeps the reference and the reason. 409 inbox_changed,
+ * ai_running, inbox_filed. */
+export function discardSubmission(id: string, body: DiscardRequest): Promise<{ deleted: string | boolean }> {
+  return inboxPost(id, "discard", body, "Failed to discard the report");
 }
 
 // ---------------------------------------------------------------------------
@@ -1516,13 +1856,41 @@ export async function getAnalyticsSummary(scope?: CaseScope): Promise<AnalyticsS
   return res.json();
 }
 
+/** GET /settings. The three public-report settings (release P6) come back
+ * to admins only; everyone else gets company_name alone. */
 export type AppSettings = {
   company_name: string;
+  /** "6123 4567": the number the Telegram bot gives the public to call.
+   * Empty: the bot leaves every "call us on ..." out. */
+  public_contact_phone?: string;
+  /** Who to ask about personal data ("dpo@firm.sg"), shown on /privacy. */
+  dpo_contact?: string;
+  /** An admin has confirmed the company AI key is on a billed Google Cloud
+   * project. Until then AI on public reports runs only on the presser's own
+   * billed key. */
+  company_key_billed?: boolean;
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   company_name: "Carlink Loss Adjuster",
 };
+
+/** The settings as the screens use them. app_settings stores text, so a
+ * tick may come back as "true"/"1"/"" rather than a boolean; the P6 keys are
+ * left out when the API didn't send them (not an admin, or an older API). */
+function normalizeSettings(body: unknown): AppSettings {
+  const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+  const settings: AppSettings = {
+    company_name: typeof raw.company_name === "string" ? raw.company_name : DEFAULT_APP_SETTINGS.company_name,
+  };
+  if (typeof raw.public_contact_phone === "string") settings.public_contact_phone = raw.public_contact_phone;
+  if (typeof raw.dpo_contact === "string") settings.dpo_contact = raw.dpo_contact;
+  if ("company_key_billed" in raw) {
+    const v = raw.company_key_billed;
+    settings.company_key_billed = v === true || v === 1 || (typeof v === "string" && ["true", "1", "yes"].includes(v.trim().toLowerCase()));
+  }
+  return settings;
+}
 
 /** Live read-only facts about the running deployment. Never contains the
  * API key or bot token themselves -- only whether they're configured. */
@@ -1577,7 +1945,7 @@ export async function getAppSettings(): Promise<AppSettings> {
   try {
     const res = await apiFetch(`${API_BASE_URL}/settings`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load settings (${res.status}: ${res.statusText})`);
-    return await res.json();
+    return normalizeSettings(await res.json());
   } catch (err) {
     unstable_rethrow(err);
     console.warn("Failed to load settings, using fallback default:", err);
@@ -1585,6 +1953,8 @@ export async function getAppSettings(): Promise<AppSettings> {
   }
 }
 
+/** Admin only. Sends only the keys in the patch; company_key_billed goes as
+ * a JSON true/false. */
 export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const res = await apiFetch(`${API_BASE_URL}/settings`, {
     method: "PUT",
@@ -1592,7 +1962,29 @@ export async function updateAppSettings(patch: Partial<AppSettings>): Promise<Ap
     body: JSON.stringify(patch),
   });
   if (!res.ok) throw await apiError(res, "Failed to save settings");
-  return res.json();
+  return normalizeSettings(await res.json());
+}
+
+/** What the public privacy notice (/privacy#public-reports) shows: the
+ * data-protection contact and the public contact line (release P6). Read
+ * without signing in, from GET /privacy/contact; empty strings when they
+ * aren't set, or when they couldn't be read. */
+export type PublicContact = { dpo_contact: string; public_contact_phone: string };
+
+export async function getPublicContact(): Promise<PublicContact> {
+  const none: PublicContact = { dpo_contact: "", public_contact_phone: "" };
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/privacy/contact`, { cache: "no-store" }, { timeoutMs: 5000, onSignedOut: "return" });
+    if (!res.ok) return none;
+    const body = await res.json();
+    return {
+      dpo_contact: typeof body?.dpo_contact === "string" ? body.dpo_contact.trim() : "",
+      public_contact_phone: typeof body?.public_contact_phone === "string" ? body.public_contact_phone.trim() : "",
+    };
+  } catch (err) {
+    unstable_rethrow(err);
+    return none;
+  }
 }
 
 /** Never contains key material -- only enough to tell keys apart. */

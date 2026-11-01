@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
 from app.api.ai_keys import router as ai_keys_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
+from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import router as parts_router
 from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
@@ -52,9 +53,21 @@ from app.auth.deps import (
 )
 from app.auth.middleware import LOCAL_DEV_ORIGIN, AuthMiddleware
 from app.auth.passwords import HashingBusy
-from app.auth.permissions import can_assign, can_delete_case, can_reopen, can_sign_off, is_staff, list_scope
+from app.auth.permissions import (
+    PUBLIC_CHANNEL,
+    can_assign,
+    can_delete_case,
+    can_reopen,
+    can_sign_off,
+    in_inbox,
+    is_public,
+    is_staff,
+    list_scope,
+)
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
+from app.intake import public
+from app.intake.photos import remove_intake_dir
 from app.reports import owners
 from app.reports.db import SessionLocal, init_db
 from app.ai.client import get_client, reset_client_cache
@@ -137,6 +150,7 @@ app.include_router(parts_router)
 app.include_router(intake_router)
 app.include_router(ai_keys_router)
 app.include_router(telegram_link_router)
+app.include_router(inbox_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -193,7 +207,13 @@ class _ImmutableStaticFiles(StaticFiles):
         user = scope.get("state", {}).get("user")
         if user is None or not await run_in_threadpool(can_view_file, user, path):
             raise HTTPException(status_code=404)
-        return await super().get_response(path, scope)
+        resp = await super().get_response(path, scope)
+        if path.replace("\\", "/").startswith("intake/"):
+            # A draft's photos (a public report's among them) go when it is
+            # discarded, withdrawn or swept: a browser keeps them an hour at
+            # most, not a year (review L4).
+            resp.headers["Cache-Control"] = "private, max-age=3600"
+        return resp
 
     def lookup_path(self, path: str):
         full_path, stat_result = super().lookup_path(path)
@@ -246,10 +266,13 @@ Scope = Optional[Literal["mine", "all", "unassigned"]]
 def _scoped(query, user: CurrentUser, requested: str | None):
     """Narrows a Report query to the cases a list covers for this user
     (permissions.list_scope): their own, every case, or the Unassigned
-    ones. Lists, counts and charts all go through this."""
+    ones. Lists, counts and charts all go through this. Never public
+    reports nobody has taken: those are the Public Inbox's (api/inbox.py),
+    and a NULL channel on an older row still lists (review H2)."""
     scope = list_scope(user, requested)
     if scope is None:
         raise ApiError(403, "You can only list your own cases.", "scope_not_allowed")
+    query = query.filter(public.not_untaken_clause())
     if scope == "mine":
         return query.filter(Report.owner_id == user.id)
     if scope == "unassigned":
@@ -270,6 +293,8 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
     try:
         reports = _scoped(db.query(Report), user, scope).order_by(Report.created_at.desc()).all()
         owner_rows = owners.owners_by_id(db, {r.owner_id for r in reports})
+        # TG-... of the reports the public sent, in one query.
+        references = public.references_for(db, [r.id for r in reports if r.channel == PUBLIC_CHANNEL])
         result = []
         for r in reports:
             data = r.data or {}
@@ -332,6 +357,7 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
                 "disassembly_required": recommendations.get("disassembly_required"),
                 "reported_to_police": police_report.get("reported_to_police"),
                 "owner": owners.owner_dict(owner_rows.get(r.owner_id)),
+                "public_reference": references.get(r.id),
             })
         return result
     finally:
@@ -346,8 +372,9 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         # Owner, what this user may do (the buttons follow it), and for an
-        # admin on an Unassigned case, who it should probably go to.
-        access = owners.access_fields(db, r, user)
+        # admin on an Unassigned case, who it should probably go to. On a
+        # report from the public, who sent it (else None).
+        access = {**owners.access_fields(db, r, user), "public_submission": public.submission_info(db, r)}
 
         if r.status == "intake":
             # Unfinished intake -- the dashboard sends these to the intake
@@ -500,10 +527,26 @@ def _temp_prefix(user: CurrentUser) -> str:
     return f"u{user.id}-"
 
 
+def _analysis_is_public(report_id: str, user: CurrentUser) -> bool:
+    """analyze-photos for one case (its edit form): editable_case's answers
+    -- 404 unless the user may see it, 403 not_allowed unless they may
+    change it (an untaken public report: no one) -- then whether the public
+    sent it (P6, filed ones too), whose AI takes the stricter key rule
+    (ai/keys.resolve_keys, public_case)."""
+    editable_case(report_id, user)
+    db = SessionLocal()
+    try:
+        channel = db.query(Report.channel).filter(Report.id == report_id).scalar()
+    finally:
+        db.close()
+    return channel == PUBLIC_CHANNEL
+
+
 @app.post("/reports/analyze-photos")
 async def analyze_report_photos(
     description: str = Form(""),
     photos: list[UploadFile] = File(default=[]),
+    report_id: Optional[str] = Form(None),
     user: CurrentUser = Depends(current_user),
 ) -> dict:
     """Dashboard equivalent of the Telegram bot's photo+text drafting step:
@@ -513,13 +556,19 @@ async def analyze_report_photos(
     temp_photo_paths get passed back in on POST /reports if the reporter
     goes on to save the report, so the photos are only ever attached to a
     report the reporter actually confirmed.
+
+    report_id: the case the edit form is for (its Re-analyze, or photos
+    added to it). Gated as the other routes about one case (404, 403), and
+    a case the public sent takes only the presser's own billed key until
+    company_key_billed (409 ai_key_missing). Left out by the New Report form.
     """
-    # No case to gate on: the photos go to a case later, through PUT
-    # /reports/{id}'s checks. AI first (the presser pays: 409 {detail,
-    # code} when theirs isn't available; one request at a time, 429
-    # ai_busy), then room on the disk, the file types and the hourly photo
-    # count, before any photo is saved.
-    actor = AiActor.for_user(user.id, "dashboard")
+    # The case first, when there is one (the photos still go to it later,
+    # through PUT /reports/{id}'s checks). Then AI (the presser pays: 409
+    # {detail, code} when theirs isn't available; one request at a time,
+    # 429 ai_busy), then room on the disk, the file types and the hourly
+    # photo count, before any photo is saved.
+    public_case = await asyncio.to_thread(_analysis_is_public, report_id, user) if report_id else False
+    actor = AiActor.for_user(user.id, "dashboard", public_case=public_case)
     await asyncio.to_thread(own_keys.ensure_ai_ready, actor)
     limits.claim_ai_turn(user)
     try:
@@ -1156,26 +1205,46 @@ def get_analytics_summary(scope: Scope = None, user: CurrentUser = Depends(curre
 @app.delete("/reports/{report_id}")
 def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     """Admins only, except an unfinished intake draft (status "intake"),
-    which the person filing it may throw away (permissions.can_delete_case)."""
+    which the person filing it may throw away (permissions.can_delete_case).
+    A public report in the inbox is refused (Discard it, with a reason:
+    POST /inbox/{id}/discard); a taken one goes with its submission row,
+    and its history entry carries the reference (never a name or phone)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         if not can_delete_case(user, r):
+            if in_inbox(r):
+                raise not_allowed("This report is in the Public Inbox: use Discard, with a reason.")
             raise not_allowed(
                 "Only an admin can delete a case." if r.status != "intake"
                 else "Only the person filing this draft, or an admin, can throw it away."
             )
 
+        if is_public(r):
+            # A taken public draft: only while it is still this owner's and
+            # neither the AI nor finalize holds it (public.delete_submission).
+            seen_owner = r.owner_id
+            clear_stale_run(db, report_id)
+            if not public.delete_submission(
+                db, report_id, seen_owner=seen_owner, actor=user, action="deleted", detail="Unfinished intake",
+            ):
+                raise public.refusal(db, report_id)
+            db.commit()
+            remove_intake_dir(report_id)
+            remove_incident_dirs(report_id)
+            return {"deleted": report_id}
+
         # Unconditional (and a no-op for ordinary cases): a draft that was
         # turned into a case some other way would otherwise leak its folder.
-        delete_intake_files(db, r.id)
+        reference = delete_intake_files(db, r.id)
         # Every month folder the case has files in, not only the PDF's.
         remove_incident_dirs(r.id)
 
         plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
-        audit(db, user, "deleted", report_id, detail="Unfinished intake" if r.status == "intake" else (plate or ""))
+        detail = "Unfinished intake" if r.status == "intake" else (plate or "")
+        audit(db, user, "deleted", report_id, detail=" · ".join(p for p in (reference, detail) if p))
         db.delete(r)
         db.commit()
         return {"deleted": report_id}
@@ -1339,21 +1408,46 @@ def ai_enrich_all_reports(admin: CurrentUser = Depends(require_admin)) -> dict:
 # =============================================================================
 
 # Only keys listed here can be written, so a typo'd or hostile key can't
-# quietly fill the table with junk.
+# quietly fill the table with junk. The public report settings (P6:
+# public_contact_phone, dpo_contact, company_key_billed) are intake/
+# public.py's SETTING_KEYS, which stores and reads them; admins only.
 ALLOWED_SETTING_KEYS = {"company_name"}
 
 
 class SettingsUpdateRequest(BaseModel):
     company_name: Optional[str] = None
+    # P6, admins only (as all of PUT /settings): the public line the bot
+    # gives, and the data-protection contact /privacy shows.
+    public_contact_phone: Optional[str] = Field(None, max_length=public.MAX_SETTING_TEXT)
+    dpo_contact: Optional[str] = Field(None, max_length=public.MAX_SETTING_TEXT)
+    # A JSON true/false, or "true"/"false".
+    company_key_billed: Optional[bool] = None
+
+    @field_validator("company_key_billed", mode="before")
+    @classmethod
+    def _true_or_false(cls, value):
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            return value.strip().lower() == "true"
+        raise ValueError("company_key_billed is true or false")
+
+
+def _settings(db, user: CurrentUser) -> dict:
+    """company_name for everyone signed in; the public report settings only
+    for admins (p6_decisions §1)."""
+    stored = {r.key: r.value for r in db.query(AppSetting).filter(AppSetting.key.in_(ALLOWED_SETTING_KEYS)).all()}
+    result = {key: stored.get(key, "") for key in sorted(ALLOWED_SETTING_KEYS)}
+    if user.is_admin:
+        result.update(public.settings_dict(db))
+    return result
 
 
 @app.get("/settings")
-def get_settings() -> dict:
+def get_settings(user: CurrentUser = Depends(current_user)) -> dict:
     db = SessionLocal()
     try:
-        rows = db.query(AppSetting).all()
-        stored = {r.key: r.value for r in rows}
-        return {key: stored.get(key, "") for key in sorted(ALLOWED_SETTING_KEYS)}
+        return _settings(db, user)
     finally:
         db.close()
 
@@ -1362,7 +1456,11 @@ def get_settings() -> dict:
 def update_settings(body: SettingsUpdateRequest, admin: CurrentUser = Depends(require_admin)) -> dict:
     db = SessionLocal()
     try:
+        billed_before = public.company_key_billed(db)
         for key, value in body.model_dump(exclude_none=True).items():
+            if key in public.SETTING_KEYS:
+                public.save_setting(db, key, value)
+                continue
             if key not in ALLOWED_SETTING_KEYS:
                 continue
             row = db.get(AppSetting, key)
@@ -1370,10 +1468,26 @@ def update_settings(body: SettingsUpdateRequest, admin: CurrentUser = Depends(re
                 row.value = value.strip()
             else:
                 db.add(AppSetting(key=key, value=value.strip()))
+        db.flush()
+        billed = public.company_key_billed(db)
+        if billed != billed_before:
+            # Who said the company key's project is billed: from then on
+            # public reports may use it (ai/keys.resolve_keys).
+            audit(db, admin, "company_key_billed_on" if billed else "company_key_billed_off")
         db.commit()
-        rows = db.query(AppSetting).all()
-        stored = {r.key: r.value for r in rows}
-        return {key: stored.get(key, "") for key in sorted(ALLOWED_SETTING_KEYS)}
+        return _settings(db, admin)
+    finally:
+        db.close()
+
+
+@app.get("/privacy/contact")
+def privacy_contact() -> dict:
+    """For the public privacy notice (/privacy#public-reports), read without
+    signing in (middleware PUBLIC_PATHS): these two settings, nothing else.
+    Empty strings when not set."""
+    db = SessionLocal()
+    try:
+        return {"dpo_contact": public.dpo_contact(db), "public_contact_phone": public.public_contact_phone(db)}
     finally:
         db.close()
 

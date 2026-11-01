@@ -30,7 +30,7 @@ import {
   Eye,
   Check,
 } from "lucide-react";
-import type { ReportDetail, TyreItem } from "@/lib/api";
+import { channelLabel, PUBLIC_CHANNEL, type ReportDetail, type TyreItem } from "@/lib/api";
 import {
   formatCarlinkRef,
   inferVehicleName,
@@ -106,6 +106,14 @@ const HISTORY_LABELS: Record<string, string> = {
   reopened: "Reopened",
   // Detail: "Assigned to Name (@username)" or "Unassigned".
   assigned: "Owner changed",
+  // Reports from the public (release P6). The detail carries the reference
+  // (and a discard's reason), never the sender's name or phone.
+  taken: "Taken from the Public Inbox",
+  returned_to_inbox: "Returned to the Public Inbox",
+  discarded: "Discarded",
+  expired: "Deleted: not taken within 30 days",
+  withdrawn: "Withdrawn by the sender",
+  withdraw_requested: "Sender asked to withdraw it",
 };
 
 export function CaseFileTab({ report }: { report: ReportDetail }) {
@@ -134,6 +142,9 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
   // witness, third party, GPS, quantum figures), so every case read as
   // fully surveyed.
   const caseIdDisplay = formatCarlinkRef(report.id, v?.plate_number, report.created_at);
+  // Sent by a member of the public through the Telegram bot (release P6).
+  const isPublic = report.channel === PUBLIC_CHANNEL;
+  const publicRef = report.public_submission?.reference ?? null;
   const plateDisplay = v?.plate_number || "Plate not recorded";
   const vehicleName = inferVehicleName({
     vehicle_name: v ? `${v.make || ""} ${v.model || ""}`.trim() : null,
@@ -554,7 +565,11 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
             <DossierField label="Incident Date / Time" value={formatSgtDateTime(d.incident_datetime)} mono highlight />
             {/* Lighting, coordinates and drivability aren't recorded fields. */}
             <DossierField label="Lighting / Solar Phase" value={null} />
-            <DossierField label="Intake Channel" value={report.channel.toUpperCase()} mono />
+            <DossierField
+              label="Intake Channel"
+              value={isPublic ? `${channelLabel(report.channel)}${publicRef ? ` · ${publicRef}` : ""}` : report.channel.toUpperCase()}
+              mono
+            />
 
             <DossierField label="Roadway Location" value={d.location} />
             <DossierField label="Decimal Coordinates" value={null} mono />
@@ -720,9 +735,11 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
           </div>
 
           <div className="dossier-field-grid grid-2col">
-            {/* The case's reporter as recorded -- not the firm's surveyor. */}
-            <DossierField label="Reporting Assessor / Lead" value={d.reporter_name} />
-            <DossierField label="Professional Role" value={d.reporter_role} />
+            {/* The case's reporter as recorded -- not the firm's surveyor. On a
+                report from the public (release P6), the member of the public
+                who sent it. */}
+            <DossierField label={isPublic ? "Reporter" : "Reporting Assessor / Lead"} value={d.reporter_name} />
+            <DossierField label={isPublic ? "Role" : "Professional Role"} value={d.reporter_role} />
             <DossierField label="Organisation / Firm" value={d.company_name || d.reporter_department} />
             <DossierField label="Contact Telephony / Email" value={d.reporter_contact || d.reporter_email} mono />
             <DossierField label="Filing Date & Time" value={formatSgtDateTime(report.created_at)} mono />

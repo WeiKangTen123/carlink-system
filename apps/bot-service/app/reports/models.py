@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -175,6 +175,93 @@ class IntakePhoto(Base):
     # Kept in the case file but never sent to the AI.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class PublicSubmission(Base):
+    """Who sent a public report through the Telegram bot, and what they gave
+    (P6, app/intake/public.py, which makes every change to it).
+
+    The report itself is an ordinary intake draft (Report channel
+    "telegram_public", status "intake", IntakeSession, IntakePhoto rows).
+    Its state is never stored here: new = no owner, taken = an owner, filed
+    = any status but "intake" -- one source of truth, settled by the
+    conditional UPDATE on reports. taken_*, filed_at and
+    withdraw_requested_at are facts kept for the inbox.
+
+    The submitter_* fields are the unchanging record of what the person
+    sent; Report.data holds the copy staff can edit. telegram_* is cleared
+    when the case is filed. Deleted with the draft (withdraw, discard,
+    expiry); kept with a filed case. The unique rule and the indexes are
+    part of the table itself (create_all makes it in one statement; the
+    indexes are also in db._ADDED_INDEXES).
+    """
+    __tablename__ = "public_submissions"
+    __table_args__ = (
+        UniqueConstraint("reference", name="uq_public_submissions_reference"),
+        # The 30-day sweep (public.sweep_untaken).
+        Index("ix_public_submissions_expires_at", "expires_at"),
+        # The caps per sender and per phone (public.check_can_accept); the
+        # first also serves lookups by telegram_user_id alone (/withdraw).
+        Index("ix_public_submissions_telegram_user_id_submitted_at", "telegram_user_id", "submitted_at"),
+        Index("ix_public_submissions_submitter_phone_submitted_at", "submitter_phone", "submitted_at"),
+    )
+
+    report_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # TG-YYMMDD-XXXX (public.new_reference): what the person is told.
+    reference: Mapped[str] = mapped_column(String, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # submitted_at + 30 days, as promised at consent: untaken reports are
+    # deleted then. Stored, not worked out, so the promise doesn't move.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consent_version: Mapped[str] = mapped_column(String, nullable=False)
+    submitter_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    # driver | owner | workshop | other (public.ROLES).
+    submitter_role: Mapped[str] = mapped_column(String, nullable=False)
+    # E.164, from a contact the person shared from their own Telegram
+    # (typed numbers are refused, so every phone here is Telegram-verified).
+    submitter_phone: Mapped[str] = mapped_column(String, nullable=False)
+    # sg_mobile | sg_other | foreign (public.phone_kind).
+    phone_kind: Mapped[str] = mapped_column(String, nullable=False)
+    # None: "Not sure".
+    plate: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    plate_looks_sg: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Their text, or "Location pin: lat, lon". At most 300 characters.
+    when_where: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    # Their own words, verbatim; at most 2000 characters.
+    statement: Mapped[str] = mapped_column(String(2000), nullable=False)
+    photo_count_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    forwarded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The sender's Telegram user id (as text), @username and name; all
+    # three cleared when the case is filed (public.on_finalize).
+    telegram_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    telegram_username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    telegram_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    taken_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    taken_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    filed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # /withdraw on a report staff had already taken: noted for them.
+    withdraw_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PublicBlock(Base):
+    """A Telegram account the public bot takes no reports from, set when a
+    report is discarded as spam (public.block_sender), for BLOCK_FOR (90
+    days); swept after. The plain Telegram user id: a hash of a numeric id
+    can be reversed, so it is stored honestly and the privacy notice says
+    so."""
+    __tablename__ = "public_blocks"
+    __table_args__ = (
+        Index("ix_public_blocks_until", "until"),
+    )
+
+    telegram_user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    blocked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # The account that discarded the report (users.id).
+    blocked_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The report's TG- reference, for the history.
+    reference: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class User(Base):

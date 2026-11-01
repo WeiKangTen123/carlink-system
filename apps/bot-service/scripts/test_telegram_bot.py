@@ -41,9 +41,11 @@ os.environ["PUBLIC_BASE_URL"] = "https://carlink.test/"
 os.environ["MIN_FREE_DISK_GB"] = "0"
 
 from PIL import Image  # noqa: E402
-from telegram import Chat, Message, MessageEntity, PhotoSize, Update, User as TgUser  # noqa: E402
+from telegram import Chat, Contact, Location, Message, MessageEntity, PhotoSize, Sticker, Update  # noqa: E402
+from telegram import User as TgUser  # noqa: E402
 
 import app.channels.telegram as tg  # noqa: E402
+import app.channels.telegram_public as tg_public  # noqa: E402
 from app.ai.keys import AiActor  # noqa: E402
 from app.api import limits  # noqa: E402
 from app.auth import chat_links  # noqa: E402
@@ -250,7 +252,13 @@ async def send_text(chat_id: int, outbox: Outbox, text: str, user_id=None, chat_
     await tg.handle_text(message_update(chat_id, outbox, user_id, chat_type, text=text, forwarded=forwarded), None)
 
 
-async def command(handler, chat_id: int, outbox: Outbox, *args: str):
+async def command(handler, chat_id: int, outbox: Outbox, *args: str, pace: bool = True):
+    """pace: someone not connected gets /whoami, /link and /unlink answered
+    at most every 5 s (tg._too_soon): that wait is let pass first, as a
+    person typing would, unless the check is about it. Linked unvetted
+    accounts' own 5 s (command:<chat>) is never skipped here."""
+    if pace:
+        tg._told_at.pop(f"pub-command:{chat_id}", None)
     words = " ".join(args)
     await handler(message_update(chat_id, outbox, text=f"/x {words}".strip()), SimpleNamespace(args=list(args)))
 
@@ -327,7 +335,22 @@ class LogCapture(logging.Handler):
 
 # --- who may use the bot -------------------------------------------------------
 
+def is_welcome(out: Outbox, index: int = -1) -> bool:
+    """The public form's welcome and consent (P6): the privacy notice, and
+    [I agree, start] [No thanks] as pub: buttons."""
+    buttons = out.buttons(index)
+    return (
+        f"{BASE}/privacy#public-reports" in out.texts[index]
+        and set(buttons) == {"I agree, start", "No thanks"}
+        and all(data.startswith("pub:") for data in buttons.values())
+    )
+
+
 async def check_not_connected(log: LogCapture) -> None:
+    """P6 replaced "connect first": someone not connected gets the public
+    report form's welcome (scripts/test_telegram_public.py has the rest of
+    it). Still, before they agree nothing is fetched or kept, and nothing
+    of a staff draft (AI, buttons) works for them."""
     print("who may use the bot")
     assert not hasattr(settings, "telegram_allowed_ids")
     assert not any(hasattr(tg, name) for name in ("_staff_only", "_allowed_ids", "_load_allowed_ids", "REFUSAL_TEXT"))
@@ -340,32 +363,31 @@ async def check_not_connected(log: LogCapture) -> None:
         await tg.handle_callback(tap(STRANGER, out), None)
         await tg.handle_document(message_update(STRANGER, out, document=FakeDocument(out, "image/png", "scan.png")), None)
         await tg.cancel_command(message_update(STRANGER, out, text="/cancel"), None)
-    assert len(out.texts) == 1 and "connect" in out.texts[0].lower(), out.texts
-    assert f"{BASE}/settings#my-telegram" in out.texts[0], out.texts[0]
+    assert len(out.texts) == 2 and is_welcome(out, 0), out.texts
+    assert "I didn't keep the photos you sent" in out.texts[0], out.texts[0]
+    assert out.texts[1].startswith("Nothing to cancel"), out.texts[1]
     assert out.downloads == [] and str(STRANGER) not in state._sessions
     assert len(cases_for(STRANGER)) == before
-    told = [m for m in log.messages() if "connect first" in m]
-    assert len(told) == 1 and str(STRANGER) in told[0], told
     assert not any("SECRET123" in r.getMessage() for r in log.records)
-    ok("not connected: one 'connect first' with the Settings link; no download, session, AI or case; ids logged, not the text")
+    ok("not connected: one welcome (with the privacy notice) for a photo, text, a staff button and a file, within "
+       "5 s; nothing downloaded, no session, AI or case; the text never logged")
 
-    await tg.start(message_update(STRANGER, out, text="/start"), None)
     await tg.help_command(message_update(STRANGER, out, text="/help"), None)
-    assert len(out.texts) == 3 and all(f"{BASE}/settings#my-telegram" in t for t in out.texts[1:]), out.texts
+    assert "/withdraw" in out.texts[-1] and "/link" in out.texts[-1], out.texts[-1]
+    await tg.start(message_update(STRANGER, out, text="/start"), None)
+    assert len(out.texts) == 3  # the welcome again only 5 s after the last
+    tg._told_at[f"pub-welcome:{STRANGER}"] -= tg_public.WELCOME_EVERY_SECONDS + 1
+    await tg.start(message_update(STRANGER, out, text="/start"), None)
+    assert len(out.texts) == 4 and is_welcome(out), out.texts[-1]
     assert str(STRANGER) not in state._sessions
-    ok("/start and /help always answer, with how to connect")
-
-    tg._told_at[f"connect:{STRANGER}"] -= tg.REPLY_EVERY_SECONDS + 1
-    await send_text(STRANGER, out, "hello?")
-    assert len(out.texts) == 4 and "connect" in out.texts[-1].lower()
-    ok("told again only once the hour has passed")
+    ok("/help always answers (and names /link for staff); /start gets the welcome at most every 5 s")
 
     add_case(str(PAST_REPORTER), "telegram")
     await tg._post_init(SimpleNamespace(bot=mock.AsyncMock()))
     out = Outbox()
     await send_photo(PAST_REPORTER, out)
-    assert out.downloads == [] and "connect" in out.texts[-1].lower() and str(PAST_REPORTER) not in state._sessions
-    ok("no allow-list: a chat that filed a case before P5 isn't served until it connects")
+    assert out.downloads == [] and is_welcome(out) and str(PAST_REPORTER) not in state._sessions
+    ok("no allow-list: a chat that filed a case before P5 gets the public welcome, not the staff flow")
 
 
 async def check_group_chat() -> None:
@@ -390,7 +412,7 @@ async def check_link_ends_mid_draft() -> None:
     before = len(cases_for(ANN_TG))
     await tg.handle_callback(tap(ANN_TG, out), None)
     assert len(cases_for(ANN_TG)) == before
-    assert "connect" in out.texts[-1].lower(), out.texts[-1]
+    assert out.texts[-1] == tg_public.LINK_ENDED, out.texts[-1]
     assert str(ANN_TG) not in state._sessions and not any(Path(p).exists() for p in temp)
     link_tg(P.ann, ANN_TG)
     ok("the link ends mid-draft: Confirm files nothing; the draft and its photos are thrown away")
@@ -428,7 +450,7 @@ async def check_linking() -> None:
     out = Outbox()
     for words in ("SJB8762M", "STANDARD", "GBH 2345 K", "sjb8-762"):
         await send_text(dot_tg, out, words)
-    assert len(out.texts) == 1 and "connect" in out.texts[0].lower(), out.texts
+    assert len(out.texts) == 1 and is_welcome(out, 0), out.texts  # the public welcome (P6), once in 5 s
     await send_text(dot_tg, out, code, forwarded=True)
     assert len(out.texts) == 1, out.texts[-1]  # just more text from someone not connected
     forwarded_link = message_update(dot_tg, out, text=f"/link {code}", forwarded=True)
@@ -519,7 +541,7 @@ async def check_linking() -> None:
     unlink_tg(2002)
     fresh_code = make_code(P.eve)
     await send_text(2002, out, fresh_code)
-    assert not out.buttons() and "connect" in out.texts[-1].lower(), out.texts[-1]
+    assert not out.buttons() and out.texts[-1] == tg_public.LINK_ENDED, out.texts[-1]
     await send_text(2002, out, fresh_code)
     assert "Connect this Telegram to <b>@eve (Eve Sim)" in out.texts[-1], out.texts[-1]
     await tg.handle_callback(tap(2002, out, out.buttons()["Cancel"]), None)
@@ -956,7 +978,46 @@ async def check_dashboard_limits() -> None:
         await command(tg.help_command, 3999, stranger)
     assert len(ann.texts) == 2 and len(stranger.texts) == 2
     ok("L7: an unvetted account's /start, /help, /whoami and /link get an answer at most every 5 s; ticked "
-       "accounts and people not connected aren't held back")
+       "accounts aren't held back, nor is /help from people not connected (their /whoami, /link and /unlink are: "
+       "test_telegram_public.py)")
+
+
+async def until_waiting(lock: asyncio.Lock, waiters: int = 1) -> None:
+    """Until that many updates are past the gate and waiting for the lock."""
+    for _ in range(200):
+        if len(getattr(lock, "_waiters", None) or ()) >= waiters:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{waiters} update(s) never reached the chat lock")
+
+
+async def check_link_made_while_queued() -> None:
+    """The gate looks the sender up before the chat lock; a handler looks
+    again under it. An album's photo the gate saw from someone not
+    connected, still waiting while their link is made, joins the staff
+    draft -- it doesn't take the public path and throw that draft away."""
+    nia = make_user("Nia Tan", "nia", ai_company_key_allowed=True)
+    chat = 4100
+    out = Outbox()
+    lock = tg._lock_for(str(chat))
+    await lock.acquire()
+    try:
+        first = asyncio.create_task(send_photo(chat, out))
+        await until_waiting(lock)  # looked up as not connected, now queued
+        link_tg(nia, chat)  # Settings confirms the link meanwhile
+        second = asyncio.create_task(send_photo(chat, out))
+        await until_waiting(lock, 2)
+    finally:
+        lock.release()
+    await asyncio.gather(first, second)
+    session = state.find_session(str(chat))
+    assert session is not None and session.public is None and session.carlink_user_id == nia
+    assert len(session.photo_paths) == 2 and len(out.downloads) == 2, (session.photo_paths, out.texts)
+    assert not any(f"{BASE}/privacy" in t for t in out.texts), out.texts
+    unlink_tg(chat)
+    tg._drop(str(chat))
+    ok("a photo the gate saw before the link was made, handled after it: looked up again under the lock, both "
+       "photos join the staff draft (no public welcome, nothing thrown away)")
 
 
 async def check_handlers_share_the_lock() -> None:
@@ -1127,6 +1188,13 @@ def check_new_messages_only() -> None:
         "/whoami": command_message("/whoami"),
         "/unlink": command_message("/unlink"),
         "photo": message(photo=[PhotoSize(file_id="f", file_unique_id="u", width=10, height=10)]),
+        # P6's public form: its commands, contact cards, location pins, and
+        # the catch-all for anything else.
+        "/withdraw": command_message("/withdraw"),
+        "contact": message(contact=Contact(phone_number="+6591234567", first_name="Tester", user_id=ANN_TG)),
+        "location": message(location=Location(longitude=103.8, latitude=1.3)),
+        "sticker": message(sticker=Sticker(file_id="s", file_unique_id="su", width=10, height=10, is_animated=False,
+                                           is_video=False, type="regular")),
     }
     for name, msg in samples.items():
         assert any(h.check_update(Update(update_id=1, message=msg)) for h in handlers), f"new {name} not handled"
@@ -1140,11 +1208,15 @@ def check_new_messages_only() -> None:
 
 async def run_async_checks() -> None:
     log = LogCapture()
-    logging.getLogger("app.channels.telegram").addHandler(log)
-    logging.getLogger("app.channels.telegram").setLevel(logging.INFO)
+    for name in ("app.channels.telegram", "app.channels.telegram_public"):
+        logging.getLogger(name).addHandler(log)
+        logging.getLogger(name).setLevel(logging.INFO)
+    # These checks send far faster than anyone could: the gate's per-user
+    # bucket (P6) has its own checks in scripts/test_telegram_public.py.
     with mock.patch.object(tg, "build_draft", fake_build_draft), \
             mock.patch.object(tg, "render_pdf", fake_render_pdf), \
-            mock.patch.object(tg, "estimate_wait", lambda _key=None: 0.0):
+            mock.patch.object(tg, "estimate_wait", lambda _key=None: 0.0), \
+            mock.patch.object(tg, "BURST", 10**6), mock.patch.object(tg, "BURST_LINKED", 10**6):
         await check_not_connected(log)
         await check_group_chat()
         await check_link_ends_mid_draft()
@@ -1156,6 +1228,7 @@ async def run_async_checks() -> None:
         await check_failed_save_can_retry()
         await check_confirm_rechecks()
         await check_handlers_share_the_lock()
+        await check_link_made_while_queued()
         print("photos")
         await check_photo_limit()
         print("stale drafts")

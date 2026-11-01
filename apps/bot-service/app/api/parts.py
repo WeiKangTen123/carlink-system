@@ -26,7 +26,7 @@ from app.ai.structured import call_structured
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
-from app.auth.permissions import can_view_all_cases, is_admin
+from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, Report
@@ -252,15 +252,17 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
     quantities only -- no prices, no part numbers -- and labelled as AI.
     Reads nothing from the price book, so it has nothing to hide. The
     person asking pays (ai/keys.py): 409 {detail, code} when their AI isn't
-    available."""
-    actor = AiActor.for_user(user.id, "dashboard")
-    ai_keys.ensure_ai_ready(actor)
+    available -- on a case the public sent (P6, filed ones too), by the
+    stricter rule for those (ai/keys.resolve_keys, public_case)."""
     db = SessionLocal()
     try:
         r = _report(db, report_id)
         vehicle = (r.data or {}).get("vehicle_info") or {}
+        public_case = r.channel == PUBLIC_CHANNEL
     finally:
         db.close()
+    actor = AiActor.for_user(user.id, "dashboard", public_case=public_case)
+    ai_keys.ensure_ai_ready(actor)
     car = " ".join(x for x in (vehicle.get("make"), vehicle.get("model"), vehicle.get("year")) if x) or "unknown vehicle"
     prompt = f"Vehicle: {car}, Singapore.\nDamaged parts: {json.dumps(body.parts)}"
     try:

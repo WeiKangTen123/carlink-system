@@ -84,6 +84,15 @@ _ADDED_INDEXES = [
     # Telegram link codes (P5): create_all adds this one separately. The
     # unique rules of both chat tables are inside the tables themselves.
     "CREATE INDEX IF NOT EXISTS ix_chat_link_codes_user_id ON chat_link_codes (user_id)",
+    # Public reports (P6): the same names as models.PublicSubmission's and
+    # PublicBlock's __table_args__. The reference's unique rule is inside
+    # the table.
+    "CREATE INDEX IF NOT EXISTS ix_public_submissions_expires_at ON public_submissions (expires_at)",
+    "CREATE INDEX IF NOT EXISTS ix_public_submissions_telegram_user_id_submitted_at"
+    " ON public_submissions (telegram_user_id, submitted_at)",
+    "CREATE INDEX IF NOT EXISTS ix_public_submissions_submitter_phone_submitted_at"
+    " ON public_submissions (submitter_phone, submitted_at)",
+    "CREATE INDEX IF NOT EXISTS ix_public_blocks_until ON public_blocks (until)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

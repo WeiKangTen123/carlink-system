@@ -72,14 +72,17 @@ function aiActionError(err: unknown, fallback: string): AiActionError {
  * directly (avoids CORS) -- called imperatively from the client component,
  * not via <form action>, since the result drives React state (auto-filling
  * fields) rather than a redirect. Shared by both the New Report and Edit
- * Report forms. */
+ * Report forms; the Edit form adds `report_id`, so a case the public sent
+ * gets its stricter AI key rule (release P6: a 409 ai_key_missing in the
+ * API's words). */
 export async function analyzePhotosAction(
   formData: FormData
 ): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | AiActionError> {
   try {
     const description = (formData.get("description") as string) || "";
+    const reportId = formData.get("report_id");
     const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
-    return await analyzeReportPhotos(description, photos);
+    return await analyzeReportPhotos(description, photos, typeof reportId === "string" && reportId ? reportId : undefined);
   } catch (err) {
     return aiActionError(err, "AI analysis failed");
   }
@@ -89,7 +92,8 @@ export async function analyzePhotosAction(
  * to re-pick files -- looks up the report's already-saved photo paths fresh
  * (rather than trusting whatever the client passed in) and re-fetches them
  * server-side, sidestepping the CORS error a direct browser fetch of the
- * API's /files/ route hits. */
+ * API's /files/ route hits. The analysis is sent the case's id, for the
+ * key rule on a case the public sent (as analyzePhotosAction). */
 export async function reanalyzeExistingPhotosAction(
   reportId: string,
   description: string
@@ -98,7 +102,7 @@ export async function reanalyzeExistingPhotosAction(
     const report = await getReport(reportId);
     if (!report) return { error: "Report not found", code: null };
     if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze", code: null };
-    return await analyzeExistingReportPhotos(report.photo_urls, description);
+    return await analyzeExistingReportPhotos(reportId, report.photo_urls, description);
   } catch (err) {
     return aiActionError(err, "AI analysis failed");
   }

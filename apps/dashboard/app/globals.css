@@ -7639,3 +7639,544 @@ html:has(.intake-footer) {
   text-align: right;
 }
 /* ---- end P5 telegram connect ---- */
+
+/* ==========================================================================
+   P6 PUBLIC REPORTS: the Public Inbox (app/inbox), its sidebar badge, the
+   "Sent by the public" card in the wizard and on the case
+   (components/inbox), the Discard and Return dialogs, the Inbox chip and
+   Command Center card, the Company tab's public-report settings and the
+   privacy notice's #public-reports section.
+   Theme tokens only, so it follows dark and light mode.
+   ========================================================================== */
+
+/* Sidebar: "Public Inbox" and its count. */
+.sidebar-inbox-badge {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.sidebar-inbox-badge.expiring {
+  border-color: var(--badge-red-border);
+  background: var(--badge-red-bg);
+  color: var(--badge-red-text);
+}
+.sidebar-link.active .sidebar-inbox-badge {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+/* Banners: amber (warn), green (ok), blue (info). */
+.inbox-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border-color);
+}
+.inbox-banner.warn {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.inbox-banner.ok {
+  border-color: var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+}
+.inbox-banner.info {
+  border-color: var(--badge-blue-border, var(--border-color));
+  background: var(--badge-blue-bg);
+  color: var(--text-primary);
+}
+.inbox-banner svg {
+  margin-top: 2px;
+}
+.inbox-banner .intake-icon-btn {
+  margin: -2px -4px -2px 0;
+}
+
+/* Small text pieces shared by the list, the report page and the card. */
+.inbox-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.inbox-sub.inline {
+  display: inline;
+}
+.inbox-muted {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.inbox-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* What a sender typed: plain text, kept as written, never overflowing. */
+.inbox-as-given {
+  overflow-wrap: anywhere;
+}
+.inbox-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.inbox-statement {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border-color);
+  background: var(--surface-elevated);
+  border-radius: 0 8px 8px 0;
+}
+
+/* Buttons */
+.btn-secondary-modern.inbox-danger-outline {
+  color: var(--badge-red-text) !important;
+}
+.btn-secondary-modern.inbox-danger-outline:hover:not(:disabled) {
+  border-color: var(--badge-red-border);
+  background: var(--badge-red-bg);
+}
+.btn-primary-modern.inbox-danger-btn {
+  background: var(--badge-red-text);
+  box-shadow: none;
+}
+.btn-primary-modern.inbox-danger-btn:hover:not(:disabled) {
+  box-shadow: 0 4px 14px var(--badge-red-border);
+}
+:is(.inbox-page, .public-sender-card, .modal-card) :is(.btn-primary-modern, .btn-secondary-modern):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ---- The list (app/inbox/InboxClient.tsx) ---- */
+.inbox-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.inbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.inbox-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.inbox-search {
+  margin-top: 0 !important;
+  width: 240px;
+  max-width: 100%;
+  padding-left: 28px !important;
+}
+.inbox-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.inbox-table-wrapper {
+  margin: 0 !important;
+  max-height: none !important;
+}
+.inbox-table td {
+  vertical-align: top;
+}
+.inbox-row {
+  cursor: pointer;
+}
+.inbox-row.picked td {
+  background: var(--surface-hover);
+}
+.inbox-col-pick {
+  width: 32px;
+  padding-right: 0 !important;
+}
+.inbox-col-pick input {
+  cursor: pointer;
+}
+.inbox-ref {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--accent-primary);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.inbox-ref:hover {
+  text-decoration: underline;
+}
+.inbox-row-chip {
+  display: flex;
+  width: fit-content;
+  margin-top: 4px;
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.inbox-sender-cell {
+  max-width: 260px;
+}
+.inbox-sender-name {
+  display: block;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.inbox-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.inbox-left.soon {
+  color: var(--badge-amber-text);
+}
+.inbox-left.urgent,
+.inbox-left.due {
+  color: var(--badge-red-text);
+}
+.inbox-taken-by {
+  display: block;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.inbox-empty {
+  text-align: center;
+  padding: 36px 16px !important;
+  color: var(--text-muted);
+}
+
+/* ---- One report (app/inbox/[id]) ---- */
+.inbox-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+.inbox-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.inbox-back:hover {
+  color: var(--text-primary);
+}
+.inbox-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .inbox-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.inbox-detail-panel {
+  padding: 16px 18px;
+  min-width: 0;
+}
+.inbox-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.inbox-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+}
+.inbox-photo {
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-elevated);
+  cursor: zoom-in;
+  transition: var(--transition-smooth);
+}
+.inbox-photo:hover {
+  border-color: var(--border-hover);
+}
+.inbox-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.inbox-lightbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(1100px, 100%);
+  max-height: calc(100vh - 32px);
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+}
+.inbox-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.inbox-lightbox-img {
+  max-width: 100%;
+  max-height: calc(100vh - 120px);
+  object-fit: contain;
+  align-self: center;
+  border-radius: 8px;
+}
+.inbox-sender-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.inbox-sender-panel .inbox-section-title {
+  margin-bottom: 0;
+}
+.inbox-sender-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inbox-phone-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.inbox-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--badge-green-text);
+}
+.inbox-field {
+  min-width: 0;
+}
+.inbox-same-sender {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.inbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+}
+.inbox-discard-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.inbox-discard-reasons legend {
+  margin-bottom: 4px;
+}
+
+/* Call / WhatsApp / Copy */
+.inbox-phone-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.btn-secondary-modern.inbox-phone-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  gap: 4px;
+}
+.inbox-phone-actions.compact .inbox-phone-btn {
+  padding: 2px 8px;
+}
+
+/* ---- "Sent by the public" (components/inbox/PublicSenderCard.tsx) ---- */
+.public-sender-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+  border-left: 3px solid var(--badge-amber-text);
+}
+.public-sender-head {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+}
+.public-sender-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--badge-amber-text);
+}
+.public-sender-ref {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+.public-sender-sent {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.btn-secondary-modern.public-sender-release {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 5px 12px;
+}
+.public-sender-who {
+  display: flex;
+  align-items: center;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.public-sender-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.public-sender-facts {
+  display: flex;
+  gap: 8px 24px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.public-sender-statement {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.public-sender-statement .inbox-statement {
+  align-self: stretch;
+}
+
+/* The wizard header's "Public · TG-…" chip. */
+.intake-chip.public-chip {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  font-family: var(--font-mono);
+}
+
+/* Command Center: the Public Inbox card is a link. */
+.kpi-card-command.inbox-kpi-card {
+  text-decoration: none !important;
+  color: inherit;
+}
+
+/* Case history: a public report's own entries. */
+.case-history-dot.taken {
+  background: var(--badge-green-text);
+}
+.case-history-dot.returned_to_inbox,
+.case-history-dot.withdraw_requested {
+  background: var(--badge-amber-text);
+}
+.case-history-dot.discarded,
+.case-history-dot.expired,
+.case-history-dot.withdrawn {
+  background: var(--badge-red-text);
+}
+
+/* /privacy#public-reports: the same text styles as the account notice above
+   it, one level further in. */
+.privacy-public-section {
+  scroll-margin-top: 16px;
+}
+.privacy-public-section > p:not(.setup-note),
+.privacy-public-section > ul {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.privacy-public-section > ul {
+  padding-left: 20px;
+}
+.privacy-contact {
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .inbox-search {
+    width: 100%;
+  }
+  .btn-secondary-modern.public-sender-release {
+    margin-left: 0;
+  }
+}
+/* ---- end P6 public reports ---- */
