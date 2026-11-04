@@ -1100,6 +1100,9 @@ def finalize_section() -> None:
     data = jd(fin.c.get(f"/intake/{rid}")).get("data") or {}
     need(data, "(Finn reads the draft)")
     data["reporter_name"] = "Zebulon <b>x</b> Quayle"
+    # The firm's report prints no reporter name; the cover page's "Requested by"
+    # (typed by staff) is the printed field, so it carries the same hostile text.
+    data["cover_page"] = {**(data.get("cover_page") or {}), "requested_by": "Zebulon <b>x</b> Quayle"}
     mark = len(CAPTURED_HTML)
     r = fin.c.post(f"/intake/{rid}/finalize", json={"data": data})
     need(r.status_code == 200, "Finn finishes it -> 200", brief(r))

@@ -8,8 +8,29 @@ export function sameLineKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+/** The same for an Annex B job description, also without the "To " the
+ * firm starts most lines with ("To remove, reinstall tail gate parts" and
+ * "Remove & reinstall tail gate parts" are one line) -- the key the API
+ * groups past labour lines by (app/parts/history.py suggest_labour). */
+export function sameLabourKey(description: string): string {
+  return sameLineKey(description).replace(/^to /, "");
+}
+
+/** A quantity as a surveyor writes it ("1set", "2", "10 pcs"): the leading
+ * number, or 0 when there is none. */
+export function leadingNumber(text: string): number {
+  const m = text.trim().match(/^(\d+(?:\.\d+)?)/);
+  const n = m ? parseFloat(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export function formatSgd(n: number): string {
   return `S$${n.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** "7,475.04": how the firm prints money in its tables (S$ only in the letter). */
+export function formatAmount(n: number): string {
+  return n.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

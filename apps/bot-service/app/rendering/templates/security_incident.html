@@ -2,8 +2,15 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Accident Vehicle Inspection &amp; Assessment Report - {{ report.vehicle_info.plate_number if report.vehicle_info else report_id }}</title>
+<title>Accident Vehicle Inspection / Assessment Report - {{ view.plate or report_id }}</title>
 <style>
+  {#- The firm's report: the four pages of its CL-xxxxx spreadsheets (Cover
+      Page, Annex A, Annex B, Annex C), printed plain -- black text, thin
+      rules, A4 -- plus an optional Photographs appendix. Until 2026-11-01
+      this template added a GST line, a "Consolidated Repair Quantum
+      Summary" with variance and savings, a BOLA liability box, "forensic"
+      wording, a seal with a SHA-256 hash and a generation stamp, none of
+      which the firm's reports carry. -#}
   @page {
     size: A4 portrait;
     margin: 12mm 14mm 14mm 14mm;
@@ -14,293 +21,193 @@
     print-color-adjust: exact !important;
   }
   body {
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    color: #0f172a;
-    font-size: 10.5px;
-    line-height: 1.45;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #000;
+    font-size: 11px;
+    line-height: 1.4;
     margin: 0;
     padding: 0;
     background: #fff;
   }
-
-  .page-break {
-    page-break-after: always;
-    break-after: page;
+  /* One block per printed page; a break only between pages, so the last
+     page never drags an empty one behind it. */
+  .page + .page {
+    page-break-before: always;
+    break-before: page;
   }
   .avoid-break {
     page-break-inside: avoid;
     break-inside: avoid;
   }
 
-  /* Letterhead Header */
-  .carlink-letterhead {
-    border-bottom: 2.5px solid #0f172a;
-    padding-bottom: 8px;
-    margin-bottom: 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-  }
-  .firm-brand {
-    font-size: 18px;
-    font-weight: 800;
-    letter-spacing: -0.01em;
-    color: #0f172a;
-    text-transform: uppercase;
-  }
-  .firm-sub {
-    font-size: 9px;
-    color: #475569;
-    margin-top: 1px;
-  }
-  .firm-contact {
-    text-align: right;
-    font-size: 9px;
-    color: #475569;
-  }
-
-  .report-title-banner {
-    text-align: center;
-    background: #f1f5f9;
-    border: 1px solid #cbd5e1;
-    padding: 6px 12px;
-    margin-bottom: 12px;
-  }
-  .report-title-text {
-    font-size: 12px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #0f172a;
-  }
-  .report-ref-line {
-    font-size: 10.5px;
-    font-weight: 700;
-    font-family: monospace;
-    color: #0284c7;
-    margin-top: 2px;
-  }
-
-  /* Section Styling */
-  .section-block {
-    margin-bottom: 12px;
-  }
-  .section-heading {
-    font-size: 10.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #0f172a;
-    background: #e2e8f0;
-    padding: 4px 8px;
-    margin-bottom: 6px;
-    border-left: 3.5px solid #0284c7;
-  }
-
-  .spec-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 4px 16px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 4px;
-    padding: 6px 10px;
-  }
-  .spec-row {
-    display: flex;
-    font-size: 10px;
-    padding: 2px 0;
-  }
-  .spec-label {
-    width: 140px;
-    color: #64748b;
-    font-weight: 600;
-    flex-shrink: 0;
-  }
-  .spec-value {
-    flex: 1;
-    color: #0f172a;
-    font-weight: 700;
-  }
-
-  /* Table Ledgers */
-  .ledger-table {
+  /* Letterhead (cover page only, as in the firm's workbook) */
+  .letterhead {
     width: 100%;
     border-collapse: collapse;
-    font-size: 9.5px;
-    margin-top: 4px;
-    margin-bottom: 8px;
+    margin-bottom: 14px;
   }
-  .ledger-table th {
-    background: #0f172a;
-    color: #ffffff;
-    font-size: 8.5px;
+  .letterhead td {
+    padding: 0;
+    vertical-align: top;
+  }
+  .letterhead .firm {
+    font-size: 15px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 5px 6px;
-    border: 1px solid #0f172a;
+    letter-spacing: 0.02em;
+  }
+  .letterhead .contact {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .report-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    text-decoration: underline;
+    margin: 6px 0 2px;
+  }
+  .our-ref {
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  /* Cover page: number | label | : | value, two pairs on the static-check
+     rows, the tyre columns on section 4. */
+  .cover {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .cover td {
+    padding: 1.5px 3px;
+    vertical-align: top;
+  }
+  .cover td.n { width: 4%; font-weight: 700; }
+  .cover td.lbl { width: 24%; }
+  .cover td.c { width: 2%; text-align: center; }
+  .cover td.val { width: 32%; white-space: pre-line; }
+  .cover td.lbl2 { width: 18%; }
+  .cover td.c2 { width: 2%; text-align: center; }
+  .cover td.val2 { width: 18%; }
+  .cover tr.sec td {
+    font-weight: 700;
+    padding-top: 10px;
+  }
+  .cover tr.sec:first-child td { padding-top: 0; }
+  .cover td.colhead { font-weight: 700; }
+
+  /* Annex pages */
+  .annex-title {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+  .plate-line {
+    font-weight: 700;
+    margin: 6px 0 8px;
+  }
+  table.grid {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.grid th,
+  table.grid td {
+    border: 0.5pt solid #000;
+    padding: 2.5px 4px;
+    vertical-align: top;
     text-align: left;
   }
-  .ledger-table td {
-    padding: 4px 6px;
-    border: 1px solid #cbd5e1;
-    color: #1e293b;
+  table.grid th {
+    font-weight: 700;
+    text-align: center;
     vertical-align: middle;
   }
-  .ledger-table tr:nth-child(even) td {
-    background: #f8fafc;
-  }
-  .ledger-table tfoot td {
-    background: #f1f5f9;
-    font-weight: 800;
-    border-top: 2px solid #0f172a;
-    font-size: 9.5px;
-  }
-  .num {
-    text-align: right;
-    font-family: monospace;
-    font-size: 9.5px;
-  }
-  .center {
-    text-align: center;
-  }
+  /* The header row again on every page a long Annex A spills onto. */
+  table.grid thead { display: table-header-group; }
+  table.grid tr { page-break-inside: avoid; break-inside: avoid; }
+  table.grid td.num { text-align: right; white-space: nowrap; }
+  table.grid td.ctr { text-align: center; }
+  table.grid tr.sub td { font-weight: 700; border-left: none; border-right: none; }
+  table.grid tr.sub td:first-child { border-left: 0.5pt solid #000; }
+  table.grid tr.sub td:last-child { border-right: 0.5pt solid #000; }
+  table.grid tr.total td { font-weight: 700; }
+  table.grid td.empty { text-align: center; }
 
-  /* Settlement Summary Box */
-  .summary-waterfall {
-    background: #f8fafc;
-    border: 1.5px solid #cbd5e1;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 12px;
+  .summary-title {
+    font-weight: 700;
+    margin: 18px 0 6px;
   }
-  .waterfall-line {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 0;
-    font-size: 10px;
-    border-bottom: 1px dashed #e2e8f0;
-  }
-  .waterfall-line:last-child {
-    border-bottom: none;
-  }
-  .waterfall-line.total {
-    font-weight: 800;
-    font-size: 11px;
-    border-top: 1.5px solid #0f172a;
-    border-bottom: 1.5px solid #0f172a;
-    padding: 6px 0;
-    margin: 4px 0;
-  }
-  .waterfall-line.highlight {
-    background: #e0f2fe;
-    padding: 6px 8px;
-    border-radius: 4px;
-    font-weight: 800;
-    font-size: 11.5px;
-    color: #0369a1;
-  }
+  table.summary { width: 70%; }
+  table.summary th { text-align: center; }
 
-  /* Without Prejudice Disclaimers */
-  .wp-badge {
-    background: #fef2f2;
-    border: 1px solid #f87171;
-    color: #991b1b;
-    padding: 6px 10px;
-    font-size: 9.5px;
-    font-weight: 600;
-    line-height: 1.4;
-    border-radius: 4px;
-    margin: 10px 0;
+  /* Annex C: the letter */
+  .letter p {
+    margin: 0 0 11px;
+    text-align: justify;
   }
-
-  /* Endorsement & Stamp Section */
-  .endorsement-block {
-    display: grid;
-    grid-template-columns: 1.2fr 0.8fr;
-    gap: 16px;
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid #cbd5e1;
+  .sign-block {
+    margin-top: 26px;
   }
-  .assessor-sign-box {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-  }
-  .sign-line {
-    width: 200px;
-    height: 40px;
-    border-bottom: 1.5px solid #0f172a;
-    margin-bottom: 4px;
-    display: flex;
-    align-items: flex-end;
-  }
-  .assessor-name {
-    font-size: 12px;
-    font-weight: 800;
-    color: #0f172a;
+  .sign-block .firm {
+    font-weight: 700;
     text-transform: uppercase;
-  }
-  .assessor-creds {
-    font-size: 9px;
-    color: #475569;
-    font-weight: 600;
-    line-height: 1.3;
-  }
-
-  .company-chop-box {
-    border: 2px solid #0284c7;
-    border-radius: 6px;
-    padding: 10px;
-    text-align: center;
-    background: rgba(2, 132, 199, 0.04);
-  }
-  .chop-title {
-    font-size: 11px;
-    font-weight: 800;
-    text-transform: uppercase;
-    color: #0f172a;
-  }
-  .chop-sub {
-    font-size: 8px;
-    color: #64748b;
-    margin: 2px 0;
-  }
-  .chop-hash {
-    font-size: 7.5px;
-    font-family: monospace;
-    color: #0284c7;
     margin-top: 4px;
   }
+  .sign-block .signature {
+    height: 52px;
+    margin: 6px 0 2px;
+  }
+  .sign-block .signature img {
+    max-height: 52px;
+    max-width: 220px;
+    display: block;
+  }
+  .sign-block .name {
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .draft-notice {
+    margin-top: 10px;
+    font-weight: 700;
+  }
+  /* Light "DRAFT" across every page of an unsigned report. position: fixed
+     repeats in print; faint enough to read through. */
+  .draft-mark {
+    position: fixed;
+    top: 38%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 120px;
+    font-weight: 700;
+    color: rgba(0, 0, 0, 0.06);
+    transform: rotate(-30deg);
+    pointer-events: none;
+  }
 
-  /* Photo Evidence Gallery */
-  .photo-grid-2x2 {
+  /* Photographs appendix */
+  .photo-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 10px;
+    gap: 12px 14px;
+    margin-top: 8px;
   }
   .photo-frame {
-    border: 1px solid #cbd5e1;
-    border-radius: 4px;
-    overflow: hidden;
-    background: #000;
+    border: 0.5pt solid #000;
     page-break-inside: avoid;
+    break-inside: avoid;
   }
   .photo-frame img {
     width: 100%;
-    height: 195px;
-    object-fit: cover;
+    height: 232px;
+    object-fit: contain;
     display: block;
+    background: #fff;
   }
-  .photo-meta {
-    background: #f8fafc;
-    border-top: 1px solid #cbd5e1;
-    padding: 4px 8px;
-    font-size: 9px;
-    display: flex;
-    justify-content: space-between;
+  .photo-caption {
+    border-top: 0.5pt solid #000;
+    padding: 2px 6px;
+    font-weight: 700;
   }
 {% if unverified_owner %}
   /* A case owned by someone outside the firm (renderer._owner_unverified)
@@ -311,7 +218,7 @@
   @page {
     @bottom-center {
       content: "Prepared by an unverified user, not issued by Carlink Consultancy";
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-family: Arial, Helvetica, sans-serif;
       font-size: 9px;
       font-weight: 700;
       color: #b91c1c;
@@ -319,7 +226,6 @@
   }
   .unverified-notice {
     border: 1.5px solid #b91c1c;
-    background: #fef2f2;
     color: #b91c1c;
     font-size: 10px;
     font-weight: 700;
@@ -334,441 +240,290 @@
 
 {% set v = report.vehicle_info or {} %}
 {% set ins = report.insurance_details or {} %}
-{% set ax_a = report.annex_a or {} %}
-{% set ax_b = report.annex_b or {} %}
-{% set ax_c = report.annex_c or {} %}
-{% set bola = report.bola_assessment or {} %}
-{% set sign = report.sign_off or {} %}
+{% set cp = report.cover_page or {} %}
 {#- This report goes to insurers and courts, so a missing fact prints as
     missing. Until 2026-10-21 empty fields fell back to a real past case's
     values (SLK 3063 Z's chassis/engine numbers, odometer, workshop, insurer,
     totals) and to a signature and seal on unsigned drafts. -#}
 {% set NR = 'Not recorded' %}
-{% set PENDING = 'Pending surveyor' %}
-{% set signed = sign.status == 'Signed Off' %}
+{% set our_ref = ('Our Ref: ' ~ view.our_ref) if view.our_ref else 'Our Ref: (to be issued)' %}
+{% set firm = (org_name or 'Carlink Consultancy') | upper %}
+{% set show_photos = photo_data_uris and (include_photos if include_photos is defined else true) %}
+
+{% macro row(label, value, addr=None) -%}
+      <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val" colspan="4">{{ value or NR }}</td></tr>
+      {%- if addr %}
+      <tr><td class="n"></td><td class="lbl"></td><td class="c"></td><td class="val" colspan="4">{{ addr }}</td></tr>
+      {%- endif %}
+{%- endmacro %}
+
+{% macro pair(label, value, label2, value2) -%}
+      <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val">{{ value or NR }}</td><td class="lbl2">{{ label2 }}</td><td class="c2">:</td><td class="val2">{{ value2 or NR }}</td></tr>
+{%- endmacro %}
+
+{% if not view.signed %}
+<div class="draft-mark">DRAFT</div>
+{% endif %}
 
 <!-- =====================================================================
-     PAGE 1: COVER PAGE (ACCIDENT VEHICLE INSPECTION REPORT)
+     PAGE 1: COVER PAGE
      ===================================================================== -->
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">Automotive Forensic Engineers, Motor Loss Adjusters &amp; Independent Assessors</div>
-      <div class="firm-sub">60 Hillside Drive, Singapore 549009</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Tel:</strong> 6285 6178</div>
-      <div><strong>Fax:</strong> 6287 4788</div>
-      <div><strong>Generated:</strong> {{ generated_at }}</div>
-    </div>
-  </div>
+<div class="page">
+  <table class="letterhead">
+    <tr><td class="firm">{{ firm }}</td><td class="contact">Tel : 62856178</td></tr>
+    <tr><td>60 Hillside Drive</td><td></td></tr>
+    <tr><td>Singapore 549009</td><td class="contact">Fax : 62874788</td></tr>
+  </table>
   {% if unverified_owner %}
   <div class="unverified-notice">Prepared by an unverified user, not issued by Carlink Consultancy</div>
   {% endif %}
 
-  <div class="report-title-banner">
-    <div class="report-title-text">Accident Vehicle Inspection / Assessment Report</div>
-    {#- A recorded file reference if there is one; otherwise the system's own
-        reference, labelled as such so it can't pass for an issued CL number. -#}
-    <div class="report-ref-line">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-  </div>
+  <div class="report-title">ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT</div>
+  {#- The recorded file reference, or a plain "(to be issued)": a CL number
+      is the firm's to give, never made up here. -#}
+  <div class="our-ref">{{ our_ref }}</div>
 
-  <!-- 1.0 REFERENCE -->
-  <div class="section-block">
-    <div class="section-heading">1.0 Reference &amp; Instructions</div>
-    <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Date of Request:</span><span class="spec-value">{{ NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Type of Claim:</span><span class="spec-value">{{ ins.claim_type or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Requested by:</span><span class="spec-value">{{ report.reporter_name or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Appointed Workshop:</span><span class="spec-value">{{ ins.workshop_assigned or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Date of Survey:</span><span class="spec-value">{{ PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">Accident Date:</span><span class="spec-value">{{ report.incident_datetime or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Insurer:</span><span class="spec-value">{{ ins.insurer_name or NR }}</span></div>
-    </div>
-  </div>
+  <table class="cover">
+    <tr class="sec"><td class="n">1</td><td colspan="6">REFERENCE</td></tr>
+    {{ row('Date of request', cp.date_of_request) }}
+    {{ row('Requested by', cp.requested_by, cp.requested_by_address) }}
+    {{ row('Type of claim', ins.claim_type) }}
+    {{ row('Workshop', ins.workshop_assigned, cp.workshop_address) }}
+    {{ row('Accident date', report.incident_datetime) }}
+    {{ row('Date of survey', cp.date_of_survey) }}
+    {{ row('Date of dismantle parts', cp.date_of_dismantle) }}
+    {{ row('Date of before painting', cp.date_before_painting) }}
+    {{ row('Date of after painting', cp.date_after_painting) }}
 
-  <!-- 2.0 DETAILS OF VEHICLE -->
-  <div class="section-block">
-    <div class="section-heading">2.0 Details of Vehicle</div>
-    <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Registration No:</span><span class="spec-value" style="font-family: monospace; font-size: 11px; color: #0284c7;">{{ v.plate_number or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Make &amp; Model:</span><span class="spec-value">{{ [v.make, v.model] | select | join(' ') or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Date of Registration:</span><span class="spec-value">{{ v.date_of_registration or v.year or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Body Type:</span><span class="spec-value">{{ v.body_type or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Engine No:</span><span class="spec-value" style="font-family: monospace;">{{ v.engine_number or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Chassis No. (VIN):</span><span class="spec-value" style="font-family: monospace;">{{ v.vin or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Speedometer / Odometer:</span><span class="spec-value" style="font-family: monospace;">{{ v.odometer_reading or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Transmission:</span><span class="spec-value">{{ v.transmission or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Colour:</span><span class="spec-value">{{ v.color or NR }}</span></div>
-      <div class="spec-row"><span class="spec-label">Paintwork Condition:</span><span class="spec-value">{{ v.paintwork_condition or NR }}</span></div>
-    </div>
-  </div>
+    <tr class="sec"><td class="n">2</td><td colspan="6">DETAILS OF VEHICLE</td></tr>
+    {{ row('Registration No.', v.plate_number) }}
+    {{ row('Make & Model', view.make_model) }}
+    {{ row('Date of registration', v.date_of_registration) }}
+    {{ row('Engine No.', v.engine_number) }}
+    {{ row('Chassis No.', v.vin) }}
+    {{ row('Speedometer reading', v.odometer_reading) }}
+    {{ row('Transmission', v.transmission) }}
+    {{ row('Colour', v.color) }}
 
-  <!-- 3.0 STATIC CHECK -->
-  <div class="section-block">
-    <div class="section-heading">3.0 Static Inspection Checks</div>
-    <div class="spec-grid">
-      <div class="spec-row"><span class="spec-label">Steering System:</span><span class="spec-value">{{ v.steering_condition or PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">Footbrake:</span><span class="spec-value">{{ v.brakes_condition or PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">Handbrake:</span><span class="spec-value">{{ PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">Aftermarket Modifications:</span><span class="spec-value">{{ PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">General Condition:</span><span class="spec-value">{{ PENDING }}</span></div>
-      <div class="spec-row"><span class="spec-label">Disassembly Status:</span><span class="spec-value">{{ 'Required for frame inspection' if report.recommendations and report.recommendations.disassembly_required else NR }}</span></div>
-    </div>
-  </div>
+    <tr class="sec"><td class="n">3</td><td colspan="6">STATIC CHECK</td></tr>
+    {{ pair('Steering', v.steering_condition, 'Paintwork', v.paintwork_condition) }}
+    {{ pair('Footbrake', v.brakes_condition, 'Modification', cp.modification) }}
+    {{ pair('Handbrake', cp.handbrake_condition, 'General condition', cp.general_condition) }}
 
-  <!-- 4.0 TYRE CONDITION -->
-  <div class="section-block">
-    <div class="section-heading">4.0 Tyre Condition Matrix (LTA Roadworthiness)</div>
-    <table class="ledger-table" style="margin-bottom: 0;">
-      <thead>
-        <tr>
-          <th>Wheel Position</th>
-          <th>Tread Depth (mm)</th>
-          <th>Manufacturer &amp; Pattern</th>
-          <th>Size Specification</th>
-          <th>Regulatory Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#- The recorded tyres. This table used to be fixed text -- four
-            "Dunlop Enasave 215/60 R16, 6.0 mm, Legal" rows on every report. -#}
-        {% set tyres = v.tyres or {} %}
-        {% for key, label in [('front_nearside', 'Front Nearside (LH)'), ('front_offside', 'Front Offside (RH)'), ('rear_nearside', 'Rear Nearside (LH)'), ('rear_offside', 'Rear Offside (RH)')] %}
-        {% set t = tyres[key] or {} %}
-        {% set depth = t.get('tread_depth_mm') %}
-        <tr>
-          <td>{{ label }}</td>
-          <td class="center font-mono">{{ ('%.1f mm' % depth) if depth is number else '—' }}</td>
-          <td>{{ t.get('brand') or '—' }}</td>
-          <td class="center">{{ t.get('size') or '—' }}</td>
-          {% if t.get('condition') %}
-          <td class="center">{{ t.get('condition') }}</td>
-          {% elif depth is number %}
-          <td class="center" style="color: {{ '#dc2626' if depth < 1.6 else '#16a34a' }}; font-weight: 700;">{{ 'Below 1.6mm legal minimum' if depth < 1.6 else 'Legal (above 1.6mm)' }}</td>
-          {% else %}
-          <td class="center">{{ NR }}</td>
-          {% endif %}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- 5.0 POINT OF IMPACT & 6.0 REMARK -->
-  <div class="section-block" style="margin-top: 10px;">
-    <div class="spec-grid" style="grid-template-columns: 1fr;">
-      <div class="spec-row">
-        <span class="spec-label" style="width: 160px;">5.0 Point of Primary Impact:</span>
-        <span class="spec-value">{{ v.point_of_impact or NR }}</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="wp-badge">
-    <strong>6.0 PRELIMINARY STATUTORY RESERVATION:</strong><br>
-    This inspection was conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair on behalf of any underwriter or insurer.
-  </div>
-</div>
-
-<!-- =====================================================================
-     PAGE 2: ANNEX A — SPARE PARTS FINANCIAL LEDGER
-     ===================================================================== -->
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Annex A:</strong> Spare Parts Adjustment Schedule</div>
-      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} {% if v.make or v.model %}({{ [v.make, v.model] | select | join(' ') }}){% endif %}</div>
-    </div>
-  </div>
-
-  <div class="section-heading">Annex A : Assessment / Adjustment on Spare Parts</div>
-  <table class="ledger-table">
-    <thead>
-      <tr>
-        <th style="width: 35px;">Item</th>
-        <th>Vehicle Parts Description</th>
-        <th>Condition</th>
-        <th>Remarks / Action</th>
-        <th style="width: 35px; text-align: center;">Qty</th>
-        <th style="width: 85px; text-align: right;">W/Shop Est. ($)</th>
-        <th style="width: 55px; text-align: center;">Disc (%)</th>
-        <th style="width: 85px; text-align: right;">Adjusted ($)</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% set parts = ax_a['items'] if 'items' in ax_a else [] %}
-      {% for p in parts %}
-      <tr>
-        <td class="center font-mono">{{ p.item_no or loop.index ~ '.0' }}</td>
-        <td><strong>{{ p.part_name }}</strong></td>
-        <td>{{ p.condition or '—' }}</td>
-        <td>{{ p.action or PENDING }}</td>
-        <td class="center font-mono">{{ p.qty or 1 }}</td>
-        {#- Unpriced rows (listed from the damage found, awaiting the workshop
-            quote) print as "—", not S$0.00. -#}
-        <td class="num">{{ ('S$%.2f' % ((p.workshop_est or 0) * (p.qty or 1))) if p.workshop_est else '—' }}</td>
-        <td class="center font-mono">
-          {% if p.is_net_item %}Nett{% elif p.discount_pct is not none %}{{ '%.0f' % (p.discount_pct * 100) }}%{% else %}—{% endif %}
-        </td>
-        <td class="num" style="font-weight: 700;">{{ ('S$%.2f' % p.adjusted_cost) if p.adjusted_cost else '—' }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="8" class="center" style="color: #64748b;">No parts recorded yet &mdash; pending surveyor assessment.</td></tr>
-      {% endfor %}
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="5" style="text-transform: uppercase;">Total For Spare Parts (Annex A)</td>
-        <td class="num">{{ ('S$%.2f' % ax_a.total_workshop_est) if ax_a.total_workshop_est else '—' }}</td>
-        <td class="center" style="color: #16a34a; font-size: 8px;">{% if ax_a.total_workshop_est and ax_a.total_adjusted_cost %}Adj: -{{ '%.1f' % (((ax_a.total_workshop_est - ax_a.total_adjusted_cost) / ax_a.total_workshop_est) * 100) }}%{% endif %}</td>
-        <td class="num" style="color: #0369a1;">{{ ('S$%.2f' % ax_a.total_adjusted_cost) if ax_a.total_adjusted_cost else '—' }}</td>
-      </tr>
-    </tfoot>
-  </table>
-</div>
-
-<!-- =====================================================================
-     PAGE 3: ANNEX B — LABOUR, SPRAY PAINTING & MASTER RECONCILIATION
-     ===================================================================== -->
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Annex B:</strong> Labour &amp; Refinishing Adjustment</div>
-      <div><strong>Vehicle:</strong> {{ v.plate_number or '—' }} {% if v.make or v.model %}({{ [v.make, v.model] | select | join(' ') }}){% endif %}</div>
-    </div>
-  </div>
-
-  <div class="section-heading">Annex B : Adjustment on Labour and Spray Painting</div>
-  <table class="ledger-table">
-    <thead>
-      <tr>
-        <th style="width: 35px;">Item</th>
-        <th>Job Description</th>
-        <th style="width: 110px; text-align: right;">Workshop Est. ($)</th>
-        <th style="width: 110px; text-align: right;">Adjusted Cost ($)</th>
-        <th>Adjuster Technical Justification</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% set labours = ax_b['items'] if 'items' in ax_b else [] %}
-      {% for l in labours %}
-      <tr>
-        <td class="center font-mono">{{ l.item_no or loop.index ~ '.0' }}</td>
-        <td><strong>{{ l.description }}</strong></td>
-        <td class="num">S${{ '%.2f' % (l.workshop_est or 0) }}</td>
-        <td class="num" style="font-weight: 700; color: #0369a1;">S${{ '%.2f' % (l.adjusted_cost or 0) }}</td>
-        <td style="font-size: 8.5px; color: #475569;">{{ l.justification or '' }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="center" style="color: #64748b;">No labour recorded yet &mdash; pending surveyor assessment.</td></tr>
-      {% endfor %}
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="2" style="text-transform: uppercase;">Total For Labour &amp; Spray Painting (Annex B)</td>
-        <td class="num">{{ ('S$%.2f' % ax_b.total_workshop_est) if ax_b.total_workshop_est else '—' }}</td>
-        <td class="num" style="color: #0369a1;">{{ ('S$%.2f' % ax_b.total_adjusted_cost) if ax_b.total_adjusted_cost else '—' }}</td>
-        <td style="color: #16a34a; font-size: 8.5px;">{% if ax_b.total_workshop_est and ax_b.total_adjusted_cost %}Variance: -S${{ '%.2f' % (ax_b.total_workshop_est - ax_b.total_adjusted_cost) }}{% endif %}</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <!-- MASTER QUANTUM SUMMARY TABLE -->
-  <div class="section-heading" style="margin-top: 18px;">Consolidated Repair Quantum Summary</div>
-  <div class="summary-waterfall">
-    <div class="waterfall-line">
-      <span>1. Total for Spare Parts (Annex A)</span>
-      <span><strong>{{ ('S$%.2f' % ax_a.total_adjusted_cost) if ax_a.total_adjusted_cost else '—' }}</strong></span>
-    </div>
-    <div class="waterfall-line">
-      <span>2. Total for Labour and Spray Painting (Annex B)</span>
-      <span><strong>{{ ('S$%.2f' % ax_b.total_adjusted_cost) if ax_b.total_adjusted_cost else '—' }}</strong></span>
-    </div>
-    <div class="waterfall-line total">
-      <span>TOTAL REPAIR COSTS (Part-by-Part Adjusted)</span>
-      <span style="font-family: monospace; font-size: 12px; color: #0369a1;">
-        {{ ('S$%.2f' % ax_c.adjusted_total) if ax_c.adjusted_total else '—' }}
-      </span>
-    </div>
-    <div class="waterfall-line">
-      <span>Initial Workshop Claimed Amount</span>
-      <span style="color: #64748b; text-decoration: line-through;">{{ ('S$%.2f' % ax_c.workshop_total) if ax_c.workshop_total else '—' }}</span>
-    </div>
-    <div class="waterfall-line">
-      <span>Achieved Technical Variance (Line-by-Line Savings)</span>
-      <span style="color: #16a34a; font-weight: 700;">{% if ax_c.workshop_total and ax_c.adjusted_total %}-S${{ '%.2f' % (ax_c.workshop_total - ax_c.adjusted_total) }}{% else %}—{% endif %}</span>
-    </div>
-  </div>
-</div>
-
-<!-- =====================================================================
-     PAGE 4: ANNEX C — RECOMMENDATION, CONTRACT LUMP SUM & ENDORSEMENT
-     ===================================================================== -->
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Annex C:</strong> Recommendation &amp; Quantum Endorsement</div>
-      <div><strong>Assessor:</strong> {{ (sign.surveyor_name or sign.reviewed_by) if signed and (sign.surveyor_name or sign.reviewed_by) else PENDING }}</div>
-    </div>
-  </div>
-
-  <div class="section-heading">Annex C : Assessor Recommendations &amp; Settlement Quantum</div>
-  {#- The recommendation, lump sum and signature are the surveyor's: printed
-      only once the case is signed off and only from recorded values. This
-      page used to print a full recommendation, a S$8,700 "agreed" lump sum,
-      11 working days, Patrick Ng's signature and a seal on every draft. -#}
-  <div style="font-size: 10.5px; line-height: 1.6; color: #1e293b; margin-bottom: 14px;">
-    {% if signed %}
-    <p style="margin-top: 0;">
-      We have inspected thoroughly the actual damages found on the vehicle and our assessment is appended in the Annex(es) attached. The condition and age of the vehicle was considered before we reached our recommendation as to whether the parts need replacement or repair.
-    </p>
-    {% if ax_c.workshop_total and ax_c.adjusted_total %}
-    <p>
-      {{ ins.workshop_assigned or 'The workshop' }} estimated repair cost is <strong>S${{ '%.2f' % ax_c.workshop_total }}</strong> and we have adjusted it to <strong>S${{ '%.2f' % ax_c.adjusted_total }}</strong> on a part-by-part basis.
-    </p>
-    {% endif %}
-    {% if ax_c.agreed_lump_sum %}
-    <p>
-      The repairer has agreed to undertake the repairs on a contract lump sum of <strong style="font-size: 12px; color: #0369a1;">S${{ '%.2f' % ax_c.agreed_lump_sum }}</strong>, according to acceptable quality and standard (Repairer discretion to repair parts, to replace with reconditioned/used parts, or to replace with OEM or genuine parts).
-    </p>
-    {% endif %}
-    {% if ax_c.repair_days %}
-    <p>
-      The entire repair of the damaged vehicle should be completed within a reasonable period of <strong style="color: #b45309;">{{ ax_c.repair_days }} working days</strong>.
-    </p>
-    {% endif %}
-    {% else %}
-    <p style="margin-top: 0; color: #64748b;">
-      Recommendation and settlement quantum pending surveyor assessment. This report has not been signed off.
-    </p>
-    {% endif %}
-  </div>
-
-  <!-- FINAL SETTLEMENT WATERFALL -->
-  <div class="summary-waterfall">
-    <div class="waterfall-line highlight">
-      <span>RECOMMENDED CONTRACT LUMP SUM QUANTUM:</span>
-      <span style="font-size: 13px; font-family: monospace;">{{ ('S$%.2f' % ax_c.agreed_lump_sum) if ax_c.agreed_lump_sum else PENDING }}</span>
-    </div>
-    <div class="waterfall-line">
-      <span>Prevailing Singapore GST (9%):</span>
-      <span>{{ ('S$%.2f' % ax_c.gst_amount) if ax_c.agreed_lump_sum and ax_c.gst_amount else '—' }}</span>
-    </div>
-    <div class="waterfall-line total">
-      <span>GRAND TOTAL PAYABLE (Including 9% GST):</span>
-      <span style="font-size: 13px; font-family: monospace; color: #0369a1;">{{ ('S$%.2f' % ax_c.total_with_gst) if ax_c.agreed_lump_sum and ax_c.total_with_gst else '—' }}</span>
-    </div>
-  </div>
-
-  {% if signed %}
-  <!-- STATUTORY WITHOUT PREJUDICE CLAUSE -->
-  <div class="wp-badge">
-    <strong>WITHOUT PREJUDICE STATUTORY DECLARATION:</strong><br>
-    We have advised the repairer that the inspection was conducted strictly on a <strong>WITHOUT PREJUDICE</strong> basis and we have not given any instruction and authorisation to proceed with the repair of the vehicle.<br>
-    We are reverting the matter to you for your discretion.
-  </div>
-
-  <!-- OFFICIAL SIGN-OFF BLOCK -->
-  {% set signer = sign.surveyor_name or sign.reviewed_by or sign.approved_by %}
-  <div class="endorsement-block avoid-break">
-    <div class="assessor-sign-box">
-      <div style="font-size: 10px; color: #64748b; margin-bottom: 4px;">Yours faithfully,</div>
-      <div style="font-size: 12px; font-weight: 800; text-transform: uppercase;">CARLINK CONSULTANCY</div>
-
-      <div class="sign-line">
-        {% if sign.signature_data_url %}
-        <img src="{{ sign.signature_data_url }}" alt="Signature" style="max-height: 40px;">
-        {% else %}
-        <span style="font-family: Georgia, serif; font-style: italic; font-size: 16px; color: #0284c7;">{{ signer or '' }}</span>
-        {% endif %}
-      </div>
-      <div class="assessor-name">{{ (signer or PENDING) | upper }}</div>
-      <div class="assessor-creds">
-        {% if sign.qualifications %}{{ sign.qualifications }}<br>{% endif %}
-        Surveyor License: {{ sign.license_number or '—' }}{% if sign.signature_date %}<br>Signed: {{ sign.signature_date }}{% endif %}
-      </div>
-    </div>
-
-    <!-- Official Corporate Chop Box -->
-    <div class="company-chop-box">
-      <div class="chop-title">CARLINK CONSULTANCY</div>
-      <div class="chop-sub">60 Hillside Drive, Singapore 549009</div>
-      <div class="chop-sub">Tel: 6285 6178 / Fax: 6287 4788</div>
-      <div style="font-size: 9px; font-weight: 700; color: #0284c7; margin: 4px 0;">
-        OFFICIAL LOSS ADJUSTER &amp; SURVEYOR SEAL
-      </div>
-      {% if sign.signature_hash %}
-      <div class="chop-hash">
-        SHA-256: {{ sign.signature_hash }}
-      </div>
-      {% endif %}
-    </div>
-  </div>
-  {% else %}
-  <div class="wp-badge" style="border-color: #f59e0b; background: #fffbeb;">
-    <strong>DRAFT &mdash; NOT SIGNED OFF.</strong> This report has not been reviewed or signed by a surveyor and carries no endorsement.
-  </div>
-  {% endif %}
-</div>
-
-<!-- =====================================================================
-     PAGE 5+: ANNEX D — PHOTO EVIDENCE GALLERY
-     ===================================================================== -->
-{% if photo_data_uris %}
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Annex D:</strong> Photographic Evidence Dossier</div>
-      <div><strong>Total Images:</strong> {{ photo_data_uris | length }}</div>
-    </div>
-  </div>
-
-  <div class="section-heading">Annex D : Forensic Photographic Inspection Evidence</div>
-  <div class="photo-grid-2x2">
-    {% for uri in photo_data_uris %}
-    <div class="photo-frame">
-      <img src="{{ uri }}" alt="Photo P{{ '%02d' % loop.index }}">
-      <div class="photo-meta">
-        <strong>Photo P{{ '%02d' % loop.index }}</strong>
-        <span>Vehicle Inspection Evidence</span>
-      </div>
-    </div>
-    {% if loop.index is divisibleby 4 and not loop.last %}
-  </div>
-</div>
-<div class="page-break">
-  <div class="carlink-letterhead">
-    <div>
-      <div class="firm-brand">CARLINK CONSULTANCY</div>
-      <div class="firm-sub">{% if report.report_id %}Our Ref: {{ report.report_id }}{% else %}System Ref: REF-{{ report_id[:6].upper() }}{% endif %}</div>
-    </div>
-    <div class="firm-contact">
-      <div><strong>Annex D:</strong> Photographic Evidence Dossier (Cont'd)</div>
-    </div>
-  </div>
-  <div class="photo-grid-2x2">
-    {% endif %}
+    <tr class="sec"><td class="n">4</td><td colspan="6">TYRE CONDITION</td></tr>
+    {#- Per axle, as the firm writes it: "7mm/Dunlop" nearside and offside,
+        then the size. This table used to be fixed text -- four "Dunlop
+        Enasave 215/60 R16, 6.0 mm, Legal" rows on every report. -#}
+    <tr><td class="n"></td><td class="lbl"></td><td class="c"></td><td class="val colhead">Nearside/Make</td><td class="lbl2 colhead">Offside/Make</td><td class="c2"></td><td class="val2 colhead">Size</td></tr>
+    {% for label, axle in [('Front tyre', view.tyres.front), ('Rear tyre', view.tyres.rear)] %}
+    <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val">{{ axle.nearside or NR }}</td><td class="lbl2">{{ axle.offside or NR }}</td><td class="c2">:</td><td class="val2">{{ axle.size or NR }}</td></tr>
     {% endfor %}
+
+    <tr class="sec"><td class="n">5</td><td colspan="6">POINT OF IMPACT</td></tr>
+    {#- The recorded point of impact, then the firm's note ("See Annex(es)
+        and Motor Accident Reports"), whichever of the two is there. -#}
+    {% set impact = [v.point_of_impact, cp.point_of_impact_note] | select | list %}
+    <tr><td class="n"></td><td class="val" colspan="6">{% for line in impact %}<div>{{ line }}</div>{% else %}{{ NR }}{% endfor %}</td></tr>
+
+    <tr class="sec"><td class="n">6</td><td colspan="6">REMARK</td></tr>
+    <tr><td class="n"></td><td class="val" colspan="6">This inspection was conducted entirely on a &ldquo;WITHOUT PREJUDICE&rdquo; basis and we have not authorised any repair.</td></tr>
+  </table>
+</div>
+
+<!-- =====================================================================
+     PAGE 2: ANNEX A -- SPARE PARTS
+     ===================================================================== -->
+<div class="page">
+  <div class="annex-title">Annex A : Assessment / Adjustment on Spare Parts</div>
+  <div class="plate-line">{{ view.plate or NR }}</div>
+  <table class="grid">
+    <thead>
+      <tr>
+        <th style="width: 6%;">Item</th>
+        <th>Vehicle Parts Description</th>
+        <th style="width: 15%;">Condition</th>
+        <th style="width: 11%;">Remarks</th>
+        <th style="width: 6%;">Qty</th>
+        <th style="width: 11%;">W/shop<br>Est. ($)</th>
+        <th style="width: 7%;">Disc<br>(%)</th>
+        <th style="width: 12%;">Adjusted<br>Cost ($)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#- List Items (trade discount applies) first, then S/Nett Items, as
+          the firm lays them out. An unpriced row -- listed from the damage
+          found, awaiting the workshop's quotation -- prints blank, not 0.00. -#}
+      <tr class="sub"><td></td><td colspan="7">List Items</td></tr>
+      {% for p in view.list_rows %}
+      <tr>
+        <td class="ctr">{{ p.no }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.condition }}</td>
+        <td>{{ p.remarks }}</td>
+        <td class="ctr">{{ p.qty_text }}</td>
+        <td class="num">{{ (p.est | money) if p.est else '' }}</td>
+        <td class="ctr">{% if p.disc is not none and p.est %}{{ (p.disc * 100) | round | int }}%{% endif %}</td>
+        <td class="num">{{ (p.adjusted | money) if p.est else '' }}</td>
+      </tr>
+      {% endfor %}
+      {% if view.nett_rows %}
+      <tr class="sub"><td></td><td colspan="7">S/Nett Items</td></tr>
+      {% for p in view.nett_rows %}
+      <tr>
+        <td class="ctr">{{ p.no }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.condition }}</td>
+        <td>{{ p.remarks }}</td>
+        <td class="ctr">{{ p.qty_text }}</td>
+        <td class="num">{{ (p.est | money) if p.est else '' }}</td>
+        <td></td>
+        <td class="num">{{ (p.adjusted | money) if p.est else '' }}</td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+      {% if not view.list_rows and not view.nett_rows %}
+      <tr><td colspan="8" class="empty">No parts recorded yet.</td></tr>
+      {% endif %}
+    </tbody>
+    <tfoot>
+      <tr class="total">
+        <td colspan="5" class="num">Total for Spare Parts :</td>
+        <td class="num">{{ (view.a_est | money) if view.a_est else '' }}</td>
+        <td></td>
+        <td class="num">{{ (view.a_adjusted | money) if view.a_est else '' }}</td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+<!-- =====================================================================
+     PAGE 3: ANNEX B -- LABOUR AND SPRAY PAINTING, WITH THE SUMMARY
+     ===================================================================== -->
+<div class="page">
+  <div class="annex-title">Annex B : Adjustment on Labour and Spray Painting</div>
+  <div class="plate-line">{{ view.plate or NR }}</div>
+  <table class="grid">
+    <thead>
+      <tr>
+        <th style="width: 6%;">Item</th>
+        <th>Job Description</th>
+        <th style="width: 16%;">Workshop Est. ($)</th>
+        <th style="width: 16%;">Adjusted Cost ($)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in view.labour %}
+      <tr>
+        <td class="ctr">{{ l.no }}</td>
+        <td>{{ l.description }}</td>
+        <td class="num">{{ (l.est | money) if l.est else '' }}</td>
+        <td class="num">{{ (l.adjusted | money) if l.est else '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No labour recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr class="total">
+        <td colspan="2" class="num">TOTAL FOR LABOUR &amp; SPRAY PAINTING :</td>
+        <td class="num">{{ (view.b_est | money) if view.b_est else '' }}</td>
+        <td class="num">{{ (view.b_adjusted | money) if view.b_est else '' }}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="summary-title avoid-break">Summary</div>
+  <table class="grid summary avoid-break">
+    <thead>
+      <tr>
+        <th style="width: 54%;"></th>
+        <th>Workshop Est. ($)</th>
+        <th>Adjusted Cost ($)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>TOTAL FOR SPARE PARTS :</td>
+        <td class="num">{{ (view.a_est | money) if view.a_est else '' }}</td>
+        <td class="num">{{ (view.a_adjusted | money) if view.a_est else '' }}</td>
+      </tr>
+      <tr>
+        <td>TOTAL FOR LABOUR &amp; SPRAY PAINTING :</td>
+        <td class="num">{{ (view.b_est | money) if view.b_est else '' }}</td>
+        <td class="num">{{ (view.b_adjusted | money) if view.b_est else '' }}</td>
+      </tr>
+      <tr class="total">
+        <td>TOTAL REPAIR COSTS :</td>
+        <td class="num">{{ (view.c_est | money) if view.c_est else '' }}</td>
+        <td class="num">{{ (view.c_adjusted | money) if view.c_est else '' }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- =====================================================================
+     PAGE 4: ANNEX C -- RECOMMENDATION (the firm's letter)
+     ===================================================================== -->
+<div class="page">
+  <div class="annex-title">{{ firm }}</div>
+  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="annex-title" style="margin-bottom: 14px;">Annex C: Recommendation</div>
+
+  {#- The firm's fixed wording; only the workshop, the four figures and the
+      signer change. Lump sum and working days the surveyor hasn't agreed
+      print "(to be agreed)". This page used to print a S$8,700 "agreed" lump
+      sum, 11 working days, Patrick Ng's signature and a seal on every draft. -#}
+  <div class="letter">
+    <p>We have inspected thoroughly the actual damages found on the vehicle and our assessment is appended in the Annex(es) attached. The condition and age of the vehicle was considered before we reached our recommendation as to whether the parts need replacement or repair.</p>
+
+    <p>{{ view.workshop or 'The repairer' }} estimated repair cost is {{ view.c_est_text }} and we have adjusted it to {{ view.c_adjusted_text }} on a part by part basis. However, taking into consideration the age of the vehicle and the availability of used/recondition components. We, therefore recommend a contract lump sum repair cost.</p>
+
+    <p>The repairer have agreed to undertake the repairs on a contract lump sum of {{ view.lump_sum_text }}, according to acceptable quality and standard. (Repairer discretion to repair parts, to replace with old parts, or to replace with OEM or genuine parts).</p>
+
+    <p>The entire repair of the damaged vehicle should be completed within a reasonable period of {{ view.repair_days_text }} working days.</p>
+
+    <p>We have advised the repairer that the inspection was conducted strictly on a WITHOUT PREJUDICE basis and we have not given any instruction and authorisation to proceed with the repair of the vehicle.</p>
+
+    <p>We are reverting the matter to you for your discretion and enclosed is our invoice for service rendered.</p>
+  </div>
+
+  <div class="sign-block avoid-break">
+    <div>Yours faithfully,</div>
+    <div class="firm">{{ firm }}</div>
+    {% if view.signed %}
+    <div class="signature">
+      {% if view.signature_data_url %}<img src="{{ view.signature_data_url }}" alt="Signature">{% endif %}
+    </div>
+    <div class="name">{{ (view.signer | upper) if view.signer else NR }}</div>
+    <div>{{ view.signatory_title }}</div>
+    {% if view.qualifications %}<div>{{ view.qualifications }}</div>{% endif %}
+    {% else %}
+    <div class="draft-notice">DRAFT &ndash; not signed off</div>
+    {% endif %}
   </div>
 </div>
+
+<!-- =====================================================================
+     APPENDIX: PHOTOGRAPHS (optional, four to a page)
+     ===================================================================== -->
+{% if show_photos %}
+{% for uri in photo_data_uris %}
+{% if loop.index0 is divisibleby 4 %}
+<div class="page">
+  <div class="annex-title">{{ firm }}</div>
+  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="annex-title">Photographs{% if loop.index0 %} (continued){% endif %}</div>
+  <div class="photo-grid">
+{% endif %}
+    <div class="photo-frame">
+      <img src="{{ uri }}" alt="Photograph P{{ '%02d' % loop.index }}">
+      <div class="photo-caption">P{{ '%02d' % loop.index }}</div>
+    </div>
+{% if loop.index is divisibleby 4 or loop.last %}
+  </div>
+</div>
+{% endif %}
+{% endfor %}
 {% endif %}
 
 </body>

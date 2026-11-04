@@ -28,8 +28,18 @@ const CLIENT_FILES_BASE_URL = process.env.NEXT_PUBLIC_FILES_BASE_URL ?? "http://
 
 export const API_BASE_URL = isBrowser ? CLIENT_API_BASE_URL : SERVER_BASE_URL;
 
-export function pdfDownloadUrl(reportId: string): string {
-  return `${CLIENT_API_BASE_URL}/reports/${reportId}/download`;
+// Download links end up in the DOM (<a href>), so they always use the
+// client-safe base: same-origin in prod, where infra/nginx.conf proxies
+// /reports/*/download to the API; the API's own port in local dev.
+export function pdfDownloadUrl(reportId: string, opts: { photos?: boolean } = {}): string {
+  const url = `${CLIENT_API_BASE_URL}/reports/${reportId}/download`;
+  // photos=0: the same report without the photo pages, rendered on the fly.
+  return opts.photos === false ? `${url}?photos=0` : url;
+}
+
+/** The report as the firm's four-sheet workbook (Cover Page, Annex A, B, C). */
+export function xlsxDownloadUrl(reportId: string): string {
+  return `${CLIENT_API_BASE_URL}/reports/${reportId}/download.xlsx`;
 }
 
 /**
@@ -943,6 +953,13 @@ export type AnnexAPartItem = {
   /** What past cases' lines were adjusted to per unit (median). A
    * reference for the surveyor only -- never the workshop's estimate. */
   usual_unit_price?: number | null;
+  /** The quantity as the surveyor writes it ("1set"), printed instead of
+   * qty when set; qty stays a number for the statistics. */
+  qty_text?: string | null;
+  /** The estimate came from past cases (POST annex-a/prefill), not from a
+   * person. Shown as a tag, never printed; cleared when someone types an
+   * estimate. */
+  prefilled?: boolean;
 };
 
 export type AnnexAInfo = {
@@ -956,7 +973,81 @@ export type AnnexBLabourItem = {
   description: string;
   workshop_est: number;
   adjusted_cost: number;
+  /** Kept in the data but no longer shown or printed. */
   justification?: string | null;
+  /** The line was added from the usual labour lines with its usual price;
+   * cleared when someone types a price. Not printed. */
+  prefilled?: boolean;
+  /** Where a suggested line came from ("3 past Honda Vezel cases"). */
+  suggested_from?: string | null;
+  /** What past cases adjusted this line to (median). A reference only. */
+  usual_price?: number | null;
+};
+
+/** GET /reports/{id}/labour-suggestions: the Annex B lines past reports
+ * wrote for this make and model (else any), with their usual prices. */
+export type LabourSuggestionLine = {
+  description: string;
+  /** Median adjusted cost in past cases; null when none had one. */
+  usual_price: number | null;
+  usual_workshop_est: number | null;
+  /** How many past cases had this line. */
+  cases: number;
+  /** Where it comes from, e.g. "3 past Honda Vezel cases". */
+  source: string;
+};
+
+export type LabourSuggestionGroup = {
+  reason: string;
+  lines: LabourSuggestionLine[];
+};
+
+export type LabourSuggestions = {
+  vehicle: string | null;
+  groups: LabourSuggestionGroup[];
+  /** How many past cases the lines come from. */
+  cases_used?: number;
+  /** Past-report prices are the firm's price book, for admins and "see
+   * all cases" staff: anyone else gets no groups and hidden: true. */
+  hidden?: boolean;
+};
+
+/** The Cover Page fields that have no home elsewhere on the report
+ * (report.cover_page). Dates are free text, printed as typed ("27th
+ * February 2023 (10.15am)"). Anything unset prints as "Not recorded". */
+export type CoverPageInfo = {
+  date_of_request?: string | null;
+  requested_by?: string | null;
+  /** "C/o Blk 3023A, Ubi Road 1, #01-60, Singapore 408717" */
+  requested_by_address?: string | null;
+  workshop_address?: string | null;
+  date_of_survey?: string | null;
+  date_of_dismantle?: string | null;
+  date_before_painting?: string | null;
+  date_after_painting?: string | null;
+  handbrake_condition?: string | null;
+  modification?: string | null;
+  general_condition?: string | null;
+  /** Printed under 5 POINT OF IMPACT. */
+  point_of_impact_note?: string | null;
+};
+
+/** PUT /reports/{id}/cover-page: merged key by key -- a key left out is
+ * untouched, null clears it; tyres are replaced whole. */
+export type CoverPageRequest = {
+  report_id?: string | null;
+  incident_datetime?: string | null;
+  cover_page?: CoverPageInfo;
+  vehicle_info?: Partial<VehicleInfo>;
+  insurance_details?: Partial<InsuranceDetails>;
+};
+
+export type CoverPageResponse = {
+  report_id: string | null;
+  incident_datetime: string | null;
+  cover_page: CoverPageInfo;
+  vehicle_info: VehicleInfo;
+  insurance_details: InsuranceDetails;
 };
 
 export type AnnexBInfo = {
@@ -966,15 +1057,17 @@ export type AnnexBInfo = {
 };
 
 export type AnnexCInfo = {
+  /** Annex A + Annex B, both columns, as the API last worked them out. */
   workshop_total: number;
   adjusted_total: number;
   agreed_lump_sum?: number | null;
-  gst_rate: number;
+  /** Left over from when the report printed GST; no longer computed or shown. */
+  gst_rate?: number;
   gst_amount?: number | null;
   total_with_gst?: number | null;
   repair_days?: number | null;
   terms?: string | null;
-  without_prejudice: boolean;
+  without_prejudice?: boolean;
 };
 
 export type BolaLiabilityAssessment = {
@@ -992,10 +1085,15 @@ export type BolaLiabilityAssessment = {
  * takes them from the signed-in user's profile. */
 export type SignOffRequest = {
   signature_data_url?: string;
+  /** Left out by the dashboard since the Annex C tab saves these itself
+   * (PUT annex-c); the API then keeps annex_c's values. */
   agreed_quantum?: number;
   turnaround_days?: number;
+  /** No longer sent (the liability tab went); the API still takes it. */
   liability_opinion?: string;
   remarks?: string;
+  /** How the signer is described under their name ("Automotive Engineer Assessor"). */
+  signatory_title?: string;
   terms_accepted?: boolean;
 };
 
@@ -1013,6 +1111,8 @@ export type SignOffInfo = {
   turnaround_days?: number | null;
   liability_opinion?: string | null;
   remarks?: string | null;
+  /** Printed under the signer's name; "Automotive Engineer Assessor" when unset. */
+  signatory_title?: string | null;
   status?: string;
   signature_date?: string | null;
   terms_accepted?: boolean;
@@ -1103,6 +1203,8 @@ export type ReportData = {
   timeline?: TimelineEvent[];
   recommendations?: RecommendationsInfo | null;
   sign_off?: SignOffInfo | null;
+  /** Absent on reports saved before the Cover Page tab existed. */
+  cover_page?: CoverPageInfo | null;
   annex_a?: AnnexAInfo | null;
   annex_b?: AnnexBInfo | null;
   annex_c?: AnnexCInfo | null;
@@ -1771,6 +1873,67 @@ export async function saveAnnexA(
     body: JSON.stringify({ items }),
   });
   if (!res.ok) throw await apiError(res, "Failed to save Annex A");
+  return res.json();
+}
+
+/** Fills the workshop estimates on Annex A from past cases of the same
+ * make and model (POST /reports/{id}/annex-a/prefill). Rows a person
+ * priced are kept; prefilled and unpriced rows are replaced. The whole
+ * table comes back, saved. */
+export async function prefillAnnexA(
+  reportId: string
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; filled: number; unpriced: number }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-a/prefill`, { method: "POST" }, { timeoutMs: 30000 });
+  if (!res.ok) throw await apiError(res, "Failed to fill prices from past cases");
+  return res.json();
+}
+
+/** Saves the whole Annex B table (PUT /reports/{id}/annex-b). The API
+ * numbers the rows, drops rows with no job description, keeps the adjusted
+ * costs as typed and works out the Annex B/C totals. 409 once signed off. */
+export async function saveAnnexB(
+  reportId: string,
+  items: AnnexBLabourItem[]
+): Promise<{ annex_b: AnnexBInfo; annex_c: AnnexCInfo }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-b`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save Annex B");
+  return res.json();
+}
+
+/** The two figures the Annex C letter takes from the surveyor: the
+ * contract lump sum and the working days. Null clears one. */
+export type AnnexCRequest = { agreed_lump_sum?: number | null; repair_days?: number | null };
+
+export async function saveAnnexC(reportId: string, body: AnnexCRequest): Promise<{ annex_c: AnnexCInfo }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-c`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save Annex C");
+  return res.json();
+}
+
+/** The Annex B lines past reports wrote for this vehicle, with usual prices. */
+export async function getLabourSuggestions(reportId: string): Promise<LabourSuggestions> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/labour-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (!res.ok) throw await apiError(res, "Failed to load the usual labour lines");
+  return res.json();
+}
+
+/** Saves the Cover Page fields (PUT /reports/{id}/cover-page). Only the
+ * keys sent change; null clears a value. 409 once signed off. */
+export async function saveCoverPage(reportId: string, body: CoverPageRequest): Promise<CoverPageResponse> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/cover-page`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save the cover page");
   return res.json();
 }
 

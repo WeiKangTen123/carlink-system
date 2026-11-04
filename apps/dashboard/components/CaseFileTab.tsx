@@ -161,7 +161,6 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
   const claimArchetype = getClaimArchetype({ claim_type: ins?.claim_type });
   const claimTypeLabel = ins?.claim_type || claimArchetype.label;
   const giaSla = getGiaSla(report.created_at, Boolean(signOff?.signature_date));
-  const bola = d.bola_assessment;
   const annexC = d.annex_c;
 
   // Tyres as surveyed. These used to default to "Dunlop Enasave 215/60 R16",
@@ -204,9 +203,6 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
     n != null && !Number.isNaN(n)
       ? `SGD ${n.toLocaleString("en-SG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
       : "—";
-  const gstAmount =
-    annexC?.gst_amount ??
-    (annexC?.agreed_lump_sum != null ? Math.round(annexC.agreed_lump_sum * (annexC.gst_rate || 0.09) * 100) / 100 : null);
 
   const integrityParts = [
     v?.steering_condition && `Steering: ${v.steering_condition}`,
@@ -520,29 +516,8 @@ export function CaseFileTab({ report }: { report: ReportDetail }) {
                   {formatSgd(annexC?.agreed_lump_sum)}
                 </div>
               </div>
-              <div>
-                <div className="dossier-field-label">GST (9%)</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-secondary)", fontSize: 13 }}>
-                  {formatSgd(gstAmount)}
-                </div>
-              </div>
             </div>
 
-            <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, color: "var(--text-secondary)", background: "rgba(59, 130, 246, 0.05)", padding: "6px 10px", borderRadius: 6 }}>
-              <span>
-                <strong>GIA BOLA Matrix:</strong>{" "}
-                {bola?.scenario_number != null
-                  ? `Scenario #${bola.scenario_number}${bola.scenario_name ? ` (${bola.scenario_name})` : ""}`
-                  : "Pending surveyor assessment"}
-              </span>
-              {bola?.insured_liability_pct != null && bola?.third_party_liability_pct != null ? (
-                <span style={{ fontWeight: 700, color: "var(--badge-green-text)" }}>
-                  Insured Liability: {bola.insured_liability_pct}% | TP: {bola.third_party_liability_pct}%
-                </span>
-              ) : (
-                <span style={{ fontWeight: 700, color: "var(--text-muted)" }}>Liability: Pending surveyor</span>
-              )}
-            </div>
           </div>
         </div>
       </div>

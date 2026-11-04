@@ -1731,6 +1731,9 @@ def finalize() -> None:
     if hostile not in str(data.get("reporter_name") or ""):
         info("the stored name holds no <b>x</b>; S types 'Zebulon <b>x</b> Quayle' into the name before finishing")
         data["reporter_name"] = "Zebulon <b>x</b> Quayle"
+    # The firm's report prints no reporter name; the cover page's "Requested by"
+    # (typed by staff) is the printed field, so it carries the same hostile text.
+    data["cover_page"] = {**(data.get("cover_page") or {}), "requested_by": "Zebulon <b>x</b> Quayle"}
     html_mark = len(CAPTURED_HTML)
     r = W.sam.c.post(f"/intake/{t1.rid}/finalize", json={"data": data})
     need(r.status_code == 200, "S finishes the case: POST /intake/{id}/finalize -> 200", brief(r))

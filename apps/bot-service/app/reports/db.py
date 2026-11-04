@@ -232,7 +232,7 @@ def _once(name: str, step) -> None:
 
 
 def init_db() -> None:
-    from app.reports import owners
+    from app.reports import owners, synthesize_annexes
 
     _create_tables()
     _upgrade_schema()
@@ -241,3 +241,6 @@ def init_db() -> None:
     # The people already working here keep seeing every case, using the
     # company AI key and signing off; self-signups don't.
     _once("staff_ticks_v1", owners.grandfather_staff_ticks)
+    # Annex A estimates typed per unit become the line totals the firm
+    # writes (synthesize_annexes.convert_per_unit_estimates).
+    _once("annex_a_line_totals_v1", synthesize_annexes.convert_per_unit_estimates)

@@ -509,7 +509,36 @@ class PastAnnexLine(Base):
     side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     condition: Mapped[str] = mapped_column(String, default="")
     qty: Mapped[float] = mapped_column(Float, default=1.0)
+    # The quantity as the sheet had it when it wasn't a plain number
+    # ("1set"), so a prefilled row can print it the same way; None for
+    # "2". (Added after the table shipped: see db._ADDED_COLUMNS.)
+    qty_text: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     workshop_est: Mapped[float] = mapped_column(Float, default=0.0)
     discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    adjusted_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class PastLabourLine(Base):
+    """One Annex B (labour and spray painting) line from a past report
+    spreadsheet (app/parts/history.py): the wording the surveyor used and
+    what the workshop's figure was adjusted to, so a new case can pick the
+    firm's usual labour lines with their usual prices. Imported and replaced
+    together with the report's PastAnnexLine rows."""
+    __tablename__ = "past_labour_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    source_file: Mapped[str] = mapped_column(String, default="")
+    plate: Mapped[str] = mapped_column(String, default="")
+    make: Mapped[str] = mapped_column(String, default="", index=True)
+    model: Mapped[str] = mapped_column(String, default="", index=True)
+    surveyed: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ISO date
+    line_no: Mapped[int] = mapped_column(Integer, default=0)
+    description: Mapped[str] = mapped_column(String)
+    # Wording-level key ("remove, reinstall rear windscreen" for "To remove,
+    # reinstall rear windscreen (to FR)"), history.normalise_labour.
+    desc_key: Mapped[str] = mapped_column(String, index=True)
+    workshop_est: Mapped[float] = mapped_column(Float, default=0.0)
     adjusted_cost: Mapped[float] = mapped_column(Float, default=0.0)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
