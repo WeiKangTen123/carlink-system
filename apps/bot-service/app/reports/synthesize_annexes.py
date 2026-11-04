@@ -122,4 +122,5 @@ def convert_per_unit_estimates(db) -> int:
         if touched:
             data["annex_a"] = {"items": items}
             r.data = synthesize_annexes_for_report(data)
+            r.pdf_path = None  # rendered again on the next download
     return changed

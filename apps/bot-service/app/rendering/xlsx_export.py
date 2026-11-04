@@ -70,6 +70,11 @@ class _Sheet:
         cell = self.ws.cell(row=row, column=col)
         if value is not None and value != "":
             cell.value = value
+            if isinstance(value, str):
+                # Typed text stays text: openpyxl makes a formula of any
+                # string starting with "=", so a part name or address typed
+                # as "=HYPERLINK(...)" would run when the firm opens the file.
+                cell.data_type = "s"
         cell.font = _font(bold=bold, size=size)
         if fmt:
             cell.number_format = fmt
@@ -253,13 +258,17 @@ def _annex_b_sheet(ws, view: dict) -> None:
     for job in view["labour"]:
         s.put(s.row, 2, job["no"], align="center")
         s.put(s.row, 3, job["description"], wrap=True)
+        # Either figure prints on its own: a line the surveyor allowed that
+        # the workshop never quoted (towing) has an adjusted cost only.
         if job["est"]:
             s.put(s.row, 4, job["est"], fmt=NUMBER_FORMAT)
+        if job["adjusted"]:
             s.put(s.row, 5, job["adjusted"], fmt=NUMBER_FORMAT)
         s.row += 2
     s.put(s.row, 3, "TOTAL FOR LABOUR & SPRAY PAINTING :", bold=True)
     if view["b_est"]:
         s.put(s.row, 4, view["b_est"], bold=True, fmt=NUMBER_FORMAT)
+    if view["b_adjusted"]:
         s.put(s.row, 5, view["b_adjusted"], bold=True, fmt=NUMBER_FORMAT)
     s.skip(2)
     s.put(s.row, 2, "Summary", bold=True, size=11)

@@ -477,9 +477,14 @@ def download_report_pdf(report_id: str, photos: int = 1, user: CurrentUser = Dep
 
         if photos == 0:
             with limits.render_turn(user):
-                nophotos_path = str(Path(report_pdf_path(r.id)).with_name(f"{r.id}_nophotos.pdf"))
+                out = Path(report_pdf_path(r.id)).with_name(f"{r.id}_nophotos.pdf")
+                # Rendered beside the final name and swapped in whole: two
+                # people asking at once must not read each other's half file.
+                tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex[:8]}.part.pdf")
+                nophotos_path = str(out)
                 try:
-                    render_pdf(r.data or {}, r.photo_paths or [], nophotos_path, report_id=r.id, include_photos=False)
+                    render_pdf(r.data or {}, r.photo_paths or [], str(tmp), report_id=r.id, include_photos=False)
+                    tmp.replace(out)
                 except RenderBusy as exc:
                     raise limits.render_busy() from exc
                 except Exception as exc:
@@ -537,8 +542,11 @@ def download_report_xlsx(report_id: str, user: CurrentUser = Depends(visible_cas
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
         out = Path(report_pdf_path(r.id)).with_name(f"{r.id}.xlsx")
+        # Written beside the final name and swapped in whole (see ?photos=0).
+        tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex[:8]}.part.xlsx")
         try:
-            render_xlsx(r.data or {}, str(out), report_id=r.id)
+            render_xlsx(r.data or {}, str(tmp), report_id=r.id)
+            tmp.replace(out)
         except Exception as exc:
             logger.error("Failed to make the Excel report for %s: %s", r.id, exc)
             raise HTTPException(status_code=503, detail="Excel export currently unavailable.") from exc

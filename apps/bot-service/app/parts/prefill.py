@@ -150,6 +150,11 @@ def prefill_annex_a(db: Session, data: dict) -> dict:
             # typed into this Annex A are not repeated.
             suggestion = suggest(db, make=make, model=model, damaged_parts=[name], existing_items=kept_names)
             found = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
+            # Another make's prices are no estimate for this car: with no
+            # same-make history the part stays unpriced (the suggestions
+            # panel still offers those lines, labelled, for a person to pick).
+            if found and suggestion.get("scope") == "all imported cases":
+                found = None
         if not found:
             # No past case covers it (or its lines are all typed already).
             if normalise_item(part["part"]) not in kept_keys and part["part"] not in seen_names:

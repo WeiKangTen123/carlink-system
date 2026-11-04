@@ -91,8 +91,8 @@ def save_cover_page(report_id: str, body: CoverPageSave, user: CurrentUser = Dep
                 continue
             patch = sent[key]
             if patch is None:
-                # The whole section sent as null: back to blank.
-                data[key] = model().model_dump()
+                # A whole section sent as null is ignored: no partial save
+                # means "forget the plate, make, model and tyres".
                 continue
             current = dict(data.get(key) or {})
             if key == "vehicle_info" and "tyres" in patch:

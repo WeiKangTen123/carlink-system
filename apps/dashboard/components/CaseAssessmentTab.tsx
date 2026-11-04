@@ -696,10 +696,14 @@ export function CaseAssessmentTab({
   const annexCLocked = readOnly || annexCSave === "saving";
 
   /** Annex C as the API saved it, after any annex is saved. */
-  const takeSavedAnnexC = (saved: AnnexCInfo) => {
+  // resetInputs false: the totals move, the lump sum and days being typed
+  // stay (a Save Annex A used to wipe unsaved Annex C typing without a word).
+  const takeSavedAnnexC = (saved: AnnexCInfo, resetInputs = true) => {
     setAnnexC(saved);
-    setLumpText(text(saved.agreed_lump_sum));
-    setDaysText(text(saved.repair_days));
+    if (resetInputs) {
+      setLumpText(text(saved.agreed_lump_sum));
+      setDaysText(text(saved.repair_days));
+    }
   };
 
   const handleSaveAnnexC = async () => {
@@ -825,7 +829,7 @@ export function CaseAssessmentTab({
     setAnnexABaseline(items);
     setAnnexAItems(items.map(toAnnexRow));
     setAnnexASave("saved");
-    if (annexC) takeSavedAnnexC(annexC);
+    if (annexC) takeSavedAnnexC(annexC, !annexCDirty);
     router.refresh();
   };
 
@@ -945,7 +949,7 @@ export function CaseAssessmentTab({
     setAnnexBBaseline(saved);
     setAnnexBItems(saved.map(toLabourRow));
     setAnnexBSave("saved");
-    if (res.annex_c) takeSavedAnnexC(res.annex_c);
+    if (res.annex_c) takeSavedAnnexC(res.annex_c, !annexCDirty);
     router.refresh();
   };
 

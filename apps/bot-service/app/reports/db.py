@@ -68,6 +68,9 @@ _ADDED_COLUMNS = [
     # Why an intake run stopped, when the person's AI wasn't available (P4).
     ("intake_sessions", "error_code", "VARCHAR"),
     ("intake_sessions", "error_by", "VARCHAR"),
+    # "1set" wording of a past Annex A line (models.PastAnnexLine.qty_text);
+    # the table shipped with PR #9, before this column.
+    ("past_annex_lines", "qty_text", "VARCHAR"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

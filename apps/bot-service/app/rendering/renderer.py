@@ -55,8 +55,6 @@ _env = Environment(
 
 BLANK_IMAGE_DATA_URI = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 
-# The signer's title when sign-off recorded none (SignOffInfo.signatory_title).
-DEFAULT_SIGNATORY_TITLE = "Automotive Engineer Assessor"
 # What the letter says in place of a figure the surveyor hasn't agreed yet.
 TO_BE_AGREED = "(to be agreed)"
 
@@ -193,7 +191,9 @@ def report_view(report: dict) -> dict:
         "tyres": {"front": axle("front"), "rear": axle("rear")},
         "signed": signed,
         "signer": str(sign.get("surveyor_name") or sign.get("approved_by") or sign.get("reviewed_by") or "").strip(),
-        "signatory_title": str(sign.get("signatory_title") or "").strip() or DEFAULT_SIGNATORY_TITLE,
+        # Only the title recorded at sign-off (the sign-off form offers the
+        # firm's usual one); a case signed before titles existed prints none.
+        "signatory_title": str(sign.get("signatory_title") or "").strip(),
         "qualifications": str(sign.get("qualifications") or "").strip(),
         "signature_data_url": sign.get("signature_data_url") if signed else None,
     }

@@ -91,7 +91,7 @@ def fixture() -> dict:
         ]},
         "annex_c": {"agreed_lump_sum": 1900.0, "repair_days": 7},
         "sign_off": {"status": "Signed Off", "surveyor_name": "Patrick Ng", "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.",
-                     "signatory_title": None, "signature_data_url": None},
+                     "signatory_title": "Automotive Engineer Assessor", "signature_data_url": None},
     }
 
 
@@ -202,7 +202,7 @@ def report_from_xls(path: Path) -> dict:
         "annex_b": {"items": labour},
         "annex_c": {"agreed_lump_sum": float(lump.group(1).replace(",", "")) if lump else None,
                     "repair_days": int(days.group(1)) if days else None},
-        "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else "Patrick Ng"),
+        "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else "Patrick Ng"), "signatory_title": "Automotive Engineer Assessor",
                      "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."},
     }
 
@@ -473,6 +473,20 @@ def main() -> int:
     check_pdf(report)
     print("workbook")
     check_xlsx(report, source)
+
+    print("typed text in the workbook")
+    import copy
+    import openpyxl
+    hostile = copy.deepcopy(fixture())
+    hostile["cover_page"] = {**(hostile.get("cover_page") or {}), "requested_by": '=HYPERLINK("http://evil.example","open")'}
+    hostile["annex_a"]["items"][0]["part_name"] = "=1+1"
+    render_xlsx(hostile, str(OUT / "hostile.xlsx"), report_id="unsaved", unverified=False)
+    hbook = openpyxl.load_workbook(OUT / "hostile.xlsx")
+    formulas = [f"{ws.title}!{c.coordinate}" for ws in hbook.worksheets for row in ws.iter_rows() for c in row if c.data_type == "f"]
+    assert not formulas, formulas
+    assert any(c.value == "=1+1" for row in hbook["Annex A"].iter_rows() for c in row), "the typed part name is kept as text"
+    ok("text starting with '=' is written as text, never as a formula (HYPERLINK, =1+1)")
+
     print("\nALL REPORT RENDER CHECKS PASSED")
     return 0
 

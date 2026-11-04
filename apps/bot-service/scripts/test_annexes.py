@@ -485,7 +485,8 @@ def main() -> int:
     r = surveyor.get(f"/reports/{rid}/download?photos=0")
     assert r.status_code == 200 and r.headers["content-type"].startswith("application/pdf"), r.text
     assert filename_of(r) == "CL 12330 SMV7530X (no photos).pdf", r.headers["content-disposition"]
-    assert render_calls[-1]["include_photos"] is False and render_calls[-1]["path"].endswith(f"{rid}_nophotos.pdf")
+    # Rendered to "<id>_nophotos.<random>.part.pdf" and swapped into place whole.
+    assert render_calls[-1]["include_photos"] is False and f"{rid}_nophotos." in render_calls[-1]["path"]
     db = SessionLocal()
     row = db.get(Report, rid)
     assert row.pdf_path is None, row.pdf_path

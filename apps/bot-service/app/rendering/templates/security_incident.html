@@ -417,7 +417,7 @@
         <td class="ctr">{{ l.no }}</td>
         <td>{{ l.description }}</td>
         <td class="num">{{ (l.est | money) if l.est else '' }}</td>
-        <td class="num">{{ (l.adjusted | money) if l.est else '' }}</td>
+        <td class="num">{{ (l.adjusted | money) if l.adjusted else '' }}</td>
       </tr>
       {% else %}
       <tr><td colspan="4" class="empty">No labour recorded yet.</td></tr>
@@ -427,7 +427,7 @@
       <tr class="total">
         <td colspan="2" class="num">TOTAL FOR LABOUR &amp; SPRAY PAINTING :</td>
         <td class="num">{{ (view.b_est | money) if view.b_est else '' }}</td>
-        <td class="num">{{ (view.b_adjusted | money) if view.b_est else '' }}</td>
+        <td class="num">{{ (view.b_adjusted | money) if view.b_adjusted else '' }}</td>
       </tr>
     </tfoot>
   </table>
@@ -450,7 +450,7 @@
       <tr>
         <td>TOTAL FOR LABOUR &amp; SPRAY PAINTING :</td>
         <td class="num">{{ (view.b_est | money) if view.b_est else '' }}</td>
-        <td class="num">{{ (view.b_adjusted | money) if view.b_est else '' }}</td>
+        <td class="num">{{ (view.b_adjusted | money) if view.b_adjusted else '' }}</td>
       </tr>
       <tr class="total">
         <td>TOTAL REPAIR COSTS :</td>
@@ -495,7 +495,7 @@
       {% if view.signature_data_url %}<img src="{{ view.signature_data_url }}" alt="Signature">{% endif %}
     </div>
     <div class="name">{{ (view.signer | upper) if view.signer else NR }}</div>
-    <div>{{ view.signatory_title }}</div>
+    {% if view.signatory_title %}<div>{{ view.signatory_title }}</div>{% endif %}
     {% if view.qualifications %}<div>{{ view.qualifications }}</div>{% endif %}
     {% else %}
     <div class="draft-notice">DRAFT &ndash; not signed off</div>
