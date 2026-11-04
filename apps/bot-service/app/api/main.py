@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import shutil
 import uuid
 from typing import Literal, Optional
@@ -33,6 +34,7 @@ from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
 from app.api.ai_keys import router as ai_keys_router
+from app.api.annexes import router as annexes_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import router as parts_router
@@ -147,6 +149,7 @@ if settings.twilio_account_sid and settings.twilio_auth_token:
 app.include_router(auth_router)
 app.include_router(signup_router)
 app.include_router(parts_router)
+app.include_router(annexes_router)
 app.include_router(intake_router)
 app.include_router(ai_keys_router)
 app.include_router(telegram_link_router)
@@ -443,9 +446,27 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
         db.close()
 
 
+def _report_filename(r: Report, ext: str, suffix: str = "") -> str:
+    """"<Our Ref or REF-xxxxxx> <plate>.<ext>": the firm names its report
+    files by reference and plate ("CL 12330 SMV 7530 X.xls"). REF- and the
+    case id stand in while no Our Ref is issued -- never a made-up CL
+    number. Characters a file name can't carry become "-"."""
+    data = r.data or {}
+    ref = (data.get("report_id") or "").strip() or f"REF-{r.id[:6].upper()}"
+    plate = ((data.get("vehicle_info") or {}).get("plate_number") or "").strip()
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", " ".join(p for p in (ref, plate) if p) + suffix).strip(" .")
+    return f"{name}.{ext}"
+
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
 @app.get("/reports/{report_id}/download")
 @app.head("/reports/{report_id}/download")
-def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case)):
+def download_report_pdf(report_id: str, photos: int = 1, user: CurrentUser = Depends(visible_case)):
+    """The report PDF. ?photos=0: the same pages without the photo
+    appendix, rendered now into "<id>_nophotos.pdf" and never kept on
+    r.pdf_path -- that is the full report, the one every save invalidates."""
     from fastapi.responses import FileResponse
     db = SessionLocal()
     try:
@@ -453,6 +474,25 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
         _refuse_intake_draft(r)
+
+        if photos == 0:
+            with limits.render_turn(user):
+                out = Path(report_pdf_path(r.id)).with_name(f"{r.id}_nophotos.pdf")
+                # Rendered beside the final name and swapped in whole: two
+                # people asking at once must not read each other's half file.
+                tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex[:8]}.part.pdf")
+                nophotos_path = str(out)
+                try:
+                    render_pdf(r.data or {}, r.photo_paths or [], str(tmp), report_id=r.id, include_photos=False)
+                    tmp.replace(out)
+                except RenderBusy as exc:
+                    raise limits.render_busy() from exc
+                except Exception as exc:
+                    logger.error("Failed to render the no-photos PDF for report %s: %s", r.id, exc)
+                    raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            return FileResponse(
+                path=nophotos_path, filename=_report_filename(r, "pdf", " (no photos)"), media_type="application/pdf", headers=_NO_STORE
+            )
 
         pdf_path = r.pdf_path
         if not pdf_path or not Path(pdf_path).exists():
@@ -472,14 +512,49 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(visible_case
         if not r.pdf_path or not Path(r.pdf_path).exists():
             raise HTTPException(status_code=503, detail="PDF generation currently unavailable.")
 
-        filename = f"Car_Incident_Report_CIR-2026-{r.id[:4].upper()}.pdf"
         return FileResponse(
             path=r.pdf_path,
-            filename=filename,
+            filename=_report_filename(r, "pdf"),
             media_type="application/pdf",
             # Not kept by the browser: a cached copy outlives signing out and
             # losing access to the case (reassigned, account unticked).
-            headers={"Cache-Control": "no-store"},
+            headers=_NO_STORE,
+        )
+    finally:
+        db.close()
+
+
+@app.get("/reports/{report_id}/download.xlsx")
+def download_report_xlsx(report_id: str, user: CurrentUser = Depends(visible_case)):
+    """The report as the firm's four-sheet workbook (Cover Page, Annex A,
+    Annex B, Annex C -- rendering/xlsx_export.py), made now from the case
+    data. openpyxl only, no Chromium: cheap enough that nothing is kept."""
+    from fastapi.responses import FileResponse
+
+    # Imported here so the API still starts, and every other route works,
+    # if the workbook exporter can't be imported on a deployment.
+    from app.rendering.xlsx_export import render_xlsx
+
+    db = SessionLocal()
+    try:
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        _refuse_intake_draft(r)
+        out = Path(report_pdf_path(r.id)).with_name(f"{r.id}.xlsx")
+        # Written beside the final name and swapped in whole (see ?photos=0).
+        tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex[:8]}.part.xlsx")
+        try:
+            render_xlsx(r.data or {}, str(tmp), report_id=r.id)
+            tmp.replace(out)
+        except Exception as exc:
+            logger.error("Failed to make the Excel report for %s: %s", r.id, exc)
+            raise HTTPException(status_code=503, detail="Excel export currently unavailable.") from exc
+        return FileResponse(
+            path=str(out),
+            filename=_report_filename(r, "xlsx"),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=_NO_STORE,
         )
     finally:
         db.close()
@@ -941,6 +1016,17 @@ def review_damage_item(
 _MAX_SIGNATURE_CHARS = 700_000  # a drawn PNG is ~10-60 KB as base64
 
 
+def _number(value, cast, fallback):
+    """value as cast (float / int), or fallback when it is missing or isn't
+    a number -- a sign-off body is read as loose JSON, not a model."""
+    if value is None:
+        return fallback
+    try:
+        return cast(value)
+    except (ValueError, TypeError):
+        return fallback
+
+
 def _drawn_signature(value) -> str | None:
     """Only the PNG the sign-off pad produces. The value is placed in an
     <img src> in the PDF template, so anything else -- a URL -- would make
@@ -1031,6 +1117,15 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         canonical_str = f"{r.id}:{user.id}:{user.name}:{signed_at}"
         sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
 
+        # The figures Annex C prints: typed at sign-off when the body has
+        # them, else what is saved on Annex C (PUT /reports/{id}/annex-c) --
+        # the dashboard saves them there now and sends nothing here.
+        annex_c_now = (r.data or {}).get("annex_c") or {}
+        quantum = _number(body_data.get("agreed_quantum"), float, annex_c_now.get("agreed_lump_sum"))
+        days = _number(body_data.get("turnaround_days"), int, annex_c_now.get("repair_days"))
+        title = body_data.get("signatory_title")
+        title = title.strip()[:120] if isinstance(title, str) and title.strip() else None
+
         updates = {
             "status": "Signed Off",
             "reviewed_by": user.name,
@@ -1044,8 +1139,9 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             "signed_by_email": user.email,
             "signature_hash": sig_hash,
             "signature_data_url": _drawn_signature(body_data.get("signature_data_url")),
-            "agreed_quantum": body_data.get("agreed_quantum"),
-            "turnaround_days": body_data.get("turnaround_days"),
+            "signatory_title": title,
+            "agreed_quantum": quantum,
+            "turnaround_days": days,
             "liability_opinion": body_data.get("liability_opinion"),
             "remarks": body_data.get("remarks"),
             # Only what the surveyor actually ticked -- this defaulted to
@@ -1057,28 +1153,20 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         r.status = "Signed Off"
         new_data = _with_sign_off(r.data, **updates)
 
-        # Update quantum in annex_c and insurance_details if provided
-        if body_data.get("agreed_quantum") is not None:
-            try:
-                q_val = float(body_data["agreed_quantum"])
-                ac = dict(new_data.get("annex_c") or {})
-                ac["agreed_lump_sum"] = q_val
-                ac["gst_amount"] = round(q_val * 0.09, 2)
-                ac["total_with_gst"] = round(q_val * 1.09, 2)
-                new_data["annex_c"] = ac
-                ins = dict(new_data.get("insurance_details") or {})
-                ins["final_approved_cost"] = f"S${q_val:,.2f}"
-                new_data["insurance_details"] = ins
-            except (ValueError, TypeError):
-                pass
-
-        if body_data.get("turnaround_days") is not None:
-            try:
-                ac = dict(new_data.get("annex_c") or {})
-                ac["repair_days"] = int(body_data["turnaround_days"])
-                new_data["annex_c"] = ac
-            except (ValueError, TypeError):
-                pass
+        # Annex C carries the settled figures; the approved cost on the
+        # insurance details follows the lump sum. No GST: the firm's letter
+        # has none, so the figures a signature used to add are left None.
+        ac = dict(new_data.get("annex_c") or {})
+        if quantum is not None:
+            ac["agreed_lump_sum"] = quantum
+            ins = dict(new_data.get("insurance_details") or {})
+            ins["final_approved_cost"] = f"S${quantum:,.2f}"
+            new_data["insurance_details"] = ins
+        if days is not None:
+            ac["repair_days"] = days
+        ac["gst_amount"] = None
+        ac["total_with_gst"] = None
+        new_data["annex_c"] = ac
 
         if body_data.get("liability_opinion"):
             ba = dict(new_data.get("bola_assessment") or {})

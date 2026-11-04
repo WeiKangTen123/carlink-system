@@ -4,7 +4,8 @@ the dashboard (Knowledge -> Parts price history).
 
     docker exec -it carlink_api python scripts/import_past_reports.py /path/to/folder [more folders or files]
 
-A report imported again replaces its earlier lines.
+Each report's Annex A (parts) and Annex B (labour) lines are stored; a
+report imported again replaces its earlier lines of both kinds.
 """
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ def main() -> int:
                 n = import_case(db, case, f.name)
                 db.commit()
                 ok += 1
-                print(f"  {case.ref:<10} {case.make} {case.model:<10} {n:>3} lines  ({f.name})")
+                print(f"  {case.ref:<10} {case.make} {case.model:<10} {n:>3} parts  {len(case.labour):>2} labour  ({f.name})")
             except Exception as exc:
                 db.rollback()
                 failed += 1

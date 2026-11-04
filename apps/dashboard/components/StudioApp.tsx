@@ -9,14 +9,12 @@ import {
   Pencil,
   Trash2,
   Bot,
-  ShieldCheck,
   CheckCircle2,
   Lock,
   UserRound,
 } from "lucide-react";
 import { ownerLabel, personLabel, PUBLIC_CHANNEL, type ReportDetail, type DamageSummaryItem, type Owner } from "@/lib/api";
 import { deleteReportAction } from "@/app/reports/actions";
-import { signOffReportAction } from "@/app/reports/actions";
 import { PdfPreviewModal } from "@/components/PdfPreviewModal";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { CaseInspectionTab } from "@/components/CaseInspectionTab";
@@ -24,7 +22,6 @@ import { CaseFileTab } from "@/components/CaseFileTab";
 import { CaseAssessmentTab } from "@/components/CaseAssessmentTab";
 import { AssignOwnerDialog } from "@/components/AssignOwnerDialog";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
-import { useCurrentUser } from "@/components/CurrentUser";
 import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 
@@ -41,7 +38,6 @@ const TABS: { id: CaseTab; label: string; icon: React.ComponentType<{ style?: Re
 export function StudioApp({ report }: { report: ReportDetail }) {
   const d = report.data;
   const v = d.vehicle_info;
-  const user = useCurrentUser();
   const router = useRouter();
   // What this account may do here, as the API worked it out. The buttons
   // follow it; the API checks again on every call.
@@ -59,9 +55,6 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
-  const [isSignOffModalOpen, setIsSignOffModalOpen] = useState(false);
-  const [isSigningOff, setIsSigningOff] = useState(false);
-  const [signOffError, setSignOffError] = useState<string | null>(null);
 
   const isSignedOff = report.status === "Signed Off" || d.sign_off?.status === "Signed Off";
 
@@ -126,21 +119,6 @@ export function StudioApp({ report }: { report: ReportDetail }) {
     }
   };
 
-  const handleSignOff = async () => {
-    setIsSigningOff(true);
-    setSignOffError(null);
-    // Signed as the signed-in user, with their own profile (the API takes
-    // the name, licence and firm from the account, not from here).
-    const result = await signOffReportAction(report.id, { terms_accepted: true });
-    if ("error" in result) {
-      setSignOffError(result.error);
-      setIsSigningOff(false);
-      return;
-    }
-    // Same Next.js Router Cache staleness the original SignOffButton worked
-    // around -- a full reload is what actually shows the new status here.
-    window.location.reload();
-  };
 
   return (
     <div>
@@ -221,9 +199,20 @@ export function StudioApp({ report }: { report: ReportDetail }) {
             </a>
           )}
           <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={reportCode} />
+          {/* Goes to the Assessment tab rather than signing here: a sign-off
+              from this button used to record only the declaration tick, so
+              the Annex C letter printed "(to be agreed)" for the lump sum
+              and working days on a signed report. */}
           {!isSignedOff && perms.sign_off && (
-            <button type="button" className="btn-primary-modern" onClick={() => setIsSignOffModalOpen(true)}>
-              <CheckCircle2 style={{ width: 14, height: 14 }} /> Finalize & Sign Off
+            <button
+              type="button"
+              className="btn-primary-modern"
+              onClick={() => {
+                setActiveTab("assessment");
+                setAssessmentOpened(true);
+              }}
+            >
+              <CheckCircle2 style={{ width: 14, height: 14 }} /> Sign off
             </button>
           )}
           {/* Admins only for a filed case; the API refuses anyone else. */}
@@ -351,75 +340,6 @@ export function StudioApp({ report }: { report: ReportDetail }) {
         />
       )}
 
-      {/* Sign-Off Confirmation Modal */}
-      {isSignOffModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100vw",
-            height: "100vh",
-            background: "rgba(0, 0, 0, 0.8)",
-            backdropFilter: "blur(10px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 999,
-          }}
-          onClick={() => !isSigningOff && setIsSignOffModalOpen(false)}
-        >
-          <div
-            style={{
-              background: "var(--surface-card)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "16px",
-              width: "90%",
-              maxWidth: "500px",
-              padding: "24px",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-              <ShieldCheck style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />
-              <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Surveyor Digital Sign-Off</h3>
-            </div>
-            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-              By signing off, you certify that the damage items and photos for report <strong>{report.id}</strong>
-              {plate && <> ({plate})</>} have been verified. This locks the report against further edits until
-              reopened.
-            </p>
-            {user && (
-              <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-                Signing as <strong>{user.name}</strong>
-                {user.license_number ? <> · Licence {user.license_number}</> : null}
-                {user.firm_name ? <> · {user.firm_name}</> : null}
-                {(!user.license_number || user.name === user.username) && (
-                  <span style={{ display: "block", fontSize: 12, color: "var(--badge-amber-text)", marginTop: 4 }}>
-                    {user.name === user.username
-                      ? "Your profile has no full name yet, so the report will print your username."
-                      : "Your profile has no licence number, so the report will print without one."}{" "}
-                    Add it in Settings.
-                  </span>
-                )}
-              </p>
-            )}
-
-            {signOffError && (
-              <p style={{ fontSize: 12, color: "var(--danger, #ef4444)", marginBottom: 12 }}>{signOffError}</p>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button type="button" className="btn-secondary-modern" onClick={() => setIsSignOffModalOpen(false)} disabled={isSigningOff}>
-                Cancel
-              </button>
-              <button type="button" className="btn-primary-modern" onClick={handleSignOff} disabled={isSigningOff}>
-                <CheckCircle2 style={{ width: 14, height: 14 }} /> {isSigningOff ? "Signing Off..." : "Confirm & Lock"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

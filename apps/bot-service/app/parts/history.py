@@ -4,16 +4,20 @@ A finished case's Annex A says which lines a surveyor wrote for each damaged
 part -- a Honda Vezel tailgate job is the tailgate itself plus hinges,
 stopper, lock, striker, weatherstrip, emblem, inner trim board and its clips,
 and the rear windscreen moulding, seal and clips that have to come off with
-it -- and what each line actually cost after adjustment. Imported from the
-CL-xxxxx spreadsheets (Cover Page + Annex A), that becomes:
+it -- and what each line actually cost after adjustment. Its Annex B says
+which labour and spray-painting lines the surveyor wrote, and what each was
+adjusted to. Imported from the CL-xxxxx spreadsheets (Cover Page + Annex A +
+Annex B), that becomes:
 
   - suggested Annex A lines for a new case, by the parts it has damaged, for
-    the same make and model first;
+    the same make and model first (suggest), and the firm's usual labour
+    lines (suggest_labour);
   - a "usual price" for each line, from what past cases were adjusted to --
     a Singapore price source that needs no web search or scraping.
 
 Nothing here is a finding: every suggestion says how many past cases it
-comes from, and the surveyor ticks what applies.
+comes from, and the surveyor ticks what applies (app/parts/prefill.py writes
+priced Annex A rows from it, tagged prefilled, for the surveyor to check).
 """
 import hashlib
 import re
@@ -24,7 +28,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.reports.models import PastAnnexLine
+from app.reports.models import PastAnnexLine, PastLabourLine
 
 # Conditions that mean "renewed on refit" or "kept", not "damaged".
 FITTING_CONDITIONS = {"necessary", "serviceable"}
@@ -54,6 +58,16 @@ class PastLine:
 
 
 @dataclass
+class PastLabour:
+    """One Annex B line: the job as worded, the workshop's figure and the
+    adjusted one. No qty or discount -- the firm's labour sheet has none."""
+    line_no: int
+    description: str
+    workshop_est: float
+    adjusted_cost: float
+
+
+@dataclass
 class PastCase:
     ref: str
     plate: str
@@ -63,6 +77,7 @@ class PastCase:
     registered: str | None
     surveyed: str | None
     lines: list[PastLine] = field(default_factory=list)
+    labour: list[PastLabour] = field(default_factory=list)
 
 
 def _date(text: str) -> str | None:
@@ -118,6 +133,56 @@ def _sheet(sheets: dict, wanted: str) -> list[list]:
         if name.strip().lower() == wanted:
             return rows
     raise ValueError(f"no '{wanted}' sheet")
+
+
+def _label(cell) -> str:
+    return re.sub(r"\s+", " ", str(cell)).strip().lower()
+
+
+def _is_line_number(value) -> bool:
+    return bool(re.fullmatch(r"\d+(\.0)?", str(value).strip()))
+
+
+def _labour_lines(rows: list[list]) -> list[PastLabour]:
+    """The Annex B sheet's job lines: the rows between the `Item | Job
+    Description | Workshop Est. ($) | Adjusted Cost ($)` header and the
+    `TOTAL FOR LABOUR` row. The sheets wrap a long description by padding
+    it with runs of spaces, so whitespace is collapsed."""
+    header_at, cols = None, {}
+    for i, row in enumerate(rows):
+        labels = [_label(c) for c in row]
+        if any("job description" in lab for lab in labels):
+            header_at = i
+            for j, lab in enumerate(labels):
+                if "job description" in lab:
+                    cols["desc"] = j
+                elif lab == "item":
+                    cols["item"] = j
+                elif "est" in lab:
+                    cols["est"] = j
+                elif "adjusted" in lab:
+                    cols["adjusted"] = j
+            break
+    if header_at is None:
+        return []
+    number_col = cols.get("item", cols["desc"] - 1)
+    get = lambda row, key: row[cols[key]] if key in cols and cols[key] < len(row) else ""  # noqa: E731
+    out = []
+    for row in rows[header_at + 1:]:
+        text = " ".join(_label(c) for c in row if str(c).strip())
+        if text.startswith("total"):
+            break
+        description = re.sub(r"\s+", " ", str(get(row, "desc"))).strip()
+        number = row[number_col] if 0 <= number_col < len(row) else ""
+        if not description or not _is_line_number(number):
+            continue
+        out.append(PastLabour(
+            line_no=int(float(number)),
+            description=description,
+            workshop_est=_number(get(row, "est")),
+            adjusted_cost=_number(get(row, "adjusted")),
+        ))
+    return out
 
 
 def parse_report(path: Path) -> PastCase:
@@ -199,6 +264,11 @@ def parse_report(path: Path) -> PastCase:
             discount=float(disc) if isinstance(disc, (int, float)) else None,
             adjusted_cost=_number(get(row, "adjusted")),
         ))
+    # Annex B is optional: a report without one still imports its parts.
+    try:
+        case.labour = _labour_lines(_sheet(sheets, "annex b"))
+    except ValueError:
+        case.labour = []
     if not case.ref:
         case.ref = Path(path).stem
     return case
@@ -323,6 +393,25 @@ def normalise_item(item: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def normalise_labour(description: str) -> str:
+    """Wording-level key for an Annex B line: lowercase, without a leading
+    "To ", punctuation or double spaces, so "To remove, reinstall rear
+    windscreen (to FR)" and "to remove reinstall rear windscreen" are one
+    line."""
+    t = re.sub(r"\s+", " ", (description or "").lower()).strip()
+    t = re.sub(r"^to\s+", "", t)
+    t = re.sub(r"[^a-z0-9 ]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _qty_text(qty_raw: str) -> str | None:
+    """"1set" as the sheet had it; None for a plain number ("2", "1.0")."""
+    text = (qty_raw or "").strip()
+    if not text or re.fullmatch(r"\d+(\.\d+)?", text):
+        return None
+    return text[:20]
+
+
 def _with_side(item: str, side: str | None) -> str:
     """Puts the case's side on a line learnt from the other side."""
     if not side:
@@ -337,8 +426,26 @@ def _with_side(item: str, side: str | None) -> str:
 
 def import_case(db: Session, case: PastCase, source_name: str) -> int:
     """Replaces any earlier import of the same report (by its CL reference)
-    with this one. Returns the number of lines stored."""
+    with this one: its Annex A lines and its Annex B labour lines (so a
+    report imported before Annex B was read gains them on re-import).
+    Returns the number of Annex A lines stored; len(case.labour) is the
+    labour count."""
     db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == case.ref).delete()
+    db.query(PastLabourLine).filter(PastLabourLine.case_ref == case.ref).delete()
+    for job in case.labour:
+        db.add(PastLabourLine(
+            case_ref=case.ref,
+            source_file=source_name[:200],
+            plate=case.plate,
+            make=case.make,
+            model=case.model,
+            surveyed=case.surveyed,
+            line_no=job.line_no,
+            description=job.description[:500],
+            desc_key=normalise_labour(job.description),
+            workshop_est=job.workshop_est,
+            adjusted_cost=job.adjusted_cost,
+        ))
     for line in case.lines:
         db.add(PastAnnexLine(
             case_ref=case.ref,
@@ -357,6 +464,7 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
             side=side_of(line.item),
             condition=line.condition,
             qty=line.qty,
+            qty_text=_qty_text(line.qty_raw),
             workshop_est=line.workshop_est,
             discount=line.discount,
             adjusted_cost=line.adjusted_cost,
@@ -444,20 +552,33 @@ def suggest(
                 continue
             seen_in = sorted({g.case_ref for g in group})
             prices = [p for p in (_unit_price(g) for g in group) if p is not None]
+            # What the workshop asked per unit, on the lines that were paid:
+            # the W/shop Est column of a prefilled row (prefill.py). The
+            # adjusted figure used to go there and was discounted a second time.
+            ests = [round(g.workshop_est / (g.qty or 1), 2) for g in group if _unit_price(g) is not None and g.workshop_est > 0]
             qtys = [g.qty for g in group if g.qty]
             names = [g.item for g in group]
             name = max(set(names), key=names.count)
             conditions = sorted({g.condition for g in group if g.condition})
             fitting = all((g.condition or "").strip().lower() in FITTING_CONDITIONS for g in group)
+            qty = statistics.median(qtys) if qtys else 1.0
+            # "1set" when at least half the past lines were written as a
+            # set (prefill prints it that way); the unit goes on the median.
+            units = [re.sub(r"[\d.\s]", "", g.qty_text or "") for g in group if g.qty_text]
+            unit = max(set(units), key=units.count) if units and len(units) * 2 >= len(group) else ""
             out.append({
                 "name": _with_side(name, side if family in _SIDED else None),
                 "family": family,
-                "qty": statistics.median(qtys) if qtys else 1.0,
+                "qty": qty,
+                "qty_text": f"{qty:g}{unit}" if unit else None,
                 "usual_unit_price": round(statistics.median(prices), 2) if prices else None,
+                "usual_unit_est": round(statistics.median(ests), 2) if ests else None,
                 "price_from_cases": len({g.case_ref for g in group if _unit_price(g) is not None}),
                 "price_range": [min(prices), max(prices)] if len(prices) > 1 else None,
                 "cases": len(seen_in),
                 "nett": all(g.section == "nett" for g in group),
+                # Which section most past cases put it in (ties: list).
+                "nett_majority": sum(g.section == "nett" for g in group) * 2 > len(group),
                 "conditions": conditions,
                 "kind": "fitting" if fitting else "part",
                 "last_seen": max((g.surveyed or "") for g in group) or None,
@@ -495,3 +616,61 @@ def suggest(
                 wanted[fam] = None  # list each companion once
 
     return {"scope": scope_label, "cases_used": len(cases), "groups": groups, "without_history": without_history}
+
+
+def _labour_rows(pool: list[PastLabourLine], have: set[str], vehicle_label) -> list[dict]:
+    """One row per wording key: the most common wording, the median
+    adjusted cost and median workshop figure, how many cases had it."""
+    groups: dict[str, list[PastLabourLine]] = {}
+    for ln in pool:
+        if ln.desc_key and ln.desc_key not in have:
+            groups.setdefault(ln.desc_key, []).append(ln)
+    out = []
+    for group in groups.values():
+        names = [g.description for g in group]
+        # Most common wording; sorted first so a tie is decided the same
+        # way every time.
+        description = max(sorted(set(names)), key=names.count)
+        prices = [g.adjusted_cost for g in group if g.adjusted_cost and g.adjusted_cost > 0]
+        ests = [g.workshop_est for g in group if g.workshop_est and g.workshop_est > 0]
+        cases = len({g.case_ref for g in group})
+        out.append({
+            "description": description,
+            "usual_price": round(statistics.median(prices), 2) if prices else None,
+            "usual_workshop_est": round(statistics.median(ests), 2) if ests else None,
+            "cases": cases,
+            "source": f"{cases} past {vehicle_label(group)} case{'s' if cases != 1 else ''}",
+        })
+    out.sort(key=lambda s: (-s["cases"], s["description"].lower()))
+    return out
+
+
+def suggest_labour(db: Session, make: str | None, model: str | None, existing: list[str] | tuple = ()) -> dict:
+    """Annex B lines past cases wrote, with what each was usually adjusted
+    to: the same make and model first (when there is history for it), then
+    every other imported case. Lines whose wording is already in this
+    case's Annex B (`existing`) are left out, as are repeats of the first
+    group in the second. Answer: {"groups": [{"reason", "lines": [
+    {"description", "usual_price", "usual_workshop_est", "cases", "source"}
+    ]}], "cases_used"}."""
+    lines = db.query(PastLabourLine).all()
+    have = {normalise_labour(e) for e in existing if e}
+    same = [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)]
+    same_ids = {ln.id for ln in same}
+    others = [ln for ln in lines if ln.id not in same_ids]
+    groups = []
+    if same:
+        rows = _labour_rows(same, have, lambda g: f"{make} {same[0].model}")
+        if rows:
+            groups.append({"reason": f"past {make} {same[0].model} cases", "lines": rows})
+        have |= {ln.desc_key for ln in same}
+
+    def vehicles(group: list[PastLabourLine]) -> str:
+        names = sorted({" ".join(x for x in (g.make, g.model) if x) for g in group} - {""})
+        return "other-vehicle" if not names else ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
+
+    if others:
+        rows = _labour_rows(others, have, vehicles)
+        if rows:
+            groups.append({"reason": "other past cases" if same else "all imported cases", "lines": rows})
+    return {"groups": groups, "cases_used": len({ln.case_ref for ln in lines})}

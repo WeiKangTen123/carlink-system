@@ -12,6 +12,7 @@ lines, and the dashboard saves the table with PUT /annex-a.
 """
 import json
 import logging
+import re
 import statistics
 import tempfile
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 
 from app.ai import keys as ai_keys
 from app.ai.keys import AiActor, AiUnavailable
@@ -29,9 +31,9 @@ from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case,
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.reports.db import SessionLocal
-from app.reports.models import PastAnnexLine, Report
+from app.reports.models import PastAnnexLine, PastLabourLine, Report
 from app.reports.schema import AnnexAPartItem
-from app.reports.synthesize_annexes import synthesize_annexes_for_report
+from app.reports.synthesize_annexes import adjusted_cost, synthesize_annexes_for_report
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["parts"])
@@ -66,9 +68,9 @@ def _sees_price_book(user) -> bool:
 
 @router.post("/parts-history/import")
 def import_past_reports(files: list[UploadFile] = File(...), admin: CurrentUser = Depends(require_admin)) -> dict:
-    """Each file is one past report (Cover Page + Annex A). A report imported
-    again replaces its earlier lines. Files that aren't reports are listed
-    with the reason, the rest still import."""
+    """Each file is one past report (Cover Page + Annex A, and Annex B when
+    it has one). A report imported again replaces its earlier lines. Files
+    that aren't reports are listed with the reason, the rest still import."""
     if len(files) > MAX_IMPORT_FILES:
         raise HTTPException(status_code=400, detail=f"At most {MAX_IMPORT_FILES} files at a time.")
     results = []
@@ -93,7 +95,8 @@ def import_past_reports(files: list[UploadFile] = File(...), admin: CurrentUser 
                     results.append({"file": name, "error": "No Annex A lines found."})
                     continue
                 count = import_case(db, case, name)
-                results.append({"file": name, "ref": case.ref, "make": case.make, "model": case.model, "lines": count})
+                results.append({"file": name, "ref": case.ref, "make": case.make, "model": case.model, "lines": count,
+                                "labour": len(case.labour)})
             except Exception as exc:  # one bad file mustn't stop the rest
                 results.append({"file": name, "error": f"Couldn't read it as a report ({str(exc)[:120]})."})
             finally:
@@ -117,10 +120,14 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
     db = SessionLocal()
     try:
         lines = db.query(PastAnnexLine).all()
+        # Annex B lines per report, so the Knowledge page shows the import
+        # read them (the picker itself is GET /reports/{id}/labour-suggestions).
+        labour_counts = dict(db.query(PastLabourLine.case_ref, func.count()).group_by(PastLabourLine.case_ref).all())
         cases = {}
         for ln in lines:
             cases.setdefault(ln.case_ref, {"ref": ln.case_ref, "plate": ln.plate if admin else "", "make": ln.make,
                                            "model": ln.model, "surveyed": ln.surveyed, "lines": 0,
+                                           "labour": labour_counts.get(ln.case_ref, 0),
                                            "file": ln.source_file if admin else ""})
             cases[ln.case_ref]["lines"] += 1
         needle = q.strip().lower()
@@ -161,11 +168,12 @@ def delete_past_report(case_ref: str, admin: CurrentUser = Depends(require_admin
     db = SessionLocal()
     try:
         n = db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == case_ref).delete()
-        if not n:
+        labour = db.query(PastLabourLine).filter(PastLabourLine.case_ref == case_ref).delete()
+        if not n and not labour:
             raise HTTPException(status_code=404, detail="No imported report with that reference.")
         audit(db, admin, "past_report_removed", detail=case_ref)
         db.commit()
-        return {"ok": True, "lines": n}
+        return {"ok": True, "lines": n, "labour": labour}
     finally:
         db.close()
 
@@ -304,26 +312,43 @@ class AnnexASave(BaseModel):
     items: list[AnnexAPartItem] = Field(max_length=300)
 
 
+def _qty_fields(row: dict) -> None:
+    """qty_text as typed ("1set") with qty the number in it, so the sheet
+    prints the text and the statistics keep the number; a bare number typed
+    as text is just the qty."""
+    text = (row.get("qty_text") or "").strip()
+    if not text:
+        row["qty_text"] = None
+    elif re.fullmatch(r"\d+(\.\d+)?", text):
+        row["qty"], row["qty_text"] = float(text), None
+    else:
+        row["qty_text"] = text[:20]
+        m = re.match(r"\d+(\.\d+)?", text)
+        if m:
+            row["qty"] = float(m.group(0))
+    row["qty"] = float(row.get("qty") or 1.0)
+
+
 @router.put("/reports/{report_id}/annex-a")
 def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(editable_case)) -> dict:
     """Saves the surveyor's Annex A table. Adjusted costs and the Annex A/C
-    totals are worked out here, so they always agree with the rows."""
+    totals are worked out here, so they always agree with the rows. The
+    estimate is the line total as quoted: adjusted = est x (1 - discount),
+    not x qty (synthesize_annexes.adjusted_cost)."""
     db = SessionLocal()
     try:
         r = _report(db, report_id)
         if _signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
         items = []
-        for i, item in enumerate(body.items, start=1):
+        for item in body.items:
             row = item.model_dump()
             row["part_name"] = row["part_name"].strip()
             if not row["part_name"]:
                 continue
-            row["item_no"] = f"{i}.0"
-            qty = float(row.get("qty") or 1.0)
-            est = float(row.get("workshop_est") or 0.0)
-            discount = 0.0 if row.get("is_net_item") else float(row.get("discount_pct") or 0.0)
-            row["adjusted_cost"] = round(qty * est * (1.0 - discount), 2) if est else 0.0
+            row["item_no"] = f"{len(items) + 1}.0"
+            _qty_fields(row)
+            row["adjusted_cost"] = adjusted_cost(row.get("workshop_est"), row.get("discount_pct"), bool(row.get("is_net_item")))
             items.append(row)
         data = dict(r.data or {})
         data["annex_a"] = {"items": items}

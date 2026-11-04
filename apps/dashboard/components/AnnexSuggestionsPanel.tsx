@@ -168,8 +168,12 @@ export function AnnexSuggestionsPanel({
         item_no: "",
         part_name: line.name,
         condition: line.kind === "fitting" ? "Necessary" : "",
-        action: "Replace",
+        // Remarks stay empty until the surveyor writes one (the firm's
+        // reports leave most of them blank); this used to put "Replace"
+        // on every suggested line.
+        action: "",
         qty: line.qty || 1,
+        qty_text: null,
         // The workshop's estimate is the surveyor's to enter; the usual
         // price is kept beside it as a reference only.
         workshop_est: 0,
@@ -179,6 +183,7 @@ export function AnnexSuggestionsPanel({
         oem_part_number: null,
         suggested_from: source === "ai" ? "AI suggestion" : casesPhrase(line.cases, data.scope),
         usual_unit_price: line.usual_unit_price ?? null,
+        prefilled: false,
       });
     }
     onAdd(items);

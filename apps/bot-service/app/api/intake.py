@@ -30,7 +30,7 @@ from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
-from app.auth.permissions import PUBLIC_CHANNEL, in_inbox
+from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, in_inbox
 from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
@@ -41,6 +41,7 @@ from app.intake.photos import (
     remove_intake_dir,
     serialize_photo,
 )
+from app.parts.prefill import prefill_annex_a
 from app.reports import owners
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
@@ -571,6 +572,19 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     data["annex_a"] = {}
     data["annex_b"] = {}
     data = synthesize_annexes_for_report(data)
+    # Then price those rows from the firm's past cases (app/parts/prefill.py)
+    # -- for someone who may see the price book (api/parts._sees_price_book);
+    # a self-signup's case keeps unpriced rows, as its suggestions are hidden.
+    # On a session of its own: a read that fails must not touch this
+    # transaction, and the case is filed with unpriced rows rather than not.
+    if can_view_all_cases(user):
+        prices = SessionLocal()
+        try:
+            data = prefill_annex_a(prices, data)
+        except Exception:
+            logger.exception("Could not price Annex A from past cases for %s; its rows stay unpriced", report_id)
+        finally:
+            prices.close()
 
     new_paths = copy_into_case(report_id, photos)
     report.photo_paths = new_paths

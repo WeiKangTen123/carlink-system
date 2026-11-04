@@ -8180,3 +8180,178 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end P6 public reports ---- */
+
+/* ==========================================================================
+   Assessment tab in the firm's report layout (2026-11-01): Cover Page form,
+   Annex A sections, Annex B summary, the Annex C letter and the sign-off box
+   (components/CaseAssessmentTab.tsx).
+   ========================================================================== */
+.report-downloads {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cover-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px 16px;
+}
+.cover-form-section {
+  grid-column: 1 / -1;
+  margin-top: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.cover-form-section:first-child {
+  margin-top: 0;
+}
+.cover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.cover-field.wide {
+  grid-column: 1 / -1;
+}
+.cover-field input,
+.cover-field textarea {
+  width: 100%;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.cover-field input:focus,
+.cover-field textarea:focus {
+  outline: none;
+  border-color: var(--border-glow);
+}
+.cover-field input:disabled,
+.cover-field textarea:disabled {
+  opacity: 0.85;
+  cursor: default;
+}
+.cover-field-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.cover-tyre-table td input.annex-cell-input {
+  min-width: 70px;
+}
+
+/* "List Items" / "S/Nett Items" rows inside the Annex A table. */
+.annex-table tr.annex-section-row td {
+  background: var(--surface-hover);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+}
+
+/* A price that came from past cases, not from a person. */
+.annex-prefill-tag {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  border: 1px solid var(--badge-amber-border);
+  cursor: help;
+}
+
+.annex-summary {
+  margin-top: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card);
+  overflow: hidden;
+}
+.annex-summary .annex-table tbody td {
+  font-weight: 600;
+}
+
+/* The Annex C letter as printed. */
+.annex-letter {
+  max-width: 760px;
+  padding: 24px 28px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+.annex-letter p {
+  margin: 0 0 14px;
+}
+.annex-letter .letter-var {
+  font-weight: 700;
+}
+.annex-letter .letter-missing {
+  font-style: italic;
+  color: var(--badge-amber-text);
+}
+.annex-letter .letter-closing {
+  margin-top: 24px;
+}
+.annex-letter .letter-draft {
+  display: inline-block;
+  margin: 10px 0;
+  padding: 6px 12px;
+  border: 1px dashed var(--badge-amber-border);
+  border-radius: 6px;
+  font-family: var(--font-body, inherit);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--badge-amber-text);
+}
+
+.annex-c-inputs {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.signoff-box {
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--surface-card);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.signoff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 800px) {
+  .signoff-grid {
+    grid-template-columns: 1fr;
+  }
+}

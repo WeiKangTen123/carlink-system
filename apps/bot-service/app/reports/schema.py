@@ -16,6 +16,7 @@ here without checking whether that point has arrived.
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class PersonInvolved(BaseModel):
@@ -151,15 +152,45 @@ class RecommendationsInfo(BaseModel):
     preventive_action: Optional[str] = None
 
 
+class CoverPageInfo(BaseModel):
+    """The report's Cover Page as the firm's spreadsheets have it (section
+    1 Reference, 3 Static check, 5 Point of impact): what the surveyor types
+    at review. Every value is free text printed as typed ("27th February
+    2023 (10.15am)"); nothing here is read by the AI (see
+    SecurityIncidentDraft.cover_page). The vehicle and insurance facts the
+    cover page also prints stay in vehicle_info / insurance_details."""
+    date_of_request: Optional[str] = None
+    requested_by: Optional[str] = None
+    requested_by_address: Optional[str] = None
+    workshop_address: Optional[str] = None
+    date_of_survey: Optional[str] = None
+    date_of_dismantle: Optional[str] = None
+    date_before_painting: Optional[str] = None
+    date_after_painting: Optional[str] = None
+    handbrake_condition: Optional[str] = None
+    modification: Optional[str] = None
+    general_condition: Optional[str] = None
+    # Printed under 5 POINT OF IMPACT; the firm writes "See Annex(es) and
+    # Motor Accident Reports".
+    point_of_impact_note: Optional[str] = None
+
+
 class AnnexAPartItem(BaseModel):
     item_no: str = Field(default="1.0", description="Item number e.g. '1.0'")
     part_name: str = Field(description="Part description e.g. 'Rear bumper fascia'")
     # Empty, not "Deformed/cut" / "Replace": a row listed from the damage
     # found (synthesize_annexes) has no surveyor finding yet.
     condition: str = Field(default="", description="Observed condition e.g. 'Deformed/cut', 'Grazed/cracked', 'Necessary', 'Serviceable'")
+    # Printed under the Remarks column, as the firm's sheets have it.
     action: str = Field(default="", description="Action e.g. 'Replace', 'Repair', 'Straighten', 'Disallow'")
     qty: float = Field(default=1.0, description="Quantity")
-    workshop_est: float = Field(default=0.0, description="Workshop claimed estimate in SGD")
+    # "1set": printed instead of the number when set; qty stays numeric for
+    # the statistics (1set -> qty 1).
+    qty_text: Optional[str] = None
+    # The LINE TOTAL as the workshop quoted it (10 clips, est 50), not a
+    # unit price: adjusted_cost = workshop_est x (1 - discount), never
+    # multiplied by qty.
+    workshop_est: float = Field(default=0.0, description="Workshop claimed estimate in SGD (line total)")
     discount_pct: float = Field(default=0.20, description="Depreciation/trade discount (0.20 = 20%, 1.0 = 100% disallowed)")
     adjusted_cost: float = Field(default=0.0, description="Adjusted cost in SGD")
     is_net_item: bool = Field(default=False, description="True for net items (clips, sealants, plate) with 0% discount")
@@ -169,6 +200,10 @@ class AnnexAPartItem(BaseModel):
     # for the surveyor, never the workshop's estimate. Not printed.
     suggested_from: Optional[str] = None
     usual_unit_price: Optional[float] = None
+    # The estimate came from past cases (app/parts/prefill.py), not from a
+    # person: a tag in the editor, never printed, and the first rows the
+    # next prefill replaces.
+    prefilled: bool = False
 
 
 class AnnexAInfo(BaseModel):
@@ -182,7 +217,14 @@ class AnnexBLabourItem(BaseModel):
     description: str = Field(description="Job description e.g. 'To respray affected areas'")
     workshop_est: float = Field(default=0.0, description="Workshop claimed cost in SGD")
     adjusted_cost: float = Field(default=0.0, description="Surveyor adjusted cost in SGD")
+    # Kept so stored cases still validate; no longer shown or printed (the
+    # firm's Annex B has no such column).
     justification: Optional[str] = Field(default=None, description="Technical rationale")
+    # As AnnexAPartItem's: the line came from past cases' Annex B
+    # (history.suggest_labour), with what they were usually adjusted to.
+    prefilled: bool = False
+    suggested_from: Optional[str] = None
+    usual_price: Optional[float] = None
 
 
 class AnnexBInfo(BaseModel):
@@ -195,6 +237,9 @@ class AnnexCInfo(BaseModel):
     workshop_total: float = Field(default=0.0, description="Annex A + Annex B workshop total")
     adjusted_total: float = Field(default=0.0, description="Annex A + Annex B adjusted total")
     agreed_lump_sum: Optional[float] = Field(default=None, description="Recommended negotiated contract lump sum")
+    # The firm's letter has no GST line. These three stay so stored cases
+    # validate, but nothing computes or prints them any more (they are left
+    # None by synthesize_annexes and sign-off).
     gst_rate: float = Field(default=0.09, description="Singapore GST rate (9%)")
     gst_amount: Optional[float] = Field(default=None, description="GST on lump sum or adjusted total")
     total_with_gst: Optional[float] = Field(default=None, description="Total including GST")
@@ -233,6 +278,9 @@ class SignOffInfo(BaseModel):
     qualifications: Optional[str] = None
     license_number: Optional[str] = None
     firm_name: Optional[str] = None
+    # Printed under the signer's name in Annex C ("Automotive Engineer
+    # Assessor"): typed or confirmed at sign-off, never defaulted here.
+    signatory_title: Optional[str] = None
     signature_hash: Optional[str] = None
     signature_data_url: Optional[str] = None
     agreed_quantum: Optional[float] = None
@@ -321,6 +369,11 @@ class SecurityIncidentDraft(BaseModel):
     annex_a: Optional[AnnexAInfo] = Field(default_factory=AnnexAInfo)
     annex_b: Optional[AnnexBInfo] = Field(default_factory=AnnexBInfo)
     annex_c: Optional[AnnexCInfo] = Field(default_factory=AnnexCInfo)
+    # Left out of model_json_schema() on purpose: ai/extraction.py hands
+    # that schema to Gemini (minus its _NOT_MODEL_OUTPUT list), and the
+    # cover page is dates of request/survey/painting and static checks the
+    # surveyor records -- read off photos they would be invented.
+    cover_page: SkipJsonSchema[Optional[CoverPageInfo]] = Field(default_factory=CoverPageInfo)
     bola_assessment: Optional[BolaLiabilityAssessment] = Field(default_factory=BolaLiabilityAssessment)
     reported_to_authorities: bool = False
     authority_reference: Optional[str] = None

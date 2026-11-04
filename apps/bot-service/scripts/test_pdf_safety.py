@@ -92,7 +92,7 @@ html = captured[0]
 for tag in ("<iframe", "<img src=\"http", "<meta http-equiv", "<link rel", "<script>"):
     assert tag not in html, f"{tag!r} reached the page unescaped"
 assert "&lt;iframe" in html
-assert "Requested by:" in html and "WX 8888 A" in html  # the rest still renders
+assert "Requested by" in html and "WX 8888 A" in html  # the rest still renders
 ok("typed fields are escaped (iframe, img, meta refresh, link, script)")
 
 # 2. A whole hostile report renders, and nothing is fetched.

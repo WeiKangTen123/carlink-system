@@ -194,11 +194,13 @@ def main() -> int:
     assert r.status_code == 200, r.text
     a = r.json()["annex_a"]
     assert [i["item_no"] for i in a["items"]] == ["1.0", "2.0", "3.0"]
-    assert [i["adjusted_cost"] for i in a["items"]] == [1160.0, 40.0, 380.0]
-    assert a["total_adjusted_cost"] == 1580.0 and a["total_workshop_est"] == 1880.0
+    # The estimate is the line total as quoted (2 stoppers, est 25 -> 20),
+    # not a unit price: no x qty (contract 2026-11-01).
+    assert [i["adjusted_cost"] for i in a["items"]] == [1160.0, 20.0, 380.0]
+    assert a["total_adjusted_cost"] == 1560.0 and a["total_workshop_est"] == 1855.0
     saved = surveyor.get(f"/reports/{rid}").json()["data"]
     assert saved["annex_a"]["items"][0]["suggested_from"] == "2 past Honda Vezel cases"
-    assert saved["annex_c"]["adjusted_total"] == 1580.0
+    assert saved["annex_c"]["adjusted_total"] == 1560.0
     s2 = surveyor.get(f"/reports/{rid}/annex-suggestions").json()
     boot2 = next((g for g in s2["groups"] if g["part"] == "Boot Lid"), {"lines": []})
     assert not any(normalise_item(l["name"]) == "tailgate" for l in boot2["lines"])

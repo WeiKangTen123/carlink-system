@@ -15,6 +15,11 @@ import {
   getAnnexSuggestions,
   askAiAnnexSuggestions,
   saveAnnexA,
+  prefillAnnexA,
+  saveAnnexB,
+  saveAnnexC,
+  getLabourSuggestions,
+  saveCoverPage,
   listReports,
   listUsers,
   setCaseOwner,
@@ -24,10 +29,16 @@ import {
   messageForCode,
   type AnnexAInfo,
   type AnnexAPartItem,
+  type AnnexBInfo,
+  type AnnexBLabourItem,
   type AnnexCInfo,
+  type AnnexCRequest,
   type AnnexSuggestionGroup,
   type AnnexSuggestions,
   type CaseCounts,
+  type CoverPageRequest,
+  type CoverPageResponse,
+  type LabourSuggestions,
   type Owner,
   type PhotoAnalysisDraft,
   type SignOffRequest,
@@ -269,6 +280,77 @@ export async function saveAnnexAAction(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to save Annex A" };
+  }
+}
+
+/** Prices the unpriced Annex A rows from past cases and saves the table;
+ * the whole table comes back with how many rows were filled and how many
+ * still have no price. Same error handling as saveAnnexAAction. */
+export async function prefillAnnexAAction(
+  reportId: string
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; filled: number; unpriced: number } | { error: string }> {
+  try {
+    const result = await prefillAnnexA(reportId);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to fill prices from past cases" };
+  }
+}
+
+/** Annex B as saveAnnexAAction: the saved table as the API worked it out
+ * (numbering, totals, blank descriptions dropped), or the error. */
+export async function saveAnnexBAction(
+  reportId: string,
+  items: AnnexBLabourItem[]
+): Promise<{ annex_b: AnnexBInfo; annex_c: AnnexCInfo } | { error: string }> {
+  try {
+    const result = await saveAnnexB(reportId, items);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save Annex B" };
+  }
+}
+
+/** The contract lump sum and working days of the Annex C letter. */
+export async function saveAnnexCAction(reportId: string, body: AnnexCRequest): Promise<{ annex_c: AnnexCInfo } | { error: string }> {
+  try {
+    const result = await saveAnnexC(reportId, body);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save Annex C" };
+  }
+}
+
+export async function getLabourSuggestionsAction(reportId: string): Promise<LabourSuggestions | { error: string }> {
+  try {
+    return await getLabourSuggestions(reportId);
+  } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load the usual labour lines" };
+  }
+}
+
+/** The Cover Page as saved (the API merges key by key). */
+export async function saveCoverPageAction(reportId: string, body: CoverPageRequest): Promise<CoverPageResponse | { error: string }> {
+  try {
+    const result = await saveCoverPage(reportId, body);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save the cover page" };
   }
 }
 
