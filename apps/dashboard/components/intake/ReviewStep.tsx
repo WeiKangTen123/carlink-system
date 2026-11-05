@@ -1,31 +1,22 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, ArrowRight, ImagePlus, Plus, Trash2 } from "lucide-react";
-import {
-  ACCIDENT_TYPE_OPTIONS,
-  ROAD_OPTIONS,
-  TRAFFIC_OPTIONS,
-  WEATHER_OPTIONS,
-  fileUrl,
-  type DamageSummaryItem,
-  type ReportData,
-  type Taxonomy,
-  type VehicleInfo,
-} from "@/lib/api";
-import { severityClass } from "@/lib/caseFields";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ImagePlus, Plus, Trash2 } from "lucide-react";
+import { fileUrl, type DamageSummaryItem, type ReportData, type Taxonomy } from "@/lib/api";
+import { CoverPageFields } from "@/components/CoverPageFields";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
+import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
 import { DOCUMENT_KINDS, PHOTO_KIND_LABELS, photoForReference, type IntakePhoto } from "@/lib/intake";
-import { incidentTypeOptions } from "@/lib/intakeCategories";
-import { bboxStyle } from "@/lib/intakeReview";
+import { applyCoverPatch, bboxStyle } from "@/lib/intakeReview";
 import { DamagePhotoViewer, type ViewerSlide } from "./DamagePhotoViewer";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
 
-// Three.js/WebGL only exists client-side (same as CaseInspectionTab).
+// Three.js/WebGL only exists client-side (same as the case page).
 const VehicleBlueprint3D = dynamic(() => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D), {
   ssr: false,
-  loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D preview…</div>,
+  loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading the 3D model…</div>,
 });
 
 type Props = {
@@ -35,15 +26,34 @@ type Props = {
   readPhotoIds: string[];
   taxonomy: Taxonomy;
   aiSkipped: boolean;
+  /** What the AI last read for the cover fields, when the API sent it
+   * (IntakeState.ai_read / ai_read_photos): shown as "(P03)" tags beside a
+   * field that still says what the AI said. */
+  aiRead?: AiRead;
+  aiReadPhotos?: Record<string, string> | null;
   onBack: () => void;
   onNext: () => void;
 };
 
 /** A select that still shows a value outside its option list (an older or
  * unexpected AI answer) instead of silently snapping to blank. */
-function Select({ value, options, onChange, placeholder }: { value: string; options: readonly string[]; onChange: (v: string) => void; placeholder: string }) {
+function Select({
+  value,
+  options,
+  onChange,
+  placeholder,
+  className,
+  ariaLabel,
+}: {
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  placeholder: string;
+  className?: string;
+  ariaLabel?: string;
+}) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className} aria-label={ariaLabel}>
       <option value="">{placeholder}</option>
       {value && !options.includes(value) && <option value={value}>{value}</option>}
       {options.map((o) => (
@@ -64,15 +74,52 @@ type Reveal = { key: string; block: ScrollLogicalPosition; focusPart: boolean };
 
 const FLASH_MS = 2000;
 
-export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, onBack, onNext }: Props) {
+/** The tyre fields that are numbers on the draft (TyreItem.tread_depth_mm). */
+const MM_KEYS: readonly CoverFormKey[] = ["front_nearside_mm", "front_offside_mm", "rear_nearside_mm", "rear_offside_mm"];
+
+/** Whether the text in a cover field still means what the draft holds for
+ * it: the same number for a tread depth, the same trimmed text otherwise
+ * (the draft stores trimmed text, blank as null -> ""). */
+const meansStored = (key: CoverFormKey, raw: string, stored: string): boolean =>
+  MM_KEYS.includes(key) ? parseDepth(raw) === parseDepth(stored) : raw.trim() === stored;
+
+/** Step 3: the Cover Page (left, as printed) and the damaged parts as the
+ * Annex A rows they become (right), with the photo evidence beside them. */
+export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, aiRead, aiReadPhotos, onBack, onNext }: Props) {
+  const user = useCurrentUser();
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [newPart, setNewPart] = useState("");
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ViewerState | null>(null);
-  const incidentHeadingId = useId();
-  const v: VehicleInfo = data.vehicle_info || {};
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const damage = data.damage_summary || [];
+  const v = data.vehicle_info || {};
+
+  // The cover page as text, re-read from the draft on every change. The
+  // draft stores each value trimmed (tread depth as a number), so the text
+  // as typed is kept here too and shown while it still means the stored
+  // value: re-deriving alone would take a trailing space or a "7." dot
+  // away under the surveyor's cursor. Once the draft says something else
+  // (the server's copy after a read), the draft wins. Every change is
+  // written through to the draft at once (autosave sends the whole draft).
+  const derived = useMemo(() => coverFormFrom(data), [data]);
+  const [typed, setTyped] = useState<Partial<CoverForm>>({});
+  const cover = useMemo(() => {
+    const c = { ...derived };
+    for (const [k, raw] of Object.entries(typed) as [CoverFormKey, string | undefined][]) {
+      if (raw !== undefined && meansStored(k, raw, derived[k])) c[k] = raw;
+    }
+    return c;
+  }, [derived, typed]);
+  const patchCover = (patch: Partial<CoverForm>) => {
+    setTyped((prev) => ({ ...prev, ...patch }));
+    onChange((d) => applyCoverPatch(d, patch));
+  };
+  // Our Ref is the firm's file number: the API refuses a change from anyone
+  // else (403), which would leave autosave stuck on "Not saved -- retrying".
+  const ourRefEditable = isAdmin(user) || Boolean(user?.may_sign_off);
+  const ai = useMemo(() => aiReadFrom(aiRead, aiReadPhotos), [aiRead, aiReadPhotos]);
 
   // Client-only row keys, so editing or removing an item never remounts a
   // different row (an index key shifts every row below a removed one). Kept
@@ -103,13 +150,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     return unique;
   });
 
-  // A non-motor category the draft held stays on screen after being
-  // unticked, so the surveyor can tick it back.
-  const heldCategories = useRef<string[]>([]);
-  for (const c of data.category || []) if (!heldCategories.current.includes(c)) heldCategories.current.push(c);
-  const incidentTypes = incidentTypeOptions(heldCategories.current);
-
-  const rowEls = useRef(new Map<string, HTMLDivElement>());
+  const rowEls = useRef(new Map<string, HTMLTableRowElement>());
   const pendingReveal = useRef<Reveal | null>(null);
   const flashTimer = useRef<number | undefined>(undefined);
 
@@ -119,7 +160,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     if (!row) return false;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block });
-    if (focusPart) row.querySelector<HTMLSelectElement>(".intake-damage-fields select")?.focus({ preventScroll: true });
+    if (focusPart) row.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true });
     setFlashKey(key);
     window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => setFlashKey(null), FLASH_MS);
@@ -138,16 +179,20 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     () => photos.filter((p) => readPhotoIds.includes(p.id) && p.kind && DOCUMENT_KINDS.includes(p.kind)),
     [photos, readPhotoIds]
   );
-  const lowConfidence = damage.filter((d) => d.ai_confidence === "Low" && !d.human_verified).length;
+  const checked = damage.filter((d) => d.human_verified).length;
   const vehicleName = [v.make, v.model].filter(Boolean).join(" ");
 
-  const set = (patch: Partial<ReportData>) => onChange((d) => ({ ...d, ...patch }));
-  const setVehicle = (patch: Partial<VehicleInfo>) => onChange((d) => ({ ...d, vehicle_info: { ...(d.vehicle_info || {}), ...patch } }));
   const setItem = (index: number, patch: Partial<DamageSummaryItem>) =>
     onChange((d) => ({
       ...d,
       // Any edit counts as the surveyor confirming the item.
       damage_summary: (d.damage_summary || []).map((it, i) => (i === index ? carryKey(it, { ...it, ...patch, human_verified: true }) : it)),
+    }));
+  /** The Verified tick itself: the one edit that may also untick. */
+  const setVerified = (index: number, verified: boolean) =>
+    onChange((d) => ({
+      ...d,
+      damage_summary: (d.damage_summary || []).map((it, i) => (i === index ? carryKey(it, { ...it, human_verified: verified }) : it)),
     }));
   const removeItem = (index: number) => {
     setHighlighted(null);
@@ -163,7 +208,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     setNewPart("");
   };
   /** "Add as damage" from Photos by part. An area-only group can't say which
-   * part it shows, so that item opens with its part select focused. */
+   * part it shows, so that row opens with its part select focused. */
   const addFromPhotos = (part: string, photoId: string) =>
     pushItem(
       {
@@ -184,13 +229,8 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     if (rowKeys[index]) pendingReveal.current = { key: rowKeys[index], block: "center", focusPart: false };
     setItemPhoto(index, photoId);
   };
-  const toggleCategory = (c: string) =>
-    onChange((d) => {
-      const cats = new Set(d.category || []);
-      if (cats.has(c)) cats.delete(c);
-      else cats.add(c);
-      return { ...d, category: Array.from(cats) };
-    });
+  const setBodyType = (bodyType: string) => onChange((d) => ({ ...d, vehicle_info: { ...(d.vehicle_info || {}), body_type: bodyType || null } }));
+  const setDescription = (description: string) => onChange((d) => ({ ...d, description }));
 
   const pickerIndex = pickerFor ? rowKeys.indexOf(pickerFor) : -1;
   const pickerItem = pickerIndex >= 0 ? damage[pickerIndex] : null;
@@ -213,24 +253,13 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     viewerIndex = viewerSlides.findIndex((s) => s.key === viewer.id);
   }
 
-  const vehicleField = (label: string, key: keyof VehicleInfo, placeholder = "") => (
-    <label>
-      {label}
-      <input
-        type="text"
-        placeholder={placeholder}
-        value={(v[key] as string | null | undefined) ?? ""}
-        onChange={(e) => setVehicle({ [key]: e.target.value } as Partial<VehicleInfo>)}
-      />
-    </label>
-  );
-
   return (
     <div className="intake-review-layout">
       <div className="intake-col">
         <section className="card intake-panel">
           <div className="intake-panel-head">
-            <h2>Vehicle</h2>
+            <h2>Cover page</h2>
+            <span className="intake-muted">As printed. Anything left blank prints as &quot;Not recorded&quot;.</span>
             {aiSkipped && <span className="intake-chip warn">Filled in by hand</span>}
           </div>
           {sources.length > 0 && (
@@ -245,169 +274,189 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
               ))}
             </div>
           )}
-          <div className="intake-field-grid">
-            {vehicleField("Plate number", "plate_number", "e.g. SLK 3063 Z")}
-            {vehicleField("Make", "make", "e.g. Honda")}
-            {vehicleField("Model", "model", "e.g. Vezel 1.5X")}
-            {vehicleField("Year", "year")}
-            {vehicleField("VIN / Chassis no.", "vin", "From the log card")}
-            {vehicleField("Engine no.", "engine_number")}
-            {vehicleField("Colour", "color")}
-            {vehicleField("Odometer", "odometer_reading", "e.g. 015,287 km")}
-            {vehicleField("Registration date", "date_of_registration")}
-            <label>
-              Body type
-              <Select value={v.body_type ?? ""} options={taxonomy.body_types} placeholder="Auto from make/model" onChange={(val) => setVehicle({ body_type: val || null })} />
-            </label>
-          </div>
+          <CoverPageFields
+            value={cover}
+            onChange={patchCover}
+            disabled={false}
+            ourRefEditable={ourRefEditable}
+            aiRead={ai.tags}
+            aiValues={ai.values}
+            showUsualValues
+          />
         </section>
 
         <section className="card intake-panel">
           <div className="intake-panel-head">
-            <h2>Incident</h2>
+            <h2>
+              <button type="button" className="rv-collapse" aria-expanded={summaryOpen} onClick={() => setSummaryOpen((o) => !o)}>
+                {summaryOpen ? <ChevronDown style={{ width: 16, height: 16 }} /> : <ChevronRight style={{ width: 16, height: 16 }} />}
+                Incident summary
+              </button>
+            </h2>
+            <span className="intake-muted">{aiSkipped ? "Shown on the case page, not printed" : "AI draft; shown on the case page, not printed"}</span>
           </div>
-          <div className="intake-field-grid">
-            <label>
-              Date &amp; time
-              <input type="text" placeholder="e.g. 2026-10-18 08:40" value={data.incident_datetime ?? ""} onChange={(e) => set({ incident_datetime: e.target.value })} />
+          {summaryOpen && (
+            <label className="intake-field-wide">
+              <textarea rows={5} value={data.description ?? ""} onChange={(e) => setDescription(e.target.value)} placeholder="What happened" />
             </label>
-            <label>
-              Location
-              <input type="text" placeholder="e.g. PIE exit 12" value={data.location ?? ""} onChange={(e) => set({ location: e.target.value })} />
-            </label>
-            <label>
-              Accident type
-              <Select value={data.accident_type ?? ""} options={ACCIDENT_TYPE_OPTIONS} placeholder="Select…" onChange={(val) => set({ accident_type: val || null })} />
-            </label>
-            <label>
-              Overall severity
-              <Select value={data.severity_level ?? ""} options={taxonomy.severities} placeholder="Not assessed" onChange={(val) => set({ severity_level: val || null })} />
-            </label>
-            <label>
-              Point of impact
-              <input type="text" placeholder="e.g. Rear centre" value={v.point_of_impact ?? ""} onChange={(e) => setVehicle({ point_of_impact: e.target.value })} />
-            </label>
-            <label>
-              Weather
-              <Select value={data.weather_condition ?? ""} options={WEATHER_OPTIONS} placeholder="Select…" onChange={(val) => set({ weather_condition: val || null })} />
-            </label>
-            <label>
-              Road
-              <Select value={data.road_condition ?? ""} options={ROAD_OPTIONS} placeholder="Select…" onChange={(val) => set({ road_condition: val || null })} />
-            </label>
-            <label>
-              Traffic
-              <Select value={data.traffic_condition ?? ""} options={TRAFFIC_OPTIONS} placeholder="Select…" onChange={(val) => set({ traffic_condition: val || null })} />
-            </label>
-          </div>
-          <label className="intake-field-wide">
-            Description <span className="intake-optional">{aiSkipped ? "" : "(AI draft — edit freely)"}</span>
-            <textarea rows={5} value={data.description ?? ""} onChange={(e) => set({ description: e.target.value })} placeholder="What happened, in loss-adjuster English." />
-          </label>
-          <div role="group" aria-labelledby={incidentHeadingId}>
-            <div id={incidentHeadingId} className="rv-subhead">
-              Incident type
-            </div>
-            <div className="intake-category-row">
-              {incidentTypes.map((c) => (
-                <label key={c.value} className="checkbox-label" title={c.motor ? undefined : "From the AI draft — not one of the motor incident types"}>
-                  <input type="checkbox" checked={(data.category || []).includes(c.value)} onChange={() => toggleCategory(c.value)} /> {c.label}
-                </label>
-              ))}
-            </div>
-          </div>
+          )}
         </section>
       </div>
 
       <div className="intake-col">
         <section className="card intake-panel">
           <div className="intake-panel-head">
-            <h2>Damage found ({damage.length})</h2>
-            {lowConfidence > 0 && (
-              <span className="intake-chip warn">
-                <AlertTriangle style={{ width: 12, height: 12 }} /> {lowConfidence} low-confidence item{lowConfidence === 1 ? "" : "s"} to check
+            <h2>Damaged parts ({damage.length})</h2>
+            <span className="intake-muted">These become the Annex A rows, unpriced.</span>
+            {damage.length > 0 && (
+              <span className={`intake-chip ${checked === damage.length ? "ok" : ""}`}>
+                {checked} of {damage.length} checked
               </span>
             )}
           </div>
-          {damage.length === 0 && <div className="intake-empty">No damage recorded yet. Add the damaged parts below.</div>}
-          <div className="intake-damage-list">
-            {damage.map((item, i) => {
-              const key = rowKeys[i];
-              const photo = photoForReference(item.photo_reference, photos);
-              const box = bboxStyle(item.bbox_2d);
-              const partName = item.part || "this item";
-              return (
-                <div
-                  key={key}
-                  ref={(el) => {
-                    if (el) rowEls.current.set(key, el);
-                    else rowEls.current.delete(key);
-                  }}
-                  className={`intake-damage-item ${highlighted === i ? "highlighted" : ""} ${flashKey === key ? "rv-flash" : ""}`}
-                  onMouseEnter={() => setHighlighted(i)}
-                >
-                  <div className="intake-damage-photo">
-                    {photo ? (
-                      <>
-                        <button
-                          type="button"
-                          className="rv-photo-btn"
-                          onClick={() => setViewer({ kind: "damage", key })}
-                          title={photo.note ? `${photo.label} — ${photo.note}` : `View ${photo.label}`}
-                          aria-label={`View ${photo.label} for ${partName}`}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={fileUrl(photo.thumb_url)} alt="" />
-                          {box && <span className="intake-bbox" style={box} />}
-                          <span className="intake-tile-label">{photo.label}</span>
-                        </button>
-                        <div className="rv-photo-actions">
-                          <button type="button" className="intake-link" onClick={() => setPickerFor(key)} aria-label={`Change the photo for ${partName}`}>
-                            Change
+          {damage.length === 0 ? (
+            <div className="intake-empty">No damaged parts yet. Add them below, or from Photos by part.</div>
+          ) : (
+            <div className="annex-table-wrapper">
+              <table className="annex-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 44 }}>Item</th>
+                    <th>Vehicle Parts Description</th>
+                    <th>Condition</th>
+                    <th style={{ width: 110 }}>Photo</th>
+                    <th>Severity*</th>
+                    <th style={{ width: 70 }}>Verified</th>
+                    <th style={{ width: 36 }} aria-label="Remove" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {damage.map((item, i) => {
+                    const key = rowKeys[i];
+                    const photo = photoForReference(item.photo_reference, photos);
+                    const box = bboxStyle(item.bbox_2d);
+                    const partName = item.part || "this item";
+                    // The AI's own doubt, only until the surveyor checks the row.
+                    const unsure = item.ai_confidence === "Low" && !item.human_verified;
+                    const lit = highlighted === i || flashKey === key;
+                    return (
+                      <tr
+                        key={key}
+                        ref={(el) => {
+                          if (el) rowEls.current.set(key, el);
+                          else rowEls.current.delete(key);
+                        }}
+                        onMouseEnter={() => setHighlighted(i)}
+                        // The 3D hotspot <-> row coupling: the hovered or
+                        // clicked row lights up (globals.css has no rule for
+                        // a table row here, hence inline).
+                        style={lit ? { background: "var(--surface-hover)", outline: "2px solid var(--accent-primary)", outlineOffset: -2 } : undefined}
+                      >
+                        <td style={{ fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
+                          {i + 1}
+                          {unsure && (
+                            <AlertTriangle
+                              style={{ width: 12, height: 12, marginLeft: 4, verticalAlign: "-2px", color: "var(--badge-amber-text, #b45309)" }}
+                              aria-label="The AI was unsure about this part"
+                            >
+                              <title>The AI was unsure about this part. Check it against the photo, then tick Verified.</title>
+                            </AlertTriangle>
+                          )}
+                        </td>
+                        <td>
+                          <Select
+                            className="annex-cell-input"
+                            value={item.part}
+                            options={taxonomy.parts}
+                            placeholder="Choose the part…"
+                            ariaLabel={`Vehicle parts description, item ${i + 1}`}
+                            onChange={(val) => setItem(i, { part: val })}
+                          />
+                        </td>
+                        <td>
+                          <Select
+                            className="annex-cell-input"
+                            value={item.damage_type ?? ""}
+                            options={taxonomy.damage_types}
+                            placeholder=""
+                            ariaLabel={`Condition of ${partName}`}
+                            onChange={(val) => setItem(i, { damage_type: val || null })}
+                          />
+                        </td>
+                        <td>
+                          <div className="intake-damage-photo" style={{ width: 88 }}>
+                            {photo ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="rv-photo-btn"
+                                  onClick={() => setViewer({ kind: "damage", key })}
+                                  title={photo.note ? `${photo.label} — ${photo.note}` : `View ${photo.label}`}
+                                  aria-label={`View ${photo.label} for ${partName}`}
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={fileUrl(photo.thumb_url)} alt="" />
+                                  {box && <span className="intake-bbox" style={box} />}
+                                  <span className="intake-tile-label">{photo.label}</span>
+                                </button>
+                                <div className="rv-photo-actions">
+                                  <button type="button" className="intake-link" onClick={() => setPickerFor(key)} aria-label={`Change the photo for ${partName}`}>
+                                    Change
+                                  </button>
+                                  <button type="button" className="intake-link" onClick={() => setItemPhoto(i, null)} aria-label={`Unlink the photo from ${partName}`}>
+                                    Unlink
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <button type="button" className="intake-damage-nophoto rv-attach-btn" onClick={() => setPickerFor(key)}>
+                                <ImagePlus style={{ width: 16, height: 16 }} />
+                                Attach
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <Select
+                            className="annex-cell-input"
+                            value={item.severity ?? ""}
+                            options={taxonomy.severities}
+                            placeholder=""
+                            ariaLabel={`Severity of ${partName} (not printed)`}
+                            onChange={(val) => setItem(i, { severity: val || null })}
+                          />
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(item.human_verified)}
+                            onChange={(e) => setVerified(i, e.target.checked)}
+                            aria-label={`${partName} checked`}
+                            title={item.human_verified ? "Checked by you" : "Tick once you have checked this row against the photo"}
+                          />
+                        </td>
+                        <td>
+                          <button type="button" className="annex-row-remove" onClick={() => removeItem(i)} aria-label={`Remove ${partName}`} title="Remove">
+                            <Trash2 style={{ width: 14, height: 14 }} />
                           </button>
-                          <button type="button" className="intake-link" onClick={() => setItemPhoto(i, null)} aria-label={`Remove the photo from ${partName}`}>
-                            Remove
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <button type="button" className="intake-damage-nophoto rv-attach-btn" onClick={() => setPickerFor(key)}>
-                        <ImagePlus style={{ width: 16, height: 16 }} />
-                        Attach photo
-                      </button>
-                    )}
-                  </div>
-                  <div className="intake-damage-fields">
-                    <Select value={item.part} options={taxonomy.parts} placeholder="Part…" onChange={(val) => setItem(i, { part: val })} />
-                    <div className="intake-damage-row">
-                      <Select value={item.damage_type ?? ""} options={taxonomy.damage_types} placeholder="Damage type…" onChange={(val) => setItem(i, { damage_type: val || null })} />
-                      <Select value={item.severity ?? ""} options={taxonomy.severities} placeholder="Severity…" onChange={(val) => setItem(i, { severity: val || null })} />
-                    </div>
-                    <div className="intake-damage-meta">
-                      {!item.part && <span className="intake-chip warn">Choose the part</span>}
-                      <span className={`chip-severity ${severityClass(item.severity)}`}>{item.severity || "Unrated"}</span>
-                      {item.ai_confidence && !item.human_verified && <span className={`intake-chip ${item.ai_confidence === "Low" ? "warn" : ""}`}>AI confidence: {item.ai_confidence}</span>}
-                      {item.human_verified && <span className="intake-chip ok">Checked</span>}
-                      {!item.human_verified && (
-                        <button type="button" className="intake-link" onClick={() => setItem(i, {})}>
-                          Mark checked
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <button type="button" className="intake-icon-btn danger" onClick={() => removeItem(i)} aria-label={`Remove ${partName}`}>
-                    <Trash2 style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
           <div className="intake-add-row">
-            <Select value={newPart} options={taxonomy.parts} placeholder="Add a damaged part…" onChange={setNewPart} />
+            <Select value={newPart} options={taxonomy.parts} placeholder="Add a damaged part…" ariaLabel="Add a damaged part" onChange={setNewPart} />
             <button type="button" className="btn-secondary-modern" onClick={addItem} disabled={!newPart}>
               <Plus style={{ width: 14, height: 14 }} /> Add
             </button>
           </div>
+          <p className="intake-muted" style={{ margin: 0 }}>
+            Remarks, Qty and prices are filled in Annex A after filing.
+            <br />* Severity is kept for the case list and analytics; it is not printed.
+          </p>
         </section>
 
         <PhotosByPart
@@ -421,8 +470,13 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
 
         <section className="card intake-panel">
           <div className="intake-panel-head">
-            <h2>3D preview</h2>
+            <h2>Vehicle model</h2>
             <span className="intake-muted">{vehicleName || "Vehicle"}</span>
+            {/* The body type only picks the 3D model; it is not printed. */}
+            <label className="intake-muted" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Body type
+              <Select value={v.body_type ?? ""} options={taxonomy.body_types} placeholder="Auto from make/model" onChange={setBodyType} />
+            </label>
           </div>
           <VehicleBlueprint3D
             damageEntries={damage}
@@ -442,7 +496,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
           <ArrowLeft style={{ width: 14, height: 14 }} /> Back
         </button>
         <button type="button" className="btn-primary-modern" onClick={onNext}>
-          Next: parties &amp; claim <ArrowRight style={{ width: 14, height: 14 }} />
+          Next: parties <ArrowRight style={{ width: 14, height: 14 }} />
         </button>
       </div>
 
@@ -465,7 +519,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
         <DamagePhotoViewer
           slides={viewerSlides}
           index={viewerIndex}
-          title={viewer.kind === "damage" ? "Damage photos" : `Photos by part · ${viewer.title}`}
+          title={viewer.kind === "damage" ? "Damaged parts" : `Photos by part · ${viewer.title}`}
           onNavigate={(i) => {
             const next = viewerSlides[i];
             if (!next) return;

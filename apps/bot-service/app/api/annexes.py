@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api import limits
-from app.api.parts import _report, _sees_price_book, _signed_off
+from app.api.parts import _report, _sees_price_book, _signed_off, price_book_for_case
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import editable_case, not_allowed, visible_case
 from app.parts.history import suggest_labour
@@ -225,7 +225,9 @@ def prefill_annex_a_route(report_id: str, user: CurrentUser = Depends(editable_c
     db = SessionLocal()
     try:
         r = _editable(db, report_id)
-        if not _sees_price_book(user):
+        # By the case, not only the presser: an admin pricing a self-signup's
+        # case would put the price book into a case whose owner can't see it.
+        if not price_book_for_case(db, r, user):
             raise not_allowed(PRICE_BOOK_ONLY)
         data = prefill_annex_a(db, r.data or {})
         r.data = data

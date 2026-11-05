@@ -97,7 +97,11 @@ export function PdfPreviewModal({
   const viewUrl = pdfUrl ? (pdfUrl.startsWith("http") ? pdfUrl : `${API_BASE_URL}${pdfUrl}`) : fetchedUrl;
   // The PDF already fetched for the preview, so Download doesn't ask again.
   const downloadUrl = fetchedUrl ?? pdfDownloadUrl(reportId);
-  const fileName = `Car_Incident_Report_${reportCode}.pdf`;
+  // Named as the API names its downloads (main.py _report_filename): "<Our
+  // Ref> <plate>.pdf", else "<plate>.pdf", else "report.pdf" -- the caller
+  // passes that text as reportCode; never a generated CIR- or id code.
+  // Characters a file name can't carry become "-", spaces are kept.
+  const fileName = `${reportCode.replace(/[\\/:*?"<>|\x00-\x1f]+/g, "-").replace(/^[\s.]+|[\s.]+$/g, "") || "report"}.pdf`;
 
   return (
     <>
@@ -119,7 +123,7 @@ export function PdfPreviewModal({
             }}
           >
             <FileText style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-            <span>Preview & Download PDF</span>
+            <span>Preview PDF</span>
           </button>
         )
       )}
@@ -157,7 +161,7 @@ export function PdfPreviewModal({
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <FileText style={{ width: 20, height: 20, color: "var(--accent-primary)" }} />
               <span style={{ fontSize: 17, fontWeight: 700 }}>
-                Report Document Preview ({reportCode})
+                Report preview{reportCode ? ` — ${reportCode}` : ""}
               </span>
               <span
                 style={{
@@ -168,7 +172,7 @@ export function PdfPreviewModal({
                   color: "#e2e8f0",
                 }}
               >
-                {wasAutoOpened ? "Generated PDF Document" : "Official Surveyor Draft"}
+                {wasAutoOpened ? "Just generated" : "As last saved"}
               </span>
             </div>
 

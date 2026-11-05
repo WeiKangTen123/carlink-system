@@ -15,6 +15,7 @@ which couldn't take a real case: the four sample cases are 41-78 photos and
 
 The Telegram/WhatsApp bots and the edit form keep using draft_report directly.
 """
+import copy
 import hashlib
 import logging
 from pathlib import Path
@@ -30,7 +31,7 @@ from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
-from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, in_inbox
+from app.auth.permissions import PUBLIC_CHANNEL, in_inbox
 from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
@@ -41,12 +42,11 @@ from app.intake.photos import (
     remove_intake_dir,
     serialize_photo,
 )
-from app.parts.prefill import prefill_annex_a
 from app.reports import owners
 from app.reports.db import SessionLocal
+from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
-from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import generate_preview, generate_thumbnail, report_pdf_path
@@ -154,10 +154,19 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         )
         error_code = error_by = None
     photos = ordered_photos(db, report.id)
+    # The AI's own values for the cover fields and the sorted photo each
+    # was read from, so the wizard's cover page can tag them "(P03)";
+    # null / {} before a read. From IntakeSession.ai_draft alone (never a
+    # public sender's details), like GET /reports/{id} after filing.
+    ai_read, ai_read_photos = ai_read_for(
+        session.ai_draft, [{"label": photo_label(i), "kind": p.kind} for i, p in enumerate(photos) if not p.excluded]
+    )
     return {
         "id": report.id,
         "status": report.status,
         "created_at": iso_utc(report.created_at),
+        "ai_read": ai_read,
+        "ai_read_photos": ai_read_photos,
         "stage": stage,
         "progress": {"done": session.progress_done, "total": session.progress_total},
         "stage_started_at": iso_utc(session.stage_started_at) if session.stage_started_at else None,
@@ -542,11 +551,30 @@ def _render_case_pdf(report_id: str, user: CurrentUser) -> None:
         db.close()
 
 
+def _with_final_labels(ai_draft: dict | None, index_of: dict) -> dict | None:
+    """The AI's draft with its "@<photo id>" references (pipeline.py keeps
+    them so until the order is fixed) turned into the case's P-numbers,
+    with the same map the data gets -- the IntakePhoto rows are deleted at
+    filing, so "@id" would point at nothing."""
+    if not ai_draft:
+        return ai_draft
+    out = copy.deepcopy(ai_draft)
+    for item in out.get("damage_summary") or []:
+        ref = str(item.get("photo_reference") or "")
+        if ref.startswith("@"):
+            index = index_of.get(ref[1:])
+            item["photo_reference"] = photo_label(index) if index is not None else None
+            if index is None:
+                item["bbox_2d"] = None
+    return out
+
+
 def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: CurrentUser) -> None:
     report = db.get(Report, report_id)
     session = db.get(IntakeSession, report_id)
     photos = [p for p in ordered_photos(db, report_id) if Path(p.path).exists()]
     index_of = {p.id: i for i, p in enumerate(photos)}
+    ai_draft = _with_final_labels(session.ai_draft, index_of)
 
     draft = body.data
     if draft.vehicle_info:
@@ -564,31 +592,24 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         draft.damaged_parts = [item.part for item in draft.damage_summary]
 
     data = draft.model_dump()
-    # A new case is unsigned, whatever the request carried (main.blank_sign_off).
-    data["sign_off"] = SignOffInfo().model_dump()
-    # Annex A/B are only synthesized when empty, so the ones drafted from
-    # the AI's first damage list would otherwise survive the surveyor
-    # changing that list at review. Rebuild them from the confirmed one.
-    data["annex_a"] = {}
-    data["annex_b"] = {}
-    data = synthesize_annexes_for_report(data)
-    # Then price those rows from the firm's past cases (app/parts/prefill.py)
-    # -- for someone who may see the price book (api/parts._sees_price_book);
-    # a self-signup's case keeps unpriced rows, as its suggestions are hidden.
-    # On a session of its own: a read that fails must not touch this
-    # transaction, and the case is filed with unpriced rows rather than not.
-    if can_view_all_cases(user):
-        prices = SessionLocal()
-        try:
-            data = prefill_annex_a(prices, data)
-        except Exception:
-            logger.exception("Could not price Annex A from past cases for %s; its rows stay unpriced", report_id)
-        finally:
-            prices.close()
+    # The filing step every channel shares (app/reports/filing.py): sign-off
+    # blank, annexes rebuilt from the confirmed damage list and Annex A
+    # priced for someone who may see the price book, photo_index from the
+    # sort step (same order as `photos`, so P-numbers line up).
+    # The owner may be someone else when an admin finishes their draft:
+    # then the price book goes in only if the owner may see it too.
+    owner = db.get(User, report.owner_id) if report.owner_id and report.owner_id != user.id else None
+    data = file_case_data(
+        db, data, user, ai_draft=ai_draft,
+        photo_kinds=[{key: getattr(p, key) for key in PHOTO_INDEX_KEYS} for p in photos],
+        owner=owner, report_id=report_id,
+    )
 
     new_paths = copy_into_case(report_id, photos)
     report.photo_paths = new_paths
     report.data = data
+    # What the AI said, kept apart from the surveyor's version (ai_read).
+    report.ai_draft = ai_draft
     report.status = "confirmed"
     report.pdf_path = None
     db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()

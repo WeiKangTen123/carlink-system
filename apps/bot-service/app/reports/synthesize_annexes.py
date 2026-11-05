@@ -38,13 +38,19 @@ def adjusted_cost(workshop_est, discount_pct, is_net_item: bool = False) -> floa
     return round(est * (1.0 - discount), 2)
 
 
-def _annex_a_rows(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _annex_a_rows(data: Dict[str, Any], scaffold: bool = True) -> List[Dict[str, Any]]:
     items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or [])]
-    if items:
+    if items or not scaffold:
         return items
+    # A part the surveyor dismissed (DELETE /damage-items) gets no row back,
+    # even when the table is otherwise empty.
+    from app.parts.history import canonical_part
+
+    dismissed = {canonical_part(p) or p.strip() for p in (data.get("dismissed_parts") or []) if p}
     damage = [it for it in (data.get("damage_summary") or []) if it.get("part")]
     if not damage:
         damage = [{"part": p} for p in (data.get("damaged_parts") or []) if p]
+    damage = [it for it in damage if (canonical_part(it["part"]) or str(it["part"]).strip()) not in dismissed]
     return [
         {
             "item_no": f"{i}.0",
@@ -61,15 +67,22 @@ def _annex_a_rows(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             "suggested_from": None,
             "usual_unit_price": None,
             "prefilled": False,
+            # So a later sync (prefill.sync_annex_a) knows the row is the
+            # machine's and which damaged part it stands for.
+            "origin": "detection",
+            "source_part": it["part"],
+            "stale": False,
         }
         for i, it in enumerate(damage, start=1)
     ]
 
 
-def synthesize_annexes_for_report(data: Dict[str, Any]) -> Dict[str, Any]:
+def synthesize_annexes_for_report(data: Dict[str, Any], *, scaffold_annex_a: bool = True) -> Dict[str, Any]:
+    """scaffold_annex_a=False: the caller (prefill.sync_annex_a) has already
+    decided the rows, so an empty table stays empty."""
     data = dict(data)
 
-    items_a = _annex_a_rows(data)
+    items_a = _annex_a_rows(data, scaffold=scaffold_annex_a)
     for row in items_a:
         # Always from the estimate, so a row saved under the old qty rule
         # comes right the next time its case is touched.

@@ -808,6 +808,13 @@ def before_take() -> None:
     check(r.status_code == 403, "an admin's POST /intake/{id}/finalize -> 403", brief(r))
     r = W.ada.c.post(f"/intake/{rid}/photos", files={"file": ("x.jpg", _photo_bytes("x"), "image/jpeg")})
     check(r.status_code == 403, "an admin's photo upload -> 403", brief(r))
+    # The damage-item routes of the case page's tab 1 (2026-11-04) take the
+    # same editable_case gate, so an untaken report is no one's to edit.
+    for method, path, kw in (("patch", "/damage-items/0", {"json": {"human_verified": True}}),
+                             ("post", "/damage-items", {"json": {"part": "Rear Bumper"}}),
+                             ("delete", "/damage-items/0", {})):
+        r = W.ada.c.request(method, f"/reports/{rid}{path}", **kw)
+        check(r.status_code == 403 and code_of(r) == "not_allowed", f"an admin's {method.upper()} /reports/{{id}}{path} -> 403 not_allowed", brief(r))
     r = W.ada.c.delete(f"/reports/{rid}")
     check(r.status_code == 403 and code_of(r) == "not_allowed" and "Discard" in jd(r).get("detail", ""),
           "an admin's DELETE /reports/{id} -> 403 (use Discard)", brief(r))

@@ -37,7 +37,7 @@ from app.api.ai_keys import router as ai_keys_router
 from app.api.annexes import router as annexes_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
-from app.api.parts import router as parts_router
+from app.api.parts import price_book_for_case, router as parts_router
 from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
 from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
@@ -61,6 +61,7 @@ from app.auth.permissions import (
     can_delete_case,
     can_reopen,
     can_sign_off,
+    can_view_all_cases,
     in_inbox,
     is_public,
     is_staff,
@@ -71,7 +72,11 @@ from app.config import settings
 from app.intake import public
 from app.intake.photos import remove_intake_dir
 from app.reports import owners
+from app.parts.history import canonical_part
+from app.parts.prefill import sync_annex_a
 from app.reports.db import SessionLocal, init_db
+from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
+from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, User, gen_id, iso_utc
 from app.reports.taxonomy import (
@@ -82,7 +87,7 @@ from app.reports.taxonomy import (
     MODEL_BODY_TYPES,
     body_type_for,
 )
-from app.reports.schema import SecurityIncidentDraft, SignOffInfo
+from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft, SignOffInfo
 from app.rendering.renderer import RenderBusy, render_pdf
 from app.storage.files import (
     generate_preview,
@@ -361,6 +366,11 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
                 "reported_to_police": police_report.get("reported_to_police"),
                 "owner": owners.owner_dict(owner_rows.get(r.owner_id)),
                 "public_reference": references.get(r.id),
+                # Our Ref (None until staff issue one) and who asked for the
+                # report, as the cover page records them -- from the case
+                # data only, never from a public sender's details.
+                "report_id": data.get("report_id") or None,
+                "requested_by": (data.get("cover_page") or {}).get("requested_by") or None,
             })
         return result
     finally:
@@ -395,6 +405,8 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
                 "photo_preview_urls": [],
                 "pdf_url": None,
                 "created_at": iso_utc(r.created_at),
+                "ai_read": None,  # the wizard reads the draft's AI values from GET /intake/{id}
+                "ai_read_photos": {},
                 **access,
             }
 
@@ -426,6 +438,10 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
         photo_urls = [to_public_url(p) for p in existing_photos]
         photo_thumb_urls = [to_thumbnail_url(p) for p in existing_photos]
         photo_preview_urls = [to_preview_url(p) for p in existing_photos]
+        # What the AI read for the cover fields, and from which photo, so
+        # the Cover tab can tag a field whose value is still the AI's. From
+        # Report.ai_draft alone; never printed, never in data.
+        ai_read, ai_read_photos = ai_read_for(r.ai_draft, (r.data or {}).get("photo_index"))
 
         return {
             "id": r.id,
@@ -440,6 +456,8 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             "created_at": iso_utc(r.created_at),
             # Who created, edited, signed off, reopened and assigned it.
             "history": report_history(db, r),
+            "ai_read": ai_read,
+            "ai_read_photos": ai_read_photos,
             **access,
         }
     finally:
@@ -931,6 +949,15 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         ]
         if new_photos:
             r.photo_paths = existing_photos + new_photos
+            # photo_index is positional (P-number = position): the new photos
+            # get entries with kind None, never sorted, so the labels keep
+            # lining up with photo_paths.
+            index = data.get("photo_index")
+            if isinstance(index, list):
+                r.data = {**data, "photo_index": index + [
+                    {"label": photo_label(len(existing_photos) + i), **{key: None for key in PHOTO_INDEX_KEYS}}
+                    for i in range(len(new_photos))
+                ]}
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
 
@@ -945,22 +972,119 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
 
 
 class DamageItemReviewRequest(BaseModel):
-    """Only the two fields a reviewer actually fills in on the checklist.
-    Both optional so a caller can tick the verified box without touching
-    the part number, or vice versa."""
+    """What a surveyor changes on one detected part in tab 1 (Damage
+    detection): the part, how it is damaged, how badly, which photo shows
+    it, the verified tick and the OEM part number. Everything optional, so
+    a caller can tick the box without touching the rest; a key left out
+    is left alone (exclude_unset), and photo_reference sent as null clears
+    the photo."""
+    part: Optional[str] = None
+    damage_type: Optional[str] = None
+    severity: Optional[str] = None
+    photo_reference: Optional[str] = None
     human_verified: Optional[bool] = None
     oem_part_number: Optional[str] = None
+
+
+class DamageItemAddRequest(BaseModel):
+    """A part the surveyor adds by hand (tab 1 "+ Add a part")."""
+    part: str
+    damage_type: Optional[str] = None
+    photo_reference: Optional[str] = None
+
+
+_PHOTO_REF = re.compile(r"P(\d{2,3})")
+
+
+def _damage_item_fields(sent: dict, r: Report) -> dict:
+    """The sent fields checked against the taxonomy, so a damage item never
+    carries a part or condition the Annex A, the 3D model and the
+    analytics don't know. 400 says which value was refused."""
+    out: dict = {}
+    if "part" in sent:
+        part = (sent["part"] or "").strip()
+        if part not in CANONICAL_PARTS:
+            raise HTTPException(status_code=400, detail=f"'{part}' isn't a part on the list.")
+        out["part"] = part
+    if "damage_type" in sent:
+        damage_type = (sent["damage_type"] or "").strip() or None
+        if damage_type is not None and damage_type not in CANONICAL_DAMAGE_TYPES:
+            raise HTTPException(status_code=400, detail=f"'{damage_type}' isn't a damage type on the list.")
+        out["damage_type"] = damage_type
+    if "severity" in sent:
+        severity = (sent["severity"] or "").strip() or None
+        if severity is not None and severity not in CANONICAL_SEVERITIES:
+            raise HTTPException(status_code=400, detail=f"'{severity}' isn't a severity on the list.")
+        out["severity"] = severity
+    if "photo_reference" in sent:
+        ref = (sent["photo_reference"] or "").strip().upper() or None
+        if ref is not None:
+            m = _PHOTO_REF.fullmatch(ref)
+            n = len(r.photo_paths or [])
+            if not m or not 1 <= int(m.group(1)) <= n:
+                raise HTTPException(status_code=400, detail=f"'{ref}' isn't one of this case's {n} photo(s).")
+        out["photo_reference"] = ref
+    if sent.get("human_verified") is not None:
+        out["human_verified"] = bool(sent["human_verified"])
+    if sent.get("oem_part_number") is not None:
+        # Empty string clears the field rather than storing "" -- keeps
+        # "not entered" as a single honest null everywhere downstream.
+        out["oem_part_number"] = sent["oem_part_number"].strip() or None
+    return out
+
+
+def _damage_case(db, report_id: str) -> Report:
+    """The case a damage item is edited on: as PUT /annex-a, an unfinished
+    intake (409: the wizard owns its damage list) and a signed-off case
+    (409: reopen it first) are refused."""
+    r = db.get(Report, report_id)
+    if not r:
+        raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+    _refuse_intake_draft(r)
+    if _is_signed_off(r):
+        raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+    return r
+
+
+def _undismiss(data: dict, part: str) -> None:
+    """A part the surveyor names again is theirs again: it leaves
+    dismissed_parts, so its Annex A rows come back on this sync."""
+    key = canonical_part(part) or part
+    data["dismissed_parts"] = [p for p in (data.get("dismissed_parts") or []) if (canonical_part(p) or p) != key]
+
+
+def _save_damage_items(db, user: CurrentUser, r: Report, data: dict, damage_summary: list[dict], action: str, detail: str) -> dict:
+    """Writes the damage list back and lets Annex A follow it
+    (parts/prefill.sync_annex_a): rows a person priced or typed are kept,
+    the machine's unpriced rows are rebuilt, a kept row for a part no
+    longer damaged is flagged stale. Priced from past cases only when
+    this person AND the case's owner may see the price book
+    (parts.price_book_for_case). Its own history action (not "edited",
+    which audit() folds into the previous edit within 30 minutes, losing
+    the detail). The PDF is rendered again on the next download, as after
+    PUT /annex-a."""
+    data["damage_summary"] = damage_summary
+    data["damaged_parts"] = [it.get("part") for it in damage_summary if it.get("part")]
+    data = sync_annex_a(db, data, price_book=price_book_for_case(db, r, user))
+    # Reassigned rather than mutated in place: `data` is a plain JSON
+    # column, so SQLAlchemy only detects the change on assignment (same
+    # reason sign_off_report/reopen_report rebuild the dict).
+    r.data = data
+    r.pdf_path = None
+    audit(db, user, action, r.id, detail=detail)
+    db.commit()
+    return {"id": r.id, "damage_summary": data["damage_summary"], "damaged_parts": data["damaged_parts"],
+            "annex_a": data["annex_a"], "annex_c": data["annex_c"]}
 
 
 @app.patch("/reports/{report_id}/damage-items/{item_index}")
 def review_damage_item(
     report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(editable_case)
 ) -> dict:
-    """Marks one damage line item verified and/or records its OEM part
-    number -- the two things a surveyor is meant to do while reviewing the
-    checklist, which the schema always had fields for (oem_part_number's
-    own description says "a human enters this during review") but nothing
-    could actually set.
+    """Changes one damage item: the part, damage type, severity, photo,
+    the verified tick, the OEM part number. The box the AI drew is dropped
+    when the photo changes (it was drawn on the old one). Answers the
+    whole damage list and the Annex A/C that now follow it.
 
     Deliberately NOT routed through PUT /reports/{id}: that replaces the
     entire data blob and re-renders the PDF through Chromium on every
@@ -972,17 +1096,7 @@ def review_damage_item(
     """
     db = SessionLocal()
     try:
-        r = db.get(Report, report_id)
-        if not r:
-            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
-        # Same lock rule update_report enforces -- a signed-off report is
-        # a finalized record; reopen it first.
-        if _is_signed_off(r):
-            raise HTTPException(
-                status_code=409,
-                detail="Report is signed off and locked. Reopen it before editing.",
-            )
-
+        r = _damage_case(db, report_id)
         data = dict(r.data or {})
         damage_summary = list(data.get("damage_summary") or [])
         if not 0 <= item_index < len(damage_summary):
@@ -990,25 +1104,67 @@ def review_damage_item(
                 status_code=404,
                 detail=f"Damage item {item_index} not found (report has {len(damage_summary)})",
             )
-
         item = dict(damage_summary[item_index])
-        if body.human_verified is not None:
-            item["human_verified"] = body.human_verified
-        if body.oem_part_number is not None:
-            # Empty string clears the field rather than storing "" -- keeps
-            # "not entered" as a single honest null everywhere downstream.
-            item["oem_part_number"] = body.oem_part_number.strip() or None
+        changes = _damage_item_fields(body.model_dump(exclude_unset=True), r)
+        if "photo_reference" in changes and changes["photo_reference"] != item.get("photo_reference"):
+            item["bbox_2d"] = None
+        if "part" in changes and changes["part"] != item.get("part"):
+            _undismiss(data, changes["part"])  # renamed to a part dismissed earlier: as POST
+        item.update(changes)
         damage_summary[item_index] = item
+        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_edited",
+                                 f"item {item_index + 1}: {item.get('part')}")
+        return {"item_index": item_index, "item": item, **out}
+    finally:
+        db.close()
 
-        # Reassigned rather than mutated in place: `data` is a plain JSON
-        # column, so SQLAlchemy only detects the change on assignment (same
-        # reason sign_off_report/reopen_report rebuild the dict).
-        data["damage_summary"] = damage_summary
-        r.data = data
 
-        audit(db, user, "edited", r.id)
-        db.commit()
-        return {"id": r.id, "item_index": item_index, "item": item}
+@app.post("/reports/{report_id}/damage-items")
+def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUser = Depends(editable_case)) -> dict:
+    """Appends a part the surveyor names: verified by them, so
+    human_verified is true from the start. A part they had dismissed
+    earlier (DELETE below) is theirs again: it leaves dismissed_parts, so
+    its Annex A rows come back."""
+    db = SessionLocal()
+    try:
+        r = _damage_case(db, report_id)
+        data = dict(r.data or {})
+        damage_summary = list(data.get("damage_summary") or [])
+        fields = _damage_item_fields(body.model_dump(), r)
+        item = DamageSummaryItem(**fields, human_verified=True).model_dump()
+        damage_summary.append(item)
+        _undismiss(data, item["part"])
+        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item["part"])
+        return {"item_index": len(damage_summary) - 1, "item": item, **out}
+    finally:
+        db.close()
+
+
+@app.delete("/reports/{report_id}/damage-items/{item_index}")
+def remove_damage_item(report_id: str, item_index: int, user: CurrentUser = Depends(editable_case)) -> dict:
+    """Removes one damage item. The part goes into dismissed_parts (its
+    canonical name) when no other item names it, so a later sync -- or a
+    re-detection (Phase 2) -- doesn't bring its rows back; Annex A rows a
+    person priced for it stay, flagged stale."""
+    db = SessionLocal()
+    try:
+        r = _damage_case(db, report_id)
+        data = dict(r.data or {})
+        damage_summary = list(data.get("damage_summary") or [])
+        if not 0 <= item_index < len(damage_summary):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Damage item {item_index} not found (report has {len(damage_summary)})",
+            )
+        removed = damage_summary.pop(item_index)
+        key = canonical_part(removed.get("part") or "") or (removed.get("part") or "").strip()
+        dismissed = list(data.get("dismissed_parts") or [])
+        still_listed = any((canonical_part(it.get("part") or "") or it.get("part")) == key for it in damage_summary)
+        if key and key not in dismissed and not still_listed:
+            dismissed.append(key)
+        data["dismissed_parts"] = dismissed
+        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_removed", str(removed.get("part") or ""))
+        return {"item_index": item_index, "item": removed, **out}
     finally:
         db.close()
 

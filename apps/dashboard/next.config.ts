@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
       // Server Actions default to a 1MB body limit -- easily exceeded by a
       // single real phone-camera photo (typically 2-8MB), let alone the
       // multiple photos a report can attach. Photo uploads to
-      // analyzePhotosAction (see app/reports/new/actions.ts) were silently
+      // analyzePhotosAction (a server action since removed) were silently
       // hanging rather than erroring because of this.
       bodySizeLimit: "25mb",
     },

@@ -26,6 +26,7 @@ from app.config import settings
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal
+from app.reports.filing import file_case_data
 from app.reports.models import Report
 from app.rendering.renderer import render_pdf
 from app.storage.files import report_pdf_path, save_photo, tmp_dir
@@ -111,11 +112,17 @@ async def _download_media(chat_id: str, url: str, index: int) -> str:
 def _finalize(chat_id: str, session, user) -> str:
     db = SessionLocal()
     try:
+        # The filing step every channel shares (app/reports/filing.py):
+        # Annex A rows, priced when this account may see the price book.
+        # ai_draft is the AI's own reading, not the draft with the template merged.
+        ai_draft = session.ai_draft
+        data = file_case_data(db, session.draft.model_dump(), user, ai_draft=ai_draft, photo_kinds=[{} for _ in session.photo_paths])
         report = Report(
             channel="whatsapp",
             reporter_chat_id=chat_id,
-            data=session.draft.model_dump(),
+            data=data,
             status="confirmed",
+            ai_draft=ai_draft,
         )
         db.add(report)
         db.flush()
@@ -182,9 +189,9 @@ async def whatsapp_webhook(request: Request) -> Response:
         if body.lower() in CONFIRM_WORDS:
             report_id = await asyncio.to_thread(_finalize, chat_id, session, user)
             reset_session(chat_id)
-            rep_code = report_id[:8].upper()
+            # No CIR- code: the firm's reference is issued on the case page.
             return _twiml(
-                f"✅ Report CIR-{rep_code} finalized and saved to Carlink System!\n\n"
+                "✅ Report saved to Carlink System!\n\n"
                 f"🖥️ Loss Adjuster Studio:\n"
                 f"https://carlink.34-45-253-162.sslip.io/reports/{report_id}\n\n"
                 "Send /new or a photo to file another report."
@@ -203,6 +210,7 @@ async def whatsapp_webhook(request: Request) -> Response:
             logger.exception("AI drafting failed")
             return _twiml(_DRAFT_ERROR_MESSAGE)
         session.draft = result.draft
+        session.ai_draft = result.ai_draft
         return _twiml(result.summary_text)
 
     if not session.photo_paths:
@@ -210,12 +218,13 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     parsed = parse_template_reply(body)
     if parsed:
+        # The same template as the Telegram bot (flow.TEMPLATE_PROMPT).
         session.location = parsed["location"]
         session.incident_datetime = parsed["incident_datetime"]
-        session.reported_to_authorities = parsed["reported_to_authorities"]
-        session.reporter_name = parsed["reporter_name"]
-        session.reporter_role = parsed["reporter_role"]
-        session.reporter_contact = parsed["reporter_contact"]
+        session.requested_by = parsed["requested_by"]
+        session.claim_type = parsed["claim_type"]
+        session.workshop_name = parsed["workshop_name"]
+        session.insurer_name = parsed["insurer_name"]
         session.vehicle_plate = parsed["vehicle_plate"]
         session.damaged_side = parsed["damaged_side"]
         description = parsed["description"]
@@ -237,5 +246,6 @@ async def whatsapp_webhook(request: Request) -> Response:
         logger.exception("AI drafting failed")
         return _twiml(_DRAFT_ERROR_MESSAGE)
     session.draft = result.draft
+    session.ai_draft = result.ai_draft
     session.stage = Stage.AWAITING_CONFIRMATION
     return _twiml(result.summary_text)

@@ -20,6 +20,7 @@ import {
   type PublicSubmissionInfo,
   type ReportData,
 } from "./api";
+import type { AiRead } from "./coverForm";
 
 export type IntakeStage = "uploading" | "sorting" | "reading" | "ready" | "failed";
 
@@ -115,6 +116,13 @@ export type IntakeState = {
    * otherwise. With no owner it is still in the Public Inbox, and the
    * wizard sends the browser there (/inbox/{id}). */
   public_submission?: PublicSubmissionInfo | null;
+  /** What the AI last read for the cover fields, and the photo each came
+   * from ("P03"): GET /intake/{id} sends them like GET /reports/{id} does
+   * (filing.ai_read_for). The review step shows them as "(P03)" tags beside
+   * a field that still says what the AI said. Absent on an older API: no
+   * tags. Never printed. */
+  ai_read?: AiRead;
+  ai_read_photos?: Record<string, string> | null;
 };
 
 export const ALLOWED_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic"];
@@ -333,11 +341,14 @@ export const processIntake = (id: string, mode: "all" | "read") =>
 export const finalizeIntake = (id: string, data: ReportData) =>
   call<{ id: string }>(`/${id}/finalize`, jsonInit("POST", { data: prepareForSave(data) }));
 
-/** The same derivations app/reports/form-payload.ts applies to the old form,
- * so a case filed through the wizard reads identically everywhere else:
- * blank people rows dropped, police flags mirrored, vehicle_details built. */
+/** The draft as PUT /intake/{id}/data and finalize take it: blank people
+ * rows dropped, the police flags mirrored into the flat fields older readers
+ * use, damaged_parts kept in step with damage_summary. The whole draft goes,
+ * cover_page included (the server protects it on a re-read). The old
+ * vehicle_details summary string is no longer built: nothing printed reads
+ * it, and the case page falls back to it only when vehicle_info has no
+ * plate, make or model -- which the cover page on step 3 asks for. */
 export function prepareForSave(data: ReportData): ReportData {
-  const v = data.vehicle_info || {};
   const police = data.police_report || { reported_to_police: false };
   const reported = Boolean(police.reported_to_police);
   const damage: DamageSummaryItem[] = (data.damage_summary || []).filter((d) => d.part && d.part.trim());
@@ -352,8 +363,6 @@ export function prepareForSave(data: ReportData): ReportData {
     reported_to_authorities: reported,
     authority_reference: police.report_number || null,
     police_report: { ...police, reported_to_police: reported },
-    vehicle_details:
-      [v.plate_number, [v.make, v.model].filter(Boolean).join(" ") || null].filter(Boolean).join(" - ") || null,
   };
 }
 

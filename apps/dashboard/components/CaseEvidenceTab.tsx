@@ -1,36 +1,14 @@
 "use client";
 
 import { useState, useMemo, useRef, useEffect } from "react";
-import {
-  Camera,
-  Eye,
-  EyeOff,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
-  X,
-  Sparkles,
-  Layers,
-  ChevronLeft,
-  ChevronRight,
-  SlidersHorizontal,
-  LayoutGrid,
-  FileSpreadsheet,
-} from "lucide-react";
+import { Camera, Eye, EyeOff, ZoomIn, ZoomOut, Maximize2, X, Sparkles, Layers, ChevronLeft, ChevronRight } from "lucide-react";
 import { type DamageSummaryItem, fileUrl } from "@/lib/api";
 import { severityClass } from "@/lib/caseFields";
-import {
-  VEHICLE_ZONE_GROUPS,
-  UNCLASSIFIED_ZONE_ID,
-  UNCLASSIFIED_ZONE_LABEL,
-  classifyPhotos,
-  buildPresentationSlides,
-  type ClassifiedPhoto,
-} from "@/lib/vehicleZones";
+import { VEHICLE_ZONE_GROUPS, UNCLASSIFIED_ZONE_ID, classifyPhotos } from "@/lib/vehicleZones";
 import { evidenceCache } from "@/lib/evidenceCache";
 
-/** damage_summary.photo_reference is "P01", "P02"... in upload order (see schema.py) */
-const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
+/** Photos no damage item links to: the pill's wording on this page. */
+const NOT_LINKED_LABEL = "Not linked";
 
 /** Converts Gemini's native bbox_2d format ([y_min, x_min, y_max, x_max], each 0-1000) into CSS % positioning */
 function bboxToCss(bbox: number[] | null | undefined): { top: string; left: string; width: string; height: string } | null {
@@ -54,8 +32,15 @@ interface Props {
   selectedZone?: string | null;
   onSelectPhoto: (idx: number) => void;
   onSelectZone?: (zoneId: string | null) => void;
+  /** The arrow keys flick through photos only while this view is the one
+   * on screen (tab 1 stays mounted behind the other tabs). */
+  keyboardActive?: boolean;
 }
 
+/** "Photos" on tab 1: the viewer with the AI boxes, the photos-by-part
+ * pills, the thumbnail rail and the full-size view. The 2x2 "presentation
+ * matrix" mode went on 2026-11-04 (the firm's report never had slides);
+ * the wording follows the rest of the page (photos, parts, AI boxes). */
 export function CaseEvidenceTab({
   photos,
   photoThumbs,
@@ -65,14 +50,13 @@ export function CaseEvidenceTab({
   selectedZone,
   onSelectPhoto,
   onSelectZone,
+  keyboardActive = true,
 }: Props) {
-  const [viewMode, setViewMode] = useState<"hud" | "matrix">("hud");
   const [showBadges, setShowBadges] = useState(true);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [loadRawInLightbox, setLoadRawInLightbox] = useState(false);
   const [activeZoneFilter, setActiveZoneFilter] = useState<string | null>(selectedZone || null);
-  const [currentSlideIndex, setCurrentSlideIndex] = useState<number>(0);
 
   const railRef = useRef<HTMLDivElement>(null);
 
@@ -83,32 +67,14 @@ export function CaseEvidenceTab({
     }
   }, [selectedZone]);
 
-  // Classify all photos deterministically into automotive assemblies
-  const classifiedPhotos = useMemo(
-    () => classifyPhotos(photos, photoThumbs, damageEntries, photoPreviews),
-    [photos, photoThumbs, damageEntries, photoPreviews]
-  );
+  // Classify all photos deterministically into the parts they show
+  const classifiedPhotos = useMemo(() => classifyPhotos(photos, photoThumbs, damageEntries, photoPreviews), [photos, photoThumbs, damageEntries, photoPreviews]);
 
   // Filter photos based on currently selected zone
   const filteredPhotos = useMemo(() => {
     if (!activeZoneFilter) return classifiedPhotos;
     return classifiedPhotos.filter((p) => p.zoneId === activeZoneFilter);
   }, [classifiedPhotos, activeZoneFilter]);
-
-  // Build 2x2 presentation matrix slides (matching Presentation1.pptx)
-  const presentationSlides = useMemo(
-    () => buildPresentationSlides(filteredPhotos),
-    [filteredPhotos]
-  );
-
-  // Keep slide index bounded
-  useEffect(() => {
-    if (presentationSlides.length === 0) {
-      setCurrentSlideIndex(0);
-    } else if (currentSlideIndex >= presentationSlides.length) {
-      setCurrentSlideIndex(Math.max(0, presentationSlides.length - 1));
-    }
-  }, [presentationSlides.length, currentSlideIndex]);
 
   // When activePhotoIndex changes, auto-scroll thumbnail rail into view
   useEffect(() => {
@@ -123,11 +89,10 @@ export function CaseEvidenceTab({
   const currentPhotoPreview = currentPhoto?.previewUrl || currentPhoto?.thumbUrl || currentPhotoUrl;
   const currentPhotoLabel = currentPhoto?.photoRef || "P01";
   const currentPhotoDamage = currentPhoto?.damageItems || [];
+  const zoneLabel = (p: { zoneId: string; zoneLabel: string } | undefined) => (p ? (p.zoneId === UNCLASSIFIED_ZONE_ID ? NOT_LINKED_LABEL : p.zoneLabel) : "");
 
   // Track cached display URL (0ms from CacheStorage / Memory LRU) & HD loading state
-  const [activeDisplayUrl, setActiveDisplayUrl] = useState<string>(
-    currentPhoto ? fileUrl(currentPhoto.thumbUrl || currentPhotoPreview) : ""
-  );
+  const [activeDisplayUrl, setActiveDisplayUrl] = useState<string>(currentPhoto ? fileUrl(currentPhoto.thumbUrl || currentPhotoPreview) : "");
   const [isHdLoaded, setIsHdLoaded] = useState<boolean>(false);
 
   // Dual-tier cache lookup: Instant L1 memory check, followed by L2 CacheStorage resolution
@@ -157,11 +122,7 @@ export function CaseEvidenceTab({
   // Pre-caches adjacent preview WebP photos (N-1, N+1, N+2) in the background via requestIdleCallback
   useEffect(() => {
     if (!classifiedPhotos || classifiedPhotos.length === 0) return;
-    const targets = [
-      activePhotoIndex + 1,
-      activePhotoIndex + 2,
-      activePhotoIndex - 1,
-    ].filter((i) => i >= 0 && i < classifiedPhotos.length);
+    const targets = [activePhotoIndex + 1, activePhotoIndex + 2, activePhotoIndex - 1].filter((i) => i >= 0 && i < classifiedPhotos.length);
 
     const urlsToPreload = targets.map((idx) => {
       const p = classifiedPhotos[idx];
@@ -180,6 +141,7 @@ export function CaseEvidenceTab({
 
   // Keyboard navigation: ArrowLeft / ArrowRight to rapidly flick through photos
   useEffect(() => {
+    if (!keyboardActive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (["INPUT", "TEXTAREA", "SELECT"].includes((e.target as HTMLElement)?.tagName)) return;
       if (e.key === "ArrowRight") {
@@ -196,7 +158,7 @@ export function CaseEvidenceTab({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activePhotoIndex, photos.length, onSelectPhoto]);
+  }, [activePhotoIndex, photos.length, onSelectPhoto, keyboardActive]);
 
   const toggleZoom = () => {
     setZoomLevel((prev) => (prev === 1 ? 1.5 : prev === 1.5 ? 2 : prev === 2 ? 3 : 1));
@@ -215,7 +177,6 @@ export function CaseEvidenceTab({
         setZoomLevel(1);
       }
     }
-    setCurrentSlideIndex(0);
   };
 
   const scrollRail = (direction: "left" | "right") => {
@@ -225,16 +186,12 @@ export function CaseEvidenceTab({
     }
   };
 
-  const currentSlide = presentationSlides[currentSlideIndex] || presentationSlides[0] || null;
-
   if (!photos || photos.length === 0) {
     return (
       <div className="card-glass" style={{ padding: "48px 24px", textAlign: "center" }}>
         <Camera style={{ width: 36, height: 36, color: "var(--text-muted)", margin: "0 auto 12px" }} />
-        <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 6px" }}>No Evidence Photos Attached</h4>
-        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
-          This case does not have any attached photographic evidence.
-        </p>
+        <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 6px" }}>No photos</h4>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>This case has no photos attached.</p>
       </div>
     );
   }
@@ -242,94 +199,67 @@ export function CaseEvidenceTab({
   return (
     <>
       <div className="card-glass">
-        {/* Top Header Strip: Title, Active Status, Mode Toggle & Tools */}
+        {/* Header: title, the photo being shown, the tools */}
         <div className="card-header" style={{ marginBottom: 12 }}>
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Camera style={{ width: 18, height: 18, color: "var(--accent-primary)" }} />
-              <span>Forensic Evidence Studio</span>
+              <span>Photos</span>
               <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 12, background: "var(--surface-hover)", color: "var(--text-secondary)", fontWeight: 600 }}>
-                {photos.length} Photos Attached
+                {photos.length}
               </span>
             </div>
             <div className="card-subtitle">
-              Photo {activePhotoIndex + 1} of {photos.length} • Ref:{" "}
+              Photo {activePhotoIndex + 1} of {photos.length} •{" "}
               <strong style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{currentPhotoLabel}</strong>
               {currentPhoto?.zoneLabel && (
-                <> • Zone: <span style={{ color: currentPhoto.zoneId === UNCLASSIFIED_ZONE_ID ? "var(--text-muted)" : "var(--accent-primary)", fontWeight: 600 }}>{currentPhoto.zoneLabel}</span></>
+                <>
+                  {" "}
+                  • <span style={{ color: currentPhoto.zoneId === UNCLASSIFIED_ZONE_ID ? "var(--text-muted)" : "var(--accent-primary)", fontWeight: 600 }}>{zoneLabel(currentPhoto)}</span>
+                </>
               )}
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {/* View Mode Toggle: 1-Up Forensic HUD vs 2x2 Presentation Matrix */}
-            <div className="studio-view-toggle">
-              <button
-                type="button"
-                className={`studio-view-toggle-btn ${viewMode === "hud" ? "active" : ""}`}
-                onClick={() => setViewMode("hud")}
-                title="Single Photo Deep Inspection HUD"
-              >
-                <SlidersHorizontal style={{ width: 12, height: 12 }} />
-                <span>1-Up HUD</span>
-              </button>
-              <button
-                type="button"
-                className={`studio-view-toggle-btn ${viewMode === "matrix" ? "active" : ""}`}
-                onClick={() => setViewMode("matrix")}
-                title="2x2 Presentation Matrix (Matching Presentation1.pptx)"
-              >
-                <LayoutGrid style={{ width: 12, height: 12 }} />
-                <span>2×2 Matrix</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 9px", display: "inline-flex", alignItems: "center", gap: 5 }}
+              onClick={toggleZoom}
+              title="Zoom (1x / 1.5x / 2x / 3x)"
+            >
+              {zoomLevel > 1 ? <ZoomOut style={{ width: 13, height: 13 }} /> : <ZoomIn style={{ width: 13, height: 13 }} />}
+              <span>{zoomLevel}x</span>
+            </button>
 
-            {viewMode === "hud" && (
-              <>
-                <button
-                  type="button"
-                  className="btn-secondary-modern"
-                  style={{ fontSize: 11, padding: "5px 9px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  onClick={toggleZoom}
-                  title="Toggle Zoom (1x / 1.5x / 2x / 3x)"
-                >
-                  {zoomLevel > 1 ? <ZoomOut style={{ width: 13, height: 13 }} /> : <ZoomIn style={{ width: 13, height: 13 }} />}
-                  <span>{zoomLevel}x</span>
-                </button>
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 9px", display: "inline-flex", alignItems: "center", gap: 5 }}
+              onClick={() => setIsLightboxOpen(true)}
+              title="Show the photo full size"
+            >
+              <Maximize2 style={{ width: 13, height: 13 }} />
+              <span>Full size</span>
+            </button>
 
-                <button
-                  type="button"
-                  className="btn-secondary-modern"
-                  style={{ fontSize: 11, padding: "5px 9px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  onClick={() => setIsLightboxOpen(true)}
-                  title="Open Fullscreen Lightbox"
-                >
-                  <Maximize2 style={{ width: 13, height: 13 }} />
-                  <span>Inspect</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="btn-secondary-modern"
-                  style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  onClick={() => setShowBadges(!showBadges)}
-                >
-                  {showBadges ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
-                  <span>{showBadges ? "Hide AI Tags" : "Show AI Tags"}</span>
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: 5 }}
+              onClick={() => setShowBadges(!showBadges)}
+            >
+              {showBadges ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
+              <span>{showBadges ? "Hide AI boxes" : "Show AI boxes"}</span>
+            </button>
           </div>
         </div>
 
-        {/* 1. VEHICLE ASSEMBLY / ZONE FILTER STRIP */}
-        <div className="studio-zone-strip">
-          <button
-            type="button"
-            className={`studio-zone-pill ${activeZoneFilter === null ? "active" : ""}`}
-            onClick={() => handleZoneClick(null)}
-          >
-            <span>All Photos</span>
+        {/* 1. PHOTOS BY PART */}
+        <div className="studio-zone-strip" aria-label="Photos by part">
+          <button type="button" className={`studio-zone-pill ${activeZoneFilter === null ? "active" : ""}`} onClick={() => handleZoneClick(null)}>
+            <span>All</span>
             <span style={{ opacity: 0.8, fontSize: 10 }}>({photos.length})</span>
           </button>
 
@@ -346,14 +276,14 @@ export function CaseEvidenceTab({
                 onClick={() => handleZoneClick(group.id)}
                 title={group.label}
               >
-                {hasDamage && <span className="zone-damage-dot" title="Damage detected in this zone" />}
+                {hasDamage && <span className="zone-damage-dot" title="Damage detected on this part" />}
                 <span>{group.shortLabel}</span>
                 <span style={{ opacity: 0.8, fontSize: 10 }}>({count})</span>
               </button>
             );
           })}
 
-          {/* Photos no damage item links to -- not filed under a zone they
+          {/* Photos no damage item links to -- not filed under a part they
               may not show (see classifyPhotos). */}
           {(() => {
             const count = classifiedPhotos.filter((p) => p.zoneId === UNCLASSIFIED_ZONE_ID).length;
@@ -363,16 +293,16 @@ export function CaseEvidenceTab({
                 type="button"
                 className={`studio-zone-pill ${activeZoneFilter === UNCLASSIFIED_ZONE_ID ? "active" : ""}`}
                 onClick={() => handleZoneClick(UNCLASSIFIED_ZONE_ID)}
-                title="Photos not linked to a damage item"
+                title="Photos not linked to a detected part"
               >
-                <span>{UNCLASSIFIED_ZONE_LABEL}</span>
+                <span>{NOT_LINKED_LABEL}</span>
                 <span style={{ opacity: 0.8, fontSize: 10 }}>({count})</span>
               </button>
             );
           })()}
         </div>
 
-        {/* 2. MAIN VIEWPORT: FORENSIC 1-UP HUD OR 2x2 PRESENTATION MATRIX */}
+        {/* 2. THE PHOTO */}
         {filteredPhotos.length === 0 ? (
           <div
             style={{
@@ -390,11 +320,9 @@ export function CaseEvidenceTab({
             }}
           >
             <Camera style={{ width: 32, height: 32, color: "var(--accent-primary)", marginBottom: 12, opacity: 0.8 }} />
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>
-              No Evidence Photos in this Vehicle Zone
-            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>No photos of this part</div>
             <p style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 380, lineHeight: 1.5, margin: "0 0 16px" }}>
-              None of the {photos.length} uploaded inspection photos are classified under the selected zone. You can inspect all photos across the vehicle.
+              None of the {photos.length} photos is linked to this part.
             </p>
             <button
               type="button"
@@ -402,13 +330,10 @@ export function CaseEvidenceTab({
               onClick={() => handleZoneClick(null)}
               style={{ fontSize: 11, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
             >
-              <span>View All Photos ({photos.length})</span>
+              <span>All photos ({photos.length})</span>
             </button>
           </div>
-        ) : viewMode === "hud" ? (
-          /* =========================================================================
-             MODE A: FORENSIC 1-UP HUD
-             ========================================================================= */
+        ) : (
           <>
             <div
               className="photo-inspector-box"
@@ -454,7 +379,7 @@ export function CaseEvidenceTab({
                   zIndex: 20,
                   backdropFilter: "blur(6px)",
                 }}
-                title="Previous Photo (Left Arrow Key)"
+                title="Previous photo (left arrow key)"
               >
                 <ChevronLeft style={{ width: 18, height: 18 }} />
               </button>
@@ -489,7 +414,7 @@ export function CaseEvidenceTab({
                   zIndex: 20,
                   backdropFilter: "blur(6px)",
                 }}
-                title="Next Photo (Right Arrow Key)"
+                title="Next photo (right arrow key)"
               >
                 <ChevronRight style={{ width: 18, height: 18 }} />
               </button>
@@ -516,7 +441,7 @@ export function CaseEvidenceTab({
                   }}
                 >
                   <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent-primary)" }} />
-                  <span>Buffering HD…</span>
+                  <span>Loading…</span>
                 </div>
               )}
 
@@ -577,7 +502,6 @@ export function CaseEvidenceTab({
                           <div className="ai-box-tag-glow">
                             <Sparkles style={{ width: 10, height: 10 }} />
                             <span>{item.part}</span>
-                            {item.ai_confidence ? <span style={{ opacity: 0.8 }}>// {item.ai_confidence}</span> : null}
                           </div>
                         </div>
                       ))}
@@ -586,227 +510,29 @@ export function CaseEvidenceTab({
               </div>
             </div>
 
-            {/* Damage Tags for active photo */}
+            {/* The parts the AI linked to this photo */}
             {showBadges && (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
                 {currentPhotoDamage.length > 0 ? (
                   currentPhotoDamage.map((item, i) => (
-                    <span
-                      key={i}
-                      className={`chip-severity ${severityClass(item.severity)}`}
-                      style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}
-                    >
+                    <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
                       <Layers style={{ width: 11, height: 11 }} />
                       <span>{item.part}</span>
                       {item.damage_type ? <span style={{ opacity: 0.85 }}>({item.damage_type})</span> : null}
-                      {item.ai_confidence ? <span style={{ opacity: 0.85 }}>· {item.ai_confidence}</span> : null}
-                      {item.bbox_2d ? <span title="AI Localized Bounding Box">⊡</span> : null}
+                      {item.bbox_2d ? <span title="The AI drew a box for this part">⊡</span> : null}
                     </span>
                   ))
                 ) : (
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    No localized damaged parts linked to this photo
-                  </span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>No detected part is linked to this photo</span>
                 )}
               </div>
             )}
           </>
-        ) : (
-          /* =========================================================================
-             MODE B: 2×2 PRESENTATION MATRIX (Matching Presentation1.pptx)
-             ========================================================================= */
-          <div className="studio-matrix-container">
-            {/* Matrix Slide Navigation Toolbar */}
-            <div className="studio-matrix-nav">
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FileSpreadsheet style={{ width: 15, height: 15, color: "var(--accent-primary)" }} />
-                <span style={{ fontSize: 12, fontWeight: 700 }}>
-                  Presentation Slide {currentSlideIndex + 1} of {Math.max(1, presentationSlides.length)}
-                </span>
-                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  • {filteredPhotos.length} Photos in this bundle
-                </span>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn-secondary-modern"
-                  style={{ padding: "4px 8px", fontSize: 11 }}
-                  disabled={currentSlideIndex <= 0}
-                  onClick={() => setCurrentSlideIndex((prev) => Math.max(0, prev - 1))}
-                >
-                  <ChevronLeft style={{ width: 13, height: 13 }} />
-                  <span>Prev Slide</span>
-                </button>
-
-                <div style={{ display: "flex", gap: 4 }}>
-                  {presentationSlides.map((_, sIdx) => (
-                    <button
-                      key={sIdx}
-                      type="button"
-                      style={{
-                        width: 22,
-                        height: 22,
-                        borderRadius: "50%",
-                        border: sIdx === currentSlideIndex ? "1px solid var(--accent-primary)" : "1px solid var(--border-color)",
-                        background: sIdx === currentSlideIndex ? "var(--accent-primary)" : "var(--surface-card)",
-                        color: sIdx === currentSlideIndex ? "#fff" : "var(--text-secondary)",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                      onClick={() => setCurrentSlideIndex(sIdx)}
-                    >
-                      {sIdx + 1}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  className="btn-secondary-modern"
-                  style={{ padding: "4px 8px", fontSize: 11 }}
-                  disabled={presentationSlides.length === 0 || currentSlideIndex >= presentationSlides.length - 1}
-                  onClick={() => setCurrentSlideIndex((prev) => Math.min(Math.max(0, presentationSlides.length - 1), prev + 1))}
-                >
-                  <span>Next Slide</span>
-                  <ChevronRight style={{ width: 13, height: 13 }} />
-                </button>
-              </div>
-            </div>
-
-            {/* 2×2 Quadrant Grid: Q1, Q2, Q3, Q4 */}
-            <div className="studio-matrix-grid">
-              {(["q1", "q2", "q3", "q4"] as const).map((qKey, qIdx) => {
-                const qPhoto: ClassifiedPhoto | null = currentSlide?.quadrants[qKey] || null;
-                const qBadge = `Q${qIdx + 1}`;
-                const qTitle =
-                  qIdx === 0
-                    ? "Top-Left"
-                    : qIdx === 1
-                    ? "Top-Right"
-                    : qIdx === 2
-                    ? "Bottom-Left"
-                    : "Bottom-Right";
-
-                if (!qPhoto) {
-                  return (
-                    <div
-                      key={qKey}
-                      className="studio-quadrant-card"
-                      style={{ opacity: 0.35, display: "flex", alignItems: "center", justifyContent: "center" }}
-                    >
-                      <div className="studio-quadrant-header">
-                        <span className="studio-quadrant-badge">{qBadge}</span>
-                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{qTitle}</span>
-                      </div>
-                      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Slot {qBadge} Empty</span>
-                    </div>
-                  );
-                }
-
-                const isActive = activePhotoIndex === qPhoto.index;
-
-                return (
-                  <div
-                    key={qKey}
-                    className={`studio-quadrant-card ${isActive ? "active" : ""}`}
-                    onClick={() => onSelectPhoto(qPhoto.index)}
-                  >
-                    {/* Quadrant Header Overlay */}
-                    <div className="studio-quadrant-header">
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <span className="studio-quadrant-badge">{qBadge}</span>
-                        <span
-                          style={{
-                            background: "rgba(0,0,0,0.75)",
-                            color: "#fff",
-                            fontFamily: "var(--font-mono)",
-                            fontSize: 10,
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            fontWeight: 700,
-                          }}
-                        >
-                          {qPhoto.photoRef}
-                        </span>
-                      </div>
-                      <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", fontWeight: 500 }}>
-                        {qPhoto.zoneLabel}
-                      </span>
-                    </div>
-
-                    {/* Image */}
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={fileUrl(qPhoto.previewUrl || qPhoto.thumbUrl || qPhoto.url)}
-                      alt={qPhoto.photoRef}
-                      loading="lazy"
-                      decoding="async"
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "contain",
-                        background: "#080c18",
-                      }}
-                    />
-
-                    {/* Quadrant Footer Overlay */}
-                    <div className="studio-quadrant-footer">
-                      <div style={{ maxWidth: "70%" }}>
-                        {qPhoto.damageItems.length > 0 ? (
-                          <span
-                            className={`chip-severity ${severityClass(qPhoto.damageItems[0]?.severity)}`}
-                            style={{ fontSize: 10, padding: "2px 6px" }}
-                          >
-                            {qPhoto.damageItems[0]?.part}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>
-                            Inspection Reference
-                          </span>
-                        )}
-                      </div>
-
-                      <button
-                        type="button"
-                        className="btn-secondary-modern"
-                        style={{
-                          fontSize: 10,
-                          padding: "3px 7px",
-                          background: "rgba(0,0,0,0.8)",
-                          color: "#fff",
-                          borderColor: "rgba(255,255,255,0.2)",
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectPhoto(qPhoto.index);
-                          setViewMode("hud");
-                        }}
-                      >
-                        Inspect 1-Up
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
         )}
 
-        {/* 3. BOUNDED CAPSULE THUMBNAIL RAIL (Fixed Height ≤ 90px — completely eliminates 11-row overflow) */}
+        {/* 3. THUMBNAIL RAIL */}
         <div className="studio-capsule-rail-wrap">
-          <button
-            type="button"
-            className="btn-secondary-modern"
-            style={{ padding: "8px 6px", borderRadius: 8, height: 60, flexShrink: 0 }}
-            onClick={() => scrollRail("left")}
-            title="Scroll Rail Left"
-          >
+          <button type="button" className="btn-secondary-modern" style={{ padding: "8px 6px", borderRadius: 8, height: 60, flexShrink: 0 }} onClick={() => scrollRail("left")} title="Scroll left">
             <ChevronLeft style={{ width: 14, height: 14 }} />
           </button>
 
@@ -826,7 +552,7 @@ export function CaseEvidenceTab({
                     onSelectPhoto(item.index);
                     setZoomLevel(1);
                   }}
-                  title={`${item.photoRef} • ${item.zoneLabel}${hasDamage ? ` (${item.damageItems.length} damages)` : ""}`}
+                  title={`${item.photoRef} • ${zoneLabel(item)}${hasDamage ? ` (${item.damageItems.length} part${item.damageItems.length === 1 ? "" : "s"})` : ""}`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={fileUrl(item.thumbUrl || item.url)} alt={item.photoRef} loading="lazy" decoding="async" />
@@ -837,19 +563,13 @@ export function CaseEvidenceTab({
             })}
           </div>
 
-          <button
-            type="button"
-            className="btn-secondary-modern"
-            style={{ padding: "8px 6px", borderRadius: 8, height: 60, flexShrink: 0 }}
-            onClick={() => scrollRail("right")}
-            title="Scroll Rail Right"
-          >
+          <button type="button" className="btn-secondary-modern" style={{ padding: "8px 6px", borderRadius: 8, height: 60, flexShrink: 0 }} onClick={() => scrollRail("right")} title="Scroll right">
             <ChevronRight style={{ width: 14, height: 14 }} />
           </button>
         </div>
       </div>
 
-      {/* High-Resolution Fullscreen Lightbox Modal */}
+      {/* Full-size view */}
       {isLightboxOpen && (
         <div
           style={{
@@ -866,11 +586,9 @@ export function CaseEvidenceTab({
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ color: "#fff", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontWeight: 800, fontSize: 16 }}>Forensic Evidence Lightbox</span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent-primary)" }}>
-                {currentPhotoLabel}
-              </span>
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>• {currentPhoto?.zoneLabel}</span>
+              <span style={{ fontWeight: 800, fontSize: 16 }}>Photo</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent-primary)" }}>{currentPhotoLabel}</span>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>• {zoneLabel(currentPhoto)}</span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button
@@ -886,10 +604,10 @@ export function CaseEvidenceTab({
                   gap: 6,
                 }}
                 onClick={() => setLoadRawInLightbox(!loadRawInLightbox)}
-                title="Toggle between Web-Optimized Preview and Full Master Camera RAW"
+                title="Show the original file instead of the web-sized copy"
               >
                 <Sparkles style={{ width: 13, height: 13 }} />
-                <span>{loadRawInLightbox ? "Viewing Master RAW (4K+)" : "Load Master RAW (Full)"}</span>
+                <span>{loadRawInLightbox ? "Showing the original" : "Open original"}</span>
               </button>
               <button
                 type="button"
@@ -920,7 +638,7 @@ export function CaseEvidenceTab({
             <div style={{ position: "relative", display: "inline-block" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={fileUrl(loadRawInLightbox ? currentPhotoUrl : (currentPhoto.previewUrl || currentPhotoUrl))}
+                src={fileUrl(loadRawInLightbox ? currentPhotoUrl : currentPhoto.previewUrl || currentPhotoUrl)}
                 alt={currentPhotoLabel}
                 loading="eager"
                 decoding="async"
@@ -942,7 +660,6 @@ export function CaseEvidenceTab({
                         <div className="ai-box-tag-glow">
                           <Sparkles style={{ width: 10, height: 10 }} />
                           <span>{item.part}</span>
-                          {item.ai_confidence ? <span style={{ opacity: 0.8 }}>// {item.ai_confidence}</span> : null}
                         </div>
                       </div>
                     ))}

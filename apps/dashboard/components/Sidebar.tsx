@@ -19,8 +19,8 @@ import { useInboxCount } from "@/components/inbox/useInboxCount";
 const INBOX_POLL_MS = 60_000;
 
 const NAV_ITEMS = [
-  { href: "/", label: "Command Center", icon: LayoutDashboard },
-  { href: "/reports", label: "Cases Repository", icon: FolderArchive },
+  { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/reports", label: "Cases", icon: FolderArchive },
   // Release P6: reports the public sends through the Telegram bot. Only for
   // people who see all cases (admins and staff ticked for it).
   { href: "/inbox", label: "Public Inbox", icon: Inbox, seeAllOnly: true },

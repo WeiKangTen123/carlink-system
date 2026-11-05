@@ -1,7 +1,8 @@
 /** Helpers for the New Intake review step (components/intake/ReviewStep.tsx
  * and its Photos by part panel, photo picker and damage photo viewer). */
 import type { CSSProperties } from "react";
-import type { DamageSummaryItem } from "./api";
+import type { CoverPageInfo, DamageSummaryItem, InsuranceDetails, ReportData, TyreCondition, TyreItem, VehicleInfo } from "./api";
+import { parseDepth, type CoverForm, type CoverFormKey } from "./coverForm";
 import { DOCUMENT_KINDS, photoForReference, type IntakePhoto } from "./intake";
 
 /** bbox_2d is Gemini's [y_min, x_min, y_max, x_max] on a 0-1000 scale, so as
@@ -129,4 +130,68 @@ export function photosForPicker(photos: IntakePhoto[], part: string, current: In
   return candidates
     .sort((a, b) => rank(a) - rank(b) || a.position - b.position)
     .map((photo) => ({ photo, samePart: !photo.excluded && samePart(photo.part, part) }));
+}
+
+// ---------------------------------------------------------------------------
+// Cover page <-> draft
+
+const COVER_PAGE_KEYS = [
+  "date_of_request", "requested_by", "requested_by_address", "workshop_address", "date_of_survey", "date_of_dismantle",
+  "date_before_painting", "date_after_painting", "handbrake_condition", "modification", "general_condition", "point_of_impact_note",
+] as const satisfies readonly (keyof CoverPageInfo & CoverFormKey)[];
+const VEHICLE_KEYS = [
+  "plate_number", "make", "model", "date_of_registration", "engine_number", "vin", "odometer_reading", "transmission", "color",
+  "steering_condition", "brakes_condition", "paintwork_condition", "point_of_impact",
+] as const satisfies readonly (keyof VehicleInfo & CoverFormKey)[];
+const INSURANCE_KEYS = ["claim_type", "workshop_assigned"] as const satisfies readonly (keyof InsuranceDetails & CoverFormKey)[];
+
+const has = (keys: readonly string[], key: string) => keys.includes(key);
+
+/** Writes a Cover Page edit (CoverForm keys, as typed) into the intake
+ * draft at the keys the report prints them from: report_id and
+ * incident_datetime at the top, cover_page.*, vehicle_info.* (tyres as the
+ * four TyreItems), insurance_details.claim_type / workshop_assigned. The
+ * reverse of coverFormFrom. Values are trimmed, and blank or whitespace-only
+ * clears the value (null, which prints "Not recorded"), the same as the
+ * Cover tab's coverRequestFrom -- a stored " " would count as filled and
+ * print an empty cell. (ReviewStep keeps the raw text on screen while it is
+ * being typed, so the trim never eats a space under the cursor.) Tread
+ * depth is a number on the report (TyreItem.tread_depth_mm), so it is
+ * parsed; the size is one per axle and goes on both its tyres, as the firm
+ * prints it. */
+export function applyCoverPatch(data: ReportData, patch: Partial<CoverForm>): ReportData {
+  const next: ReportData = { ...data };
+  let cover: CoverPageInfo | null = null;
+  let vehicle: VehicleInfo | null = null;
+  let insurance: InsuranceDetails | null = null;
+  let tyres: TyreCondition | null = null;
+  const tyre = (slot: keyof TyreCondition, fields: Partial<TyreItem>) => {
+    const all: TyreCondition = tyres || { ...(data.vehicle_info?.tyres || {}) };
+    all[slot] = { ...(all[slot] || {}), ...fields };
+    tyres = all;
+  };
+  for (const [key, raw] of Object.entries(patch) as [CoverFormKey, string | undefined][]) {
+    if (raw === undefined) continue;
+    const value = raw.trim() || null;
+    if (key === "report_id") next.report_id = value;
+    else if (key === "incident_datetime") next.incident_datetime = value;
+    else if (has(COVER_PAGE_KEYS, key)) cover = { ...(cover || data.cover_page || {}), [key]: value };
+    else if (has(VEHICLE_KEYS, key)) vehicle = { ...(vehicle || data.vehicle_info || {}), [key]: value };
+    else if (has(INSURANCE_KEYS, key)) insurance = { ...(insurance || data.insurance_details || {}), [key]: value };
+    else {
+      const side = /^(front|rear)_(nearside|offside)_(mm|brand)$/.exec(key);
+      const size = /^(front|rear)_size$/.exec(key);
+      if (side) {
+        const slot = `${side[1]}_${side[2]}` as keyof TyreCondition;
+        tyre(slot, side[3] === "mm" ? { tread_depth_mm: parseDepth(raw) } : { brand: value });
+      } else if (size) {
+        tyre(`${size[1]}_nearside` as keyof TyreCondition, { size: value });
+        tyre(`${size[1]}_offside` as keyof TyreCondition, { size: value });
+      }
+    }
+  }
+  if (cover) next.cover_page = cover;
+  if (insurance) next.insurance_details = insurance;
+  if (vehicle || tyres) next.vehicle_info = { ...(vehicle || data.vehicle_info || {}), ...(tyres ? { tyres } : {}) };
+  return next;
 }

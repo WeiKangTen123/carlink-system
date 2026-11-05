@@ -208,6 +208,56 @@ def main() -> int:
     assert "Boot Lid" not in s2["without_history"], s2["without_history"]
     ok("lines already in Annex A aren't suggested again, and their part isn't called \"no history\"")
 
+    # Origin: the table had no rows, so every saved line is a person's.
+    assert all((i["origin"], i["source_part"], i["stale"]) == ("typed", None, False) for i in a["items"]), a["items"]
+    items2 = [
+        {**items[0], "workshop_est": 1500, "origin": "history"},  # the figure changed: typed, whatever the client says
+        {**items[1], "origin": "history"},                         # unchanged, but a typed row is never lowered to history
+        {**items[2], "origin": "lookup", "source_part": "Rear Bumper", "stale": True},  # [Use]: a lookup price applied
+        {"part_name": "Rear number plate", "workshop_est": 0},     # new: typed, no source part
+        {"part_name": "Tail gate stopper clips", "workshop_est": 0, "origin": "detection"},  # new under a name never stored: typed
+    ]
+    rows2 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items2}).json()["annex_a"]["items"]
+    assert [(r["origin"], r["source_part"], r["stale"]) for r in rows2] == [
+        ("typed", None, False), ("typed", None, False), ("lookup", "Rear Bumper", True), ("typed", None, False), ("typed", None, False)], rows2
+    assert rows2[0]["workshop_est"] == 1500 and rows2[0]["adjusted_cost"] == 1200.0
+    ok("PUT /annex-a makes a row typed when its name or estimate changed, never lowers a typed row, takes an explicit lookup, keeps source_part and stale as sent")
+    items3 = [
+        {**rows2[0], "origin": "detection"},                      # a typed row sent back as detection: stays typed
+        {**rows2[1], "condition": "Grazed"},                      # only the condition changed on a history row: typed
+        {**rows2[2], "origin": "history"},                        # a lookup row sent back as history, unchanged: stays lookup
+        {**rows2[3], "qty_text": "1set"},                         # qty wording changed: typed (was typed anyway)
+        {**rows2[4], "origin": "lookup"},                         # raised by the client (a price applied), unchanged: lookup
+    ]
+    rows3 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items3}).json()["annex_a"]["items"]
+    assert [r["origin"] for r in rows3] == ["typed", "typed", "lookup", "typed", "lookup"], [(r["part_name"], r["origin"]) for r in rows3]
+    ok("a change to the condition or qty wording makes a row typed; a client can raise a row's origin, never lower it; lookup and typed may become each other")
+    # New rows from the suggestions panel keep "history"; anything else new is typed.
+    panel = {"suggested_from": "2 past cases (Honda Vezel)", "usual_unit_price": 100.0, "qty": 2, "origin": "history", "source_part": "Boot Lid"}
+    items5 = [
+        {**panel, "part_name": "Tail gate hinge", "workshop_est": 200},        # usual x qty: history
+        {**panel, "part_name": "Tail gate seal", "workshop_est": 0},           # unpriced suggestion: history
+        {**panel, "part_name": "Tail gate emblem", "workshop_est": 150},       # a figure the person typed: typed
+        {"part_name": "Tail gate garnish", "workshop_est": 0, "origin": "history"},  # says history, from nowhere: typed
+    ]
+    rows5 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items5}).json()["annex_a"]["items"]
+    assert [r["origin"] for r in rows5] == ["history", "history", "typed", "typed"], [(r["part_name"], r["origin"]) for r in rows5]
+    ok("a new row from the suggestions panel (suggested_from, the usual price or unpriced) keeps origin history; other new rows are typed")
+    # Any other field changed on a history row makes it typed; re-saved untouched it stays history.
+    items6 = [{**rows5[0], "oem_part_number": "33500-T7A"}, {**rows5[1], "discount_pct": 0.0}, {**rows5[0], "part_name": "Tail gate hinge", "is_net_item": True},
+              {**rows5[1], "part_name": "Tail gate seal"}]
+    items6[2]["part_name"] = "Tail gate hinge"  # same row as items6[0]: only the first of a name is matched, so give it its own
+    items6 = [items6[0], items6[1], {**rows5[1], "action": "Replace"}]
+    rows6 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items6}).json()["annex_a"]["items"]
+    assert [r["origin"] for r in rows6] == ["typed", "typed", "typed"], [(r["part_name"], r["origin"]) for r in rows6]
+    again = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items5[:2]}).json()["annex_a"]["items"]
+    assert [r["origin"] for r in again] == ["typed", "typed"], "once typed, a row re-sent as history stays typed"
+    ok("a change to the part number, discount or remarks makes a history row typed, and it never goes back")
+    # [Keep] on a stale row sends source_part null: it must stick; a row sent without the key gets the stored one back.
+    kept_null = surveyor.put(f"/reports/{rid}/annex-a", json={"items": [{**rows5[0], "source_part": None, "stale": False}, {k: v for k, v in rows5[1].items() if k != "source_part"}]}).json()["annex_a"]["items"]
+    assert kept_null[0]["source_part"] is None and kept_null[1]["source_part"] == "Boot Lid", [(r["part_name"], r["source_part"]) for r in kept_null]
+    ok("an explicit source_part: null is honoured ([Keep] on a stale row); a row sent without the key keeps its stored source part")
+
     db = SessionLocal()
     row = db.get(Report, rid)
     row.data = {**row.data, "sign_off": {**(row.data.get("sign_off") or {}), "status": "Signed Off"}}

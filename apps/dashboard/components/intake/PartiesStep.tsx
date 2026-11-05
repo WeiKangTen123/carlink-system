@@ -1,26 +1,21 @@
 "use client";
 
 import { ArrowLeft, CheckCircle2, Loader2, Plus, X } from "lucide-react";
-import {
-  CLAIM_TYPE_OPTIONS,
-  type InsuranceDetails,
-  type PersonInvolved,
-  type PoliceReportDetails,
-  type ReportData,
-  type ThirdPartyInfo,
-  type Witness,
-} from "@/lib/api";
+import type { InsuranceDetails, PersonInvolved, PoliceReportDetails, ReportData, ThirdPartyInfo, Witness } from "@/lib/api";
 
 type Props = {
   data: ReportData;
   onChange: (update: (d: ReportData) => ReportData) => void;
   finalizing: boolean;
-  /** Photos still uploading: creating the case now would leave them out. */
+  /** Photos still uploading: filing the case now would leave them out. */
   uploading: boolean;
   onBack: () => void;
   onFinalize: () => void;
 };
 
+/** Step 4. Everything here stays on the Case Record (the case page's
+ * drawer); none of it is printed on the report. Type of claim is asked on
+ * step 3 with the other Cover Page facts. */
 export function PartiesStep({ data, onChange, finalizing, uploading, onBack, onFinalize }: Props) {
   const people = data.people_involved || [];
   const witnesses = data.witnesses || [];
@@ -39,8 +34,15 @@ export function PartiesStep({ data, onChange, finalizing, uploading, onBack, onF
   return (
     <section className="card intake-panel">
       <div className="intake-panel-head">
-        <h2>Parties &amp; claim</h2>
-        <span className="intake-muted">Optional — anything left blank can be completed later in the case file.</span>
+        <h2>Parties and police</h2>
+        <span className="intake-muted">Kept on the Case Record; not printed on the report. Anything left blank can be added later.</span>
+      </div>
+
+      <div className="intake-field-grid single">
+        <label>
+          Accident location
+          <input type="text" placeholder="e.g. Ubi Road 1" value={data.location ?? ""} onChange={(e) => onChange((d) => ({ ...d, location: e.target.value }))} />
+        </label>
       </div>
 
       <div className="intake-parties-grid">
@@ -101,49 +103,34 @@ export function PartiesStep({ data, onChange, finalizing, uploading, onBack, onF
           </label>
           <div className="intake-field-grid single">
             <label>
-              Police station
+              Station
               <input type="text" placeholder="e.g. Sengkang NPC" value={police.police_station ?? ""} onChange={(e) => setPolice({ police_station: e.target.value })} />
             </label>
             <label>
-              Report number
-              <input type="text" placeholder="e.g. POL-2026-9941" value={police.report_number ?? ""} onChange={(e) => setPolice({ report_number: e.target.value })} />
+              Report no.
+              <input type="text" value={police.report_number ?? ""} onChange={(e) => setPolice({ report_number: e.target.value })} />
             </label>
             <label>
               Officer
               <input type="text" value={police.officer_name ?? ""} onChange={(e) => setPolice({ officer_name: e.target.value })} />
             </label>
           </div>
-          <label className="intake-field-wide">
-            Immediate actions taken
-            <textarea rows={2} value={data.immediate_actions ?? ""} onChange={(e) => onChange((d) => ({ ...d, immediate_actions: e.target.value }))} />
-          </label>
         </div>
 
         <div className="intake-subcard">
-          <h3>Insurance</h3>
+          <h3>Insurer</h3>
           <div className="intake-field-grid single">
             <label>
               Insurer
               <input type="text" placeholder="e.g. NTUC Income" value={insurance.insurer_name ?? ""} onChange={(e) => setInsurance({ insurer_name: e.target.value })} />
             </label>
             <label>
-              Claim number
+              Claim no.
               <input type="text" value={insurance.claim_number ?? ""} onChange={(e) => setInsurance({ claim_number: e.target.value })} />
-            </label>
-            <label>
-              Claim type
-              <select value={insurance.claim_type ?? ""} onChange={(e) => setInsurance({ claim_type: e.target.value || null })}>
-                <option value="">Select…</option>
-                {CLAIM_TYPE_OPTIONS.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
             </label>
           </div>
 
-          <h3 style={{ marginTop: 18 }}>Third-party vehicle</h3>
+          <h3 style={{ marginTop: 18 }}>Other party</h3>
           <div className="intake-field-grid single">
             <label>
               Plate
@@ -168,7 +155,7 @@ export function PartiesStep({ data, onChange, finalizing, uploading, onBack, onF
         {uploading && <span className="intake-muted">Waiting for photos to finish uploading…</span>}
         <button type="button" className="btn-primary-modern" onClick={onFinalize} disabled={finalizing || uploading}>
           {finalizing ? <Loader2 className="spin" style={{ width: 15, height: 15 }} /> : <CheckCircle2 style={{ width: 15, height: 15 }} />}
-          {finalizing ? "Creating case & PDF…" : "Create case & open dossier"}
+          {finalizing ? "Filing case…" : "File case"}
         </button>
       </div>
     </section>

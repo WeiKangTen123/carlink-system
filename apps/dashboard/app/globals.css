@@ -8355,3 +8355,514 @@ html:has(.intake-footer) {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   CASE STUDIO, 5 TABS (2026-11-04): the tab bar's unsaved dot, the Case
+   record drawer, tab 1's detected-parts table, the Cover page's AI tags and
+   impact sketch, the Report menu, and the card fallback for the annex tables
+   on a phone. Additions only; theme tokens so it follows dark and light mode.
+   ========================================================================== */
+
+/* "3 Annex A *": a section with unsaved changes. */
+.case-tab-dirty-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--badge-amber-text);
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+.case-tab-no {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Case header: plate, vehicle, Our Ref, status, the filed line and the
+   buttons. */
+.case-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px 20px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.case-head-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.case-head-ref {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.case-head-ref strong {
+  color: var(--text-primary);
+}
+.case-head-ref .unissued {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.case-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+.case-head-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.case-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.case-status-chip.signed {
+  border-color: var(--badge-green-border, var(--border-color));
+  background: var(--badge-green-bg, var(--surface-elevated));
+  color: var(--badge-green-text);
+}
+.case-public-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* [Report v] menu: PDF, PDF without photos, Excel, Preview. */
+.report-menu {
+  position: relative;
+}
+.report-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card-solid, var(--surface-card));
+  box-shadow: var(--shadow-md, 0 12px 30px rgba(0, 0, 0, 0.25));
+  z-index: 50;
+}
+.report-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.report-menu-item:hover {
+  background: var(--surface-hover);
+}
+.report-menu-note {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  color: var(--badge-amber-text);
+}
+
+/* Case record drawer: a sheet from the right; full screen on a phone. */
+.record-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(11, 15, 25, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.record-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 100vw);
+  z-index: 901;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card-solid, var(--surface-base));
+  border-left: 1px solid var(--border-color);
+  box-shadow: -20px 0 50px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.record-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+}
+.record-drawer-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+.record-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.record-section-title {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.record-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.record-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  background: var(--surface-elevated);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.record-remark {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+}
+.record-drawer-close {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 640px) {
+  .record-drawer {
+    width: 100vw;
+    border-left: none;
+  }
+  .record-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Tab 1: the detection status line and the detected-parts table. */
+.detection-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+}
+.detected-parts-table td {
+  vertical-align: middle;
+}
+.detected-part-select {
+  width: 100%;
+  min-width: 180px;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+}
+.detected-photo-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.detected-photo-thumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-base);
+  cursor: pointer;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.detected-photo-thumb img {
+  width: 44px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.detected-link-btn,
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  cursor: pointer;
+  font-family: inherit;
+}
+.detected-link-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.detected-photo-picker-row td {
+  background: var(--surface-elevated);
+}
+.detected-photo-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.detected-photo-choice {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-base);
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.detected-photo-choice img {
+  width: 56px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.detected-photo-choice.active {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* Cover page: "(P03)" beside a field the AI read, the usual-values
+   button in the section heading, and the impact sketch. */
+.cover-ai-tag {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  cursor: help;
+}
+.cover-form-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cover-usual-values {
+  font-size: 11px !important;
+  padding: 3px 10px !important;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.impact-sketch {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.impact-sketch-svg {
+  width: 150px;
+  height: 300px;
+  flex-shrink: 0;
+}
+.impact-sketch-axis {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--text-muted);
+}
+.impact-zone.outline {
+  fill: var(--surface-elevated);
+  stroke: var(--border-hover, var(--border-color));
+  stroke-width: 1.5;
+}
+.impact-zone.severe {
+  fill: rgba(239, 68, 68, 0.55);
+  stroke: #ef4444;
+  stroke-width: 1.5;
+}
+.impact-zone.moderate {
+  fill: rgba(245, 158, 11, 0.55);
+  stroke: #f59e0b;
+  stroke-width: 1.5;
+}
+.impact-zone.minor {
+  fill: rgba(16, 185, 129, 0.5);
+  stroke: #10b981;
+  stroke-width: 1.5;
+}
+.impact-zone.unrated {
+  fill: rgba(56, 189, 248, 0.45);
+  stroke: var(--accent-cyan);
+  stroke-width: 1.5;
+}
+.impact-sketch-notes {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+/* Annex A: a kept row whose part is no longer detected. */
+.annex-row-stale td {
+  background: var(--badge-amber-bg);
+}
+.annex-stale-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--badge-amber-text);
+}
+.annex-stale-btn {
+  background: none;
+  border: 1px solid var(--badge-amber-border);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--badge-amber-text);
+  cursor: pointer;
+  font-family: inherit;
+}
+.annex-stale-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Annex A / B on a phone: each line as a card, cells labelled from
+   data-label (the header row is hidden). */
+@media (max-width: 640px) {
+  .annex-table.annex-cards thead {
+    display: none;
+  }
+  .annex-table.annex-cards tbody tr,
+  .annex-table.annex-cards tfoot tr {
+    display: block;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .annex-table.annex-cards tbody tr.annex-section-row {
+    padding: 0;
+  }
+  .annex-table.annex-cards tbody tr.annex-section-row td {
+    display: block;
+  }
+  .annex-table.annex-cards td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border: none;
+    padding: 3px 0;
+    text-align: right !important;
+  }
+  .annex-table.annex-cards td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  .annex-table.annex-cards td[data-label=""]::before {
+    content: none;
+  }
+  .annex-table.annex-cards td:not([data-label]) {
+    justify-content: flex-start;
+    text-align: left !important;
+  }
+  .annex-table.annex-cards td .annex-cell-input {
+    max-width: 60%;
+  }
+  .annex-table.annex-cards tfoot td[colspan] {
+    justify-content: flex-start;
+  }
+}
+
+/* Loading skeleton for the case page: header, tab bar, split. */
+.case-skeleton-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0;
+}
+.case-skeleton-tabs .skeleton-bar {
+  width: 120px;
+  height: 28px;
+}

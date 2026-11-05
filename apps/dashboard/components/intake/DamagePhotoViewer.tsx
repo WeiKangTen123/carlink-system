@@ -4,14 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, ExternalLink, X } from "lucide-react";
 import { fileUrl } from "@/lib/api";
-import { severityClass } from "@/lib/caseFields";
 import type { IntakePhoto } from "@/lib/intake";
 import { bboxStyle, isTypingTarget } from "@/lib/intakeReview";
 
 export type ViewerSlide = {
   key: string;
   photo: IntakePhoto;
-  /** Set when the slide is a damage item: what the list says about it. */
+  /** Set when the slide is a damage item: what the Annex A-shaped list says
+   * about it (Vehicle Parts Description / Condition; severity is kept on the
+   * case, not printed). */
   damage?: { part: string; damageType?: string | null; severity?: string | null; bbox?: number[] | null };
   /** Shown instead for a plain photo (opened from Photos by part). */
   heading?: string;
@@ -111,12 +112,16 @@ export function DamagePhotoViewer({ slides, index, title, onNavigate, onClose }:
             <dl className="rv-viewer-facts">
               <dt>Part</dt>
               <dd>{damage.part || "Not chosen yet"}</dd>
-              <dt>Damage</dt>
+              <dt>Condition</dt>
               <dd>{damage.damageType || "Not set"}</dd>
-              <dt>Severity</dt>
-              <dd>
-                <span className={`chip-severity ${severityClass(damage.severity)}`}>{damage.severity || "Unrated"}</span>
-              </dd>
+              {damage.severity && (
+                <>
+                  <dt>Severity</dt>
+                  <dd>
+                    {damage.severity} <span className="intake-muted">(not printed)</span>
+                  </dd>
+                </>
+              )}
             </dl>
           ) : (
             slide.heading && <div className="rv-viewer-heading">{slide.heading}</div>

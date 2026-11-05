@@ -117,7 +117,8 @@ from app.auth.permissions import is_staff
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, find_session, get_session, reset_session
 from app.reports.db import SessionLocal, init_db
-from app.reports.models import ChatLink, ChatLinkCode, Report, gen_id
+from app.reports.filing import file_case_data
+from app.reports.models import ChatLink, ChatLinkCode, Report, User, gen_id
 from app.reports.schema import SignOffInfo
 from app.rendering.renderer import BOT_RENDER_SLOT_WAIT_SECONDS, render_pdf
 from app.storage.files import disk_space_low, remove_incident_dirs, report_pdf_path, save_photo
@@ -410,7 +411,21 @@ def _check_filing(external_id: str, user_id: str) -> tuple[bool, str | None]:
         db.close()
 
 
-def _save_case(report_id: str, external_id: str, user_id: str, data: dict, photos: list[str], pdf_path) -> tuple[bool, str | None]:
+def _file_draft(user_id: str, data: dict, n_photos: int, ai_draft: dict | None, report_id: str) -> dict:
+    """The filing step every channel shares (app/reports/filing.py), as the
+    linked account: Annex A rows priced when it may see the price book,
+    photo_index with kind None (bot photos are never sorted). Reads only;
+    the case row comes later (_save_case)."""
+    db = SessionLocal()
+    try:
+        return file_case_data(db, data, db.get(User, user_id), ai_draft=ai_draft,
+                              photo_kinds=[{} for _ in range(n_photos)], report_id=report_id)
+    finally:
+        db.close()
+
+
+def _save_case(report_id: str, external_id: str, user_id: str, data: dict, photos: list[str], pdf_path,
+               ai_draft: dict | None = None) -> tuple[bool, str | None]:
     """Saves the case as this person's, with step 8's check made once more
     inside the same transaction: a long render could outlast the link.
 
@@ -432,6 +447,7 @@ def _save_case(report_id: str, external_id: str, user_id: str, data: dict, photo
             photo_paths=photos,
             pdf_path=pdf_path,
             owner_id=user_id,
+            ai_draft=ai_draft,  # what the AI said, before anyone's edits (GET /reports/{id} ai_read)
         )
         db.add(report)
         db.flush()
@@ -1108,7 +1124,8 @@ async def _handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if parsed:
             if parsed.get("location"): session.location = parsed["location"]
             if parsed.get("incident_datetime"): session.incident_datetime = parsed["incident_datetime"]
-            if parsed.get("reporter_name"): session.reporter_name = parsed["reporter_name"]
+            if parsed.get("requested_by"): session.requested_by = parsed["requested_by"]
+            if parsed.get("claim_type"): session.claim_type = parsed["claim_type"]
             if parsed.get("vehicle_plate"): session.vehicle_plate = parsed["vehicle_plate"]
             if parsed.get("insurer_name"): session.insurer_name = parsed["insurer_name"]
             if parsed.get("workshop_name"): session.workshop_name = parsed["workshop_name"]
@@ -1240,10 +1257,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if parsed:
         if parsed.get("location"): session.location = parsed["location"]
         if parsed.get("incident_datetime"): session.incident_datetime = parsed["incident_datetime"]
-        if parsed.get("reported_to_authorities") is not None: session.reported_to_authorities = parsed["reported_to_authorities"]
-        if parsed.get("reporter_name"): session.reporter_name = parsed["reporter_name"]
-        if parsed.get("reporter_role"): session.reporter_role = parsed["reporter_role"]
-        if parsed.get("reporter_contact"): session.reporter_contact = parsed["reporter_contact"]
+        # The template's printed facts (flow.TEMPLATE_PROMPT): requested by
+        # and type of claim go to the cover page / insurance details.
+        if parsed.get("requested_by"): session.requested_by = parsed["requested_by"]
+        if parsed.get("claim_type"): session.claim_type = parsed["claim_type"]
         if parsed.get("vehicle_plate"): session.vehicle_plate = parsed["vehicle_plate"]
         if parsed.get("damaged_side"): session.damaged_side = parsed["damaged_side"]
         if parsed.get("insurer_name"): session.insurer_name = parsed["insurer_name"]
@@ -1302,6 +1319,7 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
             limits.ai_running.release(user.id)
 
     session.draft = result.draft
+    session.ai_draft = result.ai_draft
     session.stage = Stage.AWAITING_CONFIRMATION
     keyboard = _build_inline_keyboard(session)
 
@@ -1481,6 +1499,12 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
     if not user.staff:
         data["report_id"] = None
     report_id = gen_id()
+    # Filed like a wizard case (app/reports/filing.py) before any file is
+    # written -- a failure here leaves nothing behind -- and before the
+    # render, so the PDF carries the Annex A rows. ai_draft is the AI's own
+    # reading (flow.DraftResult), not the draft with the template merged.
+    ai_draft = session.ai_draft
+    data = await asyncio.to_thread(_file_draft, user.id, data, len(session.photo_paths), ai_draft, report_id)
     stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
     pdf_path: str | None = report_pdf_path(report_id)
     try:
@@ -1498,7 +1522,7 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
 
     try:
         still_linked, problem = await asyncio.to_thread(
-            _save_case, report_id, external_id, user.id, data, stored_photos, pdf_path
+            _save_case, report_id, external_id, user.id, data, stored_photos, pdf_path, ai_draft
         )
     except Exception:
         remove_incident_dirs(report_id)  # no case row, so no files for one
@@ -1516,9 +1540,11 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
     reset_session(chat_id)
 
     if msg_target:
-        # The link, not the PDF file: the PDF stays behind sign-in (D8).
+        # The link, not the PDF file: the PDF stays behind sign-in (D8). No
+        # CIR- code: the firm's reference (Our Ref) is issued on the case
+        # page, and a made-up one read as if it were.
         await msg_target.reply_text(
-            f"✅ Report CIR-{report_id[:8].upper()} is saved to your cases in Carlink.\n\n"
+            "✅ Report saved to your cases in Carlink.\n\n"
             f"Open it (sign in to see the PDF):\n{_base_url()}/reports/{report_id}\n\n"
             "Send /new or a photo to file another report.",
             link_preview_options=NO_PREVIEW,

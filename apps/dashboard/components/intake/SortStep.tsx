@@ -204,10 +204,10 @@ export function SortStep({
   // after a reload, when "Continue without AI" is no longer on screen.
   const canContinueByHand = stage === "failed" || aiSkipped;
   const byHand = canContinueByHand && !hasRead && stage !== "ready";
-  let nextLabel = "Review facts";
-  if (stage === "ready") nextLabel = "Looks right — review facts";
+  let nextLabel = "Next: cover page & damage";
+  if (stage === "ready") nextLabel = "Looks right — next: cover page & damage";
   else if (running) nextLabel = "Waiting for the AI…";
-  else if (byHand) nextLabel = "Fill in the facts by hand";
+  else if (byHand) nextLabel = "Fill in the cover page by hand";
   const canNext = !busy && !running && (stage === "ready" || canContinueByHand);
 
   const openReason = open && hasRead && !readIds.has(open.id) ? unreadReason(open, readIds.size, changedSinceRead) : null;
@@ -224,7 +224,7 @@ export function SortStep({
   return (
     <section className="card intake-panel">
       <div className="intake-panel-head">
-        <h2>AI sorting</h2>
+        <h2>Sort photos</h2>
         {running ? (
           <div className="intake-progress-row compact">
             <Loader2 className="spin" style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />

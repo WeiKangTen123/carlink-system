@@ -278,7 +278,8 @@ def fake_build_draft(description, photo_paths, session=None, **kw):
     DRAFT_CALLS.append(list(photo_paths))
     for p in photo_paths:  # the real call reads every photo
         assert Path(p).exists(), f"drafted with a missing photo {p}"
-    return DraftResult(draft=SecurityIncidentDraft(description=description), summary_text="Draft summary")
+    draft = SecurityIncidentDraft(description=description)
+    return DraftResult(draft=draft, summary_text="Draft summary", ai_draft=draft.model_dump())
 
 
 def fake_render_pdf(data, photo_paths, output_path, report_id=None, unverified=None, slot_wait=None):
@@ -570,6 +571,41 @@ async def check_drafting_as_the_person() -> None:
     ok("AI off for the person: one plain 'add your key' message for an album, nothing downloaded")
 
 
+TEMPLATE_REPLY = (
+    "Vehicle Plate: SMV7530X\n"
+    "Requested by (insurer / company): Tokio Marine\n"
+    "Type of claim (Own damage / Third party): Own damage\n"
+    "Workshop: Precise Auto Service\n"
+    "Date/time of accident: 27 Feb 2023 10.15am\n"
+    "Damaged Side (Left / Right / Front / Rear): Rear\n"
+    "What happened: Rear-ended at a junction."
+)
+
+
+async def check_template() -> None:
+    out = Outbox()
+    chat = BEN_TG
+    state.reset_session(str(chat))
+    await send_photo(chat, out)
+    prompt = next(t for t in out.texts if "Vehicle Plate:" in t)
+    for asked in ("Requested by", "Type of claim", "Workshop:", "Date/time of accident:", "Damaged Side", "What happened:"):
+        assert asked in prompt, prompt
+    for dropped in ("Name:", "Role/Position", "Contact Number", "Reported to Authorities", "Location:", "Insurer"):
+        assert dropped not in prompt, prompt
+    ok("after the first photo the template asks only the printed facts: plate, requested by, type of claim, workshop, "
+       "date/time, damaged side, what happened -- no name, role, contact or police question")
+    await send_text(chat, out, TEMPLATE_REPLY)
+    session = state.get_session(str(chat))
+    assert session.stage == Stage.AWAITING_CONFIRMATION, out.texts[-2:]
+    assert (session.vehicle_plate, session.requested_by, session.claim_type, session.workshop_name, session.incident_datetime,
+            session.damaged_side) == ("SMV7530X", "Tokio Marine", "Own damage", "Precise Auto Service", "27 Feb 2023 10.15am", "Rear")
+    assert session.description == "Rear-ended at a junction."
+    assert not hasattr(session, "reporter_name") and not hasattr(session, "reported_to_authorities")
+    ok("the reply fills the session's plate, requested by (-> cover page), type of claim and workshop (-> insurance details), "
+       "date/time, side and story; nothing about the reporter is kept")
+    state.reset_session(str(chat))
+
+
 async def check_one_confirm() -> None:
     out = Outbox()
     chat = ANN_TG
@@ -599,6 +635,16 @@ async def check_one_confirm() -> None:
     assert case.pdf_path and Path(case.pdf_path).exists() and RENDERS == [True]
     ok("one Confirm saves one case as Ann's ('created - Filed through the Telegram bot' by her) and replies "
        "with its link, no PDF file; her PDF has the unverified banner")
+    # Filed like a wizard case (app/reports/filing.py). The fake draft names
+    # no damage, so Annex A is empty here; rows per part: scripts/test_filing.py.
+    assert "CIR-" not in out.texts[-1], out.texts[-1]
+    assert case.data["photo_index"] == [
+        {"label": "P01", "kind": None, "area": None, "part": None, "shows_damage": None, "quality": None},
+        {"label": "P02", "kind": None, "area": None, "part": None, "shows_damage": None, "quality": None},
+    ], case.data["photo_index"]
+    assert case.data["annex_a"]["items"] == [] and case.data["annex_c"]["adjusted_total"] == 0.0
+    assert case.ai_draft and case.ai_draft["description"] == "Rear-ended at PIE exit 12", case.ai_draft
+    ok("the case carries photo_index (kind None: never sorted), a synced Annex A and the AI's draft; the reply has no CIR- code")
 
     assert not any(Path(p).exists() for p in temp_files), [p for p in temp_files if Path(p).exists()]
     fresh = state.get_session(str(chat))
@@ -1222,6 +1268,7 @@ async def run_async_checks() -> None:
         await check_link_ends_mid_draft()
         await check_linking()
         await check_drafting_as_the_person()
+        await check_template()
         print("confirm")
         await check_one_confirm()
         await check_double_confirm()
