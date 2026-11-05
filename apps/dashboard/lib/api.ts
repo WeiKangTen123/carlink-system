@@ -960,7 +960,22 @@ export type AnnexAPartItem = {
    * person. Shown as a tag, never printed; cleared when someone types an
    * estimate. */
   prefilled?: boolean;
+  /** Where the row came from: "detection" (one unpriced row per detected
+   * part), "history" (wording and usual price from past cases), "lookup"
+   * (a price lookup, Phase 3), "typed" (a person wrote or priced it). Null
+   * on rows from before 2026-11-04; the API derives it on read. Shown as a
+   * tag, never printed. The dashboard sends "typed" on any row a person
+   * changed, so a later detection re-sync leaves it alone. */
+  origin?: AnnexAOrigin | null;
+  /** The damage_summary.part this row was made for; null for a line added
+   * by hand. How tab 1 counts "Annex A: n lines, m priced" per part. */
+  source_part?: string | null;
+  /** A kept row whose source_part is no longer detected: the machine never
+   * deletes it, the surveyor keeps or removes it. */
+  stale?: boolean;
 };
+
+export type AnnexAOrigin = "detection" | "history" | "lookup" | "typed";
 
 export type AnnexAInfo = {
   items: AnnexAPartItem[];
@@ -1170,6 +1185,10 @@ export type ReportSummary = {
   /** "TG-261030-K7M4" on a case a member of the public sent through the
    * Telegram bot (release P6); null or absent otherwise. */
   public_reference?: string | null;
+  /** Our Ref (the firm's file number), or null until issued. */
+  report_id?: string | null;
+  /** cover_page.requested_by, or null. */
+  requested_by?: string | null;
 };
 
 export type ReportData = {
@@ -1243,6 +1262,19 @@ export type ReportDetail = {
   /** Who sent it, on a report from the public (release P6); null or absent
    * otherwise. */
   public_submission?: PublicSubmissionInfo | null;
+  /** What the AI last read for the cover fields (from Report.ai_draft):
+   * the non-empty values only, so the Cover tab can tag a field "(P03)"
+   * while it still says what the AI said. Null when nothing was read.
+   * Never printed. */
+  ai_read?: AiReadInfo | null;
+  /** The photo each ai_read field came from ("P03"), when the draft can
+   * tell; {} otherwise. */
+  ai_read_photos?: Record<string, string>;
+};
+
+export type AiReadInfo = {
+  vehicle_info?: Record<string, string | number | null | undefined> | null;
+  incident_datetime?: string | null;
 };
 
 export type HistoryEntry = {
@@ -1355,81 +1387,14 @@ export async function reassignCases(
   return res.json();
 }
 
-export async function createReport(payload: ReportData, tempPhotoPaths: string[] = []): Promise<{ id: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
-  });
-  if (!res.ok) throw await apiError(res, "Failed to create report");
-  return res.json();
-}
-
-/** AI-drafted subset of ReportData returned by analyzing uploaded photos --
- * matches what the Telegram bot flow already fills in from photos+text. */
-export type PhotoAnalysisDraft = Pick<
-  ReportData,
-  "accident_type" | "severity_level" | "damaged_parts" | "category" | "description" | "damage_summary" | "vehicle_info"
->;
-
-/** `reportId`: the case the edit form is for (left out on New Report). The
- * API checks it may be seen and changed (404, 403), and on a case the public
- * sent (release P6) uses only the presser's own billed AI key until an admin
- * confirms the company key is billed (409 ai_key_missing). */
-export async function analyzeReportPhotos(
-  description: string,
-  photos: File[],
-  reportId?: string
-): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] }> {
-  const formData = new FormData();
-  formData.set("description", description);
-  if (reportId) formData.set("report_id", reportId);
-  for (const photo of photos) formData.append("photos", photo);
-
-  const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) throw await apiError(res, "AI analysis failed");
-  return res.json();
-}
-
-/** Same analysis as analyzeReportPhotos, but against photos a report already
- * has saved rather than freshly-picked files -- must run server-side (this
- * is only ever called from a server action) since it re-fetches each photo
- * from the API's /files/ route directly, which has no CORS headers and
- * fails if a browser calls it. `reportId`: the case they are from, as for
- * analyzeReportPhotos (its key rule, on a case the public sent). */
-export async function analyzeExistingReportPhotos(
-  reportId: string,
-  photoPaths: string[],
-  description: string
-): Promise<{ draft: PhotoAnalysisDraft }> {
-  const formData = new FormData();
-  formData.set("description", description);
-  formData.set("report_id", reportId);
-  for (let i = 0; i < photoPaths.length; i++) {
-    const path = photoPaths[i];
-    const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
-    const res = await apiFetch(url);
-    if (!res.ok) throw new Error(`Failed to fetch existing photo ${path} (${res.status})`);
-    const blob = await res.blob();
-    formData.append("photos", blob, `existing_${i}.jpg`);
-  }
-
-  const res = await apiFetch(`${API_BASE_URL}/reports/analyze-photos`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) throw await apiError(res, "AI analysis failed");
-  const result = await res.json();
-  return { draft: result.draft };
-}
+// createReport, analyzeReportPhotos and analyzeExistingReportPhotos went on
+// 2026-11-04: cases are only created by the intake wizard (POST /intake)
+// and the bots now, and the AI reads photos in the wizard, not on the edit
+// form.
 
 /** Attaches photos to a case without the AI (release P4: for people whose
- * AI is off). They are saved to the temp dir like analyzeReportPhotos'
- * and come back as the same temp_photo_paths, which PUT /reports/{id}
- * then moves into the case on save. Refusals keep their code: disk_full
+ * AI is off). They are saved to the temp dir and come back as
+ * temp_photo_paths, which PUT /reports/{id} then moves into the case on save. Refusals keep their code: disk_full
  * (507), rate_limited (429, accounts without staff access: a number of
  * photos an hour), not_allowed (403). */
 export async function uploadReportPhotos(reportId: string, photos: File[]): Promise<{ temp_photo_paths: string[] }> {
@@ -1444,9 +1409,13 @@ export async function uploadReportPhotos(reportId: string, photos: File[]): Prom
   return { temp_photo_paths: Array.isArray(result?.temp_photo_paths) ? result.temp_photo_paths : [] };
 }
 
+/** PUT /reports/{id}: the API merges the sent keys over the record
+ * (exclude_unset), so the edit form sends only what it edits (description,
+ * location, police, insurer, people, witnesses, third party, photos) and
+ * never the sections other tabs own. */
 export async function updateReport(
   id: string,
-  payload: ReportData,
+  payload: Partial<ReportData>,
   tempPhotoPaths: string[] = []
 ): Promise<{ id: string; status: string; pdf_url: string }> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, {
@@ -1458,20 +1427,65 @@ export async function updateReport(
   return res.json();
 }
 
-/** Patches just the two reviewer-owned fields on one damage line item.
- * Deliberately not updateReport(): that replaces the whole report and
- * re-renders the PDF, which is far too heavy for a checkbox toggle. */
-export async function reviewDamageItem(
-  reportId: string,
-  itemIndex: number,
-  patch: { human_verified?: boolean; oem_part_number?: string }
-): Promise<{ id: string; item_index: number; item: DamageSummaryItem }> {
+// Deliberately not updateReport() for the parts: that replaces the whole
+// report and re-renders the PDF, which is far too heavy for a checkbox
+// toggle. The damage-items endpoints change one line at a time.
+
+/** PATCH /reports/{id}/damage-items/{i}: what tab 1's detected-parts table
+ * changes on one line. `part` must be a taxonomy part; `photo_reference`
+ * "P07" or null (the AI box is dropped when the photo changes). */
+export type DamageItemPatch = {
+  part?: string;
+  damage_type?: string | null;
+  severity?: string | null;
+  photo_reference?: string | null;
+  human_verified?: boolean;
+  oem_part_number?: string | null;
+};
+
+/** Every damage-items call answers with the parts as saved and the Annex A
+ * the API re-synced to them (priced and typed rows kept, stale ones
+ * flagged), plus the Annex C totals, so the page updates without a
+ * reload. */
+export type DamageItemsResponse = {
+  damage_summary: DamageSummaryItem[];
+  /** The plain part names, kept in step with damage_summary (the page
+   * falls back to them when damage_summary is missing). */
+  damaged_parts?: string[];
+  annex_a: AnnexAInfo;
+  annex_c: AnnexCInfo;
+};
+
+export async function patchDamageItem(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw await apiError(res, "Failed to update damage item");
+  if (!res.ok) throw await apiError(res, "Failed to update the part");
+  return res.json();
+}
+
+/** POST /reports/{id}/damage-items: a part the surveyor adds by hand
+ * (appended, verified). */
+export async function addDamageItem(
+  reportId: string,
+  body: { part: string; damage_type?: string | null; photo_reference?: string | null }
+): Promise<DamageItemsResponse> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to add the part");
+  return res.json();
+}
+
+/** DELETE /reports/{id}/damage-items/{i}: the part is remembered as
+ * dismissed, so a later detection doesn't bring it back. */
+export async function removeDamageItem(reportId: string, itemIndex: number): Promise<DamageItemsResponse> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, { method: "DELETE" });
+  if (!res.ok) throw await apiError(res, "Failed to remove the part");
   return res.json();
 }
 

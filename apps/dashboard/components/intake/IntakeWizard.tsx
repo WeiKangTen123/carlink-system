@@ -40,10 +40,10 @@ import { UploadStep, type UploadItem } from "./UploadStep";
 type Step = 1 | 2 | 3 | 4;
 
 const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: "Upload" },
-  { n: 2, label: "AI Sorting" },
-  { n: 3, label: "Review Facts" },
-  { n: 4, label: "Parties & Claim" },
+  { n: 1, label: "Photos" },
+  { n: 2, label: "Sort photos" },
+  { n: 3, label: "Cover page & damage" },
+  { n: 4, label: "Parties" },
 ];
 
 // Three at a time keeps a 70-photo case moving without one slow phone
@@ -306,7 +306,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   // Leaving mid-upload loses the rest of the queue (the File objects only
   // exist in this page), and leaving with unsaved edits loses those. The
   // browser's own prompt covers closing the tab and reloading; in-app links
-  // (sidebar, breadcrumbs, "Back to Cases Repository") never fire
+  // (sidebar, breadcrumbs, "Back to cases") never fire
   // beforeunload, so those clicks are caught here too.
   const uploading = uploads.some((u) => u.status === "queued" || u.status === "uploading" || u.status === "retrying");
   const unsafeToLeave = uploading || dirty;
@@ -875,11 +875,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     <div className="intake-shell new-report-form">
       <header className="intake-header">
         <div>
-          <h1>New Case Intake</h1>
-          <p className="form-hint">Drop the whole case folder — the AI sorts the photos and reads the facts, you check them.</p>
+          <h1>New case</h1>
+          <p className="form-hint">
+            Drop the case folder; the AI sorts the photos and reads the facts; you check them against the cover page and Annex A.
+          </p>
         </div>
         <div className="intake-header-actions">
-          {draftId && <span className="intake-chip">Draft {draftId.slice(0, 6).toUpperCase()}</span>}
           {publicInfo && (
             <span className="intake-chip public-chip" title="Sent by a member of the public through the Telegram bot">
               <Send style={{ width: 11, height: 11 }} /> Public · {publicInfo.reference}
@@ -981,8 +982,6 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           photos={state?.photos ?? []}
           uploads={uploads}
           stage={stage}
-          data={data}
-          onDataChange={(patch) => editData((d) => ({ ...d, ...patch }))}
           notes={notes}
           onNotesChange={editNotes}
           locked={running}
@@ -1033,6 +1032,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           readPhotoIds={state.read_photo_ids}
           taxonomy={reviewTaxonomy}
           aiSkipped={aiSkipped}
+          aiRead={state.ai_read}
+          aiReadPhotos={state.ai_read_photos}
           onBack={() => goTo(2)}
           onNext={() => goTo(4)}
         />

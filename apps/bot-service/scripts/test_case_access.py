@@ -626,6 +626,7 @@ def _probe_routes(B_id: str, photo_id: str) -> tuple[list, list]:
         ("POST", "/reports/{id}/render-pdf", dict),
         ("PUT", "/reports/{id}", lambda: {"json": {"draft": {"category": ["Other"], "description": "B was here"}}}),
         ("PATCH", "/reports/{id}/damage-items/0", lambda: {"json": {"human_verified": True, "oem_part_number": "B-1"}}),
+        ("POST", "/reports/{id}/damage-items", lambda: {"json": {"part": "Bonnet"}}),
         ("POST", "/reports/{id}/ai-enrich", dict),
         ("GET", "/reports/{id}/annex-suggestions", dict),
         ("POST", "/reports/{id}/annex-suggestions/ai", lambda: {"json": {"parts": ["Rear Bumper"]}}),
@@ -640,6 +641,7 @@ def _probe_routes(B_id: str, photo_id: str) -> tuple[list, list]:
         ("POST", "/intake/{id}/process", lambda: {"json": {"mode": "all"}}),
     ]
     destructive = [
+        ("DELETE", "/reports/{id}/damage-items/0", dict),
         ("DELETE", "/intake/{id}/photos/{photo}", dict),
         ("POST", "/intake/{id}/finalize", lambda: {"json": {"data": {"description": "B", "category": ["Other"]}}}),
         ("DELETE", "/reports/{id}", dict),

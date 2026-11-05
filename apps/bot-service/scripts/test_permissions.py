@@ -273,7 +273,9 @@ DECISIONS = {
     ("GET", "/intake/{report_id}"): ("case-view", "adds owner, permissions"),
 
     ("PUT", "/reports/{report_id}"): ("case-edit", "Our Ref (report_id) staff only (B2)"),
-    ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", ""),
+    ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", "409 intake / signed off, as PUT /annex-a; Annex A follows"),
+    ("POST", "/reports/{report_id}/damage-items"): ("case-edit", "as PATCH; tested in scripts/test_damage_items.py"),
+    ("DELETE", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", "as PATCH; records the part in dismissed_parts"),
     ("POST", "/reports/{report_id}/ai-enrich"): ("case-edit", "not a Gemini call"),
     ("PUT", "/reports/{report_id}/annex-a"): ("case-edit", ""),
     ("PUT", "/reports/{report_id}/cover-page"): ("case-edit", "Our Ref (report_id) staff only, as PUT /reports/{id}"),

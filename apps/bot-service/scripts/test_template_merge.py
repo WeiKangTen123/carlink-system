@@ -38,10 +38,11 @@ def _session(**overrides):
     s = S()
     s.location = "Bedok"
     s.incident_datetime = "2026-09-13 05:02 UTC"
-    s.reported_to_authorities = False
-    s.reporter_name = "EK"
-    s.reporter_role = "Ah Gou/ Car Surveyor 1"
-    s.reporter_contact = "81238123"
+    # The template's printed facts (2026-11-04): who asked for the report,
+    # the type of claim and the workshop. The AI never sees these in a photo.
+    s.requested_by = "Tokio Marine Insurance"
+    s.claim_type = "Own damage"
+    s.workshop_name = "Precise Auto Service"
     s.vehicle_plate = "SBD1234C"
     s.pending_edits = []
     for k, v in overrides.items():
@@ -79,17 +80,18 @@ def main() -> int:
     print("  first draft -- the typed template is stated ground truth")
     with mock.patch.object(flow, "draft_report", _ai(vehicle_info=VehicleInfo(plate_number="SLJ7948"))):
         d = flow.build_draft("x", [], _session(), actor=ACTOR).draft
-        check("reporter_name applied", d.reporter_name, "EK")
-        check("reporter_contact applied", d.reporter_contact, "81238123")
+        check("requested_by applied (cover page)", d.cover_page.requested_by, "Tokio Marine Insurance")
+        check("claim_type applied", d.insurance_details.claim_type, "Own damage")
+        check("workshop applied", d.insurance_details.workshop_assigned, "Precise Auto Service")
         check("location applied", d.location, "Bedok")
         check("typed plate beats the AI's photo reading", d.vehicle_info.plate_number, "SBD1234C")
 
     print("\n  redraft, AI returns nothing new -- nothing may be lost")
     with mock.patch.object(flow, "draft_report", _ai()):
         d = flow.build_draft("x", [], _session(pending_edits=["the plate is actually ABC1234"]), actor=ACTOR).draft
-        check("reporter_name survives", d.reporter_name, "EK")
-        check("reporter_role survives", d.reporter_role, "Ah Gou/ Car Surveyor 1")
-        check("reporter_contact survives", d.reporter_contact, "81238123")
+        check("requested_by survives", d.cover_page.requested_by, "Tokio Marine Insurance")
+        check("claim_type survives", d.insurance_details.claim_type, "Own damage")
+        check("workshop survives", d.insurance_details.workshop_assigned, "Precise Auto Service")
         check("location survives", d.location, "Bedok")
         check("incident_datetime survives", d.incident_datetime, "2026-09-13 05:02 UTC")
 
@@ -100,12 +102,36 @@ def main() -> int:
         d = flow.build_draft("x", [], _session(pending_edits=["plate is ABC1234, it was Tampines"]), actor=ACTOR).draft
         check("corrected plate wins over the stale template", d.vehicle_info.plate_number, "ABC1234")
         check("corrected location wins over the stale template", d.location, "Tampines")
-        check("reporter identity preserved alongside", d.reporter_name, "EK")
+        check("requested by preserved alongside", d.cover_page.requested_by, "Tokio Marine Insurance")
 
-    print("\n  reporter corrects their own name in chat")
-    with mock.patch.object(flow, "draft_report", _ai(reporter_name="Ahmad")):
-        d = flow.build_draft("x", [], _session(pending_edits=["actually my name is Ahmad"]), actor=ACTOR).draft
-        check("AI-extracted name correction wins", d.reporter_name, "Ahmad")
+    print("\n  reporter corrects the type of claim in chat")
+    with mock.patch.object(flow, "draft_report", _ai(insurance_details={"claim_type": "Third party"})):
+        d = flow.build_draft("x", [], _session(pending_edits=["it is a third party claim"]), actor=ACTOR).draft
+        check("AI-extracted claim type correction wins", d.insurance_details.claim_type, "Third party")
+
+    print("\n  the template and its summary")
+    prompt = flow.build_template_prompt()
+    for asked in ("Vehicle Plate:", "Requested by", "Type of claim", "Workshop:", "Date/time of accident:", "Damaged Side", "What happened:"):
+        check(f"the template asks {asked!r}", asked in prompt, True)
+    for dropped in ("Name:", "Role", "Contact", "Reported to Authorities", "Location:", "Insurer"):
+        check(f"the template no longer asks {dropped!r}", dropped in prompt, False)
+    parsed = flow.parse_template_reply(
+        "Vehicle Plate: SMV7530X\nRequested by (insurer / company): Tokio Marine\nType of claim (Own damage / Third party): Own damage\n"
+        "Workshop: Precise Auto\nDate/time of accident: 27 Feb 2023 10.15am\nDamaged Side (Left / Right / Front / Rear): Rear\n"
+        "What happened: Rear-ended at a junction.\nSecond line of the story."
+    )
+    check("parsed: plate", parsed["vehicle_plate"], "SMV7530X")
+    check("parsed: requested by", parsed["requested_by"], "Tokio Marine")
+    check("parsed: type of claim", parsed["claim_type"], "Own damage")
+    check("parsed: workshop", parsed["workshop_name"], "Precise Auto")
+    check("parsed: date/time of accident", parsed["incident_datetime"], "27 Feb 2023 10.15am")
+    check("parsed: side", parsed["damaged_side"], "Rear")
+    check("parsed: what happened (continued lines)", parsed["description"], "Rear-ended at a junction. Second line of the story.")
+    check("parsed: no reporter keys", any(k.startswith("reporter") or k == "reported_to_authorities" for k in parsed), False)
+    text = flow.summarize(d)
+    check("summary has no 'Police report' line", "Police report" in text, False)
+    check("summary shows who asked for the report", "Requested by:* Tokio Marine Insurance" in text, True)
+    check("summary shows the type of claim", "Claim Type:* Third party" in text, True)
 
     print()
     if FAILURES:

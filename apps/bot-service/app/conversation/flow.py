@@ -12,7 +12,7 @@ from typing import Optional
 
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor
-from app.reports.schema import SecurityIncidentDraft, VehicleInfo
+from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
 from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
 
 
@@ -20,6 +20,10 @@ from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONI
 class DraftResult:
     draft: SecurityIncidentDraft
     summary_text: str
+    # What the AI itself said, as a dict, before the template's typed facts
+    # were merged in: kept on the case as Report.ai_draft, so a typed plate
+    # or date is never shown as "AI-read" (GET /reports/{id} ai_read).
+    ai_draft: Optional[dict] = None
 
 
 def _damage_vocabulary() -> re.Pattern:
@@ -103,7 +107,6 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
                 "incident date and time": session.incident_datetime,
                 "location": session.location,
                 "vehicle plate": session.vehicle_plate,
-                "reporter name": session.reporter_name,
             })
             # The findings from the previous draft, so a damage-related
             # correction is applied TO them rather than re-derived from a
@@ -119,6 +122,9 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
     draft = draft_report(description, photo_paths, known_facts or None, actor=actor)
     if session is not None and session.pending_edits and getattr(session, "draft", None) is not None:
         draft = _carry_over_damage(draft, session.draft, session.pending_edits[-1])
+    # The AI's own reading (its earlier findings carried over are its own
+    # too), taken before the template's answers are merged below.
+    ai_draft = draft.model_dump()
     # Merging the reporter's typed template answers with the AI's draft.
     #
     # Two failure modes have to be avoided at once, and each earlier attempt
@@ -151,18 +157,10 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
 
         keep("location", session.location)
         keep("incident_datetime", session.incident_datetime)
-        # The AI can never see these in a photo, so "the AI left it empty"
-        # is their normal state on every redraft -- which is exactly why
-        # they were the fields that vanished.
-        keep("reporter_name", session.reporter_name)
-        keep("reporter_role", session.reporter_role)
-        keep("reporter_contact", session.reporter_contact)
-
-        # A bool has no empty state to fall back on, so it is pinned on the
-        # first draft only. Later changes still reach the model, because
-        # combined_description() feeds every edit back in on each redraft.
-        if first_draft and session.reported_to_authorities is not None:
-            draft.reported_to_authorities = session.reported_to_authorities
+        # The template no longer asks who is reporting or whether the police
+        # were told (2026-11-04): the report never prints them, and a
+        # question the reporter skipped was being recorded as "No". The
+        # template's facts are the printed ones below.
 
         if session.vehicle_plate:
             if draft.vehicle_info is None:
@@ -170,14 +168,26 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
             if first_draft or not draft.vehicle_info.plate_number:
                 draft.vehicle_info.plate_number = session.vehicle_plate
 
-        if getattr(session, "insurer_name", None) or getattr(session, "workshop_name", None):
+        insurer = getattr(session, "insurer_name", None)
+        workshop = getattr(session, "workshop_name", None)
+        claim_type = getattr(session, "claim_type", None)
+        if insurer or workshop or claim_type:
             if draft.insurance_details is None:
-                from app.reports.schema import InsuranceDetails
                 draft.insurance_details = InsuranceDetails()
-            if getattr(session, "insurer_name", None) and (first_draft or not draft.insurance_details.insurer_name):
-                draft.insurance_details.insurer_name = session.insurer_name
-            if getattr(session, "workshop_name", None) and (first_draft or not draft.insurance_details.workshop_assigned):
-                draft.insurance_details.workshop_assigned = session.workshop_name
+            if insurer and (first_draft or not draft.insurance_details.insurer_name):
+                draft.insurance_details.insurer_name = insurer
+            if workshop and (first_draft or not draft.insurance_details.workshop_assigned):
+                draft.insurance_details.workshop_assigned = workshop
+            if claim_type and (first_draft or not draft.insurance_details.claim_type):
+                draft.insurance_details.claim_type = claim_type
+        # Who asked for the report goes on the cover page (section 1), which
+        # the AI never drafts: typed once, it stays.
+        requested_by = getattr(session, "requested_by", None)
+        if requested_by:
+            if draft.cover_page is None:
+                draft.cover_page = CoverPageInfo()
+            if first_draft or not draft.cover_page.requested_by:
+                draft.cover_page.requested_by = requested_by
         if getattr(session, "vehicle_body_type", None):
             if draft.vehicle_info:
                 draft.vehicle_info.body_type = session.vehicle_body_type
@@ -189,51 +199,46 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
             draft.vehicle_info.body_type
         )
 
-    return DraftResult(draft=draft, summary_text=summarize(draft))
+    return DraftResult(draft=draft, summary_text=summarize(draft), ai_draft=ai_draft)
 
 
+# Only facts the report prints (2026-11-04): the cover page's requested-by
+# and type of claim, the workshop, the vehicle, the accident, and the side
+# (the one fact a photo can't be trusted for). Name, role, contact and
+# "reported to authorities" were asked, never printed, and a blank police
+# answer was recorded as "No".
 TEMPLATE_PROMPT = (
-    "📋 *Incident Report — Surveyor / Reporter Details*\n\n"
-    "Please fill in the fields below and send them back. I'll work out *Category*, "
-    "*Damaged Parts*, and *Severity* automatically from your photos.\n\n"
-    "👤 *Reporter Information*\n"
-    "Name: \n"
-    "Role/Position: \n"
-    "Contact Number: \n\n"
-    "🚘 *Vehicle & Incident*\n"
+    "📋 *Report details*\n\n"
+    "Please fill in the fields below and send them back. I'll work out the "
+    "*damaged parts* from your photos.\n\n"
     "Vehicle Plate: \n"
+    "Requested by (insurer / company): \n"
+    "Type of claim (Own damage / Third party): \n"
+    "Workshop: \n"
+    "Date/time of accident: \n"
     "Damaged Side (Left / Right / Front / Rear): \n"
-    "Location: \n"
-    "Date/Time: \n"
-    "Description: \n\n"
-    "🏢 *Insurance & Repairer*\n"
-    "Insurer (e.g. Tokio Marine, Income, AIG): \n"
-    "Workshop (e.g. Precise Auto Service): \n\n"
-    "🚓 *Authority Report*\n"
-    "Reported to Authorities (Yes/No): "
+    "What happened: "
 )
 
 
 def build_template_prompt() -> str:
-    # Date/Time and "Reported to Authorities" used to be pre-filled with the
-    # moment the template was sent and "No". Reporters who left them as-is
-    # recorded the wrong accident date (pinned over the date the AI read
-    # from their description) and a police answer they never gave.
+    # Date/Time used to be pre-filled with the moment the template was sent.
+    # Reporters who left it as-is recorded the wrong accident date (pinned
+    # over the date the AI read from their description).
     return TEMPLATE_PROMPT
 
 
 _FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("name", re.compile(r"^\s*name\s*:\s*(.*)$", re.IGNORECASE)),
-    ("role", re.compile(r"^\s*role\s*/?\s*position\s*:\s*(.*)$", re.IGNORECASE)),
-    ("contact", re.compile(r"^\s*contact\s*number\s*:\s*(.*)$", re.IGNORECASE)),
     ("plate", re.compile(r"^\s*vehicle\s*plate\s*:\s*(.*)$", re.IGNORECASE)),
-    ("side", re.compile(r"^\s*damaged\s*side[^:]*:\s*(.*)$", re.IGNORECASE)),
-    ("location", re.compile(r"^\s*location\s*:\s*(.*)$", re.IGNORECASE)),
-    ("datetime", re.compile(r"^\s*date\s*/?\s*time\s*:\s*(.*)$", re.IGNORECASE)),
-    ("insurer", re.compile(r"^\s*insurer[^:]*:\s*(.*)$", re.IGNORECASE)),
+    ("requested_by", re.compile(r"^\s*requested\s*by[^:]*:\s*(.*)$", re.IGNORECASE)),
+    ("claim_type", re.compile(r"^\s*(?:type\s*of\s*claim|claim\s*type)[^:]*:\s*(.*)$", re.IGNORECASE)),
     ("workshop", re.compile(r"^\s*workshop[^:]*:\s*(.*)$", re.IGNORECASE)),
-    ("description", re.compile(r"^\s*description\s*:\s*(.*)$", re.IGNORECASE)),
-    ("reported", re.compile(r"^\s*reported\s*to\s*authorities[^:]*:\s*(.*)$", re.IGNORECASE)),
+    ("datetime", re.compile(r"^\s*date\s*/?\s*time[^:]*:\s*(.*)$", re.IGNORECASE)),
+    ("side", re.compile(r"^\s*damaged\s*side[^:]*:\s*(.*)$", re.IGNORECASE)),
+    ("description", re.compile(r"^\s*(?:what\s*happened|description)\s*:\s*(.*)$", re.IGNORECASE)),
+    # Asked by older templates; still read when someone types them.
+    ("location", re.compile(r"^\s*location\s*:\s*(.*)$", re.IGNORECASE)),
+    ("insurer", re.compile(r"^\s*insurer[^:]*:\s*(.*)$", re.IGNORECASE)),
 ]
 
 
@@ -263,20 +268,16 @@ def parse_template_reply(text: str) -> Optional[dict]:
     def get(key: str) -> str:
         return " ".join(values.get(key, [])).strip()
 
-    reported_raw = get("reported").splitlines()[0].strip().lower() if get("reported") else ""
     return {
-        "reporter_name": get("name") or None,
-        "reporter_role": get("role") or None,
-        "reporter_contact": get("contact") or None,
         "vehicle_plate": get("plate") or None,
+        "requested_by": get("requested_by") or None,
+        "claim_type": get("claim_type") or None,
         "damaged_side": get("side") or None,
         "insurer_name": get("insurer") or None,
         "workshop_name": get("workshop") or None,
         "location": get("location") or None,
         "incident_datetime": get("datetime") or None,
         "description": get("description") or text,
-        # None when the line was left blank: "not stated" isn't "No".
-        "reported_to_authorities": (reported_raw in {"yes", "y", "true"}) if reported_raw else None,
     }
 
 
@@ -360,8 +361,10 @@ def summarize(draft: SecurityIncidentDraft) -> str:
     where_when = " · ".join(b for b in [draft.location, draft.incident_datetime] if b)
     if where_when:
         incident.append(where_when)
-    incident.append(f"Police report: {'Yes' if draft.reported_to_authorities else 'No'}")
-    lines += ["", "📍 *Incident*", *incident]
+    # No "Police report: No" line: the template doesn't ask, so a "No"
+    # here was an answer nobody gave.
+    if incident:
+        lines += ["", "📍 *Incident*", *incident]
 
     reporter = []
     if draft.reporter_name or draft.reporter_role:
@@ -380,6 +383,8 @@ def summarize(draft: SecurityIncidentDraft) -> str:
 
     # Claim & Governance details
     ins_lines = []
+    if draft.cover_page and draft.cover_page.requested_by:
+        ins_lines.append(f"📨 *Requested by:* {draft.cover_page.requested_by}")
     if draft.insurance_details:
         if draft.insurance_details.insurer_name:
             ins_lines.append(f"🏢 *Insurer:* {draft.insurance_details.insurer_name}")

@@ -3,11 +3,11 @@
 import React, { Component, useMemo, useState, useEffect, type ErrorInfo, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { Box, AlertTriangle, RotateCcw, Wrench } from "lucide-react";
-import { type ReportDetail, type DamageSummaryItem } from "@/lib/api";
+import { type AnnexAPartItem, type DamageItemsResponse, type ReportDetail, type DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 import { CaseEvidenceTab } from "./CaseEvidenceTab";
-import { CaseDamageTab } from "./CaseDamageTab";
+import { DetectedPartsTable } from "./DetectedPartsTable";
 
 interface BlueprintErrorBoundaryProps {
   children: ReactNode;
@@ -18,10 +18,7 @@ interface BlueprintErrorBoundaryState {
   error: Error | null;
 }
 
-export class BlueprintErrorBoundary extends Component<
-  BlueprintErrorBoundaryProps,
-  BlueprintErrorBoundaryState
-> {
+export class BlueprintErrorBoundary extends Component<BlueprintErrorBoundaryProps, BlueprintErrorBoundaryState> {
   constructor(props: BlueprintErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -73,39 +70,14 @@ export class BlueprintErrorBoundary extends Component<
           </div>
 
           <div style={{ maxWidth: 380 }}>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 700,
-                color: "var(--text-primary)",
-                marginBottom: 6,
-              }}
-            >
-              3D Blueprint Engine Offline
-            </div>
-            <p
-              style={{
-                fontSize: 12,
-                color: "var(--text-muted)",
-                lineHeight: 1.5,
-                margin: 0,
-              }}
-            >
-              3D Blueprint rendering unavailable on this device. Damage items are available in the parts checklist below.
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>3D blueprint unavailable</div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, margin: 0 }}>
+              The 3D model can&apos;t be drawn on this device. The detected parts are in the table below.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={this.handleRetry}
-            className="btn-secondary-modern"
-            style={{
-              fontSize: 11,
-              padding: "6px 14px",
-              marginTop: 4,
-            }}
-          >
-            <RotateCcw style={{ width: 12, height: 12 }} /> Retry 3D Engine
+          <button type="button" onClick={this.handleRetry} className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 14px", marginTop: 4 }}>
+            <RotateCcw style={{ width: 12, height: 12 }} /> Try again
           </button>
         </div>
       );
@@ -118,15 +90,22 @@ export class BlueprintErrorBoundary extends Component<
 // Three.js/WebGL only exists client-side -- SSR-rendering the Canvas would
 // either crash on the server or produce a hydration mismatch, so this is
 // loaded only after mount.
-const VehicleBlueprint3D = dynamic(
-  () => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D),
-  { ssr: false, loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint…</div> }
-);
+const VehicleBlueprint3D = dynamic(() => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D), {
+  ssr: false,
+  loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint…</div>,
+});
 
 interface Props {
   report: ReportDetail;
   isSignedOff: boolean;
+  canEdit: boolean;
+  /** The detected parts as the store holds them (fresh after every change). */
   damageEntries: DamageSummaryItem[];
+  /** The same parts, with an identity that only changes when a part, its
+   * severity or its photo changes: the 3D blueprint resets its camera and
+   * rebuilds its materials on a new array, which must not happen on every
+   * verified tick or Annex A save. */
+  blueprintEntries: DamageSummaryItem[];
   zoneResolutions: (ZoneResolution | null)[];
   vehicleName: string;
   photos: string[];
@@ -138,24 +117,28 @@ interface Props {
   onSelectPhoto: (idx: number) => void;
   onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
   onSelectZone: (zoneId: string | null) => void;
+  /** Annex A as saved, for the "n lines, m priced" cell per part. */
+  annexAItems: AnnexAPartItem[];
+  onDamageItemsApplied: (res: DamageItemsResponse) => void;
+  onPartRemoved?: (idx: number) => void;
+  onGoToAnnexA: () => void;
+  /** This tab is the one on screen (it stays mounted behind the others). */
+  isActive: boolean;
 }
 
-/** The three views of a case's damage -- 3D blueprint, evidence photos,
- * and the parts checklist -- are all views of the SAME damage_summary
- * data, and reviewing a case means constantly cross-referencing between
- * them ("where is it → what does it look like → is it on the list").
- *
- * They were briefly split across three separate tabs, which forced
- * clicking a blueprint part to silently jump you to a different tab just
- * to show the photo it selected. That tab-switch was the tell: these are
- * linked views, not separate sections, so they live on one screen and
- * cross-highlight instead. Tabs are still used for the genuinely
- * different mode (sign-off/paperwork), just not to separate these three.
- */
-export function CaseInspectionTab({
+/** Tab 1, Damage detection: the three views of a case's damage -- 3D
+ * blueprint, photos, and the detected parts table -- are all views of the
+ * SAME damage_summary, and reviewing a case means constantly
+ * cross-referencing between them ("where is it -> what does it look like
+ * -> is it on the list"), so they live on one screen and cross-highlight.
+ * Owns damage_summary and the photo links; never shows a price. From
+ * CaseInspectionTab.tsx, 2026-11-04. */
+export function DamageDetectionTab({
   report,
   isSignedOff,
+  canEdit,
   damageEntries,
+  blueprintEntries,
   zoneResolutions,
   vehicleName,
   photos,
@@ -167,19 +150,22 @@ export function CaseInspectionTab({
   onSelectPhoto,
   onHotspotClick,
   onSelectZone,
+  annexAItems,
+  onDamageItemsApplied,
+  onPartRemoved,
+  onGoToAnnexA,
+  isActive,
 }: Props) {
   const d = report.data;
 
   const nonExteriorItems = useMemo(() => {
     const rx = /airbag|seat|dashboard|interior|radiator|condenser|exhaust|fuel\s*tank|suspension|steering|subframe|battery|engine|transmission|brake|catalytic/i;
-    return damageEntries
-      .map((item, idx) => ({ item, idx }))
-      .filter(({ item, idx }) => zoneResolutions[idx] === null || rx.test(item.part));
+    return damageEntries.map((item, idx) => ({ item, idx })).filter(({ item, idx }) => zoneResolutions[idx] === null || rx.test(item.part));
   }, [damageEntries, zoneResolutions]);
 
   // Defer Three.js / WebGL canvas mount until after initial DOM paint and hydration.
-  // This guarantees clicking "Studio" transitions instantaneously (<30ms, 60fps)
-  // while the heavy WebGL shader compilation and 3D asset parsing occur asynchronously.
+  // This guarantees opening the case transitions instantaneously while the
+  // heavy WebGL shader compilation and 3D asset parsing occur asynchronously.
   const [shouldMount3D, setShouldMount3D] = useState(false);
 
   useEffect(() => {
@@ -191,27 +177,36 @@ export function CaseInspectionTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* What the AI found, counted from the record; no read time is shown
+          because none is recorded apart from the filing time. */}
+      <div className="detection-status-strip">
+        <span>
+          {damageEntries.length} part{damageEntries.length === 1 ? "" : "s"} detected from {photos.length} photo{photos.length === 1 ? "" : "s"}.
+        </span>
+        {/* Phase 2: [Add photos] (POST /reports/{id}/photos) and [Re-run
+            detection] (POST /reports/{id}/redetect) go here, with the
+            redetect status line. Not built in this PR. */}
+      </div>
+
       {/* Top row: the two visual views, side by side, always both visible */}
       <div className="inspection-split">
         <div className="card-glass">
           <div className="card-header">
             <div>
               <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Box style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle Body Blueprint
+                <Box style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle blueprint
               </div>
-              <div className="card-subtitle">
-                Click a marker to highlight it in the photo and parts list below
-              </div>
+              <div className="card-subtitle">Click a marker to highlight it in the photos and the parts table below</div>
             </div>
             <span className={`chip-severity ${severityClass(d.severity_level)}`}>
-              {damageEntries.length} Damaged {damageEntries.length === 1 ? "Zone" : "Zones"}
+              {damageEntries.length} damaged {damageEntries.length === 1 ? "part" : "parts"}
             </span>
           </div>
 
           <BlueprintErrorBoundary>
             {shouldMount3D ? (
               <VehicleBlueprint3D
-                damageEntries={damageEntries}
+                damageEntries={blueprintEntries}
                 onHotspotClick={onHotspotClick}
                 highlightedDamageIndex={highlightedDamageIndex}
                 vehicleName={vehicleName}
@@ -220,45 +215,17 @@ export function CaseInspectionTab({
                 onZoneSelect={onSelectZone}
               />
             ) : (
-              <div className="blueprint-stage-3d blueprint-3d-loading">
-                Loading 3D blueprint…
-              </div>
+              <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint…</div>
             )}
           </BlueprintErrorBoundary>
 
-          {/* Non-Exterior & Mechanical Components tray */}
+          {/* Parts the model has no panel for */}
           {nonExteriorItems.length > 0 && (
-            <div
-              style={{
-                marginTop: 16,
-                paddingTop: 14,
-                borderTop: "1px solid var(--border-color)",
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "var(--text-secondary)",
-                    letterSpacing: "0.02em",
-                  }}
-                >
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border-color)", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", letterSpacing: "0.02em" }}>
                   <Wrench style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-                  <span>Non-Exterior & Mechanical Components</span>
+                  <span>Not on the model</span>
                 </div>
                 <span
                   style={{
@@ -270,22 +237,16 @@ export function CaseInspectionTab({
                     border: "1px solid var(--border-color)",
                   }}
                 >
-                  {nonExteriorItems.length} {nonExteriorItems.length === 1 ? "component" : "components"}
+                  {nonExteriorItems.length} {nonExteriorItems.length === 1 ? "part" : "parts"}
                 </span>
               </div>
 
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 8,
-                }}
-              >
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {nonExteriorItems.map(({ item, idx }) => {
                   const isHighlighted = highlightedDamageIndex === idx;
                   const sevClass = severityClass(item.severity);
                   const res = zoneResolutions[idx];
-                  const badgeNumber = res?.badgeNumber ?? (idx + 1);
+                  const badgeNumber = res?.badgeNumber ?? idx + 1;
 
                   return (
                     <button
@@ -296,7 +257,7 @@ export function CaseInspectionTab({
                         const rowEl = document.getElementById(`damage-row-${idx}`);
                         rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
                       }}
-                      title={`Click to highlight ${item.part} in the checklist`}
+                      title={`Click to highlight ${item.part} in the parts table`}
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
@@ -304,12 +265,8 @@ export function CaseInspectionTab({
                         padding: "6px 10px",
                         borderRadius: 8,
                         fontSize: 12,
-                        background: isHighlighted
-                          ? "var(--accent-glow, rgba(37, 99, 235, 0.15))"
-                          : "var(--surface-elevated, rgba(255, 255, 255, 0.04))",
-                        border: isHighlighted
-                          ? "1px solid var(--accent-primary)"
-                          : "1px solid var(--border-color)",
+                        background: isHighlighted ? "var(--accent-glow, rgba(37, 99, 235, 0.15))" : "var(--surface-elevated, rgba(255, 255, 255, 0.04))",
+                        border: isHighlighted ? "1px solid var(--accent-primary)" : "1px solid var(--border-color)",
                         color: "var(--text-primary)",
                         cursor: "pointer",
                         transition: "all 0.15s ease",
@@ -333,25 +290,9 @@ export function CaseInspectionTab({
                         {String(badgeNumber).padStart(2, "0")}
                       </span>
                       <span style={{ fontWeight: 600 }}>{item.part}</span>
-                      <span
-                        className={`chip-severity ${sevClass}`}
-                        style={{ fontSize: 9, padding: "1px 6px" }}
-                      >
+                      <span className={`chip-severity ${sevClass}`} style={{ fontSize: 9, padding: "1px 6px" }}>
                         {item.severity || "—"}
                       </span>
-                      {item.ai_confidence && (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            color: "var(--text-muted)",
-                            fontFamily: "var(--font-mono, monospace)",
-                          }}
-                        >
-                          {typeof item.ai_confidence === "number"
-                            ? `${Math.round(item.ai_confidence * 100)}%`
-                            : item.ai_confidence}
-                        </span>
-                      )}
                     </button>
                   );
                 })}
@@ -369,17 +310,25 @@ export function CaseInspectionTab({
           selectedZone={selectedZone}
           onSelectPhoto={onSelectPhoto}
           onSelectZone={onSelectZone}
+          keyboardActive={isActive}
         />
       </div>
 
-      {/* Full width: the checklist needs the room for its six columns */}
-      <CaseDamageTab
+      {/* Full width: the table needs the room for its columns */}
+      <DetectedPartsTable
         reportId={report.id}
-        isSignedOff={isSignedOff}
+        readOnly={isSignedOff || !canEdit}
         damageEntries={damageEntries}
         zoneResolutions={zoneResolutions}
         highlightedDamageIndex={highlightedDamageIndex}
         onHotspotClick={onHotspotClick}
+        photos={photos}
+        photoThumbs={photoThumbs}
+        onSelectPhoto={onSelectPhoto}
+        annexAItems={annexAItems}
+        onApplied={onDamageItemsApplied}
+        onRemoved={onPartRemoved}
+        onGoToAnnexA={onGoToAnnexA}
       />
     </div>
   );

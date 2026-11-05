@@ -1,22 +1,39 @@
-import { CATEGORY_OPTIONS, type ReportData, type DamageSummaryItem } from "@/lib/api";
+import type { ReportData } from "@/lib/api";
 
-/** Builds a ReportData payload from the shared New/Edit report form's
- * FormData -- pulled out so both create and edit go through exactly the
- * same parsing logic instead of two copies that can silently drift apart. */
-export function buildReportPayload(formData: FormData): { payload: ReportData; tempPhotoPaths: string[] } {
-  const category = CATEGORY_OPTIONS.filter((c) => formData.get(`category_${c}`) === "on");
+/** What the edit form (ReportForm.tsx) may change: the Case Record facts
+ * the report never prints. Everything else on a case is edited where it is
+ * printed -- the Cover page tab (vehicle, dates, Our Ref, claim type,
+ * workshop) and Damage detection / Annex A (damaged parts) -- so this form
+ * must not send those keys: PUT /reports/{id} merges with exclude_unset,
+ * and an emitted damage_summary: [] or vehicle_info: {} would wipe them. */
+export type ReportEditPayload = Pick<
+  ReportData,
+  | "description"
+  | "location"
+  | "people_involved"
+  | "witnesses"
+  | "reported_to_authorities"
+  | "authority_reference"
+  | "police_report"
+  | "insurance_details"
+  | "third_party_info"
+>;
 
+const text = (formData: FormData, name: string): string | null => (formData.get(name) as string | null)?.trim() || null;
+
+/** Builds the PUT /reports/{id} body from the edit form's FormData. Only
+ * the keys above: lib/api.ts updateReport takes a Partial<ReportData> and the
+ * API merges with exclude_unset. */
+export function buildReportPayload(formData: FormData): { payload: ReportEditPayload; tempPhotoPaths: string[] } {
   const personNames = formData.getAll("person_name") as string[];
   const personRoles = formData.getAll("person_role") as string[];
-  const personDepartments = formData.getAll("person_department") as string[];
   const personContacts = formData.getAll("person_contact") as string[];
   const people_involved = personNames
     .map((name, i) => ({
       name: name.trim(),
-      // A blank role stays blank (it used to become "Driver"). "" rather
-      // than null: the API's PersonInvolved.role is a required str.
+      // A blank role stays blank. "" rather than null: the API's
+      // PersonInvolved.role is a required str.
       role: (personRoles[i] || "").trim(),
-      department: personDepartments[i]?.trim() || null,
       contact: personContacts[i]?.trim() || null,
     }))
     .filter((p) => p.name);
@@ -32,105 +49,35 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
     }))
     .filter((w) => w.name);
 
-  const plateNumber = (formData.get("plate_number") as string)?.trim() || null;
-  const make = (formData.get("make") as string)?.trim() || null;
-  const model = (formData.get("model") as string)?.trim() || null;
-  const vin = (formData.get("vin") as string)?.trim() || null;
-  const driverName = (formData.get("driver_name") as string)?.trim() || null;
-  const bodyType = (formData.get("body_type") as string)?.trim() || null;
-  const vehicle_details = [plateNumber, [make, model].filter(Boolean).join(" ") || null].filter(Boolean).join(" - ") || null;
-
-  const policeStation = (formData.get("police_station") as string)?.trim() || null;
-  const officerName = (formData.get("officer_name") as string)?.trim() || null;
-  const reportNumber = (formData.get("report_number") as string)?.trim() || null;
   const reportedToAuthorities = formData.get("reported_to_authorities") === "on";
+  const reportNumber = text(formData, "report_number");
 
-  const insurerName = (formData.get("insurer_name") as string)?.trim() || null;
-  const claimNumber = (formData.get("claim_number") as string)?.trim() || null;
-  const claimType = (formData.get("claim_type") as string)?.trim() || null;
-
-  const repairRecommendation = (formData.get("repair_recommendation") as string)?.trim() || null;
-  const inspectionRecommendation = (formData.get("inspection_recommendation") as string)?.trim() || null;
-
-  const damagedPartsStr = (formData.get("damaged_parts") as string)?.trim() || "";
-  const damaged_parts = damagedPartsStr
-    ? damagedPartsStr.split(",").map((p) => p.trim()).filter(Boolean)
-    : [];
-
-  const severityInput = (formData.get("severity_level") as string)?.trim() || null;
-
-  // ReportForm sends the reconciled per-part data (AI-derived damage_type/
-  // photo_reference/ai_confidence where a part still matches what the AI
-  // identified, a plain entry for anything hand-typed) via this hidden
-  // field -- see buildFinalDamageSummary there. Falls back to a plain
-  // rebuild only if that field is missing entirely, which shouldn't happen
-  // from ReportForm itself but keeps this function safe to call from
-  // anywhere else that only has damaged_parts + severity.
-  const damageSummaryRaw = formData.get("damage_summary") as string | null;
-  let damage_summary: DamageSummaryItem[] | null = null;
-  if (damageSummaryRaw) {
-    try {
-      damage_summary = JSON.parse(damageSummaryRaw);
-    } catch {
-      damage_summary = null;
-    }
-  }
-  if (!damage_summary) {
-    damage_summary = damaged_parts.map((part) => ({
-      part,
-      severity: severityInput,
-      human_verified: true,
-    }));
-  }
-
-  const payload: ReportData = {
-    reporter_name: (formData.get("reporter_name") as string)?.trim() || null,
-    reporter_role: (formData.get("reporter_role") as string)?.trim() || null,
-    reporter_contact: (formData.get("reporter_contact") as string)?.trim() || null,
-    reporter_department: (formData.get("reporter_department") as string)?.trim() || null,
-    incident_datetime: (formData.get("incident_datetime") as string)?.trim() || null,
-    location: (formData.get("location") as string)?.trim() || null,
-    weather_condition: (formData.get("weather_condition") as string)?.trim() || null,
-    road_condition: (formData.get("road_condition") as string)?.trim() || null,
-    traffic_condition: (formData.get("traffic_condition") as string)?.trim() || null,
-    category: category.length ? category : [],
-    accident_type: (formData.get("accident_type") as string)?.trim() || null,
-    severity_level: severityInput,
-    vehicle_details,
-    vehicle_info: {
-      plate_number: plateNumber,
-      make,
-      model,
-      vin,
-      driver_name: driverName,
-      body_type: bodyType,
-    },
-    damaged_parts,
-    damage_summary,
-    description: (formData.get("description") as string)?.trim() || "",
+  const edit: ReportEditPayload = {
+    description: (formData.get("description") as string | null)?.trim() || "",
+    location: text(formData, "location"),
     people_involved,
     witnesses,
-    immediate_actions: (formData.get("immediate_actions") as string)?.trim() || null,
     reported_to_authorities: reportedToAuthorities,
     // Mirrored into both police_report.report_number (what the PDF template
-    // and detail page prefer) and the flat authority_reference (kept as a
-    // fallback -- other surfaces like the Telegram/WhatsApp template read
-    // authority_reference directly), so the two can't drift apart.
+    // and case page prefer) and the flat authority_reference (older readers
+    // such as the Telegram template), so the two can't drift apart.
     authority_reference: reportNumber,
     police_report: {
       reported_to_police: reportedToAuthorities,
-      police_station: policeStation,
-      officer_name: officerName,
+      police_station: text(formData, "police_station"),
+      officer_name: text(formData, "officer_name"),
       report_number: reportNumber,
     },
+    // Nested sections merge key by key on the server, so claim_type and
+    // workshop_assigned (Cover page) are untouched by this form.
     insurance_details: {
-      insurer_name: insurerName,
-      claim_number: claimNumber,
-      claim_type: claimType,
+      insurer_name: text(formData, "insurer_name"),
+      claim_number: text(formData, "claim_number"),
     },
-    recommendations: {
-      repair_recommendation: repairRecommendation,
-      inspection_recommendation: inspectionRecommendation,
+    third_party_info: {
+      plate_number: text(formData, "tp_plate_number"),
+      make_model: text(formData, "tp_make_model"),
+      insurer_name: text(formData, "tp_insurer_name"),
     },
   };
 
@@ -144,5 +91,5 @@ export function buildReportPayload(formData: FormData): { payload: ReportData; t
     }
   }
 
-  return { payload, tempPhotoPaths };
+  return { payload: edit, tempPhotoPaths };
 }

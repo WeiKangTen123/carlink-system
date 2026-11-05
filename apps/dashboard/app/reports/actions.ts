@@ -6,10 +6,11 @@ import {
   deleteReport,
   updateReport,
   reopenReport,
-  reviewDamageItem,
+  patchDamageItem,
+  addDamageItem,
+  removeDamageItem,
+  getTaxonomy,
   signOffReport,
-  analyzeReportPhotos,
-  analyzeExistingReportPhotos,
   uploadReportPhotos,
   getReport,
   getAnnexSuggestions,
@@ -38,9 +39,11 @@ import {
   type CaseCounts,
   type CoverPageRequest,
   type CoverPageResponse,
+  type DamageItemPatch,
+  type DamageItemsResponse,
+  type Taxonomy,
   type LabourSuggestions,
   type Owner,
-  type PhotoAnalysisDraft,
   type SignOffRequest,
   type SignOffInfo,
 } from "@/lib/api";
@@ -79,51 +82,15 @@ function aiActionError(err: unknown, fallback: string): AiActionError {
   };
 }
 
-/** Runs on the server so the browser never talks to the API's port
- * directly (avoids CORS) -- called imperatively from the client component,
- * not via <form action>, since the result drives React state (auto-filling
- * fields) rather than a redirect. Shared by both the New Report and Edit
- * Report forms; the Edit form adds `report_id`, so a case the public sent
- * gets its stricter AI key rule (release P6: a 409 ai_key_missing in the
- * API's words). */
-export async function analyzePhotosAction(
-  formData: FormData
-): Promise<{ draft: PhotoAnalysisDraft; temp_photo_paths: string[] } | AiActionError> {
-  try {
-    const description = (formData.get("description") as string) || "";
-    const reportId = formData.get("report_id");
-    const photos = formData.getAll("photos").filter((p): p is File => p instanceof File && p.size > 0);
-    return await analyzeReportPhotos(description, photos, typeof reportId === "string" && reportId ? reportId : undefined);
-  } catch (err) {
-    return aiActionError(err, "AI analysis failed");
-  }
-}
+// analyzePhotosAction and reanalyzeExistingPhotosAction went on 2026-11-04:
+// the AI reads photos in the intake wizard (POST /intake/{id}/process), not
+// on the edit form.
 
-/** Lets "Re-analyze with AI" work in edit mode without the reporter having
- * to re-pick files -- looks up the report's already-saved photo paths fresh
- * (rather than trusting whatever the client passed in) and re-fetches them
- * server-side, sidestepping the CORS error a direct browser fetch of the
- * API's /files/ route hits. The analysis is sent the case's id, for the
- * key rule on a case the public sent (as analyzePhotosAction). */
-export async function reanalyzeExistingPhotosAction(
-  reportId: string,
-  description: string
-): Promise<{ draft: PhotoAnalysisDraft } | AiActionError> {
-  try {
-    const report = await getReport(reportId);
-    if (!report) return { error: "Report not found", code: null };
-    if (report.photo_urls.length === 0) return { error: "This report has no saved photos to analyze", code: null };
-    return await analyzeExistingReportPhotos(reportId, report.photo_urls, description);
-  } catch (err) {
-    return aiActionError(err, "AI analysis failed");
-  }
-}
-
-/** "Attach photos without AI" on the edit form (release P4), for people
- * whose AI is off: the photos go to the temp dir with no analysis, and the
- * temp_photo_paths come back for the form to send on save, exactly as an
- * analysis's do. A refusal comes back with its code and message (disk_full,
- * rate_limited...). Same CORS reason as analyzePhotosAction. */
+/** "Attach photos" on the edit form (release P4): the photos go to the temp
+ * dir with no analysis, and the temp_photo_paths come back for the form to
+ * send on save. A refusal comes back with its code and message (disk_full,
+ * rate_limited...). Runs on the server so the browser never talks to the
+ * API's port directly (avoids CORS). */
 export async function attachPhotosAction(
   reportId: string,
   formData: FormData
@@ -194,26 +161,61 @@ export async function signOffReportAction(
   }
 }
 
-/** Server action wrapper so the browser never fetches the API directly --
- * same CORS reason every other mutation here is a server action (see
- * signOffReportAction's note). Returns the error instead of throwing so
- * the checklist can revert its optimistic state and show what went wrong
- * (e.g. a 409 when the report is signed off and locked). */
-export async function reviewDamageItemAction(
-  reportId: string,
-  itemIndex: number,
-  patch: { human_verified?: boolean; oem_part_number?: string }
-): Promise<{ ok: true } | { error: string }> {
+// Tab 1's detected parts (damage_summary), modelled on saveAnnexAAction:
+// server actions so the browser never fetches the API directly (CORS), and
+// the error as a value (a 409 once signed off) so the table can show it.
+// Each answer carries the parts as saved and the Annex A the API re-synced
+// to them, plus the Annex C totals.
+
+/** Changes one detected part: its name (a taxonomy part), condition,
+ * severity, photo, verified tick or OEM number. */
+export async function patchDamageItemAction(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse | { error: string }> {
   try {
-    await reviewDamageItem(reportId, itemIndex, patch);
+    const result = await patchDamageItem(reportId, itemIndex, patch);
     revalidatePath(`/reports/${reportId}`);
     revalidatePath("/reports");
-    return { ok: true };
+    return result;
   } catch (err) {
-    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to update damage item" };
+    return { error: err instanceof Error ? err.message : "Failed to update the part" };
   }
+}
+
+/** A part the surveyor adds by hand (appended, verified). */
+export async function addDamageItemAction(
+  reportId: string,
+  body: { part: string; damage_type?: string | null; photo_reference?: string | null }
+): Promise<DamageItemsResponse | { error: string }> {
+  try {
+    const result = await addDamageItem(reportId, body);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to add the part" };
+  }
+}
+
+/** Removes a detected part; the API remembers it as dismissed so a later
+ * detection doesn't bring it back. */
+export async function removeDamageItemAction(reportId: string, itemIndex: number): Promise<DamageItemsResponse | { error: string }> {
+  try {
+    const result = await removeDamageItem(reportId, itemIndex);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to remove the part" };
+  }
+}
+
+/** The controlled vocabulary (GET /taxonomy) for tab 1's part select and
+ * condition suggestions. getTaxonomy falls back to an empty vocabulary
+ * when the API can't be reached, so the table still renders. */
+export async function getTaxonomyAction(): Promise<Taxonomy> {
+  return getTaxonomy();
 }
 
 /** Returns the error (e.g. 403: only the signer or an admin may reopen)

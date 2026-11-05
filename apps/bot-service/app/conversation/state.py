@@ -77,6 +77,9 @@ class Session:
     description: str = ""
     pending_edits: list[str] = field(default_factory=list)
     draft: Optional[SecurityIncidentDraft] = None
+    # The AI's own reading behind `draft` (flow.DraftResult.ai_draft):
+    # filed as Report.ai_draft, never the merged draft.
+    ai_draft: Optional[dict] = None
     # Fields the reporter fills in via the template (flow.build_template_prompt /
     # parse_template_reply) -- kept separate from the AI-derived fields
     # (category, damaged_parts, severity_level, ...) so user-stated ground
@@ -84,17 +87,17 @@ class Session:
     template_sent: bool = False
     location: Optional[str] = None
     incident_datetime: Optional[str] = None
-    # None until the reporter actually answers (see flow.parse_template_reply).
-    reported_to_authorities: bool | None = None
-    reporter_name: Optional[str] = None
-    reporter_role: Optional[str] = None
-    reporter_contact: Optional[str] = None
     vehicle_plate: Optional[str] = None
     damaged_side: Optional[str] = None
     insurer_name: Optional[str] = None
     workshop_name: Optional[str] = None
     vehicle_body_type: Optional[str] = None
+    # The cover page's facts the template asks (2026-11-04): who asked for
+    # the report and the type of claim. The reporter's own name, role and
+    # contact and "reported to authorities" are no longer asked: the
+    # report never printed them.
     claim_type: Optional[str] = None
+    requested_by: Optional[str] = None
     clarifying_field: Optional[str] = None
     # Telegram (channels/telegram.py): set while a Confirm is being saved, so
     # a second tap saves nothing; and when the chat was last active, so a

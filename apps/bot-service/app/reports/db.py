@@ -71,6 +71,8 @@ _ADDED_COLUMNS = [
     # "1set" wording of a past Annex A line (models.PastAnnexLine.qty_text);
     # the table shipped with PR #9, before this column.
     ("past_annex_lines", "qty_text", "VARCHAR"),
+    # What the AI last said about a case (models.Report.ai_draft, 2026-11-04).
+    ("reports", "ai_draft", "JSON"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

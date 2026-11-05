@@ -97,6 +97,12 @@ class Report(Base):
     # Unassigned until an admin assigns them. (Added after the table
     # shipped: see db._ADDED_COLUMNS / _ADDED_INDEXES.)
     owner_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # What the AI last said about the case: the draft before any person's
+    # edits (the wizard: IntakeSession.ai_draft at filing; the bots: the
+    # draft confirmed in the chat). The case page tags the cover fields
+    # whose value is still the AI's (GET /reports/{id} ai_read). Never
+    # printed. (Added after the table shipped: see db._ADDED_COLUMNS.)
+    ai_draft: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class IntakeSession(Base):

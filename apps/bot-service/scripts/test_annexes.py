@@ -337,7 +337,13 @@ def main() -> int:
         assert all(i["qty_text"].endswith("set") and i["qty"] == float(i["qty_text"][:-3]) for i in with_sets), with_sets
         ok("a line past cases wrote as '1set' prints as 1set and counts as 1")
 
-    # A row a person priced is kept, not repeated, and not re-priced.
+    assert all(i["origin"] == "history" and i["source_part"] in ("Tail Gate", "Rear Bumper") and i["stale"] is False for i in priced), priced
+    assert all(i["origin"] in ("history", "detection") and i["source_part"] for i in items), items
+    ok("rows from past cases carry origin history and the damaged part they were made for")
+
+    # A row a person priced is kept, not repeated, and not re-priced; a
+    # hand-added unpriced line is kept too (origin typed), so a sync never
+    # drops what a person wrote. The machine's unpriced rows are rebuilt.
     typed = [{"part_name": "Rear bumper fascia", "condition": "Buckled/cut", "action": "Replace", "qty": 1, "workshop_est": 1020, "discount_pct": 0.2},
              {"part_name": "Spoiler", "qty": 1, "workshop_est": 0}]
     assert surveyor.put(f"/reports/{rid}/annex-a", json={"items": typed}).status_code == 200
@@ -345,9 +351,15 @@ def main() -> int:
     names = [i["part_name"] for i in out2["annex_a"]["items"]]
     kept = out2["annex_a"]["items"][0]
     assert kept["part_name"] == "Rear bumper fascia" and kept["workshop_est"] == 1020 and kept["adjusted_cost"] == 816.0 and not kept["prefilled"]
+    # PUT matched it to the stored history row of that name: source_part
+    # carried over; typed, since the condition and remarks were changed
+    # (every field counts, not only the figure).
+    assert kept["source_part"] == "Rear Bumper" and kept["stale"] is False and kept["origin"] == "typed", kept
     assert sum(1 for n in names if normalise_item(n) == "rear bumper") == 1, names
-    assert "Spoiler" not in names and any(normalise_item(n) == "tailgate" for n in names)
-    ok("a row a person priced survives a prefill unchanged and isn't duplicated; unpriced rows are replaced")
+    spoiler = next(i for i in out2["annex_a"]["items"] if i["part_name"] == "Spoiler")
+    assert spoiler["origin"] == "typed" and spoiler["workshop_est"] == 0 and spoiler["source_part"] is None and spoiler["stale"] is False, spoiler
+    assert any(normalise_item(n) == "tailgate" for n in names)
+    ok("a row a person priced survives a prefill unchanged and isn't duplicated; a hand-added unpriced line is kept (origin typed); the machine's rows are rebuilt")
     r = surveyor.put(f"/reports/{rid}/annex-a", json={"items": [
         {"part_name": "Reverse sensor", "qty": 1, "qty_text": "1set", "workshop_est": 280, "is_net_item": True},
         {"part_name": "Rear bumper clips", "qty": 1, "qty_text": "10", "workshop_est": 50, "discount_pct": 0.2},
@@ -367,6 +379,90 @@ def main() -> int:
     r = stranger.get(f"/reports/{own}/labour-suggestions")
     assert r.status_code == 200 and r.json()["hidden"] is True and r.json()["groups"] == [], r.text
     ok("the price book stays the firm's: a self-signup can't prefill (403) and gets hidden labour suggestions")
+
+    print("sync_annex_a (detection -> Annex A, one way)")
+    from app.parts.prefill import origin_of, sync_annex_a
+    base = {
+        "vehicle_info": {"plate_number": "SMV7530X", "make": "Honda", "model": "Vezel"},
+        "damage_summary": [{"part": "Tail Gate", "damage_type": "Dent"}, {"part": "Rear Bumper", "damage_type": "Deformation"}],
+        "annex_a": {"items": [
+            # Rows saved before origin existed: derived on read.
+            {"part_name": "Rear bumper fascia", "qty": 1, "workshop_est": 1020, "discount_pct": 0.2, "prefilled": True},
+            {"part_name": "Tail Gate", "qty": 1, "workshop_est": 0, "discount_pct": 0.2},       # the scaffold shape: a damaged part's name
+            {"part_name": "Towing fee", "qty": 1, "workshop_est": 0, "discount_pct": 0.2},      # unpriced, not a part: a person typed it
+            {"part_name": "Rear number plate", "qty": 1, "workshop_est": 35, "discount_pct": 0.2},
+            # Rows the new dashboard writes.
+            {"part_name": "Towing", "qty": 1, "workshop_est": 0, "origin": "typed", "source_part": None},
+            {"part_name": "Rear bumper side retainer", "qty": 2, "workshop_est": 42, "origin": "lookup", "source_part": "Rear Bumper"},
+        ]},
+    }
+    parts = {d["part"] for d in base["damage_summary"]}
+    assert [origin_of(r, parts) for r in base["annex_a"]["items"]] == ["history", "detection", "typed", "typed", "typed", "lookup"]
+    assert origin_of({"part_name": "Tail Gate", "workshop_est": 0}) == "typed", "with no damage list to compare, an unpriced old row is a person's"
+    db = SessionLocal()
+    synced = sync_annex_a(db, base, price_book=True)
+    rows = synced["annex_a"]["items"]
+    by = {r["part_name"]: r for r in rows}
+    assert [r["part_name"] for r in rows[:5]] == ["Rear bumper fascia", "Towing fee", "Rear number plate", "Towing", "Rear bumper side retainer"], [r["part_name"] for r in rows]
+    assert by["Rear bumper fascia"]["origin"] == "history" and by["Rear bumper fascia"]["workshop_est"] == 1020
+    assert by["Towing fee"]["origin"] == "typed" and by["Rear number plate"]["origin"] == "typed" and by["Towing"]["origin"] == "typed"
+    assert by["Rear bumper side retainer"]["origin"] == "lookup" and by["Rear bumper side retainer"]["workshop_est"] == 42
+    assert all(r["stale"] is False for r in rows) and all("source_part" in r for r in rows)
+    tail = [r for r in rows if r["source_part"] == "Tail Gate"]
+    assert tail and all(r["origin"] == "history" and r["prefilled"] for r in tail) and any(r["workshop_est"] > 0 for r in tail), tail
+    assert [r["item_no"] for r in rows] == [f"{n}.0" for n in range(1, len(rows) + 1)]
+    assert synced["annex_c"]["adjusted_total"] == synced["annex_a"]["total_adjusted_cost"]
+    ok("sync: old rows get an origin (prefilled -> history, priced -> typed, a damaged part's bare name -> detection, any other unpriced line -> typed); priced, typed and lookup rows are kept in order; the scaffold row is rebuilt from history")
+
+    gone = {**synced, "damage_summary": base["damage_summary"][:1]}
+    rows2 = sync_annex_a(db, gone, price_book=True)["annex_a"]["items"]
+    by2 = {r["part_name"]: r for r in rows2}
+    assert by2["Rear bumper side retainer"]["stale"] is True and all(r["stale"] for r in rows2 if r["source_part"] == "Rear Bumper"), [(r["part_name"], r["stale"]) for r in rows2]
+    # No source part (a hand line, or a row saved before the field): never stale.
+    assert by2["Rear bumper fascia"]["stale"] is False and by2["Towing"]["stale"] is False and by2["Rear number plate"]["stale"] is False
+    assert not any(r["source_part"] == "Rear Bumper" and r["workshop_est"] == 0 for r in rows2), rows2
+    assert all(r["stale"] is False for r in rows2 if r["source_part"] == "Tail Gate")
+    back = sync_annex_a(db, {**synced, "damage_summary": base["damage_summary"]}, price_book=True)["annex_a"]["items"]
+    assert all(r["stale"] is False for r in back), [(r["part_name"], r["stale"]) for r in back]
+    ok("sync: a kept row whose part is no longer damaged is flagged stale, never removed, and loses the flag when the part is back; unpriced machine rows for it go")
+
+    fresh = {"vehicle_info": base["vehicle_info"], "damage_summary": base["damage_summary"], "dismissed_parts": ["Rear Bumper"]}
+    with_dismissed = sync_annex_a(db, fresh, price_book=True)["annex_a"]["items"]
+    without = sync_annex_a(db, {**fresh, "dismissed_parts": []}, price_book=True)["annex_a"]["items"]
+    assert any(r["source_part"] == "Rear Bumper" for r in without) and not any(r["source_part"] == "Rear Bumper" for r in with_dismissed)
+    assert any(r["source_part"] == "Tail Gate" for r in with_dismissed)
+    plain = sync_annex_a(db, {**fresh, "dismissed_parts": []}, price_book=False)["annex_a"]["items"]
+    assert [(r["part_name"], r["origin"], r["source_part"], r["workshop_est"], r["condition"]) for r in plain] == [
+        ("Tail Gate", "detection", "Tail Gate", 0.0, "Dent"), ("Rear Bumper", "detection", "Rear Bumper", 0.0, "Deformation")], plain
+    plain2 = sync_annex_a(db, {**fresh, "dismissed_parts": [], "damage_summary": base["damage_summary"][:1],
+                               "annex_a": {"items": plain + [{"part_name": "Towing", "workshop_est": 0, "origin": "typed"}]}}, price_book=False)["annex_a"]["items"]
+    assert [(r["part_name"], r["origin"]) for r in plain2] == [("Towing", "typed"), ("Tail Gate", "detection")], plain2
+    # An empty table stays empty: no scaffold row for a dismissed part.
+    both = sync_annex_a(db, {**fresh, "dismissed_parts": ["Tail Gate", "Rear Bumper"]}, price_book=True)
+    assert both["annex_a"]["items"] == [] and both["annex_c"]["adjusted_total"] == 0.0, both["annex_a"]
+    scaffold = synthesize_annexes_for_report({**fresh, "dismissed_parts": ["Rear Bumper"], "annex_a": {}})
+    assert [r["part_name"] for r in scaffold["annex_a"]["items"]] == ["Tail Gate"], scaffold["annex_a"]
+    ok("sync: a dismissed part gets no rows back -- not even the scaffold row when the table is otherwise empty")
+
+    # A kept row for one side of a sided family must not stand for the other side.
+    sided = {"vehicle_info": base["vehicle_info"],
+             "damage_summary": [{"part": "Left Tail Lamp", "damage_type": "Crack"}, {"part": "Right Tail Lamp", "damage_type": "Crack"}],
+             "annex_a": {"items": [{"part_name": "Tail lamp LH", "qty": 1, "workshop_est": 500, "origin": "typed", "source_part": "Left Tail Lamp"}]}}
+    priced_rows = sync_annex_a(db, sided, price_book=True)["annex_a"]["items"]
+    names = [r["part_name"] for r in priced_rows]
+    assert names[0] == "Tail lamp LH" and names.count("Tail lamp LH") == 1
+    rh = [r for r in priced_rows if r["source_part"] == "Right Tail Lamp"]
+    assert rh and any(normalise_item(r["part_name"]) == "tail lamp" and r["workshop_est"] > 0 and r["origin"] == "history" for r in rh), priced_rows
+    assert not any(r["source_part"] == "Left Tail Lamp" and r["origin"] != "typed" and normalise_item(r["part_name"]) == "tail lamp" for r in priced_rows), priced_rows
+    plain_rows = sync_annex_a(db, sided, price_book=False)["annex_a"]["items"]
+    assert [(r["part_name"], r["origin"]) for r in plain_rows] == [("Tail lamp LH", "typed"), ("Right Tail Lamp", "detection")], plain_rows
+    # A line picked from the suggestions panel (suggested_from, not prefilled) is a person's choice: kept even unpriced.
+    picked = {**sided, "annex_a": {"items": [{"part_name": "Rear windscreen moulding", "qty": 1, "workshop_est": 0, "origin": "history",
+                                              "suggested_from": "2 past cases (Honda Vezel)", "usual_unit_price": None, "source_part": None}]}}
+    picked_rows = sync_annex_a(db, picked, price_book=True)["annex_a"]["items"]
+    assert picked_rows[0]["part_name"] == "Rear windscreen moulding" and picked_rows[0]["origin"] == "history" and picked_rows[0]["stale"] is False, picked_rows[:2]
+    db.close()
+    ok("sync: a kept 'Tail lamp LH' hides only the left lamp's line -- Right Tail Lamp still gets its history row, or its unpriced row")
 
     print("prefill on filing an intake")
     draft = surveyor.post("/intake").json()["id"]

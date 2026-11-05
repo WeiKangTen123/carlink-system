@@ -419,13 +419,15 @@ def _read(report_id: str, actor: AiActor) -> None:
         db.close()
 
 
-# Sections only the surveyor fills in (step 4, the reporter fields, and Our
-# Ref, which the AI never drafts). A re-read never touches them when they
-# hold anything.
+# Sections only the surveyor fills in (step 4, the reporter fields, Our
+# Ref and the cover page, which the AI never drafts). A re-read never
+# touches them when they hold anything. cover_page is here because the
+# draft's model_dump() carries it as all-None: starting the merge from
+# that would blank every cover fact typed at review (wizard audit risk 1).
 _SURVEYOR_SECTIONS = (
     "people_involved", "witnesses", "police_report", "insurance_details", "third_party_info",
     "immediate_actions", "reported_to_authorities", "authority_reference", "recommendations",
-    "report_id",
+    "report_id", "cover_page",
 ) + REPORTER_FIELDS
 
 # Facts the AI drafts but the surveyor may correct.

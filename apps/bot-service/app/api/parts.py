@@ -30,8 +30,9 @@ from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
+from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of
 from app.reports.db import SessionLocal
-from app.reports.models import PastAnnexLine, PastLabourLine, Report
+from app.reports.models import PastAnnexLine, PastLabourLine, Report, User
 from app.reports.schema import AnnexAPartItem
 from app.reports.synthesize_annexes import adjusted_cost, synthesize_annexes_for_report
 
@@ -61,6 +62,19 @@ def _sees_price_book(user) -> bool:
     Anyone else gets the same answer shapes with empty lists and
     hidden: true. Plates and file names are for admins alone."""
     return can_view_all_cases(user)
+
+
+def price_book_for_case(db, r: Report, user) -> bool:
+    """Whether the price book may be written INTO this case by this person:
+    they must see it, and so must the case's owner (or it has none): a
+    self-signup's case never carries the firm's prices, whoever edits it,
+    since its owner reads its Annex A."""
+    if not _sees_price_book(user):
+        return False
+    if r.owner_id is None or r.owner_id == getattr(user, "id", None):
+        return True
+    owner = db.get(User, r.owner_id)
+    return owner is not None and _sees_price_book(owner)
 
 
 # ------------------------------------------------------------ history
@@ -329,17 +343,75 @@ def _qty_fields(row: dict) -> None:
     row["qty"] = float(row.get("qty") or 1.0)
 
 
+def _row_facts(row: dict) -> tuple:
+    """What a person can change on a row, normalised for comparing a saved
+    row with its stored one."""
+    return (
+        str(row.get("condition") or "").strip(),
+        str(row.get("action") or "").strip(),
+        float(row.get("qty") or 1.0),
+        (row.get("qty_text") or None),
+        round(float(row.get("workshop_est") or 0), 2),
+        round(float(row.get("discount_pct") or 0), 4),
+        bool(row.get("is_net_item")),
+        (row.get("oem_part_number") or None),
+    )
+
+
+def _from_suggestions(row: dict) -> bool:
+    """A NEW row picked from the suggestions panel: it says where it came
+    from (suggested_from) and carries the past cases' figure untouched --
+    unpriced, or the usual unit price x qty. Anything else new is a
+    person's own line."""
+    if not row.get("suggested_from"):
+        return False
+    est = round(float(row.get("workshop_est") or 0), 2)
+    usual = row.get("usual_unit_price")
+    return est == 0 or (bool(usual) and est == round(float(usual) * float(row.get("qty") or 1.0), 2))
+
+
+def _origin_after_edit(row: dict, before: dict | None, damaged_parts: set[str]) -> str:
+    """"typed" once a person changed anything on the row -- its name (no
+    stored row of that name and side), condition, remarks, qty, estimate,
+    discount, section or part number -- so a sync (prefill.sync_annex_a)
+    leaves it alone. A new row from the suggestions panel may come in as
+    "history" (_from_suggestions). Otherwise the client's origin, which
+    may raise a row's protection (a lookup price applied) but never lower
+    it: a typed or looked-up row sent back as "detection" stays what it was."""
+    if before is None:
+        if row.get("origin") == "lookup":
+            return "lookup"
+        return "history" if row.get("origin") == "history" and _from_suggestions(row) else "typed"
+    stored = origin_of(before, damaged_parts)
+    if row.get("origin") == "lookup":
+        # Only the dashboard's [Use] (Phase 3) says so, and applying a looked-up
+        # price is itself a change to the row; the client sends "typed" once a
+        # person overtypes that price.
+        return "lookup"
+    if _row_facts(row) != _row_facts(before):
+        return "typed"
+    client = row.get("origin") if row.get("origin") in ORIGINS else None
+    return client if client and ORIGIN_RANK[client] >= ORIGIN_RANK[stored] else stored
+
+
 @router.put("/reports/{report_id}/annex-a")
 def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(editable_case)) -> dict:
     """Saves the surveyor's Annex A table. Adjusted costs and the Annex A/C
     totals are worked out here, so they always agree with the rows. The
     estimate is the line total as quoted: adjusted = est x (1 - discount),
-    not x qty (synthesize_annexes.adjusted_cost)."""
+    not x qty (synthesize_annexes.adjusted_cost). A row whose name or
+    estimate changed becomes origin "typed" (the dashboard sends it so too),
+    so no later sync rebuilds it; source_part carries over from the stored
+    row of the same name when the client leaves it out."""
     db = SessionLocal()
     try:
         r = _report(db, report_id)
         if _signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
+        stored = {}
+        for it in ((r.data or {}).get("annex_a") or {}).get("items") or []:
+            stored.setdefault(line_key(it.get("part_name") or ""), it)
+        damaged_parts = {str(it.get("part") or "").strip() for it in ((r.data or {}).get("damage_summary") or [])}
         items = []
         for item in body.items:
             row = item.model_dump()
@@ -349,6 +421,13 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
             row["item_no"] = f"{len(items) + 1}.0"
             _qty_fields(row)
             row["adjusted_cost"] = adjusted_cost(row.get("workshop_est"), row.get("discount_pct"), bool(row.get("is_net_item")))
+            before = stored.get(line_key(row["part_name"]))
+            row["origin"] = _origin_after_edit(row, before, damaged_parts)
+            # source_part carries over from the stored row only when the
+            # client left it OUT: an explicit null is [Keep] on a stale row
+            # (the line stays as a hand line), and must stick.
+            if "source_part" not in item.model_fields_set and before is not None:
+                row["source_part"] = before.get("source_part")
             items.append(row)
         data = dict(r.data or {})
         data["annex_a"] = {"items": items}

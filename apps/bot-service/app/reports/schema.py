@@ -204,6 +204,18 @@ class AnnexAPartItem(BaseModel):
     # person: a tag in the editor, never printed, and the first rows the
     # next prefill replaces.
     prefilled: bool = False
+    # Where the row came from -- "detection" (one unpriced row per damaged
+    # part), "history" (lines past cases wrote), "lookup" (a price looked
+    # up; Phase 3), "typed" (a person wrote or priced it) -- so a re-sync
+    # after the damage list changes (prefill.sync_annex_a) rebuilds only
+    # the unpriced detection/history rows and never touches a person's.
+    # None on rows saved before 2026-11-04: prefill.origin_of derives it.
+    origin: Optional[str] = None
+    # The damage_summary.part this row was made for; None for a hand-added
+    # line. A kept row whose part is no longer damaged is flagged stale,
+    # never deleted by the machine: the surveyor keeps or removes it.
+    source_part: Optional[str] = None
+    stale: bool = False
 
 
 class AnnexAInfo(BaseModel):

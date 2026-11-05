@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Loader2, PencilLine, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
-import { fileUrl, type ReportData } from "@/lib/api";
+import { fileUrl } from "@/lib/api";
 import { formatBytes, UPLOAD_RETRY_DELAYS_MS, type IntakePhoto, type IntakeStage } from "@/lib/intake";
 
 /** retrying: a transient failure, waiting out its backoff before the next try. */
@@ -59,8 +59,8 @@ type Props = {
   photos: IntakePhoto[];
   uploads: UploadItem[];
   stage: IntakeStage | null;
-  data: ReportData;
-  onDataChange: (patch: Partial<ReportData>) => void;
+  /** Free text for the AI's read (IntakeSession.reporter_notes): deleted
+   * when the case is filed, never printed. */
   notes: string;
   onNotesChange: (notes: string) => void;
   /** The AI is reading the case: its result is merged into this form when
@@ -89,8 +89,6 @@ export function UploadStep({
   photos,
   uploads,
   stage,
-  data,
-  onDataChange,
   notes,
   onNotesChange,
   locked,
@@ -142,9 +140,9 @@ export function UploadStep({
   if (running) {
     primary = { label: "View AI progress", action: onContinue, icon: <Loader2 className="spin" style={{ width: 15, height: 15 }} /> };
   } else if (aiOff && onFillByHand) {
-    primary = { label: "Next: fill in the facts", action: onFillByHand, icon: <PencilLine style={{ width: 15, height: 15 }} /> };
+    primary = { label: "Next: fill in the cover page", action: onFillByHand, icon: <PencilLine style={{ width: 15, height: 15 }} /> };
   } else if (stage === "ready" && unsorted === 0) {
-    primary = { label: "Next: check AI sorting", action: onContinue, icon: <CheckCircle2 style={{ width: 15, height: 15 }} /> };
+    primary = { label: "Next: check the photo sort", action: onContinue, icon: <CheckCircle2 style={{ width: 15, height: 15 }} /> };
   } else if (stage === "ready") {
     primary = { label: `Sort ${unsorted} new photo${unsorted === 1 ? "" : "s"} & re-read`, action: onStart, icon: <Sparkles style={{ width: 15, height: 15 }} /> };
   } else if (stage === "failed") {
@@ -157,7 +155,7 @@ export function UploadStep({
   return (
     <section className="card intake-panel">
       <div className="intake-panel-head">
-        <h2>Upload evidence</h2>
+        <h2>Photos</h2>
         <span className="intake-muted">
           {photos.length} / {maxPhotos} photos
         </span>
@@ -318,7 +316,7 @@ export function UploadStep({
       )}
 
       <label className="intake-field-wide">
-        What happened? <span className="intake-optional">(optional, helps the AI)</span>
+        Notes for the AI <span className="intake-optional">(optional; helps the AI read the case, not kept on the case)</span>
         <textarea
           rows={3}
           placeholder="e.g. Rear-ended at PIE exit 12 while stationary in traffic..."
@@ -328,39 +326,6 @@ export function UploadStep({
         />
       </label>
 
-      <div className="intake-field-grid three">
-        <label>
-          Filed by
-          <input
-            type="text"
-            placeholder="Reporter name"
-            value={data.reporter_name ?? ""}
-            disabled={locked}
-            onChange={(e) => onDataChange({ reporter_name: e.target.value })}
-          />
-        </label>
-        <label>
-          Contact
-          <input
-            type="text"
-            placeholder="e.g. +65 9123 4567"
-            value={data.reporter_contact ?? ""}
-            disabled={locked}
-            onChange={(e) => onDataChange({ reporter_contact: e.target.value })}
-          />
-        </label>
-        <label>
-          Company / Dept
-          <input
-            type="text"
-            placeholder="e.g. Fleet Operations"
-            value={data.reporter_department ?? ""}
-            disabled={locked}
-            onChange={(e) => onDataChange({ reporter_department: e.target.value })}
-          />
-        </label>
-      </div>
-
       <div className="intake-footer">
         <span className="intake-muted">
           {inFlight.length > 0
@@ -368,7 +333,7 @@ export function UploadStep({
             : photos.length === 0
               ? "Add photos to start. Your draft saves automatically."
               : aiOff
-                ? "AI is off for your account, so you'll enter the facts yourself."
+                ? "AI is off for your account, so you'll fill in the cover page yourself."
                 : "The AI sorts every photo, then reads the vehicle facts and damage."}
         </span>
         <button type="button" className="btn-primary-modern" onClick={primary.action} disabled={!running && !canStart}>

@@ -22,10 +22,10 @@ export default async function EditReportPage({
   if (report.status === "Signed Off") {
     return (
       <div className="new-report-form">
-        <h1>Report Locked</h1>
+        <h1>Case signed off</h1>
         <p className="form-hint">
-          This report has been signed off and is locked against further edits. Reopen it to make
-          changes -- this resets its status to Draft until it's signed off again.
+          This case has been signed off and is locked against further edits. Reopen it to make
+          changes -- it then needs signing off again.
         </p>
         <ReopenButton id={id} allowed={report.permissions.reopen} />
       </div>
@@ -53,13 +53,12 @@ export default async function EditReportPage({
         </div>
       )}
       <ReportForm
-        mode="edit"
         initialData={report.data}
         existingPhotoUrls={report.photo_urls}
         existingPhotoThumbUrls={report.photo_thumb_urls}
         reportId={id}
         action={boundUpdate}
-        submitLabel="Save Changes & Regenerate PDF"
+        submitLabel="Save changes"
       />
     </>
   );
