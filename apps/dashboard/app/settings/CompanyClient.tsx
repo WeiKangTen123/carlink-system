@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Building2, Check, MessageCircle, Save, Send } from "lucide-react";
-import type { AppSettings } from "@/lib/api";
+import { Building2, Check, HardDrive, MessageCircle, Save, Send } from "lucide-react";
+import { BACKUP_STALE_HOURS, type AppSettings, type LastBackup } from "@/lib/api";
+import { formatSgtDateTime } from "@/lib/caseFields";
 import { updateSettingsAction } from "./actions";
 import { AiKeyStorageStatus, type AiKeyStorageView } from "./AiKeyStorageStatus";
 import { CompanyAiKeysCard } from "./CompanyAiKeysCard";
@@ -25,6 +26,53 @@ export interface SetupStatus {
   telegramBotUsername: string | null;
   /** How many accounts have connected their Telegram; null when unknown. */
   telegramAccountsConnected: number | null;
+  /** storage/.last_backup as GET /system/info sends it (round 3, B1b);
+   * null when no backup has been recorded. */
+  lastBackup: LastBackup | null;
+  /** Older than BACKUP_STALE_HOURS -- worked out on the server (company/page.tsx). */
+  backupTooOld: boolean;
+}
+
+/** Whether the last backup ran and reached the bucket (round 3, B1b). Red
+ * when there is no record, the offsite copy failed, or the last one is
+ * older than 36 hours: in each case there is no copy to fall back on. The
+ * figures are infra/backup.sh's own, never worked out here. */
+function BackupsCard({ backup, tooOld }: { backup: LastBackup | null; tooOld: boolean }) {
+  const bad = !backup || !backup.uploaded || tooOld;
+  let line: string;
+  if (!backup) {
+    line = "Last backup: none (no backup recorded)";
+  } else {
+    const cases = `${backup.reports} case${backup.reports === 1 ? "" : "s"}`;
+    const uploaded = backup.uploaded ? "uploaded: yes" : "uploaded: no (no offsite copy)";
+    const old = tooOld ? ` (more than ${BACKUP_STALE_HOURS} hours ago)` : "";
+    line = `Last backup: ${formatSgtDateTime(backup.at)}, ${cases}, ${uploaded}${old}`;
+  }
+
+  return (
+    <SetupCard
+      id="backups"
+      icon={<HardDrive style={{ width: 22, height: 22, color: bad ? "var(--badge-red-text)" : "var(--badge-green-text)" }} />}
+      title="Backups"
+      subtitle="The nightly copy of the database and photos (infra/backup.sh), and whether it reached the bucket"
+      status={{ ok: !bad, label: bad ? "Needs attention" : "Up to date", fail: bad }}
+    >
+      <div className={`company-backup-line${bad ? " bad" : ""}`} suppressHydrationWarning>
+        {line}
+      </div>
+      {backup?.bucket && (
+        <div className="settings-info-row">
+          <span className="settings-info-label">Bucket</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, wordBreak: "break-all" }}>{backup.bucket}</span>
+        </div>
+      )}
+      <p className="setup-note" style={{ margin: "10px 0 0" }}>
+        {bad
+          ? "Until a backup uploads, a server fault loses every case since the last offsite copy. A deploy refuses to run while the backup fails (deploy.sh --no-backup overrides that, loudly)."
+          : "The local copy is kept on the server as well; a deploy runs the backup first and stops if it fails."}
+      </p>
+    </SetupCard>
+  );
 }
 
 /** Report branding, saved on its own (there is no page-wide save bar: each
@@ -93,8 +141,8 @@ function BrandingCard({ initial }: { initial: AppSettings }) {
 }
 
 /** Settings -> Company (admins): whether people's own AI keys can be read,
- * the company AI key, the Telegram bot, reports from the public (release
- * P6), WhatsApp and report branding. */
+ * the last backup (round 3), the company AI key, the Telegram bot, reports
+ * from the public (release P6), WhatsApp and report branding. */
 export function CompanyClient({ settings, setup }: { settings: AppSettings; setup: SetupStatus }) {
   const bot = botHandle(setup.telegramBotUsername);
   const botLink = botUrl(setup.telegramBotUsername);
@@ -103,6 +151,10 @@ export function CompanyClient({ settings, setup }: { settings: AppSettings; setu
   return (
     <>
       <AiKeyStorageStatus storage={setup.aiKeyStorage} />
+
+      {/* First, because a missing backup is the one thing here that loses
+          data; the rest are services that can be set up later. */}
+      <BackupsCard backup={setup.lastBackup} tooOld={setup.backupTooOld} />
 
       <CompanyAiKeysCard envKeyConfigured={setup.geminiEnvKeyConfigured} />
 

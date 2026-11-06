@@ -27,11 +27,11 @@ from pathlib import Path
 from sqlalchemy import func
 
 from app.auth.chat_links import sweep_codes
-from app.auth.core import sweep_sessions
+from app.auth.core import audit, sweep_sessions
 from app.auth.links import sweep_links
 from app.auth.permissions import in_inbox, is_public
 from app.config import settings
-from app.intake import public
+from app.intake import pipeline, public
 from app.intake.photos import remove_intake_dir
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
@@ -110,7 +110,16 @@ def sweep(now: datetime | None = None) -> dict:
             if report is not None:
                 candidates.append(_as_utc(report.created_at))
             last_activity = max(c for c in candidates if c is not None)
-            if session.stage in ("sorting", "reading", "finalizing") or now - last_activity < DRAFT_MAX_IDLE:
+            # A filing a restart cut off (pipeline.filing_interrupted) is a
+            # failed draft like any other: skipped for good it was a leak.
+            # Likewise an AI run a restart cut off: the stage still says
+            # "sorting"/"reading" but no thread here runs it (the wizard
+            # already shows it as failed, pipeline.is_running); left out it
+            # was skipped forever, the same leak.
+            busy = (session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id)) or (
+                session.stage == "finalizing" and not pipeline.filing_interrupted(session, now)
+            )
+            if busy or now - last_activity < DRAFT_MAX_IDLE:
                 continue
             if report is not None and is_public(report):
                 # A taken public draft: deleted with its submission row, and
@@ -127,6 +136,10 @@ def sweep(now: datetime | None = None) -> dict:
             db.query(IntakePhoto).filter(IntakePhoto.report_id == report_id).delete()
             if report is not None and report.status == "intake":
                 db.delete(report)
+                # The history keeps that it went, and why, as it does for a
+                # public draft (public.delete_submission): before this a
+                # staff draft vanished after a week with no trace.
+                audit(db, None, "expired", report_id, detail=f"Not worked on for {DRAFT_MAX_IDLE.days} days")
             db.delete(session)
             db.commit()
             remove_intake_dir(report_id)

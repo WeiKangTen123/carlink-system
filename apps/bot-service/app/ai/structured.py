@@ -17,12 +17,14 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from app.ai import runs
 from app.ai.client import get_client
 from app.ai.keys import (
     AI_KEY_INVALID,
     AI_QUOTA_USED,
     AiActor,
     AiUnavailable,
+    last4,
     record_result,
     refusal,
     resolve_keys,
@@ -122,6 +124,9 @@ def call_structured(
     last_error: Exception | None = None
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
+    # The run log (ai/runs.py) gets the request's size once, and each try
+    # below as it ends, through the calling thread's collector.
+    runs.note_input(_input_size(system_instruction, input_parts))
 
     for key in keys:
         client = get_client(key)
@@ -133,12 +138,14 @@ def call_structured(
             # gate ran once before these loops, so a draft that fell through
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
-            acquire(key.rate_limit_id)
+            waited = acquire(key.rate_limit_id)
             verdict = None
             # One retry per model on a 429, using the delay the server itself
             # supplies. Falling straight through to the next model is
             # pointless: it draws on the same per-key quota and 429s too.
             for attempt in (1, 2):
+                started = time.monotonic()
+                interaction = None
                 try:
                     interaction = _create_within(
                         timeout + DEADLINE_MARGIN,
@@ -169,9 +176,11 @@ def call_structured(
                     # in production is indistinguishable from a bug.
                     logger.info("Gemini %s produced by %r on %s", purpose, model_id, key.label)
                     record_result(actor, key, "ok")
+                    _note_attempt(key, model_id, "ok", waited, started, interaction)
                     return result
                 except Exception as exc:
                     last_error = exc
+                    _note_attempt(key, model_id, _outcome(exc, interaction), waited, started, interaction)
                     # A company key's failures go on exactly as before P4.
                     verdict = refusal(exc) if own else None
                     # A refused key or a spent day's allowance won't come
@@ -183,10 +192,15 @@ def call_structured(
                             model_id, key.label, delay,
                         )
                         time.sleep(delay)
+                        # The retry's wait is the one the server asked for.
+                        waited = delay
                         continue
+                    # runs.scrub_error, not only the key scrub: a validation
+                    # error quotes the model's answer, which on a public
+                    # report can repeat the sender's own words.
                     logger.warning(
                         "Gemini model %r failed on %s, trying next: %s",
-                        model_id, key.label, scrub(str(exc), key.value),
+                        model_id, key.label, runs.scrub_error(str(exc), (key.value,)),
                     )
                     break
             verdicts.append(verdict)
@@ -206,6 +220,71 @@ def call_structured(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."
     ) from _scrubbed(last_error, keys)
+
+
+def _input_size(system_instruction: str, input_parts: list[dict]) -> int:
+    """What a call sends, in bytes: the system prompt, the texts and the
+    images as sent (base64)."""
+    size = len((system_instruction or "").encode("utf-8"))
+    for part in input_parts:
+        if part.get("type") == "image":
+            size += len(part.get("data") or "")
+        elif part.get("type") == "text":
+            size += len((part.get("text") or "").encode("utf-8"))
+    return size
+
+
+def _outcome(exc: Exception, interaction) -> str:
+    """One failed try, for the run log: schema (the model answered, parse()
+    refused it), 429, timeout (ours or the SDK's), or error."""
+    if interaction is not None:
+        return "schema"
+    if is_rate_limit_error(exc):
+        return "429"
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return "timeout"
+    return "error"
+
+
+def _count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _tokens(interaction) -> tuple[int | None, int | None]:
+    """(prompt, output) tokens when the response says: the interactions
+    API's usage, or generate_content's usage_metadata. (None, None) when it
+    doesn't -- never a made-up 0."""
+    usage = getattr(interaction, "usage", None)
+    if usage is not None:
+        return _count(getattr(usage, "total_input_tokens", None)), _count(getattr(usage, "total_output_tokens", None))
+    meta = getattr(interaction, "usage_metadata", None)
+    if meta is not None:
+        return _count(getattr(meta, "prompt_token_count", None)), _count(getattr(meta, "candidates_token_count", None))
+    return None, None
+
+
+def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction) -> None:
+    """One try for the run log (ai/runs.py). Never raises: a log that can't
+    be kept must not turn an answer into a failure. waited: seconds spent
+    before the try was sent (a rate-limit slot, or the delay a 429 asked
+    for)."""
+    try:
+        attempt = {
+            "model": model_id,
+            "key_source": key.source,
+            "key_last4": last4(key.value) if key.value else None,
+            "outcome": outcome,
+            "waited_s": round(float(waited), 1) if isinstance(waited, (int, float)) and not isinstance(waited, bool) else 0.0,
+            "ms": int((time.monotonic() - started) * 1000),
+        }
+        prompt_tokens, output_tokens = _tokens(interaction) if interaction is not None else (None, None)
+        if prompt_tokens is not None:
+            attempt["prompt_tokens"] = prompt_tokens
+        if output_tokens is not None:
+            attempt["output_tokens"] = output_tokens
+        runs.note_attempt(attempt)
+    except Exception:
+        logger.warning("AI run log: couldn't note a Gemini try", exc_info=True)
 
 
 def _key_outcome(verdicts: list[str | None]) -> str | None:

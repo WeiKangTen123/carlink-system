@@ -27,7 +27,12 @@ from app.reports.models import AuditEntry, ChatLink, Report, User, iso_utc
 TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
 SIGNED_OFF_STATUSES = ("Signed Off", "signed_off")
 # History entries that say someone worked on a case, for suggesting an owner.
-_EDIT_ACTIONS = ("edited", "annex_a_edited")
+# The five tabs' own saves count as much as the old edit form's: someone who
+# only ever worked through the tabs used to count for nothing.
+_EDIT_ACTIONS = (
+    "edited", "annex_a_edited", "annex_a_prefilled", "annex_b_edited", "annex_c_edited", "cover_page_edited",
+    "damage_item_edited", "damage_item_added", "damage_item_removed",
+)
 
 
 def owner_dict(user) -> dict | None:

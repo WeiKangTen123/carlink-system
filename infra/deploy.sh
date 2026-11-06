@@ -17,9 +17,26 @@
 #
 #   TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy NGINX_PORT=8080 ./deploy.sh
 #
+# It backs up first (infra/backup.sh) and refuses to deploy when it can't:
+# backups not configured, or the backup or its upload failed. Only
+#
+#   ./deploy.sh --no-backup
+#
+# deploys without one (a brand-new server with no database yet, or a bucket
+# you are fixing), with a loud warning.
+#
 # ==============================================================================
 
 set -e
+
+NO_BACKUP=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-backup) NO_BACKUP=1 ;;
+        # A typo must not quietly deploy without a backup.
+        *) echo "❌ Unknown option: $arg (the only option is --no-backup)"; exit 1 ;;
+    esac
+done
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$GEMINI_API_KEY" ]; then
     echo "❌ TELEGRAM_BOT_TOKEN and GEMINI_API_KEY must be set in the environment before running this script."
@@ -56,12 +73,21 @@ cd "$APP_DIR"
 
 # Back up the database and case files before changing anything (see
 # infra/backup.sh; the nightly cron runs the same script). A deploy that
-# adds tables or columns can't be undone without one.
-if sudo test -f /root/.carlink-backup/hmac.env; then
-    echo "💾 Backing up before deploy..."
-    sudo bash infra/backup.sh || { echo "❌ Backup failed -- not deploying."; exit 1; }
+# adds tables or columns can't be undone without one, so no backup, no
+# deploy: missing credentials used to only warn, and a server ran for weeks
+# with no offsite copy. backup.sh fails when the upload fails too.
+if [ "$NO_BACKUP" = 1 ]; then
+    echo "⚠️⚠️⚠️  --no-backup: DEPLOYING WITHOUT A BACKUP. If this deploy goes wrong, the database cannot be put back. ⚠️⚠️⚠️"
+elif ! sudo test -f /root/.carlink-backup/hmac.env; then
+    echo "❌ Backups are not configured on this server (no /root/.carlink-backup/hmac.env, see infra/backup.sh) -- not deploying."
+    echo "   Set them up, or deploy anyway with: ./deploy.sh --no-backup"
+    exit 1
 else
-    echo "⚠️  Backups not configured on this server (see infra/backup.sh) -- deploying without one."
+    echo "💾 Backing up before deploy..."
+    sudo bash infra/backup.sh || {
+        echo "❌ Backup failed -- not deploying. Fix it (Settings > Company shows the last backup), or deploy anyway with: ./deploy.sh --no-backup"
+        exit 1
+    }
 fi
 
 # 3. Build and Launch Containers using Docker Compose.

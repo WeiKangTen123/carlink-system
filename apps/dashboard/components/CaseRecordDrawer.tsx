@@ -1,12 +1,69 @@
 "use client";
 
 import { useEffect } from "react";
-import { Clock, FileText, MapPin, Pencil, Shield, Users, X } from "lucide-react";
-import { channelLabel, PUBLIC_CHANNEL, type ReportDetail } from "@/lib/api";
+import { Bot, Clock, FileText, MapPin, Pencil, Shield, Users, X } from "lucide-react";
+import { aiKeySourceLabel, aiRunErrorLabel, aiRunKindLabel, channelLabel, PUBLIC_CHANNEL, type AiRunSummary, type ReportDetail } from "@/lib/api";
 import { formatSgtDateTime } from "@/lib/caseFields";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 
 const NOT_RECORDED = "Not recorded";
+
+// The AI run log (round 3, B3): every Gemini call made on this case or its
+// draft, as the API recorded it. Nothing here is worked out from the case
+// data; a fact the row doesn't carry is left out of the line.
+
+/** Who ran it when no account did (the bot's own runs, the server's). */
+const AI_RUN_CHANNEL_WHO: Record<string, string> = {
+  dashboard: "the website",
+  telegram: "the Telegram bot",
+  whatsapp: "WhatsApp",
+  system: "the server",
+};
+
+/** "P03, P07, P12" when few enough to name, else "14 photos"; null when
+ * the row doesn't say (a redraft or price lookup sends none). */
+function runPhotos(run: AiRunSummary): string | null {
+  const sent = run.photos_sent;
+  if (Array.isArray(sent)) {
+    if (sent.length === 0) return null;
+    if (sent.length <= 6) return sent.join(", ");
+    return `${sent.length} photos`;
+  }
+  const n = sent && typeof sent === "object" && typeof sent.count === "number" ? sent.count : run.photos_count;
+  if (typeof n !== "number") return null;
+  return `${n} photo${n === 1 ? "" : "s"}`;
+}
+
+/** How long it took, from the row's own timestamps; null while it runs. */
+function runSeconds(run: AiRunSummary): string | null {
+  if (!run.finished_at) return null;
+  const ms = Date.parse(run.finished_at) - Date.parse(run.started_at);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return `${Math.round(ms / 1000)} s`;
+}
+
+/** The outcome as a short label, and the scrubbed error (or the code in
+ * words) for a run that failed. */
+function runOutcome(run: AiRunSummary): { label: string; tone: "ok" | "danger" | "warn" | ""; error: string | null } {
+  switch (run.status) {
+    case "ok":
+      return { label: "OK", tone: "ok", error: null };
+    case "running":
+      return { label: "Running…", tone: "", error: null };
+    case "aborted":
+      return { label: "Stopped", tone: "warn", error: run.error_text?.trim() || aiRunErrorLabel(run.error_code) };
+    case "failed":
+    case "refused":
+      return {
+        label: run.status === "refused" ? "Refused" : "Failed",
+        tone: "danger",
+        // The API scrubs error_text of digits and plates before storing it.
+        error: run.error_text?.trim() || aiRunErrorLabel(run.error_code) || null,
+      };
+    default:
+      return { label: run.status, tone: "", error: null };
+  }
+}
 
 /** One labelled fact of the case record: the recorded value, or "Not
  * recorded" -- never a guessed one. */
@@ -47,6 +104,9 @@ const HISTORY_LABELS: Record<string, string> = {
   damage_item_edited: "Damaged part edited",
   damage_item_added: "Damaged part added",
   damage_item_removed: "Damaged part removed",
+  // A PDF or Excel made on download (detail: pdf / pdf-no-photos / xlsx);
+  // a preview with no stored PDF yet renders one too, hence not "sent".
+  exported: "Report downloaded",
 };
 
 /** The Case record drawer: what the report never prints -- who sent it, how
@@ -100,6 +160,8 @@ export function CaseRecordDrawer({
   // Only a recorded "yes" is a fact; a default-false flag is not "No".
   const reportedToPolice = pol?.reported_to_police || d.reported_to_authorities ? "Yes" : null;
   const history = report.history || [];
+  // Newest first from the API (at most 50). An older API sends none.
+  const aiRuns = report.ai_runs || [];
 
   return (
     <>
@@ -206,6 +268,47 @@ export function CaseRecordDrawer({
                   </div>
                 ))}
               </div>
+            )}
+          </section>
+
+          {/* AI RUNS (round 3, B3) -- every Gemini call on this case or its
+              draft: what for, when, which photos, which model, how long, how
+              it ended, who pressed it and on which key. Phase 2 adds a
+              "Retry on tab 1" link beside a failed redetect. */}
+          <section>
+            <div className="record-section-title">
+              <Bot style={{ width: 12, height: 12 }} /> AI runs ({aiRuns.length})
+            </div>
+            {aiRuns.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>None recorded</div>
+            ) : (
+              <ul className="ai-run-list">
+                {aiRuns.map((run) => {
+                  const outcome = runOutcome(run);
+                  const who = run.actor_name || AI_RUN_CHANNEL_WHO[run.channel] || run.channel;
+                  const facts = [runPhotos(run), run.model_used, runSeconds(run), `by ${who}`, aiKeySourceLabel(run.key_source, run.key_last4)].filter(
+                    Boolean
+                  );
+                  return (
+                    <li key={run.id} className="ai-run-row">
+                      <div className="ai-run-head">
+                        <strong>{aiRunKindLabel(run.kind)}</strong>
+                        <span className={`ai-run-status ${outcome.tone}`}>{outcome.label}</span>
+                        {typeof run.parts_found === "number" && (
+                          <span style={{ color: "var(--text-secondary)" }}>
+                            {run.parts_found} part{run.parts_found === 1 ? "" : "s"} found
+                          </span>
+                        )}
+                        <span className="ai-run-when" suppressHydrationWarning>
+                          {formatSgtDateTime(run.started_at)}
+                        </span>
+                      </div>
+                      <div className="ai-run-meta">{facts.join(" · ")}</div>
+                      {outcome.error && <div className="ai-run-error">{outcome.error}</div>}
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </section>
 

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 
 from app.ai import keys as ai_keys
+from app.ai import runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured
 from app.api import limits
@@ -288,8 +289,10 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
     car = " ".join(x for x in (vehicle.get("make"), vehicle.get("model"), vehicle.get("year")) if x) or "unknown vehicle"
     prompt = f"Vehicle: {car}, Singapore.\nDamaged parts: {json.dumps(body.parts)}"
     try:
-        # One AI request at a time per person (429 ai_busy).
-        with limits.ai_turn(user):
+        # One AI request at a time per person (429 ai_busy). The run log's
+        # row (ai/runs.py) only once the turn is had: a refused turn made no
+        # AI call.
+        with limits.ai_turn(user), runs.recorded(report_id, "annex_suggest", actor) as run:
             out = call_structured(
                 purpose="annex suggestions",
                 system_instruction=_AI_SYSTEM,
@@ -300,6 +303,9 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
                 actor=actor,
                 timeout=60.0,
             )
+            # The parts it gave lines for.
+            parts = out.get("parts") if isinstance(out, dict) else None
+            run.parts_found = sum(1 for p in (parts or []) if isinstance(p, dict) and p.get("lines"))
     except (AiUnavailable, ApiError):
         # Their own key refused mid-call (the 409), or AI already running
         # for them (429): not "try again in a minute".

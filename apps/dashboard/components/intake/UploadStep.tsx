@@ -83,6 +83,9 @@ type Props = {
    * instead of offering an AI run the API would refuse. */
   aiOff?: boolean;
   onFillByHand?: () => void;
+  /** Set when a filing was cut off (filing_interrupted): the main button
+   * goes to File case, not to a fresh (paid) AI run. */
+  onFileCase?: () => void;
 };
 
 export function UploadStep({
@@ -105,6 +108,7 @@ export function UploadStep({
   onContinue,
   aiOff = false,
   onFillByHand,
+  onFileCase,
 }: Props) {
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -139,6 +143,8 @@ export function UploadStep({
   let primary: { label: string; action: () => void; icon: React.ReactNode };
   if (running) {
     primary = { label: "View AI progress", action: onContinue, icon: <Loader2 className="spin" style={{ width: 15, height: 15 }} /> };
+  } else if (onFileCase) {
+    primary = { label: "Next: file the case", action: onFileCase, icon: <CheckCircle2 style={{ width: 15, height: 15 }} /> };
   } else if (aiOff && onFillByHand) {
     primary = { label: "Next: fill in the cover page", action: onFillByHand, icon: <PencilLine style={{ width: 15, height: 15 }} /> };
   } else if (stage === "ready" && unsorted === 0) {

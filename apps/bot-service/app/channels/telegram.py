@@ -71,6 +71,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from telegram.helpers import escape_markdown
 
 from app.config import settings
+from app.ai import runs
 from app.ai.keys import AI_KEY_MISSING, AiActor, AiUnavailable, ensure_ai_ready, resolve_keys
 from app.ai.rate_limit import estimate_wait
 from app.api import limits
@@ -116,6 +117,7 @@ from app.auth.deps import ApiError
 from app.auth.permissions import is_staff
 from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
 from app.conversation.state import Stage, find_session, get_session, reset_session
+from app.intake.photos import photo_label
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import file_case_data
 from app.reports.models import ChatLink, ChatLinkCode, Report, User, gen_id
@@ -1273,6 +1275,33 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await draft_and_reply(update, session, description, user=user)
 
 
+def _case_id_for(session) -> str:
+    """The id this chat's case will be saved under, made with its first
+    draft, so the AI run log's rows for the draft (_draft_logged) are the
+    case's once Confirm saves it -- as a wizard draft and its case share
+    one id. Kept on the session object itself, which is the chat's whole
+    draft: a new one (after a save, /cancel, a stale draft) starts again."""
+    case_id = getattr(session, "ai_case_id", None)
+    if not case_id:
+        case_id = gen_id()
+        session.ai_case_id = case_id
+    return case_id
+
+
+def _draft_logged(description: str, session, actor: AiActor, report_id: str):
+    """build_draft as one run of the AI run log (ai/runs.py), kind
+    "redraft" on every call -- the first draft too: each is a whole draft
+    from every photo and the words so far. Runs in the worker thread, so
+    the log's collector sees the call's tries and its writes stay off the
+    event loop."""
+    with runs.recorded(report_id, "redraft", actor) as run:
+        # Every photo goes, labelled P01, P02... in order (extraction._build_input).
+        run.photos_sent = [photo_label(i) for i in range(len(session.photo_paths))]
+        result = build_draft(description, session.photo_paths, session, actor=actor)
+        run.parts_found = len(result.draft.damage_summary or [])
+    return result
+
+
 async def draft_and_reply(update: Update, session, description: str, redrafting: bool = False, *, user: Linked) -> None:
     """Step 7: drafts on this person's AI (user.actor: their own key, or the
     company's if they may use it). An unvetted account gets one AI request
@@ -1300,7 +1329,7 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
                 await msg_target.reply_text(f"{notice} (busy right now -- about {round(queued)}s in queue)")
             else:
                 await msg_target.reply_text(notice)
-        result = await asyncio.to_thread(build_draft, description, session.photo_paths, session, actor=actor)
+        result = await asyncio.to_thread(_draft_logged, description, session, actor, _case_id_for(session))
     except AiUnavailable as exc:
         # Their AI went off mid-draft (key removed or failing, tick taken
         # away): said plainly, and the draft and photos stay for a retry.
@@ -1498,7 +1527,8 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
     data["sign_off"] = SignOffInfo().model_dump()
     if not user.staff:
         data["report_id"] = None
-    report_id = gen_id()
+    # The id the draft's AI runs were logged under (_case_id_for).
+    report_id = _case_id_for(session)
     # Filed like a wizard case (app/reports/filing.py) before any file is
     # written -- a failure here leaves nothing behind -- and before the
     # render, so the PDF carries the Annex A rows. ai_draft is the AI's own

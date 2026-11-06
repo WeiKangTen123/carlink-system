@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import shutil
@@ -29,11 +30,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from app.ai import keys as own_keys
+from app.ai import runs as run_log
 from app.ai import secretbox
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
 from app.api.ai_keys import router as ai_keys_router
+from app.api.ai_runs import router as ai_usage_router
 from app.api.annexes import router as annexes_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
@@ -159,6 +162,7 @@ app.include_router(intake_router)
 app.include_router(ai_keys_router)
 app.include_router(telegram_link_router)
 app.include_router(inbox_router)
+app.include_router(ai_usage_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -458,10 +462,27 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             "history": report_history(db, r),
             "ai_read": ai_read,
             "ai_read_photos": ai_read_photos,
+            # What the AI did on this case and its draft (app/ai/runs.py),
+            # newest first: the Case record drawer's list, and tab 1's "AI
+            # read 14 of 41 photos" line (null when the AI never read it).
+            "ai_runs": run_log.summaries(db, r.id, viewer=user),
+            "ai_last_read": run_log.last_read(db, r.id, len(r.photo_paths or [])),
             **access,
         }
     finally:
         db.close()
+
+
+def _audit_export(db, user: CurrentUser, r: Report, detail: str) -> None:
+    """History entry "exported" (pdf | pdf-no-photos | xlsx): the case left
+    the server as a file. Best effort: a busy database must not stop the
+    download the person asked for."""
+    try:
+        audit(db, user, "exported", r.id, detail=detail)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Couldn't record the %s export of report %s: %s", detail, r.id, type(exc).__name__)
 
 
 def _report_filename(r: Report, ext: str, suffix: str = "") -> str:
@@ -481,10 +502,11 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 @app.get("/reports/{report_id}/download")
 @app.head("/reports/{report_id}/download")
-def download_report_pdf(report_id: str, photos: int = 1, user: CurrentUser = Depends(visible_case)):
+def download_report_pdf(request: Request, report_id: str, photos: int = 1, user: CurrentUser = Depends(visible_case)):
     """The report PDF. ?photos=0: the same pages without the photo
     appendix, rendered now into "<id>_nophotos.pdf" and never kept on
-    r.pdf_path -- that is the full report, the one every save invalidates."""
+    r.pdf_path -- that is the full report, the one every save invalidates.
+    A GET is an export in the case history (HEAD only asks)."""
     from fastapi.responses import FileResponse
     db = SessionLocal()
     try:
@@ -508,6 +530,8 @@ def download_report_pdf(report_id: str, photos: int = 1, user: CurrentUser = Dep
                 except Exception as exc:
                     logger.error("Failed to render the no-photos PDF for report %s: %s", r.id, exc)
                     raise HTTPException(status_code=503, detail="PDF generation currently unavailable.") from exc
+            if request.method == "GET":
+                _audit_export(db, user, r, "pdf-no-photos")
             return FileResponse(
                 path=nophotos_path, filename=_report_filename(r, "pdf", " (no photos)"), media_type="application/pdf", headers=_NO_STORE
             )
@@ -530,6 +554,8 @@ def download_report_pdf(report_id: str, photos: int = 1, user: CurrentUser = Dep
         if not r.pdf_path or not Path(r.pdf_path).exists():
             raise HTTPException(status_code=503, detail="PDF generation currently unavailable.")
 
+        if request.method == "GET":
+            _audit_export(db, user, r, "pdf")
         return FileResponse(
             path=r.pdf_path,
             filename=_report_filename(r, "pdf"),
@@ -568,6 +594,7 @@ def download_report_xlsx(report_id: str, user: CurrentUser = Depends(visible_cas
         except Exception as exc:
             logger.error("Failed to make the Excel report for %s: %s", r.id, exc)
             raise HTTPException(status_code=503, detail="Excel export currently unavailable.") from exc
+        _audit_export(db, user, r, "xlsx")
         return FileResponse(
             path=str(out),
             filename=_report_filename(r, "xlsx"),
@@ -1797,9 +1824,39 @@ def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
                 "bot_username": chat_links.bot_username(db),
                 "accounts_connected": chat_links.accounts_connected(db),
             },
+            # What infra/backup.sh last recorded, or None when no backup
+            # has been recorded here (Settings > Company shows it in red).
+            "last_backup": _last_backup(),
         }
     finally:
         db.close()
+
+
+# Written by infra/backup.sh into the data volume, which is STORAGE_DIR in
+# the container: {at, reports, local_path, uploaded, bucket}. Outside
+# _PUBLIC_FILE_PREFIXES, so never served under /files.
+LAST_BACKUP_FILE = ".last_backup"
+
+
+def _last_backup() -> dict | None:
+    """System info's last_backup: {at, reports, uploaded, bucket}, or None
+    when there is no record or it can't be read -- never a guess. The
+    backup's path on the server (local_path) isn't sent."""
+    try:
+        raw = json.loads((Path(settings.storage_dir) / LAST_BACKUP_FILE).read_text(encoding="utf-8"))
+        # backup.sh writes UTC with a "Z" (2026-11-05T06:17:00Z).
+        at = datetime.fromisoformat(raw["at"].replace("Z", "+00:00"))
+        reports, uploaded, bucket = raw["reports"], raw["uploaded"], raw.get("bucket")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    if not isinstance(reports, int) or isinstance(reports, bool) or not isinstance(uploaded, bool):
+        return None
+    return {
+        "at": iso_utc(at),
+        "reports": reports,
+        "uploaded": uploaded,
+        "bucket": bucket if isinstance(bucket, str) and bucket else None,
+    }
 
 
 # =============================================================================

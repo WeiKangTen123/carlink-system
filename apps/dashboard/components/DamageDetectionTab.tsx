@@ -9,6 +9,23 @@ import { severityClass } from "@/lib/caseFields";
 import { CaseEvidenceTab } from "./CaseEvidenceTab";
 import { DetectedPartsTable } from "./DetectedPartsTable";
 
+/** "27 Feb, 10:16" in Singapore time, for the one-line status strip (the
+ * Case record drawer has the full date). h23 for the same reason as
+ * caseFields.formatSgtDateTime: Node and browsers disagree on midnight
+ * under hour12:false. */
+function formatSgtShort(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-SG", {
+    timeZone: "Asia/Singapore",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
 interface BlueprintErrorBoundaryProps {
   children: ReactNode;
 }
@@ -175,13 +192,33 @@ export function DamageDetectionTab({
     return () => clearTimeout(timer);
   }, []);
 
+  // The last AI read as the run log recorded it (round 3, B3): which photos
+  // went and when. Null when the AI never read this case (filled in by
+  // hand, or filed before the log existed), and absent from an older API.
+  const lastRead = report.ai_last_read ?? null;
+  const partsCount = damageEntries.length;
+  const verifiedCount = damageEntries.filter((e) => e.human_verified).length;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* What the AI found, counted from the record; no read time is shown
-          because none is recorded apart from the filing time. */}
+      {/* What the AI read and found. The parts are counted from the record
+          as it is now (the surveyor may have added or removed some since);
+          the read itself comes from the run log, so with no log entry the
+          line falls back to counts alone, with no time invented. */}
       <div className="detection-status-strip">
-        <span>
-          {damageEntries.length} part{damageEntries.length === 1 ? "" : "s"} detected from {photos.length} photo{photos.length === 1 ? "" : "s"}.
+        <span suppressHydrationWarning>
+          {lastRead ? (
+            <>
+              AI read {lastRead.photos_read} of {plural(lastRead.photos_total, "photo")} on {formatSgtShort(lastRead.at)}
+              {typeof lastRead.seconds === "number" ? ` (${Math.round(lastRead.seconds)} s)` : ""}. {plural(partsCount, "part")} found,{" "}
+              {verifiedCount} verified.
+            </>
+          ) : (
+            <>
+              {plural(partsCount, "part")} detected from {plural(photos.length, "photo")}.
+            </>
+          )}
         </span>
         {/* Phase 2: [Add photos] (POST /reports/{id}/photos) and [Re-run
             detection] (POST /reports/{id}/redetect) go here, with the

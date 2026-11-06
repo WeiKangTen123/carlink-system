@@ -201,6 +201,26 @@ def main() -> int:
         assert not (Path(settings.storage_dir) / "intake" / rid).exists()
         ok(f"finalized: photos moved, reference resolved to {expected}, Annex A rebuilt")
 
+        # The AI run log (round 3, B3): one row per stage the draft ran,
+        # kept by the case (same id), newest first.
+        rows = detail["ai_runs"]
+        assert [(r["kind"], r["status"]) for r in rows] == [
+            ("redraft", "ok"), ("redraft", "failed"), ("redraft", "failed"), ("redraft", "ok"), ("read", "ok"), ("sort", "ok"),
+        ], [(r["kind"], r["status"]) for r in rows]
+        sort_run = rows[-1]
+        assert sort_run["photos_sent"] == {"count": len(files)} and sort_run["photos_count"] == len(files), sort_run
+        assert sort_run["model_used"] and sort_run["key_source"] == "company" and sort_run["key_last4"] == "fake"
+        assert sort_run["actor_name"].startswith("Test Surveyor") and sort_run["channel"] == "dashboard"
+        assert [r["error_code"] for r in rows[1:3]] == ["ai_error", "ai_error"], rows[1:3]
+        assert "400" in rows[1]["error_text"] and "503" in rows[2]["error_text"] and rows[1]["model_used"] is None
+        read_labels = [e["label"] for e in detail["data"]["photo_index"] if e.get("read")]
+        assert read_labels and rows[0]["photos_sent"] == read_labels and rows[0]["parts_found"] == 2, (rows[0], read_labels)
+        last = detail["ai_last_read"]
+        assert last["photos_read"] == len(read_labels) and last["photos_total"] == len(files) - 1, last
+        assert last["model"] == rows[0]["model_used"] and last["seconds"] is not None
+        ok(f"run log: sort (1 row for 2 batches, {len(files)} photos), read, re-reads as redraft, the two failures "
+           f"with code and Google's words; photo_index read flags match the last reading ({len(read_labels)} photos)")
+
         rid2 = client.post("/intake").json()["id"]
         with open(files[0], "rb") as fh:
             client.post(f"/intake/{rid2}/photos", files={"file": (files[0].name, fh, "image/jpeg")})

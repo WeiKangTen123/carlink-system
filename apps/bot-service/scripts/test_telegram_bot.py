@@ -46,7 +46,7 @@ from telegram import User as TgUser  # noqa: E402
 
 import app.channels.telegram as tg  # noqa: E402
 import app.channels.telegram_public as tg_public  # noqa: E402
-from app.ai.keys import AiActor  # noqa: E402
+from app.ai.keys import AI_QUOTA_USED, MESSAGES, AiActor, AiUnavailable  # noqa: E402
 from app.api import limits  # noqa: E402
 from app.auth import chat_links  # noqa: E402
 from app.auth.chat_links import confirm_from_web, new_code, wrong_codes  # noqa: E402
@@ -56,7 +56,7 @@ from app.conversation import state  # noqa: E402
 from app.conversation.flow import DraftResult  # noqa: E402
 from app.conversation.state import Stage  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
-from app.reports.models import AuditEntry, ChatLink, ChatLinkCode, Report, User  # noqa: E402
+from app.reports.models import AiRun, AuditEntry, ChatLink, ChatLinkCode, Report, User  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo  # noqa: E402
 from app.storage.files import tmp_dir  # noqa: E402
 
@@ -570,6 +570,23 @@ async def check_drafting_as_the_person() -> None:
     assert state.get_session(str(HANA_TG)).photo_paths == []
     ok("AI off for the person: one plain 'add your key' message for an album, nothing downloaded")
 
+    # Their AI refusing mid-draft is in the run log too (round 3, B3).
+    out = Outbox()
+    state.reset_session(str(BEN_TG))
+    with mock.patch.object(tg, "build_draft", side_effect=AiUnavailable(AI_QUOTA_USED)):
+        await send_photo(BEN_TG, out)
+        await send_text(BEN_TG, out, "Rear-ended at PIE exit 12")
+    case_id = state.get_session(str(BEN_TG)).ai_case_id
+    db = SessionLocal()
+    try:
+        logged = [(r.kind, r.status, r.error_code, r.key_source, r.actor_user_id, r.error_text)
+                  for r in db.query(AiRun).filter(AiRun.report_id == case_id)]
+    finally:
+        db.close()
+    assert logged == [("redraft", "refused", AI_QUOTA_USED, "none", P.ben, MESSAGES[AI_QUOTA_USED])], logged
+    state.reset_session(str(BEN_TG))
+    ok("a draft their AI refused: a 'refused' redraft row with the code and its words, under the draft's case id")
+
 
 TEMPLATE_REPLY = (
     "Vehicle Plate: SMV7530X\n"
@@ -646,9 +663,21 @@ async def check_one_confirm() -> None:
     assert case.ai_draft and case.ai_draft["description"] == "Rear-ended at PIE exit 12", case.ai_draft
     ok("the case carries photo_index (kind None: never sorted), a synced Annex A and the AI's draft; the reply has no CIR- code")
 
+    # The AI run log (round 3, B3): the draft's run, under the id the case
+    # was saved with.
+    db = SessionLocal()
+    try:
+        logged = [(r.kind, r.status, r.channel, r.actor_user_id, r.photos_sent, r.parts_found, r.finished_at is not None)
+                  for r in db.query(AiRun).filter(AiRun.report_id == case.id)]
+    finally:
+        db.close()
+    assert logged == [("redraft", "ok", "telegram", P.ann, ["P01", "P02"], 0, True)], logged
+    ok("the draft's AI run is logged under the case's id: redraft, telegram, as Ann, photos P01-P02")
+
     assert not any(Path(p).exists() for p in temp_files), [p for p in temp_files if Path(p).exists()]
     fresh = state.get_session(str(chat))
     assert fresh.draft is None and fresh.photo_paths == [] and not fresh.finalizing
+    assert getattr(fresh, "ai_case_id", None) is None  # the next draft gets an id of its own
     ok("the temp files are deleted once the case is saved, and the session is reset")
 
 

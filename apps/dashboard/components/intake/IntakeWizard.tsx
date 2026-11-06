@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Bot, Check, Lock, Save, Send, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bot, Check, Loader2, Lock, Save, Send, X } from "lucide-react";
 import { aiOffMessage, isAiOffCode, ownerLabel, type AiOffCode, type ReportData, type Taxonomy } from "@/lib/api";
 import { AiFixLink } from "@/components/AiFixLink";
 import { CaseNotFound } from "@/components/CaseNotFound";
@@ -11,13 +11,16 @@ import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
+  FILING_INTERRUPTED_MESSAGE,
   IntakeRequestError,
+  STAGE_LABELS,
   createIntake,
   deleteIntakePhoto,
   fetchAiAllowed,
   finalizeIntake,
   formatBytes,
   getIntake,
+  isFilingInterrupted,
   isPermanentFailure,
   isTransientFailure,
   processIntake,
@@ -70,7 +73,14 @@ const EMPTY_DATA: ReportData = {
 
 const isRunning = (stage: IntakeStage | null | undefined) => stage === "sorting" || stage === "reading";
 
+/** The API's answer once a draft has become a case (GET /intake/{id} and
+ * POST /intake/{id}/finalize both say so): the case page is where to go. */
+const isCaseNow = (e: unknown) => e instanceof Error && e.message.includes("already been turned into a case");
+
 function stepFor(state: IntakeState): Step {
+  // Being filed, or a filing cut short by a restart (round 3, B1a): back
+  // to Parties, where File case is, not to the photos.
+  if (state.stage === "finalizing" || isFilingInterrupted(state)) return 4;
   if (state.stage === "ready") return 3;
   if (state.stage === "uploading" || state.photos.length === 0) return 1;
   return 2;
@@ -222,9 +232,15 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     try {
       applyState(await getIntake(id), false);
     } catch (e) {
+      // A File case whose answer was lost (502/504) may have finished on
+      // the server: open the case rather than show its 409 as an error.
+      if (isCaseNow(e)) {
+        router.push(`/reports/${id}`);
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [applyState]);
+  }, [applyState, router]);
 
   // Resume an existing draft (?draft=<id>).
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -247,7 +263,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       })
       .catch((e: Error) => {
         if (cancelled) return;
-        if (e.message.includes("already been turned into a case")) {
+        if (isCaseNow(e)) {
           router.replace(`/reports/${initialDraftId}`);
           return;
         }
@@ -289,19 +305,27 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     };
   }, [aiOff]);
 
-  // Poll while the AI works in the background.
+  // Poll while the AI works in the background, and while the server files
+  // the case (stage "finalizing", round 3 B1a): a filing that finished
+  // answers "already a case" (go there); one cut short by a restart reads
+  // as failed / filing_interrupted after 10 minutes, with File case back.
   const running = isRunning(state?.stage);
+  const filing = state?.stage === "finalizing";
   useEffect(() => {
-    if (!running || !draftId) return;
+    if ((!running && !filing) || !draftId) return;
     const timer = setInterval(() => {
       getIntake(draftId)
         .then((s) => applyState(s, false))
-        .catch(() => {
+        .catch((e: unknown) => {
+          if (filing && isCaseNow(e)) {
+            router.replace(`/reports/${draftId}`);
+            return;
+          }
           // transient -- the next tick retries
         });
     }, POLL_MS);
     return () => clearInterval(timer);
-  }, [running, draftId, applyState]);
+  }, [running, filing, draftId, applyState, router]);
 
   // Leaving mid-upload loses the rest of the queue (the File objects only
   // exist in this page), and leaving with unsaved edits loses those. The
@@ -755,8 +779,20 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       router.push(`/reports/${id}`);
       router.refresh();
     } catch (e) {
+      // Filed after all -- an earlier press got through, or the server
+      // finished while this answer was lost: the case page is where it is.
+      if (isCaseNow(e)) {
+        setDirty(false);
+        router.push(`/reports/${id}`);
+        router.refresh();
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
       setBusy(null);
+      // No answer (the server restarted mid-request): the draft may be
+      // "finalizing" on the server. Ask, so the poll takes it from there --
+      // to the case, or to filing_interrupted with File case enabled again.
+      if (isTransientFailure(e)) void refresh();
     }
   }
 
@@ -777,9 +813,13 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     if (n === 1) return true;
     if (!draftId || !state) return false;
     if (n === 2) return stage !== "uploading" || state.photos.some((p) => p.kind);
-    // A failed AI never blocks filling in the facts by hand.
-    return stage === "ready" || stage === "failed" || aiSkipped;
+    // A failed AI never blocks filling in the facts by hand. A draft being
+    // filed got here already (the stepper is locked meanwhile, below).
+    return stage === "ready" || stage === "failed" || stage === "finalizing" || aiSkipped;
   };
+  // A filing cut short by a restart (round 3, B1a): say so, with File case
+  // enabled again. Not an AI refusal, so none of the AI-off words below.
+  const filingInterrupted = isFilingInterrupted(state);
 
   const changedSinceRead = useMemo(
     () => new Set([...changedAt].filter(([, at]) => at > readStartedAt).map(([photoId]) => photoId)),
@@ -861,7 +901,13 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const publicCase = Boolean(publicInfo);
 
   let saveStatus: React.ReactNode = null;
-  if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
+  if (filing)
+    saveStatus = (
+      <span className="intake-muted">
+        <Loader2 className="spin" style={{ width: 12, height: 12, verticalAlign: "-2px" }} /> {STAGE_LABELS.finalizing}
+      </span>
+    );
+  else if (running) saveStatus = <span className="intake-muted">Editing locked while the AI reads</span>;
   else if (saveFailed && dirty) saveStatus = <span className="intake-chip warn">Not saved -- retrying</span>;
   else if (dirty) saveStatus = <span className="intake-muted">Unsaved changes…</span>;
   else if (savedAt)
@@ -893,7 +939,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           )}
           <span role="status">{saveStatus}</span>
           {draftId && (
-            <button type="button" className="btn-secondary-modern" onClick={saveAndExit} disabled={Boolean(busy) || uploading}>
+            <button type="button" className="btn-secondary-modern" onClick={saveAndExit} disabled={Boolean(busy) || uploading || filing}>
               <Save style={{ width: 14, height: 14 }} /> Save &amp; exit
             </button>
           )}
@@ -903,7 +949,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       <ol className="intake-stepper">
         {STEPS.map((s, i) => {
           const done = s.n < step;
-          const can = reachable(s.n) && !busy;
+          // Locked while the server files the case: a save then would race
+          // the session row being deleted.
+          const can = reachable(s.n) && !busy && !filing;
           return (
             <li key={s.n} className={`intake-step ${s.n === step ? "active" : ""} ${done ? "done" : ""}`}>
               <button type="button" onClick={() => can && goTo(s.n)} disabled={!can}>
@@ -923,6 +971,30 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           <button type="button" className="intake-icon-btn" onClick={() => setError(null)} aria-label="Dismiss">
             <X style={{ width: 14, height: 14 }} />
           </button>
+        </div>
+      )}
+
+      {/* The server is turning the draft into a case (stage "finalizing"):
+          the poll above moves to the case page when it has. */}
+      {filing && (
+        <div className="intake-alert info" role="status">
+          <Loader2 className="spin" style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>{STAGE_LABELS.finalizing} The case opens as soon as the server has filed it.</div>
+        </div>
+      )}
+
+      {/* Filing stopped partway (the server restarted; round 3 B1a). The
+          same words as the API's, and File case works again on step 4 --
+          PartiesStep only disables it while a filing is in progress. */}
+      {filingInterrupted && (
+        <div className="intake-alert danger" role="alert">
+          <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>{state?.error || FILING_INTERRUPTED_MESSAGE}</div>
+          {step !== 4 && (
+            <button type="button" className="btn-secondary-modern" onClick={() => void goTo(4)} disabled={Boolean(busy)}>
+              Go to File case
+            </button>
+          )}
         </div>
       )}
 
@@ -998,6 +1070,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onContinue={() => goTo(2)}
           aiOff={aiOff}
           onFillByHand={fillByHand}
+          onFileCase={filingInterrupted ? () => void goTo(4) : undefined}
         />
       )}
 
@@ -1043,7 +1116,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         <PartiesStep
           data={data}
           onChange={editData}
-          finalizing={busy === "finalizing"}
+          // Also while the server is still filing it (after a reload
+          // mid-filing): File case stays disabled until the poll settles it.
+          finalizing={busy === "finalizing" || filing}
           uploading={uploading}
           onBack={() => goTo(3)}
           onFinalize={finalize}

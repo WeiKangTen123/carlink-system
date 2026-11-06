@@ -1,4 +1,4 @@
-import { getAppSettings, getSystemInfo, type SystemInfo } from "@/lib/api";
+import { BACKUP_STALE_HOURS, getAppSettings, getSystemInfo, type LastBackup, type SystemInfo } from "@/lib/api";
 import type { AiKeyStorageView } from "../AiKeyStorageStatus";
 import { AdminOnly } from "../AdminOnly";
 import { CompanyClient } from "../CompanyClient";
@@ -10,6 +10,17 @@ function aiKeyStorageOf(system: SystemInfo): AiKeyStorageView | null {
   const s = system.ai_key_storage;
   if (!s || typeof s.state !== "string" || !s.state) return null;
   return { state: s.state, detail: typeof s.detail === "string" && s.detail.trim() ? s.detail : null };
+}
+
+/** Whether the last recorded backup is older than BACKUP_STALE_HOURS.
+ * Worked out here on the server, so the red/green of the Backups card can't
+ * differ between the server's render and the browser's (hydration). A date
+ * that can't be read counts as too old: the screen can't vouch for it. */
+function backupTooOld(backup: LastBackup | null | undefined): boolean {
+  if (!backup) return false;
+  const at = Date.parse(backup.at);
+  if (Number.isNaN(at)) return true;
+  return Date.now() - at > BACKUP_STALE_HOURS * 3600 * 1000;
 }
 
 /** Settings -> Company (admins). The role is checked here, before any
@@ -39,6 +50,11 @@ export default async function CompanySettingsPage() {
     telegramBotUsername: system.telegram?.bot_username || null,
     telegramAccountsConnected:
       typeof system.telegram?.accounts_connected === "number" ? system.telegram.accounts_connected : null,
+    // Round 3 B1b. Null: no backup recorded -- also when the API is older
+    // than round 3 or couldn't be reached, which is equally "can't vouch
+    // for a backup".
+    lastBackup: system.last_backup ?? null,
+    backupTooOld: backupTooOld(system.last_backup),
   };
 
   return <CompanyClient settings={settings} setup={setup} />;

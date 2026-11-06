@@ -1270,12 +1270,157 @@ export type ReportDetail = {
   /** The photo each ai_read field came from ("P03"), when the draft can
    * tell; {} otherwise. */
   ai_read_photos?: Record<string, string>;
+  /** Every AI call made on this case or its draft, newest first, at most 50
+   * (the ai_runs table, round 3 B3). Absent from an older API. Shown in
+   * the Case record drawer; never printed. */
+  ai_runs?: AiRunSummary[];
+  /** The last "read" run that finished, for tab 1's status line. Null when
+   * the AI never read this case; absent from an older API. */
+  ai_last_read?: AiLastRead | null;
 };
 
 export type AiReadInfo = {
   vehicle_info?: Record<string, string | number | null | undefined> | null;
   incident_datetime?: string | null;
 };
+
+// The AI run log (round 3, B3): one row per Gemini call, written by the
+// API. GET /reports/{id} sends the case's rows; GET /ai-usage (admins)
+// sums them. The rows never hold an API key or anything a member of the
+// public typed; error_text is scrubbed of digits and plates by the API.
+
+/** What the call was for. Kept open (string) so a kind a newer API adds
+ * still shows, under its raw name. */
+export type AiRunKind = "sort" | "read" | "redraft" | "annex_suggest" | "redetect" | "lookup";
+export type AiRunStatus = "running" | "ok" | "failed" | "refused" | "aborted";
+export type AiRunChannel = "dashboard" | "telegram" | "whatsapp" | "system";
+export type AiKeySource = "own" | "company" | "none";
+
+export type AiRunSummary = {
+  id: string;
+  kind: AiRunKind | (string & {});
+  channel: AiRunChannel | (string & {});
+  started_at: string;
+  /** Null while the run is still going (or the server died with it). */
+  finished_at: string | null;
+  status: AiRunStatus | (string & {});
+  /** The existing codes (ai_key_missing, ai_quota_used, timeout...) on a
+   * failed or refused run; null otherwise. */
+  error_code: string | null;
+  /** The scrubbed error, when the API sends it with the per-case list
+   * (the contract lists only error_code there; shown when present). */
+  error_text?: string | null;
+  /** The model that answered, null when none did. */
+  model_used: string | null;
+  /** P-labels of the photos sent ("P03"), or {count} for a sort batch,
+   * or null when the run sent no photos (a redraft, a price lookup). */
+  photos_sent: string[] | { count: number } | null;
+  /** How many photos went, worked out by the API from photos_sent. */
+  photos_count: number | null;
+  /** Damaged parts the run found; null for a run that doesn't find parts. */
+  parts_found: number | null;
+  /** Who pressed the button; null for the bot's own runs (system). */
+  actor_name: string | null;
+  key_source: AiKeySource | (string & {});
+  /** Last 4 characters of the key used, when the API sends them. Never
+   * more of the key than that. */
+  key_last4?: string | null;
+};
+
+export type AiLastRead = {
+  at: string;
+  photos_read: number;
+  photos_total: number;
+  /** Null when the run never finished (no finished_at). */
+  seconds: number | null;
+  model: string | null;
+};
+
+/** GET /ai-usage?days=N (admins): the run log summed over the last N days.
+ * A count the API can't give (tokens the SDK didn't report) is null, and
+ * the screen shows "—", never 0. */
+export type AiUsage = {
+  days?: number;
+  runs: number;
+  failed: number;
+  failed_by_code: Record<string, number>;
+  /** How many model tries hit a 429 and waited, and for how long in all. */
+  waits_429: number;
+  waited_s: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  by_key: Array<{ key_source: AiKeySource | (string & {}); key_last4: string | null; runs: number; failed: number }>;
+  by_kind: Record<string, number>;
+  by_user: Array<{ name: string | null; runs: number; failed: number }>;
+  /** Newest 50 failed or refused runs. plate_or_ref comes from the case's
+   * own data (plate, else Our Ref / id), never from a public sender. */
+  failures: Array<{
+    at: string;
+    report_id: string;
+    plate_or_ref: string | null;
+    kind: AiRunKind | (string & {});
+    error_code: string | null;
+    actor_name: string | null;
+  }>;
+};
+
+/** A failed run's error code in a few words, for the run log (the Case
+ * record drawer, Settings -> AI usage). Not AI_OFF_MESSAGES: those tell the
+ * viewer what to do about their own key, and a logged run may be someone
+ * else's. A code not listed here shows as itself, never as a guess. */
+const AI_RUN_ERROR_LABELS: Record<string, string> = {
+  ai_key_missing: "No AI key to use",
+  ai_key_invalid: "AI key refused by Google",
+  ai_quota_used: "AI key quota used up",
+  ai_key_unreadable: "AI key couldn't be read",
+  ai_account_off: "Account disabled",
+  timeout: "Timed out",
+  rate_limited: "Too many requests",
+};
+
+export function aiRunErrorLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return AI_RUN_ERROR_LABELS[code] || code;
+}
+
+/** Each run kind in plain words. An unknown kind shows under its raw name. */
+const AI_RUN_KIND_LABELS: Record<string, string> = {
+  sort: "Sort photos",
+  read: "Read case",
+  redraft: "Re-draft",
+  annex_suggest: "Annex A suggestions",
+  redetect: "Re-run detection",
+  lookup: "Price lookup",
+};
+
+export function aiRunKindLabel(kind: string | null | undefined): string {
+  if (!kind) return "—";
+  return AI_RUN_KIND_LABELS[kind] || kind;
+}
+
+/** Which key a run used, in words: "company key", "own key …1a2b", "no key".
+ * Never more of the key than its last 4 characters, which is all the API
+ * sends. */
+export function aiKeySourceLabel(source: string | null | undefined, last4?: string | null): string {
+  if (source === "company") return last4 ? `company key …${last4}` : "company key";
+  if (source === "own") return last4 ? `own key …${last4}` : "own key";
+  if (source === "none") return "no key";
+  return source || "—";
+}
+
+export const AI_USAGE_DAYS = [7, 30, 90] as const;
+export type AiUsageDays = (typeof AI_USAGE_DAYS)[number];
+
+export function isAiUsageDays(value: unknown): value is AiUsageDays {
+  return typeof value === "number" && (AI_USAGE_DAYS as readonly number[]).includes(value);
+}
+
+/** Admin only: the API refuses everyone else (403, like /system/info). */
+export async function getAiUsage(days: AiUsageDays = 30): Promise<AiUsage> {
+  const res = await apiFetch(`${API_BASE_URL}/ai-usage?days=${days}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load AI usage");
+  return res.json();
+}
 
 export type HistoryEntry = {
   /** "assigned": the owner changed; detail is "Assigned to Name (@username)" or "Unassigned".
@@ -2094,7 +2239,26 @@ export type SystemInfo = {
    * many accounts have connected their Telegram. Absent from an API older
    * than release P5. */
   telegram?: { bot_username: string | null; accounts_connected: number };
+  /** What infra/backup.sh last wrote to storage/.last_backup (round 3,
+   * B1b): null when no backup has ever been recorded on this server.
+   * Absent from an API older than round 3, which the screen treats the
+   * same way -- it can't vouch for a backup it can't see. */
+  last_backup?: LastBackup | null;
 };
+
+export type LastBackup = {
+  at: string;
+  /** How many cases the backup held. */
+  reports: number;
+  /** Whether the offsite copy (rclone to the bucket) went through. The
+   * local copy is kept either way. */
+  uploaded: boolean;
+  bucket: string | null;
+};
+
+/** A backup older than this counts as missing on Settings -> Company: the
+ * nightly job should have run since. */
+export const BACKUP_STALE_HOURS = 36;
 
 /** "ok", or why people's own AI keys can't be read right now. Kept open
  * (string) so a state a newer API adds still shows, with its detail. */
