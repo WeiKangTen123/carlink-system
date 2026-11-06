@@ -490,6 +490,63 @@ class AccountLink(Base):
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class AiRun(Base):
+    """One piece of AI work on a case or its draft (round 3, B3): a sorting
+    or reading stage of the intake wizard, a Telegram (re)draft, Annex A
+    suggestions, and later re-detection and price lookups. Written by
+    app/ai/runs.py, which every Gemini-calling path goes through; read by
+    GET /reports/{id} (ai_runs, ai_last_read) and GET /ai-usage.
+
+    Before this the only trace of an AI call was a log line without a case
+    id: nobody could see which photos were read, how long it took, which
+    key paid or why it failed. A draft and the case it becomes share one
+    id, so the rows need no copying at filing and outlive the
+    IntakeSession. Never holds a key (only its last 4 characters) or
+    anything a member of the public sent: error_text is scrubbed of digits,
+    plates and quoted model output (runs.scrub_error). New table, made by
+    create_all: nothing in db._ADDED_COLUMNS.
+    """
+    __tablename__ = "ai_runs"
+    __table_args__ = (
+        # GET /ai-usage reads a window of days. Also in db._ADDED_INDEXES.
+        Index("ix_ai_runs_started_at", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    # The draft's or the case's id (the same id). A bot draft gets the id
+    # its case will be saved under (channels/telegram._case_id_for).
+    report_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # sort | read | redraft | annex_suggest | redetect | lookup (runs.KINDS).
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    # Where it was started: dashboard | telegram | whatsapp | system.
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="dashboard")
+    # Who pressed the button (users.id); None for the system's own runs.
+    actor_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # own | company | none: the key that answered, else the last one tried.
+    key_source: Mapped[str] = mapped_column(String, nullable=False, default="none")
+    key_last4: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # running | ok | failed | refused | aborted (runs.STATUSES).
+    status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+    error_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error_text: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # One entry per model try: {model, key_source, key_last4, outcome
+    # (ok | 429 | timeout | error | schema), waited_s, ms[, prompt_tokens,
+    # output_tokens]}.
+    attempts: Mapped[list] = mapped_column(JSON, default=list)
+    model_used: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The P-labels sent ("P03"), or {"count": n} for a sorting stage; None
+    # when no photo went (Annex A suggestions).
+    photos_sent: Mapped[Optional[object]] = mapped_column(JSON, nullable=True)
+    input_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Only when the SDK reports them; None otherwise, never 0.
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Damaged parts the run came back with (reading, drafting).
+    parts_found: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
 class PastAnnexLine(Base):
     """One Annex A line from a past report spreadsheet (app/parts/history.py)
     -- the firm's own record of what was replaced with what, and what it

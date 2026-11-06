@@ -22,7 +22,34 @@ import {
 } from "./api";
 import type { AiRead } from "./coverForm";
 
-export type IntakeStage = "uploading" | "sorting" | "reading" | "ready" | "failed";
+/** "finalizing": File case was pressed and the server is turning the draft
+ * into a case (round 3, B1a). It normally lasts a second or two; a draft
+ * left in it for over 10 minutes (the server restarted mid-filing) reads as
+ * "failed" with error_code FILING_INTERRUPTED, and File case works again. */
+export type IntakeStage = "uploading" | "sorting" | "reading" | "finalizing" | "ready" | "failed";
+
+/** Each stage in a few words, for a status line. */
+export const STAGE_LABELS: Record<IntakeStage, string> = {
+  uploading: "Adding photos",
+  sorting: "Sorting photos...",
+  reading: "Reading key photos...",
+  finalizing: "Filing the case...",
+  ready: "Ready",
+  failed: "Stopped",
+};
+
+/** error_code of a draft whose filing was cut short (see IntakeStage). Not
+ * an AI refusal -- nothing is wrong with anyone's key, so no AI-off banner:
+ * the person just presses File case again. */
+export const FILING_INTERRUPTED = "filing_interrupted";
+
+/** The API's words for FILING_INTERRUPTED, for a draft whose `error` came
+ * back empty. */
+export const FILING_INTERRUPTED_MESSAGE = "Filing stopped before it finished (the server restarted). Press File case again.";
+
+export function isFilingInterrupted(state: { stage: IntakeStage; error_code?: string | null } | null | undefined): boolean {
+  return Boolean(state && state.stage === "failed" && state.error_code === FILING_INTERRUPTED);
+}
 
 /** Mirrors PHOTO_KINDS in apps/bot-service/app/ai/triage.py. */
 export const PHOTO_KINDS = [

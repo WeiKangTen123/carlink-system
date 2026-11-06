@@ -2,7 +2,9 @@
 fake Gemini: re-reads keep the surveyor's work, nothing edits a draft while
 the AI is reading it, finalize can't run twice and survives a failure, the
 older /reports endpoints refuse drafts, uploads must be real images (HEIC
-included), limits, the cleanup sweep, and the PDF's JPEG images.
+included), limits, the cleanup sweep, and the PDF's JPEG images. Round 3
+(cycle safety): a filing cut off by a restart (B1a), System info's
+last_backup (B1b), and the audit polish (B10).
 
     python3 scripts/test_intake_integrity.py
 """
@@ -61,7 +63,7 @@ from app.config import settings  # noqa: E402
 from app.intake import cleanup  # noqa: E402
 from app.intake.pipeline import merge_redraft  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
-from app.reports.models import IntakePhoto, IntakeSession, Report  # noqa: E402
+from app.reports.models import AuditEntry, IntakePhoto, IntakeSession, Report, User  # noqa: E402
 from app.storage.files import generate_pdf_image, tmp_dir  # noqa: E402
 
 
@@ -222,6 +224,153 @@ def main() -> int:
         assert case["status"] == "confirmed" and len(case["photo_urls"]) == 2
         assert not (Path(settings.storage_dir) / "intake" / rid).exists()
         ok("finalize is claimed (second one and uploads refused) and the retry builds the full case")
+
+        # A filed case answers GET /intake/{id} and finalize with the words
+        # the wizard looks for (its session row is gone, which used to be 404).
+        for r in (client.get(f"/intake/{rid}"), client.post(f"/intake/{rid}/finalize", json={"data": final})):
+            assert r.status_code == 409 and "already been turned into a case" in r.json()["detail"], (r.status_code, r.text)
+        ok("a filed draft: GET /intake/{id} and finalize say 409 'already been turned into a case', not 404")
+
+        # A filing a restart cut off (round 3, B1a): "finalizing" for over
+        # 10 minutes reads as failed, File case claims it again, the sweep
+        # no longer skips it for good.
+        rid_s = new_draft(client)
+        draft_answers.append(ai_draft())
+        client.post(f"/intake/{rid_s}/process", json={"mode": "all"})
+        final_s = wait_done(client, rid_s)["data"]
+
+        def set_finalizing(report_id: str, minutes_ago: float) -> None:
+            db = SessionLocal()
+            session = db.get(IntakeSession, report_id)
+            session.stage = "finalizing"
+            session.stage_started_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+            db.commit()
+            db.close()
+
+        set_finalizing(rid_s, 2)
+        state = client.get(f"/intake/{rid_s}").json()
+        assert state["stage"] == "finalizing" and state["error_code"] is None, state["stage"]
+        assert client.put(f"/intake/{rid_s}/data", json={"data": final_s}).status_code == 409
+        assert client.post(f"/intake/{rid_s}/finalize", json={"data": final_s}).status_code == 409
+        ok("a filing 2 minutes old is still in progress: GET says finalizing, autosave and File case are refused")
+
+        set_finalizing(rid_s, 11)
+        state = client.get(f"/intake/{rid_s}").json()
+        assert state["stage"] == "failed" and state["error_code"] == "filing_interrupted", state
+        assert state["error"] == "Filing stopped before it finished (the server restarted). Press File case again.", state["error"]
+        assert state["error_by"] is None and not state["error_mine"]
+        assert client.put(f"/intake/{rid_s}/data", json={"data": final_s}).status_code == 200
+        r = client.post(f"/intake/{rid_s}/photos", files={"file": ("late.jpg", jpeg((5, 6, 7)), "image/jpeg")}, data={"position": "9"})
+        assert r.status_code == 200, r.text
+        ok("11 minutes on: failed / filing_interrupted with the wizard's sentence; autosave and uploads work again")
+
+        # A retry that fails too leaves it interrupted, not "filing".
+        intake_api._finalize_claimed = failing
+        try:
+            assert client.post(f"/intake/{rid_s}/finalize", json={"data": final_s}).status_code == 500
+        except RuntimeError:
+            pass
+        intake_api._finalize_claimed = original_commit_step
+        state = client.get(f"/intake/{rid_s}").json()
+        assert state["stage"] == "failed" and state["error_code"] == "filing_interrupted", state["stage"]
+        db = SessionLocal()
+        assert db.get(IntakeSession, rid_s).stage == "finalizing"  # derived, never written over
+        db.close()
+        ok("a failed retry puts the old stamp back: still filing_interrupted, File case still enabled")
+
+        # The sweep treats it like a failed draft: idle a week, it goes.
+        db = SessionLocal()
+        week_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=8)
+        db.get(Report, rid_s).created_at = week_ago
+        db.get(IntakeSession, rid_s).updated_at = week_ago
+        for p in db.query(IntakePhoto).filter(IntakePhoto.report_id == rid_s):
+            p.created_at = week_ago
+        db.commit()
+        db.close()
+        live = new_draft(client, 1)
+        db = SessionLocal()
+        live_session = db.get(IntakeSession, live)
+        live_session.stage, live_session.stage_started_at = "finalizing", datetime.now(timezone.utc)
+        db.get(Report, live).created_at = week_ago
+        live_session.updated_at = week_ago
+        for p in db.query(IntakePhoto).filter(IntakePhoto.report_id == live):
+            p.created_at = week_ago
+        db.commit()
+        db.close()
+        swept = cleanup.sweep()["drafts"]
+        assert rid_s in swept and live not in swept, swept
+        db = SessionLocal()
+        expired = [(e.action, e.user_id, e.detail) for e in db.query(AuditEntry).filter(AuditEntry.report_id == rid_s)]
+        db.close()
+        assert ("expired", None, "Not worked on for 7 days") in expired, expired
+        ok("the sweep removes a week-idle interrupted filing (history: expired) and still skips a filing in progress")
+
+        # And File case on an interrupted one files it.
+        rid_f = new_draft(client)
+        draft_answers.append(ai_draft())
+        client.post(f"/intake/{rid_f}/process", json={"mode": "all"})
+        final_f = wait_done(client, rid_f)["data"]
+        set_finalizing(rid_f, 30)
+        r = client.post(f"/intake/{rid_f}/finalize", json={"data": final_f})
+        assert r.status_code == 200, r.text
+        case = client.get(f"/reports/{rid_f}").json()
+        assert case["status"] == "confirmed" and len(case["photo_urls"]) == 2
+        db = SessionLocal()
+        live_session = db.get(IntakeSession, live)
+        live_session.stage = "ready"
+        db.commit()
+        db.close()
+        ok("File case on an interrupted filing claims it again and builds the case")
+
+        # Backups shown (round 3, B1b): System info reads what infra/backup.sh
+        # wrote into the volume (STORAGE_DIR/.last_backup).
+        record = Path(settings.storage_dir) / ".last_backup"
+        assert client.get("/system/info").json()["last_backup"] is None
+        record.write_text(json.dumps({"at": "2026-11-05T06:17:00Z", "reports": 17, "local_path": "/root/.carlink-backup/local/x.db",
+                                      "uploaded": False, "bucket": "carlink-backups-x"}), encoding="utf-8")
+        assert client.get("/system/info").json()["last_backup"] == {
+            "at": "2026-11-05T06:17:00+00:00", "reports": 17, "uploaded": False, "bucket": "carlink-backups-x"}
+        for broken in ("{not json", json.dumps({"at": "yesterday", "reports": 3, "uploaded": True}),
+                       json.dumps({"at": "2026-11-05T06:17:00Z", "reports": "17", "uploaded": True}), "[]"):
+            record.write_text(broken, encoding="utf-8")
+            assert client.get("/system/info").json()["last_backup"] is None, broken
+        record.unlink()
+        ok("System info last_backup: {at, reports, uploaded, bucket} from storage/.last_backup (never its path); "
+           "null when missing or unreadable")
+
+        # Audit polish (round 3, B10): downloads are exports in the history
+        # (a HEAD only asks); the tabs' saves count toward a suggested owner.
+        import app.api.main as main_api
+        from app.reports import owners
+
+        def fake_render(data, photo_paths, output_path, **kw):
+            Path(output_path).write_bytes(b"%PDF-1.4 fake")
+
+        real_render = main_api.render_pdf
+        main_api.render_pdf = fake_render
+        try:
+            assert client.head(f"/reports/{rid_f}/download").status_code == 200
+            assert client.get(f"/reports/{rid_f}/download").status_code == 200
+            assert client.get(f"/reports/{rid_f}/download?photos=0").status_code == 200
+            assert client.get(f"/reports/{rid_f}/download.xlsx").status_code == 200
+        finally:
+            main_api.render_pdf = real_render
+        db = SessionLocal()
+        exports = [e.detail for e in db.query(AuditEntry).filter(AuditEntry.report_id == rid_f, AuditEntry.action == "exported")
+                   .order_by(AuditEntry.id)]
+        other = User(email="tabs@example.com", name="Tab Worker", role="user", password_hash="!")
+        db.add(other)
+        db.flush()
+        other_id = other.id
+        for action in ("cover_page_edited", "annex_b_edited", "damage_item_added"):
+            db.add(AuditEntry(report_id=rid_f, user_id=other_id, user_name="Tab Worker", action=action))
+        db.commit()
+        _, edits = owners._history_accounts(db, rid_f)
+        db.close()
+        assert exports == ["pdf", "pdf-no-photos", "xlsx"], exports
+        assert edits.get(rid_f, {}).get(other_id) == 3, edits
+        ok("GET download / ?photos=0 / .xlsx write 'exported' (pdf, pdf-no-photos, xlsx), HEAD doesn't; "
+           "cover, Annex B and damage-item saves count as edits for the owner suggestion")
 
         # Uploads must be real images; HEIC works.
         rid2 = client.post("/intake").json()["id"]

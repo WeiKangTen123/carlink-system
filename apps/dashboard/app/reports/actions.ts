@@ -14,6 +14,7 @@ import {
   uploadReportPhotos,
   getReport,
   getAnnexSuggestions,
+  getAiUsage,
   askAiAnnexSuggestions,
   saveAnnexA,
   prefillAnnexA,
@@ -36,6 +37,8 @@ import {
   type AnnexCRequest,
   type AnnexSuggestionGroup,
   type AnnexSuggestions,
+  type AiUsage,
+  type AiUsageDays,
   type CaseCounts,
   type CoverPageRequest,
   type CoverPageResponse,
@@ -282,6 +285,20 @@ export async function saveAnnexAAction(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to save Annex A" };
+  }
+}
+
+/** The AI run log summed over the last `days` days (GET /ai-usage, admins
+ * only; round 3 B3), for Settings -> AI usage's days selector. Modelled on
+ * getAnnexSuggestionsAction: a server action so the browser never fetches
+ * the API directly (CORS), the error as a value so the tab can show it. */
+export async function getAiUsageAction(days: AiUsageDays): Promise<AiUsage | { error: string }> {
+  try {
+    return await getAiUsage(days);
+  } catch (err) {
+    // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load AI usage" };
   }
 }
 

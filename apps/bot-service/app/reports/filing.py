@@ -36,15 +36,25 @@ logger = logging.getLogger(__name__)
 PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
 
 
-def photo_index_for(photo_kinds: list[dict] | None, ai_draft: dict | None) -> list[dict]:
+def photo_index_for(photo_kinds: list[dict] | None, ai_draft: dict | None, read_ids=None) -> list[dict]:
     """data["photo_index"]: one entry per case photo, positional (P01 is
     photo_paths[0]; append only). For a photo nobody sorted, the AI's own
     photo references are the one thing known about it: the damage item it
-    stands for says the photo shows that part."""
+    stands for says the photo shows that part.
+
+    read_ids: the photos the AI's last reading was sent (the wizard's
+    IntakeSession.read_photo_ids, which goes when the draft is filed),
+    matched against each photo_kinds entry's "id": those get read: true,
+    so the case keeps which photos the facts were read from. None (the
+    bots): no "read" key."""
     index = [
         {"label": photo_label(i), **{key: (p or {}).get(key) for key in PHOTO_INDEX_KEYS}}
         for i, p in enumerate(photo_kinds or [])
     ]
+    if read_ids:
+        for entry, p in zip(index, photo_kinds or []):
+            if (p or {}).get("id") in read_ids:
+                entry["read"] = True
     unsorted = {entry["label"]: entry for entry in index if entry["kind"] is None}
     for item in (ai_draft or {}).get("damage_summary") or []:
         entry = unsorted.get(item.get("photo_reference"))
@@ -63,7 +73,7 @@ def price_book_for(user, owner=None) -> bool:
 
 
 def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: list[dict] | None,
-                   owner=None, report_id: str | None = None) -> dict:
+                   owner=None, report_id: str | None = None, read_ids=None) -> dict:
     """The case data as it is filed: sign-off blank, annexes rebuilt from
     the damage list and Annex A priced when `user` -- and the case's
     `owner`, when that is someone else -- may see the price book
@@ -75,7 +85,7 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     the filing -- the case is filed with unpriced rows rather than not.
     `ai_draft` is what the AI said (the caller stores it as
     Report.ai_draft); here it only labels unsorted photos. `report_id`
-    names the case in the log only.
+    names the case in the log only. `read_ids`: photo_index_for's.
     """
     data = dict(data)
     data["sign_off"] = SignOffInfo().model_dump()
@@ -89,7 +99,7 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
         logger.exception("Could not sync Annex A from past cases for case %s; its rows stay unpriced", report_id or "(new)")
     finally:
         prices.close()
-    data["photo_index"] = photo_index_for(photo_kinds, ai_draft)
+    data["photo_index"] = photo_index_for(photo_kinds, ai_draft, read_ids)
     return data
 
 

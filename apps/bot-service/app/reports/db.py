@@ -98,6 +98,10 @@ _ADDED_INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_public_submissions_submitter_phone_submitted_at"
     " ON public_submissions (submitter_phone, submitted_at)",
     "CREATE INDEX IF NOT EXISTS ix_public_blocks_until ON public_blocks (until)",
+    # The AI run log (round 3, models.AiRun): the same names create_all
+    # gives report_id's index=True and the table's started_at Index.
+    "CREATE INDEX IF NOT EXISTS ix_ai_runs_report_id ON ai_runs (report_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_runs_started_at ON ai_runs (started_at)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

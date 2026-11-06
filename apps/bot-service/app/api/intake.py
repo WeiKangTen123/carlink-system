@@ -18,6 +18,7 @@ The Telegram/WhatsApp bots and the edit form keep using draft_report directly.
 import copy
 import hashlib
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -27,6 +28,7 @@ from sqlalchemy import exists, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
 from app.ai import keys as ai_keys
+from app.ai import runs as run_log
 from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
@@ -78,13 +80,19 @@ def _load_draft(db, report_id: str, *, mutating: bool = False, block_while_runni
     route's edit check (released a moment ago): nobody changes those."""
     report = db.get(Report, report_id)
     session = db.get(IntakeSession, report_id)
+    # A filed case first: filing deletes the session row, so checking it
+    # first answered 404 -- and the wizard, polling a draft being filed (or
+    # retrying a finalize whose answer was lost), looks for these words to
+    # go to the case page instead.
+    if report is not None and report.status != "intake":
+        raise HTTPException(status_code=409, detail="This intake has already been turned into a case")
     if report is None or session is None:
         raise HTTPException(status_code=404, detail="Intake draft not found")
-    if report.status != "intake":
-        raise HTTPException(status_code=409, detail="This intake has already been turned into a case")
     if mutating and in_inbox(report):
         raise not_allowed(BACK_IN_INBOX)
-    if mutating and session.stage == "finalizing":
+    # A filing cut off by a restart reads as failed (_state), so the draft
+    # can be worked on and filed again rather than staying locked for good.
+    if mutating and session.stage == "finalizing" and not pipeline.filing_interrupted(session):
         raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
     if block_while_running and session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
         raise HTTPException(status_code=409, detail="Wait for the AI to finish reading this case.")
@@ -99,16 +107,24 @@ def _claim_stage(db, report_id: str, new_stage: str, seen_owner: str | None) -> 
     Also only while the draft is still seen_owner's (as _load_draft read
     it) and not in the Public Inbox: a public draft released (POST
     /inbox/{id}/release) between the route's checks and here gets no AI run
-    and isn't filed (review M4). Release refuses once this has committed."""
+    and isn't filed (review M4). Release refuses once this has committed.
+
+    A "finalizing" left by a filing that a restart cut off
+    (pipeline.filing_interrupted) may be claimed again. stage_started_at is
+    set on every claim: it is what tells a live filing from a stale one, and
+    the moment a claimed run's stage began (the pipeline's own _set_stage
+    only stamps a change of stage)."""
     owner_is = Report.owner_id.is_(None) if seen_owner is None else Report.owner_id == seen_owner
+    started = func.coalesce(IntakeSession.stage_started_at, IntakeSession.updated_at)
     result = db.execute(
         update(IntakeSession)
         .where(
             IntakeSession.report_id == report_id,
-            IntakeSession.stage != "finalizing",
+            or_(IntakeSession.stage != "finalizing", started < pipeline.finalize_cutoff()),
             exists().where(Report.id == report_id, owner_is, public.not_untaken_clause()),
         )
-        .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None, error_by=None)
+        .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None, error_by=None,
+                stage_started_at=datetime.now(timezone.utc))
     )
     db.commit()
     return result.rowcount == 1
@@ -126,10 +142,19 @@ def _claim_refused(db, report_id: str, busy: str) -> HTTPException:
     db.rollback()
     # Columns, not the rows _load_draft loaded (one may be gone by now).
     report = db.query(Report.status, Report.channel, Report.owner_id).filter(Report.id == report_id).first()
-    session = db.query(IntakeSession.stage).filter(IntakeSession.report_id == report_id).first()
+    session = (
+        db.query(IntakeSession.stage, IntakeSession.stage_started_at, IntakeSession.updated_at)
+        .filter(IntakeSession.report_id == report_id)
+        .first()
+    )
+    # Filed meanwhile (filing deletes the session row): the wizard's "open
+    # the case" answer, not a 404 -- the session check alone said "not found"
+    # when a second File case landed as the first one committed.
+    if report is not None and report.status != "intake":
+        return HTTPException(status_code=409, detail="This intake has already been turned into a case")
     if report is None or session is None:
         return HTTPException(status_code=404, detail="Intake draft not found")
-    if session.stage == "finalizing" or report.status != "intake":
+    if (session.stage == "finalizing" and not pipeline.filing_interrupted(session)) or report.status != "intake":
         return HTTPException(status_code=409, detail=busy)
     return ApiError(409, BACK_IN_INBOX if in_inbox(report) else CHANGED_HANDS, "inbox_changed")
 
@@ -153,6 +178,11 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
             "Press Retry to continue -- photos already sorted are kept."
         )
         error_code = error_by = None
+    # Left mid-filing by a restart: failed, with File case enabled again
+    # (the wizard words filing_interrupted and opens on the File case step).
+    if pipeline.filing_interrupted(session):
+        stage, error = "failed", pipeline.FILING_INTERRUPTED_MESSAGE
+        error_code, error_by = pipeline.FILING_INTERRUPTED, None
     photos = ordered_photos(db, report.id)
     # The AI's own values for the cover fields and the sorted photo each
     # was read from, so the wizard's cover page can tag them "(P03)";
@@ -509,7 +539,10 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
         # MAX_DRAFT_BYTES, 1.5 GB): 507 disk_full before the draft is
         # claimed, so it stays as it was and Finish can be tried again.
         limits.require_disk_space()
-        prior_stage = session.stage
+        # Put back as they were on a failure: the claim stamps
+        # stage_started_at, and a retry of an interrupted filing must still
+        # read as interrupted afterwards, not as a filing in progress.
+        prior_stage, prior_started = session.stage, session.stage_started_at
         seen_owner = report.owner_id
         if not _claim_stage(db, report_id, "finalizing", seen_owner):
             raise _claim_refused(db, report_id, "This intake is already being turned into a case.")
@@ -517,7 +550,11 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
             _finalize_claimed(db, report_id, body, user)
         except Exception:
             db.rollback()
-            db.execute(update(IntakeSession).where(IntakeSession.report_id == report_id).values(stage=prior_stage))
+            db.execute(
+                update(IntakeSession)
+                .where(IntakeSession.report_id == report_id)
+                .values(stage=prior_stage, stage_started_at=prior_started)
+            )
             db.commit()
             raise
     finally:
@@ -599,11 +636,16 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     # The owner may be someone else when an admin finishes their draft:
     # then the price book goes in only if the owner may see it too.
     owner = db.get(User, report.owner_id) if report.owner_id and report.owner_id != user.id else None
+    # Which photos the AI's last reading was sent: read_photo_ids goes with
+    # the session row below, so the case keeps it as photo_index[i].read,
+    # and the run log names that reading's photos by their final P-numbers.
+    read_ids = list(session.read_photo_ids or [])
     data = file_case_data(
         db, data, user, ai_draft=ai_draft,
-        photo_kinds=[{key: getattr(p, key) for key in PHOTO_INDEX_KEYS} for p in photos],
-        owner=owner, report_id=report_id,
+        photo_kinds=[{"id": p.id, **{key: getattr(p, key) for key in PHOTO_INDEX_KEYS}} for p in photos],
+        owner=owner, report_id=report_id, read_ids=set(read_ids),
     )
+    run_log.relabel_last_read(db, report_id, read_ids, {p.id: photo_label(i) for i, p in enumerate(photos)})
 
     new_paths = copy_into_case(report_id, photos)
     report.photo_paths = new_paths

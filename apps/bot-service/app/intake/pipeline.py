@@ -18,15 +18,19 @@ again. When their AI stops being available mid-run (their key refused, an
 admin's untick), the run fails with the reason's code in
 IntakeSession.error_code, and error_by says whose run it was; photos
 already sorted stay sorted.
+
+Each stage is one row of the AI run log (ai/runs.py): "sort" (photos_sent
+{"count": n}), and "read" -- "redraft" for a re-read -- with the labels sent.
 """
 import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.ai import runs
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
@@ -38,6 +42,38 @@ from app.reports.taxonomy import body_type_for
 logger = logging.getLogger(__name__)
 
 RUNNING_STAGES = {"sorting", "reading"}
+
+# Filing (api/intake.finalize_intake) holds the stage "finalizing" for a
+# second or two -- copying a 150-photo draft, well under a minute. A draft
+# still "finalizing" after this long was being filed when the process died:
+# it reads as failed (filing_interrupted) and the next File case claims it
+# again. Before this it stayed locked for good: every upload, autosave and
+# finalize answered 409, and the sweep skipped it forever.
+FINALIZE_STALE_AFTER = timedelta(minutes=10)
+FILING_INTERRUPTED = "filing_interrupted"
+FILING_INTERRUPTED_MESSAGE = "Filing stopped before it finished (the server restarted). Press File case again."
+
+
+def finalize_cutoff(now: datetime | None = None) -> datetime:
+    """A "finalizing" stage that began before this is stale (naive UTC, as
+    SQLite hands DateTime columns back)."""
+    now = now or datetime.now(timezone.utc)
+    return (now - FINALIZE_STALE_AFTER).replace(tzinfo=None)
+
+
+def filing_interrupted(session: IntakeSession, now: datetime | None = None) -> bool:
+    """Whether this draft's filing was cut off (see FINALIZE_STALE_AFTER).
+    When the stage began: stage_started_at, which every claim sets
+    (api/intake._claim_stage); a draft left "finalizing" by a version from
+    before that falls back to updated_at."""
+    if session.stage != "finalizing":
+        return False
+    since = session.stage_started_at or session.updated_at
+    if since is None:
+        return True
+    since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+    return since < (now or datetime.now(timezone.utc)) - FINALIZE_STALE_AFTER
+
 
 # Photos that carry facts rather than damage, taken first. Documents are the
 # only reliable source of plate, VIN and make -- the facts parts lookup will
@@ -176,7 +212,10 @@ def _run(report_id: str, mode: str, actor: AiActor, on_done: Callable[[], None] 
     try:
         if mode == "all":
             _sort(report_id, actor)
-        _read(report_id, actor)
+        # A re-read (mode "read", after the surveyor regrouped photos)
+        # merges into the form the surveyor has been editing, like a
+        # redraft: the run log calls it one (ai/runs.py).
+        _read(report_id, actor, kind="read" if mode == "all" else "redraft")
         done()
         _set_stage(report_id, "ready", 1, 1)
     except AiUnavailable as exc:
@@ -210,16 +249,21 @@ def _sort(report_id: str, actor: AiActor) -> None:
     total = len(todo)
     _set_stage(report_id, "sorting", 0, total)
     done = 0
+    sent = 0
     done_lock = threading.Lock()
 
-    def sort_batch(batch: list[tuple[str, str, str]], actor: AiActor) -> None:
-        nonlocal done
+    def sort_batch(batch: list[tuple[str, str, str]], actor: AiActor, attempts: runs.Attempts) -> None:
+        nonlocal done, sent
         # Paths were captured at the start of the run; a photo deleted since
         # is skipped rather than failing the whole run on a missing file.
         batch = [item for item in batch if Path(item[2]).exists()]
         if not batch:
             return
-        result = triage_photos([(label, path) for label, _, path in batch], actor=actor)
+        with done_lock:
+            sent += len(batch)
+        # This worker's Gemini tries go to the stage's one run.
+        with runs.collecting(attempts):
+            result = triage_photos([(label, path) for label, _, path in batch], actor=actor)
         db = SessionLocal()
         try:
             for label, photo_id, _ in batch:
@@ -245,17 +289,25 @@ def _sort(report_id: str, actor: AiActor) -> None:
             db.close()
 
     batches = [todo[offset:offset + BATCH_SIZE] for offset in range(0, total, BATCH_SIZE)]
-    # The actor goes to each worker as an argument: a pool thread sees
-    # nothing of the thread that submitted to it.
-    with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
-        futures = [pool.submit(sort_batch, batch, actor) for batch in batches]
-    # A failed batch fails the run, but every batch that finished stays
-    # sorted -- the others are left to complete rather than cancelled -- so
-    # Retry only sorts what's left. The person's AI going away is the
-    # failure to report when it is among them: it says what to fix.
-    failures = [future.exception() for future in futures if future.exception()]
-    if failures:
-        raise next((e for e in failures if isinstance(e, AiUnavailable)), failures[0])
+    if not batches:
+        return  # all sorted already (a Retry after the reading failed): no AI call, no run
+    # One run for the whole stage, not one per batch: a run is what one
+    # press of Start or Retry did, and the batches run at once. photos_sent
+    # is {"count": n}, summed over the batches that went out.
+    with runs.recorded(report_id, "sort", actor) as run:
+        # The actor (and the run's collector) go to each worker as
+        # arguments: a pool thread sees nothing of the thread that
+        # submitted to it.
+        with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
+            futures = [pool.submit(sort_batch, batch, actor, run.attempts) for batch in batches]
+        run.photos_sent = {"count": sent}
+        # A failed batch fails the run, but every batch that finished stays
+        # sorted -- the others are left to complete rather than cancelled --
+        # so Retry only sorts what's left. The person's AI going away is the
+        # failure to report when it is among them: it says what to fix.
+        failures = [future.exception() for future in futures if future.exception()]
+        if failures:
+            raise next((e for e in failures if isinstance(e, AiUnavailable)), failures[0])
 
 
 def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
@@ -359,12 +411,20 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     return sorted(chosen, key=lambda p: order[p.id])
 
 
-def _read(report_id: str, actor: AiActor) -> None:
+def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
+    """The reading stage, as one run of the log (ai/runs.py): kind "read",
+    or "redraft" for a re-read."""
+    with runs.recorded(report_id, kind, actor) as run:
+        _read_into(report_id, actor, run)
+
+
+def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     _set_stage(report_id, "reading", 0, 1)
     db = SessionLocal()
     try:
         session = db.get(IntakeSession, report_id)
         if session is None:
+            run.aborted = "draft_gone"
             return  # draft deleted mid-run
         photos = ordered_photos(db, report_id)
         labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
@@ -377,7 +437,11 @@ def _read(report_id: str, actor: AiActor) -> None:
     finally:
         db.close()
 
+    # The photos as the model was told them ("Photo P03:"); renumbered to
+    # the case's at filing (runs.relabel_last_read).
+    run.photos_sent = [label for label, _, _ in inputs]
     if not inputs and not notes.strip():
+        run.error_code = "nothing_to_read"
         raise ValueError("there is nothing to read -- every photo is excluded or unusable. Include some photos again.")
 
     draft = draft_report(
@@ -388,6 +452,7 @@ def _read(report_id: str, actor: AiActor) -> None:
         actor=actor,
     )
     data = draft.model_dump()
+    run.parts_found = len(data.get("damage_summary") or [])
 
     # Photo references are stored as "@<photo id>" until finalize, because
     # P-numbers shift whenever a photo is deleted or added before then.
@@ -408,6 +473,7 @@ def _read(report_id: str, actor: AiActor) -> None:
         report = db.get(Report, report_id)
         session = db.get(IntakeSession, report_id)
         if report is None or session is None or report.status != "intake":
+            run.aborted = "draft_gone"  # read, but there is nothing to keep it in
             return
         # Merged against the form as it is NOW (re-read inside this
         # transaction), not as it was when the run started.

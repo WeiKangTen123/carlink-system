@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { aiOffMessage, fileUrl, isAiOffCode, type AiOffCode } from "@/lib/api";
-import { PHOTO_KIND_LABELS, PHOTO_KINDS, type IntakePhoto, type IntakeState, type PhotoKind } from "@/lib/intake";
+import { PHOTO_KIND_LABELS, PHOTO_KINDS, isFilingInterrupted, type IntakePhoto, type IntakeState, type PhotoKind } from "@/lib/intake";
 import { AiFixLink } from "@/components/AiFixLink";
 
 type GroupKey = PhotoKind | "all" | "unsorted" | "excluded" | "unread";
@@ -271,7 +271,9 @@ export function SortStep({
             Fill in by hand
           </button>
         </div>
-      ) : stage === "failed" ? (
+      ) : stage === "failed" && !isFilingInterrupted(state) ? (
+        // An interrupted filing is not an AI failure: the wizard's own banner
+        // says so and points to File case. Retry here would re-run the AI.
         <div className="intake-alert danger">
           <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>{state.error || "AI processing failed."}</div>

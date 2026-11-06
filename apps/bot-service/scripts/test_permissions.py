@@ -255,7 +255,9 @@ DECISIONS = {
     ("DELETE", "/parts-history/{case_ref}"): ("admin", ""),
     ("POST", "/reports/ai-enrich-all"): ("admin", ""),
     ("PUT", "/settings"): ("admin", ""),
-    ("GET", "/system/info"): ("admin", ""),
+    ("GET", "/system/info"): ("admin", "round 3: last_backup from storage/.last_backup"),
+    # Round 3 AI run log (app/api/ai_runs.py; tested in scripts/test_ai_runs.py).
+    ("GET", "/ai-usage"): ("admin", "?days=7|30|90; every case's runs summed, never a key or public sender data"),
     ("GET", "/setup/llm-keys"): ("admin", ""),
     ("POST", "/setup/llm-keys"): ("admin", ""),
     ("DELETE", "/setup/llm-keys/{key_id}"): ("admin", ""),
