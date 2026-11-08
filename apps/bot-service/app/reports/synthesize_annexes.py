@@ -2,7 +2,8 @@
 
 Builds only what follows from recorded facts:
   - Annex A: when it has no rows yet, one UNPRICED row per damaged part
-    (name, and condition from the recorded damage type) for the surveyor to
+    (the firm's wording for it, and its condition in the firm's words --
+    taxonomy.firm_part_name / annex_condition) for the surveyor to
     price from the workshop's quotation (app/parts/prefill.py then prices
     what past cases can). Rows with an estimate get their adjusted cost
     worked out from estimate x (1 - discount): the estimate is the LINE
@@ -26,6 +27,11 @@ and approved repair costs. All of that read as findings nobody had made.
 from typing import Any, Dict, List
 
 DEFAULT_DISCOUNT = 0.20  # the firm's standard trade discount on parts
+# Condition "Repair": the firm's "repair it, don't renew it". The part's
+# line stays (the workshop priced it) and is disallowed at 100% -- the three
+# such lines in the imported reports all carry 100%.
+REPAIR_CONDITION = "Repair"
+REPAIR_DISCOUNT = 1.0
 
 
 def adjusted_cost(workshop_est, discount_pct, is_net_item: bool = False) -> float:
@@ -45,22 +51,31 @@ def _annex_a_rows(data: Dict[str, Any], scaffold: bool = True) -> List[Dict[str,
     # A part the surveyor dismissed (DELETE /damage-items) gets no row back,
     # even when the table is otherwise empty.
     from app.parts.history import canonical_part
+    from app.reports.taxonomy import annex_condition, body_type_for, firm_part_name
 
     dismissed = {canonical_part(p) or p.strip() for p in (data.get("dismissed_parts") or []) if p}
     damage = [it for it in (data.get("damage_summary") or []) if it.get("part")]
     if not damage:
         damage = [{"part": p} for p in (data.get("damaged_parts") or []) if p]
     damage = [it for it in damage if (canonical_part(it["part"]) or str(it["part"]).strip()) not in dismissed]
+    vehicle = data.get("vehicle_info") or {}
+    body = vehicle.get("body_type") or body_type_for(vehicle.get("make"), vehicle.get("model"))
+    # The firm's words, as prefill.sync_annex_a writes them: the floor
+    # wording, not the canonical name (no database here for past wording),
+    # without LH / RH while an inferred side is unconfirmed; the condition
+    # in the firm's words, the remarks, "Repair" disallowed.
+    from app.parts.prefill import side_unconfirmed  # here: prefill imports this module
+
     return [
         {
             "item_no": f"{i}.0",
-            "part_name": it["part"],
-            "condition": it.get("damage_type") or "",
-            "action": "",
+            "part_name": firm_part_name(it["part"], body, unsided=side_unconfirmed(it)) or it["part"],
+            "condition": annex_condition(it),
+            "action": (it.get("remarks") or "").strip(),
             "qty": 1.0,
             "qty_text": None,
             "workshop_est": 0.0,
-            "discount_pct": DEFAULT_DISCOUNT,
+            "discount_pct": REPAIR_DISCOUNT if annex_condition(it) == REPAIR_CONDITION else DEFAULT_DISCOUNT,
             "adjusted_cost": 0.0,
             "is_net_item": False,
             "oem_part_number": it.get("oem_part_number"),

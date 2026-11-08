@@ -3,12 +3,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ClipboardCheck, Image as ImageIcon, Link2Off, Plus, Trash2, X } from "lucide-react";
-import { fileUrl, type AnnexAPartItem, type DamageItemPatch, type DamageItemsResponse, type DamageSummaryItem, type Taxonomy } from "@/lib/api";
+import {
+  DAMAGE_REMARKS,
+  conditionWordsOf,
+  fileUrl,
+  toDamageRemarks,
+  type AnnexAPartItem,
+  type DamageItemPatch,
+  type DamageItemsResponse,
+  type DamageSummaryItem,
+  type Taxonomy,
+} from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { isSideUndetermined } from "@/lib/vehicleZones";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
 import { severityClass } from "@/lib/caseFields";
+import { ConditionPicker } from "./ConditionPicker";
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see schema.py) */
 const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
@@ -38,13 +49,21 @@ interface Props {
   onGoToAnnexA?: () => void;
 }
 
+/** The AI took this part's side from nearby photos, not its own: worth a
+ * look until a person has touched the row. The API clears the flag on any
+ * edit; a ticked row is hidden too, because the tick is that look. */
+const sideInferred = (item: DamageSummaryItem) => Boolean(item.side_inferred) && !item.human_verified;
+
 /** Tab 1's "Detected parts": the damage_summary as an Annex A-shaped table
- * (Item | Vehicle Parts Description | Condition (AI) | Photo | Annex A |
- * Verified). What is damaged is decided here; what the report lists and at
+ * (Item | Vehicle Parts Description | Condition | Remarks | Photo | Annex A
+ * | Verified). What is damaged is decided here; what the report lists and at
  * what price is Annex A's (tab 3), so no price shows here. Every change
  * goes straight to PATCH / POST / DELETE damage-items and the API re-syncs
  * Annex A (priced and typed rows kept). From CaseDamageTab.tsx, 2026-11-04:
- * the OEM number and AI confidence columns went (the firm prints neither). */
+ * the OEM number and AI confidence columns went (the firm prints neither).
+ * 2026-11-06: Condition is the firm's wording (`condition`, damage_type
+ * when an older case has none) and Remarks is set here, because both print
+ * on the part's main Annex A line. */
 export function DetectedPartsTable({
   reportId,
   readOnly,
@@ -65,14 +84,16 @@ export function DetectedPartsTable({
   const [error, setError] = useState<string | null>(null);
   // Which row has its photo picker open (or "new" for the add row).
   const [pickerFor, setPickerFor] = useState<number | "new" | null>(null);
-  const [adding, setAdding] = useState<{ part: string; damage_type: string; photo_reference: string } | null>(null);
-  // A condition a row was just set to, kept visible while it saves and
-  // after a refusal (so the choice isn't silently snapped back).
+  const [adding, setAdding] = useState<{ part: string; condition: string; remarks: string; photo_reference: string } | null>(null);
+  // A condition or remark a row was just set to, kept visible while it
+  // saves and after a refusal (so the choice isn't silently snapped back).
   const [conditionDraft, setConditionDraft] = useState<Record<number, string>>({});
+  const [remarksDraft, setRemarksDraft] = useState<Record<number, string>>({});
 
-  // The controlled vocabulary: the part select and condition suggestions.
-  // Loaded once; an empty vocabulary just leaves the current values as the
-  // only options.
+  // The controlled vocabulary: the part select and the firm's condition
+  // words. Loaded once; an empty part list just leaves the current values
+  // as the only options, and the condition words fall back to the built-in
+  // copy (also while loading), so a Condition can always be changed.
   const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -84,7 +105,7 @@ export function DetectedPartsTable({
     };
   }, []);
   const parts = taxonomy?.parts || [];
-  const damageTypes = taxonomy?.damage_types || [];
+  const words = useMemo(() => conditionWordsOf(taxonomy), [taxonomy]);
 
   const linesByPart = useMemo(
     () =>
@@ -120,22 +141,37 @@ export function DetectedPartsTable({
     void patch(idx, { human_verified: !item.human_verified });
   };
 
-  // The API only accepts the taxonomy's damage types (400 otherwise), so
-  // the cell is a select. The choice stays shown while it saves; a refusal
-  // leaves it shown beside the error instead of snapping back silently.
-  const saveCondition = async (idx: number, item: DamageSummaryItem, value: string) => {
+  /** Saves one field of a row, keeping the choice shown while it saves; a
+   * refusal leaves it shown beside the error instead of snapping back
+   * silently. */
+  const saveDrafted = async (
+    idx: number,
+    value: string,
+    saved: string,
+    setDraft: (update: (s: Record<number, string>) => Record<number, string>) => void,
+    body: DamageItemPatch
+  ) => {
     if (readOnly) return;
-    if (value === (item.damage_type || "")) return; // nothing actually changed
-    setConditionDraft((s) => ({ ...s, [idx]: value }));
-    const ok = await patch(idx, { damage_type: value || null });
-    if (ok) {
-      setConditionDraft((s) => {
+    const dropDraft = () =>
+      setDraft((s) => {
         const next = { ...s };
         delete next[idx];
         return next;
       });
-    }
+    // Back to what is saved (after a refusal, say): nothing to send, only
+    // the refused choice to stop showing.
+    if (value === saved) return dropDraft();
+    setDraft((s) => ({ ...s, [idx]: value }));
+    if (await patch(idx, body)) dropDraft();
   };
+
+  // The API only accepts the firm's words (400 otherwise), which is all the
+  // editor offers. damage_type is left as the AI's category.
+  const saveCondition = (idx: number, item: DamageSummaryItem, value: string) =>
+    saveDrafted(idx, value, item.condition || "", setConditionDraft, { condition: value });
+
+  const saveRemarks = (idx: number, item: DamageSummaryItem, value: string) =>
+    saveDrafted(idx, value, item.remarks || "", setRemarksDraft, { remarks: toDamageRemarks(value) });
 
   const changePart = (idx: number, item: DamageSummaryItem, part: string) => {
     if (readOnly || part === item.part) return;
@@ -156,6 +192,7 @@ export function DetectedPartsTable({
       // Index-keyed state would now point at the next row.
       setPickerFor(null);
       setConditionDraft({});
+      setRemarksDraft({});
       onRemoved?.(idx);
     }
   };
@@ -163,9 +200,11 @@ export function DetectedPartsTable({
   const submitAdd = async () => {
     if (readOnly || !adding || !adding.part.trim()) return;
     const ok = await run("new", () =>
+      // No damage_type: the add row asks for the firm's wording only.
       addDamageItemAction(reportId, {
         part: adding.part.trim(),
-        damage_type: adding.damage_type.trim() || null,
+        condition: adding.condition || null,
+        remarks: toDamageRemarks(adding.remarks),
         photo_reference: adding.photo_reference || null,
       })
     );
@@ -175,7 +214,7 @@ export function DetectedPartsTable({
   /** The photo strip under a row: pick the photo this part is on. */
   const photoPicker = (key: number | "new", current: string | null | undefined, onPick: (photoIdx: number | null) => void) => (
     <tr key={`picker-${key}`} className="detected-photo-picker-row">
-      <td colSpan={7}>
+      <td colSpan={8}>
         <div className="detected-photo-picker">
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Which photo shows this part?</span>
           {photos.map((_, i) => {
@@ -227,7 +266,7 @@ export function DetectedPartsTable({
             <ClipboardCheck style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Detected parts ({damageEntries.length})
           </div>
           <div className="card-subtitle">
-            {readOnly ? "Locked — reopen the report to change the parts" : "Check each part the AI found: its name, condition and photo. Tick it when verified."}
+            {readOnly ? "Locked — reopen the report to change the parts" : "Check each part the AI found: its name, condition, remarks and photo. Tick it when verified."}
           </div>
         </div>
         <span
@@ -249,7 +288,8 @@ export function DetectedPartsTable({
               <tr>
                 <th style={{ width: 50 }}>Item</th>
                 <th>Vehicle Parts Description</th>
-                <th>Condition (AI)</th>
+                <th>Condition</th>
+                <th>Remarks</th>
                 <th>Photo</th>
                 <th>Annex A</th>
                 <th>Verified</th>
@@ -262,7 +302,8 @@ export function DetectedPartsTable({
                 const verified = Boolean(item.human_verified);
                 const photoIdx = photoIndexOf(item.photo_reference);
                 const hasPhoto = photoIdx >= 0 && photoIdx < photos.length;
-                const condition = conditionDraft[idx] ?? (item.damage_type || "");
+                const condition = conditionDraft[idx] ?? (item.condition || "");
+                const remarks = remarksDraft[idx] ?? (item.remarks || "");
                 const inVocabulary = parts.includes(item.part);
                 const rows = [
                   <tr
@@ -315,24 +356,48 @@ export function DetectedPartsTable({
                           set side
                         </span>
                       )}
+                      {sideInferred(item) && (
+                        <span className="chip-severity moderate" style={{ fontSize: 9, marginLeft: 6 }} title="The AI guessed the side from nearby photos; check it">
+                          side inferred
+                        </span>
+                      )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       {readOnly ? (
-                        <span>{item.damage_type || "—"}</span>
+                        <span>{item.condition || item.damage_type || "—"}</span>
                       ) : (
-                        <select
+                        <ConditionPicker
                           className="detected-part-select"
                           style={{ minWidth: 140 }}
                           value={condition}
+                          fallback={item.damage_type}
+                          words={words}
                           disabled={savingIdx === idx}
-                          aria-label={`Condition of part ${badgeNumber}`}
-                          onChange={(e) => void saveCondition(idx, item, e.target.value)}
+                          ariaLabel={`Condition of part ${badgeNumber}`}
+                          partName={item.part}
+                          onChange={(value) => void saveCondition(idx, item, value)}
+                        />
+                      )}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {readOnly ? (
+                        <span>{item.remarks || "—"}</span>
+                      ) : (
+                        <select
+                          className="detected-part-select"
+                          style={{ minWidth: 96 }}
+                          value={remarks}
+                          disabled={savingIdx === idx}
+                          aria-label={`Remarks for part ${badgeNumber}`}
+                          onChange={(e) => void saveRemarks(idx, item, e.target.value)}
                         >
                           <option value="">—</option>
-                          {condition && !damageTypes.includes(condition) && <option value={condition}>{condition} (as recorded)</option>}
-                          {damageTypes.map((t) => (
-                            <option key={t} value={t}>
-                              {t}
+                          {/* A stored remark outside the two (none should
+                              exist) still shows rather than reading blank. */}
+                          {remarks && !toDamageRemarks(remarks) && <option value={remarks}>{remarks}</option>}
+                          {DAMAGE_REMARKS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
                             </option>
                           ))}
                         </select>
@@ -420,17 +485,29 @@ export function DetectedPartsTable({
                       </select>
                     </td>
                     <td>
-                      <select
+                      <ConditionPicker
                         className="detected-part-select"
                         style={{ minWidth: 140 }}
-                        value={adding.damage_type}
-                        aria-label="New part condition"
-                        onChange={(e) => setAdding({ ...adding, damage_type: e.target.value })}
+                        value={adding.condition}
+                        words={words}
+                        placeholder="Condition…"
+                        ariaLabel="New part condition"
+                        partName={adding.part || undefined}
+                        onChange={(value) => setAdding({ ...adding, condition: value })}
+                      />
+                    </td>
+                    <td>
+                      <select
+                        className="detected-part-select"
+                        style={{ minWidth: 96 }}
+                        value={adding.remarks}
+                        aria-label="New part remarks"
+                        onChange={(e) => setAdding({ ...adding, remarks: e.target.value })}
                       >
-                        <option value="">Condition…</option>
-                        {damageTypes.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
+                        <option value="">—</option>
+                        {DAMAGE_REMARKS.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
                           </option>
                         ))}
                       </select>
@@ -471,7 +548,7 @@ export function DetectedPartsTable({
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
         {!readOnly && !adding ? (
-          <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 12px" }} onClick={() => setAdding({ part: "", damage_type: "", photo_reference: "" })}>
+          <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 12px" }} onClick={() => setAdding({ part: "", condition: "", remarks: "", photo_reference: "" })}>
             <Plus style={{ width: 13, height: 13 }} /> Add a part
           </button>
         ) : (

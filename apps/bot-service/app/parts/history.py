@@ -421,6 +421,16 @@ def _with_side(item: str, side: str | None) -> str:
     return re.sub(rf"\b{other}\b", code, item)
 
 
+_SIDE_WORDS = re.compile(r"\s*\b(?:lh|rh|l\.h\.|r\.h\.|left|right|nearside|offside)(?:\b|(?<=\.))", re.I)
+
+
+def _without_side(item: str) -> str:
+    """A past line's wording with its side taken out, for a part whose side
+    nobody determined: "Tail lamp LH" -> "Tail lamp". Printing the past
+    case's LH there stated a side this case never established."""
+    return re.sub(r"\s{2,}", " ", _SIDE_WORDS.sub("", item)).strip()
+
+
 # ------------------------------------------------------------- import
 
 
@@ -530,9 +540,14 @@ def suggest(
     cases = sorted({ln.case_ref for ln in pool})
     have = {normalise_item(i) for i in existing_items}
     wanted: dict[str, str | None] = {}
+    # Families named "(side undetermined)": also the ones _SIDED leaves out
+    # because their history family has no side (Wheel).
+    undetermined: set[str] = set()
     for part in damaged_parts:
         fam, side = family_and_side(part)
         wanted.setdefault(fam, side)
+        if part.endswith(" (side undetermined)"):
+            undetermined.add(fam)
 
     # Which families each past case had damaged (not just refitted).
     damaged_by_case: dict[str, set[str]] = {}
@@ -540,7 +555,9 @@ def suggest(
         if ln.family and (ln.condition or "").strip().lower() not in FITTING_CONDITIONS:
             damaged_by_case.setdefault(ln.case_ref, set()).add(ln.family)
 
-    def lines_for(family: str, side: str | None, case_refs: set[str] | None = None) -> list[dict]:
+    def lines_for(family: str, side: str | None, case_refs: set[str] | None = None, unsided: bool = False) -> list[dict]:
+        """unsided: the damaged part's side is undetermined, so no line
+        keeps a past case's LH / RH."""
         groups: dict[str, list[PastAnnexLine]] = {}
         for ln in pool:
             if ln.family != family or (case_refs is not None and ln.case_ref not in case_refs):
@@ -567,7 +584,7 @@ def suggest(
             units = [re.sub(r"[\d.\s]", "", g.qty_text or "") for g in group if g.qty_text]
             unit = max(set(units), key=units.count) if units and len(units) * 2 >= len(group) else ""
             out.append({
-                "name": _with_side(name, side if family in _SIDED else None),
+                "name": _without_side(name) if unsided else _with_side(name, side if family in _SIDED else None),
                 "family": family,
                 "qty": qty,
                 "qty_text": f"{qty:g}{unit}" if unit else None,
@@ -588,7 +605,10 @@ def suggest(
 
     groups, without_history = [], []
     for family, side in wanted.items():
-        found = lines_for(family, side)
+        # A sided family with no side: a "(side undetermined)" part (or a
+        # pre-taxonomy "Tail lamp"). The past lines' LH / RH said which side
+        # THAT case had; printed here it read as this case's finding.
+        found = lines_for(family, side, unsided=side is None and (family in _SIDED or family in undetermined))
         if found:
             groups.append({"part": family if not side else f"{side} {family}", "reason": "damaged", "lines": found})
         elif not any(ln.family == family for ln in pool):
@@ -616,6 +636,70 @@ def suggest(
                 wanted[fam] = None  # list each companion once
 
     return {"scope": scope_label, "cases_used": len(cases), "groups": groups, "without_history": without_history}
+
+
+# Families whose history lumps together parts the canonical names keep
+# apart: "Wheel" holds front and rear rims, tyres and the spare's wheel nut,
+# so its usual wording could name the wrong wheel. Those take the floor
+# (taxonomy.FIRM_PART_NAMES), which knows front from rear.
+_COARSE_FAMILIES = {"Wheel"}
+
+
+def firm_wording(db: Session, part: str, make: str | None = None, model: str | None = None,
+                 body_type: str | None = None) -> str | None:
+    """How the firm's past reports name a damaged part, for the Annex A row
+    of a part no past line prices (prefill.sync_annex_a): the family's main
+    wording -- its shortest part line (not a fitting), as prefill picks the
+    main row -- in the form written most often.
+
+    Looked for in past cases of the same make and model, else the same body
+    class (a tailgate is not a boot lid: taxonomy.body_class), else the same
+    make, else any: wording is not a price, so unlike prefill's prices
+    another make's will do. The case's side goes on ("Tail lamp LH"); a part
+    whose side nobody determined gets none, never the past case's. None when
+    no past case has the family as a part (the caller uses the floor)."""
+    from app.reports.taxonomy import SIDE_CODES, body_class, body_type_for
+
+    canon = canonical_part(part or "")
+    if not canon or canon == "Other / Not Listed":
+        return None
+    family, side = family_and_side(canon)
+    if family in _COARSE_FAMILIES:
+        return None
+    lines = db.query(PastAnnexLine).filter(PastAnnexLine.family == family).all()
+    wanted_class = body_class(body_type)
+
+    def same_class(ln: PastAnnexLine) -> bool:
+        return wanted_class is not None and body_class(body_type_for(ln.make, ln.model)) == wanted_class
+
+    scopes = (
+        [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
+        [ln for ln in lines if same_class(ln)],
+        [ln for ln in lines if _same(ln.make, make)],
+        lines,
+    )
+    pool = next((s for s in scopes if s), [])
+    by_key: dict[str, list[PastAnnexLine]] = {}
+    for ln in pool:
+        if ln.item_key:
+            by_key.setdefault(ln.item_key, []).append(ln)
+    # A family past cases only ever refitted (the rear windscreen's
+    # moulding, seal and clips, all "Necessary") has no wording for the
+    # damaged part itself.
+    part_keys = [k for k, group in by_key.items()
+                 if not all((g.condition or "").strip().lower() in FITTING_CONDITIONS for g in group)]
+    if not part_keys:
+        return None
+    main = min(part_keys, key=lambda k: (len(k), k))
+    names = [g.item for g in by_key[main]]
+    name = max(sorted(set(names)), key=names.count)
+    if side:
+        name = _with_side(name, side)
+        if side_of(name) is None:
+            name = f"{name} {SIDE_CODES[side]}"
+    elif family in _SIDED or canon.endswith(" (side undetermined)"):
+        name = _without_side(name)
+    return name
 
 
 def _labour_rows(pool: list[PastLabourLine], have: set[str], vehicle_label) -> list[dict]:

@@ -313,10 +313,12 @@ def main() -> int:
     assert out["unpriced"] == sum(1 for i in items if i["workshop_est"] <= 0)
     assert all(i["suggested_from"] and i["suggested_from"].endswith("(Honda Vezel)") and i["usual_unit_price"] for i in priced), priced
     tailgate = next(i for i in items if normalise_item(i["part_name"]) == "tailgate")
-    assert tailgate["condition"] == "Dent" and tailgate["prefilled"] and tailgate["workshop_est"] > 0, tailgate
+    # The case's items carry only the AI's damage type (filed before the
+    # firm's words existed): the row prints the firm word for it.
+    assert tailgate["condition"] == "Dented" and tailgate["prefilled"] and tailgate["workshop_est"] > 0, tailgate
     assert tailgate["adjusted_cost"] == round(tailgate["workshop_est"] * 0.8, 2) and tailgate["discount_pct"] == 0.2
     bumper = next(i for i in items if normalise_item(i["part_name"]) == "rear bumper")
-    assert bumper["condition"] == "Deformation" and bumper["workshop_est"] > 0, bumper
+    assert bumper["condition"] == "Deformed" and bumper["workshop_est"] > 0, bumper
     stopper = next(i for i in items if normalise_item(i["part_name"]) == "tailgate stopper")
     # The adjusted cost is what past cases paid for two; the estimate is the
     # workshop's usual asking figure, so it sits above the adjusted figure.
@@ -330,7 +332,7 @@ def main() -> int:
     assert out["annex_c"]["adjusted_total"] == out["annex_a"]["total_adjusted_cost"] == round(sum(i["adjusted_cost"] for i in items), 2)
     assert out["annex_c"]["gst_amount"] is None
     ok("a Honda Vezel with a damaged Tail Gate and Rear Bumper gets priced rows from past Vezel cases, tagged prefilled with their source")
-    ok("the damaged part itself carries the AI's damage type, fittings keep 'Necessary', a kept (Serviceable) part stays unpriced")
+    ok("the damaged part itself carries its condition in the firm's words, fittings keep 'Necessary', a kept (Serviceable) part stays unpriced")
     ok("rows are numbered in saved order, List Items before S/Nett, and Annex C adds up to them")
     with_sets = [i for i in items if i["qty_text"]]
     if with_sets:
@@ -432,15 +434,21 @@ def main() -> int:
     assert any(r["source_part"] == "Rear Bumper" for r in without) and not any(r["source_part"] == "Rear Bumper" for r in with_dismissed)
     assert any(r["source_part"] == "Tail Gate" for r in with_dismissed)
     plain = sync_annex_a(db, {**fresh, "dismissed_parts": []}, price_book=False)["annex_a"]["items"]
-    assert [(r["part_name"], r["origin"], r["source_part"], r["workshop_est"], r["condition"]) for r in plain] == [
-        ("Tail Gate", "detection", "Tail Gate", 0.0, "Dent"), ("Rear Bumper", "detection", "Rear Bumper", 0.0, "Deformation")], plain
+    # Unpriced, but in the firm's words: "Tail Gate" is pre-taxonomy free
+    # text and stays as written, the canonical "Rear Bumper" takes the past
+    # Vezel cases' wording; conditions are the firm word for the type.
+    assert [(normalise_item(r["part_name"]), r["origin"], r["source_part"], r["workshop_est"], r["condition"]) for r in plain] == [
+        ("tailgate", "detection", "Tail Gate", 0.0, "Dented"), ("rear bumper", "detection", "Rear Bumper", 0.0, "Deformed")], plain
+    assert plain[1]["part_name"] == "Rear bumper fascia", plain
     plain2 = sync_annex_a(db, {**fresh, "dismissed_parts": [], "damage_summary": base["damage_summary"][:1],
                                "annex_a": {"items": plain + [{"part_name": "Towing", "workshop_est": 0, "origin": "typed"}]}}, price_book=False)["annex_a"]["items"]
-    assert [(r["part_name"], r["origin"]) for r in plain2] == [("Towing", "typed"), ("Tail Gate", "detection")], plain2
+    assert [(r["part_name"], r["origin"]) for r in plain2] == [("Towing", "typed"), (plain[0]["part_name"], "detection")], plain2
     # An empty table stays empty: no scaffold row for a dismissed part.
     both = sync_annex_a(db, {**fresh, "dismissed_parts": ["Tail Gate", "Rear Bumper"]}, price_book=True)
     assert both["annex_a"]["items"] == [] and both["annex_c"]["adjusted_total"] == 0.0, both["annex_a"]
     scaffold = synthesize_annexes_for_report({**fresh, "dismissed_parts": ["Rear Bumper"], "annex_a": {}})
+    # "Tail Gate" is pre-taxonomy free text, printed as written (a canonical
+    # name gets the floor wording: scripts/test_detection_wording.py).
     assert [r["part_name"] for r in scaffold["annex_a"]["items"]] == ["Tail Gate"], scaffold["annex_a"]
     ok("sync: a dismissed part gets no rows back -- not even the scaffold row when the table is otherwise empty")
 
@@ -455,7 +463,7 @@ def main() -> int:
     assert rh and any(normalise_item(r["part_name"]) == "tail lamp" and r["workshop_est"] > 0 and r["origin"] == "history" for r in rh), priced_rows
     assert not any(r["source_part"] == "Left Tail Lamp" and r["origin"] != "typed" and normalise_item(r["part_name"]) == "tail lamp" for r in priced_rows), priced_rows
     plain_rows = sync_annex_a(db, sided, price_book=False)["annex_a"]["items"]
-    assert [(r["part_name"], r["origin"]) for r in plain_rows] == [("Tail lamp LH", "typed"), ("Right Tail Lamp", "detection")], plain_rows
+    assert [(r["part_name"], r["origin"]) for r in plain_rows] == [("Tail lamp LH", "typed"), ("Tail lamp RH", "detection")], plain_rows
     # A line picked from the suggestions panel (suggested_from, not prefilled) is a person's choice: kept even unpriced.
     picked = {**sided, "annex_a": {"items": [{"part_name": "Rear windscreen moulding", "qty": 1, "workshop_est": 0, "origin": "history",
                                               "suggested_from": "2 past cases (Honda Vezel)", "usual_unit_price": None, "source_part": None}]}}
@@ -475,7 +483,7 @@ def main() -> int:
     filed = surveyor.get(f"/reports/{draft}").json()["data"]
     filed_items = filed["annex_a"]["items"]
     assert any(i["prefilled"] and i["workshop_est"] > 0 for i in filed_items), filed_items
-    assert next(i for i in filed_items if normalise_item(i["part_name"]) == "tailgate")["condition"] == "Dent"
+    assert next(i for i in filed_items if normalise_item(i["part_name"]) == "tailgate")["condition"] == "Dented"
     assert filed["sign_off"]["status"] == "Draft" and filed["annex_c"]["adjusted_total"] == filed["annex_a"]["total_adjusted_cost"]
     draft2 = stranger.post("/intake").json()["id"]
     assert stranger.post(f"/intake/{draft2}/finalize", json={"data": body}).status_code == 200

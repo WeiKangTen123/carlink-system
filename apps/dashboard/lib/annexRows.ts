@@ -131,9 +131,6 @@ export const DISCOUNT_OPTIONS: [number, string][] = [
   [1.0, "100%"],
 ];
 
-/** Conditions surveyors write most; any other wording can be typed. */
-export const CONDITION_SUGGESTIONS = ["Deformed/cut", "Grazed/cracked", "Necessary", "Serviceable"];
-
 /** "from 2 past Honda Vezel cases", "detected", "lookup": the row's origin
  * in words, for the tag beside the part description. Null for a typed row
  * and for old rows with no origin (nothing to say). */

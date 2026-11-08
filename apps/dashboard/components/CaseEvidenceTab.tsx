@@ -518,7 +518,8 @@ export function CaseEvidenceTab({
                     <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
                       <Layers style={{ width: 11, height: 11 }} />
                       <span>{item.part}</span>
-                      {item.damage_type ? <span style={{ opacity: 0.85 }}>({item.damage_type})</span> : null}
+                      {/* The firm's wording when the case has it ("Buckled/cut"), else the AI's damage type. */}
+                      {item.condition || item.damage_type ? <span style={{ opacity: 0.85 }}>({item.condition || item.damage_type})</span> : null}
                       {item.bbox_2d ? <span title="The AI drew a box for this part">⊡</span> : null}
                     </span>
                   ))

@@ -126,8 +126,11 @@ async def telegram_checks() -> None:
         # Ann: no ticks, so the price book is hidden from her.
         case, out = await file_via_bot(bot.ANN_TG)
         rows = case.data["annex_a"]["items"]
+        # In the firm's words (2026-11-06): the condition word for the AI's
+        # type; the canonical "Rear Bumper" worded as the firm writes it
+        # ("Tail Gate" is pre-taxonomy free text, kept as written).
         assert [(r["part_name"], r["condition"], r["origin"], r["source_part"], r["workshop_est"], r["prefilled"]) for r in rows] == [
-            ("Tail Gate", "Dent", "detection", "Tail Gate", 0.0, False), ("Rear Bumper", "Deformation", "detection", "Rear Bumper", 0.0, False)], rows
+            ("Tail Gate", "Dented", "detection", "Tail Gate", 0.0, False), ("Rear bumper fascia", "Deformed", "detection", "Rear Bumper", 0.0, False)], rows
         assert case.data["annex_c"]["adjusted_total"] == 0.0 and case.data["sign_off"] == SignOffInfo().model_dump()
         ok("a self-signup's bot case has one unpriced detection row per damaged part, signed off by nobody")
         assert case.data["photo_index"] == [
@@ -150,7 +153,7 @@ async def telegram_checks() -> None:
         priced = [r for r in rows if r["prefilled"] and r["workshop_est"] > 0]
         assert len(priced) >= 3 and all(r["origin"] == "history" and r["source_part"] in ("Tail Gate", "Rear Bumper") for r in priced), rows
         tailgate = next(r for r in rows if normalise_item(r["part_name"]) == "tailgate")
-        assert tailgate["condition"] == "Dent" and tailgate["workshop_est"] > 0, tailgate
+        assert tailgate["condition"] == "Dented" and tailgate["workshop_est"] > 0, tailgate
         assert case.data["annex_c"]["adjusted_total"] == case.data["annex_a"]["total_adjusted_cost"] > 0
         assert case.owner_id == sue and case.ai_draft["damage_summary"][0]["part"] == "Tail Gate" and len(case.data["photo_index"]) == 2
         ok("a price-book account's bot case has Annex A priced from past cases (origin history), the AI draft and photo_index too")
@@ -181,7 +184,7 @@ def direct_checks() -> None:
         sorted_kinds = [{"kind": "damage", "area": "rear", "part": "Tail Gate", "shows_damage": True, "quality": "good"}, {}]
         data = file_case_data(db, before, plain, ai_draft=draft, photo_kinds=sorted_kinds)
         assert data["sign_off"] == SignOffInfo().model_dump() and data["report_id"] == "CL 12330"
-        assert [r["part_name"] for r in data["annex_a"]["items"]] == ["Tail Gate", "Rear Bumper"] and data["annex_b"]["items"] == []
+        assert [r["part_name"] for r in data["annex_a"]["items"]] == ["Tail Gate", "Rear bumper fascia"] and data["annex_b"]["items"] == []
         assert data["photo_index"] == [
             {"label": "P01", "kind": "damage", "area": "rear", "part": "Tail Gate", "shows_damage": True, "quality": "good"},
             {"label": "P02", "kind": None, "area": None, "part": "Rear Bumper", "shows_damage": True, "quality": None},

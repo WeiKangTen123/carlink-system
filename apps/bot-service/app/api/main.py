@@ -87,8 +87,15 @@ from app.reports.taxonomy import (
     CANONICAL_DAMAGE_TYPES,
     CANONICAL_PARTS,
     CANONICAL_SEVERITIES,
+    FIRM_CONDITION_COMMON,
+    FIRM_CONDITION_TOKENS,
+    FIRM_REMARKS,
+    FIRM_WHOLE_CONDITIONS,
     MODEL_BODY_TYPES,
     body_type_for,
+    damage_type_from_tokens,
+    firm_condition,
+    parse_condition,
 )
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft, SignOffInfo
 from app.rendering.renderer import RenderBusy, render_pdf
@@ -1000,13 +1007,19 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
 
 class DamageItemReviewRequest(BaseModel):
     """What a surveyor changes on one detected part in tab 1 (Damage
-    detection): the part, how it is damaged, how badly, which photo shows
-    it, the verified tick and the OEM part number. Everything optional, so
+    detection): the part, how it is damaged (type, and the condition and
+    remarks Annex A prints), how badly, which photo shows it, the verified
+    tick and the OEM part number. Everything optional, so
     a caller can tick the box without touching the rest; a key left out
     is left alone (exclude_unset), and photo_reference sent as null clears
     the photo."""
     part: Optional[str] = None
     damage_type: Optional[str] = None
+    # The Annex A Condition in the firm's words ("Grazed/cut", or Necessary
+    # / Serviceable / Repair) and the Remarks (Replace / Repair); null or ""
+    # clears either. See _damage_item_fields.
+    condition: Optional[str] = None
+    remarks: Optional[str] = None
     severity: Optional[str] = None
     photo_reference: Optional[str] = None
     human_verified: Optional[bool] = None
@@ -1017,6 +1030,8 @@ class DamageItemAddRequest(BaseModel):
     """A part the surveyor adds by hand (tab 1 "+ Add a part")."""
     part: str
     damage_type: Optional[str] = None
+    condition: Optional[str] = None
+    remarks: Optional[str] = None
     photo_reference: Optional[str] = None
 
 
@@ -1038,6 +1053,25 @@ def _damage_item_fields(sent: dict, r: Report) -> dict:
         if damage_type is not None and damage_type not in CANONICAL_DAMAGE_TYPES:
             raise HTTPException(status_code=400, detail=f"'{damage_type}' isn't a damage type on the list.")
         out["damage_type"] = damage_type
+    if "condition" in sent:
+        # Only the firm's words, so the printed Condition column and the
+        # condition statistics stay in one vocabulary. condition_tokens
+        # follows: the words of the condition, [] for a whole word.
+        try:
+            tokens, condition = parse_condition(sent["condition"])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{exc}' isn't one of the firm's condition words ({', '.join(FIRM_CONDITION_TOKENS)}); "
+                       f"or write {', '.join(FIRM_WHOLE_CONDITIONS[:-1])} or {FIRM_WHOLE_CONDITIONS[-1]} on its own.",
+            )
+        out["condition"], out["condition_tokens"] = condition, tokens
+    if "remarks" in sent:
+        remarks = (sent["remarks"] or "").strip() or None
+        match = next((r for r in FIRM_REMARKS if remarks and r.lower() == remarks.lower()), None)
+        if remarks is not None and match is None:
+            raise HTTPException(status_code=400, detail=f"'{remarks}' isn't a remark on the list ({' or '.join(FIRM_REMARKS)}).")
+        out["remarks"] = match
     if "severity" in sent:
         severity = (sent["severity"] or "").strip() or None
         if severity is not None and severity not in CANONICAL_SEVERITIES:
@@ -1108,8 +1142,9 @@ def _save_damage_items(db, user: CurrentUser, r: Report, data: dict, damage_summ
 def review_damage_item(
     report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(editable_case)
 ) -> dict:
-    """Changes one damage item: the part, damage type, severity, photo,
-    the verified tick, the OEM part number. The box the AI drew is dropped
+    """Changes one damage item: the part, damage type, condition (the
+    firm's words), remarks, severity, photo, the verified tick, the OEM part
+    number. Any change clears side_inferred. The box the AI drew is dropped
     when the photo changes (it was drawn on the old one). Answers the
     whole damage list and the Annex A/C that now follow it.
 
@@ -1138,6 +1173,16 @@ def review_damage_item(
         if "part" in changes and changes["part"] != item.get("part"):
             _undismiss(data, changes["part"])  # renamed to a part dismissed earlier: as POST
         item.update(changes)
+        if changes:
+            # A person has looked at this row -- even ticking Verified alone
+            # -- so a side the pipeline inferred (resolve_sides) is theirs now.
+            item["side_inferred"] = False
+        # Firm words with no AI type: the type they imply, as at drafting
+        # (the 3D colours and analytics read damage_type). A condition is
+        # never rewritten from a damage type here: once set it changes only
+        # when a person sends one.
+        if changes.get("condition_tokens") and not item.get("damage_type"):
+            item["damage_type"] = damage_type_from_tokens(changes["condition_tokens"])
         damage_summary[item_index] = item
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_edited",
                                  f"item {item_index + 1}: {item.get('part')}")
@@ -1158,6 +1203,14 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
         data = dict(r.data or {})
         damage_summary = list(data.get("damage_summary") or [])
         fields = _damage_item_fields(body.model_dump(), r)
+        # As the drafting step does (extraction._firm_condition): a type with
+        # no words gets the firm word for it; words with no type (the
+        # dashboard's add row sends words only) get the type they imply --
+        # none for Necessary / Serviceable / Repair.
+        if not fields.get("condition") and fields.get("damage_type"):
+            fields["condition_tokens"], fields["condition"] = firm_condition([], fields["damage_type"])
+        if not fields.get("damage_type") and fields.get("condition_tokens"):
+            fields["damage_type"] = damage_type_from_tokens(fields["condition_tokens"])
         item = DamageSummaryItem(**fields, human_verified=True).model_dump()
         damage_summary.append(item)
         _undismiss(data, item["part"])
@@ -2068,6 +2121,14 @@ def get_taxonomy(scope: Scope = None, user: CurrentUser = Depends(current_user))
             "parts": CANONICAL_PARTS,
             "damage_types": CANONICAL_DAMAGE_TYPES,
             "severities": CANONICAL_SEVERITIES,
+            # The firm's Annex A wording (taxonomy.py): the words a
+            # condition is made of, in print order; the compounds the
+            # firm's reports use most; the whole-word conditions (fittings,
+            # kept parts, repair-not-renew); the Remarks values.
+            "condition_tokens": FIRM_CONDITION_TOKENS,
+            "condition_common": FIRM_CONDITION_COMMON,
+            "condition_whole": FIRM_WHOLE_CONDITIONS,
+            "remarks": FIRM_REMARKS,
             "body_types": BODY_TYPES,
             "model_body_types": MODEL_BODY_TYPES,
             "usage": {

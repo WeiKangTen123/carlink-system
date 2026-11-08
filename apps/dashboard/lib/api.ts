@@ -837,6 +837,15 @@ export const CLAIM_TYPE_OPTIONS = [
   "Special case",
 ] as const;
 
+/** The Annex A Remarks a detected part can carry (printed on its main line);
+ * blank is null. The API refuses anything else (400). */
+export const DAMAGE_REMARKS = ["Replace", "Repair"] as const;
+export type DamageRemarks = (typeof DAMAGE_REMARKS)[number];
+/** A select's text as a remark: anything but the two words is blank, so a
+ * stray value never reaches the API. */
+export const toDamageRemarks = (value: string | null | undefined): DamageRemarks | null =>
+  value === "Replace" || value === "Repair" ? value : null;
+
 export type DamageSummaryItem = {
   part: string;
   damage_type?: string | null;
@@ -850,6 +859,21 @@ export type DamageSummaryItem = {
    * each normalized 0-1000 with a top-left origin. See fileUrl-adjacent
    * bboxToCss() in StudioApp.tsx for the conversion to CSS percentages. */
   bbox_2d?: number[] | null;
+  /** The firm's condition words the AI picked (1-3 of
+   * Taxonomy.condition_tokens) that `condition` is built from. Optional
+   * here, like the three fields below: parts drafted before 2026-11 have
+   * none of them. */
+  condition_tokens?: string[];
+  /** The Condition as the firm prints it ("Grazed/cut", "Distorted/jammed"),
+   * or a whole value (Necessary / Serviceable / Repair). A person may change
+   * it; damage_type stays the AI's category. When it is missing, show
+   * damage_type (what older cases have). */
+  condition?: string | null;
+  /** Annex A Remarks for this part's main line; null is blank. */
+  remarks?: DamageRemarks | null;
+  /** The AI could not see the side on this part's own photo and took it
+   * from nearby photos. The API clears it once a person edits the part. */
+  side_inferred?: boolean;
 };
 
 export type TyreItem = {
@@ -1578,7 +1602,9 @@ export async function updateReport(
 
 /** PATCH /reports/{id}/damage-items/{i}: what tab 1's detected-parts table
  * changes on one line. `part` must be a taxonomy part; `photo_reference`
- * "P07" or null (the AI box is dropped when the photo changes). */
+ * "P07" or null (the AI box is dropped when the photo changes).
+ * `condition` must be the firm's words joined with "/" or one whole value
+ * (400 otherwise); any change clears side_inferred. */
 export type DamageItemPatch = {
   part?: string;
   damage_type?: string | null;
@@ -1586,6 +1612,17 @@ export type DamageItemPatch = {
   photo_reference?: string | null;
   human_verified?: boolean;
   oem_part_number?: string | null;
+  condition?: string | null;
+  remarks?: DamageRemarks | null;
+};
+
+/** POST /reports/{id}/damage-items: what the add row sends. */
+export type NewDamageItem = {
+  part: string;
+  damage_type?: string | null;
+  condition?: string | null;
+  remarks?: DamageRemarks | null;
+  photo_reference?: string | null;
 };
 
 /** Every damage-items call answers with the parts as saved and the Annex A
@@ -1613,10 +1650,7 @@ export async function patchDamageItem(reportId: string, itemIndex: number, patch
 
 /** POST /reports/{id}/damage-items: a part the surveyor adds by hand
  * (appended, verified). */
-export async function addDamageItem(
-  reportId: string,
-  body: { part: string; damage_type?: string | null; photo_reference?: string | null }
-): Promise<DamageItemsResponse> {
+export async function addDamageItem(reportId: string, body: NewDamageItem): Promise<DamageItemsResponse> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2380,7 +2414,72 @@ export type Taxonomy = {
     legacy_terms: Record<string, number>;
     reports_counted: number;
   };
+  /** The firm's condition words in print order (taxonomy.py
+   * FIRM_CONDITION_TOKENS). A Condition is 1-3 of them joined with "/",
+   * first one capitalised: "Distorted/cut/faulty". */
+  condition_tokens: string[];
+  /** The firm's most used Conditions (FIRM_CONDITION_COMMON), offered first. */
+  condition_common: string[];
 };
+
+/** Built-in copies of the two condition lists, for an API from before they
+ * existed (GET /taxonomy without them) or one that can't be reached: the
+ * condition editor must never be left with nothing to offer. The words are
+ * the firm's 18 in print order; the common list is the most used Conditions
+ * in the firm's four example Annex A sheets (detection audit, 2026-11-04).
+ * Keep in step with taxonomy.py. */
+export const FALLBACK_CONDITION_TOKENS: readonly string[] = [
+  "Grazed",
+  "Dented",
+  "Bent",
+  "Buckled",
+  "Deformed",
+  "Distorted",
+  "Crumpled",
+  "Warped",
+  "Shifted",
+  "Slack",
+  "Cracked",
+  "Chipped",
+  "Torn",
+  "Cut",
+  "Jammed",
+  "Faulty",
+  "Leaked",
+  "Rattle",
+];
+export const FALLBACK_CONDITION_COMMON: readonly string[] = [
+  "Bent",
+  "Deformed/cut",
+  "Grazed/cut",
+  "Bent/cut",
+  "Distorted/jammed",
+  "Dented/bent",
+  "Grazed/cracked",
+  "Buckled",
+  "Distorted/cut",
+  "Cracked",
+  "Crumpled",
+];
+
+/** Conditions the API takes whole, never joined with a word
+ * (FIRM_WHOLE_CONDITIONS): Necessary (a fitting renewed on refit),
+ * Serviceable (a part kept) and Repair (repaired rather than renewed: the
+ * line is priced, then disallowed in full -- the firm's convention). */
+export const CONDITION_WHOLE_VALUES = ["Necessary", "Serviceable", "Repair"] as const;
+
+export type ConditionWords = { tokens: string[]; common: string[] };
+
+/** The condition lists from a taxonomy answer, each falling back to the
+ * built-in copy when missing or empty. */
+export function conditionWordsOf(t: { condition_tokens?: unknown; condition_common?: unknown } | null | undefined): ConditionWords {
+  const list = (v: unknown, fallback: readonly string[]): string[] =>
+    Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string") ? (v as string[]) : [...fallback];
+  return {
+    tokens: list(t?.condition_tokens, FALLBACK_CONDITION_TOKENS),
+    common: list(t?.condition_common, FALLBACK_CONDITION_COMMON),
+  };
+}
 
 export const DEFAULT_TAXONOMY: Taxonomy = {
   parts: [],
@@ -2394,13 +2493,17 @@ export const DEFAULT_TAXONOMY: Taxonomy = {
     legacy_terms: {},
     reports_counted: 0,
   },
+  condition_tokens: [...FALLBACK_CONDITION_TOKENS],
+  condition_common: [...FALLBACK_CONDITION_COMMON],
 };
 
 export async function getTaxonomy(): Promise<Taxonomy> {
   try {
     const res = await apiFetch(`${API_BASE_URL}/taxonomy`, { cache: "no-store" }, { timeoutMs: 8000 });
     if (!res.ok) throw new Error(`Failed to load taxonomy (${res.status}: ${res.statusText})`);
-    return await res.json();
+    const body = (await res.json()) as Omit<Taxonomy, "condition_tokens" | "condition_common"> & Partial<Taxonomy>;
+    const words = conditionWordsOf(body);
+    return { ...body, condition_tokens: words.tokens, condition_common: words.common };
   } catch (err) {
     unstable_rethrow(err);
     console.warn("Failed to load taxonomy, using fallback default:", err);

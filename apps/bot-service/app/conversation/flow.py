@@ -13,7 +13,13 @@ from typing import Optional
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor
 from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
-from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
+from app.reports.taxonomy import (
+    CANONICAL_DAMAGE_TYPES,
+    CANONICAL_PARTS,
+    CANONICAL_SEVERITIES,
+    FIRM_CONDITION_TOKENS,
+    body_type_for,
+)
 
 
 @dataclass
@@ -28,8 +34,9 @@ class DraftResult:
 
 def _damage_vocabulary() -> re.Pattern:
     """Words that mean a reporter's message is about the damage itself, built
-    from the same vocabulary the model chooses parts and damage types from,
-    so a new canonical part is covered without touching this list."""
+    from the same vocabulary the model chooses parts, damage types and the
+    firm's condition words from ("the bumper is cut, not cracked"), so a new
+    canonical part is covered without touching this list."""
     words = {
         "damage", "damaged", "dent", "dented", "scratch", "scratched", "scrape", "scraped",
         "broken", "crack", "cracked", "severity", "part", "parts", "left", "right", "side", "panel",
@@ -40,7 +47,7 @@ def _damage_vocabulary() -> re.Pattern:
     # tails of a few part names.
     skip = {"side", "undetermined", "not", "listed", "other", "and", "the",
             "number", "plate", "front", "rear", "system", "assembly", "trim"}
-    for name in (*CANONICAL_PARTS, *CANONICAL_DAMAGE_TYPES, *CANONICAL_SEVERITIES):
+    for name in (*CANONICAL_PARTS, *CANONICAL_DAMAGE_TYPES, *CANONICAL_SEVERITIES, *FIRM_CONDITION_TOKENS):
         for word in re.findall(r"[a-z]+", name.lower()):
             if len(word) > 2 and word not in skip:
                 words.add(word)
@@ -80,9 +87,16 @@ def _carry_over_damage(draft: SecurityIncidentDraft, previous: SecurityIncidentD
         prev = by_part.get(item.part)
         if prev is None:
             continue
-        for field_name in ("damage_type", "severity", "photo_reference", "bbox_2d", "ai_confidence"):
+        # condition and its words go together: words without the matching
+        # condition would print one thing and count another.
+        if not item.condition and prev.condition:
+            item.condition, item.condition_tokens = prev.condition, list(prev.condition_tokens or [])
+        for field_name in ("damage_type", "severity", "photo_reference", "bbox_2d", "ai_confidence", "remarks"):
             if getattr(item, field_name) in (None, "", []) and getattr(prev, field_name) not in (None, "", []):
                 setattr(item, field_name, getattr(prev, field_name))
+        # The same part under the same name: if its side was inferred last
+        # time, it still is.
+        item.side_inferred = item.side_inferred or prev.side_inferred
     return draft
 
 
@@ -308,8 +322,11 @@ def _damage_lines(draft: SecurityIncidentDraft) -> list[str]:
     """
     items = draft.damage_summary or []
     if items:
+        # The condition in the firm's words first -- what Annex A will
+        # print -- then the AI's damage type when it says something else.
         return [
-            f"{_severity_dot(i.severity)} {i.part}" + (f" · {i.damage_type}" if i.damage_type else "")
+            f"{_severity_dot(i.severity)} {i.part}"
+            + "".join(f" · {v}" for v in dict.fromkeys(v for v in (i.condition, i.damage_type) if v))
             for i in items
         ]
     # Older drafts (and any extraction that returned only names) still render.

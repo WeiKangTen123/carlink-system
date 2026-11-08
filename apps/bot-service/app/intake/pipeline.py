@@ -25,6 +25,7 @@ Each stage is one row of the AI run log (ai/runs.py): "sort" (photos_sent
 import logging
 import re
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from datetime import datetime, timedelta, timezone
@@ -37,7 +38,7 @@ from app.ai.triage import BATCH_SIZE, triage_photos
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
-from app.reports.taxonomy import body_type_for
+from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             if Path(p.path).exists()
         ]
         notes = session.reporter_notes or ""
+        # Every photo in camera order with where the sorter saw it taken,
+        # read or not: resolve_sides places side-undetermined findings by it.
+        photo_areas = [(p.id, p.area) for p in photos]
     finally:
         db.close()
 
@@ -452,7 +456,6 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         actor=actor,
     )
     data = draft.model_dump()
-    run.parts_found = len(data.get("damage_summary") or [])
 
     # Photo references are stored as "@<photo id>" until finalize, because
     # P-numbers shift whenever a photo is deleted or added before then.
@@ -463,6 +466,13 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         item["photo_reference"] = f"@{photo_id}" if photo_id else None
         if not photo_id:
             item["bbox_2d"] = None
+
+    # Before merge_redraft, so a placed part meets the surveyor's checked
+    # ones under its sided name (merge keeps theirs, drops the AI's repeat).
+    if data.get("damage_summary"):
+        data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas)
+        data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
+    run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
     if vehicle:
@@ -483,6 +493,118 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         db.commit()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------- side resolver
+#
+# The reader names a close-up's part but often not its side ("Tail Lamp
+# (side undetermined)"): a lamp filling the frame shows no LH or RH. The
+# sorter has already said where each photo was taken, and a surveyor walks
+# round the car, so the photos shot around it show the same corner. No AI
+# call: a majority of those clues names the side, flagged side_inferred
+# with ai_confidence Low for a person to confirm (the dashboard marks it).
+
+_AREA_SIDE = {
+    "left": "Left", "front-left": "Left", "rear-left": "Left",
+    "right": "Right", "front-right": "Right", "rear-right": "Right",
+}
+_AREA_END = {
+    "front": "Front", "front-left": "Front", "front-right": "Front",
+    "rear": "Rear", "rear-left": "Rear", "rear-right": "Rear",
+}
+# How many places along the camera order a neighbour may be: the nearest
+# photo of the insured vehicle each way, skipping a document or two.
+NEIGHBOUR_REACH = 2
+
+
+def _zone(area: str | None) -> str | None:
+    """Front, Rear or Side of the car, for "findings in the same area"."""
+    if area in _AREA_END:
+        return _AREA_END[area]
+    return "Side" if area in ("left", "right") else None
+
+
+def _clear_side(votes: Counter) -> str | None:
+    """The side the clues agree on, or None when they are split: a tie, or
+    the other side holding more than half as many (2 to 1 places it, 3 to 2
+    does not -- a wrong side printed in the report is worse than none)."""
+    left, right = votes["Left"], votes["Right"]
+    winner, loser = ("Left", right) if left > right else ("Right", left)
+    lead = max(left, right)
+    if lead == 0 or left == right or loser * 2 > lead:
+        return None
+    return winner
+
+
+def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]]) -> list[dict]:
+    """The damage items with each "(side undetermined)" part placed on a
+    side where the clues agree. photo_areas: every photo of the case in
+    camera order as (photo id, sorter area); items reference photos as
+    "@<photo id>".
+
+    Clues, one vote each, for an item whose photo is known:
+      - that photo's own area, when it has a side (left, rear-left...);
+      - the nearest photo of the insured vehicle before and after it in
+        camera order (within NEIGHBOUR_REACH), when its area has a side;
+      - every finding the reader placed itself (a sided name, not inferred)
+        whose photo lies in the same zone (front, rear, side).
+    Placed only on a clear majority (_clear_side), and only when the name
+    exists (taxonomy.sided_part: doors aren't placed, a wheel needs its
+    photo to say front or rear). The placed item becomes the sided name
+    with ai_confidence Low and side_inferred True; when that name is
+    already listed, it is dropped instead (the reader found it already)."""
+    position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
+    area_of = dict(photo_areas)
+
+    def photo_of(item: dict) -> str | None:
+        ref = str(item.get("photo_reference") or "")
+        return ref[1:] if ref.startswith("@") and ref[1:] in position else None
+
+    placed_by_reader: list[tuple[str, str]] = []
+    for item in items:
+        _, side = split_side(item.get("part") or "")
+        photo_id = photo_of(item)
+        zone = _zone(area_of.get(photo_id)) if photo_id else None
+        if side and zone and not item.get("side_inferred"):
+            placed_by_reader.append((zone, side))
+
+    def neighbour_areas(photo_id: str) -> list[str]:
+        at, out = position[photo_id], []
+        for step in (-1, 1):
+            for distance in range(1, NEIGHBOUR_REACH + 1):
+                j = at + step * distance
+                if not 0 <= j < len(photo_areas):
+                    break
+                if photo_areas[j][1]:
+                    out.append(photo_areas[j][1])
+                    break
+        return out
+
+    names = {item.get("part") for item in items}
+    out: list[dict] = []
+    for item in items:
+        part = item.get("part") or ""
+        photo_id = photo_of(item)
+        if not part.endswith(UNDETERMINED_SUFFIX) or photo_id is None:
+            out.append(item)
+            continue
+        own = area_of.get(photo_id)
+        votes: Counter = Counter()
+        for area in [own, *neighbour_areas(photo_id)]:
+            if area in _AREA_SIDE:
+                votes[_AREA_SIDE[area]] += 1
+        zone = _zone(own)
+        for other_zone, side in placed_by_reader:
+            if zone and other_zone == zone:
+                votes[side] += 1
+        side = _clear_side(votes)
+        name = sided_part(part, side, _AREA_END.get(own)) if side else None
+        if name is None:
+            out.append(item)
+        elif name not in names:
+            names.add(name)
+            out.append({**item, "part": name, "ai_confidence": "Low", "side_inferred": True})
+    return out
 
 
 # Sections only the surveyor fills in (step 4, the reporter fields, Our
