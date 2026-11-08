@@ -13,13 +13,7 @@ from typing import Optional
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor
 from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
-from app.reports.taxonomy import (
-    CANONICAL_DAMAGE_TYPES,
-    CANONICAL_PARTS,
-    CANONICAL_SEVERITIES,
-    FIRM_CONDITION_TOKENS,
-    body_type_for,
-)
+from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
 
 
 @dataclass
@@ -32,11 +26,23 @@ class DraftResult:
     ai_draft: Optional[dict] = None
 
 
+# The firm's condition words (taxonomy.FIRM_CONDITION_TOKENS) that only
+# ever describe damage. Cut, jammed, shifted, bent, slack and torn are left
+# out: "he cut into my lane", "traffic was jammed", "the location shifted"
+# are everyday corrections, and counting them as damage edits threw away
+# the carried-over findings (review, 2026-11-08).
+_DISTINCT_CONDITION_WORDS = (
+    "grazed", "dented", "buckled", "deformed", "distorted", "crumpled", "warped",
+    "cracked", "chipped", "faulty", "leaked", "rattle",
+)
+
+
 def _damage_vocabulary() -> re.Pattern:
     """Words that mean a reporter's message is about the damage itself, built
-    from the same vocabulary the model chooses parts, damage types and the
-    firm's condition words from ("the bumper is cut, not cracked"), so a new
-    canonical part is covered without touching this list."""
+    from the same vocabulary the model chooses parts and damage types from,
+    plus the firm's distinctive condition words ("the bumper is buckled,
+    not cracked"), so a new canonical part is covered without touching
+    this list."""
     words = {
         "damage", "damaged", "dent", "dented", "scratch", "scratched", "scrape", "scraped",
         "broken", "crack", "cracked", "severity", "part", "parts", "left", "right", "side", "panel",
@@ -47,7 +53,7 @@ def _damage_vocabulary() -> re.Pattern:
     # tails of a few part names.
     skip = {"side", "undetermined", "not", "listed", "other", "and", "the",
             "number", "plate", "front", "rear", "system", "assembly", "trim"}
-    for name in (*CANONICAL_PARTS, *CANONICAL_DAMAGE_TYPES, *CANONICAL_SEVERITIES, *FIRM_CONDITION_TOKENS):
+    for name in (*CANONICAL_PARTS, *CANONICAL_DAMAGE_TYPES, *CANONICAL_SEVERITIES, *_DISTINCT_CONDITION_WORDS):
         for word in re.findall(r"[a-z]+", name.lower()):
             if len(word) > 2 and word not in skip:
                 words.add(word)

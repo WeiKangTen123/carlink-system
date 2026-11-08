@@ -29,9 +29,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.ai.extraction import _parse_draft, _response_schema  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.conversation.flow import _carry_over_damage, _damage_lines, edit_mentions_damage  # noqa: E402
-from app.intake.pipeline import merge_redraft, resolve_sides  # noqa: E402
-from app.parts.history import PastCase, PastLine, firm_wording, import_case, side_of  # noqa: E402
-from app.parts.prefill import sync_annex_a  # noqa: E402
+from app.intake.pipeline import merge_redraft, resolve_sides, voting_areas  # noqa: E402
+from app.parts.history import PastCase, PastLine, _without_side, firm_wording, import_case, side_of  # noqa: E402
+from app.parts.prefill import row_name, sync_annex_a  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
 from app.reports.models import Report  # noqa: E402
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft  # noqa: E402
@@ -78,6 +78,9 @@ def import_history() -> None:
                          line(3, "Tail lamp LH", "Grazed/cracked", 1, 400, 320),
                          line(4, "Tail lamp clips LH", "Necessary", 4, 20, 16),
                          line(5, "Rear bumper fascia", "Deformed/cut", 1, 1000, 800),
+                         # The family's only line names a sub-part, as the
+                         # real Civic's "Front bumper fog lamps cover" does.
+                         line(6, "Front bumper fog lamps cover", "Slack", 1, 120, 96),
                      ])
     sedan = PastCase(ref="CL 90002", plate="TEST2B", make="Betamotors", model="Camry", make_model_raw="Betamotors Camry",
                      registered=None, surveyed="2025-02-01", lines=[
@@ -109,6 +112,8 @@ def check_vocabulary() -> None:
     assert join_condition([]) is None
     ok("words are filtered to the 18, each once, in print order, joined 'Grazed/cut' (first capitalised)")
 
+    assert firm_condition(["Rattle", "Grazed", "Cut", "Dented", "Bent"], None) == (["Grazed", "Dented", "Bent"], "Grazed/dented/bent"), \
+        "review item 8: at most three words, the first three in the firm's order"
     assert firm_condition([], "Dent") == (["Dented"], "Dented")
     assert firm_condition([], "Deformation") == (["Deformed"], "Deformed")
     assert firm_condition(["Bent", "Dented"], "Crack") == (["Dented", "Bent"], "Dented/bent"), "the AI's words win over its type"
@@ -204,6 +209,11 @@ def check_schema_and_parse() -> None:
     assert draft.damage_summary[2].severity is None, "_sanitize_damage_summary runs"
     ok("parse: words filtered and ordered, condition built in code, the type filled from words, words from the type, odd remarks dropped, side_inferred never the model's")
 
+    capped = _parse_draft(json.dumps({"description": "x", "damage_summary": [
+        {"part": "Rear Bumper", "condition_tokens": ["Rattle", "Cut", "Grazed", "Deformed", "Torn"]}]}))
+    assert (capped.damage_summary[0].condition_tokens, capped.damage_summary[0].condition) == (["Grazed", "Deformed", "Torn"], "Grazed/deformed/torn")
+    ok("review item 8: a draft's words are capped at three (the first three in the firm's order)")
+
     backfilled = _parse_draft(json.dumps({"description": "x", "damaged_parts": ["Rear Bumper"], "severity_level": "Minor"}))
     assert [(i.part, i.condition, i.condition_tokens) for i in backfilled.damage_summary] == [("Rear Bumper", None, [])]
     ok("an item backfilled from damaged_parts has no condition (nothing was said about it)")
@@ -253,19 +263,24 @@ def check_annex_rows() -> None:
         assert len({p for p, _ in printed}) == len(CANONICAL_PARTS)
         ok(f"no Annex A row is named by a canonical part name ({len(printed)} rows: every part x sedan/SUV/unknown x price book on/off, and the scaffold)")
 
-        # Firm wording from history, by body class, when nothing is priced.
-        assert firm_wording(db, "Boot Lid", "Gammamotors", "Harrier", "SUV") == "Tail gate assy"
-        assert firm_wording(db, "Boot Lid", "Gammamotors", "City", "Sedan") == "Boot lid assy"
-        assert firm_wording(db, "Left Tail Lamp", "Gammamotors", "Harrier", "SUV") == "Tail lamp LH"
-        assert firm_wording(db, "Right Tail Lamp", "Gammamotors", "City", "Sedan") == "Tail lamp RH"
-        assert firm_wording(db, "Bonnet", "Alphamotors", "Vezel", "SUV") is None, "no past case had one: the caller takes the floor"
-        assert firm_wording(db, "Left Rear Wheel", "Alphamotors", "Vezel", "SUV") is None, "Wheel history lumps front and rear"
+        # Review item 2: the floor wins whenever it has a wording; history
+        # wording only from the same make (model first), never any make's.
+        assert firm_wording(db, "Boot Lid", "Alphamotors", "Vezel") == "Tail gate assy"
+        assert firm_wording(db, "Left Tail Lamp", "Alphamotors", "Other") == "Tail lamp LH", "same make, another model"
+        assert firm_wording(db, "Boot Lid", "Gammamotors", "Harrier") is None, "never another make's wording"
+        assert firm_wording(db, "Bonnet", "Alphamotors", "Vezel") is None and firm_wording(db, "Left Rear Wheel", "Alphamotors", "Vezel") is None
+        assert firm_wording(db, "Left Fog Lamp", "Alphamotors", "Vezel") == "Front bumper fog lamps cover LH", "the family's shortest line is a sub-part"
+        assert row_name(db, "Left Fog Lamp", {"make": "Alphamotors", "model": "Vezel"}) == "Fog lamp LH", "the floor wins over it"
+        fog = rows(sync_annex_a(db, case([{"part": "Left Fog Lamp", "damage_type": "Crack"}]), price_book=False))
+        assert [r["part_name"] for r in fog] == ["Fog lamp LH"], fog
         unpriced = rows(sync_annex_a(db, case([{"part": "Boot Lid", "damage_type": "Dent"}], "Gammamotors", "Harrier", "SUV"), price_book=True))
         assert [(r["part_name"], r["workshop_est"], r["condition"]) for r in unpriced] == [("Tail gate assy", 0.0, "Dented")], unpriced
+        sedan = rows(sync_annex_a(db, case([{"part": "Boot Lid", "damage_type": "Dent"}], "Gammamotors", "City", "Sedan"), price_book=True))
+        assert [r["part_name"] for r in sedan] == ["Boot lid assy"], sedan
         # A pre-taxonomy case's free text is kept: its family's wording would be coarser.
         free = rows(sync_annex_a(db, case([{"part": "Tail gate lock striker", "damage_type": "Misalignment"}], "Gammamotors", "Harrier", "SUV"), price_book=False))
         assert [(r["part_name"], r["condition"]) for r in free] == [("Tail gate lock striker", "Shifted")], free
-        ok("a part no same-make case prices takes the firm's past wording (same model, else same body class, else any) -- a tailgate for an SUV, a boot lid for a sedan")
+        ok("an unpriced row takes the floor wording (a fog lamp, not the history's 'fog lamps cover'); history wording only from the same make, never another's")
     finally:
         db.close()
 
@@ -281,7 +296,9 @@ def check_side_leak() -> None:
         assert {r["part_name"] for r in priced} == {"Tail lamp", "Tail lamp clips"}, priced
         unpriced = rows(sync_annex_a(db, case(undetermined), price_book=False))
         assert [r["part_name"] for r in unpriced] == ["Tail lamp"], unpriced
-        assert firm_wording(db, "Tail Lamp" + UNDETERMINED, "Gammamotors", "Harrier", "SUV") == "Tail lamp"
+        assert firm_wording(db, "Tail Lamp" + UNDETERMINED, "Alphamotors", "Vezel") == "Tail lamp"
+        for wording in ("Tail lamp LH", "Tail lamp (LH)", "Tail lamp L.H.", "Tail lamp R.H", "Tail lamp R/H", "Tail lamp rh x2"):
+            assert _without_side(wording) in ("Tail lamp", "Tail lamp x2"), (wording, _without_side(wording))
         left = rows(sync_annex_a(db, case([{"part": "Left Tail Lamp", "damage_type": "Crack"}]), price_book=True))
         right = rows(sync_annex_a(db, case([{"part": "Right Tail Lamp", "damage_type": "Crack"}]), price_book=True))
         assert {r["part_name"] for r in left} == {"Tail lamp LH", "Tail lamp clips LH"}, left
@@ -310,16 +327,74 @@ def check_inferred_side_rows() -> None:
         assert [(r["part_name"], r["source_part"]) for r in scaffold] == [("Tail lamp", "Left Tail Lamp")], scaffold
         wheel = rows(sync_annex_a(db, case([{"part": "Left Rear Wheel", "side_inferred": True}], "Gammamotors", "Harrier", "SUV"), price_book=False))
         assert [r["part_name"] for r in wheel] == ["Rear wheel rim"], "the end stays, only the side goes"
-        # A person's tick (or any edit, which clears side_inferred) confirms it.
+        # A person's tick (or renaming the part, which clears side_inferred) confirms it.
         for confirmed in ({**inferred, "human_verified": True}, {**inferred, "side_inferred": False}):
             again = rows(sync_annex_a(db, {**plain, "damage_summary": [confirmed]}, price_book=False))
             assert [(r["part_name"], r["source_part"], r["stale"]) for r in again] == [("Tail lamp LH", "Left Tail Lamp", False)], again
-        # A row already priced while unconfirmed is a kept row: untouched, and
-        # it still stands for the lamp (no second, sided row).
-        kept = rows(sync_annex_a(db, {**case([{**inferred, "human_verified": True}]), "annex_a": {"items": priced}}, price_book=True))
-        assert {r["part_name"] for r in kept} == {"Tail lamp", "Tail lamp clips"} and not any(r["stale"] for r in kept), kept
+        # Rows priced while unconfirmed are kept, prices and all, but take the
+        # sided wording once confirmed (review item 6); a typed row doesn't.
+        by_name = {r["part_name"]: r for r in priced}
+        lamp_est, clips_est = by_name["Tail lamp"]["workshop_est"], by_name["Tail lamp clips"]["workshop_est"]
+        confirmed_case = case([{**inferred, "human_verified": True}])
+        renamed = rows(sync_annex_a(db, {**confirmed_case, "annex_a": {"items": priced}}, price_book=True))
+        assert sorted((r["part_name"], r["workshop_est"], r["stale"]) for r in renamed) == \
+            [("Tail lamp LH", lamp_est, False), ("Tail lamp clips LH", clips_est, False)], renamed
+        typed = [{**by_name["Tail lamp"], "origin": "typed"}, dict(by_name["Tail lamp clips"])]
+        kept = rows(sync_annex_a(db, {**confirmed_case, "annex_a": {"items": typed}}, price_book=True))
+        assert sorted((r["part_name"], r["workshop_est"]) for r in kept) == [("Tail lamp", lamp_est), ("Tail lamp clips LH", clips_est)], kept
         ok("unconfirmed inferred side: rows worded and looked up as '(side undetermined)' (priced, unpriced, scaffold), source_part the sided name, not stale")
-        ok("confirmed (ticked, or side_inferred cleared): the next sync rebuilds the unpriced row as 'Tail lamp LH'; a row already priced stays as it is")
+        ok("confirmed (ticked, or the part renamed): unpriced rows rebuilt as 'Tail lamp LH'; priced machine rows renamed with their prices kept; a typed row untouched")
+    finally:
+        db.close()
+
+
+def check_review_annex_fixes() -> None:
+    print("review fixes in Annex A (2026-11-08)")
+    db = SessionLocal()
+    try:
+        # 1. A case filed before the firm's wording: its typed row says "Boot
+        # Lid" / "Left Tail Lamp"; no second row in the firm's words.
+        for part in ("Boot Lid", "Left Tail Lamp", "Left Rear Quarter Panel"):
+            old = {**case([{"part": part, "damage_type": "Dent"}], "Gammamotors", "Harrier", "SUV"),
+                   "annex_a": {"items": [{"part_name": part, "origin": "typed", "workshop_est": 500.0, "qty": 1, "discount_pct": 0.2,
+                                          "source_part": part, "condition": "Dent", "action": "Replace"}]}}
+            out = rows(sync_annex_a(db, old, price_book=False))
+            assert [(r["part_name"], r["origin"]) for r in out] == [(part, "typed")], out
+        ok("1: a kept row made for the part (source_part) stands for it -- no duplicate row for cases filed with canonical names")
+
+        # 3. Each damaged part keeps its own rows, even when the wording is shared.
+        both = [{"part": "Left Tail Lamp", "side_inferred": True, "damage_type": "Crack"},
+                {"part": "Right Tail Lamp", "side_inferred": True, "damage_type": "Crack"}]
+        plain = sync_annex_a(db, case(both, "Gammamotors", "Harrier", "SUV"), price_book=False)
+        assert [(r["part_name"], r["source_part"]) for r in rows(plain)] == [("Tail lamp", "Left Tail Lamp"), ("Tail lamp", "Right Tail Lamp")], rows(plain)
+        priced = sync_annex_a(db, case(both), price_book=True)
+        got = sorted((r["source_part"], r["part_name"], r["workshop_est"]) for r in rows(priced))
+        assert len(got) == 4 and {g[0] for g in got} == {"Left Tail Lamp", "Right Tail Lamp"} and all(g[2] > 0 for g in got), got
+        again = sync_annex_a(db, priced, price_book=True)
+        assert sorted((r["source_part"], r["part_name"], r["workshop_est"]) for r in rows(again)) == got, rows(again)
+        mixed = [{"part": "Tail Lamp" + UNDETERMINED, "damage_type": "Crack"}, {"part": "Left Tail Lamp", "side_inferred": True}]
+        assert [(r["part_name"], r["source_part"]) for r in rows(sync_annex_a(db, case(mixed), price_book=False))] == \
+            [("Tail lamp", "Tail Lamp" + UNDETERMINED), ("Tail lamp", "Left Tail Lamp")]
+        ok("3: two unconfirmed lamps (or an undetermined and an inferred one) keep a row each, priced each, stable on the next sync")
+
+        # 6. The part's own row follows tab-1 condition / remarks, price untouched.
+        first = sync_annex_a(db, case([{"part": "Boot Lid", "condition": "Repair", "remarks": "Repair"}]), price_book=True)
+        main = [r for r in rows(first) if r.get("main")]
+        assert [(r["part_name"], r["condition"], r["action"], r["discount_pct"], r["adjusted_cost"]) for r in main] == \
+            [("Tail gate assy", "Repair", "Repair", 1.0, 0.0)] and main[0]["workshop_est"] > 0, main
+        assert not any(r.get("main") for r in rows(first) if r["part_name"] != "Tail gate assy"), "fittings aren't main"
+        est = main[0]["workshop_est"]
+        second = sync_annex_a(db, {**first, "damage_summary": [{"part": "Boot Lid", "condition": "Dented", "remarks": "Replace"}]}, price_book=True)
+        main = next(r for r in rows(second) if r.get("main"))
+        assert (main["condition"], main["action"], main["discount_pct"], main["workshop_est"], main["adjusted_cost"]) == \
+            ("Dented", "Replace", 0.2, est, round(est * 0.8, 2)), main
+        typed = {**second, "annex_a": {"items": [{**r, "origin": "typed", "condition": "Buckled"} if r.get("main") else r for r in rows(second)]}}
+        third = sync_annex_a(db, {**typed, "damage_summary": [{"part": "Boot Lid", "condition": "Repair"}]}, price_book=True)
+        main = next(r for r in rows(third) if r.get("main"))
+        assert (main["condition"], main["discount_pct"], main["origin"]) == ("Buckled", 0.2, "typed"), main
+        assert [r.get("main") for r in rows(synthesize_annexes_for_report(case([{"part": "Bonnet"}])))] == [True]
+        assert [r.get("main") for r in rows(sync_annex_a(db, case([{"part": "Bonnet"}]), price_book=False))] == [True]
+        ok("6: the main row (marked main) follows a tab-1 condition / remarks change with its price kept; Repair disallows, leaving Repair restores 20%; a typed row is the person's")
     finally:
         db.close()
 
@@ -348,16 +423,56 @@ def check_side_resolver() -> None:
     assert out[0]["part"] == "Tail Lamp" + UNDETERMINED and not out[0].get("side_inferred"), out
     ok("split evidence (one each way): left undetermined")
 
-    # Majority 2 to 1: own area rear-right (j) and a reader-placed right
-    # finding in the rear zone, against the left neighbour (i).
+    # No side on the part's own photo (b: rear): the others decide on a clear
+    # majority -- 2 to 1 places it, 3 to 2 does not.
     found_right = item("Right Rear Bumper Reflector", "k")
-    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "j"), found_right], photos)
-    assert out[0]["part"] == "Right Tail Lamp" and out[0]["side_inferred"] is True, out
-    # ...but 3 to 2 is too close: add two left findings in the rear zone.
-    close = [item("Tail Lamp" + UNDETERMINED, "j"), found_right, item("Left Rear Bumper Reflector", "h"), item("Left Boot Lid Lamp", "c")]
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "b"), found_right], photos)
+    assert out[0]["part"] == "Left Tail Lamp" and out[0]["side_inferred"] is True, out
+    close = [item("Tail Lamp" + UNDETERMINED, "b"), found_right, item("Right Boot Lid Lamp", "f"), item("Left Rear Bumper Reflector", "o")]
     out = resolve_sides(close, photos)
     assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, out
-    ok("a 2-to-1 majority places it; 3-to-2 does not (a wrong side is worse than none)")
+    ok("no side on its own photo: a 2-to-1 majority of the others places it; 3-to-2 does not (a wrong side is worse than none)")
+
+    # Review item 7: a side on the part's own photo is the answer when
+    # nothing contradicts it, and nothing is placed when anything does --
+    # the others can no longer outvote the photo the reader saw it in.
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "h")], photos)  # rear-left; neighbours front (no side) and left
+    assert out[0]["part"] == "Left Tail Lamp", out
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "j"), found_right], photos)  # rear-right; neighbour i is left
+    assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, out
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "j"), found_right, item("Right Boot Lid Lamp", "f"), item("Right Fog Lamp", "k")], photos)
+    assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, "3 agreeing clues still can't outvote one contradiction of the photo"
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "a"), item("Right Rear Bumper Reflector", "k")], photos)
+    assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, "a right finding in the rear zone contradicts a rear-left photo"
+    ok("7: the part's own photo side places it unless any other clue contradicts it (then nothing)")
+
+    # Review item 12: NEIGHBOUR_REACH 2 skips one area-less photo, not two.
+    reach = [("x", "rear-left"), ("doc1", None), ("doc2", None), ("y", "rear"), ("z", "rear")]
+    assert resolve_sides([item("Tail Lamp" + UNDETERMINED, "y")], reach)[0]["part"] == "Tail Lamp" + UNDETERMINED
+    assert resolve_sides([item("Tail Lamp" + UNDETERMINED, "y")], [reach[0], reach[1], *reach[3:]])[0]["part"] == "Left Tail Lamp"
+    ok("12: a neighbour is found past one area-less photo, not past two (NEIGHBOUR_REACH 2)")
+
+    # Review item 9: the other party's car, excluded and unusable photos don't vote.
+    from types import SimpleNamespace as P
+    shots = [P(id="t", area="left", kind="third_party", excluded=False, quality="good"),
+             P(id="u", area="rear", kind="damage", excluded=False, quality="good"),
+             P(id="v", area="rear-left", kind="overview", excluded=True, quality="good"),
+             P(id="w", area="rear-left", kind="overview", excluded=False, quality="unusable"),
+             P(id="q", area="rear-right", kind="damage", excluded=False, quality="blurry")]
+    assert voting_areas(shots) == [("t", None), ("u", "rear"), ("v", None), ("w", None), ("q", "rear-right")]
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "u")], voting_areas(shots))
+    assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, "t (third party) is no clue; v is excluded, w unusable: no neighbour after u within reach"
+    ok("9: photos of the other party's car, excluded and unusable photos give no clue")
+
+    # Review item 4: a part a person checked as "(side undetermined)" stays so.
+    out = resolve_sides([item("Tail Lamp" + UNDETERMINED, "b")], photos, keep_undetermined={"Tail Lamp" + UNDETERMINED})
+    assert out[0]["part"] == "Tail Lamp" + UNDETERMINED, out
+    current = {"damage_summary": [{"part": "Tail Lamp" + UNDETERMINED, "human_verified": True}]}
+    merged = merge_redraft(current, {}, {"damage_summary": [
+        {"part": "Left Tail Lamp", "side_inferred": True}, {"part": "Right Tail Lamp"}, {"part": "Tail Lamp" + UNDETERMINED}]})
+    assert [(i["part"], bool(i.get("human_verified"))) for i in merged["damage_summary"]] == \
+        [("Tail Lamp" + UNDETERMINED, True), ("Right Tail Lamp", False)], merged["damage_summary"]
+    ok("4: a re-read never places (or re-adds as 'Left ...') a part the surveyor checked as undetermined; a lamp the reader itself sided is still added")
 
     # Other sided findings in the same zone vote; one in another zone doesn't.
     out = resolve_sides([item("Boot Lid Lamp" + UNDETERMINED, "o"), item("Left Tail Lamp", "a")], photos)
@@ -409,6 +524,11 @@ def check_condition_kept() -> None:
         DamageSummaryItem(part="Boot Lid", damage_type="Crack", condition="Cracked", condition_tokens=["Cracked"]),
     ])
     assert edit_mentions_damage("the boot lid is cracked, not dented") and edit_mentions_damage("bumper is cut")
+    assert edit_mentions_damage("it's buckled and leaked") and edit_mentions_damage("the lamp is chipped")
+    # Review item 5: everyday words that are also condition words don't count.
+    for everyday in ("he cut into my lane at 5pm", "traffic was jammed", "the location shifted to Jurong", "the cable was slack",
+                     "I bent down to look at 16:45", "the ticket was torn"):
+        assert not edit_mentions_damage(everyday), everyday
     carried = _carry_over_damage(redraft, prev, "the boot lid is cracked, not dented")
     bumper, boot = carried.damage_summary
     assert (bumper.condition, bumper.condition_tokens, bumper.remarks, bumper.side_inferred, bumper.damage_type) == \
@@ -481,16 +601,28 @@ def check_routes() -> None:
         assert r.status_code == 200 and (r.json()["item"]["condition"], r.json()["item"]["condition_tokens"], r.json()["item"]["remarks"]) == (None, [], None), r.text
         ok("words off the firm's list and remarks other than Replace / Repair are refused (400, naming them); blank clears")
 
-        # The rows above are priced now, and a priced row is kept as it is
-        # by every sync (contract2's handover rule): Repair is checked on a
-        # case whose Annex A this edit builds.
         fresh = new_case(client, [{"part": "Boot Lid", "damage_type": "Dent"}])
         r = client.patch(f"/reports/{fresh}/damage-items/0", json={"condition": "Repair"})
         main = next(x for x in r.json()["annex_a"]["items"] if x["part_name"] == "Tail gate assy")
-        assert main["discount_pct"] == 1.0 and main["adjusted_cost"] == 0.0 and main["workshop_est"] > 0, main
-        kept = patch(0, {"condition": "Bent"}).json()["annex_a"]["items"]
-        assert next(x for x in kept if x["part_name"] == "Tail gate assy")["condition"] == "Cut/buckled", "a priced row is not rewritten"
-        ok("PATCH condition Repair: the part's row is disallowed at 100%; a row already priced keeps what it says")
+        assert main["discount_pct"] == 1.0 and main["adjusted_cost"] == 0.0 and main["workshop_est"] > 0 and main["main"] is True, main
+        ok("PATCH condition Repair: the part's row is disallowed at 100%")
+
+        # Review item 6 through the routes: the priced main row follows tab 1
+        # (price kept) -- also after an Annex A save from a client that sends
+        # no `main` -- until a person edits that row in Annex A.
+        main_row = lambda items: next(x for x in items if x["part_name"] == "Tail gate assy")  # noqa: E731
+        before = main_row(patch(0, {"condition": "Bent"}).json()["annex_a"]["items"])
+        assert (before["condition"], before["main"]) == ("Bent", True) and before["workshop_est"] > 0, before
+        items = client.get(f"/reports/{rid}").json()["data"]["annex_a"]["items"]
+        assert client.put(f"/reports/{rid}/annex-a", json={"items": [{k: v for k, v in x.items() if k != "main"} for x in items]}).status_code == 200
+        after = main_row(patch(0, {"condition": "Cracked", "remarks": "Replace"}).json()["annex_a"]["items"])
+        assert (after["condition"], after["action"], after["workshop_est"], after["main"]) == ("Cracked", "Replace", before["workshop_est"], True), after
+        items = client.get(f"/reports/{rid}").json()["data"]["annex_a"]["items"]
+        edited = [{**x, "condition": "Buckled/cut"} if x["part_name"] == "Tail gate assy" else x for x in items]
+        assert client.put(f"/reports/{rid}/annex-a", json={"items": edited}).status_code == 200
+        typed_row = main_row(patch(0, {"condition": "Dented"}).json()["annex_a"]["items"])
+        assert (typed_row["condition"], typed_row["origin"]) == ("Buckled/cut", "typed"), typed_row
+        ok("6: a tab-1 condition / remarks change reaches the priced main row (price kept; `main` survives an Annex A save without it); a row edited in Annex A is the person's")
 
         # D2 rule 2: changing the type never rewrites a condition that is set.
         patch(1, {"condition": "Grazed/cracked"})
@@ -501,13 +633,19 @@ def check_routes() -> None:
         assert r.json()["item"]["damage_type"] == "Deformation", r.json()["item"]
         ok("a new damage type leaves a set condition alone; words on an item with no type fill it")
 
-        # D2 rule 3: ticking Verified alone clears side_inferred.
-        set_item(rid, 1, side_inferred=True, ai_confidence="Low")
+        # D2 rule 3, as changed by review item 10: only ticking Verified or
+        # renaming the part confirms an inferred side.
+        set_item(rid, 1, side_inferred=True, ai_confidence="Low", human_verified=False)
+        for body in ({"oem_part_number": "33550-XXX"}, {"condition": "Cracked"}, {"remarks": "Replace"}, {"severity": "Minor"},
+                     {"damage_type": "Crack"}, {"human_verified": False}, {"part": "Left Tail Lamp"}):
+            r = patch(1, body)
+            assert r.status_code == 200 and r.json()["item"]["side_inferred"] is True, (body, r.json()["item"])
         r = patch(1, {"human_verified": True})
         assert r.status_code == 200 and r.json()["item"]["side_inferred"] is False and r.json()["item"]["human_verified"] is True, r.json()["item"]
-        set_item(rid, 1, side_inferred=True)
-        assert patch(1, {"oem_part_number": "33550-XXX"}).json()["item"]["side_inferred"] is False
-        ok("any person's edit -- ticking Verified alone included -- clears side_inferred")
+        set_item(rid, 1, side_inferred=True, human_verified=False)
+        assert patch(1, {"part": "Right Headlamp"}).json()["item"]["side_inferred"] is False
+        patch(1, {"part": "Left Tail Lamp"})
+        ok("10: ticking Verified or renaming the part clears side_inferred; an OEM, condition, remarks, severity, type or untick edit keeps it")
 
         # Through the routes, unpriced (a self-signup): while the lamp's side
         # is inferred, an edit to ANOTHER part syncs Annex A with "Tail lamp";
@@ -523,6 +661,18 @@ def check_routes() -> None:
             lamp = [x for x in out["annex_a"]["items"] if x["source_part"] == "Left Tail Lamp"]
             assert [(x["part_name"], x["stale"]) for x in lamp] == [("Tail lamp LH", False)], lamp
         ok("through PATCH: an unconfirmed inferred lamp's row reads 'Tail lamp' (source_part 'Left Tail Lamp'); ticking it gives 'Tail lamp LH'")
+
+        # Review item 11: the suggestions panel offers the unsided wording too.
+        sid = new_case(client, [{"part": "Left Tail Lamp", "damage_type": "Crack"}])
+        set_item(sid, 0, side_inferred=True, ai_confidence="Low")
+        sugg = client.get(f"/reports/{sid}/annex-suggestions").json()
+        names = [ln["name"] for g in sugg["groups"] if g["reason"] == "damaged" for ln in g["lines"]]
+        assert names and all(side_of(n) is None for n in names) and sugg["damaged_parts"] == ["Tail Lamp" + UNDETERMINED], sugg
+        set_item(sid, 0, human_verified=True)
+        sugg = client.get(f"/reports/{sid}/annex-suggestions").json()
+        names = [ln["name"] for g in sugg["groups"] if g["reason"] == "damaged" for ln in g["lines"]]
+        assert "Tail lamp LH" in names and sugg["damaged_parts"] == ["Left Tail Lamp"], sugg
+        ok("11: annex-suggestions offers 'Tail lamp' for an unconfirmed inferred side, 'Tail lamp LH' once it is ticked")
 
         # D2 rule 1: the add row sends words and remarks, no type.
         post = lambda body: client.post(f"/reports/{rid}/damage-items", json=body)  # noqa: E731
@@ -571,6 +721,7 @@ def main() -> int:
     check_annex_rows()
     check_side_leak()
     check_inferred_side_rows()
+    check_review_annex_fixes()
     check_side_resolver()
     check_condition_kept()
     check_routes()

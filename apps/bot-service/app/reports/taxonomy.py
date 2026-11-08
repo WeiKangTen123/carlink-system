@@ -389,12 +389,17 @@ def join_condition(tokens: list[str]) -> str | None:
     return "/".join(words)
 
 
+# The firm never writes more than three words in one condition (171 lines);
+# the schema can't say so without maxItems (the 400 risk), so code does.
+MAX_CONDITION_WORDS = 3
+
+
 def firm_condition(tokens, damage_type: str | None) -> tuple[list[str], str | None]:
     """(words, condition) for a damage item: the AI's words in print order,
-    or -- when it gave none -- the one word its damage type maps to; the
-    condition is None when neither gives a word (the caller keeps the
-    damage type)."""
-    picked = condition_tokens_of(tokens)
+    the first MAX_CONDITION_WORDS of them, or -- when it gave none -- the
+    one word its damage type maps to; the condition is None when neither
+    gives a word (the caller keeps the damage type)."""
+    picked = condition_tokens_of(tokens)[:MAX_CONDITION_WORDS]
     if not picked and damage_type in DAMAGE_TYPE_TO_TOKEN:
         picked = [DAMAGE_TYPE_TO_TOKEN[damage_type]]
     return picked, join_condition(picked)

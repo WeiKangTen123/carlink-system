@@ -81,15 +81,41 @@ def side_unconfirmed(item: dict) -> bool:
 
 
 def _main_row_terms(part: dict) -> dict:
-    """The fields a damaged part's own row takes from the damage item.
-    Condition "Repair" is the firm's "repair, don't renew": the line stays
-    priced (the workshop asked for it) and is disallowed at 100%, as in
-    the firm's sheets -- a list item, since a S/Nett line takes no
-    discount."""
-    terms = {"condition": part["condition"], "action": part["remarks"]}
+    """The fields a damaged part's own row takes from the damage item, and
+    the `main` mark that lets a later sync find that row again
+    (_refresh_kept). Condition "Repair" is the firm's "repair, don't
+    renew": the line stays priced (the workshop asked for it) and is
+    disallowed at 100%, as in the firm's sheets -- a list item, since a
+    S/Nett line takes no discount."""
+    terms = {"condition": part["condition"], "action": part["remarks"], "main": True}
     if part["condition"] == REPAIR_CONDITION:
         terms.update(discount_pct=REPAIR_DISCOUNT, is_net_item=False)
     return terms
+
+
+def _refresh_kept(row: dict, part: dict, sided_name) -> None:
+    """A kept row made for `part` follows what a person changed on tab 1,
+    its price left as it is -- unless the row is theirs (origin "typed": a
+    person edited it in Annex A, and that stands).
+      - The part's own row (main) takes the item's condition and remarks;
+        Repair disallows it at 100%, and leaving Repair puts back the
+        standard discount (owner decision via review, 2026-11-08: before
+        this a tab-1 change never reached a priced row, so the report could
+        print one condition while tab 1 showed another).
+      - Once an inferred side is confirmed, a row worded without the side
+        while it was unconfirmed takes the sided wording (sided_name maps a
+        wording to it; None when the part isn't sided now)."""
+    if row.get("origin") == "typed":
+        return
+    if row.get("main"):
+        was_repair = row.get("condition") == REPAIR_CONDITION
+        row["condition"], row["action"] = part["condition"], part["remarks"]
+        if part["condition"] == REPAIR_CONDITION:
+            row["discount_pct"], row["is_net_item"] = REPAIR_DISCOUNT, False
+        elif was_repair and float(row.get("discount_pct") or 0) == REPAIR_DISCOUNT:
+            row["discount_pct"] = DEFAULT_DISCOUNT
+    if sided_name is not None and row.get("origin") in ("history", "detection") and side_of(row.get("part_name") or "") is None:
+        row["part_name"] = sided_name(row.get("part_name") or "")
 
 
 def _est(row: dict) -> float:
@@ -153,20 +179,23 @@ def _part_key(name: str | None) -> str | None:
 
 def row_name(db: Session | None, part: str, vehicle: dict, unsided: bool = False) -> str:
     """The Annex A wording for a damaged part's row when no past line is
-    priced for it: for a canonical name, the firm's usual wording for it
-    (history.firm_wording, when `db` is given), else the floor
-    (taxonomy.FIRM_PART_NAMES) -- never the canonical name itself: "Boot
-    Lid" was printed in the firm's report until 2026-11-06. A pre-taxonomy
-    case's free text ("Tail gate lock striker") is kept as written: its
-    family's wording would only be coarser. unsided: worded without LH /
-    RH (side_unconfirmed)."""
+    priced for it, never the canonical name itself ("Boot Lid" was printed
+    in the firm's report until 2026-11-06): for a canonical name, the floor
+    (taxonomy.FIRM_PART_NAMES) whenever it has one -- a family's past
+    wording often names a different sub-part (history.firm_wording) -- else
+    the same make's past wording (when `db` is given). A pre-taxonomy case's
+    free text ("Tail gate lock striker") is kept as written: its family's
+    wording would only be coarser. unsided: worded without LH / RH
+    (side_unconfirmed)."""
     if part not in CANONICAL_PARTS:
         return part
     make, model = vehicle.get("make"), vehicle.get("model")
     body = vehicle.get("body_type") or body_type_for(make, model)
+    floor = firm_part_name(part, body, unsided=unsided)
+    if floor:
+        return floor
     lookup = (unsided_part(part) or part) if unsided else part
-    wording = firm_wording(db, lookup, make, model, body) if db is not None else None
-    return wording or firm_part_name(part, body, unsided=unsided) or part
+    return (firm_wording(db, lookup, make, model) if db is not None else None) or part
 
 
 def _unpriced_row(part: dict, name: str) -> dict:
@@ -258,6 +287,39 @@ def _rows_for(part: dict, suggestion: dict, group: dict) -> list[dict]:
     return rows
 
 
+def _sided_namer(db: Session | None, part: dict, vehicle: dict):
+    """For a part on a confirmed side: wording -> the same line's sided
+    wording ("Tail lamp" -> "Tail lamp LH", "Tail lamp clips" -> the past
+    cases' own form of it), found by line key among the lines the same
+    make's history would write for the sided part, and the floor. Built on
+    first use (most syncs rename nothing). None when the part has no
+    confirmed side."""
+    if part["unsided"] or part["part"] not in CANONICAL_PARTS or side_of(part["part"]) is None:
+        return None
+    cache: dict[str, str] | None = None
+
+    def build() -> dict[str, str]:
+        names: dict[str, str] = {}
+        if db is not None:
+            make, model = vehicle.get("make"), vehicle.get("model")
+            suggestion = suggest(db, make=make, model=model, damaged_parts=[part["part"]], existing_items=[])
+            if suggestion.get("scope") != "all imported cases":
+                for group in suggestion["groups"]:
+                    if group["reason"] == "damaged":
+                        for ln in group["lines"]:
+                            names.setdefault(normalise_item(ln["name"]), ln["name"])
+        names.setdefault(normalise_item(row_name(None, part["part"], vehicle, unsided=True)), row_name(None, part["part"], vehicle))
+        return names
+
+    def sided(wording: str) -> str:
+        nonlocal cache
+        if cache is None:
+            cache = build()
+        return cache.get(normalise_item(wording), wording)
+
+    return sided
+
+
 def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     """Returns the case data with Annex A following its damage list and
     the annex totals worked out (synthesize_annexes_for_report).
@@ -302,14 +364,40 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
         row.setdefault("source_part", None)
         row["stale"] = bool(row["source_part"]) and _part_key(row["source_part"]) not in damaged_keys
         kept.append(row)
-    kept_names = [r.get("part_name", "") for r in kept]
-    kept_keys = {line_key(n) for n in kept_names}
+
+    # Kept rows follow tab-1 changes (_refresh_kept): a main row's condition
+    # and remarks, and the sided wording once an inferred side is confirmed.
+    by_key = {}
+    for part in damaged:
+        by_key.setdefault(_part_key(part["part"]), part)
+    namers: dict = {}
+    for row in kept:
+        part = by_key.get(_part_key(row["source_part"])) if row["source_part"] and not row["stale"] else None
+        if part is not None:
+            if part["part"] not in namers:
+                namers[part["part"]] = _sided_namer(db, part, vehicle)
+            _refresh_kept(row, part, namers[part["part"]])
 
     new_rows: list[dict] = []
-    seen_names: set[str] = set()
+    # Per damaged part: two parts may share a wording ("Tail lamp" for a
+    # left and a right lamp whose sides are both still unconfirmed), and
+    # each keeps its own rows and prices.
+    seen: set[tuple[str, str]] = set()
     for part in damaged:
-        if _part_key(part["part"]) in dismissed:
+        key = _part_key(part["part"])
+        if key in dismissed:
             continue
+        # The kept rows that may stand for this part's lines: its own, and
+        # hand lines (no source_part). Another part's rows never do -- the
+        # other lamp's "Tail lamp" is not this one's.
+        own = [r for r in kept if not r.get("source_part") or _part_key(r["source_part"]) == key]
+        own_names = [r.get("part_name", "") for r in own]
+        own_keys = {line_key(n) for n in own_names}
+        # A kept row already made for this part -- typed, priced, or a case
+        # filed before 2026-11-06 whose row says "Boot Lid" where the
+        # firm's wording now says "Tail gate assy" -- stands for it: no
+        # second, unpriced row (review, 2026-11-08).
+        has_own_row = any(r.get("source_part") and _part_key(r["source_part"]) == key for r in kept)
         # An unconfirmed inferred side is looked up as "(side undetermined)":
         # its family's lines with no LH / RH. The rows' source_part stays
         # part["part"], the sided name (side_unconfirmed).
@@ -319,7 +407,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
         # Kept lines that stand for this part's side (or no side): suggest()
         # strips LH/RH when it leaves out lines already in the table, so a
         # kept "Tail lamp LH" must not hide the lines for Right Tail Lamp.
-        existing = [n for n in kept_names if side_of(n) in (None, side)]
+        existing = [n for n in own_names if side_of(n) in (None, side)]
         found = None
         if price_book and name and name != "Other / Not Listed":
             # Per part, so two sides of one family ("Left Tail Lamp" and
@@ -336,14 +424,15 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # No past case covers it (or its lines are all typed already):
             # one unpriced row, worded as the firm would (row_name).
             row_part_name = row_name(db, part["part"], vehicle, unsided=part["unsided"])
-            if not _covered(row_part_name, kept_keys) and row_part_name not in seen_names:
-                seen_names.add(row_part_name)
+            covered = has_own_row or _covered(row_part_name, own_keys) or _covered(part["part"], own_keys)
+            if not covered and (part["part"], row_part_name) not in seen:
+                seen.add((part["part"], row_part_name))
                 new_rows.append(_unpriced_row(part, row_part_name))
             continue
         for row in _rows_for(part, suggestion, found):
-            if row["part_name"] in seen_names or _covered(row["part_name"], kept_keys):
+            if (part["part"], row["part_name"]) in seen or _covered(row["part_name"], own_keys):
                 continue
-            seen_names.add(row["part_name"])
+            seen.add((part["part"], row["part_name"]))
             new_rows.append(row)
 
     items = kept + [r for r in new_rows if not r["is_net_item"]] + [r for r in new_rows if r["is_net_item"]]

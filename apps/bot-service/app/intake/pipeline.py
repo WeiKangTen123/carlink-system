@@ -38,7 +38,7 @@ from app.ai.triage import BATCH_SIZE, triage_photos
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
-from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side
+from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +437,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         notes = session.reporter_notes or ""
         # Every photo in camera order with where the sorter saw it taken,
         # read or not: resolve_sides places side-undetermined findings by it.
-        photo_areas = [(p.id, p.area) for p in photos]
+        photo_areas = voting_areas(photos)
     finally:
         db.close()
 
@@ -467,11 +467,6 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if not photo_id:
             item["bbox_2d"] = None
 
-    # Before merge_redraft, so a placed part meets the surveyor's checked
-    # ones under its sided name (merge keeps theirs, drops the AI's repeat).
-    if data.get("damage_summary"):
-        data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas)
-        data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -485,9 +480,18 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if report is None or session is None or report.status != "intake":
             run.aborted = "draft_gone"  # read, but there is nothing to keep it in
             return
+        current = report.data or {}
+        # Sides placed here, against the form as it is now and before
+        # merge_redraft: a part the surveyor checked as "(side undetermined)"
+        # stays so -- the AI's repeat of it isn't placed, and merge drops it.
+        if data.get("damage_summary"):
+            checked = {it.get("part") for it in (current.get("damage_summary") or []) if it.get("human_verified")}
+            data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas, keep_undetermined=checked)
+            data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
+            run.parts_found = len(data["damage_summary"])
         # Merged against the form as it is NOW (re-read inside this
         # transaction), not as it was when the run started.
-        report.data = merge_redraft(report.data or {}, session.ai_draft, data)
+        report.data = merge_redraft(current, session.ai_draft, data)
         session.ai_draft = data
         session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
         db.commit()
@@ -501,8 +505,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
 # (side undetermined)"): a lamp filling the frame shows no LH or RH. The
 # sorter has already said where each photo was taken, and a surveyor walks
 # round the car, so the photos shot around it show the same corner. No AI
-# call: a majority of those clues names the side, flagged side_inferred
-# with ai_confidence Low for a person to confirm (the dashboard marks it).
+# call: the photo's own area (uncontradicted), or else a clear majority of
+# the other clues, names the side, flagged side_inferred with ai_confidence
+# Low for a person to confirm (the dashboard marks it; Annex A prints no
+# LH / RH for it until then: prefill.side_unconfirmed).
 
 _AREA_SIDE = {
     "left": "Left", "front-left": "Left", "rear-left": "Left",
@@ -512,9 +518,22 @@ _AREA_END = {
     "front": "Front", "front-left": "Front", "front-right": "Front",
     "rear": "Rear", "rear-left": "Rear", "rear-right": "Rear",
 }
-# How many places along the camera order a neighbour may be: the nearest
-# photo of the insured vehicle each way, skipping a document or two.
+# How many places along the camera order a neighbour may be. Each way, the
+# nearest photo with an area within that many places counts: with 2, one
+# area-less photo in between (a document, or a photo that doesn't vote --
+# voting_areas) is skipped; two in a row end the search that way.
 NEIGHBOUR_REACH = 2
+
+
+def voting_areas(photos) -> list[tuple[str, str | None]]:
+    """(photo id, area) for every photo in camera order, the area None for a
+    photo whose area must not count as a clue: the other party's car
+    (kind third_party: its LH is not ours), a photo the surveyor excluded,
+    or one the sorter called unusable."""
+    def votes(p) -> bool:
+        return p.kind != "third_party" and not p.excluded and p.quality != "unusable"
+
+    return [(p.id, p.area if votes(p) else None) for p in photos]
 
 
 def _zone(area: str | None) -> str | None:
@@ -536,23 +555,29 @@ def _clear_side(votes: Counter) -> str | None:
     return winner
 
 
-def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]]) -> list[dict]:
+def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
+                  keep_undetermined=frozenset()) -> list[dict]:
     """The damage items with each "(side undetermined)" part placed on a
     side where the clues agree. photo_areas: every photo of the case in
-    camera order as (photo id, sorter area); items reference photos as
-    "@<photo id>".
+    camera order as (photo id, area) -- voting_areas; items reference photos
+    as "@<photo id>". keep_undetermined: parts a person checked as they are
+    (the form's human_verified parts): those are never placed.
 
-    Clues, one vote each, for an item whose photo is known:
-      - that photo's own area, when it has a side (left, rear-left...);
-      - the nearest photo of the insured vehicle before and after it in
-        camera order (within NEIGHBOUR_REACH), when its area has a side;
-      - every finding the reader placed itself (a sided name, not inferred)
-        whose photo lies in the same zone (front, rear, side).
-    Placed only on a clear majority (_clear_side), and only when the name
-    exists (taxonomy.sided_part: doors aren't placed, a wheel needs its
-    photo to say front or rear). The placed item becomes the sided name
-    with ai_confidence Low and side_inferred True; when that name is
-    already listed, it is dropped instead (the reader found it already)."""
+    For an item whose photo is known:
+      - when that photo's own area has a side (left, rear-left...), that is
+        the side -- unless any other clue below points the other way, and
+        then nothing is placed (review, 2026-11-08: the photo the reader
+        saw the part in is the best evidence; others may only confirm it);
+      - otherwise the clues decide on a clear majority (_clear_side): the
+        nearest photo with an area before and after it in camera order
+        (NEIGHBOUR_REACH), and every finding the reader placed itself (a
+        sided name, not inferred) whose photo lies in the same zone (front,
+        rear, side), one vote each.
+    Placed only when the name exists (taxonomy.sided_part: doors aren't
+    placed, a wheel needs its photo to say front or rear). The placed item
+    becomes the sided name with ai_confidence Low and side_inferred True;
+    when that name is already listed, it is dropped instead (the reader
+    found it already)."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
 
@@ -585,19 +610,24 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]]) 
     for item in items:
         part = item.get("part") or ""
         photo_id = photo_of(item)
-        if not part.endswith(UNDETERMINED_SUFFIX) or photo_id is None:
+        if not part.endswith(UNDETERMINED_SUFFIX) or photo_id is None or part in keep_undetermined:
             out.append(item)
             continue
         own = area_of.get(photo_id)
-        votes: Counter = Counter()
-        for area in [own, *neighbour_areas(photo_id)]:
+        others: Counter = Counter()
+        for area in neighbour_areas(photo_id):
             if area in _AREA_SIDE:
-                votes[_AREA_SIDE[area]] += 1
+                others[_AREA_SIDE[area]] += 1
         zone = _zone(own)
         for other_zone, side in placed_by_reader:
             if zone and other_zone == zone:
-                votes[side] += 1
-        side = _clear_side(votes)
+                others[side] += 1
+        own_side = _AREA_SIDE.get(own)
+        if own_side:
+            opposite = "Right" if own_side == "Left" else "Left"
+            side = own_side if others[opposite] == 0 else None
+        else:
+            side = _clear_side(others)
         name = sided_part(part, side, _AREA_END.get(own)) if side else None
         if name is None:
             out.append(item)
@@ -668,8 +698,14 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
 
     kept = [item for item in (current.get("damage_summary") or []) if item.get("human_verified")]
     kept_parts = {item.get("part") for item in kept}
-    merged["damage_summary"] = kept + [
-        item for item in (new_ai.get("damage_summary") or []) if item.get("part") not in kept_parts
-    ]
+
+    def already_kept(item: dict) -> bool:
+        # A part the resolver placed ("Left Tail Lamp", side_inferred) is
+        # the same finding as one the surveyor checked as "Tail Lamp (side
+        # undetermined)": the re-read must not add it beside theirs.
+        part = item.get("part")
+        return part in kept_parts or (bool(item.get("side_inferred")) and unsided_part(part or "") in kept_parts)
+
+    merged["damage_summary"] = kept + [item for item in (new_ai.get("damage_summary") or []) if not already_kept(item)]
     merged["damaged_parts"] = [item.get("part") for item in merged["damage_summary"] if item.get("part")]
     return merged

@@ -239,6 +239,11 @@ class AnnexAPartItem(BaseModel):
     # never deleted by the machine: the surveyor keeps or removes it.
     source_part: Optional[str] = None
     stale: bool = False
+    # The source part's own line (not a fitting or a companion): it carries
+    # the damage item's condition and remarks, and follows a tab-1 change of
+    # them while the row isn't a person's (origin "typed") -- price
+    # untouched (prefill.sync_annex_a). False on rows from before 2026-11-08.
+    main: bool = False
 
 
 class AnnexAInfo(BaseModel):

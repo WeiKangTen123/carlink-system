@@ -421,14 +421,16 @@ def _with_side(item: str, side: str | None) -> str:
     return re.sub(rf"\b{other}\b", code, item)
 
 
-_SIDE_WORDS = re.compile(r"\s*\b(?:lh|rh|l\.h\.|r\.h\.|left|right|nearside|offside)(?:\b|(?<=\.))", re.I)
+# LH, RH, L.H., R.H, L/H, R/H, "(LH)", left, right, nearside, offside.
+_SIDE_WORDS = re.compile(r"\s*\(?\s*\b(?:l\.?/?h|r\.?/?h|left|right|nearside|offside)\b\.?\s*\)?", re.I)
 
 
 def _without_side(item: str) -> str:
     """A past line's wording with its side taken out, for a part whose side
-    nobody determined: "Tail lamp LH" -> "Tail lamp". Printing the past
-    case's LH there stated a side this case never established."""
-    return re.sub(r"\s{2,}", " ", _SIDE_WORDS.sub("", item)).strip()
+    nobody determined: "Tail lamp LH" -> "Tail lamp", "Tail lamp (LH)" ->
+    "Tail lamp". Printing the past case's LH there stated a side this case
+    never established."""
+    return re.sub(r"\s{2,}", " ", _SIDE_WORDS.sub(" ", item)).strip()
 
 
 # ------------------------------------------------------------- import
@@ -645,20 +647,21 @@ def suggest(
 _COARSE_FAMILIES = {"Wheel"}
 
 
-def firm_wording(db: Session, part: str, make: str | None = None, model: str | None = None,
-                 body_type: str | None = None) -> str | None:
-    """How the firm's past reports name a damaged part, for the Annex A row
-    of a part no past line prices (prefill.sync_annex_a): the family's main
+def firm_wording(db: Session, part: str, make: str | None = None, model: str | None = None) -> str | None:
+    """How the firm's past reports name a damaged part: the family's main
     wording -- its shortest part line (not a fitting), as prefill picks the
     main row -- in the form written most often.
 
-    Looked for in past cases of the same make and model, else the same body
-    class (a tailgate is not a boot lid: taxonomy.body_class), else the same
-    make, else any: wording is not a price, so unlike prefill's prices
-    another make's will do. The case's side goes on ("Tail lamp LH"); a part
-    whose side nobody determined gets none, never the past case's. None when
-    no past case has the family as a part (the caller uses the floor)."""
-    from app.reports.taxonomy import SIDE_CODES, body_class, body_type_for
+    Only for a part the floor (taxonomy.FIRM_PART_NAMES) has no wording for
+    (prefill.row_name asks the floor first): the shortest line of a family
+    often names a different sub-part ("Front bumper fog lamps cover" for a
+    fog lamp, "Rear fender top side joint panels" for a quarter panel,
+    "Rear bumper mudflaps" for a wheel arch liner -- review, 2026-11-08). And
+    only from past cases of the same make (the same model first), never any
+    make's. The case's side goes on ("Tail lamp LH"); a part whose side
+    nobody determined gets none, never the past case's. None when no such
+    past case has the family as a part."""
+    from app.reports.taxonomy import SIDE_CODES
 
     canon = canonical_part(part or "")
     if not canon or canon == "Other / Not Listed":
@@ -667,16 +670,9 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     if family in _COARSE_FAMILIES:
         return None
     lines = db.query(PastAnnexLine).filter(PastAnnexLine.family == family).all()
-    wanted_class = body_class(body_type)
-
-    def same_class(ln: PastAnnexLine) -> bool:
-        return wanted_class is not None and body_class(body_type_for(ln.make, ln.model)) == wanted_class
-
     scopes = (
         [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
-        [ln for ln in lines if same_class(ln)],
         [ln for ln in lines if _same(ln.make, make)],
-        lines,
     )
     pool = next((s for s in scopes if s), [])
     by_key: dict[str, list[PastAnnexLine]] = {}

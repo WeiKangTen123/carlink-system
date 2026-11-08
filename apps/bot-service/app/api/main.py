@@ -1144,7 +1144,8 @@ def review_damage_item(
 ) -> dict:
     """Changes one damage item: the part, damage type, condition (the
     firm's words), remarks, severity, photo, the verified tick, the OEM part
-    number. Any change clears side_inferred. The box the AI drew is dropped
+    number. Ticking Verified or renaming the part clears side_inferred. The
+    box the AI drew is dropped
     when the photo changes (it was drawn on the old one). Answers the
     whole damage list and the Annex A/C that now follow it.
 
@@ -1170,12 +1171,16 @@ def review_damage_item(
         changes = _damage_item_fields(body.model_dump(exclude_unset=True), r)
         if "photo_reference" in changes and changes["photo_reference"] != item.get("photo_reference"):
             item["bbox_2d"] = None
-        if "part" in changes and changes["part"] != item.get("part"):
+        renamed = "part" in changes and changes["part"] != item.get("part")
+        if renamed:
             _undismiss(data, changes["part"])  # renamed to a part dismissed earlier: as POST
         item.update(changes)
-        if changes:
-            # A person has looked at this row -- even ticking Verified alone
-            # -- so a side the pipeline inferred (resolve_sides) is theirs now.
+        # A side the pipeline inferred (resolve_sides) is confirmed only by
+        # a person saying so: ticking Verified, or naming the part (and so
+        # its side) themselves. A new photo, OEM number, condition or remark
+        # says nothing about the side, and must not make Annex A print LH /
+        # RH (prefill.side_unconfirmed; review, 2026-11-08).
+        if changes.get("human_verified") is True or renamed:
             item["side_inferred"] = False
         # Firm words with no AI type: the type they imply, as at drafting
         # (the 3D colours and analytics read damage_type). A condition is

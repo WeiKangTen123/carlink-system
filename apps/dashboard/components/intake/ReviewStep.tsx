@@ -188,12 +188,23 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
   const setItem = (index: number, patch: Partial<DamageSummaryItem>) =>
     onChange((d) => ({
       ...d,
-      // Any edit counts as the surveyor confirming the item, its side
-      // included (the whole draft is saved, so the flag is cleared here
-      // rather than by the API's per-row edit).
-      damage_summary: (d.damage_summary || []).map((it, i) =>
-        i === index ? carryKey(it, { ...it, ...patch, human_verified: true, side_inferred: false }) : it
-      ),
+      // An edit counts as the surveyor checking the item -- except on a row
+      // whose side the AI only inferred: changing its condition, remarks or
+      // photo says nothing about the side, and a checked row prints LH/RH in
+      // Annex A. Such a row stays unconfirmed until the Verified tick or a
+      // change of the part itself (which names the side). The whole draft is
+      // saved, so the flag is handled here rather than by the API's per-row edit.
+      damage_summary: (d.damage_summary || []).map((it, i) => {
+        if (i !== index) return it;
+        const partChanged = patch.part !== undefined && patch.part !== it.part;
+        const sidePending = Boolean(it.side_inferred) && !partChanged;
+        return carryKey(it, {
+          ...it,
+          ...patch,
+          human_verified: sidePending ? it.human_verified : true,
+          side_inferred: sidePending ? it.side_inferred : false,
+        });
+      }),
     }));
   /** The Verified tick itself: the one edit that may also untick. Ticking
    * confirms an inferred side; unticking doesn't bring the guess back. */

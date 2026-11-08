@@ -87,6 +87,7 @@ def _annex_a_rows(data: Dict[str, Any], scaffold: bool = True) -> List[Dict[str,
             "origin": "detection",
             "source_part": it["part"],
             "stale": False,
+            "main": True,  # the part's own row (schema.AnnexAPartItem.main)
         }
         for i, it in enumerate(damage, start=1)
     ]
