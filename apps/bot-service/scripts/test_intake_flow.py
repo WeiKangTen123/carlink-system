@@ -197,7 +197,8 @@ def main() -> int:
         detail = client.get(f"/reports/{rid}").json()
         assert detail["status"] == "confirmed" and len(detail["photo_urls"]) == len(files) - 1
         assert detail["data"]["damage_summary"][0]["photo_reference"] == expected
-        assert "Left Tail Lamp" in [it["part_name"] for it in detail["data"]["annex_a"]["items"]]
+        # In the firm's words, not the canonical name (taxonomy.FIRM_PART_NAMES).
+        assert "Tail lamp LH" in [it["part_name"] for it in detail["data"]["annex_a"]["items"]]
         assert not (Path(settings.storage_dir) / "intake" / rid).exists()
         ok(f"finalized: photos moved, reference resolved to {expected}, Annex A rebuilt")
 

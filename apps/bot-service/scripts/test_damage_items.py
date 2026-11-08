@@ -103,7 +103,9 @@ def main() -> int:
         kept = next(i for i in rows_of(out) if i["part_name"] == typed_name)
         assert kept["workshop_est"] == 777.0 and kept["origin"] == "typed", kept
         tailgate = next(i for i in rows_of(out) if normalise_item(i["part_name"]) == "tailgate")
-        assert tailgate["condition"] == "Crack" if tailgate["workshop_est"] == 0 else True
+        # The item has no condition (filed before the firm's words): the row
+        # prints the firm word for its new damage type.
+        assert tailgate["condition"] == "Cracked" if tailgate["workshop_est"] == 0 else True
         assert out["annex_c"]["adjusted_total"] == out["annex_a"]["total_adjusted_cost"]
         ok("PATCH changes damage type, severity, the tick and the OEM number; answers the list and Annex A/C; the typed row is kept")
 
@@ -176,7 +178,10 @@ def main() -> int:
         r = plain.delete(f"/reports/{pid}/damage-items/1")
         assert r.status_code == 200, r.text
         out = r.json()
-        assert [(i["part_name"], i["origin"], i["workshop_est"]) for i in rows_of(out)] == [("Tail Gate", "detection", 0.0)], rows_of(out)
+        # Unpriced for a self-signup. "Tail Gate" is pre-taxonomy free text,
+        # kept as written; a canonical name gets the firm's wording (below).
+        assert [(normalise_item(i["part_name"]), i["origin"], i["workshop_est"]) for i in rows_of(out)] == [("tailgate", "detection", 0.0)], rows_of(out)
+        tailgate_name = rows_of(out)[0]["part_name"]
         assert [d["part"] for d in out["damage_summary"]] == ["Tail Gate"]
         # As a re-detection would: the part is back in the list, but it was dismissed.
         db = SessionLocal()
@@ -187,11 +192,11 @@ def main() -> int:
         finally:
             db.close()
         out = plain.patch(f"/reports/{pid}/damage-items/0", json={"human_verified": True}).json()
-        assert [i["part_name"] for i in rows_of(out)] == ["Tail Gate"], rows_of(out)
+        assert [i["part_name"] for i in rows_of(out)] == [tailgate_name], rows_of(out)
         assert all(i["workshop_est"] == 0 and not i["prefilled"] for i in rows_of(out))
         ok("a later sync adds no rows for a dismissed part; a self-signup's rows stay unpriced")
         out = plain.post(f"/reports/{pid}/damage-items", json={"part": "Rear Bumper"}).json()
-        assert [i["part_name"] for i in rows_of(out)] == ["Tail Gate", "Rear Bumper"], rows_of(out)
+        assert [i["part_name"] for i in rows_of(out)] == [tailgate_name, "Rear bumper fascia"], rows_of(out)
         assert plain.get(f"/reports/{pid}").json()["data"]["dismissed_parts"] == []
         ok("adding the part back by hand clears the dismissal and its row returns")
         # Every item removed (three: the tail gate, the re-detected bumper and
@@ -207,9 +212,10 @@ def main() -> int:
         # Recorded as canonical names: "Tail Gate" belongs to the Boot Lid family.
         assert plain.get(f"/reports/{pid}").json()["data"]["dismissed_parts"] == ["Rear Bumper", "Boot Lid"], plain.get(f"/reports/{pid}").json()["data"]["dismissed_parts"]
         out = plain.post(f"/reports/{pid}/damage-items", json={"part": "Bonnet"}).json()
-        assert [i["part_name"] for i in rows_of(out)] == ["Bonnet"]
+        # No past case has a bonnet: the floor wording (taxonomy.FIRM_PART_NAMES).
+        assert [i["part_name"] for i in rows_of(out)] == ["Bonnet assy"]
         out = plain.patch(f"/reports/{pid}/damage-items/0", json={"part": "Rear Bumper"}).json()
-        assert [i["part_name"] for i in rows_of(out)] == ["Rear Bumper"] and plain.get(f"/reports/{pid}").json()["data"]["dismissed_parts"] == ["Boot Lid"]
+        assert [i["part_name"] for i in rows_of(out)] == ["Rear bumper fascia"] and plain.get(f"/reports/{pid}").json()["data"]["dismissed_parts"] == ["Boot Lid"]
         ok("with every item removed Annex A is empty, not re-scaffolded; renaming an item onto a dismissed part un-dismisses it as POST does")
         db = SessionLocal()
         try:

@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ImagePlus, Plus, Trash2 } from "lucide-react";
-import { fileUrl, type DamageSummaryItem, type ReportData, type Taxonomy } from "@/lib/api";
+import { DAMAGE_REMARKS, conditionWordsOf, fileUrl, toDamageRemarks, type DamageSummaryItem, type ReportData, type Taxonomy } from "@/lib/api";
+import { ConditionPicker, conditionWordsIn } from "@/components/ConditionPicker";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
@@ -181,19 +182,44 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
   );
   const checked = damage.filter((d) => d.human_verified).length;
   const vehicleName = [v.make, v.model].filter(Boolean).join(" ");
+  // The firm's condition words; the built-in copy when the API sent none.
+  const words = useMemo(() => conditionWordsOf(taxonomy), [taxonomy]);
 
   const setItem = (index: number, patch: Partial<DamageSummaryItem>) =>
     onChange((d) => ({
       ...d,
-      // Any edit counts as the surveyor confirming the item.
-      damage_summary: (d.damage_summary || []).map((it, i) => (i === index ? carryKey(it, { ...it, ...patch, human_verified: true }) : it)),
+      // An edit counts as the surveyor checking the item -- except on a row
+      // whose side the AI only inferred: changing its condition, remarks or
+      // photo says nothing about the side, and a checked row prints LH/RH in
+      // Annex A. Such a row stays unconfirmed until the Verified tick or a
+      // change of the part itself (which names the side). The whole draft is
+      // saved, so the flag is handled here rather than by the API's per-row edit.
+      damage_summary: (d.damage_summary || []).map((it, i) => {
+        if (i !== index) return it;
+        const partChanged = patch.part !== undefined && patch.part !== it.part;
+        const sidePending = Boolean(it.side_inferred) && !partChanged;
+        return carryKey(it, {
+          ...it,
+          ...patch,
+          human_verified: sidePending ? it.human_verified : true,
+          side_inferred: sidePending ? it.side_inferred : false,
+        });
+      }),
     }));
-  /** The Verified tick itself: the one edit that may also untick. */
+  /** The Verified tick itself: the one edit that may also untick. Ticking
+   * confirms an inferred side; unticking doesn't bring the guess back. */
   const setVerified = (index: number, verified: boolean) =>
     onChange((d) => ({
       ...d,
-      damage_summary: (d.damage_summary || []).map((it, i) => (i === index ? carryKey(it, { ...it, human_verified: verified }) : it)),
+      damage_summary: (d.damage_summary || []).map((it, i) =>
+        i === index ? carryKey(it, { ...it, human_verified: verified, side_inferred: verified ? false : it.side_inferred }) : it
+      ),
     }));
+  /** A person's Condition. condition_tokens follow it, so the draft never
+   * holds words that say something else; a whole value has none. The AI's
+   * damage_type is left as it is. */
+  const setCondition = (index: number, condition: string) =>
+    setItem(index, { condition, condition_tokens: conditionWordsIn(condition, words.tokens) });
   const removeItem = (index: number) => {
     setHighlighted(null);
     onChange((d) => ({ ...d, damage_summary: (d.damage_summary || []).filter((_, i) => i !== index) }));
@@ -242,7 +268,10 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
     viewerSlides = damage.flatMap((item, i) => {
       const photo = photoForReference(item.photo_reference, photos);
       if (!photo) return [];
-      return [{ key: rowKeys[i], photo, damage: { part: item.part, damageType: item.damage_type, severity: item.severity, bbox: item.bbox_2d } }];
+      // The viewer's "Condition" is the table's: the firm's wording, else the AI's type.
+      return [
+        { key: rowKeys[i], photo, damage: { part: item.part, damageType: item.condition || item.damage_type, severity: item.severity, bbox: item.bbox_2d } },
+      ];
     });
     viewerIndex = viewerSlides.findIndex((s) => s.key === viewer.key);
   } else if (viewer?.kind === "photos") {
@@ -324,6 +353,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                     <th style={{ width: 44 }}>Item</th>
                     <th>Vehicle Parts Description</th>
                     <th>Condition</th>
+                    <th style={{ width: 92 }}>Remarks</th>
                     <th style={{ width: 110 }}>Photo</th>
                     <th>Severity*</th>
                     <th style={{ width: 70 }}>Verified</th>
@@ -372,15 +402,31 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                             ariaLabel={`Vehicle parts description, item ${i + 1}`}
                             onChange={(val) => setItem(i, { part: val })}
                           />
+                          {item.side_inferred && !item.human_verified && (
+                            <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }} title="The AI guessed the side from nearby photos; check it">
+                              side inferred
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <ConditionPicker
+                            className="annex-cell-input"
+                            value={item.condition ?? ""}
+                            fallback={item.damage_type}
+                            words={words}
+                            ariaLabel={`Condition of ${partName}`}
+                            partName={item.part || undefined}
+                            onChange={(val) => setCondition(i, val)}
+                          />
                         </td>
                         <td>
                           <Select
                             className="annex-cell-input"
-                            value={item.damage_type ?? ""}
-                            options={taxonomy.damage_types}
-                            placeholder=""
-                            ariaLabel={`Condition of ${partName}`}
-                            onChange={(val) => setItem(i, { damage_type: val || null })}
+                            value={item.remarks ?? ""}
+                            options={DAMAGE_REMARKS}
+                            placeholder="—"
+                            ariaLabel={`Remarks for ${partName}`}
+                            onChange={(val) => setItem(i, { remarks: toDamageRemarks(val) })}
                           />
                         </td>
                         <td>
@@ -454,7 +500,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
             </button>
           </div>
           <p className="intake-muted" style={{ margin: 0 }}>
-            Remarks, Qty and prices are filled in Annex A after filing.
+            Condition and Remarks print on each part&apos;s Annex A line; Qty and prices are filled in Annex A after filing.
             <br />* Severity is kept for the case list and analytics; it is not printed.
           </p>
         </section>

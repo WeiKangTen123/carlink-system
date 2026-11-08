@@ -41,7 +41,28 @@ class DamageSummaryItem(BaseModel):
     # different answers to the same question.
     part: str = Field(description="The damaged part. Choose the closest match from the allowed values; side is part of the name where it applies.")
     damage_type: Optional[str] = Field(default=None, description="How the part is damaged -- choose from the allowed values. Pick the dominant type for compound damage and leave the nuance to the description. Only set if actually known.")
+    # The firm's own words for the damage (taxonomy.FIRM_CONDITION_TOKENS),
+    # which the Annex A Condition column prints joined: ["Grazed", "Cut"] ->
+    # "Grazed/cut". A plain array with an enum on its items and no
+    # minItems/maxItems: the drafting schema is shared with the Telegram
+    # bot, and a schema Gemini finds too complex fails EVERY draft with 400
+    # (extraction._NOT_MODEL_OUTPUT). Always the words of `condition` once
+    # drafted (empty for Necessary / Serviceable / Repair).
+    condition_tokens: list[str] = Field(default_factory=list, description="The firm's words for this damage, 1 to 3 from the allowed values.")
+    # Built in code from condition_tokens (extraction._firm_condition), never
+    # by the model, so it is left out of the schema Gemini sees; a person may
+    # change it (PATCH /damage-items: firm words only). None on cases filed
+    # before it existed: readers fall back through taxonomy.annex_condition.
+    condition: SkipJsonSchema[Optional[str]] = None
     severity: Optional[str] = Field(default=None, description="Minor, Moderate, or Severe -- only set if actually assessable from the photo/description")
+    # The Annex A Remarks column for this part's main row: "Replace" or
+    # "Repair" (taxonomy.FIRM_REMARKS), null when unsure.
+    remarks: Optional[str] = Field(default=None, description="Replace or Repair; null if unsure.")
+    # True when intake/pipeline.resolve_sides placed a "(side undetermined)"
+    # part on a side from the sorter's photo areas rather than the reader
+    # seeing it; cleared by a person's edit. Never the model's, so not in
+    # its schema.
+    side_inferred: SkipJsonSchema[bool] = False
     photo_reference: Optional[str] = Field(
         default=None,
         description="Which uploaded photo actually shows this damage, e.g. 'P01' for the first photo, 'P02' for the second. Photos are given to you in that order -- only set this when you can genuinely tell which photo shows the part; leave null if unclear or if it's not visible in any single photo.",
@@ -107,7 +128,9 @@ class VehicleInfo(BaseModel):
     driver_name: Optional[str] = None
     driver_contact: Optional[str] = None
     body_type: Optional[str] = None
-    odometer_reading: Optional[str] = Field(default=None, description="Speedometer / odometer mileage e.g. '015,287 km'")
+    # As the firm's cover page writes it: the digits as read, leading zeros
+    # kept, then the unit.
+    odometer_reading: Optional[str] = Field(default=None, description="Odometer mileage as the digits read, e.g. '058615 Km'")
     transmission: Optional[str] = Field(default=None, description="Automatic, Manual, CVT")
     date_of_registration: Optional[str] = None
     paintwork_condition: Optional[str] = Field(default=None, description="Good, Scratched, Resprayed, Original")
@@ -216,6 +239,11 @@ class AnnexAPartItem(BaseModel):
     # never deleted by the machine: the surveyor keeps or removes it.
     source_part: Optional[str] = None
     stale: bool = False
+    # The source part's own line (not a fitting or a companion): it carries
+    # the damage item's condition and remarks, and follows a tab-1 change of
+    # them while the row isn't a person's (origin "typed") -- price
+    # untouched (prefill.sync_annex_a). False on rows from before 2026-11-08.
+    main: bool = False
 
 
 class AnnexAInfo(BaseModel):

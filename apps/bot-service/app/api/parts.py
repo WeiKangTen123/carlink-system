@@ -31,11 +31,12 @@ from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
-from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of
+from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of, side_unconfirmed
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, PastLabourLine, Report, User
 from app.reports.schema import AnnexAPartItem
 from app.reports.synthesize_annexes import adjusted_cost, synthesize_annexes_for_report
+from app.reports.taxonomy import unsided_part
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["parts"])
@@ -197,8 +198,14 @@ def delete_past_report(case_ref: str, admin: CurrentUser = Depends(require_admin
 
 
 def _damaged_parts(data: dict) -> list[str]:
-    parts = [it.get("part") for it in (data.get("damage_summary") or []) if it.get("part")]
-    return parts or [p for p in (data.get("damaged_parts") or []) if p]
+    """The damaged parts to suggest lines for. A side the pipeline inferred
+    and nobody confirmed is asked about as "(side undetermined)", so the
+    panel offers "Tail lamp", never a past case's "Tail lamp LH" for a side
+    this case hasn't established (prefill.side_unconfirmed)."""
+    items = [it for it in (data.get("damage_summary") or []) if it.get("part")]
+    if not items:
+        return [p for p in (data.get("damaged_parts") or []) if p]
+    return [(unsided_part(it["part"]) or it["part"]) if side_unconfirmed(it) else it["part"] for it in items]
 
 
 @router.get("/reports/{report_id}/annex-suggestions")
@@ -434,6 +441,10 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
             # (the line stays as a hand line), and must stick.
             if "source_part" not in item.model_fields_set and before is not None:
                 row["source_part"] = before.get("source_part")
+            # The part's-own-row mark (prefill._refresh_kept) likewise: a
+            # client that doesn't know the field mustn't clear it.
+            if "main" not in item.model_fields_set and before is not None:
+                row["main"] = bool(before.get("main"))
             items.append(row)
         data = dict(r.data or {})
         data["annex_a"] = {"items": items}

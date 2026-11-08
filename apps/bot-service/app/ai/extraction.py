@@ -29,6 +29,10 @@ from app.reports.taxonomy import (
     CANONICAL_DAMAGE_TYPES,
     CANONICAL_PARTS,
     CANONICAL_SEVERITIES,
+    FIRM_CONDITION_TOKENS,
+    FIRM_REMARKS,
+    damage_type_from_tokens,
+    firm_condition,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,8 @@ SYSTEM_PROMPT = (
     "3. For vehicle incidents:\n"
     "   - Set 'accident_type' if the described events make the type clear (e.g. Collision with another vehicle, Rear-end collision, Side impact, Front impact, Parked vehicle hit, Single vehicle accident, Hit-and-run, Scrape / minor contact).\n"
     "   - Populate 'vehicle_info' with make, model, plate_number, color, year, body_type, and driver details that are actually mentioned or legible in photos or documents. Also extract:\n"
-    "     * 'odometer_reading': mileage if visible in dashboard/speedometer cluster photos or stated (e.g. '015,287 km').\n"
+    "     * 'odometer_reading': the odometer digits exactly as read on the dashboard/speedometer cluster, leading zeros kept, then the unit (e.g. '058615 Km'); or as stated.\n"
+    "     * 'date_of_registration': the date of first registration, only as printed on the LTA log card or another registration document -- never worked out from the year or the plate.\n"
     "     * 'transmission': 'Automatic', 'Manual', or 'CVT' if stated or clearly identifiable from interior photos.\n"
     "     * 'vin' (chassis number) and 'engine_number' if visible on vehicle identification plates, log cards, or stated.\n"
     "     * 'point_of_impact': primary contact area e.g. 'Rear centre', 'Front LH corner', 'Driver side rear quarter'.\n"
@@ -59,6 +64,11 @@ SYSTEM_PROMPT = (
     "     * 'tyres': if photos show tyre sidewalls or tread depth, extract brand, size (e.g. '215/60 R16'), and tread depth in mm.\n"
     "     Never guess a plate number, VIN, or model you cannot actually read.\n"
     "   - For each damaged part actually visible in a photo or described in text, add an entry to 'damage_summary' with part, damage_type, and severity. Set 'ai_confidence' to 'High', 'Medium', or 'Low' based on how clearly you can actually see and identify that specific damage in the photo. Photos are labeled P01, P02, P03... in the order given -- set 'photo_reference' to the one that actually shows this part when you can genuinely tell. Never fill in 'oem_part_number' unless supplied by human.\n"
+    "   - For each 'damage_summary' entry also set 'condition_tokens': the surveyor's own words for the damage, 1 to 3 of the "
+    "allowed values -- Grazed for surface scuffs; Dented, Bent, Buckled, Deformed, Distorted, Crumpled, Warped for shape; "
+    "Shifted or Slack for pushed out of place or loose; Cracked, Chipped, Torn, Cut for split or broken; Jammed, Faulty, "
+    "Leaked, Rattle for no longer works. Never Necessary or Serviceable. Set 'remarks' to 'Replace' when the part must be "
+    "renewed, 'Repair' when it can be straightened or repaired, and null if unsure.\n"
     "   - When 'photo_reference' is set, detect the 2D bounding box of that specific damage within that photo and set 'bbox_2d' to [y_min, x_min, y_max, x_max], each value normalized 0-1000 with (0,0) at the photo's top-left corner -- tightly around the visible damage itself.\n"
     "   - When you can identify WHICH panel is damaged but not which side of the vehicle it is on, use the matching '(side undetermined)' option.\n"
     "   - List each damaged part as its own entry -- the bumper, the beam behind it, a reflector, a lamp, the boot lid and "
@@ -182,6 +192,15 @@ def _response_schema() -> dict:
         _constrain(item["damage_type"], CANONICAL_DAMAGE_TYPES)
     if "severity" in item:
         _constrain(item["severity"], CANONICAL_SEVERITIES)
+    # The firm's words: an enum on the array's items only. No minItems /
+    # maxItems and no anyOf -- each adds states Gemini counts against the
+    # schema's limit (the 2ae2183 400s above); "1 to 3" is said in the
+    # prompt instead, and _firm_condition copes with any count.
+    tokens = item.get("condition_tokens", {}).get("items")
+    if isinstance(tokens, dict):
+        _constrain(tokens, FIRM_CONDITION_TOKENS)
+    if "remarks" in item:
+        _constrain(item["remarks"], FIRM_REMARKS)
 
     top = schema.get("properties", {})
     if "severity_level" in top:
@@ -314,6 +333,8 @@ _VALID_CONFIDENCE = {"High", "Medium", "Low"}
 
 
 def _sanitize_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
+    """Run by _parse_draft on every draft (it was written for that and then
+    never called, so the backstop it describes wasn't there)."""
     for item in draft.damage_summary:
         if item.severity not in _VALID_SEVERITIES:
             item.severity = None
@@ -359,6 +380,29 @@ def _backfill_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
 # processes that share one API key -- something module state never could.
 
 
+_REMARKS_BY_LOWER = {r.lower(): r for r in FIRM_REMARKS}
+
+
+def _firm_condition(draft: SecurityIncidentDraft) -> SecurityIncidentDraft:
+    """Each damage item's condition in the firm's words, built here rather
+    than by the model: its words kept only when they are the firm's, in
+    print order, joined "Grazed/cut"; when it gave none (the lite fallbacks
+    skip optional fields), the one firm word for its damage type. A damage
+    type it left out is filled from the words, so the 3D colours and the
+    analytics, which read damage_type, still have one. Remarks other than
+    Replace / Repair are dropped. side_inferred is the pipeline's, never
+    the model's."""
+    for item in draft.damage_summary:
+        tokens, condition = firm_condition(item.condition_tokens, item.damage_type)
+        if not item.damage_type and tokens:
+            item.damage_type = damage_type_from_tokens(tokens)
+        item.condition_tokens = tokens
+        item.condition = condition
+        item.remarks = _REMARKS_BY_LOWER.get(str(item.remarks or "").strip().lower())
+        item.side_inferred = False
+    return draft
+
+
 def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     # No annex synthesis here any more: it used to fill every AI draft --
     # bot, dashboard and intake -- with priced annexes, a liability finding
@@ -366,7 +410,9 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     draft = SecurityIncidentDraft.model_validate_json(raw_output)
     draft.report_id = None  # never the model's (_NOT_MODEL_OUTPUT)
     draft = _strip_placeholder_people(draft)
-    return _backfill_damage_summary(draft)
+    draft = _sanitize_damage_summary(draft)
+    draft = _backfill_damage_summary(draft)
+    return _firm_condition(draft)
 
 
 def draft_report(

@@ -37,8 +37,23 @@ PHOTO_KINDS: dict[str, str] = {
     "third_party": "the other party's vehicle",
     "other": "anything else",
 }
-AREAS = ["front", "rear", "left", "right", "roof", "underbody", "interior"]
+# The four corners were added (contract4, 2026-11-06) so a close-up the
+# reader could only call "(side undetermined)" can be placed from where the
+# sorter saw it was taken (intake/pipeline.resolve_sides): "rear" alone says
+# nothing about LH or RH, and the lamps, reflectors and boot-lid parts a
+# rear-end case is mostly made of sit on one half of it. The old seven stay,
+# so photos sorted before keep a valid area.
+AREAS = [
+    "front", "rear", "left", "right",
+    "front-left", "front-right", "rear-left", "rear-right",
+    "roof", "underbody", "interior",
+]
 QUALITIES = ["good", "blurry", "unusable"]
+
+# Changes whenever the sort's prompt or vocabulary does, so a cache of sort
+# results (scripts/benchmark_intake.py --sort-cache) never serves answers
+# given to an older question. v1: corner areas.
+SORT_PROMPT_VERSION = "v1-corner-areas"
 
 # ~12 x 200KB previews keeps each request a few MB, well inside what one
 # inline request can carry, while still needing only ~6 calls for a
@@ -50,9 +65,12 @@ SYSTEM_PROMPT = (
     "(for example P07). Return exactly one entry per photo, using its label.\n"
     "- kind: what the photo is. One of:\n"
     + "".join(f"    {key}: {desc}\n" for key, desc in PHOTO_KINDS.items())
-    + "- area: which part of the INSURED vehicle the photo mainly shows -- front, rear, left, right, roof, "
-    "underbody or interior. Left and right are the vehicle's own sides as seen by its driver facing forward. "
-    "An open boot or tailgate, the boot floor and the boot's side trims are 'rear', not 'interior'. "
+    + "- area: which part of the INSURED vehicle the photo mainly shows -- front, rear, left, right, a corner "
+    "(front-left, front-right, rear-left, rear-right), roof, underbody or interior. Left and right are the vehicle's "
+    "own sides as seen by its driver facing forward. Use a corner when the photo shows that corner, or a close-up on "
+    "the front or rear that you can tell is on its left or right half (the lamp, reflector or bumper end beside it); "
+    "plain front or rear when you cannot tell which half. "
+    "An open boot or tailgate, the boot floor and the boot's side trims are rear (or a rear corner), not 'interior'. "
     "null when the photo is not of the insured vehicle, or the area cannot be told.\n"
     "- quality: good; blurry (soft but still readable); unusable (nothing can be made out).\n"
     "- shows_damage: true only when damage to the insured vehicle is actually visible in this photo -- including a "

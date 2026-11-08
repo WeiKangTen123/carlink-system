@@ -278,3 +278,372 @@ def body_type_for(make: str | None, model: str | None, stated: str | None = None
     if stated and stated in BODY_TYPES:
         return stated
     return None
+
+
+# ---------------------------------------------------------------------------
+# The firm's Annex A wording (agentD_detection_audit.md, contract4 A1).
+#
+# CANONICAL_DAMAGE_TYPES is how the AI classifies damage; it is not how the
+# firm writes it. Across the four imported CL reports the Condition column
+# holds 45 distinct strings built from 18 words ("Buckled/cut",
+# "Grazed/cracked", "Distorted/jammed"), and seven of the 15 AI types never
+# appear there. The AI now also picks from these words (a small enum; the
+# 45 full strings would be the schema's longest list), and code joins them
+# the firm's way, so the Annex A Condition column reads like the firm's.
+# ---------------------------------------------------------------------------
+
+# List order is print order: surface, shape, out of place, split or broken,
+# no longer works -- the order the firm mostly writes them ("Grazed/
+# deformed/cut", "Distorted/cut/faulty").
+FIRM_CONDITION_TOKENS: list[str] = [
+    "Grazed",
+    "Dented", "Bent", "Buckled", "Deformed", "Distorted", "Crumpled", "Warped",
+    "Shifted", "Slack",
+    "Cracked", "Chipped", "Torn", "Cut",
+    "Jammed", "Faulty", "Leaked", "Rattle",
+]
+
+# Every damage condition the four reports wrote on three or more lines, most
+# used first (Bent 11 ... Crumpled 3): the editor's suggestions.
+FIRM_CONDITION_COMMON: list[str] = [
+    "Bent", "Deformed/cut", "Grazed/cut", "Bent/cut", "Distorted/jammed", "Dented/bent",
+    "Grazed/cracked", "Buckled", "Distorted/cut", "Cracked", "Crumpled",
+]
+
+# Conditions written as one whole word, never with damage words: a fitting
+# renewed on refit (Necessary, 61 of 171 lines), a part kept (Serviceable),
+# and a part the firm says to repair rather than renew (Repair: the line is
+# disallowed at 100%, see prefill). The AI never picks these.
+FIRM_WHOLE_CONDITIONS: list[str] = ["Necessary", "Serviceable", "Repair"]
+
+# The Remarks column: "Replace" on 73 of 171 lines, blank on the rest.
+FIRM_REMARKS: list[str] = ["Replace", "Repair"]
+
+# One firm word per AI damage type, for drafts where the model gave a type
+# but no words (lite fallbacks skip optional fields) and for cases filed
+# before the words existed. Shatter, Missing, Water and Fire have no firm
+# word: those keep the AI's type rather than a made-up translation.
+DAMAGE_TYPE_TO_TOKEN: dict[str, str] = {
+    "Scratch": "Grazed",
+    "Scuff / Graze": "Grazed",
+    "Paint Damage": "Grazed",
+    "Dent": "Dented",
+    "Deformation": "Deformed",
+    "Crack": "Cracked",
+    # The firm's word for broken plastic and torn mountings ("Deformed/cut").
+    "Broken / Detached": "Cut",
+    "Puncture / Tear": "Torn",
+    "Misalignment": "Shifted",
+    "Structural Damage": "Crumpled",
+    "Electrical Fault": "Faulty",
+}
+
+# The AI type a firm word implies, to fill damage_type when the model gave
+# only words (the 3D colours and analytics read damage_type). Crumpled maps
+# to Deformation, the weaker claim: the firm uses it for insulator pads and
+# trim boards too, not only structure. Jammed, Leaked and Rattle describe a
+# function no AI type covers.
+TOKEN_TO_DAMAGE_TYPE: dict[str, str] = {
+    "Grazed": "Scuff / Graze",
+    "Dented": "Dent",
+    "Bent": "Deformation",
+    "Buckled": "Deformation",
+    "Deformed": "Deformation",
+    "Distorted": "Deformation",
+    "Crumpled": "Deformation",
+    "Warped": "Deformation",
+    "Shifted": "Misalignment",
+    "Slack": "Misalignment",
+    "Cracked": "Crack",
+    "Chipped": "Crack",
+    "Torn": "Puncture / Tear",
+    "Cut": "Broken / Detached",
+    "Faulty": "Electrical Fault",
+}
+
+_TOKEN_BY_LOWER = {t.lower(): t for t in FIRM_CONDITION_TOKENS}
+_TOKEN_ORDER = {t: i for i, t in enumerate(FIRM_CONDITION_TOKENS)}
+
+
+def condition_tokens_of(values) -> list[str]:
+    """The firm words among `values` (a list, or one "a/b" string), each
+    once, in print order. Anything else -- "Necessary", a sentence a model
+    leaked -- is dropped."""
+    if isinstance(values, str):
+        values = values.split("/")
+    picked: list[str] = []
+    for value in values or []:
+        token = _TOKEN_BY_LOWER.get(str(value or "").strip().lower())
+        if token and token not in picked:
+            picked.append(token)
+    return sorted(picked, key=_TOKEN_ORDER.__getitem__)
+
+
+def join_condition(tokens: list[str]) -> str | None:
+    """["Grazed", "Cut"] -> "Grazed/cut": first word capitalised, the rest
+    lower case, as the firm's sheets write it. None for no words."""
+    words = [t.lower() for t in tokens if t]
+    if not words:
+        return None
+    words[0] = words[0].capitalize()
+    return "/".join(words)
+
+
+# The firm never writes more than three words in one condition (171 lines);
+# the schema can't say so without maxItems (the 400 risk), so code does.
+MAX_CONDITION_WORDS = 3
+
+
+def firm_condition(tokens, damage_type: str | None) -> tuple[list[str], str | None]:
+    """(words, condition) for a damage item: the AI's words in print order,
+    the first MAX_CONDITION_WORDS of them, or -- when it gave none -- the
+    one word its damage type maps to; the condition is None when neither
+    gives a word (the caller keeps the damage type)."""
+    picked = condition_tokens_of(tokens)[:MAX_CONDITION_WORDS]
+    if not picked and damage_type in DAMAGE_TYPE_TO_TOKEN:
+        picked = [DAMAGE_TYPE_TO_TOKEN[damage_type]]
+    return picked, join_condition(picked)
+
+
+def damage_type_from_tokens(tokens: list[str]) -> str | None:
+    """The AI type for a set of firm words: the first word after a graze
+    that maps (the firm writes the surface first and the main damage next:
+    "Grazed/cracked" is a crack), else the graze; None when none maps."""
+    mapped = [t for t in condition_tokens_of(tokens) if t in TOKEN_TO_DAMAGE_TYPE]
+    main = [t for t in mapped if t != "Grazed"] or mapped
+    return TOKEN_TO_DAMAGE_TYPE[main[0]] if main else None
+
+
+def parse_condition(text: str | None) -> tuple[list[str], str | None]:
+    """A condition a person typed, checked: one of FIRM_WHOLE_CONDITIONS
+    as a whole, or firm words joined by "/" (kept in the person's order;
+    the firm itself writes "Shifted/bent/cut"). Returns (words, condition
+    in the firm's casing); ([], None) for blank. Raises ValueError naming
+    the first word that isn't the firm's."""
+    text = (text or "").strip()
+    if not text:
+        return [], None
+    for whole in FIRM_WHOLE_CONDITIONS:
+        if text.lower() == whole.lower():
+            return [], whole
+    tokens: list[str] = []
+    for word in text.split("/"):
+        token = _TOKEN_BY_LOWER.get(word.strip().lower())
+        if token is None:
+            raise ValueError(word.strip() or text)
+        if token not in tokens:
+            tokens.append(token)
+    return tokens, join_condition(tokens)
+
+
+def annex_condition(item: dict) -> str:
+    """What a damaged part's main Annex A row says under Condition: the
+    item's condition (built at drafting, or typed), else its words, else the
+    firm word for its damage type, else the damage type as the AI wrote it
+    (a case filed before the words existed, or a type with no firm word)."""
+    condition = str(item.get("condition") or "").strip()
+    if condition:
+        return condition
+    damage_type = str(item.get("damage_type") or "").strip()
+    _, joined = firm_condition(item.get("condition_tokens") or [], damage_type or None)
+    return joined or damage_type
+
+
+# ---------------------------------------------------------------------------
+# Part names as the firm writes them -- the floor under app/parts/history.
+#
+# Annex A rows take their wording from the firm's past reports when there
+# are any (history.firm_wording); before this, a part no past case covered
+# was printed by its canonical name ("Boot Lid", "Left Boot Lid Lamp") in a
+# report the firm signs. This is the wording when history has none, from the
+# four CL reports where they had the part. Side codes go last ("Tail lamp
+# LH"); a "(side undetermined)" part gets none.
+# ---------------------------------------------------------------------------
+
+UNDETERMINED_SUFFIX = " (side undetermined)"
+SIDE_CODES = {"Left": "LH", "Right": "RH"}
+
+# A tailgate lifts with its window; a sedan's boot lid doesn't. The firm
+# writes "Tail gate assy" for the first (three Vezel reports) and "Boot lid
+# assy" for the second (the Civic), and the parts mounted on it follow.
+# Pickups have a tail gate too. Other / unknown bodies take the plain words.
+_HATCH_BODIES = {"Hatchback", "SUV", "MPV", "Van", "Wagon", "Pickup"}
+_SEDAN_BODIES = {"Sedan", "Coupe"}
+
+
+def body_class(body_type: str | None) -> str | None:
+    """"hatch", "sedan", or None when the body type doesn't say."""
+    if body_type in _HATCH_BODIES:
+        return "hatch"
+    if body_type in _SEDAN_BODIES:
+        return "sedan"
+    return None
+
+
+# Keyed by the canonical name without its side. "assy" where the firm uses
+# it for a whole panel, so no single-word part prints exactly as its
+# canonical name.
+_FIRM_WORDING: dict[str, str] = {
+    "Front Bumper": "Front bumper",
+    "Front Grille": "Front grille",
+    "Bonnet": "Bonnet assy",
+    "Headlamp": "Headlamp",
+    "Front Windscreen": "Front windscreen",
+    "Front Fender": "Front fender assy",
+    "Front Bumper Beam": "Front bumper reinforcement",
+    "Fog Lamp": "Fog lamp",
+    "Front Number Plate": "Front number plate",
+    "Front Wheel Arch Liner": "Front fender splash shield",
+    "Front Door": "Front door assy",
+    "Rear Door": "Rear door assy",
+    "Front Door Glass": "Front door glass",
+    "Rear Door Glass": "Rear door glass",
+    "Door": "Door assy",
+    "Door Glass": "Door glass",
+    "Wing Mirror": "Wing mirror",
+    "Rear Bumper": "Rear bumper fascia",
+    "Boot Lid": "Boot lid assy",
+    "Rear Windscreen": "Rear windscreen glass",
+    "Tail Lamp": "Tail lamp",
+    # The firm calls the quarter panel the rear fender.
+    "Rear Quarter Panel": "Rear fender",
+    "Quarter Panel": "Rear fender",
+    "Rear Number Plate": "Rear number plate",
+    "Rear Bumper Beam": "Rear bumper beam",
+    "Rear Bumper Reflector": "Rear bumper reflector",
+    "Rear End Panel": "Rear end panel",
+    "Boot Lid Lock": "Boot lid lock",
+    "Boot Lid Hinge": "Boot lid hinges",
+    "Boot Lid Weatherstrip": "Boot lid weatherstrip",
+    "Boot Lid Inner Trim": "Boot lid insulator",
+    "Boot Lid Lamp": "Boot lid lamp",
+    "Boot Floor Board": "Spare tyre panel top board",
+    "Boot Side Trim": "Rear fender inner trim",
+    "Rear Wheel Arch Liner": "Rear bumper wheel arch protector",
+    "Front Wheel": "Front wheel rim",
+    "Rear Wheel": "Rear wheel rim",
+    "Wheel": "Wheel rim",
+    "Wheel Arch Liner": "Wheel arch protector",
+    "Roof": "Roof panel",
+    "Underbody / Chassis": "Chassis frame member",
+    "Sill / Rocker Panel": "Side sill panel",
+    "Rear Floor Panel": "Rear floor panel",
+    "Front Subframe": "Front cross member",
+    "Rear Subframe": "Rear cross member",
+    "Engine Undercover": "Engine under cover",
+    "Radiator": "Radiator assy",
+    "Air Conditioning Condenser": "Aircon condenser",
+    "Exhaust System": "Exhaust pipe",
+    "Fuel Tank": "Fuel tank",
+    "Suspension - Front": "Front suspension",
+    "Suspension - Rear": "Rear suspension",
+    "Steering Assembly": "Steering rack and pinion",
+    "Airbag System": "Airbag",
+    "Parking Sensor": "Reverse sensor",
+    "Reversing Camera": "Reverse camera",
+    "Interior Trim": "Interior trim",
+    "Seat": "Seat assy",
+    "Dashboard": "Dashboard panel",
+    # Not a part name: the row says a person still has to name it.
+    "Other / Not Listed": "Other part (to be named)",
+}
+_FIRM_WORDING_HATCH: dict[str, str] = {
+    "Boot Lid": "Tail gate assy",
+    "Boot Lid Lock": "Tail gate lock",
+    "Boot Lid Hinge": "Tail gate hinges",
+    "Boot Lid Weatherstrip": "Tail gate weatherstrip",
+    "Boot Lid Inner Trim": "Tail gate inner trim board",
+    "Boot Lid Lamp": "Tail gate reflector lamp",
+    "Boot Floor Board": "Rear floor panel board",
+    "Boot Side Trim": "Rear fender inner trim board",
+}
+
+
+def split_side(part: str) -> tuple[str, str | None]:
+    """A canonical name -> (name without its side, "Left" / "Right" /
+    None): "Left Front Fender" -> ("Front Fender", "Left"), "Tail Lamp
+    (side undetermined)" -> ("Tail Lamp", None)."""
+    if part.endswith(UNDETERMINED_SUFFIX):
+        return part[: -len(UNDETERMINED_SUFFIX)], None
+    for side in SIDE_CODES:
+        if part.startswith(side + " "):
+            return part[len(side) + 1:], side
+    return part, None
+
+
+def _firm_names(wording: dict[str, str]) -> dict[str, str]:
+    out = {}
+    for part in CANONICAL_PARTS:
+        base, side = split_side(part)
+        if base in wording:
+            out[part] = f"{wording[base]} {SIDE_CODES[side]}" if side else wording[base]
+    return out
+
+
+# canonical name -> the firm's wording; scripts/test_detection_wording.py
+# checks every canonical part has one and none prints as a canonical name.
+FIRM_PART_NAMES: dict[str, str] = _firm_names(_FIRM_WORDING)
+FIRM_PART_NAMES_HATCH: dict[str, str] = _firm_names({**_FIRM_WORDING, **_FIRM_WORDING_HATCH})
+
+
+def firm_part_name(part: str | None, body_type: str | None = None, unsided: bool = False) -> str | None:
+    """The floor wording for a canonical part on this body type; None for
+    a name that isn't canonical (a case filed before the taxonomy holds the
+    firm's own free text, which prints as it is). unsided: the same wording
+    without its LH / RH, for a side nobody has confirmed (an inferred one:
+    "Rear wheel rim LH" -> "Rear wheel rim", keeping the front/rear the
+    undetermined name would lose)."""
+    names = FIRM_PART_NAMES_HATCH if body_class(body_type) == "hatch" else FIRM_PART_NAMES
+    name = names.get((part or "").strip())
+    if name and unsided:
+        for code in SIDE_CODES.values():
+            if name.endswith(" " + code):
+                return name[: -len(code) - 1]
+    return name
+
+
+def unsided_part(part: str) -> str | None:
+    """The "(side undetermined)" name for a sided canonical part: "Left Tail
+    Lamp" -> "Tail Lamp (side undetermined)", "Left Rear Wheel" -> "Wheel
+    (side undetermined)", "Right Rear Quarter Panel" -> "Quarter Panel (side
+    undetermined)". The part itself when it has no side; None when no such
+    name exists. The inverse of sided_part."""
+    base, side = split_side(part)
+    if side is None:
+        return part
+    for candidate in (base, base.removeprefix("Front ").removeprefix("Rear ")):
+        name = candidate + UNDETERMINED_SUFFIX
+        if name in CANONICAL_PARTS:
+            return name
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Placing a "(side undetermined)" part on a side (intake/pipeline.
+# resolve_sides). Doors and door glass are not placed: a side alone doesn't
+# say front or rear door. Wheels and wheel arch liners need the end too.
+# ---------------------------------------------------------------------------
+
+_NEEDS_END = {"Wheel", "Wheel Arch Liner"}
+_NOT_PLACED = {"Door", "Door Glass"}
+
+
+def sided_part(part: str, side: str | None, end: str | None = None) -> str | None:
+    """"Tail Lamp (side undetermined)" + "Left" -> "Left Tail Lamp"; "Wheel
+    (side undetermined)" + "Left" + "Rear" -> "Left Rear Wheel". None when
+    the part isn't a side-undetermined one, or can't be placed with what is
+    known."""
+    if not part.endswith(UNDETERMINED_SUFFIX) or side not in SIDE_CODES:
+        return None
+    base = part[: -len(UNDETERMINED_SUFFIX)]
+    if base in _NOT_PLACED:
+        return None
+    if base in _NEEDS_END:
+        if end not in ("Front", "Rear"):
+            return None
+        name = f"{side} {end} {base}"
+    elif base == "Quarter Panel":
+        name = f"{side} Rear Quarter Panel"
+    else:
+        name = f"{side} {base}"
+    return name if name in CANONICAL_PARTS else None

@@ -44,6 +44,7 @@ import {
   type CoverPageResponse,
   type DamageItemPatch,
   type DamageItemsResponse,
+  type NewDamageItem,
   type Taxonomy,
   type LabourSuggestions,
   type Owner,
@@ -170,8 +171,8 @@ export async function signOffReportAction(
 // Each answer carries the parts as saved and the Annex A the API re-synced
 // to them, plus the Annex C totals.
 
-/** Changes one detected part: its name (a taxonomy part), condition,
- * severity, photo, verified tick or OEM number. */
+/** Changes one detected part: its name (a taxonomy part), condition (the
+ * firm's words), remarks, severity, photo, verified tick or OEM number. */
 export async function patchDamageItemAction(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse | { error: string }> {
   try {
     const result = await patchDamageItem(reportId, itemIndex, patch);
@@ -185,10 +186,7 @@ export async function patchDamageItemAction(reportId: string, itemIndex: number,
 }
 
 /** A part the surveyor adds by hand (appended, verified). */
-export async function addDamageItemAction(
-  reportId: string,
-  body: { part: string; damage_type?: string | null; photo_reference?: string | null }
-): Promise<DamageItemsResponse | { error: string }> {
+export async function addDamageItemAction(reportId: string, body: NewDamageItem): Promise<DamageItemsResponse | { error: string }> {
   try {
     const result = await addDamageItem(reportId, body);
     revalidatePath(`/reports/${reportId}`);
@@ -214,9 +212,10 @@ export async function removeDamageItemAction(reportId: string, itemIndex: number
   }
 }
 
-/** The controlled vocabulary (GET /taxonomy) for tab 1's part select and
- * condition suggestions. getTaxonomy falls back to an empty vocabulary
- * when the API can't be reached, so the table still renders. */
+/** The controlled vocabulary (GET /taxonomy) for tab 1's part select, the
+ * condition editor and Annex A's condition suggestions. getTaxonomy falls
+ * back to an empty vocabulary (but the built-in condition lists) when the
+ * API can't be reached, so the tables still render and stay editable. */
 export async function getTaxonomyAction(): Promise<Taxonomy> {
   return getTaxonomy();
 }

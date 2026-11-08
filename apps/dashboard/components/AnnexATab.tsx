@@ -1,16 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
-import type { AnnexAPartItem, ReportDetail } from "@/lib/api";
-import { prefillAnnexAAction, saveAnnexAAction } from "@/app/reports/actions";
+import { conditionWordsOf, type AnnexAPartItem, type ReportDetail } from "@/lib/api";
+import { getTaxonomyAction, prefillAnnexAAction, saveAnnexAAction } from "@/app/reports/actions";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { formatAmount, formatSgd, sameLineKey } from "@/lib/pastReports";
 import type { CaseStore } from "@/lib/caseState";
 import {
   BLANK_ANNEX_LINE,
-  CONDITION_SUGGESTIONS,
   DISCOUNT_OPTIONS,
   REMARK_OPTIONS,
   annexAdjustedCost,
@@ -44,6 +43,25 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   const [prefillBusy, setPrefillBusy] = useState(false);
   const [prefillNote, setPrefillNote] = useState<string | null>(null);
   const annexALocked = readOnly || status.save === "saving" || prefillBusy;
+
+  // The Condition suggestions: the firm's most used wordings from GET
+  // /taxonomy (so they follow the backend's list, not a copy kept here),
+  // plus Necessary and Serviceable, the whole-word Conditions the firm
+  // writes on fittings and kept parts. The built-in copy stands in while loading
+  // or for an older API. Only fetched while the table can be edited, the
+  // only time the list is shown.
+  const [conditionCommon, setConditionCommon] = useState<string[]>(() => conditionWordsOf(null).common);
+  useEffect(() => {
+    if (readOnly) return;
+    let cancelled = false;
+    void getTaxonomyAction().then((t) => {
+      if (!cancelled) setConditionCommon(conditionWordsOf(t).common);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [readOnly]);
+  const conditionSuggestions = useMemo(() => [...new Set([...conditionCommon, "Necessary", "Serviceable"])], [conditionCommon]);
 
   const sgd = (n: number | null | undefined) => (n == null ? "—" : formatSgd(n));
   const amt = (n: number) => formatAmount(n);
@@ -503,7 +521,7 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
       {!readOnly && (
         <div className="annex-edit-bar">
           <datalist id="annex-a-conditions">
-            {CONDITION_SUGGESTIONS.map((c) => (
+            {conditionSuggestions.map((c) => (
               <option key={c} value={c} />
             ))}
           </datalist>
