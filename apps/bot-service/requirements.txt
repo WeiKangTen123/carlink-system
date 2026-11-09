@@ -27,3 +27,7 @@ python-dotenv>=1.0.1
 # Fernet, which seals people's own AI keys (app/ai/secretbox.py). It was
 # only here by way of google-auth; named directly so it can't drop out.
 cryptography>=42.0.0
+# The time zone database for zoneinfo (app/ai/allowance.py: Google resets
+# free allowances at midnight America/Los_Angeles). The slim image and
+# Windows don't always ship one.
+tzdata>=2024.1
