@@ -398,7 +398,7 @@ MESSAGES = {
     ),
     AI_KEY_INVALID: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
     # The AI tries the key again after QUOTA_RETRY_AFTER by itself.
-    AI_QUOTA_USED: "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
+    AI_QUOTA_USED: "Your AI key has used up today's free allowance. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November), or turn on billing in Google Cloud.",
     AI_KEY_UNREADABLE: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     AI_ACCOUNT_OFF: "AI is off: this account is disabled.",
 }

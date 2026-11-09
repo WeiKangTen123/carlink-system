@@ -255,16 +255,19 @@ def key_state(fingerprint: str, models) -> dict[str, dict]:
     return out
 
 
-def forget(fingerprint: str) -> None:
-    """Drops what is remembered as used up for one key (its limits stay):
-    e.g. once billing is turned on for it, it has an allowance again before
-    the reset. Not called anywhere yet: Settings > My AI key's Test is where
-    it belongs."""
+def forget(fingerprint: str, *, limits: bool = False) -> None:
+    """Drops what is remembered as used up for one key: a passing Test on
+    Settings > My AI key (it may have been billed meanwhile), and -- with
+    limits=True, since a free key's daily limits say nothing about a billed
+    one -- a key saved again or switched between Free and Billed
+    (api/ai_keys.py)."""
     prefix = _tag(fingerprint) + "|"
     try:
         with _locked() as path:
             data = _read(path)
             data["spent"] = {k: v for k, v in data["spent"].items() if not k.startswith(prefix)}
+            if limits:
+                data["limits"] = {k: v for k, v in data["limits"].items() if not k.startswith(prefix)}
             _write(path, data)
     except Exception as exc:
         logger.warning("Day allowance: couldn't forget a key (%s)", type(exc).__name__)

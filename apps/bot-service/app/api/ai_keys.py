@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, StrictBool
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.ai import keys, secretbox
+from app.ai import allowance, keys, secretbox
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, require_admin
@@ -296,6 +296,9 @@ def save_my_ai_key(body: AiKeyIn, user: CurrentUser = Depends(current_user)) -> 
     status, error = keys.probe_key(key)
     if status == "invalid":
         raise ApiError(400, INVALID, "ai_key_invalid")
+    # A key saved (again): nothing remembered as used up, nor a limit learnt
+    # while it was Free, carries over (ai/allowance.py).
+    allowance.forget(fingerprint, limits=True)
 
     db = SessionLocal()
     try:
@@ -368,6 +371,9 @@ def set_my_ai_key_type(body: AiKeyTypeIn, user: CurrentUser = Depends(current_us
                 detail=f"key ...{row.last4}: {keys.key_type(was)} -> {keys.key_type(body.billing_confirmed)}",
             )
             db.commit()
+            # Billing on (or off) changes the key's allowance: what was
+            # remembered for it no longer holds.
+            allowance.forget(row.fingerprint, limits=True)
         return keys.ai_key_status(db, user)
     finally:
         db.close()
@@ -404,6 +410,10 @@ def test_my_ai_key(user: CurrentUser = Depends(current_user)) -> dict:
         # Only onto the key that was tested: one saved meanwhile keeps its own.
         keys.record_check(db, user.id, tested, status, error)
         db.commit()
+        # Google takes it again (billing turned on, say): models remembered
+        # as used up for today are tried again rather than skipped.
+        if status == "ok":
+            allowance.forget(tested)
         return keys.ai_key_status(db, user)
     finally:
         db.close()

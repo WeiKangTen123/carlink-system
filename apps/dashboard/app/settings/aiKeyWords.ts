@@ -30,11 +30,11 @@ export function aiRightNowWords(
   isAdmin: boolean
 ): { off: boolean; which: string; text: string } {
   const companyWhy = isAdmin ? "Admins can always use it." : "An admin has allowed you to use it.";
-  // Out of allowance mends itself (about an hour); a refused key doesn't.
+  // Out of allowance mends itself at Google's daily reset; a refused key doesn't.
   const quota = ai.has_key && ai.status === "quota";
   if (!ai.ai_available || ai.source === "none") {
     const why = quota
-      ? "Your own key has used up its allowance for now; it should work again within about an hour, so try again later."
+      ? "Your own key has used up today's free allowance; it works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November)."
       : ai.has_key
         ? "Your own key isn't working, and the company key isn't yours to use. Fix your key above, or ask an admin to let you use the company key."
         : "Add your own key above (get one free from Google AI Studio), or ask an admin to let you use the company key.";
@@ -55,7 +55,7 @@ export function aiRightNowWords(
       off: false,
       which: "AI uses the company key (your own key isn't working).",
       text: quota
-        ? `${companyWhy} Your key has used up its allowance for now; AI goes back to it once it works again, usually within about an hour.`
+        ? `${companyWhy} Your key has used up today's free allowance; AI goes back to it after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November).`
         : `${companyWhy} Fix your key above to use it again.`,
     };
   }
@@ -68,7 +68,7 @@ export function aiRightNowWords(
  * a Billed key reads reports sent by the public (bot-service app/ai/keys.py). */
 export const KEY_TYPE_WORDS: Record<"free" | "billed", string> = {
   free:
-    "Free: Google may use what Carlink sends with this key, case photos included, to improve its products, and people at Google may read it. Turning on billing for the key's Google Cloud project stops that. A free key can't be used for reports sent by the public.",
+    "Free: Google may use what Carlink sends with this key, case photos included, to improve its products, and people at Google may read it. Google also asks that free keys aren't used for personal information, and case photos can show plates, chassis numbers and people. Turning on billing for the key's Google Cloud project stops that use. A free key can't be used for reports sent by the public.",
   billed:
     "Billed: this key's Google Cloud project has billing turned on. With billing on, Google doesn't use what Carlink sends it to improve its products. Pick this only if billing really is on: a billed key is also used for reports sent by the public.",
 };
@@ -84,7 +84,7 @@ export const FAILING_WHAT: Record<"invalid" | "quota" | "unreadable", string> = 
 export const FAILING_FIX: Record<"invalid" | "quota" | "unreadable", string> = {
   invalid: "Replace it with a key Google accepts, or remove it.",
   quota:
-    "It should work again by itself within about an hour, so try again later; a free key's daily allowance starts again each day. If it keeps running out, turn on billing for its Google Cloud project, or replace it.",
+    "It works again by itself after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November). If it keeps running out, turn on billing for its Google Cloud project, or replace it.",
   unreadable: "Replace it: paste the key again, or a new one.",
 };
 

@@ -762,6 +762,40 @@ def no_keys_anywhere() -> None:
           "the skip is logged, by the key's label")
 
 
+def forgotten_on_change() -> None:
+    """Saving again, switching Free/Billed, or a passing Test: what was
+    remembered as used up for the key no longer holds."""
+    reset()
+    uid = new_user("forget-me")
+    key = make_key("forget")
+    give_key(uid, key)
+    fp = secretbox.fingerprint(key)
+    client = signed_in(uid)
+    allowance.mark_spent(fp, "model-a", 0)
+    r = client.patch("/auth/me/ai-key", json={"billing_confirmed": False})
+    RESPONSES.append(r.text)
+    check(r.status_code == 200, "PATCH to Free answers 200", r.text[:200])
+    check(allowance.spent_until(fp, "model-a") is None and allowance.limit(fp, "model-a") is None,
+          "switching Free/Billed forgets the spent day and the learnt limit")
+    allowance.mark_spent(fp, "model-a", 20)
+    real_probe = keys.probe_key
+    keys.probe_key = lambda k: ("ok", None)
+    try:
+        r = client.post("/auth/me/ai-key/test")
+        RESPONSES.append(r.text)
+    finally:
+        keys.probe_key = real_probe
+    check(r.status_code == 200, "Test answers 200", r.text[:200])
+    check(allowance.spent_until(fp, "model-a") is None and allowance.limit(fp, "model-a") == 20,
+          "a passing Test forgets the spent day, keeps the limit")
+    other = make_key("forget-other")
+    give_key(new_user("forget-other"), other)
+    allowance.mark_spent(secretbox.fingerprint(other), "model-a", 20)
+    client.patch("/auth/me/ai-key", json={"billing_confirmed": True})
+    check(allowance.spent_until(secretbox.fingerprint(other), "model-a") is not None,
+          "another person's key is left alone")
+
+
 def main() -> int:
     for name, fn in (
         ("setup", setup),
@@ -772,6 +806,7 @@ def main() -> int:
         ("an own key", own_key),
         ("read_by on GET /intake/{id}", read_by),
         ("GET /auth/me/ai-allowance", endpoint),
+        ("forgotten when the key changes", forgotten_on_change),
         ("no key anywhere", no_keys_anywhere),
     ):
         run_section(name, fn)

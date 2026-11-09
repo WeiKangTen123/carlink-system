@@ -46,7 +46,7 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
       label: "Fix your AI key",
       hint:
         ai.status === "quota"
-          ? "Your key has used up its allowance for now, so AI is off for you. It should work again within about an hour; try again later."
+          ? "Your key has used up today's free allowance, so AI is off for you. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November)."
           : "The key you saved isn't working, so AI is off for you. Replace it on My AI key.",
       done,
       href: "#my-ai-key",

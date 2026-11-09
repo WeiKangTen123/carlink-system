@@ -301,7 +301,7 @@ const AI_OFF_MESSAGES: Record<AiOffCode, string> = {
     "AI is off for your account. Add your own AI key in Settings → My AI key (get one free from Google AI Studio), or ask an admin to allow the company key.",
   ai_key_invalid: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
   ai_quota_used:
-    "Your AI key has used up its quota for now. It should work again within about an hour, so try again later, or check billing in Google Cloud.",
+    "Your AI key has used up today's free allowance. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November), or turn on billing in Google Cloud.",
   ai_key_unreadable: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
   ai_account_off: "AI is off: your account is disabled.",
 };
