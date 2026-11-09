@@ -46,7 +46,7 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
       label: "Fix your AI key",
       hint:
         ai.status === "quota"
-          ? "Your key has used up its allowance for now, so AI is off for you. It should work again within about an hour; try again later."
+          ? "Your key has used up today's free allowance, so AI is off for you. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November)."
           : "The key you saved isn't working, so AI is off for you. Replace it on My AI key.",
       done,
       href: "#my-ai-key",
@@ -55,8 +55,8 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
   }
   return {
     key: "ai-key",
-    label: "Set up AI",
-    hint: "Add your own Gemini key on My AI key, so the AI runs on it, or ask an admin to let you use the company key.",
+    label: "Set up your AI key",
+    hint: "AI is off for you until you do. Add your own Gemini key on My AI key (get one free from Google AI Studio; the card shows how), or ask an admin to let you use the company key.",
     done,
     href: "#my-ai-key",
   };

@@ -119,7 +119,7 @@ from google.genai import types as genai_types  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from app.ai import client as ai_client  # noqa: E402
-from app.ai import keys, secretbox  # noqa: E402
+from app.ai import allowance, keys, secretbox  # noqa: E402
 from app.ai.keys import AiActor, AiKey, AiUnavailable  # noqa: E402
 from app.api import limits  # noqa: E402
 from app.api.main import app  # noqa: E402
@@ -254,6 +254,10 @@ def reset_fakes() -> None:
     ACQUIRED.clear()
     BEHAVIOUR.clear()
     keys._touched.clear()
+    # Each check starts on a fresh Google day: a daily 429 in one would
+    # otherwise skip that model in the next (ai/allowance.py, tested in
+    # test_day_allowance.py).
+    allowance.clear()
 
 
 def code_of(fn) -> str | None:
@@ -381,9 +385,10 @@ def actor_and_key() -> None:
 
 def unavailable_codes() -> None:
     want = {
-        "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
+        "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key "
+                          "(get one free from Google AI Studio), or ask an admin to allow the company key.",
         "ai_key_invalid": "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
-        "ai_quota_used": "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
+        "ai_quota_used": "Your AI key has used up today's free allowance. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November), or turn on billing in Google Cloud.",
         "ai_key_unreadable": "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     }
     for code, message in want.items():

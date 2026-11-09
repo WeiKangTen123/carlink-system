@@ -7130,6 +7130,99 @@ html:has(.intake-footer) {
   vertical-align: baseline;
 }
 
+/* My AI key: Free or Billed in one row (the Disable dialog's choices, side
+   by side and smaller), what the choice means under it. */
+.ai-key-type {
+  margin-top: 10px;
+}
+.ai-key-type-row {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+}
+.ai-key-type-choices {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.ai-key-type-choices .settings-choice {
+  align-items: center;
+  padding: 4px 10px;
+}
+.ai-key-type-choices .settings-choice input[type="radio"] {
+  margin-top: 0;
+}
+.ai-key-type-words {
+  margin: 4px 0 0;
+}
+/* "How to get a free key". */
+.ai-key-howto {
+  margin-top: 14px;
+}
+.ai-key-howto .ai-key-steps {
+  margin: 4px 0 0;
+}
+
+/* My AI key: "Today", each key's daily allowance per model
+   (AiAllowancePanel.tsx). Wraps on a phone: the count drops under. */
+.ai-allowance {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ai-allowance-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ai-allowance-head svg {
+  color: var(--accent-primary);
+}
+.ai-allowance-reset {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.ai-allowance-key {
+  margin-top: 8px;
+}
+.ai-allowance-key-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.ai-allowance-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 12px;
+  padding: 2px 0;
+}
+.ai-allowance-role {
+  flex: 0 0 7.5em;
+  font-weight: 600;
+}
+.ai-allowance-model {
+  flex: 1 1 10em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.ai-allowance-used {
+  margin-left: auto;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ai-allowance-used.spent {
+  color: var(--badge-red-text);
+}
+
 /* Company: whether people's own AI keys can be read on this server
    (AiKeyStorageStatus.tsx). Quiet when fine, a warning when not. */
 .ai-key-storage-ok {

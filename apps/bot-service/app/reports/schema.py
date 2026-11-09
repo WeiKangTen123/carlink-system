@@ -341,6 +341,47 @@ class AIAnalysisInfo(BaseModel):
     suggested_repair_notes: Optional[str] = None
 
 
+class SecondLookItem(BaseModel):
+    """One part the second look (ai/second_look.py) suggests checking. Never a
+    finding: it becomes a damage item only when a person ticks it on the
+    Review step."""
+    part: str
+    # The firm's wording for the part (prefill.row_name), for the list.
+    name: Optional[str] = None
+    # "@<photo id>" while a draft, as damage items are (pipeline.py).
+    photo_reference: Optional[str] = None
+    note: Optional[str] = None
+    condition_tokens: list[str] = Field(default_factory=list)
+    condition: Optional[str] = None
+    damage_type: Optional[str] = None
+    confidence: Optional[str] = None
+    # "kit": past cases of the same make had it with a part found here;
+    # "nearby": next to a part found here.
+    source: Optional[str] = None
+    # The damage-list names that mean this part is already listed (its own
+    # name, and the "(side undetermined)" name of its family or the sided
+    # ones): the Review step hides the suggestion once one of them is listed.
+    covers: list[str] = Field(default_factory=list)
+
+
+class SecondLook(BaseModel):
+    """The second look's last answer for a draft, and what a person did with
+    it. status: ok, skipped (off, nothing to look at, no AI allowance) or
+    failed (an error or no answer in time); note says why, in plain words."""
+    status: str = "skipped"
+    model: Optional[str] = None
+    note: Optional[str] = None
+    # "past Honda cases" when same-make history supplied candidates.
+    scope: Optional[str] = None
+    seconds: Optional[float] = None
+    photos_sent: int = 0
+    candidates: int = 0
+    items: list[SecondLookItem] = Field(default_factory=list)
+    # Parts a person dismissed: never suggested again on this draft, also
+    # after a re-read.
+    dismissed: list[str] = Field(default_factory=list)
+
+
 class SecurityIncidentDraft(BaseModel):
     report_id: Optional[str] = Field(None, description="Custom Report ID e.g. CIR-2026-001")
     company_name: Optional[str] = Field(default=None)
@@ -414,6 +455,12 @@ class SecurityIncidentDraft(BaseModel):
     # cover page is dates of request/survey/painting and static checks the
     # surveyor records -- read off photos they would be invented.
     cover_page: SkipJsonSchema[Optional[CoverPageInfo]] = Field(default_factory=CoverPageInfo)
+    # The intake's second-look suggestions (ai/second_look.py). Out of the
+    # schema for the same reason: the pipeline writes it, never the drafting
+    # call -- and the draft schema, shared with the Telegram bot, must not
+    # grow (extraction._NOT_MODEL_OUTPUT). A field at all so the wizard's
+    # autosave, validated through this model, keeps it.
+    second_look: SkipJsonSchema[Optional[SecondLook]] = None
     bola_assessment: Optional[BolaLiabilityAssessment] = Field(default_factory=BolaLiabilityAssessment)
     reported_to_authorities: bool = False
     authority_reference: Optional[str] = None

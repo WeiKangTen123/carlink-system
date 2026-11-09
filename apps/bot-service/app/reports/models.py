@@ -356,8 +356,9 @@ class UserAiKey(Base):
     # Google's last complaint, at most 200 characters, with anything that
     # looks like a key taken out. Shown only to the key's owner.
     last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    # Ticked when saving: "This key's Google Cloud project has billing
-    # turned on" (on free keys Google may use what's sent, case photos too).
+    # Billed (True) or Free (False), as the person said when saving it or
+    # since (PATCH /auth/me/ai-key). On free keys Google may use what's
+    # sent, case photos too, so only a Billed key reads public reports.
     billing_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -516,7 +517,7 @@ class AiRun(Base):
     # The draft's or the case's id (the same id). A bot draft gets the id
     # its case will be saved under (channels/telegram._case_id_for).
     report_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    # sort | read | redraft | annex_suggest | redetect | lookup (runs.KINDS).
+    # sort | read | redraft | annex_suggest | redetect | lookup | second_look (runs.KINDS).
     kind: Mapped[str] = mapped_column(String, nullable=False)
     # Where it was started: dashboard | telegram | whatsapp | system.
     channel: Mapped[str] = mapped_column(String, nullable=False, default="dashboard")

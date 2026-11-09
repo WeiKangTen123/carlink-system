@@ -13,6 +13,8 @@ import { applyCoverPatch, bboxStyle } from "@/lib/intakeReview";
 import { DamagePhotoViewer, type ViewerSlide } from "./DamagePhotoViewer";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
+import { ReadByNotice } from "./ReadByNotice";
+import { SecondLookPanel } from "./SecondLookPanel";
 
 // Three.js/WebGL only exists client-side (same as the case page).
 const VehicleBlueprint3D = dynamic(() => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D), {
@@ -285,6 +287,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
   return (
     <div className="intake-review-layout">
       <div className="intake-col">
+        <ReadByNotice readPhotoIds={readPhotoIds} />
         <section className="card intake-panel">
           <div className="intake-panel-head">
             <h2>Cover page</h2>
@@ -505,6 +508,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
           </p>
         </section>
 
+        <SecondLookPanel data={data} onChange={onChange} photos={photos} />
         <PhotosByPart
           photos={photos}
           damage={damage}

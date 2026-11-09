@@ -20,7 +20,8 @@ IntakeSession.error_code, and error_by says whose run it was; photos
 already sorted stay sorted.
 
 Each stage is one row of the AI run log (ai/runs.py): "sort" (photos_sent
-{"count": n}), and "read" -- "redraft" for a re-read -- with the labels sent.
+{"count": n}), and "read" -- "redraft" for a re-read -- with the labels sent;
+the second look after a reading is a row of its own, "second_look".
 """
 import logging
 import re
@@ -31,7 +32,7 @@ from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import runs
+from app.ai import allowance, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
@@ -184,6 +185,11 @@ def _friendly_error(exc: Exception) -> str:
     never help."""
     if isinstance(exc, AiUnavailable):
         return exc.message
+    if isinstance(exc, RuntimeError) and "fallback models" in str(exc) and allowance.day_spent_error(exc):
+        return (
+            "Today's free AI allowance is used up on every model this key can use. Your photos are saved: "
+            "it works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November)."
+        )
     if isinstance(exc, RuntimeError) and "fallback models" in str(exc):
         cause = str(exc.__cause__ or "")
         if any(s in cause for s in ("429", "RESOURCE_EXHAUSTED", "quota", "503", "high demand")):
@@ -414,9 +420,13 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
 
 def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
     """The reading stage, as one run of the log (ai/runs.py): kind "read",
-    or "redraft" for a re-read."""
+    or "redraft" for a re-read -- then the second look at the damage it
+    found (ai/second_look.py, its own run), which only adds suggestions,
+    never raises and is time-boxed: the reading is saved by then."""
     with runs.recorded(report_id, kind, actor) as run:
         _read_into(report_id, actor, run)
+    if not run.aborted:
+        second_look.run_for_intake(report_id, actor)
 
 
 def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
@@ -708,4 +718,9 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
 
     merged["damage_summary"] = kept + [item for item in (new_ai.get("damage_summary") or []) if not already_kept(item)]
     merged["damaged_parts"] = [item.get("part") for item in merged["damage_summary"] if item.get("part")]
+    # The last second look stays until the one after this reading replaces
+    # its suggestions, keeping the parts a person dismissed
+    # (second_look._store). The reading itself never writes one.
+    if current.get("second_look"):
+        merged["second_look"] = current["second_look"]
     return merged

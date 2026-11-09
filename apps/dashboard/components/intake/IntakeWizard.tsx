@@ -1004,8 +1004,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           <div style={{ flex: "1 1 260px", minWidth: 0 }}>
             {!aiOffCode ? (
               <>
-                AI is off for your account, so the photos won&apos;t be sorted or read for you. You can fill the case in by
-                hand.
+                AI is off for your account, so the photos won&apos;t be sorted or read for you. To turn it on, set up your
+                own AI key in Settings → My AI key (get one free from Google AI Studio). Until then you can fill the case in
+                by hand.
               </>
             ) : aiOffReadEarlier ? (
               <>{aiOffMessage(aiOffCode, aiOffSaid, { publicCase })} The facts the AI read earlier are kept.</>

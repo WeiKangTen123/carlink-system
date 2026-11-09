@@ -220,9 +220,11 @@ DECISIONS = {
     ("POST", "/auth/password"): ("self", "open to temporary-password users"),
     # P3 "My AI key" (app/api/ai_keys.py; tested in scripts/test_ai_keys.py).
     ("GET", "/auth/me/ai-key"): ("self", "P3: last 4 + status + what the AI will use, never the key"),
-    ("PUT", "/auth/me/ai-key"): ("self", "P3: 400 ai_key_format / billing_not_confirmed / ai_key_invalid, 409 ai_key_in_use, 429 rate_limited"),
+    ("PUT", "/auth/me/ai-key"): ("self", "P3: 400 ai_key_format / ai_key_type_missing / ai_key_invalid, 409 ai_key_in_use, 429 rate_limited; Free allowed"),
+    ("PATCH", "/auth/me/ai-key"): ("self", "Free <-> Billed for the saved key; 404 no_ai_key, 409 ai_key_changed, 429 rate_limited; history entry ai_key_type_changed"),
     ("POST", "/auth/me/ai-key/test"): ("self", "P3: asks Google again (models.list); 10 an hour"),
     ("DELETE", "/auth/me/ai-key"): ("self", "P3: history entry ai_key_removed"),
+    ("GET", "/auth/me/ai-allowance"): ("self", "today's free Gemini allowance per key and model; company key only if allowed, its last 4 only to admins"),
     # P5 "Telegram connect" (app/api/telegram_link.py; tested in scripts/test_telegram_link.py).
     ("GET", "/auth/me/telegram"): ("self", "P5: connected?, the open code (never the code itself), bot_username"),
     ("POST", "/auth/me/telegram/code"): ("self", "P5: the plain code in this response only; cancels the open one; 429 rate_limited after 10 an hour"),
@@ -330,8 +332,8 @@ PASSWORD = "purple tiger lamp bicycle"
 TICKS = ("sees_all_cases", "ai_company_key_allowed", "may_sign_off")
 # P4: no working own key and not allowed the company key (app/ai/keys.py).
 AI_OFF_DETAIL = (
-    "AI is off for your account. Add your own AI key in Settings → My AI key, "
-    "or ask an admin to allow the company key."
+    "AI is off for your account. Add your own AI key in Settings → My AI key "
+    "(get one free from Google AI Studio), or ask an admin to allow the company key."
 )
 BANNER_WORDS = ("unverified user", "not issued by")
 

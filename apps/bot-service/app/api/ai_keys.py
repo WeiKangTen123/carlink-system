@@ -1,13 +1,18 @@
 """Someone's own AI key (Settings > My AI key; app/ai/keys.py).
 
     GET    /auth/me/ai-key           last 4, status, and what the AI will use for me
-    PUT    /auth/me/ai-key           add or replace: {api_key, billing_confirmed: true}
+    PUT    /auth/me/ai-key           add or replace: {api_key, billing_confirmed: true|false}
+    PATCH  /auth/me/ai-key           Free or Billed for the saved key: {billing_confirmed, last4?}
     POST   /auth/me/ai-key/test      ask Google about the saved key again
     DELETE /auth/me/ai-key           remove it
     DELETE /users/{id}/ai-key        admin: remove someone's key
 
-No response ever holds a key, to anyone, admins included: GET, PUT and
-test all answer with keys.ai_key_status. Like every route, these need a
+billing_confirmed is the person's word for the key's Google Cloud project:
+false (Free) is allowed, with the notice on Settings > My AI key, and
+only a Billed key is used for reports sent by the public (app/ai/keys.py).
+
+No response ever holds a key, to anyone, admins included: GET, PUT, PATCH
+and test all answer with keys.ai_key_status. Like every route, these need a
 signed-in user, and a temporary password refuses them (auth/middleware.py).
 
 Saving is limited per person and in total: a refusal for a key someone
@@ -21,10 +26,10 @@ from collections import deque
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.ai import keys, secretbox
+from app.ai import allowance, keys, secretbox
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, require_admin
@@ -40,7 +45,8 @@ INVALID = (
     "Google didn't accept this key. Check you copied all of it, and that the Gemini API "
     "is turned on for its Google Cloud project."
 )
-BILLING = "Tick the box to confirm billing is turned on for this key's Google Cloud project."
+TYPE_MISSING = "Choose whether this key is Free or Billed."
+KEY_CHANGED = "Your AI key was changed in another tab or window. Reload the page to see it."
 STORAGE_OFF = "Saving AI keys is off on this server right now. Please tell your admin."
 NO_KEY = "You haven't added an AI key yet."
 CHECK_FAILED = "Couldn't reach Google to check the key. Try again in a minute."
@@ -62,6 +68,8 @@ UNVETTED_SAVES_PER_HOUR = 3
 UNVETTED_SAVES_PER_DAY = 10
 SAVES_PER_DAY_ALL = 100
 TESTS_PER_HOUR = 10
+# Free <-> Billed: no Google call, but each one is a history entry.
+SWITCHES_PER_HOUR = 20
 _HOUR = 60 * 60
 _DAY = 24 * _HOUR
 # A 429 goes into the history at most this often per person, so a flood of
@@ -102,7 +110,8 @@ unvetted_hour = _Budget(UNVETTED_SAVES_PER_HOUR, _HOUR)
 unvetted_day = _Budget(UNVETTED_SAVES_PER_DAY, _DAY)
 saves_all = _Budget(SAVES_PER_DAY_ALL, _DAY)
 tests = _Budget(TESTS_PER_HOUR, _HOUR)
-_BUDGETS = (saves, unvetted_hour, unvetted_day, saves_all, tests)
+switches = _Budget(SWITCHES_PER_HOUR, _HOUR)
+_BUDGETS = (saves, unvetted_hour, unvetted_day, saves_all, tests, switches)
 _noted: dict[str, float] = {}  # user id -> when a 429 last went into the history
 
 
@@ -165,7 +174,7 @@ def _exempt_from_total(user: CurrentUser) -> bool:
 
 def _charge_total(user: CurrentUser) -> None:
     """Counts one save towards the day's total, once it has passed the
-    format and billing checks; 429 rate_limited when the total is full."""
+    format and Free/Billed checks; 429 rate_limited when the total is full."""
     if _exempt_from_total(user):
         return
     now = _clock()
@@ -178,17 +187,29 @@ def _charge_total(user: CurrentUser) -> None:
         raise _refused(user, TOO_MANY_TODAY, f"the day's {SAVES_PER_DAY_ALL} key saves for everyone", note)
 
 
-def _charge_test(user: CurrentUser) -> None:
+def _charge_one(user: CurrentUser, budget: _Budget, what: str) -> None:
+    """Counts one try against a per-person budget of its own (tests, or
+    Free/Billed switches); 429 rate_limited when it is full."""
     now = _clock()
     with _lock:
-        if len(tests._times) > 5000:
-            tests.reset()
-        full = tests.full(user.id, now)
+        if len(budget._times) > 5000:
+            budget.reset()
+        full = budget.full(user.id, now)
         if not full:
-            tests.add(user.id, now)
+            budget.add(user.id, now)
         note = full and _note_due(user.id, now)
     if full:
-        raise _refused(user, TOO_MANY, f"{TESTS_PER_HOUR} key tests an hour", note)
+        raise _refused(user, TOO_MANY, f"{budget.limit} {what} an hour", note)
+
+
+def _charge_test(user: CurrentUser) -> None:
+    _charge_one(user, tests, "key tests")
+
+
+def _charge_switch(user: CurrentUser) -> None:
+    # Its own budget, not the saves': switching back and forth mustn't
+    # stop someone pasting a new key.
+    _charge_one(user, switches, "Free/Billed switches")
 
 
 def reset_limits() -> None:
@@ -235,7 +256,10 @@ def my_ai_key(user: CurrentUser = Depends(current_user)) -> dict:
 
 class AiKeyIn(BaseModel):
     api_key: str = Field(max_length=200)
-    billing_confirmed: Optional[bool] = None
+    # Required, true (Billed) or false (Free): None is refused with words
+    # (400 ai_key_type_missing), not FastAPI's 422. Strict: only a real
+    # true says billing is on, never "yes" or 1.
+    billing_confirmed: Optional[StrictBool] = None
 
 
 @router.put("/auth/me/ai-key")
@@ -248,8 +272,8 @@ def save_my_ai_key(body: AiKeyIn, user: CurrentUser = Depends(current_user)) -> 
     key = body.api_key.strip()
     if keys.format_problem(key):
         raise ApiError(400, keys.FORMAT_PROBLEM, "ai_key_format")
-    if body.billing_confirmed is not True:
-        raise ApiError(400, BILLING, "billing_not_confirmed")
+    if body.billing_confirmed is None:
+        raise ApiError(400, TYPE_MISSING, "ai_key_type_missing")
     _charge_total(user)
     try:
         fingerprint = secretbox.fingerprint(key)
@@ -272,13 +296,19 @@ def save_my_ai_key(body: AiKeyIn, user: CurrentUser = Depends(current_user)) -> 
     status, error = keys.probe_key(key)
     if status == "invalid":
         raise ApiError(400, INVALID, "ai_key_invalid")
+    # A key saved (again): nothing remembered as used up, nor a limit learnt
+    # while it was Free, carries over (ai/allowance.py).
+    allowance.forget(fingerprint, limits=True)
 
     db = SessionLocal()
     try:
         for attempt in range(2):
             try:
-                keys.save_key(db, user.id, key, fingerprint, status, error, billing_confirmed=True)
-                audit(db, user, "ai_key_saved", detail=f"key ...{keys.last4(key)} ({status})")
+                keys.save_key(db, user.id, key, fingerprint, status, error, billing_confirmed=body.billing_confirmed)
+                audit(
+                    db, user, "ai_key_saved",
+                    detail=f"key ...{keys.last4(key)} ({status}, {keys.key_type(body.billing_confirmed)})",
+                )
                 # Takes the write lock: from here nobody else commits until
                 # this does, so what is read now holds.
                 db.flush()
@@ -303,6 +333,47 @@ def save_my_ai_key(body: AiKeyIn, user: CurrentUser = Depends(current_user)) -> 
                 db.rollback()
                 if attempt or keys.key_in_use(db, key, fingerprint, user.id):
                     raise ApiError(409, keys.IN_USE, "ai_key_in_use")
+        return keys.ai_key_status(db, user)
+    finally:
+        db.close()
+
+
+class AiKeyTypeIn(BaseModel):
+    billing_confirmed: StrictBool
+    # The last 4 of the key the screen showed. A key replaced in another tab
+    # since then mustn't get this choice: Billed on a free key would let it
+    # read reports sent by the public.
+    last4: Optional[str] = Field(default=None, max_length=8)
+
+
+@router.patch("/auth/me/ai-key")
+def set_my_ai_key_type(body: AiKeyTypeIn, user: CurrentUser = Depends(current_user)) -> dict:
+    """Free (false) or Billed (true) for the saved key, without pasting it
+    again. It is the person's word for the key's Google Cloud project, so
+    Google isn't asked. 404 no_ai_key with none saved; 409 ai_key_changed
+    when it isn't the key the screen showed."""
+    _charge_switch(user)
+    db = SessionLocal()
+    try:
+        row = keys.get_row(db, user.id)
+        if row is None:
+            raise ApiError(404, NO_KEY, "no_ai_key")
+        if body.last4 is not None and body.last4 != row.last4:
+            raise ApiError(409, KEY_CHANGED, "ai_key_changed")
+        was = bool(row.billing_confirmed)
+        if was != body.billing_confirmed:
+            # Onto the key just read only: one saved meanwhile keeps its own.
+            if not keys.set_billing(db, user.id, row.fingerprint, body.billing_confirmed):
+                db.rollback()
+                raise ApiError(409, KEY_CHANGED, "ai_key_changed")
+            audit(
+                db, user, "ai_key_type_changed",
+                detail=f"key ...{row.last4}: {keys.key_type(was)} -> {keys.key_type(body.billing_confirmed)}",
+            )
+            db.commit()
+            # Billing on (or off) changes the key's allowance: what was
+            # remembered for it no longer holds.
+            allowance.forget(row.fingerprint, limits=True)
         return keys.ai_key_status(db, user)
     finally:
         db.close()
@@ -339,6 +410,10 @@ def test_my_ai_key(user: CurrentUser = Depends(current_user)) -> dict:
         # Only onto the key that was tested: one saved meanwhile keeps its own.
         keys.record_check(db, user.id, tested, status, error)
         db.commit()
+        # Google takes it again (billing turned on, say): models remembered
+        # as used up for today are tried again rather than skipped.
+        if status == "ok":
+            allowance.forget(tested)
         return keys.ai_key_status(db, user)
     finally:
         db.close()

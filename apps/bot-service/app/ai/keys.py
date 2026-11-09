@@ -19,14 +19,23 @@ use AiActor.cli(): the company keys, as before P4. No HTTP route ever does,
 nor the Telegram bot, which drafts for the account its Telegram is linked
 to (AiActor.for_user(id, "telegram")).
 
+Free or Billed (billing_confirmed): what the person says about the key's
+Google Cloud project, picked when saving it (PUT) and switched later
+without pasting it again (PATCH). Free keys are allowed: Google gives every
+project a small daily allowance, and a free key runs its owner's own AI
+calls like any other. But on Google's unpaid tier what is sent may be used
+to improve Google's products and read by people at Google, so a Free key
+never reads a report sent by the public, whatever the company key is.
+
 Public reports (P6, channel "telegram_public"): until an admin ticks
 "The company AI key is on a Google Cloud project with billing turned on"
 (app_settings company_key_billed, intake/public.company_key_billed), an AI
 call for one uses ONLY the presser's own key -- working (ok or untested)
-and saved with billing confirmed -- and never a company key; with none,
-ai_key_missing with PUBLIC_KEY_ONLY. Once ticked, the order above. The
-actor carries it (AiActor.for_user(..., public_case=True)), so every call
-of a background run keeps the rule, not just the check before it.
+and Billed -- and never a company key; with none, ai_key_missing with
+PUBLIC_KEY_ONLY. Once ticked, the order above, minus a Free own key (with
+nothing left: ai_key_missing with PUBLIC_FREE_KEY). The actor carries it
+(AiActor.for_user(..., public_case=True)), so every call of a background
+run keeps the rule, not just the check before it.
 
 One key per person and one person per key: a key someone else has saved,
 or one of the company's, is refused. The key is sealed the moment it
@@ -208,11 +217,17 @@ def get_row(db: Session, user_id: str) -> UserAiKey | None:
     return db.query(UserAiKey).filter(UserAiKey.user_id == user_id).first()
 
 
+def key_type(billing_confirmed) -> str:
+    """"billed" or "free", for the history."""
+    return "billed" if billing_confirmed else "free"
+
+
 def save_key(
     db: Session, user_id: str, key: str, fingerprint: str, status: str, error: str | None, *, billing_confirmed: bool
 ) -> UserAiKey:
     """Seals and stores the key as this person's, replacing any they had
-    (the caller commits). status is probe_key's verdict."""
+    (the caller commits). status is probe_key's verdict; billing_confirmed
+    the person's Free (False) or Billed (True)."""
     now = utc_now()
     row = get_row(db, user_id)
     if row is None:
@@ -240,6 +255,20 @@ def record_check(db: Session, user_id: str, fingerprint: str, status: str, error
         update(UserAiKey)
         .where(UserAiKey.user_id == user_id, UserAiKey.fingerprint == fingerprint)
         .values(status=status, last_error=error, last_checked_at=utc_now())
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount > 0
+
+
+def set_billing(db: Session, user_id: str, fingerprint: str, billing_confirmed: bool) -> bool:
+    """Switches this person's key to Free or Billed (the caller commits) --
+    only if it is still the key the caller read (record_check's rule): a
+    key saved meanwhile keeps the choice it was saved with. False when it
+    was replaced or removed."""
+    result = db.execute(
+        update(UserAiKey)
+        .where(UserAiKey.user_id == user_id, UserAiKey.fingerprint == fingerprint)
+        .values(billing_confirmed=billing_confirmed, updated_at=utc_now())
         .execution_options(synchronize_session=False)
     )
     return result.rowcount > 0
@@ -364,12 +393,12 @@ AI_KEY_UNREADABLE = "ai_key_unreadable"
 AI_ACCOUNT_OFF = "ai_account_off"
 MESSAGES = {
     AI_KEY_MISSING: (
-        "AI is off for your account. Add your own AI key in Settings → My AI key, "
-        "or ask an admin to allow the company key."
+        "AI is off for your account. Add your own AI key in Settings → My AI key "
+        "(get one free from Google AI Studio), or ask an admin to allow the company key."
     ),
     AI_KEY_INVALID: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
     # The AI tries the key again after QUOTA_RETRY_AFTER by itself.
-    AI_QUOTA_USED: "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
+    AI_QUOTA_USED: "Your AI key has used up today's free allowance. It works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November), or turn on billing in Google Cloud.",
     AI_KEY_UNREADABLE: "Your AI key can't be read on this server right now. Tell an admin (Settings → Company).",
     AI_ACCOUNT_OFF: "AI is off: this account is disabled.",
 }
@@ -378,6 +407,11 @@ MESSAGES = {
 PUBLIC_KEY_ONLY = (
     "Public reports can only use your own (billed) AI key until an admin confirms the company key is billed. "
     "You can still fill it in by hand."
+)
+# ...and once it is: someone whose only key is their own Free one.
+PUBLIC_FREE_KEY = (
+    "Public reports can't use a free AI key. If billing is on for your key's Google Cloud project, "
+    "switch it to Billed in Settings → My AI key. You can still fill it in by hand."
 )
 # A stored status that keeps an own key out, and the code it means when
 # nothing else is left.
@@ -557,8 +591,8 @@ def resolve_keys(actor: AiActor, *, public_case: bool = False) -> list[AiKey]:
     can't be used (ai_key_missing when they have none).
 
     public_case (or actor.public_case): the call is for a public report,
-    which takes only the presser's own billed key until company_key_billed
-    is ticked."""
+    which takes only the presser's own Billed key until company_key_billed
+    is ticked, and never a Free one after."""
     public = public_case or actor.public_case
     from app.reports.db import SessionLocal
 
@@ -595,11 +629,15 @@ def resolve_keys(actor: AiActor, *, public_case: bool = False) -> list[AiKey]:
     if not billed:
         return _public_own_key(row)
     own, problem = _own_key(row) if row is not None else (None, AI_KEY_MISSING)
+    message = None
+    if public and own is not None and not row.billing_confirmed:
+        # A Free key never reads a public report, company key billed or not.
+        own, problem, message = None, AI_KEY_MISSING, PUBLIC_FREE_KEY
     keys = [own] if own else []
     if may_use_company_key(user):
         keys += company_keys()
     if not keys:
-        raise AiUnavailable(problem)
+        raise AiUnavailable(problem, message)
     return keys
 
 

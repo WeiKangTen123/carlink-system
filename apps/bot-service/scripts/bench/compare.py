@@ -29,16 +29,19 @@ KEY_METRICS = (
     "label_precision", "photographed_recall", "selection_coverage",
     "cond_exact_rate", "cond_first_token_rate", "cond_token_recall", "cond_firm_share",
     "annex_coverage", "annex_extra", "annex_unpriced", "annex_canonical", "annex_perfect_coverage",
+    "look_found", "look_added", "look_extra", "look_wrong_side", "look_calls", "look_s",
 )
 HIGHER_IS_BETTER = {
     "found", "visible_found", "facts_ok", "visible_recall", "checklist_found", "checklist_visible_found",
     "label_precision", "photographed_recall", "selection_coverage", "cond_exact", "cond_first_token",
     "cond_exact_rate", "cond_first_token_rate", "cond_token_recall", "cond_firm_share",
     "annex_covered", "annex_coverage", "annex_priced",
+    "look_found", "look_visible_found", "look_added", "look_ok",
 }
 LOWER_IS_BETTER = {
     "extra", "wrong_side", "side_undetermined", "checklist_extra", "sort_s", "read_s", "calls", "attempts",
     "n_429", "wait_429_s", "slot_wait_s", "annex_extra", "annex_unpriced", "annex_canonical",
+    "look_extra", "look_wrong_side", "look_calls", "look_s",
 }
 
 

@@ -1,6 +1,7 @@
 """The AI run log (round 3, B3): one models.AiRun row per piece of AI work
-on a case -- an intake sorting or reading stage, a Telegram (re)draft,
-Annex A suggestions, and Phase 2's re-detection and price lookups.
+on a case -- an intake sorting or reading stage and its second look, a
+Telegram (re)draft, Annex A suggestions, and Phase 2's re-detection and
+price lookups.
 
 Before this the only trace of an AI call was a log line without a case id:
 nobody could see, per case or across cases, which photos the AI read, how
@@ -39,11 +40,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from app.ai.keys import AiActor, AiUnavailable, scrub
+from app.config import settings
 from app.reports.models import AiRun, iso_utc
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup")
+# second_look: the one call after an intake reading that suggests parts to
+# check (ai/second_look.py) -- its own row, so the reading's time and model
+# ("AI read 14 of 41 photos (48 s)") stay the reading's.
+KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup", "second_look")
 CHANNELS = ("dashboard", "telegram", "whatsapp", "system")
 STATUSES = ("running", "ok", "failed", "refused", "aborted")
 # What counts as a failure on GET /ai-usage and in the case's list.
@@ -64,6 +69,10 @@ MAX_ERROR = 200
 # was the last try before the run gave up. AiUnavailable's own codes
 # (ai_key_missing, ai_quota_used...) are used as they are.
 _OUTCOME_CODES = {"429": "rate_limited", "timeout": "timeout", "schema": "bad_answer", "error": "ai_error"}
+# The last try was skipped for its model's used-up free day (outcome
+# "day_spent"), or was the 429 that said so (it carries spent_until): not
+# "too many requests", which a wait would cure.
+DAY_ALLOWANCE_USED = "day_allowance_used"
 
 
 def _now() -> datetime:
@@ -200,17 +209,19 @@ def status_for(exc: BaseException) -> str:
 
 def error_code_for(exc: BaseException, attempts: list[dict]) -> str:
     """The existing codes where there is one: AiUnavailable's; then what
-    the last model try said (rate_limited, timeout, bad_answer, ai_error);
-    photo_missing; interrupted; else "error"."""
+    the last model try said (rate_limited, timeout, bad_answer, ai_error,
+    day_allowance_used); photo_missing; interrupted; else "error"."""
     if isinstance(exc, AiUnavailable):
         return exc.code
     if isinstance(exc, FileNotFoundError):
         return "photo_missing"
     if not isinstance(exc, Exception):
         return "interrupted"
-    failed = [a.get("outcome") for a in attempts if a.get("outcome") != "ok"]
+    failed = [a for a in attempts if a.get("outcome") != "ok"]
     if failed:
-        return _OUTCOME_CODES.get(failed[-1], "ai_error")
+        if failed[-1].get("outcome") == "day_spent" or failed[-1].get("spent_until"):
+            return DAY_ALLOWANCE_USED
+        return _OUTCOME_CODES.get(failed[-1].get("outcome"), "ai_error")
     if isinstance(exc, TimeoutError):
         return "timeout"
     return "error"
@@ -462,6 +473,40 @@ def _newest_read(db, report_id: str) -> AiRun | None:
         .all()
     )
     return next((r for r in rows if isinstance(r.photos_sent, list)), None)
+
+
+def read_by(db, report_id: str) -> dict | None:
+    """GET /intake/{id}'s read_by, for the review step's notice "Read by the
+    backup model (gemini-3.6-flash): today's main-model allowance is used up
+    until 4:00 pm": {model, main_model, main_spent_until (ISO)} when the
+    newest reading that finished was answered by another model of the
+    chain because the main one's free day was used up -- skipped
+    (day_spent) or a 429 that said so -- else None.
+
+    A timeout or busy main model doesn't count: that's no reason to tell
+    the surveyor about allowances. The chain is today's setting; a reading
+    may make more than one call (a second look on another chain), so only
+    the chain's own models are looked at."""
+    chain =[m.strip() for m in (settings.gemini_model_chain or "").split(",") if m.strip()]
+    if not chain:
+        return None
+    main = chain[0]
+    row = (
+        db.query(AiRun)
+        .filter(AiRun.report_id == report_id, AiRun.kind.in_(READ_KINDS), AiRun.status == "ok")
+        .order_by(AiRun.started_at.desc(), AiRun.id)
+        .first()
+    )
+    if row is None:
+        return None
+    attempts = [a for a in (row.attempts or []) if isinstance(a, dict) and a.get("model") in chain]
+    if any(a.get("model") == main and a.get("outcome") == "ok" for a in attempts):
+        return None
+    spent = [a["spent_until"] for a in attempts if a.get("model") == main and isinstance(a.get("spent_until"), str)]
+    answered = next((a for a in attempts if a.get("outcome") == "ok"), None)
+    if not spent or answered is None:
+        return None
+    return {"model": answered.get("model"), "main_model": main, "main_spent_until": max(spent)}
 
 
 def last_read(db, report_id: str, photos_total: int) -> dict | None:
