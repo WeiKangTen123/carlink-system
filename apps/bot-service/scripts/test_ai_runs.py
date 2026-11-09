@@ -33,6 +33,9 @@ os.environ["GEMINI_API_KEY"] = COMPANY_KEY
 os.environ["MIN_FREE_DISK_GB"] = "0"
 os.environ["RUN_BACKGROUND_CLEANUP"] = "false"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
+# This file checks the reading's runs and calls exactly; the second look
+# after it (one more call and run row) has its own test_second_look.py.
+os.environ["SECOND_LOOK_ENABLED"] = "false"
 
 import app.ai.structured as structured  # noqa: E402
 

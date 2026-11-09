@@ -24,6 +24,13 @@ sorting's variance. --reports scores the drafted conditions, and the Annex A
 that prefill builds from the drafted parts, against each case's own surveyor
 report, with the other reports as the firm's history (leave-one-out).
 
+The reading is followed by the second look (app/ai/second_look.py), as in
+the app: its suggestions are scored as if every one were ticked -- parts
+found then, parts it added, its extras -- with its calls and models apart
+from the reading's, so it ships only if it finds more beyond the noise for
+few extras. --second-look-models measures another chain; --no-second-look
+leaves it out.
+
 On the server, scripts/bench/run_bench.sh runs this inside the live api
 container and scripts/bench/compare.py compares two result files; see
 scripts/bench/README.md.
@@ -140,6 +147,32 @@ def score_parts(expected: list[dict], drafted: list[str]) -> dict:
         "wrong_side": wrong_side,
         "extra": extra,
         "side_undetermined": [p for p in drafted if p.endswith(SIDE_UNDETERMINED)],
+    }
+
+
+def score_second_look(expected: list[dict], parts: dict, drafted: list[str], suggested: list[str]) -> dict:
+    """The second look's suggestions as if a person ticked every one. parts:
+    score_parts of the reading alone. found / visible_found: the key parts
+    found by the reading and the suggestions together. added: key parts the
+    reading missed that a suggestion found (scored against the missed parts
+    only, so a suggestion can't take a part the reading already had).
+    extra: suggestions that match no missed key part; wrong_side: ones that
+    name a missed part's family on the other side -- both cost the surveyor
+    an untick."""
+    suggested = [p for p in suggested if p]
+    with_look = score_parts(expected, list(drafted) + suggested)
+    missed = [e for e in expected if e["part"] in parts["missed"]]
+    gain = score_parts(missed, suggested)
+    return {
+        "suggested": len(suggested),
+        "found": with_look["found"],
+        "visible_found": with_look["visible_found"],
+        "added": gain["found"],
+        "added_visible": gain["visible_found"],
+        "added_parts": list(gain["found_parts"]),
+        "extra": len(gain["extra"]),
+        "extra_parts": gain["extra"],
+        "wrong_side": len(gain["wrong_side"]),
     }
 
 
@@ -387,6 +420,13 @@ def run_metrics(run: dict) -> dict:
     pc = run.get("parts_with_checklist")
     if pc:
         m.update(checklist_found=pc["found"], checklist_visible_found=pc["visible_found"], checklist_extra=len(pc["extra"]))
+    look = run.get("parts_with_second_look")
+    if look:
+        m.update(look_found=look["found"], look_visible_found=look["visible_found"], look_added=look["added"],
+                 look_extra=look["extra"], look_wrong_side=look["wrong_side"], look_suggested=look["suggested"])
+    info = run.get("second_look")
+    if info:
+        m.update(look_calls=info.get("calls"), look_s=info.get("seconds"), look_ok=1 if info.get("status") == "ok" else 0)
     accounting = run.get("accounting")
     if accounting is not None:
         m.update(
@@ -660,9 +700,10 @@ def _app() -> SimpleNamespace:
         runs.note_attempt = _noting(runs.note_attempt)
 
     import app.ai.extraction as extraction
+    import app.ai.second_look as second_look
     import app.ai.triage as triage
 
-    for module in (triage, extraction):  # imported before the wrap (not today)
+    for module in (triage, extraction, second_look):  # imported before the wrap (not today)
         if not getattr(module.call_structured, "_bench_wrapped", False):
             module.call_structured = structured.call_structured
 
@@ -975,6 +1016,20 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         hinted = sorted({p.part for p in photos if p.part} - set(drafted))
         out["checklist"] = hinted
         out["parts_with_checklist"] = score_parts(case["parts"], drafted + hinted)
+        look = data.get("second_look") if isinstance(data.get("second_look"), dict) else None
+        if look:
+            suggested = [it.get("part") for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
+            out["second_look"] = {
+                "status": look.get("status"), "model": look.get("model"), "note": look.get("note"),
+                "seconds": look.get("seconds"), "photos_sent": look.get("photos_sent"),
+                "candidates": look.get("candidates"), "suggested": suggested,
+                "calls": out["calls"].get("second look", 0),
+            }
+            out["parts_with_second_look"] = score_second_look(case["parts"], out["parts"], drafted, suggested)
+            # _read runs the second look after the reading: read_seconds stays
+            # the reading's own, comparable with runs from before it.
+            if isinstance(look.get("seconds"), (int, float)) and "read_seconds" in out:
+                out["read_seconds"] = round(max(0.0, out["read_seconds"] - look["seconds"]), 1)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
     finally:
@@ -1022,6 +1077,14 @@ def detail_lines(r: dict) -> list[str]:
     lines.append(f"   + checklist {r['checklist']}")
     lines.append(f"   with checklist: parts {pc['found']}/{pc['expected']} (visible {pc['visible_found']}/{pc['visible_expected']}) "
                  f"wrong-side {len(pc['wrong_side'])} extra {len(pc['extra'])} {pc['extra']}")
+    look, ls = r.get("second_look"), r.get("parts_with_second_look")
+    if look and ls:
+        lines.append(f"   second look: {look['status']} on {look.get('model') or '-'} in {look.get('seconds')}s, "
+                     f"{look['calls']} call(s), {look.get('photos_sent')} photos, {look.get('candidates')} candidates; "
+                     f"suggested {look['suggested']}" + (f" ({look['note']})" if look.get("note") else ""))
+        lines.append(f"   if every suggestion were ticked: parts {ls['found']}/{r['parts']['expected']} "
+                     f"(visible {ls['visible_found']}/{r['parts']['visible_expected']}), added {ls['added']} "
+                     f"{ls['added_parts']}, extra {ls['extra']} {ls['extra_parts']}, wrong side {ls['wrong_side']}")
     s = r["sorter"]
     cache = r.get("sort_cache")
     lines.append(f"   sorter: labels in key {s['tagged_in_key']}/{s['tagged_photos']} ({_pct(s['label_precision'])}), "
@@ -1063,6 +1126,9 @@ TABLES = (
      ("selection", "selection_coverage"), ("calls", "calls"), ("429 wait s", "wait_429_s"),
      ("cond exact", "cond_exact_rate"), ("cond words", "cond_token_recall"), ("firm words", "cond_firm_share"),
      ("Annex A", "annex_coverage"), ("A extra", "annex_extra"), ("A canonical", "annex_canonical")),
+    (("+look found", "look_found"), ("+look visible", "look_visible_found"), ("look added", "look_added"),
+     ("look extra", "look_extra"), ("look wrong side", "look_wrong_side"), ("suggested", "look_suggested"),
+     ("look calls", "look_calls"), ("look s", "look_s")),
 )
 
 
@@ -1125,6 +1191,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--models", type=_chain, metavar="CHAIN", help="override the reading model chain (comma-separated)")
     ap.add_argument("--triage-models", type=_chain, metavar="CHAIN",
                     help="override the sorting model chain (comma-separated)")
+    ap.add_argument("--second-look-models", type=_chain, metavar="CHAIN",
+                    help="override the second look's model chain (comma-separated)")
+    ap.add_argument("--no-second-look", action="store_true",
+                    help="leave the second look out (the reading alone, as before it existed)")
     ap.add_argument("--label", help="name of this run in the result file (default: the --out file name)")
     ap.add_argument("--ref", help="git ref (and commit) the code came from, for the result file")
     ap.add_argument("--keep-photos", action="store_true",
@@ -1145,6 +1215,10 @@ def main(argv=None) -> int:
         A.settings.gemini_model_chain = args.models
     if args.triage_models:
         A.settings.gemini_triage_model_chain = args.triage_models
+    if args.second_look_models:
+        A.settings.gemini_second_look_chain = args.second_look_models
+    if args.no_second_look:
+        A.settings.second_look_enabled = False
     A.init_db()
     key = json.loads(args.key.read_text(encoding="utf-8"))
     unknown = sorted(set(args.only or []) - {c["name"] for c in key["cases"]})
@@ -1165,7 +1239,8 @@ def main(argv=None) -> int:
         "label": args.label or args.out.stem,
         "git_ref": args.ref,
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
-        "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain},
+        "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
+                   "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "sort_cache": cache_meta,
         "started": _now(),
         "finished": None,
@@ -1194,11 +1269,21 @@ def main(argv=None) -> int:
                     totals[f"checklist_{k}"] += r["parts_with_checklist"][k]
                 totals["extra"] += len(r["parts"]["extra"])
                 totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
+                ls = r.get("parts_with_second_look")
+                if ls:
+                    totals["look_runs"] += 1
+                    for k in ("found", "visible_found", "added", "extra", "wrong_side", "suggested"):
+                        totals[f"look_{k}"] += ls[k]
         head = f"run {rep}: " if args.repeat > 1 else ""
         print(f"\n{head}TOTAL parts {totals['found']}/{totals['expected']}, visible {totals['visible_found']}/{totals['visible_expected']}, "
               f"extra {totals['extra']}")
         print(f"{head}WITH CHECKLIST parts {totals['checklist_found']}/{totals['checklist_expected']}, "
               f"visible {totals['checklist_visible_found']}/{totals['checklist_visible_expected']}, extra {totals['checklist_extra']}")
+        if totals["look_runs"]:
+            print(f"{head}WITH SECOND LOOK (all ticked) parts {totals['look_found']}/{totals['expected']}, "
+                  f"visible {totals['look_visible_found']}/{totals['visible_expected']}: added {totals['look_added']} "
+                  f"from {totals['look_suggested']} suggestions, extra {totals['look_extra']}, "
+                  f"wrong side {totals['look_wrong_side']}")
     print()
     for line in summary_table(doc["summary"]):
         print(line)

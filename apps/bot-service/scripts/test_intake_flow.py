@@ -29,6 +29,9 @@ os.environ.setdefault("STORAGE_DIR", _tmp)
 os.environ.setdefault("SECRETS_DIR", tempfile.mkdtemp(prefix="secrets-"))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_tmp, 'test.db').as_posix()}")
 os.environ.setdefault("GEMINI_API_KEY", "fake")
+# This file checks the reading's runs and calls exactly; the second look
+# after it (one more call and run row) has its own test_second_look.py.
+os.environ["SECOND_LOOK_ENABLED"] = "false"
 
 import app.ai.structured as structured  # noqa: E402
 

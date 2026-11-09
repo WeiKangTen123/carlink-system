@@ -516,7 +516,7 @@ class AiRun(Base):
     # The draft's or the case's id (the same id). A bot draft gets the id
     # its case will be saved under (channels/telegram._case_id_for).
     report_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    # sort | read | redraft | annex_suggest | redetect | lookup (runs.KINDS).
+    # sort | read | redraft | annex_suggest | redetect | lookup | second_look (runs.KINDS).
     kind: Mapped[str] = mapped_column(String, nullable=False)
     # Where it was started: dashboard | telegram | whatsapp | system.
     channel: Mapped[str] = mapped_column(String, nullable=False, default="dashboard")

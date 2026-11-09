@@ -1,6 +1,7 @@
 """The AI run log (round 3, B3): one models.AiRun row per piece of AI work
-on a case -- an intake sorting or reading stage, a Telegram (re)draft,
-Annex A suggestions, and Phase 2's re-detection and price lookups.
+on a case -- an intake sorting or reading stage and its second look, a
+Telegram (re)draft, Annex A suggestions, and Phase 2's re-detection and
+price lookups.
 
 Before this the only trace of an AI call was a log line without a case id:
 nobody could see, per case or across cases, which photos the AI read, how
@@ -43,7 +44,10 @@ from app.reports.models import AiRun, iso_utc
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup")
+# second_look: the one call after an intake reading that suggests parts to
+# check (ai/second_look.py) -- its own row, so the reading's time and model
+# ("AI read 14 of 41 photos (48 s)") stay the reading's.
+KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup", "second_look")
 CHANNELS = ("dashboard", "telegram", "whatsapp", "system")
 STATUSES = ("running", "ok", "failed", "refused", "aborted")
 # What counts as a failure on GET /ai-usage and in the case's list.
