@@ -679,6 +679,14 @@ def endpoint() -> None:
                                                 gemini_triage_model_chain="sort-1,backup-1",
                                                 gemini_second_look_chain=["look-1"])
         check(ai_allowance.model_roles() == roles, "...and a list for it works too")
+        ai_allowance.settings = SimpleNamespace(gemini_model_chain="main-m, backup-1,backup-2",
+                                                gemini_triage_model_chain="sort-1,backup-1",
+                                                gemini_second_look_chain="look-1", second_look_enabled=False)
+        check(ai_allowance.model_roles() == roles[:4], "second look switched off: its models left out",
+              repr(ai_allowance.model_roles()))
+        ai_allowance.settings = SimpleNamespace(gemini_model_chain="main-m, backup-1,backup-2",
+                                                gemini_triage_model_chain="sort-1,backup-1",
+                                                gemini_second_look_chain="look-1,main-m")
 
         own_tail, company_tail = W.A_KEY[-4:], COMPANY_KEY[-4:]
         A_own = lambda model, outcome: {"model": model, "key_source": "own", "key_last4": own_tail, "outcome": outcome}  # noqa: E731

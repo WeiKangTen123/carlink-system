@@ -39,13 +39,16 @@ class Settings(BaseSettings):
     gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
     # The second look after an intake reading (ai/second_look.py): ONE call
     # per read on its own chain, so it never draws on the reading model's
-    # small free daily allowance, and never falls to the lite models -- a
-    # weak model's suggestions would only add parts to untick. Provisional:
-    # the integrator sets the final chain after measuring models with
-    # scripts/benchmark_intake.py --second-look-models.
+    # small free daily allowance. Provisional: chosen after measuring models
+    # with scripts/benchmark_intake.py --second-look-models. NB on the free
+    # tier gemini-3.5-flash and gemini-3.6-flash share ONE allowance of 20 a
+    # day (Google's 429 for 3.5 names 3.6), the backup reader's.
     gemini_second_look_chain: str = "gemini-3.5-flash,gemini-3.6-flash"
-    # Off: no second-look call at all; the Review step shows no suggestions.
-    second_look_enabled: bool = True
+    # Off until the benchmark shows it finds more parts without many wrong
+    # ones (owner's gate, 2026-11-09): no second-look call at all and the
+    # Review step shows no suggestions. The benchmark turns it on for a run
+    # given --second-look-models.
+    second_look_enabled: bool = False
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False

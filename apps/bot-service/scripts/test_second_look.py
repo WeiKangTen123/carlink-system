@@ -32,6 +32,8 @@ _tmp = tempfile.mkdtemp(prefix="second-look-test-")
 os.environ["STORAGE_DIR"] = _tmp
 os.environ["SECRETS_DIR"] = tempfile.mkdtemp(prefix="secrets-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmp, 'test.db').as_posix()}"
+# Off by default in the app until the benchmark gate passes; on for its tests.
+os.environ["SECOND_LOOK_ENABLED"] = "true"
 os.environ.setdefault("GEMINI_API_KEY", "fake")
 
 import app.ai.structured as structured  # noqa: E402

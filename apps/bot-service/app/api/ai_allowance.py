@@ -65,9 +65,11 @@ def model_roles() -> list[tuple[str, str]]:
         roles.setdefault(model, "main" if i == 0 else "backup")
     for model in _chain(settings.gemini_triage_model_chain):
         roles.setdefault(model, "sorting")
-    # Added by another change, maybe not here yet: read defensively.
-    for model in _chain(getattr(settings, "gemini_second_look_chain", None)):
-        roles.setdefault(model, "second_look")
+    # Read defensively; and left out while the second look is switched off,
+    # since nothing is asking its models then.
+    if getattr(settings, "second_look_enabled", True):
+        for model in _chain(getattr(settings, "gemini_second_look_chain", None)):
+            roles.setdefault(model, "second_look")
     return list(roles.items())
 
 

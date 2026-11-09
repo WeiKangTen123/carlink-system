@@ -1217,6 +1217,8 @@ def main(argv=None) -> int:
         A.settings.gemini_triage_model_chain = args.triage_models
     if args.second_look_models:
         A.settings.gemini_second_look_chain = args.second_look_models
+        # Measured even while it is off in the app (config.second_look_enabled).
+        A.settings.second_look_enabled = True
     if args.no_second_look:
         A.settings.second_look_enabled = False
     A.init_db()
