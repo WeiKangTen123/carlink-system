@@ -600,6 +600,11 @@ def suggest(
                 "nett_majority": sum(g.section == "nett" for g in group) * 2 > len(group),
                 "conditions": conditions,
                 "kind": "fitting" if fitting else "part",
+                # Whether a past case wrote it for one side ("Tail lamp LH"):
+                # one side's own line. A line no past case gave a side
+                # ("Taillamps assy" x2 on a case with both lamps) stands for
+                # its whole family (prefill.sync_annex_a prints it once).
+                "sided": any(side_of(g.item) for g in group),
                 "last_seen": max((g.surveyed or "") for g in group) or None,
             })
         out.sort(key=lambda s: (-s["cases"], s["kind"] == "fitting", s["name"]))
