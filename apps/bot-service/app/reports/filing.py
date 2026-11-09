@@ -88,6 +88,11 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     names the case in the log only. `read_ids`: photo_index_for's.
     """
     data = dict(data)
+    # The intake's second-look suggestions (ai/second_look.py) end here: a
+    # ticked one is already a damage item, the rest were only suggestions,
+    # and their photo links ("@id") point at the intake's photos, which the
+    # case renumbers.
+    data.pop("second_look", None)
     data["sign_off"] = SignOffInfo().model_dump()
     data["annex_a"] = {}
     data["annex_b"] = {}

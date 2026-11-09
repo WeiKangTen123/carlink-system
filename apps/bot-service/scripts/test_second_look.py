@@ -409,6 +409,8 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
     assert "Boot Lid Lock" in sources, sorted(s for s in sources if s)
     assert "Rear End Panel" not in sources and "Boot Lid Hinge" not in sources
     ok("the ticked part has its Annex A rows; parts only suggested have none")
+    assert "second_look" not in detail["data"], "the filed case keeps no second-look suggestions"
+    ok("the filed case keeps no second-look suggestions (their photo links were the intake's)")
 
 
 def test_failures(client: TestClient, files: list[Path]) -> None:
