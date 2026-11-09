@@ -255,6 +255,8 @@ def _purpose(kw: dict) -> str:
         return "annex"
     if "damage_summary" in props or "description" in props:
         return "draft"
+    if "items" in props:  # the second look after an intake reading (ai/second_look.py)
+        return "second_look"
     return "other"
 
 
@@ -301,6 +303,8 @@ def _answer(purpose: str, kw: dict) -> str:
         return json.dumps({"parts": [{"part": p, "lines": [{"name": f"{p} clips", "qty": 2}]} for p in parts]})
     if purpose == "draft":
         return json.dumps(DRAFT_ANSWER)
+    if purpose == "second_look":
+        return json.dumps({"items": []})
     return "{}"
 
 

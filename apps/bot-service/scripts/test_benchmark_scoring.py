@@ -72,7 +72,8 @@ def test_cli() -> None:
     script = SCRIPTS / "benchmark_intake.py"
     r = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
-    for flag in ("--repeat", "--sort-cache", "--reports", "--models", "--triage-models", "--label", "--ref"):
+    for flag in ("--repeat", "--sort-cache", "--reports", "--models", "--triage-models", "--label", "--ref",
+                 "--second-look-models", "--no-second-look"):
         assert flag in r.stdout, flag
     ok("--help works without BENCHMARK_SCRATCH and lists the new options")
     out = Path(_tmp, "never.json")
@@ -109,6 +110,33 @@ def test_score_parts() -> None:
     assert bi.covers("Door (side undetermined)", "Left Front Door") and not bi.covers("Door (side undetermined)", "Left Front Door Glass")
     assert bi.covers("Quarter Panel (side undetermined)", "Right Rear Quarter Panel") and not bi.covers("Left Tail Lamp", "Right Tail Lamp")
     ok("a side-undetermined name covers its family only")
+
+
+def test_second_look_scoring() -> None:
+    print("second look, as if every suggestion were ticked")
+    drafted = ["Rear Bumper", "Tail Lamp (side undetermined)", "Bonnet"]
+    p = bi.score_parts(KEY_PARTS, drafted)
+    suggested = ["Boot Lid Lock", "Right Rear Bumper Reflector", "Boot Lid", "Rear End Panel",
+                 "Headlamp (side undetermined)", "Rear Bumper", None]
+    s = bi.score_second_look(KEY_PARTS, p, drafted, suggested)
+    assert s["suggested"] == 6 and s["added"] == 3 and s["added_visible"] == 3, s
+    assert s["added_parts"] == ["Boot Lid Lock", "Boot Lid", "Left Headlamp"], s["added_parts"]
+    assert s["wrong_side"] == 1, s  # the right reflector: the key's is on the left
+    # Rear End Panel is in no key; Rear Bumper the reading had already (a
+    # suggestion never takes a part the reading found).
+    assert s["extra"] == 2 and s["extra_parts"] == ["Rear End Panel", "Rear Bumper"], s
+    assert (s["found"], s["visible_found"]) == (p["found"] + 3, p["visible_found"] + 3), (s, p)
+    ok("found with every suggestion ticked, parts it added, its extras and wrong sides")
+    none = bi.score_second_look(KEY_PARTS, p, drafted, [])
+    assert (none["found"], none["added"], none["extra"], none["suggested"]) == (p["found"], 0, 0, 0), none
+    run = {"parts": p, "drafted_parts": drafted, "vehicle": {}, "parts_with_second_look": s,
+           "second_look": {"status": "ok", "calls": 1, "seconds": 21.5}}
+    m = bi.run_metrics(run)
+    assert (m["look_found"], m["look_added"], m["look_extra"], m["look_wrong_side"], m["look_suggested"]) == (
+        p["found"] + 3, 3, 2, 1, 6), m
+    assert (m["look_calls"], m["look_s"], m["look_ok"]) == (1, 21.5, 1), m
+    assert "look_found" not in bi.run_metrics({"parts": p, "vehicle": {}})
+    ok("run metrics: look_found / added / extra / wrong side / suggested / calls / seconds; absent without one")
 
 
 def test_vehicle() -> None:
@@ -585,15 +613,19 @@ def test_benchmark_run() -> None:
             report, session = db.get(A.Report, rid), db.get(A.IntakeSession, rid)
             photos = A.ordered_photos(db, rid)
             session.read_photo_ids = [photos[0].id, photos[2].id]
+            gemini(purpose="second look")
             report.data = dict(report.data, vehicle_info={"plate_number": "TEST-A", "make": "Honda", "model": "Vezel"},
                                damage_summary=[{"part": "Boot Lid", "damage_type": "Dent", "condition": "Dented/bent"},
                                                {"part": "Tail Lamp (side undetermined)", "damage_type": "Crack"},
-                                               {"part": "Bonnet", "damage_type": "Scratch"}])
+                                               {"part": "Bonnet", "damage_type": "Scratch"}],
+                               second_look={"status": "ok", "model": "test-look", "seconds": 0.0, "photos_sent": 2,
+                                            "candidates": 30, "items": [{"part": "Boot Lid Lock"}, {"part": "Rear End Panel"}]})
             db.commit()
         finally:
             db.close()
 
-    saved = (A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain)
+    saved = (A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain,
+             A.settings.gemini_second_look_chain)
     os.environ["BENCHMARK_SCRATCH"] = "1"
     A.pipeline._sort, A.pipeline._read = fake_sort, fake_read
     buf = io.StringIO()
@@ -601,16 +633,19 @@ def test_benchmark_run() -> None:
         with contextlib.redirect_stdout(buf):
             code = bi.main(["--cases", str(cases_dir), "--key", str(key_path), "--out", str(out), "--repeat", "2",
                             "--sort-cache", str(cache_dir), "--reports", str(reports_dir), "--label", "test-run",
-                            "--ref", "test-branch@0000000", "--models", "test-strong", "--triage-models", " test-lite-a, test-lite-b "])
+                            "--ref", "test-branch@0000000", "--models", "test-strong", "--triage-models", " test-lite-a, test-lite-b ",
+                            "--second-look-models", "test-look"])
     finally:
-        A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain = saved
+        (A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain,
+         A.settings.gemini_second_look_chain) = saved
         os.environ.pop("BENCHMARK_SCRATCH", None)
     text = buf.getvalue()
     assert code == 0, text
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert list(doc) == ["label", "git_ref", "args", "models", "sort_cache", "started", "finished", "runs", "summary"], list(doc)
     assert (doc["label"], doc["git_ref"], doc["args"]["repeat"]) == ("test-run", "test-branch@0000000", 2)
-    assert doc["models"] == {"model_chain": "test-strong", "triage_model_chain": "test-lite-a,test-lite-b"}, doc["models"]
+    assert doc["models"] == {"model_chain": "test-strong", "triage_model_chain": "test-lite-a,test-lite-b",
+                             "second_look_chain": "test-look"}, doc["models"]
     assert doc["sort_cache"]["triage_model_chain"] == "test-lite-a,test-lite-b"
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
     runs = doc["runs"]
@@ -618,7 +653,8 @@ def test_benchmark_run() -> None:
     assert sent == [3, 3, 0, 0], sent
     assert [r["sort_cache"]["hits"] for r in runs] == [0, 0, 3, 3] and [r["sort_cache"]["stored"] for r in runs] == [3, 3, 0, 0]
     assert "photo sort" in runs[0]["accounting"] and "photo sort" not in runs[2]["accounting"]
-    assert runs[0]["calls"] == {"photo sort": 1, "draft": 1} and runs[0]["answered_by"] == {"photo sort: test-model": 1, "draft: test-model": 1}
+    assert runs[0]["calls"] == {"photo sort": 1, "draft": 1, "second look": 1}, runs[0]["calls"]
+    assert runs[0]["answered_by"] == {"photo sort: test-model": 1, "draft: test-model": 1, "second look: test-model": 1}
     ok("run 1 sorts and fills the cache; run 2 takes every photo from it and makes no sorting call")
     assert history_seen[0] == {"CL 90002", "CL 90003"} and history_seen[1] == {"CL 90001", "CL 90003"}, history_seen
     ok("while a case is read, the history is every report but its own")
@@ -633,6 +669,11 @@ def test_benchmark_run() -> None:
     assert an["perfect_covered"] >= 1 and an["extra"] >= 0 and isinstance(an["canonical_names"], list), an
     assert a1["vehicle"]["plate_number"]["verdict"] == "ok"
     ok("each run carries parts, sorter quality, conditions and the leave-one-out Annex A")
+    look, ls = a1["second_look"], a1["parts_with_second_look"]
+    assert (look["status"], look["model"], look["calls"], look["suggested"]) == ("ok", "test-look", 1, ["Boot Lid Lock", "Rear End Panel"]), look
+    assert (ls["found"], ls["added"], ls["added_parts"], ls["extra"], ls["extra_parts"]) == (3, 1, ["Boot Lid Lock"], 1, ["Rear End Panel"]), ls
+    assert "second look" in a1["accounting"] and a1["accounting"]["second look"]["calls"] == 1
+    ok("each run scores the second look as if all ticked (found 3, added 1, extra 1) and counts its call apart")
     assert runs[3].get("error", "").startswith("RuntimeError: All Gemini fallback models")
     s = doc["summary"]
     assert s["complete_reps"] == [1] and s["errors"][0]["case"] == "TEST CASE B" and s["cases"]["TEST CASE A"]["metrics"]["found"]["n"] == 2
@@ -643,6 +684,8 @@ def test_benchmark_run() -> None:
         assert not Path(os.environ["STORAGE_DIR"], "intake", r["report_id"]).exists()
     ok("each run's photo copies are deleted after scoring")
     assert "run 1: TOTAL parts" in text and "WITH CHECKLIST" in text and "SUMMARY: 2 run(s) of 2 case(s)" in text, text
+    assert "run 1: WITH SECOND LOOK (all ticked)" in text and "second look: ok on test-look" in text and "look added" in text, text
+    assert s["total"]["look_added"]["n"] == 1 and s["accounting"]["second look"]["calls"] == 3
     assert "Annex A (leave-one-out)" in text and "sorter: labels in key" in text
     assert "ZZZZ" not in out.read_text(encoding="utf-8") and "key_last4" not in out.read_text(encoding="utf-8")
     ok("console keeps the old per-case and TOTAL lines, plus the new detail and the summary table")
@@ -656,6 +699,7 @@ def test_benchmark_run() -> None:
 def main() -> int:
     test_cli()
     test_score_parts()
+    test_second_look_scoring()
     test_vehicle()
     test_sorter_quality()
     test_conditions()

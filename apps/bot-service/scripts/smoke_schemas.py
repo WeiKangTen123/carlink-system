@@ -12,17 +12,19 @@ grey square: no vehicle, no person, nothing real), says pass or 400 for
 each.
 
     docker exec carlink_api python scripts/smoke_schemas.py --live
-        [--models a,b] [--triage-models c,d]
+        [--models a,b] [--triage-models c,d] [--second-look-models e,f]
 
 Schemas: "draft" (ai/extraction._response_schema, the wizard's reading and
-the bot's drafting) and "sort" (ai/triage._RESPONSE_SCHEMA). Each is tried on
-every distinct model of both chains (settings.gemini_model_chain and
-settings.gemini_triage_model_chain, or the overrides), since a fallback can
-put either schema on any of them. Uses the first company key (the env key
-inside carlink_api), and takes a slot from the shared rate-limit window per
-call (ai/rate_limit), so it queues behind live traffic rather than tripping
-the 12-per-minute quota. ~2 x (models) calls. The key is never printed:
-errors are scrubbed (ai/keys.scrub).
+the bot's drafting), "sort" (ai/triage._RESPONSE_SCHEMA) and "second_look"
+(ai/second_look.response_schema at its largest: MAX_CANDIDATES parts in the
+enum). Each is tried on every distinct model of the three chains
+(settings.gemini_model_chain, gemini_triage_model_chain and
+gemini_second_look_chain, or the overrides), since a fallback can put a
+schema on any of them. Uses the first company key (the env key inside
+carlink_api), and takes a slot from the shared rate-limit window per call
+(ai/rate_limit), so it queues behind live traffic rather than tripping the
+12-per-minute quota. ~3 x (models) calls. The key is never printed: errors
+are scrubbed (ai/keys.scrub).
 
 Exit status: 0 when no model answered 400; 1 when any did; 2 when it could
 not run (no --live, no key).
@@ -35,11 +37,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.ai import extraction, triage  # noqa: E402
+from app.ai import extraction, second_look, triage  # noqa: E402
 from app.ai.client import get_client  # noqa: E402
 from app.ai.keys import company_keys, http_status, scrub  # noqa: E402
 from app.ai.rate_limit import acquire  # noqa: E402
 from app.ai.structured import DEADLINE_MARGIN, _create_within, image_part  # noqa: E402
+from app.reports.taxonomy import CANONICAL_PARTS  # noqa: E402
 
 TIMEOUT = 60.0
 
@@ -69,6 +72,12 @@ def _schemas(image: str) -> dict[str, dict]:
             raise ValueError("no photos list")
         return data
 
+    # The second look's enum is built per case from its candidates; the
+    # longest it can be is MAX_CANDIDATES names.
+    parts = [p for p in CANONICAL_PARTS if p != "Other / Not Listed"][: second_look.MAX_CANDIDATES]
+    cands = [second_look.Candidate(p, "nearby", "schema smoke test") for p in parts]
+    sent = [second_look.SentPhoto("P01", "smoke", image)]
+
     return {
         "draft": {
             "system": extraction.SYSTEM_PROMPT,
@@ -81,6 +90,12 @@ def _schemas(image: str) -> dict[str, dict]:
             "input": [{"type": "text", "text": "1 photos follow."}, {"type": "text", "text": "Photo P01:"}, image_part(image)],
             "schema": triage._RESPONSE_SCHEMA,
             "parse": parse_sort,
+        },
+        "second_look": {
+            "system": second_look.SYSTEM_PROMPT,
+            "input": second_look.build_input({}, {"Roof"}, cands, sent),
+            "schema": second_look.response_schema(parts),
+            "parse": lambda raw: second_look.parse_answer(raw, set(parts), {"P01": "smoke"}),
         },
     }
 
@@ -104,6 +119,7 @@ def main() -> int:
     parser.add_argument("--live", action="store_true", help="required: this makes real Gemini calls on the company key")
     parser.add_argument("--models", help="drafting chain to try instead of settings.gemini_model_chain")
     parser.add_argument("--triage-models", help="sorting chain to try instead of settings.gemini_triage_model_chain")
+    parser.add_argument("--second-look-models", help="second-look chain to try instead of settings.gemini_second_look_chain")
     args = parser.parse_args()
     if not args.live:
         print("Refusing to run without --live: every line is a real Gemini call on the company key.")
@@ -112,6 +128,7 @@ def main() -> int:
     models = list(dict.fromkeys(
         (_chain(args.models) if args.models else extraction._model_chain())
         + (_chain(args.triage_models) if args.triage_models else triage._triage_chain())
+        + (_chain(args.second_look_models) if args.second_look_models else second_look._chain())
     ))
     keys = company_keys()
     if not keys:

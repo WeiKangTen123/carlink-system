@@ -1338,7 +1338,7 @@ export type AiReadInfo = {
 
 /** What the call was for. Kept open (string) so a kind a newer API adds
  * still shows, under its raw name. */
-export type AiRunKind = "sort" | "read" | "redraft" | "annex_suggest" | "redetect" | "lookup";
+export type AiRunKind = "sort" | "read" | "redraft" | "annex_suggest" | "redetect" | "lookup" | "second_look";
 export type AiRunStatus = "running" | "ok" | "failed" | "refused" | "aborted";
 export type AiRunChannel = "dashboard" | "telegram" | "whatsapp" | "system";
 export type AiKeySource = "own" | "company" | "none";
@@ -1441,6 +1441,7 @@ const AI_RUN_KIND_LABELS: Record<string, string> = {
   annex_suggest: "Annex A suggestions",
   redetect: "Re-run detection",
   lookup: "Price lookup",
+  second_look: "Second look",
 };
 
 export function aiRunKindLabel(kind: string | null | undefined): string {
