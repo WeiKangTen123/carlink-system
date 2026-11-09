@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from app.ai import runs
+from app.ai import allowance, runs
 from app.ai.client import get_client
 from app.ai.keys import (
     AI_KEY_INVALID,
@@ -35,6 +35,10 @@ from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# refusal()'s verdicts that mean a model's allowance is gone for the day on
+# a key: "quota" (used up) and "no_allowance" ("limit: 0", none at all).
+DAY_VERDICTS = ("quota", "no_allowance")
 
 # Extra time allowed on top of a call's own timeout before giving up on it.
 # The SDK's per-request timeout doesn't always bound a call -- a test call
@@ -113,6 +117,10 @@ def call_structured(
     to try, or when their own key was the only one and failed that way.
     Errors are told apart by keys.refusal, which knows both of the SDK's
     error families.
+
+    A model whose free allowance for the day is used up on a key -- any key,
+    the company's too -- is remembered until Google's reset (ai/allowance.py)
+    and skipped on that key until then, with nothing sent.
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each key, since every model
@@ -133,16 +141,36 @@ def call_structured(
         own = key.source == "own"
         # refusal() of each model's last error, for an own key.
         verdicts: list[str | None] = []
+        # The last error Google itself sent for this key in this call: the
+        # words its row keeps (record_result). None when every model was
+        # skipped below.
+        key_error: Exception | None = None
         for model_id in models:
+            # This model's free day is used up on this key: skipped with no
+            # request and no rate-limit slot. Asking anyway would only get
+            # the same 429 (whose "retry in 33s" we used to wait out), every
+            # call until midnight Pacific. To the key's outcome below it is
+            # the 429 it would have been.
+            spent_until = allowance.spent_until(key.fingerprint, model_id)
+            if spent_until is not None:
+                logger.info(
+                    "Gemini model %r skipped on %s: its free daily allowance is used up until %s",
+                    model_id, key.label, allowance.iso(spent_until),
+                )
+                _note_attempt(key, model_id, "day_spent", 0.0, time.monotonic(), None, spent_until=spent_until)
+                verdicts.append("no_allowance" if allowance.limit(key.fingerprint, model_id) == 0 else "quota")
+                last_error = allowance.DaySpent(model_id)
+                continue
             # Every attempt takes a slot, not just the first. Previously the
             # gate ran once before these loops, so a draft that fell through
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
             waited = acquire(key.rate_limit_id)
             verdict = None
-            # One retry per model on a 429, using the delay the server itself
-            # supplies. Falling straight through to the next model is
-            # pointless: it draws on the same per-key quota and 429s too.
+            # One retry per model on a per-minute 429, using the delay the
+            # server itself supplies. Falling straight through to the next
+            # model is pointless: it draws on the same per-key quota and
+            # 429s too. (A day's 429 is not retried: see below.)
             for attempt in (1, 2):
                 started = time.monotonic()
                 interaction = None
@@ -179,13 +207,24 @@ def call_structured(
                     _note_attempt(key, model_id, "ok", waited, started, interaction)
                     return result
                 except Exception as exc:
-                    last_error = exc
-                    _note_attempt(key, model_id, _outcome(exc, interaction), waited, started, interaction)
-                    # A company key's failures go on exactly as before P4.
-                    verdict = refusal(exc) if own else None
+                    last_error = key_error = exc
+                    said = refusal(exc)
+                    # The day's allowance gone on this model: remembered
+                    # until the reset, whoever's key it is -- the company
+                    # key's free day runs out just the same.
+                    spent_until = None
+                    if said in DAY_VERDICTS:
+                        spent_until = allowance.mark_spent(key.fingerprint, model_id, allowance.limit_from(exc))
+                    _note_attempt(
+                        key, model_id, _outcome(exc, interaction), waited, started, interaction, spent_until=spent_until
+                    )
+                    # What it says about the key itself is kept for an own
+                    # key only; a company key's row is left as before P4.
+                    verdict = said if own else None
                     # A refused key or a spent day's allowance won't come
                     # back in 30 seconds: no wait, straight to the next.
-                    delay = retry_after_seconds(exc) if verdict is None and is_rate_limit_error(exc) else None
+                    # Only a per-minute 429 (no verdict) is waited out.
+                    delay = retry_after_seconds(exc) if said is None and is_rate_limit_error(exc) else None
                     if delay is not None and attempt == 1:
                         logger.warning(
                             "Gemini model %r rate-limited on %s; waiting %.1fs as instructed",
@@ -208,7 +247,11 @@ def call_structured(
                 break  # Google refused the key itself: no other model will take it
         outcome = _key_outcome(verdicts) if own else None
         if outcome:
-            record_result(actor, key, outcome, last_error)
+            # Every model skipped and the key already marked quota (being
+            # tried again after QUOTA_RETRY_AFTER): nothing new was learned,
+            # and recording it would wipe the row's words from Google.
+            if key_error is not None or not key.retrying:
+                record_result(actor, key, outcome, key_error)
             refused.append(AI_QUOTA_USED if outcome == "quota" else AI_KEY_INVALID)
 
     if refused and len(refused) == len(keys):
@@ -236,7 +279,8 @@ def _input_size(system_instruction: str, input_parts: list[dict]) -> int:
 
 def _outcome(exc: Exception, interaction) -> str:
     """One failed try, for the run log: schema (the model answered, parse()
-    refused it), 429, timeout (ours or the SDK's), or error."""
+    refused it), 429, timeout (ours or the SDK's), or error. (A try never
+    sent, its model's day used up, is "day_spent".)"""
     if interaction is not None:
         return "schema"
     if is_rate_limit_error(exc):
@@ -263,11 +307,13 @@ def _tokens(interaction) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction) -> None:
+def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
     before the try was sent (a rate-limit slot, or the delay a 429 asked
-    for)."""
+    for). spent_until: when the model's free day on this key comes back,
+    on a try skipped for it (day_spent) or a 429 that said it was used up
+    -- what the review step's "Read by the backup model" notice is told."""
     try:
         attempt = {
             "model": model_id,
@@ -275,8 +321,10 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
             "key_last4": last4(key.value) if key.value else None,
             "outcome": outcome,
             "waited_s": round(float(waited), 1) if isinstance(waited, (int, float)) and not isinstance(waited, bool) else 0.0,
-            "ms": int((time.monotonic() - started) * 1000),
+            "ms": 0 if outcome == "day_spent" else int((time.monotonic() - started) * 1000),
         }
+        if spent_until is not None:
+            attempt["spent_until"] = allowance.iso(spent_until)
         prompt_tokens, output_tokens = _tokens(interaction) if interaction is not None else (None, None)
         if prompt_tokens is not None:
             attempt["prompt_tokens"] = prompt_tokens
@@ -312,6 +360,8 @@ def _scrubbed(error: Exception | None, keys) -> Exception | None:
     _create_within, ValueError from parse) keep their type."""
     if error is None:
         return None
+    if isinstance(error, allowance.DaySpent):
+        return error  # our own words (a model name), never Google's: nothing to scrub
     text = str(error)
     for key in keys:
         text = scrub(text, key.value)

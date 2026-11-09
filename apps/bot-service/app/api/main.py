@@ -35,6 +35,7 @@ from app.ai import secretbox
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
+from app.api.ai_allowance import router as ai_allowance_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.ai_runs import router as ai_usage_router
 from app.api.annexes import router as annexes_router
@@ -170,6 +171,7 @@ app.include_router(ai_keys_router)
 app.include_router(telegram_link_router)
 app.include_router(inbox_router)
 app.include_router(ai_usage_router)
+app.include_router(ai_allowance_router)
 
 
 @app.exception_handler(HashingBusy)

@@ -119,7 +119,7 @@ from google.genai import types as genai_types  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from app.ai import client as ai_client  # noqa: E402
-from app.ai import keys, secretbox  # noqa: E402
+from app.ai import allowance, keys, secretbox  # noqa: E402
 from app.ai.keys import AiActor, AiKey, AiUnavailable  # noqa: E402
 from app.api import limits  # noqa: E402
 from app.api.main import app  # noqa: E402
@@ -254,6 +254,10 @@ def reset_fakes() -> None:
     ACQUIRED.clear()
     BEHAVIOUR.clear()
     keys._touched.clear()
+    # Each check starts on a fresh Google day: a daily 429 in one would
+    # otherwise skip that model in the next (ai/allowance.py, tested in
+    # test_day_allowance.py).
+    allowance.clear()
 
 
 def code_of(fn) -> str | None:

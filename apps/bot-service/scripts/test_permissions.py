@@ -224,6 +224,7 @@ DECISIONS = {
     ("PATCH", "/auth/me/ai-key"): ("self", "Free <-> Billed for the saved key; 404 no_ai_key, 409 ai_key_changed, 429 rate_limited; history entry ai_key_type_changed"),
     ("POST", "/auth/me/ai-key/test"): ("self", "P3: asks Google again (models.list); 10 an hour"),
     ("DELETE", "/auth/me/ai-key"): ("self", "P3: history entry ai_key_removed"),
+    ("GET", "/auth/me/ai-allowance"): ("self", "today's free Gemini allowance per key and model; company key only if allowed, its last 4 only to admins"),
     # P5 "Telegram connect" (app/api/telegram_link.py; tested in scripts/test_telegram_link.py).
     ("GET", "/auth/me/telegram"): ("self", "P5: connected?, the open code (never the code itself), bot_username"),
     ("POST", "/auth/me/telegram/code"): ("self", "P5: the plain code in this response only; cancels the open one; 429 rate_limited after 10 an hour"),

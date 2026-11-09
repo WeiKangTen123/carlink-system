@@ -1423,6 +1423,9 @@ const AI_RUN_ERROR_LABELS: Record<string, string> = {
   ai_account_off: "Account disabled",
   timeout: "Timed out",
   rate_limited: "Too many requests",
+  // Every model left had used up its free daily allowance on the key (tries
+  // skipped, "day_spent", or refused for it); comes back at midnight US Pacific.
+  day_allowance_used: "Free daily allowance used up",
 };
 
 export function aiRunErrorLabel(code: string | null | undefined): string | null {
