@@ -1236,6 +1236,26 @@ export type ReportSummary = {
   report_id?: string | null;
   /** cover_page.requested_by, or null. */
   requested_by?: string | null;
+  // What the Overview's "Needs attention" card reads (lib/attention.ts).
+  // Optional: an older API sends none of them, and the card then only
+  // shows what it can tell from the fields above.
+  /** An intake draft's stage (lib/intake.ts IntakeStage), exactly as the
+   * wizard (GET /intake/{id}) presents it: a run or a filing a restart cut
+   * off reads "failed". Null on a filed case. */
+  intake_stage?: string | null;
+  /** Why a "failed" draft stopped: an AI_OFF_CODES code, timeout,
+   * "filing_interrupted" (lib/intake.ts FILING_INTERRUPTED)... Null when
+   * the draft has not failed, or failed without a code. */
+  intake_error_code?: string | null;
+  /** When the idle-draft clean-up will delete this draft (ISO UTC), unless
+   * someone works on it first. Null when it won't (a filed case, a busy
+   * draft, a public report nobody has taken). */
+  draft_deletes_at?: string | null;
+  /** Filed cases: Annex A rows still without a workshop estimate (rows for
+   * a part no longer detected left out). 0 on a draft. */
+  unpriced_rows?: number;
+  /** Signed off, reopened since, and not signed off again. */
+  reopened?: boolean;
 };
 
 export type ReportData = {

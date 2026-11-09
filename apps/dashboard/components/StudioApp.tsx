@@ -33,10 +33,16 @@ const TABS: { id: CaseTab; no: number; label: string; section?: CaseSection }[] 
   { id: "annexC", no: 5, label: "Annex C", section: "annexC" },
 ];
 
+/** `value` as one of the five tabs, or null for anything else (a ?tab= from
+ * a link is checked here before it opens anything). */
+function asCaseTab(value: string | null | undefined): CaseTab | null {
+  return TABS.find((t) => t.id === value)?.id ?? null;
+}
+
 /** The fields of a detected part the 3D blueprint draws from. */
 const blueprintKey = (entries: DamageSummaryItem[]) => JSON.stringify(entries.map((e) => [e.part, e.severity ?? null]));
 
-export function StudioApp({ report }: { report: ReportDetail }) {
+export function StudioApp({ report, initialTab }: { report: ReportDetail; initialTab?: string }) {
   const router = useRouter();
   // What this account may do here, as the API worked it out. The buttons
   // follow it; the API checks again on every call.
@@ -61,10 +67,18 @@ export function StudioApp({ report }: { report: ReportDetail }) {
   const [reportMenuOpen, setReportMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<CaseTab>("detection");
+  // Damage detection, unless the link asked for another tab (?tab=annexA).
+  const [activeTab, setActiveTab] = useState<CaseTab>(() => asCaseTab(initialTab) ?? "detection");
   // A tab is mounted on first open and then kept (display: none), so what
   // was fetched there (suggested lines) or typed stays on coming back.
-  const [opened, setOpened] = useState<Record<CaseTab, boolean>>({ detection: true, cover: false, annexA: false, annexB: false, annexC: false });
+  const [opened, setOpened] = useState<Record<CaseTab, boolean>>(() => ({
+    detection: false,
+    cover: false,
+    annexA: false,
+    annexB: false,
+    annexC: false,
+    [asCaseTab(initialTab) ?? "detection"]: true,
+  }));
   const showTab = (tab: CaseTab) => {
     setActiveTab(tab);
     setOpened((o) => (o[tab] ? o : { ...o, [tab]: true }));
