@@ -454,12 +454,13 @@ class Person:
         c.cookies.set(SESSION_COOKIE, self.token)
         return c
 
-    def save_key(self) -> None:
+    def save_key(self, billed: bool = True) -> None:
         ai_keys_api.reset_limits()
-        key = make_key(self.label + "Own")
-        KEY_LABEL[key] = f"{self.label}'s own key"
-        r = self.c.put("/auth/me/ai-key", json={"api_key": key, "billing_confirmed": True})
-        need(r.status_code == 200, f"(setup) {self.label} saves an own AI key, billing confirmed", brief(r))
+        key = make_key(self.label + ("Own" if billed else "Free"))
+        KEY_LABEL[key] = f"{self.label}'s own {'billed' if billed else 'free'} key"
+        r = self.c.put("/auth/me/ai-key", json={"api_key": key, "billing_confirmed": billed})
+        need(r.status_code == 200 and jd(r).get("billing_confirmed") is billed,
+             f"(setup) {self.label} saves an own AI key, {'Billed' if billed else 'Free'}", brief(r))
         self.key = key
 
     def drop_key(self) -> None:
@@ -895,6 +896,18 @@ def ai_section() -> None:
           brief(r))
     _real_sleep(0.3)
     check(not calls_since(mark), "  no Gemini call", describe(calls_since(mark)))
+
+    W.sam.save_key(billed=False)
+    mark = len(CALLS)
+    r = W.sam.c.post(f"/intake/{rid}/process", json={"mode": "all"})
+    check(r.status_code == 409 and code_of(r) == "ai_key_missing" and jd(r).get("detail") == PUBLIC_KEY_ONLY,
+          "company_key_billed false, Sam with an own FREE key presses Start -> 409 ai_key_missing (a free key never reads one)",
+          brief(r))
+    _real_sleep(0.3)
+    check(not calls_since(mark), "  no Gemini call, on his free key or any other", describe(calls_since(mark)))
+    r = W.sam.c.get("/auth/me")
+    check(r.status_code == 200 and jd(r).get("ai_allowed") is True, "  (his free key still runs his other cases: ai_allowed)",
+          brief(r))
 
     W.sam.save_key()
     mark = len(CALLS)

@@ -20,6 +20,7 @@ import {
   setSignupsOpen,
   getMyAiKey,
   saveMyAiKey,
+  setMyAiKeyBilled,
   testMyAiKey,
   deleteMyAiKey,
   deleteUserAiKey,
@@ -45,6 +46,7 @@ import {
   type UserPatch,
   type UserRole,
 } from "@/lib/api";
+import { getMyAiAllowance, type AiAllowance } from "@/lib/aiAllowance";
 
 /** All of these are server actions so the browser never talks to the API
  * directly -- same CORS reason every other mutation in this app goes
@@ -129,6 +131,25 @@ export async function saveMyAiKeyAction(apiKey: string, billingConfirmed: boolea
   } catch (err) {
     return aiKeyError(err, "Failed to save your AI key");
   }
+}
+
+/** Free or Billed for the saved key (PATCH /auth/me/ai-key). Whether the AI
+ * is on doesn't change (a Free key runs its owner's own cases too), so only
+ * Settings is asked for again. */
+export async function setMyAiKeyBilledAction(billingConfirmed: boolean, last4: string | null): Promise<AiKeyResult> {
+  try {
+    const key = await setMyAiKeyBilled(billingConfirmed, last4);
+    revalidatePath("/settings");
+    return { key };
+  } catch (err) {
+    return aiKeyError(err, "Failed to change your AI key's type");
+  }
+}
+
+/** "Today" on My AI key (GET /auth/me/ai-allowance). Null hides the panel:
+ * no such route on this API yet, or it failed. */
+export async function getMyAiAllowanceAction(): Promise<AiAllowance | null> {
+  return getMyAiAllowance();
 }
 
 export async function testMyAiKeyAction(): Promise<AiKeyResult> {

@@ -298,7 +298,7 @@ export function aiOffNeedsAdmin(code: string | null | undefined): boolean {
  * MESSAGES), for a refusal or a stopped run that came without them. */
 const AI_OFF_MESSAGES: Record<AiOffCode, string> = {
   ai_key_missing:
-    "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
+    "AI is off for your account. Add your own AI key in Settings → My AI key (get one free from Google AI Studio), or ask an admin to allow the company key.",
   ai_key_invalid: "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
   ai_quota_used:
     "Your AI key has used up its quota for now. It should work again within about an hour, so try again later, or check billing in Google Cloud.",
@@ -327,7 +327,8 @@ export const ERROR_MESSAGES: Record<string, string> = {
   // My AI key (/auth/me/ai-key). The API's own words come first for these
   // (DETAIL_FIRST_CODES); these are only for an answer without them.
   ai_key_format: "That doesn't look like a Gemini API key. It is usually 39 letters and numbers, starting with AIza.",
-  billing_not_confirmed: "Tick the box to confirm billing is turned on for this key's Google Cloud project.",
+  ai_key_type_missing: "Choose whether this key is Free or Billed.",
+  ai_key_changed: "Your AI key was changed in another tab or window. Reload the page to see it.",
   // Also an AI run's refusal (AI_OFF_CODES): there the API's words say the
   // saved key stopped working, and aiOffMessage() has them for none.
   ai_key_invalid: "Google didn't accept this key. Check you copied all of it.",
@@ -362,12 +363,14 @@ const DETAIL_FIRST_CODES = new Set([
   "not_allowed",
   // The API's usual words for this are the same as AI_OFF_MESSAGES'; on a
   // public report (release P6) they say only the presser's own billed key
-  // may be used there (PUBLIC_AI_KEY_MISSING), which must not be replaced.
+  // may be used there (PUBLIC_AI_KEY_MISSING), or that a free key can't be,
+  // which must not be replaced.
   "ai_key_missing",
   // "Taken by S. Lee just now": who, which the plain words can't say.
   "inbox_taken",
   "ai_key_format",
-  "billing_not_confirmed",
+  "ai_key_type_missing",
+  "ai_key_changed",
   "ai_key_invalid",
   "ai_key_in_use",
   "rate_limited",
@@ -546,12 +549,14 @@ export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedU
  * allowance left for now. unreadable: this server can't open it. */
 export type AiKeyStatus = "untested" | "ok" | "invalid" | "quota" | "unreadable";
 
-/** GET, PUT and POST .../test /auth/me/ai-key. */
+/** GET, PUT, PATCH and POST .../test /auth/me/ai-key. */
 export type MyAiKey = {
   has_key: boolean;
   last4: string | null;
   /** Null when there is no key. */
   status: AiKeyStatus | null;
+  /** Billed (true) or Free (false), as the person said. Only a Billed key
+   * is used for reports sent by the public. False when there is no key. */
   billing_confirmed: boolean;
   added_at: string | null;
   last_checked_at: string | null;
@@ -579,7 +584,25 @@ export async function getMyAiKey(): Promise<MyAiKey> {
   return res.json();
 }
 
-/** Adds or replaces. The API asks Google about the key first (up to ~10 s). */
+/** Free (false) or Billed (true) for the saved key, without pasting it
+ * again; Google isn't asked. `last4`: the key the card shows, so a key
+ * replaced in another tab meanwhile isn't switched (409 ai_key_changed). */
+export async function setMyAiKeyBilled(billingConfirmed: boolean, last4: string | null): Promise<MyAiKey> {
+  const res = await apiFetch(
+    `${API_BASE_URL}/auth/me/ai-key`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(last4 ? { billing_confirmed: billingConfirmed, last4 } : { billing_confirmed: billingConfirmed }),
+    },
+    { timeoutMs: 8000 }
+  );
+  if (!res.ok) throw await apiError(res, "Failed to change your AI key's type");
+  return res.json();
+}
+
+/** Adds or replaces. The API asks Google about the key first (up to ~10 s).
+ * billingConfirmed: Billed (true) or Free (false). */
 export async function saveMyAiKey(apiKey: string, billingConfirmed: boolean): Promise<MyAiKey> {
   const res = await apiFetch(
     `${API_BASE_URL}/auth/me/ai-key`,

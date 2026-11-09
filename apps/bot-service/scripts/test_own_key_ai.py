@@ -413,7 +413,8 @@ BASE = "https://carlink.test"
 COMPANY = {ENV_COMPANY_KEY, SETTINGS_COMPANY_KEY}
 # The brief's table, word for word.
 MESSAGES = {
-    "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key, or ask an admin to allow the company key.",
+    "ai_key_missing": "AI is off for your account. Add your own AI key in Settings → My AI key "
+                      "(get one free from Google AI Studio), or ask an admin to allow the company key.",
     "ai_key_invalid": "Your AI key stopped working (Google refused it). Check it in Settings → My AI key.",
     # Reworded once quota keys came back by themselves after an hour.
     "ai_quota_used": "Your AI key has used up its quota for now. Try again in about an hour, or check billing in Google Cloud.",
@@ -575,16 +576,16 @@ class Person:
         self.id = sign_in(self.c, role=role, name=label, username=label.lower(), **profile)
         self.key = None
 
-    def save_key(self, key: str, probe: str = "ok", expect: str = "ok") -> dict:
+    def save_key(self, key: str, probe: str = "ok", expect: str = "ok", billed: bool = True) -> dict:
         """PUT /auth/me/ai-key (P3), with the fake Google's key check
-        answering `probe`."""
+        answering `probe`. billed False: saved as a Free key."""
         reset_key_limits()
         SENT_KEYS.add(key)
         KEY_LABEL[key] = f"{self.label}'s own key"
         PROBE_MODE[key] = probe
-        r = self.c.put("/auth/me/ai-key", json={"api_key": key, "billing_confirmed": True})
-        need(r.status_code == 200 and jd(r).get("status") == expect,
-             f"{self.label} saves an own key (P3): status {expect}", brief(r))
+        r = self.c.put("/auth/me/ai-key", json={"api_key": key, "billing_confirmed": billed})
+        need(r.status_code == 200 and jd(r).get("status") == expect and jd(r).get("billing_confirmed") is billed,
+             f"{self.label} saves an own {'Billed' if billed else 'Free'} key (P3): status {expect}", brief(r))
         self.key = key
         return jd(r)
 
@@ -754,6 +755,9 @@ def setup() -> None:
     W.quentin.recheck("quota", "quota")
     W.uri = Person("Uri")
     W.uri.save_key(make_key("Uri"))
+    # A Free key (billing_confirmed false), no ticks at all.
+    W.fran = Person("Fran")
+    W.fran.save_key(make_key("Fran"), billed=False)
     for name in ("Mia", "Quinn", "Pete", "Rex", "Max"):
         p = Person(name)
         p.save_key(make_key(name))
@@ -1036,6 +1040,27 @@ def more_paths() -> None:
                             (W.abe, {W.abe.key}, "Abe (admin, own key): his own key")):
         r, calls, _ = analyze(p)
         check(r.status_code == 200 and all_on(calls, allowed), who, f"{brief(r)} | {off_key(calls, allowed)}")
+
+
+def free_key() -> None:
+    print("  Fran: no tick, her own key saved as Free")
+    check(W.fran.me().get("ai_allowed") is True, "GET /auth/me: ai_allowed true", str(W.fran.me().get("ai_allowed")))
+    status = W.fran.key_status()
+    check(status.get("source") == "own" and status.get("billing_confirmed") is False,
+          "GET /auth/me/ai-key: source own, billing_confirmed false", str(status))
+    rid = new_draft(W.fran, BATCH_SIZE + 2)
+    s, calls = run(W.fran, rid, "Fran presses Process on her draft")
+    check(s.get("stage") == "ready", "it finishes: ready", stage_line(s))
+    check(any(c["purpose"] == "sort" for c in calls) and any(c["purpose"] == "draft" for c in calls),
+          "the photos were sorted and the case read", describe(calls))
+    check(all_on(calls, {W.fran.key}), f"every one of the {len(calls)} calls used her Free key", off_key(calls, {W.fran.key}))
+    r, calls, _ = analyze(W.fran)
+    check(r.status_code == 200 and all_on(calls, {W.fran.key}), "the report form's Analyze: her Free key too",
+          f"{brief(r)} | {off_key(calls, {W.fran.key})}")
+    case = filed_case(W.fran)
+    r, calls = annex(W.fran, case)
+    check(r.status_code == 200 and calls and all_on(calls, {W.fran.key}), "Annex A 'Ask AI' on her own case: her Free key",
+          f"{brief(r)} | {describe(calls)}")
 
 
 def no_ai() -> None:
@@ -1374,6 +1399,7 @@ def main() -> int:
         ("who pays: someone else presses Retry, or asks AI on Alice's case", others_press),
         ("who pays: ticked users -- no own key, a working one, a failing one", ticked),
         ("who pays: an untested own key; the report form's Analyze", more_paths),
+        ("who pays: a Free own key runs its owner's own AI", free_key),
         ("no AI: 409 with the right code, no Gemini call, stage unchanged", no_ai),
         ("no AI: the key storage can't be read", unreadable),
         ("order of checks: 404, then 403, then 400, then 409", route_order),

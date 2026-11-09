@@ -39,6 +39,7 @@ export function SetupCard({
   helpLabel,
   testKey,
   status,
+  headAction,
   children,
 }: {
   /** An anchor, so the setup checklist and other pages can link here. */
@@ -48,6 +49,8 @@ export function SetupCard({
   subtitle: string;
   helpUrl?: string;
   helpLabel?: string;
+  /** A button or link beside the status, top right (My AI key's "Get a key"). */
+  headAction?: React.ReactNode;
   /** The service POST /setup/test/{service} checks (admins only). */
   testKey?: string;
   /** fail: a red dot ("Failing"), rather than the grey of "Not set up". */
@@ -87,6 +90,7 @@ export function SetupCard({
               {status.label}
             </span>
           )}
+          {headAction}
           {testKey && (
             <button
               type="button"

@@ -55,8 +55,8 @@ export function aiKeySetupItem(ai: MyAiKey): SetupItem {
   }
   return {
     key: "ai-key",
-    label: "Set up AI",
-    hint: "Add your own Gemini key on My AI key, so the AI runs on it, or ask an admin to let you use the company key.",
+    label: "Set up your AI key",
+    hint: "AI is off for you until you do. Add your own Gemini key on My AI key (get one free from Google AI Studio; the card shows how), or ask an admin to let you use the company key.",
     done,
     href: "#my-ai-key",
   };
