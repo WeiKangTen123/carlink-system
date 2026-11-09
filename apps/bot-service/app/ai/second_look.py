@@ -43,7 +43,7 @@ from typing import Callable, TypeVar
 
 from sqlalchemy import func
 
-from app.ai import runs
+from app.ai import allowance, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured, image_part
 from app.config import settings
@@ -491,6 +491,9 @@ def look(*, actor: AiActor, vehicle: dict, listed: set[str], cands: list[Candida
         models=_ChainUntil(_chain(), stop or threading.Event()),
         actor=actor,
         timeout=CALL_TIMEOUT,
+        # Its own two models being used up must not switch the person's key
+        # off for the reading (structured.call_structured).
+        judge_key=False,
     )
 
 
@@ -625,6 +628,11 @@ def _ask(report_id: str, actor: AiActor) -> dict | None:
         logger.warning("Second look for %s: no answer within %.0fs", report_id, TIME_BOX)
         return _result("failed", NOTE_TIMEOUT, **meta)
     except Exception as exc:
+        if allowance.day_spent_error(exc):
+            # Today's allowance on its models is gone: a re-read would only
+            # spend a reading for nothing before Google's reset.
+            logger.info("Second look for %s skipped: its models' free day is used up", report_id)
+            return _result("skipped", NOTE_NO_ALLOWANCE, **meta)
         # Scrubbed: the error can quote the model's answer.
         logger.warning("Second look for %s failed: %s", report_id, runs.scrub_error(str(exc)))
         return _result("failed", NOTE_FAILED, **meta)

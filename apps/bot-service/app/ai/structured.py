@@ -101,6 +101,7 @@ def call_structured(
     models: list[str],
     actor: AiActor,
     timeout: float = 45.0,
+    judge_key: bool = True,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
     output parse() accepts.
@@ -121,6 +122,13 @@ def call_structured(
     A model whose free allowance for the day is used up on a key -- any key,
     the company's too -- is remembered until Google's reset (ai/allowance.py)
     and skipped on that key until then, with nothing sent.
+
+    judge_key=False: what this call's chain says about an own key is not
+    stored on it (the call still ends in AiUnavailable when that key was all
+    there was). The second look passes it: its own short chain being used
+    up says nothing about the reading's models, and storing "quota" (or
+    "invalid" for "limit: 0") would switch the person's key off for every
+    AI call (review, 2026-11-09).
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each key, since every model
@@ -130,6 +138,9 @@ def call_structured(
     # on the first model.
     keys = resolve_keys(actor)
     last_error: Exception | None = None
+    # Whether every try so far failed for the day's allowance (a skip, or a
+    # 429 per day / "limit: 0"): then the call ends in allowance.DayUsedUp.
+    all_day = True
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
     # The run log (ai/runs.py) gets the request's size once, and each try
@@ -209,6 +220,8 @@ def call_structured(
                 except Exception as exc:
                     last_error = key_error = exc
                     said = refusal(exc)
+                    if said not in DAY_VERDICTS:
+                        all_day = False
                     # The day's allowance gone on this model: remembered
                     # until the reset, whoever's key it is -- the company
                     # key's free day runs out just the same.
@@ -250,7 +263,7 @@ def call_structured(
             # Every model skipped and the key already marked quota (being
             # tried again after QUOTA_RETRY_AFTER): nothing new was learned,
             # and recording it would wipe the row's words from Google.
-            if key_error is not None or not key.retrying:
+            if judge_key and (key_error is not None or not key.retrying):
                 record_result(actor, key, outcome, key_error)
             refused.append(AI_QUOTA_USED if outcome == "quota" else AI_KEY_INVALID)
 
@@ -259,7 +272,7 @@ def call_structured(
         # than "the AI failed". (Not chained: the SDK's error stays in the
         # log lines above, scrubbed.)
         raise AiUnavailable(refused[-1]) from None
-    raise RuntimeError(
+    raise (allowance.DayUsedUp if all_day and last_error is not None else RuntimeError)(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."
     ) from _scrubbed(last_error, keys)

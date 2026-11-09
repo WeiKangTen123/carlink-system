@@ -108,6 +108,15 @@ class FakeInteractions:
                 time.sleep(behaviour["delay"])
             if behaviour["look"] == "fail":
                 raise RuntimeError("503 service_unavailable: high demand")
+            if behaviour["look"] == "day":
+                # Google's own error for a used-up free day (the SDK's type,
+                # so keys.refusal reads it as Google would send it).
+                from google.genai import errors as genai_errors
+                raise genai_errors.ClientError(429, {"error": {
+                    "code": 429, "status": "RESOURCE_EXHAUSTED",
+                    "message": "Quota exceeded for metric: generate_content_free_tier_requests, limit: 20, model: x",
+                    "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+                        {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}})
             enum = props["items"]["items"]["properties"]["part"]["enum"]
             return SimpleNamespace(output_text=json.dumps(_look_answer(enum, labels)))
         calls["draft"] += 1
@@ -415,7 +424,7 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
 
 def test_failures(client: TestClient, files: list[Path]) -> None:
     print("\n  failures leave the intake as the reading made it")
-    for mode, status, note in (("fail", "failed", sl.NOTE_FAILED),):
+    for mode, status, note in (("fail", "failed", sl.NOTE_FAILED), ("day", "skipped", sl.NOTE_NO_ALLOWANCE)):
         behaviour["look"] = mode
         rid = new_draft(client, files)
         before = calls["look"]
@@ -427,7 +436,14 @@ def test_failures(client: TestClient, files: list[Path]) -> None:
         assert (look["status"], look["note"], look["items"]) == (status, note, []), look
         assert calls["look"] - before == len(CHAIN), calls
         assert run_rows(rid)[-1] == ("second_look", "failed"), run_rows(rid)
-        ok(f"every model failing: the draft is ready, the second look '{status}' with a quiet note, its run failed")
+        ok(f"every model failing ({mode}): the draft is ready, the second look '{status}' with a quiet note, its run failed")
+        if mode == "day":
+            # The day is remembered as used up (ai/allowance.py): forgotten
+            # here so the checks below are asked again.
+            from app.ai import allowance
+            from app.ai.keys import company_keys
+            for k in company_keys():
+                allowance.forget(k.fingerprint, limits=True)
     behaviour["look"] = "ok"
 
     saved_box = sl.TIME_BOX
@@ -591,6 +607,10 @@ def _data(rid: str) -> dict:
 
 def main() -> int:
     init_db()
+    # This file opens more drafts than one person may keep open (each
+    # failure mode is a draft of its own); the limit isn't what it tests.
+    from app.api import limits
+    limits.MAX_OPEN_DRAFTS_PER_PERSON = 50
     import_history()
     test_vocabulary()
     test_candidates_and_photos()

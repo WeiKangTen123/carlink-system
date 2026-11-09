@@ -32,7 +32,7 @@ from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import runs, second_look
+from app.ai import allowance, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
@@ -185,6 +185,11 @@ def _friendly_error(exc: Exception) -> str:
     never help."""
     if isinstance(exc, AiUnavailable):
         return exc.message
+    if isinstance(exc, RuntimeError) and "fallback models" in str(exc) and allowance.day_spent_error(exc):
+        return (
+            "Today's free AI allowance is used up on every model this key can use. Your photos are saved: "
+            "it works again after Google's daily reset, at 4 pm Malaysia time (3 pm from mid-March to early November)."
+        )
     if isinstance(exc, RuntimeError) and "fallback models" in str(exc):
         cause = str(exc.__cause__ or "")
         if any(s in cause for s in ("429", "RESOURCE_EXHAUSTED", "quota", "503", "high demand")):

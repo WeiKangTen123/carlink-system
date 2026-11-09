@@ -762,6 +762,62 @@ def no_keys_anywhere() -> None:
           "the skip is logged, by the key's label")
 
 
+def not_judged() -> None:
+    """judge_key=False (the second look): its chain used up stores nothing
+    on the person's key; the call still ends in ai_quota_used."""
+    reset()
+    a = AiActor.for_user(W.A, "dashboard")
+    set_row(W.A, status="ok", last_error=None)
+    BEHAVIOUR[W.A_KEY] = raises(lambda m: day_429())
+    with runs.collecting():
+        try:
+            structured.call_structured(
+                purpose="unit test", system_instruction="", input_parts=[{"type": "text", "text": "hi"}],
+                schema={}, parse=json.loads, models=MODELS[:2], actor=a, judge_key=False,
+            )
+            result = None
+        except Exception as exc:
+            result = exc
+    check(code_of(result) == "ai_quota_used", "the call still ends in ai_quota_used", repr(result))
+    check(row_of(W.A).status == "ok", "her key stays ok: the reading may still use it", row_of(W.A).status)
+    BEHAVIOUR[W.A_KEY] = raises(lambda m: no_allowance_429())
+    reset()
+    with runs.collecting():
+        try:
+            structured.call_structured(
+                purpose="unit test", system_instruction="", input_parts=[{"type": "text", "text": "hi"}],
+                schema={}, parse=json.loads, models=MODELS[:2], actor=a, judge_key=False,
+            )
+        except Exception:
+            pass
+    check(row_of(W.A).status == "ok", "'limit: 0' on its models doesn't store the key invalid either", row_of(W.A).status)
+    BEHAVIOUR.clear()
+    check(allowance.day_spent_error(allowance.DaySpent("model-a")), "day_spent_error: a skip")
+    wrapped = RuntimeError("All Gemini fallback models (a) failed")
+    wrapped.__cause__ = RuntimeError("Error code: 429 - limit: 20 requests per day on Free Tier")
+    check(allowance.day_spent_error(wrapped), "day_spent_error: Google's per-day 429 as the cause")
+    busy = RuntimeError("All Gemini fallback models (a) failed")
+    busy.__cause__ = RuntimeError("Error code: 503 - high demand")
+    check(not allowance.day_spent_error(busy) and not allowance.day_spent_error(minute_429()),
+          "day_spent_error: not a 503, not a per-minute 429")
+    from app.intake.pipeline import _friendly_error
+    check("4 pm Malaysia time" in _friendly_error(wrapped) and "few minutes" not in _friendly_error(wrapped),
+          "the reading's message names the reset, not 'a few minutes'", _friendly_error(wrapped))
+    check("few minutes" in _friendly_error(busy), "...a busy model still says Retry in a few minutes")
+    reset()
+    BEHAVIOUR[COMPANY_KEY] = raises(lambda m: day_429())
+    result, _ = call(AiActor.cli())
+    check(isinstance(result, allowance.DayUsedUp) and "fallback models" in str(result),
+          "company key, every model's day used up: DayUsedUp (still the usual failure text)", repr(result))
+    check(allowance.day_spent_error(result) and "4 pm Malaysia time" in _friendly_error(result),
+          "...and the reading says when it comes back", _friendly_error(result))
+    reset()
+    BEHAVIOUR[COMPANY_KEY] = raises(lambda m: day_429() if m == MODELS[0] else minute_429())
+    result, _ = call(AiActor.cli(), models=MODELS[:2])
+    check(type(result) is RuntimeError, "one model busy for the minute: the usual RuntimeError", repr(result))
+    BEHAVIOUR.clear()
+
+
 def forgotten_on_change() -> None:
     """Saving again, switching Free/Billed, or a passing Test: what was
     remembered as used up for the key no longer holds."""
@@ -807,6 +863,7 @@ def main() -> int:
         ("read_by on GET /intake/{id}", read_by),
         ("GET /auth/me/ai-allowance", endpoint),
         ("forgotten when the key changes", forgotten_on_change),
+        ("a call that doesn't judge the key", not_judged),
         ("no key anywhere", no_keys_anywhere),
     ):
         run_section(name, fn)

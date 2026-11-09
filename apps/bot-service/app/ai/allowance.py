@@ -255,6 +255,32 @@ def key_state(fingerprint: str, models) -> dict[str, dict]:
     return out
 
 
+# Google's words for a used-up day ("...PerDay...", "per day") or none at
+# all ("limit: 0"), as keys.refusal reads them.
+_DAY_WORDS = re.compile(r"PerDay|per[ _-]day|\blimit: 0\b", re.IGNORECASE)
+
+
+class DayUsedUp(RuntimeError):
+    """call_structured's "All Gemini fallback models ... failed" when every
+    try it made failed for the day's allowance (skipped as spent, or a 429
+    per day / "limit: 0"): nothing will work before the reset. A
+    RuntimeError still, so callers matching the usual failure keep working;
+    its chained cause is scrubbed and shortened, which can cut Google's
+    "PerDay" off the end -- hence a type of its own."""
+
+
+def day_spent_error(exc: BaseException | None) -> bool:
+    """Whether a failed call ended because the day's free allowance is used
+    up (DayUsedUp, a skip's DaySpent, or Google's own words for it), so the
+    caller says so instead of "try again in a few minutes"."""
+    seen = 0
+    while exc is not None and seen < 5:
+        if isinstance(exc, (DayUsedUp, DaySpent)) or _DAY_WORDS.search(str(exc)):
+            return True
+        exc, seen = exc.__cause__, seen + 1
+    return False
+
+
 def forget(fingerprint: str, *, limits: bool = False) -> None:
     """Drops what is remembered as used up for one key: a passing Test on
     Settings > My AI key (it may have been billed meanwhile), and -- with
