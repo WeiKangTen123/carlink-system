@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from typing import Iterable
 
-from app.parts.history import FITTING_CONDITIONS, canonical_part, firm_wording, normalise_item, side_of, suggest
+from app.parts.history import FITTING_CONDITIONS, canonical_part, family_and_side, firm_wording, normalise_item, side_of, suggest
 from app.reports.synthesize_annexes import (
     DEFAULT_DISCOUNT,
     REPAIR_CONDITION,
@@ -167,6 +167,12 @@ def _covered(name: str, kept_keys: set) -> bool:
     the same side, or the same wording with no side at all."""
     norm, side = line_key(name)
     return (norm, side) in kept_keys or (norm, None) in kept_keys
+
+
+def _family(part: str) -> str:
+    """The past-case family of a damaged part: "Left Tail Lamp" and "Right
+    Tail Lamp" are both "Tail Lamp"."""
+    return family_and_side(canonical_part(part) or part)[0]
 
 
 def _part_key(name: str | None) -> str | None:
@@ -379,10 +385,18 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             _refresh_kept(row, part, namers[part["part"]])
 
     new_rows: list[dict] = []
-    # Per damaged part: two parts may share a wording ("Tail lamp" for a
-    # left and a right lamp whose sides are both still unconfirmed), and
-    # each keeps its own rows and prices.
-    seen: set[tuple[str, str]] = set()
+    # Per damaged part (by _part_key): two parts may share a wording ("Tail
+    # lamp" for a left and a right lamp whose sides are both still
+    # unconfirmed), and each keeps its own rows and prices. Two entries of
+    # the damage list that name ONE part ("Rear bumper fascia" and "Rear
+    # bumper side LH" are both Rear Bumper) share its rows: keyed by the
+    # entry's own name, each pulled the whole past kit and every line was
+    # priced twice (live check of 2026-11-09).
+    seen: set[tuple] = set()
+    # A past line no past case gave a side ("Taillamps assy" x2) stands for
+    # its family: held once, by whichever damaged side's row has it.
+    family_held = {(_family(r["source_part"]), line_key(r.get("part_name", "")))
+                   for r in kept if r.get("source_part") and not r["stale"]}
     for part in damaged:
         key = _part_key(part["part"])
         if key in dismissed:
@@ -425,14 +439,30 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # one unpriced row, worded as the firm would (row_name).
             row_part_name = row_name(db, part["part"], vehicle, unsided=part["unsided"])
             covered = has_own_row or _covered(row_part_name, own_keys) or _covered(part["part"], own_keys)
-            if not covered and (part["part"], row_part_name) not in seen:
-                seen.add((part["part"], row_part_name))
+            if not covered and (key, row_part_name) not in seen:
+                seen.add((key, row_part_name))
                 new_rows.append(_unpriced_row(part, row_part_name))
             continue
-        for row in _rows_for(part, suggestion, found):
-            if (part["part"], row["part_name"]) in seen or _covered(row["part_name"], own_keys):
+        # _rows_for gives one row per past line, in order.
+        for ln, row in zip(found["lines"], _rows_for(part, suggestion, found)):
+            if _covered(row["part_name"], own_keys):
                 continue
-            seen.add((part["part"], row["part_name"]))
+            if ln.get("sided"):
+                # A past case wrote it for one side: this side's own row (a
+                # left and a right lamp each get "Tail lamp LH" / "RH").
+                owner = (key, row["part_name"])
+            else:
+                # No past case gave it a side: the past case's both-lamps
+                # "Taillamps assy" x2 printed once per lamp priced four
+                # lamps (live check, 2026-11-09). Once per family -- also
+                # when another side's kept row already has it.
+                fam_line = (ln.get("family") or _family(part["part"]), line_key(row["part_name"]))
+                if fam_line in family_held:
+                    continue
+                owner = ("family",) + fam_line
+            if owner in seen:
+                continue
+            seen.add(owner)
             new_rows.append(row)
 
     items = kept + [r for r in new_rows if not r["is_net_item"]] + [r for r in new_rows if r["is_net_item"]]

@@ -376,6 +376,20 @@ def check_review_annex_fixes() -> None:
         assert [(r["part_name"], r["source_part"]) for r in rows(sync_annex_a(db, case(mixed), price_book=False))] == \
             [("Tail lamp", "Tail Lamp" + UNDETERMINED), ("Tail lamp", "Left Tail Lamp")]
         ok("3: two unconfirmed lamps (or an undetermined and an inferred one) keep a row each, priced each, stable on the next sync")
+        # Two entries naming ONE part ("Boot Lid" and "Tail gate" are both
+        # Boot Lid) share its rows: its past kit is priced once, not once
+        # per entry (live check, 2026-11-09), on the first sync and the next.
+        same = [{"part": "Boot Lid", "damage_type": "Dent"}, {"part": "Tail gate", "damage_type": "Dent"}]
+        once = rows(sync_annex_a(db, case(same), price_book=True))
+        assert sorted(r["part_name"] for r in once) == ["Tail gate assy", "Tail gate stopper"], once
+        assert sorted(r["part_name"] for r in rows(sync_annex_a(db, {**case(same), "annex_a": {"items": once}}, price_book=True))) ==             ["Tail gate assy", "Tail gate stopper"]
+        # Unpriced, a typed wording stays the person's ("Tail gate"), so
+        # distinct wordings keep a row each; one wording prints once.
+        assert [r["part_name"] for r in rows(sync_annex_a(db, case(same), price_book=False))] == ["Tail gate assy", "Tail gate"]
+        bumper = [{"part": "Rear Bumper", "damage_type": "Dent"}, {"part": "Rear bumper fascia", "damage_type": "Dent"}]
+        assert [r["part_name"] for r in rows(sync_annex_a(db, case(bumper), price_book=False))] == ["Rear bumper fascia"]
+        assert [r["part_name"] for r in rows(sync_annex_a(db, case(bumper), price_book=True))] == ["Rear bumper fascia"]
+        ok("3b: two entries naming one part share its rows -- its past lines are priced once, stable on the next sync")
 
         # 6. The part's own row follows tab-1 condition / remarks, price untouched.
         first = sync_annex_a(db, case([{"part": "Boot Lid", "condition": "Repair", "remarks": "Repair"}]), price_book=True)
@@ -712,6 +726,37 @@ def check_routes() -> None:
         ok("filing an intake keeps the condition typed at review (and the side flag until a person edits it); Annex A prints it")
 
 
+def check_family_lines() -> None:
+    print("a past line with no side prints once for both sides of a family")
+    # A made-up past case with both tail lamps: one line for the pair
+    # ("Taillamps assy" x2, as the real Honda case wrote it) and one per side.
+    both_lamps = PastCase(ref="CL 90003", plate="TEST3C", make="Deltamotors", model="Pilot", make_model_raw="Deltamotors Pilot",
+                          registered=None, surveyed="2025-03-01", lines=[
+                              line(1, "Taillamps assy", "Cracked", 2, 800, 640),
+                              line(2, "Tail lamp garnish LH", "Scratched", 1, 100, 80),
+                          ])
+    db = SessionLocal()
+    try:
+        import_case(db, both_lamps, "synthetic-3.xlsx")
+        db.commit()
+        sides = [{"part": "Left Tail Lamp", "damage_type": "Crack"}, {"part": "Right Tail Lamp", "damage_type": "Crack"}]
+        first = sync_annex_a(db, case(sides, "Deltamotors", "Pilot"), price_book=True)
+        got = sorted((r["source_part"], r["part_name"], r["workshop_est"]) for r in rows(first))
+        assert got == [("Left Tail Lamp", "Tail lamp garnish LH", 100.0), ("Left Tail Lamp", "Taillamps assy", 800.0),
+                       ("Right Tail Lamp", "Tail lamp garnish RH", 100.0)], got
+        again = sync_annex_a(db, first, price_book=True)
+        assert sorted((r["source_part"], r["part_name"], r["workshop_est"]) for r in rows(again)) == got, rows(again)
+        ok("both lamps damaged: the pair's 'Taillamps assy' x2 priced once, each side keeps its own sided line; stable on the next sync")
+        inferred = [dict(s, side_inferred=True) for s in sides]
+        first = sync_annex_a(db, case(inferred, "Deltamotors", "Pilot"), price_book=True)
+        names = sorted(r["part_name"] for r in rows(first))
+        assert names == ["Tail lamp garnish", "Tail lamp garnish", "Taillamps assy"], names
+        assert sorted(r["part_name"] for r in rows(sync_annex_a(db, first, price_book=True))) == names
+        ok("sides not yet confirmed: the pair's line once, the per-side line once per lamp (no LH / RH), stable")
+    finally:
+        db.close()
+
+
 def main() -> int:
     init_db()
     import_history()
@@ -725,6 +770,7 @@ def main() -> int:
     check_side_resolver()
     check_condition_kept()
     check_routes()
+    check_family_lines()
     print("\nALL DETECTION WORDING CHECKS PASSED")
     return 0
 
