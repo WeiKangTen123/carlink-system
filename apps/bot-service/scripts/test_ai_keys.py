@@ -250,6 +250,10 @@ class Person:
             body["billing_confirmed"] = billing
         return self.c.put("/auth/me/ai-key", json=body)
 
+    def patch(self, billed, **extra):
+        """PATCH /auth/me/ai-key: Free (False) or Billed (True)."""
+        return self.c.patch("/auth/me/ai-key", json={"billing_confirmed": billed, **extra})
+
     def test(self):
         return self.c.post("/auth/me/ai-key/test")
 
@@ -449,10 +453,13 @@ def put_refusals() -> None:
         r = W.A.put(bad)
         check(r.status_code == 400 and jd(r).get("code") == "ai_key_format", f"PUT with a bad key ({why}) -> 400 ai_key_format", brief(r))
     key = make_key("AliceOne")
-    for billing, label in ((None, "missing"), (False, "false")):
-        r = W.A.put(key, billing=billing)
-        check(r.status_code == 400 and jd(r).get("code") == "billing_not_confirmed",
-              f"PUT with billing_confirmed {label} -> 400 billing_not_confirmed", brief(r))
+    r = W.A.put(key, billing=None)
+    check(r.status_code == 400 and jd(r).get("code") == "ai_key_type_missing" and "Free or Billed" in jd(r).get("detail", ""),
+          "PUT without billing_confirmed -> 400 ai_key_type_missing (Free or Billed must be chosen)", brief(r))
+    for billing in ("yes", 1, "true", None):
+        r = W.A.c.put("/auth/me/ai-key", json={"api_key": key, "billing_confirmed": billing})
+        want = 400 if billing is None else 422
+        check(r.status_code == want, f"PUT with billing_confirmed {json.dumps(billing)} -> {want} (only a real true or false)", brief(r))
     check(row_of(W.A.id) is None and not PROBED, "nothing was stored, and Google wasn't asked")
 
 
@@ -505,6 +512,103 @@ def put_and_get() -> None:
     leaked = [k for k in SENT_KEYS if k.encode() in blobs]
     check(not leaked, "no key sent so far is anywhere in the SQLite files (db, -wal, -shm)", f"{len(leaked)} found")
     check(not any(k[4:24].encode() in blobs for k in (key, key2)), "not even 20 characters of one")
+
+
+def free_keys() -> None:
+    ai_keys_api.reset_limits()
+    fred = W.F = Person("Fred", sees_all_cases=True)
+    key = W.F_key = make_key("FredFree")
+    r = fred.put(key, billing=False)
+    body = jd(r)
+    need(r.status_code == 200, "PUT with billing_confirmed false (a Free key) -> 200", brief(r))
+    check(set(body) == SHAPE, "the response has exactly the brief's fields", str(sorted(set(body) ^ SHAPE)))
+    check(body.get("has_key") is True and body.get("last4") == key[-4:] and body.get("status") == "ok"
+          and body.get("billing_confirmed") is False,
+          "has_key, the last 4 characters, status ok, billing_confirmed false", brief(r))
+    check(body.get("ai_available") is True and body.get("source") == "own",
+          "a Free key runs this person's AI like any other: source own", brief(r))
+    check(PROBED[-1:] == [key], "Google was asked about it, as for any key")
+    row = row_of(fred.id)
+    check(row is not None and row.billing_confirmed is False and secretbox.unseal(row.key_enc) == key,
+          "stored sealed, billing_confirmed false")
+    saved = audits("ai_key_saved")
+    check(saved and saved[-1].user_id == fred.id and saved[-1].detail == f"key ...{key[-4:]} (ok, free)",
+          "history entry ai_key_saved says it is free, with the last 4 only", saved[-1].detail if saved else "none")
+    check(jd(fred.c.get("/auth/me")).get("ai_allowed") is True, "GET /auth/me: ai_allowed true")
+
+    print("  PATCH: Free <-> Billed without pasting it again")
+    probed = len(PROBED)
+    r = fred.patch(True)
+    body = jd(r)
+    check(r.status_code == 200 and set(body) == SHAPE and body.get("billing_confirmed") is True
+          and body.get("last4") == key[-4:] and body.get("status") == "ok",
+          "PATCH {billing_confirmed: true} -> 200, the same shape, now Billed", brief(r))
+    check(row_of(fred.id).billing_confirmed is True and secretbox.unseal(row_of(fred.id).key_enc) == key,
+          "stored as Billed; the key itself untouched")
+    switched = audits("ai_key_type_changed")
+    check(switched and switched[-1].user_id == fred.id and switched[-1].detail == f"key ...{key[-4:]}: free -> billed",
+          "history entry ai_key_type_changed: free -> billed, the last 4 only", switched[-1].detail if switched else "none")
+    r = fred.patch(True)
+    check(r.status_code == 200 and jd(r).get("billing_confirmed") is True and len(audits("ai_key_type_changed")) == len(switched),
+          "the same choice again: 200, no new history entry", brief(r))
+    r = fred.patch(False, last4=key[-4:])
+    check(r.status_code == 200 and jd(r).get("billing_confirmed") is False and row_of(fred.id).billing_confirmed is False,
+          "PATCH back to Free, with the last 4 the screen showed -> 200, Free", brief(r))
+    check(audits("ai_key_type_changed")[-1].detail == f"key ...{key[-4:]}: billed -> free", "...history: billed -> free")
+    check(len(PROBED) == probed, "Google wasn't asked for any of that")
+
+    print("  PATCH refusals")
+    r = fred.patch(True, last4="zzzz" if key[-4:] != "zzzz" else "yyyy")
+    check(r.status_code == 409 and jd(r).get("code") == "ai_key_changed" and row_of(fred.id).billing_confirmed is False,
+          "the last 4 of another key (replaced in another tab) -> 409 ai_key_changed, nothing changed", brief(r))
+    for bad in ({}, {"billing_confirmed": None}, {"billing_confirmed": "yes"}, {"billing_confirmed": 1}):
+        r = fred.c.patch("/auth/me/ai-key", json=bad)
+        check(r.status_code == 422, f"PATCH {bad} -> 422 (a real true or false only)", brief(r))
+    check(row_of(fred.id).billing_confirmed is False, "...still Free")
+    nobody = Person("Nell", sees_all_cases=True)
+    r = nobody.patch(True)
+    check(r.status_code == 404 and jd(r).get("code") == "no_ai_key" and row_of(nobody.id) is None,
+          "PATCH without a key -> 404 no_ai_key", brief(r))
+
+    print("  a PATCH racing a new key")
+    ai_keys_api.reset_limits()
+    real = keys.set_billing
+    newer = make_key("FredNewer")
+    saved_newer = []
+
+    def replaced_first(db, user_id, fingerprint, billed):
+        # Fred's other tab saves a new (Free) key between this PATCH's read
+        # and its write.
+        saved_newer.append(fred.other_tab().put(newer, billing=False).status_code)
+        return real(db, user_id, fingerprint, billed)
+
+    keys.set_billing = replaced_first
+    try:
+        r = fred.patch(True)
+    finally:
+        keys.set_billing = real
+    row = row_of(fred.id)
+    check(saved_newer == [200], "(the other tab's save went through)", str(saved_newer))
+    check(r.status_code == 409 and jd(r).get("code") == "ai_key_changed", "-> 409 ai_key_changed", brief(r))
+    check(row.last4 == newer[-4:] and row.billing_confirmed is False, "the new key keeps the Free it was saved with")
+
+    print("  saving a new key sets the choice afresh")
+    r = fred.patch(True)
+    check(r.status_code == 200 and jd(r).get("billing_confirmed") is True, "(switched to Billed)", brief(r))
+    again = make_key("FredThird")
+    r = fred.put(again, billing=False)
+    check(r.status_code == 200 and jd(r).get("billing_confirmed") is False and row_of(fred.id).billing_confirmed is False,
+          "a replacement saved as Free is Free, whatever the old one was", brief(r))
+
+    print("  PATCH has its own limit")
+    ai_keys_api.reset_limits()
+    codes = [fred.patch(i % 2 == 0).status_code for i in range(ai_keys_api.SWITCHES_PER_HOUR)]
+    check(codes == [200] * ai_keys_api.SWITCHES_PER_HOUR, f"{ai_keys_api.SWITCHES_PER_HOUR} switches in an hour", str(codes))
+    r = fred.patch(True)
+    check(r.status_code == 429 and jd(r).get("code") == "rate_limited", "the next -> 429 rate_limited", brief(r))
+    check(ai_keys_api.saves.used(fred.id) == 0 and ai_keys_api.saves_all.used("all") == 0,
+          "...and none of them used up a key save")
+    ai_keys_api.reset_limits()
 
 
 def in_use() -> None:
@@ -793,7 +897,7 @@ def _rate_limits(clock) -> None:
                 q.put("bad")
             else:
                 q.put(make_key("NoBilling"), billing=None)
-    check(ai_keys_api.saves_all.used("all") == 0, "100 tries with a bad format or no billing tick use none of it",
+    check(ai_keys_api.saves_all.used("all") == 0, "100 tries with a bad format or no Free/Billed choice use none of it",
           str(ai_keys_api.saves_all.used("all")))
     clock[0] += ai_keys_api._HOUR + 1
     refused = make_key("RefusedForCap")
@@ -969,8 +1073,8 @@ def test_vs_replace() -> None:
 
 
 
-ROUTES = (("GET", "/auth/me/ai-key"), ("PUT", "/auth/me/ai-key"), ("POST", "/auth/me/ai-key/test"),
-          ("DELETE", "/auth/me/ai-key"), ("DELETE", "/users/{id}/ai-key"))
+ROUTES = (("GET", "/auth/me/ai-key"), ("PUT", "/auth/me/ai-key"), ("PATCH", "/auth/me/ai-key"),
+          ("POST", "/auth/me/ai-key/test"), ("DELETE", "/auth/me/ai-key"), ("DELETE", "/users/{id}/ai-key"))
 
 
 def who_may() -> None:
@@ -980,7 +1084,7 @@ def who_may() -> None:
     temp_admin = Person("Tom", role="admin", must_change_password=True)
     for method, path in ROUTES:
         url = path.replace("{id}", W.A.id)
-        kw = {"json": body} if method == "PUT" else {}
+        kw = {"json": body} if method in ("PUT", "PATCH") else {}
         r = anon.request(method, url, **kw)
         check(r.status_code == 401, f"signed out: {method} {path} -> 401", brief(r))
         for p in (temp, temp_admin):
@@ -1314,8 +1418,9 @@ def main() -> int:
         ("seal, unseal, fingerprint", seal_round_trip),
         ("user_ai_keys: unique rules inside the table", table_rules),
         ("GET /auth/me/ai-key without a key", get_without_key),
-        ("PUT refusals: format, billing", put_refusals),
+        ("PUT refusals: format, Free or Billed", put_refusals),
         ("PUT, GET, replace; never in the database file", put_and_get),
+        ("free keys: PUT false, PATCH Free <-> Billed", free_keys),
         ("one person per key: 409 ai_key_in_use", in_use),
         ("Google refuses: 400 ai_key_invalid, not stored", google_refuses),
         ("Google can't answer: untested; quota", no_answer),

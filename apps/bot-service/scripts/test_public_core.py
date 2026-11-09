@@ -1265,11 +1265,28 @@ def ai_keys_section() -> None:
     # Ticked: the normal P4 rules.
     db_do(lambda db: public.save_setting(db, public.COMPANY_KEY_BILLED, True))
     check(labels(W.admin.id, True) == company, "billed: an admin on a public case gets the company keys")
-    check(labels(W.tia.id, True) == [f"own ..{tia_key[-4:]}"] + company, "billed: own first, then company, as P4")
+    check(labels(W.tia.id, True) == company,
+          "billed: Tia's own key is Free, so never on a public report; her company tick still applies")
+    check(labels(W.tia.id) == [f"own ..{tia_key[-4:]}"] + company, "...Tia elsewhere: her Free key first, then company (P4)")
     check(labels(W.kim.id, True) == [f"own ..{kim_key[-4:]}"], "billed: Kim (no tick) her own key")
     check(labels(W.ann.id, True)[0] == "ai_key_missing" and labels(W.ann.id, True)[1] == keys.MESSAGES["ai_key_missing"],
           "billed: no key and no tick: ai_key_missing with the usual words")
     check(labels(W.quinn.id, True) == [f"own ..{quinn_key[-4:]}"], "billed: a quota key retried after an hour, as P4")
+    # Kim (no tick) switches her key to Free: nothing is left for a public report.
+    db_do(lambda db: keys.set_billing(db, W.kim.id, secretbox.fingerprint(kim_key), False))
+    check(labels(W.kim.id, True) == ("ai_key_missing", keys.PUBLIC_FREE_KEY),
+          "billed: a Free own key and no tick -> ai_key_missing, saying a free key can't be used")
+    check("free" in keys.PUBLIC_FREE_KEY and "Billed" in keys.PUBLIC_FREE_KEY and "by hand" in keys.PUBLIC_FREE_KEY,
+          "...words that say why and what to do")
+    check(labels(W.kim.id) == [f"own ..{kim_key[-4:]}"], "...Kim's Free key still runs her other cases")
+    check(code_of(lambda: keys.ensure_ai_ready(AiActor.for_user(W.kim.id, "dashboard"), public_case=True)) == "ai_key_missing",
+          "...and ensure_ai_ready refuses it before anything runs")
+    check(labels(W.kim.id, actor_flag=True)[0] == "ai_key_missing", "...also when the actor carries it (every call of a run)")
+    db_do(lambda db: public.save_setting(db, public.COMPANY_KEY_BILLED, False))
+    check(labels(W.kim.id, True) == missing, "unticked: the Free key is refused there too (the decision's words)")
+    db_do(lambda db: public.save_setting(db, public.COMPANY_KEY_BILLED, True))
+    db_do(lambda db: keys.set_billing(db, W.kim.id, secretbox.fingerprint(kim_key), True))
+    check(labels(W.kim.id, True) == [f"own ..{kim_key[-4:]}"], "switched back to Billed: her own key again")
     db_do(lambda db: public.save_setting(db, public.COMPANY_KEY_BILLED, False))
     check(labels(W.admin.id, True) == missing, "unticked again: back to own keys only")
 

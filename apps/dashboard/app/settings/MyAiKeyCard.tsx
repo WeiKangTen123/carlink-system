@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import { unstable_rethrow } from "next/navigation";
-import { Check, Eye, EyeOff, Key, RefreshCw, Sparkles, Trash2, X, Zap } from "lucide-react";
+import { Check, ExternalLink, Eye, EyeOff, Key, RefreshCw, Sparkles, Trash2, X, Zap } from "lucide-react";
 import type { MyAiKey } from "@/lib/api";
 import { formatSgt } from "@/lib/signup";
 import {
   deleteMyAiKeyAction,
   getMyAiKeyAction,
   saveMyAiKeyAction,
+  setMyAiKeyBilledAction,
   testMyAiKeyAction,
   type AiKeyError,
   type AiKeyResult,
@@ -18,12 +19,14 @@ import {
   CLOUD_CREDENTIALS_URL,
   FAILING_FIX,
   FAILING_WHAT,
+  KEY_TYPE_WORDS,
   aiKeyWord,
   aiRightNowWords,
   isFailingStatus,
   keyFormatProblem,
   maskedKey,
 } from "./aiKeyWords";
+import { AiAllowancePanel } from "./AiAllowancePanel";
 import { HelpLink, SetupCard, TestResult, type TestState } from "./SetupCard";
 
 /** Settings -> My settings -> My AI key (id="my-ai-key"): the person's own
@@ -34,7 +37,14 @@ import { HelpLink, SetupCard, TestResult, type TestState } from "./SetupCard";
  * Since release P4 the AI runs on the key of whoever presses the button:
  * this key when it works, else the company key for admins and the people an
  * admin allows, else no AI. "AI right now" says which, from GET
- * /auth/me/ai-key's `source` and `ai_available`. */
+ * /auth/me/ai-key's `source` and `ai_available`.
+ *
+ * Every key is Free or Billed (`billing_confirmed`), picked when it is saved
+ * (Free unless changed) and switched later without pasting it again (PATCH).
+ * A free key from Google AI Studio is the quickest way for anyone to get AI,
+ * so it is allowed, with Google's terms for unpaid use spelt out whenever
+ * Free is picked; only a Billed key is used for reports sent by the public.
+ * "Today" shows each key's daily allowance (AiAllowancePanel). */
 
 /** Runs one of the AI key actions. If no answer comes back at all (the
  * connection dropped, the server failed outright), that becomes an error
@@ -74,7 +84,7 @@ function savedText(key: MyAiKey): string {
       : key.source === "company"
         ? "Until it works, AI uses the company key."
         : "AI stays off for you until it works.";
-  return ["Saved.", google, now].filter(Boolean).join(" ");
+  return [key.billing_confirmed ? "Saved as a billed key." : "Saved as a free key.", google, now].filter(Boolean).join(" ");
 }
 
 /** After Test: Google's answer, in a few words. */
@@ -127,7 +137,48 @@ function AiRightNow({ ai, isAdmin }: { ai: MyAiKey; isAdmin: boolean }) {
   );
 }
 
-/** The paste-a-key form, for a first key or a replacement. */
+/** Type: (o) Free ( ) Billed, and what the choice means under it. For a key
+ * being added (the form's own state) and for the saved one (each change is
+ * a PATCH). `name` keeps the two radio groups apart when both are shown. */
+function KeyTypeChoice({
+  name,
+  billed,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  billed: boolean;
+  disabled: boolean;
+  onChange: (billed: boolean) => void;
+}) {
+  return (
+    <div className="ai-key-type">
+      <div className="ai-key-type-row">
+        <span className="detail-field-label" id={`${name}-label`}>
+          Type
+        </span>
+        <div className="settings-choices ai-key-type-choices" role="radiogroup" aria-labelledby={`${name}-label`}>
+          {[false, true].map((choice) => (
+            <label key={String(choice)} className={`settings-choice${billed === choice ? " picked" : ""}`}>
+              <input
+                type="radio"
+                name={name}
+                checked={billed === choice}
+                disabled={disabled}
+                onChange={() => onChange(choice)}
+              />
+              <span className="settings-choice-title">{choice ? "Billed" : "Free"}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <span className="field-hint ai-key-type-words">{KEY_TYPE_WORDS[billed ? "billed" : "free"]}</span>
+    </div>
+  );
+}
+
+/** The paste-a-key form, for a first key or a replacement. Free unless
+ * Billed is picked. */
 function KeyForm({
   replacing,
   onSaved,
@@ -139,7 +190,7 @@ function KeyForm({
 }) {
   const [value, setValue] = useState("");
   const [show, setShow] = useState(false);
-  const [billing, setBilling] = useState(false);
+  const [billed, setBilled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -152,13 +203,9 @@ function KeyForm({
       setError(problem);
       return;
     }
-    if (!billing) {
-      setError("Tick the box to confirm billing is turned on for this key's Google Cloud project.");
-      return;
-    }
     setSaving(true);
     setError(null);
-    const result = await settle(() => saveMyAiKeyAction(typed, true));
+    const result = await settle(() => saveMyAiKeyAction(typed, billed));
     setSaving(false);
     if ("error" in result) {
       setError(result.error || "Failed to save your AI key");
@@ -166,14 +213,14 @@ function KeyForm({
       if (accountRefused(result)) {
         setValue("");
         setShow(false);
-        setBilling(false);
+        setBilled(false);
       }
       return;
     }
     // Never kept on screen once it's saved.
     setValue("");
     setShow(false);
-    setBilling(false);
+    setBilled(false);
     onSaved(result.key);
   };
 
@@ -214,24 +261,15 @@ function KeyForm({
         </div>
       </label>
 
-      <label className="user-tick ai-key-billing">
-        <input
-          type="checkbox"
-          checked={billing}
-          disabled={saving}
-          onChange={(e) => {
-            setBilling(e.target.checked);
-            setError(null);
-          }}
-        />
-        <span>
-          This key&apos;s Google Cloud project has billing turned on
-          <span className="field-hint">
-            Why it matters: on free keys, Google may use what Carlink sends it, case photos included, to improve its
-            products, and people at Google may read it. With billing on, it doesn&apos;t.
-          </span>
-        </span>
-      </label>
+      <KeyTypeChoice
+        name={replacing ? "ai-key-type-replace" : "ai-key-type-new"}
+        billed={billed}
+        disabled={saving}
+        onChange={(b) => {
+          setBilled(b);
+          setError(null);
+        }}
+      />
 
       {error && (
         <div className="setup-error" role="alert" style={{ margin: 0 }}>
@@ -248,7 +286,7 @@ function KeyForm({
         <button
           type="submit"
           className="btn-primary-modern"
-          disabled={saving || !value.trim() || !billing}
+          disabled={saving || !value.trim()}
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <Key style={{ width: 14, height: 14 }} /> {saving ? "Checking with Google…" : replacing ? "Save new key" : "Save key"}
@@ -258,18 +296,54 @@ function KeyForm({
   );
 }
 
+/** The three steps to a free key of one's own. One project per person:
+ * Google's free allowance is per project, so two people sharing one run
+ * out twice as fast. */
+function HowToGetAKey() {
+  return (
+    <div className="ai-key-howto">
+      <div className="detail-field-label">How to get a free key</div>
+      <ol className="ai-key-steps">
+        <li>
+          Open{" "}
+          <a href={AI_STUDIO_KEYS_URL} target="_blank" rel="noopener noreferrer" className="setup-help-link">
+            Google AI Studio
+          </a>{" "}
+          and sign in with <strong>your own</strong> Google account.
+        </li>
+        <li>
+          Press Create API key and create it in a new project. Two people in one project share one allowance.
+        </li>
+        <li>Copy the key, paste it above and pick Free.</li>
+      </ol>
+    </div>
+  );
+}
+
 export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isAdmin: boolean }) {
   const [ai, setAi] = useState<MyAiKey | null>(initial);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [replacing, setReplacing] = useState(false);
-  const [busy, setBusy] = useState<"test" | "remove" | null>(null);
+  const [busy, setBusy] = useState<"test" | "remove" | "type" | null>(null);
   const [tested, setTested] = useState<TestState>(null);
   const [notice, setNotice] = useState<Notice>(null);
 
   const icon = <Key style={{ width: 22, height: 22, color: "var(--accent-primary)" }} />;
   const title = "My AI key";
   const subtitle = "Your own Gemini key, for the AI that reads case photos";
+  const getKey = (
+    <a
+      href={AI_STUDIO_KEYS_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="btn-secondary-modern"
+      title="Google AI Studio's API keys page: a free key takes a minute"
+      style={{ fontSize: 11, padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 4, textDecoration: "none" }}
+    >
+      Get a key <ExternalLink style={{ width: 12, height: 12 }} />
+    </a>
+  );
 
   const reload = async () => {
     setReloading(true);
@@ -284,7 +358,14 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
 
   if (!ai) {
     return (
-      <SetupCard id="my-ai-key" icon={icon} title={title} subtitle={subtitle} status={{ ok: false, label: "Couldn't load" }}>
+      <SetupCard
+        id="my-ai-key"
+        icon={icon}
+        title={title}
+        subtitle={subtitle}
+        headAction={getKey}
+        status={{ ok: false, label: "Couldn't load" }}
+      >
         <p className="setup-note">{loadError || "Couldn't load your AI key just now."}</p>
         <button type="button" className="btn-secondary-modern" onClick={() => void reload()} disabled={reloading}>
           {reloading ? "Loading…" : "Try again"}
@@ -303,11 +384,12 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
     setNotice({ tone: "ok", text: savedText(key) });
   };
 
-  /** A refusal from Test or Remove. no_ai_key: it's gone already (another
-   * tab, or an admin), so show the card as it now is. */
+  /** A refusal from Test, Remove or the Free/Billed switch. no_ai_key: it's
+   * gone already (another tab, or an admin); ai_key_changed: another tab
+   * saved a new one. Either way, show the card as it now is. */
   const refused = async (result: AiKeyError) => {
     setNotice({ tone: "fail", text: result.error || "Something went wrong. Try again." });
-    if (result.code === "no_ai_key") await reload();
+    if (result.code === "no_ai_key" || result.code === "ai_key_changed") await reload();
   };
 
   const runTest = async () => {
@@ -319,6 +401,23 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
     if ("error" in result) return refused(result);
     setAi(result.key);
     setTested(testedResult(result.key));
+  };
+
+  const switchType = async (billed: boolean) => {
+    if (billed === ai.billing_confirmed) return;
+    setBusy("type");
+    setTested(null);
+    setNotice(null);
+    const result = await settle(() => setMyAiKeyBilledAction(billed, ai.last4));
+    setBusy(null);
+    if ("error" in result) return refused(result);
+    setAi(result.key);
+    setNotice({
+      tone: "ok",
+      text: result.key.billing_confirmed
+        ? "Your key is now Billed. It can also be used for reports sent by the public."
+        : "Your key is now Free. It won't be used for reports sent by the public.",
+    });
   };
 
   const remove = async () => {
@@ -353,8 +452,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
       icon={icon}
       title={title}
       subtitle={subtitle}
-      helpUrl={AI_STUDIO_KEYS_URL}
-      helpLabel="Get a Gemini API key at Google AI Studio"
+      headAction={getKey}
       status={{ ok: word === "Working", label: word, fail: word === "Failing" }}
     >
       {notice && (
@@ -374,7 +472,7 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
           <div className="setup-key-row ai-key-row">
             <Key style={{ width: 15, height: 15, color: "var(--accent-cyan)", flexShrink: 0 }} />
             <span className="ai-key-own">
-              Own key <span className="ai-key-mask">{maskedKey(ai.last4)}</span>
+              Key <span className="ai-key-mask">{maskedKey(ai.last4)}</span>
             </span>
             <span className={`ai-key-word ${failing ? "fail" : "ok"}`}>
               {word}
@@ -419,6 +517,13 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
             <span>{ai.last_checked_at ? `Last checked ${formatSgt(ai.last_checked_at)}` : "Not checked with Google yet"}</span>
           </div>
 
+          <KeyTypeChoice
+            name="ai-key-type-saved"
+            billed={ai.billing_confirmed}
+            disabled={busy !== null}
+            onChange={(b) => void switchType(b)}
+          />
+
           {failing && (
             <div className="setup-error ai-key-failing" role="alert">
               <div>{ai.last_error || FAILING_WHAT[failing]}</div>
@@ -433,15 +538,12 @@ export function MyAiKeyCard({ initial, isAdmin }: { initial: MyAiKey | null; isA
           )}
         </>
       ) : (
-        <>
-          <ol className="ai-key-steps">
-            <li>Open Google AI Studio&apos;s API keys page (link above) and sign in with your Google account.</li>
-            <li>Create a key in a Google Cloud project that has billing turned on.</li>
-            <li>Copy the key and paste it here.</li>
-          </ol>
-          <KeyForm replacing={false} onSaved={saved} />
-        </>
+        <KeyForm replacing={false} onSaved={saved} />
       )}
+
+      <AiAllowancePanel refreshOn={`${ai.has_key}|${ai.last4}|${ai.status}|${ai.billing_confirmed}|${ai.source}`} />
+
+      {(!ai.has_key || replacing) && <HowToGetAKey />}
 
       <p className="setup-note" style={{ margin: "12px 0 0" }}>
         Once saved, the key is locked away: nobody, admins included, can see it again. Carlink shows only its last 4

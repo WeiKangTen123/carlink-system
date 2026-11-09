@@ -124,8 +124,8 @@ export function PublicReportsCard({ initial }: { initial: AppSettings }) {
             The company AI key is on a Google Cloud project with billing turned on
             <span className="field-hint">
               Until this is ticked, the AI runs on a public report only with the key of the person who presses the button,
-              and only if they saved it with billing confirmed (Settings → My AI key). On free keys, Google may use what is
-              sent to it to improve its products.
+              and only if they saved it as Billed (Settings → My AI key). A Free key is never used for public reports,
+              ticked or not: on free keys, Google may use what is sent to it to improve its products.
             </span>
           </span>
         </label>

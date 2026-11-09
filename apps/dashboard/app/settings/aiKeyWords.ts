@@ -26,7 +26,7 @@ export function maskedKey(last4: string | null | undefined): string {
  *   none / not available     -> "AI is off for you"
  * `text` says why, and what would change it. */
 export function aiRightNowWords(
-  ai: Pick<MyAiKey, "has_key" | "status" | "company_allowed" | "ai_available" | "source">,
+  ai: Pick<MyAiKey, "has_key" | "status" | "billing_confirmed" | "company_allowed" | "ai_available" | "source">,
   isAdmin: boolean
 ): { off: boolean; which: string; text: string } {
   const companyWhy = isAdmin ? "Admins can always use it." : "An admin has allowed you to use it.";
@@ -37,7 +37,7 @@ export function aiRightNowWords(
       ? "Your own key has used up its allowance for now; it should work again within about an hour, so try again later."
       : ai.has_key
         ? "Your own key isn't working, and the company key isn't yours to use. Fix your key above, or ask an admin to let you use the company key."
-        : "Add your own key above, or ask an admin to let you use the company key.";
+        : "Add your own key above (get one free from Google AI Studio), or ask an admin to let you use the company key.";
     return { off: true, which: "AI is off for you.", text: `${why} You can still fill cases in by hand.` };
   }
   if (ai.source === "own") {
@@ -45,7 +45,9 @@ export function aiRightNowWords(
     return {
       off: false,
       which: "AI uses your own key.",
-      text: `Whatever you run with AI, on any case, is billed to its Google Cloud project.${fallback}`,
+      text: ai.billing_confirmed
+        ? `Whatever you run with AI, on any case, is billed to its Google Cloud project.${fallback}`
+        : `Whatever you run with AI, on any case, uses its free daily allowance.${fallback}`,
     };
   }
   if (ai.has_key) {
@@ -60,6 +62,17 @@ export function aiRightNowWords(
   return { off: false, which: "AI uses the company key.", text: `${companyWhy} Add your own key above to use that instead.` };
 }
 
+/** Free or Billed (the key's `billing_confirmed`), under the choice on My
+ * AI key. Free states Google's terms for unpaid use as they are; Billed
+ * keeps the words the billing tick had before free keys were allowed. Only
+ * a Billed key reads reports sent by the public (bot-service app/ai/keys.py). */
+export const KEY_TYPE_WORDS: Record<"free" | "billed", string> = {
+  free:
+    "Free: Google may use what Carlink sends with this key, case photos included, to improve its products, and people at Google may read it. Turning on billing for the key's Google Cloud project stops that. A free key can't be used for reports sent by the public.",
+  billed:
+    "Billed: this key's Google Cloud project has billing turned on. With billing on, Google doesn't use what Carlink sends it to improve its products. Pick this only if billing really is on: a billed key is also used for reports sent by the public.",
+};
+
 /** What went wrong, when the API kept no message of Google's. */
 export const FAILING_WHAT: Record<"invalid" | "quota" | "unreadable", string> = {
   invalid: "Google refused this key.",
@@ -71,7 +84,7 @@ export const FAILING_WHAT: Record<"invalid" | "quota" | "unreadable", string> = 
 export const FAILING_FIX: Record<"invalid" | "quota" | "unreadable", string> = {
   invalid: "Replace it with a key Google accepts, or remove it.",
   quota:
-    "It should work again by itself within about an hour, so try again later. If it keeps running out, check that billing is on for its Google Cloud project, or replace it.",
+    "It should work again by itself within about an hour, so try again later; a free key's daily allowance starts again each day. If it keeps running out, turn on billing for its Google Cloud project, or replace it.",
   unreadable: "Replace it: paste the key again, or a new one.",
 };
 
