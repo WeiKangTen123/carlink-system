@@ -95,7 +95,13 @@ SYSTEM_PROMPT = (
     "metal, a cracked or chipped lens, a cut, torn or crushed seal, trim pushed out of line, paint cracked at a fold. "
     "Include the part when you can see such damage, with 'ai_confidence' 'Low' if it is slight; leave it out when the "
     "close-up shows the part intact.\n"
-    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward. If the reporter stated the side, use it.\n"
+    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward -- never the left "
+    "or right of the photo (cars here are right-hand drive: the steering wheel is on the car's right). Before naming a "
+    "side, work out which way the car's front (headlamps, grille, wing mirrors) points in the photo: toward the camera, "
+    "the car's RIGHT side is on the photo's LEFT; away from the camera, the car's left is on the photo's left; to the "
+    "photo's left, you are looking at the car's LEFT side; to the photo's right, at its RIGHT side. A close-up with none "
+    "of these clues shows the side of the wide shots taken just before it. If the reporter stated the side, use it; "
+    "when you still can't tell, use the '(side undetermined)' option -- a wrong side is worse than none.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
     "4. Insurance & Workshop Details ('insurance_details'):\n"
@@ -304,15 +310,6 @@ def photo_hint(hint: dict | None) -> str | None:
     return "Sorter's hint: " + "; ".join(bits)
 
 
-def _image_resolution(kind: str | None) -> str | None:
-    """CONTRACT 6 HOOK (agent M's per-kind image resolution): the resolution
-    to ask for on an image of this sorter kind (None for a photo with no
-    kind: the bot's, an unsorted one), or None to leave the image part as it
-    is. The integrator makes this call M's helper; None until then, which
-    sends every image exactly as before."""
-    return None
-
-
 def _build_input(
     description: str,
     photo_paths: list[str],
@@ -374,11 +371,10 @@ def _build_input(
         # stays exactly that, as everything that reads labels back expects.
         if captions[i - 1]:
             parts.append({"type": "text", "text": captions[i - 1]})
-        image = image_part(path)
-        resolution = _image_resolution((hints[i - 1] or {}).get("kind"))  # CONTRACT 6 HOOK (M)
-        if resolution:
-            image["resolution"] = resolution
-        parts.append(image)
+        # The sorter's kind picks the image's resolution
+        # (settings.gemini_image_resolution); no kind -- the bots, a photo
+        # never sorted -- sends it at Gemini's default, as before.
+        parts.append(image_part(path, kind=(hints[i - 1] or {}).get("kind")))
     return parts
 
 

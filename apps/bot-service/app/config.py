@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     # is a preview feature on Gemini 3 (Google's structured-output docs),
     # untested on the lite models: a trial setting.
     gemini_read_tools: str | None = None
+    # How many photos one intake reading sends (intake/pipeline.read_limit);
+    # unset: pipeline.MAX_READ_PHOTOS (32).
+    intake_max_read_photos: int | None = None
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False

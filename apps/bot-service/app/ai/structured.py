@@ -148,6 +148,19 @@ def request_settings(purpose: str, model_id: str) -> dict:
     return extra
 
 
+# Seconds to wait before asking a busy model (is_overloaded) once more.
+OVERLOADED_RETRY_SECONDS = 8.0
+
+_OVERLOADED = re.compile(r"\b503\b|UNAVAILABLE|overloaded|high demand", re.IGNORECASE)
+
+
+def is_overloaded(error: Exception) -> bool:
+    """Google answered "busy, try again later" (503 UNAVAILABLE, "currently
+    experiencing high demand") rather than refusing this request."""
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    return status == 503 or bool(_OVERLOADED.search(str(error)))
+
+
 def call_structured(
     *,
     purpose: str,
@@ -302,9 +315,15 @@ def call_structured(
                     # back in 30 seconds: no wait, straight to the next.
                     # Only a per-minute 429 (no verdict) is waited out.
                     delay = retry_after_seconds(exc) if said is None and is_rate_limit_error(exc) else None
+                    # Google "busy" (503, "high demand"): usually gone in
+                    # seconds, and the light models -- what most reads run
+                    # on -- see it most. One short wait on the same model
+                    # beats ending a run whose last models are both busy.
+                    if delay is None and said is None and is_overloaded(exc):
+                        delay = OVERLOADED_RETRY_SECONDS
                     if delay is not None and attempt == 1:
                         logger.warning(
-                            "Gemini model %r rate-limited on %s; waiting %.1fs as instructed",
+                            "Gemini model %r rate-limited or busy on %s; waiting %.1fs before asking again",
                             model_id, key.label, delay,
                         )
                         time.sleep(delay)
