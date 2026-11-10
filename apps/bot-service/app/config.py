@@ -143,6 +143,13 @@ class Settings(BaseSettings):
     # is a preview feature on Gemini 3 (Google's structured-output docs),
     # untested on the lite models: a trial setting.
     gemini_read_tools: str | None = None
+    # Reference examples inside the reading request (ai/read_examples.py):
+    # the path of a JSON manifest naming a few labelled photos from OTHER
+    # cases, each with the lesson it teaches, sent before the case's own
+    # photos on the intake reading only. Unset: none, the request as before.
+    # A bad manifest never stops the app or a reading: a warning in the log
+    # and no examples.
+    gemini_read_examples: str | None = None
     # How many photos one intake reading sends (intake/pipeline.read_limit);
     # unset: pipeline.MAX_READ_PHOTOS (32).
     intake_max_read_photos: int | None = None
@@ -220,6 +227,11 @@ class Settings(BaseSettings):
     def _read_tools(cls, value):
         return normal_read_tools(value)
 
+    @field_validator("gemini_read_examples")
+    @classmethod
+    def _read_examples(cls, value):
+        return normal_read_examples(value)
+
 
 # Each model setting written the one way, None when blank (unset). Raise
 # ValueError as the parsers above do. The benchmark checks its flags with
@@ -241,6 +253,15 @@ def normal_read_tools(value) -> str | None:
     if value is None:
         return None
     return ",".join(read_tools(str(value))) or None
+
+
+def normal_read_examples(value) -> str | None:
+    """The manifest's path as given, None when blank. The manifest itself is
+    not checked here: a bad one must not stop the app (read_examples.
+    for_reading reads it with each reading)."""
+    if value is None:
+        return None
+    return str(value).strip() or None
 
 
 settings = Settings()

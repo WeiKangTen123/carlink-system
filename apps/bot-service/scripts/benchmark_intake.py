@@ -37,6 +37,12 @@ with --thinking-level-read / -sort / -second-look, --image-resolution and
 Gemini call's tokens (prompt, output, thinking) and seconds under each
 run's "ai_calls".
 
+--read-examples MANIFEST sends reference examples -- labelled photos of
+other cases -- before each case's photos (settings.gemini_read_examples,
+app/ai/read_examples.py). Leave-one-out: an example whose "case" is the case
+being read is never sent with it. Each run records the examples sent and
+held out under "read_examples"; the manifest's are in the result file's.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -922,6 +928,7 @@ def _app() -> SimpleNamespace:
         runs.note_attempt = _noting(runs.note_attempt)
 
     import app.ai.extraction as extraction
+    import app.ai.read_examples as read_examples
     import app.ai.second_look as second_look
     import app.ai.triage as triage
 
@@ -942,7 +949,8 @@ def _app() -> SimpleNamespace:
     from app.storage.files import generate_preview
 
     _APP = SimpleNamespace(
-        runs=runs, structured=structured, extraction=extraction, triage=triage, AiActor=AiActor,
+        runs=runs, structured=structured, extraction=extraction, triage=triage, read_examples=read_examples,
+        AiActor=AiActor,
         settings=settings, pipeline=pipeline, intake_dir=intake_dir, ordered_photos=ordered_photos,
         import_case=import_case, normalise_item=normalise_item, parse_report=parse_report, side_of=side_of,
         family_of=family_of, family_and_side=family_and_side,
@@ -1201,6 +1209,11 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
     ACCOUNTING.clear()
     out: dict = {"case": case["name"], "report_id": rid}
     cache_info = {"hits": apply_sort_cache(rid, sort_cache)} if sort_cache else None
+    # Leave-one-out for the reference examples: none of this case's own
+    # photos is sent as an example while it is read (by its name or folder).
+    A.read_examples.HELD_OUT = tuple(c for c in (case.get("name"), case.get("folder")) if c)
+    if A.settings.gemini_read_examples:
+        out["read_examples"] = read_examples_for(A)
     started = time.monotonic()
     try:
         # The company keys, as the benchmark always ran on.
@@ -1212,6 +1225,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
     except Exception as exc:  # recorded, and the next case still runs
         out["error"] = f"{type(exc).__name__}: {exc}"[:500]
     finally:
+        A.read_examples.HELD_OUT = ()
         if sort_cache:
             cache_info["stored"] = store_sort_cache(rid, sort_cache)
     out["calls"] = ACCOUNTING.call_counts()
@@ -1284,6 +1298,31 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
     return out
 
 
+def read_examples_for(A) -> dict:
+    """The reference examples sent with the reading of the case held out now
+    (read_examples.HELD_OUT) -- read_examples.for_reading, the call the
+    pipeline makes -- and the manifest's examples held out for it."""
+    sent = A.read_examples.for_reading()
+    sent_ids = sent.ids if sent else []
+    try:
+        every = A.read_examples.load(A.settings.gemini_read_examples).ids
+    except A.read_examples.ManifestError:
+        every = []
+    return {"sent": sent_ids, "held_out": [i for i in every if i not in sent_ids]}
+
+
+def manifest_record(A) -> dict | None:
+    """The manifest in use, for the result file: its path, intro, and each
+    example's id, case and caption (not its image path). None when unset.
+    Raises read_examples.ManifestError on a bad one."""
+    path = A.settings.gemini_read_examples
+    if not path:
+        return None
+    examples = A.read_examples.load(path)
+    return {"manifest": path, "intro": examples.intro,
+            "examples": [{"id": e.id, "case": e.case, "caption": e.caption} for e in examples.items]}
+
+
 # ---------------------------------------------------------------- printing
 
 
@@ -1311,6 +1350,10 @@ def detail_lines(r: dict) -> list[str]:
     lines.append(f"   wrong side: {r['parts']['wrong_side']}  extra: {r['parts']['extra']}  "
                  f"side undetermined: {len(r['parts']['side_undetermined'])}")
     lines.append(f"   facts: { {k: (x['verdict'], x['got']) for k, x in r['vehicle'].items()} }")
+    ex = r.get("read_examples")
+    if ex is not None:
+        lines.append(f"   read examples: sent {', '.join(ex['sent']) or 'none'}"
+                     + (f"; held out (this case's own) {', '.join(ex['held_out'])}" if ex["held_out"] else ""))
     f = r.get("parts_fair")
     if f:
         lines.append(fair_line(f))
@@ -1453,6 +1496,7 @@ MODEL_SETTINGS = (
     ("thinking_level_second_look", "gemini_thinking_level_second_look", "normal_thinking_levels"),
     ("image_resolution", "gemini_image_resolution", "normal_image_resolutions"),
     ("read_tools", "gemini_read_tools", "normal_read_tools"),
+    ("read_examples", "gemini_read_examples", "normal_read_examples"),
 )
 
 
@@ -1501,6 +1545,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--read-tools", metavar="TOOLS",
                     help="tools for the reading call: 'code_execution' (Agentic Vision trial; "
                          "settings.gemini_read_tools)")
+    ap.add_argument("--read-examples", metavar="MANIFEST",
+                    help="reference examples before each case's photos on the reading call: a JSON manifest "
+                         "(settings.gemini_read_examples, app/ai/read_examples.py); an example tagged with the "
+                         "case being read is left out (leave-one-out); '' turns off one set in the environment")
     ap.add_argument("--no-side-from-sorter", action="store_true",
                     help="ablation: the reader's sides stand (settings.intake_side_from_sorter off)")
     ap.add_argument("--no-sorter-hints", action="store_true",
@@ -1568,6 +1616,16 @@ def model_settings(args: argparse.Namespace) -> dict:
     if kinds:
         sys.exit(f"--image-resolution: no such photo kind {sorted(kinds)}; the kinds are "
                  f"{', '.join(list(PHOTO_KINDS) + ['unsorted'])}, or '*'")
+    if out.get("gemini_read_examples"):
+        # Absolute: the app reads it later, wherever it runs from. Checked
+        # now: the app would quietly read without a bad one.
+        from app.ai import read_examples
+
+        out["gemini_read_examples"] = str(Path(out["gemini_read_examples"]).resolve())
+        try:
+            read_examples.load(out["gemini_read_examples"])
+        except read_examples.ManifestError as exc:
+            sys.exit(f"--read-examples: {exc}")
     return out
 
 
@@ -1627,6 +1685,17 @@ def main(argv=None) -> int:
         A.settings.intake_max_read_photos = args.max_read
     for rule in args.drop_rule or []:
         extraction.SYSTEM_PROMPT = _drop_rule(extraction.SYSTEM_PROMPT, READING_RULES[rule])
+    # Reference examples, from --read-examples or the environment: a bad
+    # manifest stops the run here (the app would quietly read without them,
+    # and the run would not measure what it says).
+    try:
+        examples = manifest_record(A)
+    except A.read_examples.ManifestError as exc:
+        sys.exit(f"GEMINI_READ_EXAMPLES: {exc} (--read-examples '' reads without)")
+    if examples:
+        n = len(examples["examples"])
+        print(f"read examples: {n} from {examples['manifest']} (about {n * A.read_examples.IMAGE_TOKENS} tokens a "
+              f"reading); a case's own are left out", flush=True)
     A.init_db()
     key = json.loads(args.key.read_text(encoding="utf-8"))
     unknown = sorted(set(args.only or []) - {c["name"] for c in key["cases"]})
@@ -1650,6 +1719,7 @@ def main(argv=None) -> int:
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),
+        "read_examples": examples,
         "sort_cache": cache_meta,
         "started": _now(),
         "finished": None,

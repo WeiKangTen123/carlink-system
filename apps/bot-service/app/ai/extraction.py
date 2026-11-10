@@ -21,6 +21,7 @@ import logging
 import re
 
 from app.ai.keys import AiActor
+from app.ai.read_examples import IMAGE_TOKENS, Examples
 from app.ai.structured import call_structured, image_part
 from app.config import settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
@@ -305,16 +306,87 @@ def photo_hint(hint: dict | None) -> str | None:
     return "Sorter's hint: " + "; ".join(bits)
 
 
+# ------------------------------------------------- reference examples
+#
+# A few labelled photos from OTHER cases, each with the lesson it shows,
+# sent before everything of this case (ai/read_examples.py; the intake
+# reading only). First, so the case stays in one piece after them. Labelled
+# E1, E2... -- never a P label: the case's photos are P01..., and everything
+# that reads a photo_reference back (pipeline._read_into, the second look,
+# _case_photos_only) knows only those.
+EXAMPLES_PROMPT_LINE = (
+    "Labelled reference examples (E1, E2...) from other cases may come first: learn the firm's conventions from "
+    "them, but they are not part of this case -- never list their damage or use their labels for 'photo_reference'."
+)
+EXAMPLES_END = (
+    "End of the reference examples. Everything below is THIS case: the reporter's description and the case's own "
+    "photos. Report only what this case shows."
+)
+
+
+def example_label(n: int) -> str:
+    return f"E{n}"
+
+
+def _example_parts(examples: Examples) -> list[dict]:
+    parts: list[dict] = [{"type": "text", "text": examples.intro}]
+    for n, example in enumerate(examples.items, start=1):
+        parts.append({"type": "text", "text": f"Example {example_label(n)} (not this case): {example.caption}"})
+        # No kind: Gemini's default resolution, whatever the case's photos get.
+        parts.append(image_part(example.image))
+    parts.append({"type": "text", "text": EXAMPLES_END})
+    return parts
+
+
+_CASE_LABEL = re.compile(r"^P0*(\d+)$")
+# An example's label as a model may write it back: "E1", "e01", "Example E1".
+_EXAMPLE_LABEL = re.compile(r"^(?:EXAMPLE\s*)?E0*\d+$")
+
+
+def _case_label(ref) -> str | None:
+    """A case photo label as the pipeline reads it: "P3" or "p03" is "P03";
+    anything else (an example's "E1") is None."""
+    match = _CASE_LABEL.match(str(ref or "").strip().upper())
+    return f"P{int(match.group(1)):02d}" if match else None
+
+
+def _case_photos_only(draft: SecurityIncidentDraft, labels: set[str]) -> SecurityIncidentDraft:
+    """With reference examples in the request, no finding points at one. A
+    damage item the model saw on an example ("E1") is another case's damage:
+    dropped, and its part from damaged_parts unless another item keeps it.
+    Any other photo_reference that is not one of this case's labels is
+    dropped with its box, the item kept -- as pipeline._read_into does with
+    a label it wasn't sent."""
+    kept, dropped = [], set()
+    for item in draft.damage_summary:
+        ref = str(item.photo_reference or "").strip().upper()
+        if _EXAMPLE_LABEL.match(ref):
+            logger.info("Reading: %r left out, seen on reference example %s", item.part, ref)
+            dropped.add(item.part)
+            continue
+        if ref and _case_label(ref) not in labels:
+            item.photo_reference = None
+            item.bbox_2d = None
+        kept.append(item)
+    draft.damage_summary = kept
+    still = {item.part for item in kept}
+    draft.damaged_parts = [p for p in draft.damaged_parts if p not in dropped or p in still]
+    return draft
+
+
 def _build_input(
     description: str,
     photo_paths: list[str],
     known_facts: dict | None = None,
     photo_labels: list[str] | None = None,
     photo_hints: list[dict | None] | None = None,
+    examples: Examples | None = None,
 ) -> list[dict]:
     """photo_hints: what the sorter saw in each photo, in the order of
-    photo_paths (dashboard intake only; see photo_hint)."""
-    parts: list[dict] = []
+    photo_paths (dashboard intake only; see photo_hint). examples: reference
+    examples from other cases, sent first (_example_parts); None or empty,
+    nothing of them."""
+    parts: list[dict] = _example_parts(examples) if examples else []
     if known_facts:
         # Facts the reporter already gave, passed so a PARTIAL correction can
         # be applied to them. Without this the model only ever saw the
@@ -526,19 +598,36 @@ def draft_report(
     *,
     actor: AiActor,
     photo_hints: list[dict | None] | None = None,
+    examples: Examples | None = None,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
     model attempt; intake raises it because it sends up to ~32 photos in one
     call, where the bot's few photos fit comfortably in 45s. actor: who
     pays (structured.call_structured). photo_hints: what the sorter saw in
-    each photo (dashboard intake; photo_hint)."""
+    each photo (dashboard intake; photo_hint). examples: reference examples
+    from other cases (read_examples.for_reading; the intake reading only):
+    sent before the case, with one line more in the system prompt. None,
+    the request is exactly as before."""
+    system_instruction, parse = SYSTEM_PROMPT, _parse_draft
+    if examples:
+        # Once per reading: what the examples cost, on every model tried.
+        logger.info(
+            "Reading with %d reference example(s) (%s): about %d more input tokens",
+            len(examples), ", ".join(examples.ids), len(examples) * IMAGE_TOKENS,
+        )
+        system_instruction = SYSTEM_PROMPT + "\n" + EXAMPLES_PROMPT_LINE
+        labels = {_case_label(label) for label in (photo_labels or [f"P{i:02d}" for i in range(1, len(photo_paths) + 1)])}
+
+        def parse(raw: str) -> SecurityIncidentDraft:
+            return _case_photos_only(_parse_draft(raw), labels)
+
     return call_structured(
         purpose="draft",
-        system_instruction=SYSTEM_PROMPT,
-        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints),
+        system_instruction=system_instruction,
+        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints, examples),
         schema=_response_schema(),
-        parse=_parse_draft,
+        parse=parse,
         models=_model_chain(),
         actor=actor,
         timeout=timeout,

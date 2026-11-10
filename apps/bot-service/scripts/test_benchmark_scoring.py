@@ -75,7 +75,8 @@ def test_cli() -> None:
     assert r.returncode == 0, r.stderr
     for flag in ("--repeat", "--sort-cache", "--reports", "--models", "--triage-models", "--label", "--ref",
                  "--second-look-models", "--no-second-look", "--thinking-level-read", "--thinking-level-sort",
-                 "--thinking-level-second-look", "--image-resolution", "--read-tools", "--rescore", "--scratch"):
+                 "--thinking-level-second-look", "--image-resolution", "--read-tools", "--read-examples", "--rescore",
+                 "--scratch"):
         assert flag in r.stdout, flag
     ok("--help works without BENCHMARK_SCRATCH and lists the new options")
     out = Path(_tmp, "never.json")
@@ -779,8 +780,9 @@ def test_benchmark_run() -> None:
     text = buf.getvalue()
     assert code == 0, text
     doc = json.loads(out.read_text(encoding="utf-8"))
-    assert list(doc) == ["label", "git_ref", "args", "models", "ai_settings", "sort_cache", "started", "finished", "runs",
-                         "summary"], list(doc)
+    assert list(doc) == ["label", "git_ref", "args", "models", "ai_settings", "read_examples", "sort_cache", "started",
+                         "finished", "runs", "summary"], list(doc)
+    assert doc["read_examples"] is None and all("read_examples" not in r for r in doc["runs"])
     assert (doc["label"], doc["git_ref"], doc["args"]["repeat"]) == ("test-run", "test-branch@0000000", 2)
     assert doc["models"] == {"model_chain": "test-strong", "triage_model_chain": "test-lite-a,test-lite-b",
                              "second_look_chain": "test-look"}, doc["models"]
@@ -788,7 +790,7 @@ def test_benchmark_run() -> None:
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
     assert doc["ai_settings"] == {"thinking_level_read": "low,test-strong=high", "thinking_level_sort": "minimal",
                                   "thinking_level_second_look": None, "image_resolution": "damage=ultra_high,*=medium",
-                                  "read_tools": "code_execution"}, doc["ai_settings"]
+                                  "read_tools": "code_execution", "read_examples": None}, doc["ai_settings"]
     assert settings_seen[0] == ("low,test-strong=high", "damage=ultra_high,*=medium", "code_execution"), settings_seen
     assert doc["sort_cache"]["thinking_level_sort"] == "minimal"
     ok("the model-setting flags are on the app's settings while it reads, and in the result file (ai_settings)")

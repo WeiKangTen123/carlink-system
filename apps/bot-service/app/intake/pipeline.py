@@ -32,7 +32,7 @@ from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import allowance, runs, second_look
+from app.ai import allowance, read_examples, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
@@ -536,6 +536,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         photo_hints=hints,
         timeout=120.0,
         actor=actor,
+        # Labelled photos of other cases before this one's, when
+        # settings.gemini_read_examples names them: not in photos_sent, and
+        # no photo_reference can point at one (the label map below).
+        examples=read_examples.for_reading(),
     )
     data = draft.model_dump()
 

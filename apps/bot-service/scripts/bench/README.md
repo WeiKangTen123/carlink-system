@@ -136,6 +136,7 @@ the result file keeps them under `ai_settings` (compare.py prints them beside ea
 | `--thinking-level-second-look LEVEL` | `gemini_thinking_level_second_look` | the same on the second look |
 | `--image-resolution SPEC` | `gemini_image_resolution` | `"resolution"` on each image of the reading call, by the photo's kind |
 | `--read-tools code_execution` | `gemini_read_tools` | `tools: [{type: code_execution}]` on the reading call (Agentic Vision trial) |
+| `--read-examples MANIFEST` | `gemini_read_examples` | reference examples (labelled photos of other cases) before the case on the reading call |
 
 - LEVEL: `minimal`, `low`, `medium` or `high` for every model of the chain, or per model:
   `gemini-3.5-flash-lite=medium`, or `low,gemini-3-flash-preview=high` (the bare level for the
@@ -151,6 +152,16 @@ the result file keeps them under `ai_settings` (compare.py prints them beside ea
 - `code_execution` with a JSON schema is a preview feature on Gemini 3 and Google documents
   image zoom/crop for Gemini 3 Flash only: try it on each model with `smoke_schemas.py --live
   --read-tools code_execution` first. A try that used it counts `code runs`.
+
+- MANIFEST: a JSON file, `{"intro": "...", "examples": [{"id": "e1", "image": "<path relative
+  to the manifest>", "case": "<case tag>", "caption": "<the lesson, plain words>"}]}`, at most
+  6 examples (`app/ai/read_examples.py`). Each is sent as "Example E1 (not this case):
+  <caption>" and its photo at Gemini's default resolution (about 1,100 tokens), before
+  everything of the case; the system prompt gets one line more. **Leave-one-out**: an example
+  whose `case` is the case being read (its key name or folder; letters and digits only, any
+  case) is not sent with it. A bad manifest stops the run before anything (the app itself
+  would read without examples and log a warning); `--read-examples ''` turns off one set in the
+  environment. The example photos count in each reading call's `images` as `default`.
 
 Each run's `ai_calls` lists every Gemini call: purpose, the model that answered, seconds,
 tries, prompt / output / thinking tokens (when Google reports them), code runs, and the
@@ -250,7 +261,8 @@ out when the output is to be pasted anywhere.
   "args": {...the command line...},
   "models": {"model_chain": "...", "triage_model_chain": "..."},
   "ai_settings": {"thinking_level_read", "thinking_level_sort", "thinking_level_second_look",
-                  "image_resolution", "read_tools"},          # null: unset, nothing sent
+                  "image_resolution", "read_tools", "read_examples"},   # null: unset, nothing sent
+  "read_examples": {"manifest", "intro", "examples": [{id, case, caption}]} | null,
   "sort_cache": {"dir", "triage_model_chain", "sort_prompt_version", "prompt_fingerprint"} | null,
   "started": "...", "finished": "...",
   "runs": [ one per case per repetition: everything the earlier versions wrote per case
@@ -271,6 +283,7 @@ out when the output is to be pasted anywhere.
                         other_named [[name, key part]], strict_extra, extra, fair_extra,
                         contradicted [[drafted, report wording]] | null},
             sort_cache {hits, misses, stored},
+            read_examples {sent [ids], held_out [ids]} (only with a manifest),
             sorter {tagged_photos, tagged_in_key, label_precision, key_parts,
                     key_parts_photographed, photographed_recall, key_photos, key_photos_read,
                     selection_coverage, not_photographed, photographed_not_read, ...},
