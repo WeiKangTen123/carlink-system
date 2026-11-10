@@ -21,6 +21,7 @@ import {
   type ReportData,
 } from "./api";
 import type { AiRead } from "./coverForm";
+import type { Review } from "./review";
 
 /** "finalizing": File case was pressed and the server is turning the draft
  * into a case (round 3, B1a). It normally lasts a second or two; a draft
@@ -114,6 +115,8 @@ export type IntakeState = {
   id: string;
   status: string;
   created_at: string;
+  /** What the AI filled, what to check, what only a person knows (lib/review.ts); absent from an older API. */
+  review?: Review | null;
   stage: IntakeStage;
   progress: { done: number; total: number };
   /** When the current stage began (ISO with offset), for elapsed time and

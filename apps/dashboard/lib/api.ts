@@ -3,6 +3,7 @@
 import { cache } from "react";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { isPublicPage } from "./publicPages";
+import type { Review } from "./review";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -1348,6 +1349,8 @@ export type ReportDetail = {
   channel: string;
   created_at: string;
   data: ReportData;
+  /** What the AI filled, what to check, what only a person knows (lib/review.ts); absent from an older API. */
+  review?: Review | null;
   photo_urls: string[];
   /** Small versions of photo_urls, same order and length. The inspector
    * still shows the full image for the photo being examined; these are for
