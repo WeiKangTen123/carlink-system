@@ -31,9 +31,25 @@ from the reading's, so it ships only if it finds more beyond the noise for
 few extras. --second-look-models measures another chain; --no-second-look
 leaves it out.
 
+The model settings (app/config.py, all unset by default) are set for a run
+with --thinking-level-read / -sort / -second-look, --image-resolution and
+--read-tools; the result file keeps them under "ai_settings", and every
+Gemini call's tokens (prompt, output, thinking) and seconds under each
+run's "ai_calls".
+
+Next to the strict parts score, "parts_fair" gives half a part for a
+neighbouring panel on the same side, does not count an "Other / Not Listed"
+item named like a key part's surveyor line as extra, and flags drafted
+parts the surveyor passed as Serviceable (score_fair). --rescore FILE
+scores a stored result file again with the current scoring, offline:
+
+    python scripts/benchmark_intake.py --rescore out/a1-3x.json --key key.json [--reports DIR] [--out rescored.json]
+
 On the server, scripts/bench/run_bench.sh runs this inside the live api
 container and scripts/bench/compare.py compares two result files; see
-scripts/bench/README.md.
+scripts/bench/README.md, which also has the commands for a run on a PC
+(--scratch DIR puts the database and storage in a throwaway folder, and
+BENCH_CASES / BENCH_KEY / BENCH_REPORTS / BENCH_SORT_CACHE give the paths).
 
 Nothing from app is imported when this file loads: the offline tests
 (scripts/test_benchmark_scoring.py) and compare.py import the scoring
@@ -71,7 +87,9 @@ FITTING_CONDITIONS = frozenset({"necessary", "serviceable"})
 # What sorting writes on each photo (pipeline._sort); the sort cache keeps
 # exactly these.
 SORT_FIELDS = ("kind", "area", "quality", "shows_damage", "part", "note")
-REFUSAL = "Refusing to run: set BENCHMARK_SCRATCH=1 with DATABASE_URL and STORAGE_DIR pointing at scratch locations."
+REFUSAL = ("Refusing to run: give --scratch DIR, or set BENCHMARK_SCRATCH=1 with DATABASE_URL and STORAGE_DIR "
+           "pointing at scratch locations.")
+OTHER_PART = "Other / Not Listed"
 
 log = logging.getLogger("benchmark")
 
@@ -173,6 +191,147 @@ def score_second_look(expected: list[dict], parts: dict, drafted: list[str], sug
         "extra": len(gain["extra"]),
         "extra_parts": gain["extra"],
         "wrong_side": len(gain["wrong_side"]),
+    }
+
+
+# ---------------------------------------------------------------- the fair score
+
+# Panels that meet along one side of the car (contract 6). A reader that
+# names the panel next to the damaged one has seen the damage and put it on
+# the wrong side of a shut line: half a part in the fair score, not an
+# extra. Names without the side, as taxonomy writes them.
+NEIGHBOURS = (
+    ("Front Fender", "Front Door"), ("Front Door", "Rear Door"), ("Rear Door", "Rear Quarter Panel"),
+    ("Sill / Rocker Panel", "Front Door"), ("Sill / Rocker Panel", "Rear Door"),
+    ("Front Wheel Arch Liner", "Front Fender"), ("Front Wheel Arch Trim", "Front Fender"),
+    ("Rear Wheel Arch Liner", "Rear Quarter Panel"), ("Rear Wheel Arch Trim", "Rear Quarter Panel"),
+    ("Front Wheel Arch Liner", "Front Wheel"), ("Rear Wheel Arch Liner", "Rear Wheel"),
+    # Parts contract 6 splits out of one the key was written with (the arch
+    # trim from the liner, the tyre from the wheel): the key still has the
+    # old name, so the new one is its neighbour rather than an extra.
+    ("Front Wheel Arch Liner", "Front Wheel Arch Trim"), ("Rear Wheel Arch Liner", "Rear Wheel Arch Trim"),
+    ("Front Wheel", "Front Tyre"), ("Rear Wheel", "Rear Tyre"),
+)
+_NEXT_TO: dict[str, set[str]] = {}
+for _a, _b in NEIGHBOURS:
+    _NEXT_TO.setdefault(_a, set()).add(_b)
+    _NEXT_TO.setdefault(_b, set()).add(_a)
+# Words that place a part rather than name it: an "Other" item sharing
+# "front" with a surveyor's line says nothing about which part it is.
+_PLACE_WORDS = frozenset({"front", "right", "upper", "lower", "inner", "outer", "centre", "center", "nearside", "offside"})
+# Where an "Other / Not Listed" item says what it is: other_part_name (the
+# field contract 6 adds), and a description should one ever be kept.
+_OTHER_TEXT_FIELDS = ("other_part_name", "description")
+
+
+def _side_and_place(part: str) -> tuple[str | None, str]:
+    for side in ("Left", "Right"):
+        if part.startswith(side + " "):
+            return side, part[len(side) + 1:]
+    return None, part
+
+
+def neighbours(a: str, b: str) -> bool:
+    """Whether two part names are panels that meet (NEIGHBOURS) on the same
+    side of the car. A "(side undetermined)" name has no side: never."""
+    side_a, place_a = _side_and_place(a)
+    side_b, place_b = _side_and_place(b)
+    return side_a is not None and side_a == side_b and place_b in _NEXT_TO.get(place_a, ())
+
+
+def _long_words(text) -> set[str]:
+    return {w for w in words(text) if len(w) >= 5 and w not in _PLACE_WORDS}
+
+
+def _end(text: str) -> str | None:
+    t = f" {str(text or '').casefold()} "
+    front, rear = " front " in t, " rear " in t
+    return "front" if front and not rear else "rear" if rear and not front else None
+
+
+def contradicted_parts(drafted: list[str], lines, family_of, side_of, part_family) -> list[list[str]]:
+    """Drafted parts the surveyor looked at and passed: every line of the
+    held-out report for the part (its family, history.family_of, on its side
+    and at its end of the car) says Serviceable. key.json leaves such lines
+    out, so these parts are extras -- ones the report contradicts. A part
+    with no line at all is not flagged: nothing says it wasn't damaged.
+    family_of / side_of / part_family: app.parts.history's family_of,
+    side_of and family_and_side. Returns [part, a line's wording]."""
+    out: list[list[str]] = []
+    seen: set[str] = set()
+    for part in drafted:
+        if not part or part == OTHER_PART or part in seen:
+            continue
+        seen.add(part)
+        family, side = part_family(part)
+        end = _end(part)
+        mine = []
+        for line in lines:
+            item = str(getattr(line, "item", "") or "")
+            if family_of(item) != family:
+                continue
+            if side is not None and side_of(item) not in (None, side):
+                continue
+            if end is not None and _end(item) not in (None, end):
+                continue
+            mine.append(line)
+        if mine and all(str(getattr(line, "condition", "") or "").strip().casefold() == "serviceable" for line in mine):
+            out.append([part, mine[0].item])
+    return out
+
+
+def score_fair(expected: list[dict], drafted_items: list[dict], parts: dict | None = None,
+               contradicted: list | None = None) -> dict:
+    """The fair score, next to the strict one (score_parts, unchanged; its
+    numbers are repeated here). Of the strict extras:
+
+    - a part on the same side next to a key part the strict score missed
+      (NEIGHBOURS) is a neighbour: half a part, not an extra. Each missed
+      key part takes one neighbour, in drafted order;
+    - an "Other / Not Listed" item whose name shares a word of 5+ letters
+      (not a place word like "front") with a key part's surveyor wording is
+      not an extra (and not found: it says nothing more about which part).
+
+    contradicted: contradicted_parts of the drafted parts against the held-out
+    report, or None when there is no report -- a flag; no number changes."""
+    items = [i for i in drafted_items if isinstance(i, dict) and i.get("part")]
+    strict = parts if parts is not None else score_parts(expected, [i["part"] for i in items])
+    hidden = {e["part"] for e in expected if e.get("hidden")}
+    missed = list(strict["missed"])
+    neighbour: list[list[str]] = []
+    left: list[str] = []
+    for part in strict["extra"]:
+        match = next((k for k in missed if neighbours(part, k)), None)
+        if match:
+            missed.remove(match)
+            neighbour.append([part, match])
+        else:
+            left.append(part)
+    wordings = [(e["part"], set().union(*[_long_words(w) for w in e.get("surveyor") or []])) for e in expected]
+    other_named: list[list[str]] = []
+    for item in (i for i in items if i["part"] == OTHER_PART):
+        if OTHER_PART not in left:
+            break
+        text = " ".join(str(item.get(f) or "") for f in _OTHER_TEXT_FIELDS).strip()
+        shared = _long_words(text)
+        match = next((k for k, w in wordings if shared & w), None)
+        if match:
+            left.remove(OTHER_PART)
+            other_named.append([text[:80], match])
+    credit = 0.5 * len(neighbour)
+    return {
+        "expected": strict["expected"],
+        "visible_expected": strict["visible_expected"],
+        "found": strict["found"],
+        "visible_found": strict["visible_found"],
+        "fair_found": strict["found"] + credit,
+        "fair_visible_found": strict["visible_found"] + 0.5 * sum(1 for _, k in neighbour if k not in hidden),
+        "neighbour": neighbour,
+        "other_named": other_named,
+        "strict_extra": len(strict["extra"]),
+        "extra": left,
+        "fair_extra": len(left),
+        "contradicted": contradicted,
     }
 
 
@@ -420,6 +579,12 @@ def run_metrics(run: dict) -> dict:
     pc = run.get("parts_with_checklist")
     if pc:
         m.update(checklist_found=pc["found"], checklist_visible_found=pc["visible_found"], checklist_extra=len(pc["extra"]))
+    fair = run.get("parts_fair")
+    if fair:
+        m.update(fair_found=fair["fair_found"], fair_visible_found=fair["fair_visible_found"], fair_extra=fair["fair_extra"],
+                 neighbour=len(fair["neighbour"]), other_named=len(fair["other_named"]))
+        if fair.get("contradicted") is not None:
+            m["contradicted"] = len(fair["contradicted"])
     look = run.get("parts_with_second_look")
     if look:
         m.update(look_found=look["found"], look_visible_found=look["visible_found"], look_added=look["added"],
@@ -436,6 +601,12 @@ def run_metrics(run: dict) -> dict:
             wait_429_s=round(sum(s.get("wait_429_s", 0.0) for s in accounting.values()), 1),
             slot_wait_s=round(sum(s.get("slot_wait_s", 0.0) for s in accounting.values()), 1),
         )
+        # Tokens per kind of call, when the SDK reported them.
+        for purpose, short in _SHORT_PURPOSES.items():
+            stage = accounting.get(purpose) or {}
+            for field, suffix in _TOKEN_METRICS:
+                if stage.get(field) is not None:
+                    m[f"{short}_{suffix}"] = stage[field]
     cache = run.get("sort_cache")
     if cache:
         m["sort_cache_hits"] = cache.get("hits", 0)
@@ -523,6 +694,22 @@ def summarize(runs: list[dict]) -> dict:
 
 # ---------------------------------------------------------------- AI accounting
 
+# What call_structured reports per try beside its outcome (its
+# _note_attempt), summed per call, kind of call and model when present --
+# never a made-up 0 when the SDK said nothing.
+TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls")
+# accounting's purposes -> the short name in run metrics ("read_tok_in").
+_SHORT_PURPOSES = {"draft": "read", "photo sort": "sort", "second look": "look"}
+_TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
+                  ("tool_calls", "code_runs"))
+
+
+def _add_tokens(into: dict, source: dict) -> None:
+    for field in TOKEN_FIELDS:
+        value = source.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            into[field] = into.get(field, 0) + value
+
 
 def _empty_stage() -> dict:
     return {"calls": 0, "failed_calls": 0, "seconds": 0.0, "attempts": 0, "outcomes": {},
@@ -556,6 +743,8 @@ def accounting_summary(calls: list[dict], attempts: list[dict]) -> dict:
         m["answered"] += 1 if a["outcome"] == "ok" else 0
         m["seconds"] += a["seconds"]
         m["outcomes"][a["outcome"]] = m["outcomes"].get(a["outcome"], 0) + 1
+        _add_tokens(s, a)
+        _add_tokens(m, a)
     return merge_accounting([out])  # the same rounding as a merge
 
 
@@ -570,6 +759,7 @@ def merge_accounting(summaries: list[dict]) -> dict:
                 t[k] = round(t[k] + s.get(k, 0.0), 1)
             for outcome, n in (s.get("outcomes") or {}).items():
                 t["outcomes"][outcome] = t["outcomes"].get(outcome, 0) + n
+            _add_tokens(t, s)
             for model, ms in (s.get("by_model") or {}).items():
                 tm = t["by_model"].setdefault(model, _empty_model())
                 tm["attempts"] += ms.get("attempts", 0)
@@ -577,6 +767,7 @@ def merge_accounting(summaries: list[dict]) -> dict:
                 tm["seconds"] = round(tm["seconds"] + ms.get("seconds", 0.0), 1)
                 for outcome, n in (ms.get("outcomes") or {}).items():
                     tm["outcomes"][outcome] = tm["outcomes"].get(outcome, 0) + n
+                _add_tokens(tm, ms)
     return out
 
 
@@ -605,6 +796,13 @@ class Accounting:
         with self._lock:
             return accounting_summary(list(self.calls), list(self.attempts))
 
+    def call_list(self) -> list[dict]:
+        """Every call, in the order they ended: purpose, the model that
+        answered, seconds, tries, tokens, and the images it sent by
+        resolution."""
+        with self._lock:
+            return [dict(c) for c in self.calls]
+
     def call_counts(self) -> Counter:
         with self._lock:
             return Counter(c["purpose"] for c in self.calls)
@@ -622,21 +820,37 @@ ACCOUNTING = Accounting()
 _tls = threading.local()
 
 
+def _images(input_parts) -> dict:
+    """The images a call sends, by the resolution each carries ("default"
+    without one): shows whether --image-resolution reached the request."""
+    out: dict[str, int] = {}
+    for part in input_parts or []:
+        if isinstance(part, dict) and part.get("type") == "image":
+            name = str(part.get("resolution") or "default")
+            out[name] = out.get(name, 0) + 1
+    return out
+
+
 def _counting(fn):
-    """Wraps call_structured: each call's purpose and wall-clock time."""
+    """Wraps call_structured: each call's purpose and wall-clock time, and
+    (through _note, on the same thread) its tries and tokens."""
     def wrapper(*args, **kwargs):
         purpose = str(kwargs.get("purpose") or "unnamed")
-        outer = (getattr(_tls, "purpose", None), getattr(_tls, "last", None))
-        _tls.purpose, _tls.last = purpose, None
+        outer = (getattr(_tls, "purpose", None), getattr(_tls, "last", None), getattr(_tls, "call", None))
+        call = {"purpose": purpose, "seconds": 0.0, "ok": False, "model": None, "attempts": 0}
+        images = _images(kwargs.get("input_parts"))
+        if images:
+            call["images"] = images
+        _tls.purpose, _tls.last, _tls.call = purpose, None, call
         started = time.monotonic()
-        ok = False
         try:
             result = fn(*args, **kwargs)
-            ok = True
+            call["ok"] = True
             return result
         finally:
-            ACCOUNTING.add_call({"purpose": purpose, "seconds": round(time.monotonic() - started, 1), "ok": ok})
-            _tls.purpose, _tls.last = outer
+            call["seconds"] = round(time.monotonic() - started, 1)
+            ACCOUNTING.add_call(call)
+            _tls.purpose, _tls.last, _tls.call = outer
     wrapper._bench_wrapped = True
     return wrapper
 
@@ -652,14 +866,22 @@ def _note(attempt: dict) -> None:
         waited = attempt.get("waited_s")
         waited = float(waited) if isinstance(waited, (int, float)) and not isinstance(waited, bool) else 0.0
         after_429 = getattr(_tls, "last", None) == (model, "429")
-        ACCOUNTING.add_attempt({
+        kept = {
             "purpose": getattr(_tls, "purpose", None) or "unnamed",
             "model": model,
             "outcome": outcome,
             "seconds": round(float(attempt.get("ms") or 0) / 1000, 1),
             "slot_wait_s": 0.0 if after_429 else waited,
             "wait_429_s": waited if after_429 else 0.0,
-        })
+        }
+        _add_tokens(kept, attempt)
+        ACCOUNTING.add_attempt(kept)
+        call = getattr(_tls, "call", None)
+        if call is not None:
+            call["attempts"] += 1
+            if outcome == "ok":
+                call["model"] = model
+            _add_tokens(call, attempt)
         _tls.last = (model, outcome)
     except Exception:  # accounting must never fail a Gemini call
         log.warning("benchmark: couldn't account a Gemini try", exc_info=True)
@@ -711,7 +933,7 @@ def _app() -> SimpleNamespace:
     from app.config import settings
     from app.intake import pipeline
     from app.intake.photos import intake_dir, ordered_photos
-    from app.parts.history import import_case, normalise_item, parse_report, side_of
+    from app.parts.history import family_and_side, family_of, import_case, normalise_item, parse_report, side_of
     from app.parts.prefill import prefill_annex_a
     from app.reports.db import SessionLocal, init_db
     from app.reports.models import IntakePhoto, IntakeSession, PastAnnexLine, PastLabourLine, Report, gen_id
@@ -723,6 +945,7 @@ def _app() -> SimpleNamespace:
         runs=runs, structured=structured, extraction=extraction, triage=triage, AiActor=AiActor,
         settings=settings, pipeline=pipeline, intake_dir=intake_dir, ordered_photos=ordered_photos,
         import_case=import_case, normalise_item=normalise_item, parse_report=parse_report, side_of=side_of,
+        family_of=family_of, family_and_side=family_and_side,
         prefill_annex_a=prefill_annex_a, SessionLocal=SessionLocal, init_db=init_db, IntakePhoto=IntakePhoto,
         IntakeSession=IntakeSession, PastAnnexLine=PastAnnexLine, PastLabourLine=PastLabourLine, Report=Report,
         gen_id=gen_id, SecurityIncidentDraft=SecurityIncidentDraft, CANONICAL_PARTS=CANONICAL_PARTS,
@@ -784,8 +1007,15 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
     prompt = json.dumps([getattr(A.triage, "SYSTEM_PROMPT", ""), getattr(A.triage, "_RESPONSE_SCHEMA", None)],
                         sort_keys=True, default=str)
     fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
-    tag = hashlib.sha256(f"{chain}|{version}|{fingerprint}".encode("utf-8")).hexdigest()[:16]
+    # A sorting thinking level sorts differently: a folder of its own. Unset,
+    # the tag is what it was before the setting existed, so the caches
+    # already filled stay in use.
+    level = A.settings.gemini_thinking_level_sort
+    setup = f"{chain}|{version}|{fingerprint}" + (f"|thinking={level}" if level else "")
+    tag = hashlib.sha256(setup.encode("utf-8")).hexdigest()[:16]
     meta = {"dir": str(root / tag), "triage_model_chain": chain, "sort_prompt_version": version, "prompt_fingerprint": fingerprint}
+    if level:
+        meta["thinking_level_sort"] = level
     folder = root / tag
     folder.mkdir(parents=True, exist_ok=True)
     if not (folder / "meta.json").exists():
@@ -849,14 +1079,17 @@ class ReportSet:
     out and scored against; the others are the history prefill learns from."""
 
     def __init__(self, folder: Path):
-        A = _app()
+        # Only the report reader: --rescore reads reports without loading the
+        # app (and its database).
+        from app.parts.history import parse_report
+
         self.items: list[tuple[Path, object]] = []
         self.skipped = 0
         paths = sorted(p for p in Path(folder).rglob("*")
                        if p.is_file() and p.suffix.lower() in REPORT_EXTENSIONS and not p.name.startswith("~$"))
         for path in paths:
             try:
-                self.items.append((path, A.parse_report(path)))
+                self.items.append((path, parse_report(path)))
             except Exception:  # not a report (ValueError) or an unreadable sheet
                 self.skipped += 1
         # Every word of every Condition cell: the firm's own vocabulary.
@@ -951,7 +1184,8 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
 
 # ---------------------------------------------------------------- one run
 
-_ITEM_FIELDS = ("part", "damage_type", "condition", "condition_tokens", "remarks", "severity", "ai_confidence", "side_inferred")
+_ITEM_FIELDS = ("part", "other_part_name", "damage_type", "condition", "condition_tokens", "remarks", "severity",
+                "ai_confidence", "side_inferred")
 
 
 def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, reports: ReportSet | None = None,
@@ -983,6 +1217,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
     out["calls"] = ACCOUNTING.call_counts()
     out["answered_by"] = ACCOUNTING.answered_by()
     out["accounting"] = ACCOUNTING.summary()
+    out["ai_calls"] = ACCOUNTING.call_list()
 
     db = A.SessionLocal()
     try:
@@ -1035,10 +1270,13 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
     finally:
         db.close()
 
+    contradicted = None
     if held is not None:
         out["conditions"] = score_conditions(case["parts"], out["parts"]["matched"], items, held[1].lines,
                                              reports.firm_words, A.normalise_item, A.side_of)
         out["annex_a"] = score_annex_a(held[1], items)
+        contradicted = contradicted_parts(drafted, held[1].lines, A.family_of, A.side_of, A.family_and_side)
+    out["parts_fair"] = score_fair(case["parts"], out["drafted_items"], out["parts"], contradicted)
     if not keep_photos:
         # A repeat run copies every case's photos again; on the live
         # server's small disk, a full disk stops the app taking uploads.
@@ -1073,6 +1311,9 @@ def detail_lines(r: dict) -> list[str]:
     lines.append(f"   wrong side: {r['parts']['wrong_side']}  extra: {r['parts']['extra']}  "
                  f"side undetermined: {len(r['parts']['side_undetermined'])}")
     lines.append(f"   facts: { {k: (x['verdict'], x['got']) for k, x in r['vehicle'].items()} }")
+    f = r.get("parts_fair")
+    if f:
+        lines.append(fair_line(f))
     pc = r["parts_with_checklist"]
     lines.append(f"   + checklist {r['checklist']}")
     lines.append(f"   with checklist: parts {pc['found']}/{pc['expected']} (visible {pc['visible_found']}/{pc['visible_expected']}) "
@@ -1095,8 +1336,17 @@ def detail_lines(r: dict) -> list[str]:
     for purpose, st in r["accounting"].items():
         models = ", ".join(f"{m} {ms['answered']}/{ms['attempts']}" for m, ms in st["by_model"].items())
         stages.append(f"{purpose}: {st['calls']} call(s) {st['seconds']}s, tries {st['attempts']} [{models}], "
-                      f"slot wait {st['slot_wait_s']}s, 429 x{st['n_429']} waited {st['wait_429_s']}s")
+                      f"slot wait {st['slot_wait_s']}s, 429 x{st['n_429']} waited {st['wait_429_s']}s{_tokens_text(st)}")
     lines.append("   AI: " + ("; ".join(stages) if stages else "no calls"))
+    # Every call but sorting's batches (summed in the line above), one line
+    # each: what a thinking level or a resolution cost.
+    for call in r.get("ai_calls") or []:
+        if call.get("purpose") == "photo sort":
+            continue
+        images = call.get("images")
+        lines.append(f"   call {call['purpose']}: {call.get('model') or 'no answer'} in {call['seconds']}s, "
+                     f"{call.get('attempts', 0)} tr{'y' if call.get('attempts') == 1 else 'ies'}{_tokens_text(call)}"
+                     + (f", images {images}" if images else ""))
     c = r.get("conditions")
     if c:
         lines.append(f"   conditions: {c['scored']} scored, exact {c['exact']}, first word {c['first_token']}, "
@@ -1108,6 +1358,21 @@ def detail_lines(r: dict) -> list[str]:
                      f"rows {a['rows']} (priced {a['priced']}, unpriced {a['unpriced']}, extra {a['extra']}, "
                      f"canonical names {a['canonical_rows']}); perfect detection {a['perfect_covered']}/{a['real_lines']}")
     return lines
+
+
+def _tokens_text(source: dict) -> str:
+    said = [f"{label} {source[field]}" for field, label in (
+        ("prompt_tokens", "in"), ("output_tokens", "out"), ("thought_tokens", "thinking"), ("tool_calls", "code runs"))
+        if source.get(field) is not None]
+    return f", tokens {' '.join(said)}" if said else ""
+
+
+def fair_line(f: dict) -> str:
+    contradicted = f.get("contradicted")
+    return (f"   fair: parts {f['fair_found']:g}/{f['expected']} (visible {f['fair_visible_found']:g}/{f['visible_expected']}), "
+            f"extra {f['fair_extra']} (strict {f['strict_extra']}); neighbours {f['neighbour']}; "
+            f"Other named like a key part {f['other_named']}"
+            + ("" if contradicted is None else f"; contradicted (surveyor: Serviceable) {contradicted}"))
 
 
 def _fmt(st: dict | None) -> str:
@@ -1129,6 +1394,12 @@ TABLES = (
     (("+look found", "look_found"), ("+look visible", "look_visible_found"), ("look added", "look_added"),
      ("look extra", "look_extra"), ("look wrong side", "look_wrong_side"), ("suggested", "look_suggested"),
      ("look calls", "look_calls"), ("look s", "look_s")),
+    (("found", "found"), ("fair found", "fair_found"), ("fair visible", "fair_visible_found"), ("extra", "extra"),
+     ("fair extra", "fair_extra"), ("neighbour", "neighbour"), ("Other named", "other_named"),
+     ("contradicted", "contradicted")),
+    (("read tok in", "read_tok_in"), ("read tok out", "read_tok_out"), ("read thinking", "read_tok_think"),
+     ("read code runs", "read_code_runs"), ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
+     ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think")),
 )
 
 
@@ -1168,6 +1439,23 @@ def _chain(text: str) -> str:
     return ",".join(models)
 
 
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value) if value else None
+
+
+# flag -> the Settings field it sets, and config's normaliser for it. The
+# values are checked in main, once --scratch has pointed the app at its
+# folder: app.config is not imported while the arguments are read.
+MODEL_SETTINGS = (
+    ("thinking_level_read", "gemini_thinking_level_read", "normal_thinking_levels"),
+    ("thinking_level_sort", "gemini_thinking_level_sort", "normal_thinking_levels"),
+    ("thinking_level_second_look", "gemini_thinking_level_second_look", "normal_thinking_levels"),
+    ("image_resolution", "gemini_image_resolution", "normal_image_resolutions"),
+    ("read_tools", "gemini_read_tools", "normal_read_tools"),
+)
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="benchmark_intake.py",
@@ -1176,18 +1464,22 @@ def parse_args(argv=None) -> argparse.Namespace:
         epilog="On the server: scripts/bench/run_bench.sh LABEL GIT_REF [these options]; compare two result "
                "files with scripts/bench/compare.py BEFORE.json AFTER.json (scripts/bench/README.md).",
     )
-    ap.add_argument("--cases", required=True, type=Path, help="folder holding one photo folder per key case")
-    ap.add_argument("--key", required=True, type=Path, help="answer key (key.json, kept out of git)")
-    ap.add_argument("--out", required=True, type=Path, help="result JSON, rewritten after every run")
+    ap.add_argument("--cases", type=Path, default=_env_path("BENCH_CASES"),
+                    help="folder holding one photo folder per key case (default: $BENCH_CASES)")
+    ap.add_argument("--key", type=Path, default=_env_path("BENCH_KEY"),
+                    help="answer key (key.json, kept out of git) (default: $BENCH_KEY)")
+    ap.add_argument("--out", type=Path, help="result JSON, rewritten after every run (with --rescore: optional)")
     ap.add_argument("--only", action="append", help="case name; repeatable")
     ap.add_argument("--repeat", type=_positive, default=1, metavar="N",
                     help="run every case N times (default 1); results give mean, min and max")
-    ap.add_argument("--sort-cache", type=Path, metavar="DIR",
-                    help="keep sorting results by photo sha256 (+ triage chain, SORT_PROMPT_VERSION and prompt "
-                         "fingerprint); a cached photo costs no sorting call")
-    ap.add_argument("--reports", type=Path, metavar="DIR",
+    ap.add_argument("--sort-cache", type=Path, metavar="DIR", default=_env_path("BENCH_SORT_CACHE"),
+                    help="keep sorting results by photo sha256 (+ triage chain, SORT_PROMPT_VERSION, prompt "
+                         "fingerprint and sorting thinking level); a cached photo costs no sorting call "
+                         "(default: $BENCH_SORT_CACHE)")
+    ap.add_argument("--reports", type=Path, metavar="DIR", default=_env_path("BENCH_REPORTS"),
                     help="folder with the CL report spreadsheets: scores drafted conditions and the Annex A prefill "
-                         "builds, each case against its own report with the others as history (leave-one-out)")
+                         "builds, each case against its own report with the others as history (leave-one-out), "
+                         "and flags drafted parts the report calls Serviceable (default: $BENCH_REPORTS)")
     ap.add_argument("--models", type=_chain, metavar="CHAIN", help="override the reading model chain (comma-separated)")
     ap.add_argument("--triage-models", type=_chain, metavar="CHAIN",
                     help="override the sorting model chain (comma-separated)")
@@ -1195,6 +1487,26 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="override the second look's model chain (comma-separated)")
     ap.add_argument("--no-second-look", action="store_true",
                     help="leave the second look out (the reading alone, as before it existed)")
+    ap.add_argument("--thinking-level-read", metavar="LEVEL",
+                    help="thinking level of the reading call: minimal, low, medium or high for every model, or per "
+                         "model, e.g. 'gemini-3.5-flash-lite=medium' or 'low,gemini-3-flash-preview=high' "
+                         "(settings.gemini_thinking_level_read; default: none sent)")
+    ap.add_argument("--thinking-level-sort", metavar="LEVEL",
+                    help="the same for the sorting calls (its own sort-cache folder)")
+    ap.add_argument("--thinking-level-second-look", metavar="LEVEL", help="the same for the second look")
+    ap.add_argument("--image-resolution", metavar="SPEC",
+                    help="resolution of the reading call's photos by kind, e.g. "
+                         "'damage=ultra_high,tyre=ultra_high,overview=medium' ('*' = every other kind; "
+                         "low/medium/high/ultra_high; settings.gemini_image_resolution)")
+    ap.add_argument("--read-tools", metavar="TOOLS",
+                    help="tools for the reading call: 'code_execution' (Agentic Vision trial; "
+                         "settings.gemini_read_tools)")
+    ap.add_argument("--rescore", type=Path, metavar="FILE",
+                    help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
+                         "no Gemini call, no database; --out writes the rescored file")
+    ap.add_argument("--scratch", type=Path, metavar="DIR",
+                    help="a throwaway folder for the run's database and storage (sets DATABASE_URL and "
+                         "STORAGE_DIR; stands for BENCHMARK_SCRATCH=1) -- for a run on a PC")
     ap.add_argument("--label", help="name of this run in the result file (default: the --out file name)")
     ap.add_argument("--ref", help="git ref (and commit) the code came from, for the result file")
     ap.add_argument("--keep-photos", action="store_true",
@@ -1206,11 +1518,71 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def scratch_env(folder: Path) -> dict:
+    """--scratch DIR: the environment a run in that folder needs."""
+    folder = Path(folder).resolve()
+    return {
+        "BENCHMARK_SCRATCH": "1",
+        "DATABASE_URL": f"sqlite:///{(folder / 'run.db').as_posix()}",
+        "STORAGE_DIR": str(folder / "storage"),
+    }
+
+
+def _use_scratch(folder: Path) -> None:
+    """Points the app at --scratch DIR, before anything imports it:
+    app.reports.db binds to DATABASE_URL on import. Already loaded on other
+    paths (a test, an import before main), it refuses rather than run on
+    whatever database that is."""
+    env = scratch_env(folder)
+    loaded = sys.modules.get("app.config")
+    if loaded is not None and (loaded.settings.database_url, str(Path(loaded.settings.storage_dir))) != (
+            env["DATABASE_URL"], env["STORAGE_DIR"]):
+        sys.exit("--scratch: the app is already loaded with another database; run the script on its own.")
+    Path(env["STORAGE_DIR"]).mkdir(parents=True, exist_ok=True)
+    os.environ.update(env)
+
+
+def model_settings(args: argparse.Namespace) -> dict:
+    """The model-setting flags given, as {Settings field: normalised value}.
+    Exits on a value config refuses, or a photo kind the sorter hasn't."""
+    from app import config
+    from app.ai.triage import PHOTO_KINDS
+
+    out = {}
+    for flag, field, normaliser in MODEL_SETTINGS:
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        try:
+            out[field] = getattr(config, normaliser)(value)
+        except ValueError as exc:
+            sys.exit(f"--{flag.replace('_', '-')}: {exc}")
+    kinds = set(config.image_resolutions(out.get("gemini_image_resolution"))) - set(PHOTO_KINDS) - {"unsorted", config.ANY}
+    if kinds:
+        sys.exit(f"--image-resolution: no such photo kind {sorted(kinds)}; the kinds are "
+                 f"{', '.join(list(PHOTO_KINDS) + ['unsorted'])}, or '*'")
+    return out
+
+
+def ai_settings(settings) -> dict:
+    """The model settings a run used, for the result file (None: unset)."""
+    return {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.rescore:
+        return rescore(args)
+    missing = [f"--{name}" for name in ("cases", "key", "out") if getattr(args, name) is None]
+    if missing:
+        sys.exit(f"needs {', '.join(missing)} (or --rescore FILE)")
+    if args.scratch:
+        _use_scratch(args.scratch)
     if os.environ.get("BENCHMARK_SCRATCH") != "1":
         sys.exit(REFUSAL)
     A = _app()
+    for field, value in model_settings(args).items():
+        setattr(A.settings, field, value)
     if args.models:
         A.settings.gemini_model_chain = args.models
     if args.triage_models:
@@ -1243,6 +1615,7 @@ def main(argv=None) -> int:
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
+        "ai_settings": ai_settings(A.settings),
         "sort_cache": cache_meta,
         "started": _now(),
         "finished": None,
@@ -1262,36 +1635,127 @@ def main(argv=None) -> int:
             doc["summary"] = summarize(doc["runs"])
             _write_json(args.out, doc)
 
-    for rep in range(1, args.repeat + 1):
-        totals = Counter()
-        for r in doc["runs"]:
-            if r["rep"] == rep and "parts" in r:
-                for k in ("found", "expected", "visible_found", "visible_expected"):
-                    totals[k] += r["parts"][k]
-                    totals[f"checklist_{k}"] += r["parts_with_checklist"][k]
-                totals["extra"] += len(r["parts"]["extra"])
-                totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
-                ls = r.get("parts_with_second_look")
-                if ls:
-                    totals["look_runs"] += 1
-                    for k in ("found", "visible_found", "added", "extra", "wrong_side", "suggested"):
-                        totals[f"look_{k}"] += ls[k]
-        head = f"run {rep}: " if args.repeat > 1 else ""
-        print(f"\n{head}TOTAL parts {totals['found']}/{totals['expected']}, visible {totals['visible_found']}/{totals['visible_expected']}, "
-              f"extra {totals['extra']}")
-        print(f"{head}WITH CHECKLIST parts {totals['checklist_found']}/{totals['checklist_expected']}, "
-              f"visible {totals['checklist_visible_found']}/{totals['checklist_visible_expected']}, extra {totals['checklist_extra']}")
-        if totals["look_runs"]:
-            print(f"{head}WITH SECOND LOOK (all ticked) parts {totals['look_found']}/{totals['expected']}, "
-                  f"visible {totals['look_visible_found']}/{totals['visible_expected']}: added {totals['look_added']} "
-                  f"from {totals['look_suggested']} suggestions, extra {totals['look_extra']}, "
-                  f"wrong side {totals['look_wrong_side']}")
+    for line in total_lines(doc["runs"]):
+        print(line)
     print()
     for line in summary_table(doc["summary"]):
         print(line)
     doc["finished"] = _now()
     _write_json(args.out, doc)
     print("written", args.out)
+    return 0
+
+
+def total_lines(runs: list[dict]) -> list[str]:
+    """Per repetition: the strict TOTAL, with the checklist, with the second
+    look (all ticked) and the fair score -- the console's totals."""
+    reps = sorted({int(r.get("rep") or 1) for r in runs})
+    out = []
+    for rep in reps:
+        totals = Counter()
+        for r in runs:
+            if int(r.get("rep") or 1) == rep and "parts" in r:
+                for k in ("found", "expected", "visible_found", "visible_expected"):
+                    totals[k] += r["parts"][k]
+                    if r.get("parts_with_checklist"):
+                        totals[f"checklist_{k}"] += r["parts_with_checklist"][k]
+                totals["extra"] += len(r["parts"]["extra"])
+                if r.get("parts_with_checklist"):
+                    totals["checklist_runs"] += 1
+                    totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
+                ls = r.get("parts_with_second_look")
+                if ls:
+                    totals["look_runs"] += 1
+                    for k in ("found", "visible_found", "added", "extra", "wrong_side", "suggested"):
+                        totals[f"look_{k}"] += ls[k]
+                f = r.get("parts_fair")
+                if f:
+                    totals["fair_runs"] += 1
+                    for k in ("fair_found", "fair_visible_found", "fair_extra"):
+                        totals[k] += f[k]
+                    totals["neighbour"] += len(f["neighbour"])
+                    totals["other_named"] += len(f["other_named"])
+                    if f.get("contradicted") is not None:
+                        totals["contradicted_runs"] += 1
+                        totals["contradicted"] += len(f["contradicted"])
+        head = f"run {rep}: " if len(reps) > 1 else ""
+        out.append(f"\n{head}TOTAL parts {totals['found']}/{totals['expected']}, visible {totals['visible_found']}/{totals['visible_expected']}, "
+                   f"extra {totals['extra']}")
+        if totals["checklist_runs"]:
+            out.append(f"{head}WITH CHECKLIST parts {totals['checklist_found']}/{totals['checklist_expected']}, "
+                       f"visible {totals['checklist_visible_found']}/{totals['checklist_visible_expected']}, extra {totals['checklist_extra']}")
+        if totals["look_runs"]:
+            out.append(f"{head}WITH SECOND LOOK (all ticked) parts {totals['look_found']}/{totals['expected']}, "
+                       f"visible {totals['look_visible_found']}/{totals['visible_expected']}: added {totals['look_added']} "
+                       f"from {totals['look_suggested']} suggestions, extra {totals['look_extra']}, "
+                       f"wrong side {totals['look_wrong_side']}")
+        if totals["fair_runs"]:
+            out.append(f"{head}FAIR parts {totals['fair_found']:g}/{totals['expected']}, visible "
+                       f"{totals['fair_visible_found']:g}/{totals['visible_expected']} ({totals['neighbour']} neighbours "
+                       f"at 0.5), extra {totals['fair_extra']} (strict {totals['extra']}, Other named like a key part "
+                       f"{totals['other_named']})"
+                       + (f", contradicted by the report {totals['contradicted']}" if totals["contradicted_runs"] else ""))
+    return out
+
+
+def rescore(args: argparse.Namespace) -> int:
+    """--rescore FILE: every run of a stored result file scored again, strict
+    and fair, from its drafted items (drafted_parts in files older than
+    them), against --key and, with --reports, each case's held-out report
+    (contradicted parts). Offline: no Gemini call, no database. The other
+    numbers (conditions, Annex A, sorter) are kept as stored. Prints the
+    totals and the summary; --out writes the rescored file (never over FILE,
+    a measurement that can't be made again)."""
+    if args.key is None:
+        sys.exit("--rescore needs --key")
+    if args.out is not None and args.out.resolve() == args.rescore.resolve():
+        sys.exit("--rescore: --out must be another file; the stored result is kept as it is")
+    doc = json.loads(args.rescore.read_text(encoding="utf-8"))
+    runs = doc.get("runs")
+    if runs is None:
+        runs = doc.get("results") or []  # before --repeat
+    key = {c["name"]: c for c in json.loads(args.key.read_text(encoding="utf-8"))["cases"]}
+    reports = ReportSet(args.reports) if args.reports else None
+    if reports is not None:
+        from app.parts.history import family_and_side, family_of, side_of
+    changed, unknown = 0, set()
+    for run in runs:
+        case = key.get(run.get("case"))
+        if case is None:
+            unknown.add(str(run.get("case")))
+            continue
+        if "parts" not in run:
+            continue  # an errored run: nothing was drafted
+        items = run.get("drafted_items") or [{"part": p} for p in run.get("drafted_parts") or [] if p]
+        drafted = [p for p in run.get("drafted_parts") or [i.get("part") for i in items] if p]
+        strict = score_parts(case["parts"], drafted)
+        if (strict["found"], len(strict["extra"])) != (run["parts"]["found"], len(run["parts"]["extra"])):
+            changed += 1
+        run["parts"] = strict
+        contradicted = None
+        held = reports.for_case(case) if reports is not None else None
+        if held is not None:
+            contradicted = contradicted_parts(drafted, held[1].lines, family_of, side_of, family_and_side)
+        run["parts_fair"] = score_fair(case["parts"], items, strict, contradicted)
+    doc["runs"] = runs
+    doc.pop("results", None)
+    doc["summary"] = summarize(runs)
+    doc["rescored"] = {"from": str(args.rescore), "key": str(args.key), "reports": str(args.reports) if args.reports else None,
+                       "at": _now()}
+    print(f"rescored {len(runs)} run(s) of {doc.get('label') or args.rescore.stem}"
+          + (f"; reports: {len(reports.items)} read" if reports is not None else "; no --reports: nothing flagged as contradicted"))
+    if unknown:
+        print(f"   not in the key, left as stored: {len(unknown)} case(s)")
+    if changed:
+        print(f"   the strict score differs from the stored one on {changed} run(s): the key changed since")
+    for line in total_lines(runs):
+        print(line)
+    print()
+    for line in summary_table(doc["summary"]):
+        print(line)
+    if args.out is not None:
+        _write_json(args.out, doc)
+        print("written", args.out)
     return 0
 
 
