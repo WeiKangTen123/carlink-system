@@ -15,8 +15,10 @@ here without checking whether that point has arrived.
 """
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
+
+from app.reports.taxonomy import OTHER_PART, clean_part_name
 
 
 class PersonInvolved(BaseModel):
@@ -40,6 +42,14 @@ class DamageSummaryItem(BaseModel):
     # "Boot Lid", "Headlight" vs "Left Headlamp"), giving the model two
     # different answers to the same question.
     part: str = Field(description="The damaged part. Choose the closest match from the allowed values; side is part of the name where it applies.")
+    # What an "Other / Not Listed" part is, so Annex A can print and price
+    # it (prefill.sync_annex_a: through history.family_of when the name
+    # reads as a known family) and two unlisted parts stay two rows. Before
+    # it, every such item printed as one unpriced "Other part (to be
+    # named)". Right after part, and a short description: the drafting
+    # schema is also read by flash-lite models, which cope worse with a
+    # longer one. Cleared on any other part (the name is the part's).
+    other_part_name: Optional[str] = Field(default=None, description="Only with 'Other / Not Listed': the part's name, e.g. 'Rear air vent'.")
     damage_type: Optional[str] = Field(default=None, description="How the part is damaged -- choose from the allowed values. Pick the dominant type for compound damage and leave the nuance to the description. Only set if actually known.")
     # The firm's own words for the damage (taxonomy.FIRM_CONDITION_TOKENS),
     # which the Annex A Condition column prints joined: ["Grazed", "Cut"] ->
@@ -89,6 +99,17 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="OEM replacement part number, e.g. '71501-T7A-A00' -- never invent this. Only set it if the reporter or surveyor actually supplied it; a human enters this during review, it is never looked up or guessed.",
     )
+
+    @field_validator("other_part_name", mode="before")
+    @classmethod
+    def _clean_other_name(cls, value):
+        return clean_part_name(value)
+
+    @model_validator(mode="after")
+    def _other_name_only_for_other(self):
+        if (self.part or "").strip() != OTHER_PART:
+            self.other_part_name = None
+        return self
 
 
 class TyreItem(BaseModel):

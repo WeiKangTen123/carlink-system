@@ -26,14 +26,33 @@ from sqlalchemy.orm import Session
 
 from typing import Iterable
 
-from app.parts.history import FITTING_CONDITIONS, canonical_part, family_and_side, firm_wording, normalise_item, side_of, suggest
+from app.parts.history import (
+    FITTING_CONDITIONS,
+    _without_side,
+    canonical_part,
+    family_and_side,
+    firm_wording,
+    normalise_item,
+    side_of,
+    suggest,
+)
 from app.reports.synthesize_annexes import (
     DEFAULT_DISCOUNT,
     REPAIR_CONDITION,
     REPAIR_DISCOUNT,
     synthesize_annexes_for_report,
 )
-from app.reports.taxonomy import CANONICAL_PARTS, annex_condition, body_type_for, firm_part_name, unsided_part
+from app.reports.taxonomy import (
+    CANONICAL_PARTS,
+    OTHER_PART,
+    SIDE_CODES,
+    annex_condition,
+    body_type_for,
+    clean_part_name,
+    firm_part_name,
+    other_part_name,
+    unsided_part,
+)
 
 ORIGINS = ("detection", "history", "lookup", "typed")
 # How protected a row is: a client may raise a row's origin, never lower it.
@@ -47,7 +66,9 @@ def _damaged(data: dict) -> list[dict]:
     about them: the condition in the firm's words (taxonomy.annex_condition:
     the item's condition, else the firm word for its damage type, else the
     type as written) and the remarks (Replace / Repair): from
-    damage_summary, else the older damaged_parts list."""
+    damage_summary, else the older damaged_parts list. An "Other / Not
+    Listed" item with a name is a part of its own (item_key): "other" is
+    its name, "key" and "source" what its rows are found by."""
     seen: set[str] = set()
     out = []
     items = [it for it in (data.get("damage_summary") or []) if it.get("part")]
@@ -55,10 +76,16 @@ def _damaged(data: dict) -> list[dict]:
         items = [{"part": p} for p in (data.get("damaged_parts") or []) if p]
     for it in items:
         part = str(it["part"]).strip()
-        if part and part not in seen:
-            seen.add(part)
+        other = other_part_name(it)
+        # Two unlisted parts were one: both were "Other / Not Listed".
+        ident = item_source(it) if other else part
+        if part and ident not in seen:
+            seen.add(ident)
             out.append({
                 "part": part,
+                "other": other,
+                "key": item_key(it),
+                "source": ident,
                 "damage_type": (it.get("damage_type") or "").strip(),
                 "condition": annex_condition(it),
                 "remarks": (it.get("remarks") or "").strip(),
@@ -171,16 +198,40 @@ def _covered(name: str, kept_keys: set) -> bool:
 
 def _family(part: str) -> str:
     """The past-case family of a damaged part: "Left Tail Lamp" and "Right
-    Tail Lamp" are both "Tail Lamp"."""
+    Tail Lamp" are both "Tail Lamp". A named unlisted part is its own."""
+    if _is_other_source(part):
+        return _part_key(part)
     return family_and_side(canonical_part(part) or part)[0]
+
+
+def _other_source(name: str) -> str:
+    """The source_part of a named "Other / Not Listed" item's rows: "Other
+    / Not Listed: Rear air vent" -- the part, and which unlisted part."""
+    return f"{OTHER_PART}: {name}"
+
+
+def _is_other_source(name: str | None) -> bool:
+    return (name or "").startswith(OTHER_PART + ":")
 
 
 def _part_key(name: str | None) -> str | None:
     """One key per vehicle part, so "Tail gate" in an old row and "Tail
-    Gate" in damage_summary are the same part."""
+    Gate" in damage_summary are the same part; a named unlisted part's
+    source (_other_source) keys by its name in any case."""
     if not name:
         return None
+    if _is_other_source(name):
+        return f"{OTHER_PART}: {' '.join(name[len(OTHER_PART) + 1:].lower().split())}"
     return canonical_part(name) or name.strip()
+
+
+def item_key(item: dict) -> str | None:
+    """The part a damage item stands for, as sync_annex_a keys it: its
+    canonical part, or for a named "Other / Not Listed" item that name (two
+    unlisted parts are two parts). For callers that compare damage items
+    (a re-read keeping a ticked one, dismissing a removed one)."""
+    other = other_part_name(item)
+    return _part_key(_other_source(other) if other else str(item.get("part") or "").strip())
 
 
 def row_name(db: Session | None, part: str, vehicle: dict, unsided: bool = False) -> str:
@@ -204,6 +255,81 @@ def row_name(db: Session | None, part: str, vehicle: dict, unsided: bool = False
     return (firm_wording(db, lookup, make, model) if db is not None else None) or part
 
 
+def _other_wording(name: str) -> str:
+    """A named unlisted part as the firm would print it: the side last as
+    LH / RH ("Left rear air vent" -> "Rear air vent LH")."""
+    side = side_of(name)
+    base = clean_part_name(_without_side(name)) or name
+    return f"{base} {SIDE_CODES[side]}" if side else base
+
+
+def item_source(item: dict) -> str:
+    """The source_part an item's Annex A rows carry: its part, or for a
+    named unlisted part "Other / Not Listed: <name>". A row made with the
+    bare "Other / Not Listed" stands for every unnamed one instead."""
+    other = other_part_name(item)
+    return _other_source(other) if other else str(item.get("part") or "").strip()
+
+
+def item_row_name(item: dict, vehicle: dict, unsided: bool = False) -> str:
+    """An item's Annex A wording without past cases (the floor): a named
+    unlisted part by its name, anything else as row_name(None, ...). For
+    synthesize_annexes' scaffold, which has no database."""
+    other = other_part_name(item)
+    if other:
+        return _other_wording(other)
+    return row_name(None, str(item.get("part") or "").strip(), vehicle, unsided=unsided)
+
+
+# Words that say where or on what, not what: "window regulator" is the
+# "front door glass regulator mechanism".
+_NOT_WHAT = {"front", "rear", "door", "glass", "window", "with", "and", "the", "of", "c", "w", "set", "pcs"}
+# A last word that names no part of its own: the head is the word before.
+_NOT_HEAD = {"mechanism", "unit", "set", "pcs"}
+
+
+def _words(text: str) -> list[str]:
+    """The words of a line's wording, plurals as singular ("clips" ->
+    "clip")."""
+    return [w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+            for w in normalise_item(text).split()]
+
+
+def _head(words: list[str]) -> str | None:
+    """The thing a wording names: its last word ("motor" in "... regulator
+    mechanism motor", "regulator" in "... regulator mechanism")."""
+    rest = list(words)
+    while len(rest) > 1 and rest[-1] in _NOT_HEAD:
+        rest.pop()
+    return rest[-1] if rest else None
+
+
+def _matching_line(name: str, lines: list[dict]) -> dict | None:
+    """The past line a named unlisted part is: the one naming the same
+    thing (_head: "motor", "garnish", "vent") with most of its other words,
+    the closest first. None when no line does -- a "Rear bumper bracket" is
+    not the "Rear bumper fascia", nor "Door glass" the "door outer glass
+    moulding"."""
+    words = _words(name)
+    if not words:
+        return None
+    head, wanted = _head(words), set(words) - _NOT_WHAT or set(words)
+    best, best_score = None, None
+    for ln in lines:
+        line_words = _words(ln["name"])
+        have = set(line_words)
+        if _head(line_words) != head:
+            continue
+        overlap = len(wanted & have) / len(wanted)
+        if overlap < 0.6:
+            continue
+        # Most of the name found, then the fewest words beside it.
+        score = (overlap, -len(have - set(words)), -len(ln["name"]))
+        if best_score is None or score > best_score:
+            best, best_score = ln, score
+    return best
+
+
 def _unpriced_row(part: dict, name: str) -> dict:
     row = {
         "part_name": name,
@@ -220,7 +346,7 @@ def _unpriced_row(part: dict, name: str) -> dict:
         "usual_unit_price": None,
         "prefilled": False,
         "origin": "detection",
-        "source_part": part["part"],
+        "source_part": part.get("source") or part["part"],
         "stale": False,
     }
     row.update(_main_row_terms(part))
@@ -235,16 +361,23 @@ def _scope_vehicle(scope: str) -> str:
     return "all makes"
 
 
-def _rows_for(part: dict, suggestion: dict, group: dict) -> list[dict]:
-    """The past cases' lines for one damaged part, as priced Annex A rows."""
+def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = None) -> list[dict]:
+    """The past cases' lines for one damaged part, as priced Annex A rows.
+    floor: the part's own wording (row_name without past cases)."""
     vehicle = _scope_vehicle(suggestion.get("scope") or "")
     lines = group["lines"]
-    # The damaged part itself is the shortest wording among the lines that
-    # are parts rather than fittings ("tailgate" before "tailgate stopper"
-    # and "tailgate emblem vezel"); it alone takes the item's condition and
-    # remarks (_main_row_terms).
+    # The damaged part itself, which alone takes the item's condition and
+    # remarks (_main_row_terms): the line worded as the part is ("Front
+    # wheel rim" for a front wheel), else the shortest wording among the
+    # lines that are parts rather than fittings ("tailgate" before
+    # "tailgate stopper"). Shortest alone made another model's "Sport rim"
+    # the main row of a front wheel the same make's "Front wheel rim" was
+    # also priced for.
     parts_only = [ln for ln in lines if ln["kind"] != "fitting"]
-    main = min(parts_only, key=lambda ln: (len(normalise_item(ln["name"])), ln["name"])) if parts_only else None
+    floor_key = normalise_item(floor) if floor else None
+    main = next((ln for ln in parts_only if floor_key and normalise_item(ln["name"]) == floor_key), None)
+    if main is None and parts_only:
+        main = min(parts_only, key=lambda ln: (len(normalise_item(ln["name"])), ln["name"]))
     rows = []
     for ln in lines:
         qty = float(ln.get("qty") or 1.0)
@@ -284,7 +417,7 @@ def _rows_for(part: dict, suggestion: dict, group: dict) -> list[dict]:
             "usual_unit_price": price,
             "prefilled": True,
             "origin": "history",
-            "source_part": part["part"],
+            "source_part": part.get("source") or part["part"],
             "stale": False,
         }
         if ln is main:
@@ -300,7 +433,7 @@ def _sided_namer(db: Session | None, part: dict, vehicle: dict):
     make's history would write for the sided part, and the floor. Built on
     first use (most syncs rename nothing). None when the part has no
     confirmed side."""
-    if part["unsided"] or part["part"] not in CANONICAL_PARTS or side_of(part["part"]) is None:
+    if part["unsided"] or part.get("other") or part["part"] not in CANONICAL_PARTS or side_of(part["part"]) is None:
         return None
     cache: dict[str, str] | None = None
 
@@ -326,6 +459,30 @@ def _sided_namer(db: Session | None, part: dict, vehicle: dict):
     return sided
 
 
+def _other_rows(db: Session | None, part: dict, vehicle: dict, price_book: bool) -> list[dict]:
+    """The row for a named "Other / Not Listed" part: when its name reads
+    as a known family (history.family_of: "window regulator motor") and the
+    same make's past cases wrote a line that is this part (_matching_line),
+    that line, priced, with the item's condition; else one unpriced row by
+    its own name. Never the family's whole kit: the part is one line of it,
+    and the rest is for the listed parts to bring."""
+    name = part["other"]
+    family_part = canonical_part(name) if price_book and db is not None else None
+    if family_part:
+        make, model = vehicle.get("make"), vehicle.get("model")
+        suggestion = suggest(db, make=make, model=model, damaged_parts=[family_part], existing_items=[], unsided=True)
+        group = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
+        line = _matching_line(name, group["lines"]) if group and suggestion.get("scope") != "all imported cases" else None
+        if line is not None:
+            row = _rows_for(part, suggestion, {"lines": [line]})[0]
+            row.update(_main_row_terms(part))
+            side = side_of(name)
+            if side:
+                row["part_name"] = f"{row['part_name']} {SIDE_CODES[side]}"
+            return [row]
+    return [_unpriced_row(part, _other_wording(name))]
+
+
 def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     """Returns the case data with Annex A following its damage list and
     the annex totals worked out (synthesize_annexes_for_report).
@@ -349,16 +506,18 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     A part with no same-make history -- or anyone else's case, where the
     price book is hidden -- gets one unpriced row, named in the firm's
     words (row_name), never by its canonical name; a part whose side is
-    undetermined never takes a past case's LH / RH. Parts in data["dismissed_parts"]
-    get no rows. Kept rows first in their order, then the new List items,
-    then S/Nett, numbered "1.0"... in that order.
+    undetermined never takes a past case's LH / RH. A named "Other / Not
+    Listed" part gets one row of its own (_other_rows), after the listed
+    parts' rows and only when none of them is already that line. Parts in
+    data["dismissed_parts"] get no rows. Kept rows first in their order,
+    then the new List items, then S/Nett, numbered "1.0"... in that order.
     """
     data = dict(data)
     vehicle = data.get("vehicle_info") or {}
     make, model = vehicle.get("make"), vehicle.get("model")
     damaged = _damaged(data)
     damaged_names = {p["part"] for p in damaged}
-    damaged_keys = {_part_key(p["part"]) for p in damaged}
+    damaged_keys = {p["key"] for p in damaged}
     dismissed = {_part_key(p) for p in (data.get("dismissed_parts") or []) if p}
 
     kept = []
@@ -375,7 +534,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     # and remarks, and the sided wording once an inferred side is confirmed.
     by_key = {}
     for part in damaged:
-        by_key.setdefault(_part_key(part["part"]), part)
+        by_key.setdefault(part["key"], part)
     namers: dict = {}
     for row in kept:
         part = by_key.get(_part_key(row["source_part"])) if row["source_part"] and not row["stale"] else None
@@ -397,8 +556,11 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     # its family: held once, by whichever damaged side's row has it.
     family_held = {(_family(r["source_part"]), line_key(r.get("part_name", "")))
                    for r in kept if r.get("source_part") and not r["stale"]}
-    for part in damaged:
-        key = _part_key(part["part"])
+    # Named unlisted parts last, so one that a listed part's past lines
+    # already hold (a "Rear air vent" in the Civic's bumper kit) isn't
+    # printed twice.
+    for part in sorted(damaged, key=lambda p: p["other"] is not None):
+        key = part["key"]
         if key in dismissed:
             continue
         # The kept rows that may stand for this part's lines: its own, and
@@ -412,12 +574,19 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
         # firm's wording now says "Tail gate assy" -- stands for it: no
         # second, unpriced row (review, 2026-11-08).
         has_own_row = any(r.get("source_part") and _part_key(r["source_part"]) == key for r in kept)
-        # An unconfirmed inferred side is looked up as "(side undetermined)":
-        # its family's lines with no LH / RH. The rows' source_part stays
-        # part["part"], the sided name (side_unconfirmed).
-        lookup = (unsided_part(part["part"]) or part["part"]) if part["unsided"] else part["part"]
-        name = canonical_part(lookup)
-        side = side_of(lookup)
+        if part["other"]:
+            if not has_own_row:
+                every_line = {line_key(r.get("part_name", "")) for r in kept + new_rows}
+                for row in _other_rows(db if price_book else None, part, vehicle, price_book):
+                    if not _covered(row["part_name"], every_line):
+                        new_rows.append(row)
+            continue
+        # An unconfirmed inferred side is looked up without its side: the
+        # family's lines with no LH / RH, at its end of the car (suggest's
+        # unsided). The rows' source_part stays part["part"], the sided name
+        # (side_unconfirmed).
+        name = canonical_part(part["part"])
+        side = None if part["unsided"] else side_of(part["part"])
         # Kept lines that stand for this part's side (or no side): suggest()
         # strips LH/RH when it leaves out lines already in the table, so a
         # kept "Tail lamp LH" must not hide the lines for Right Tail Lamp.
@@ -427,7 +596,8 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # Per part, so two sides of one family ("Left Tail Lamp" and
             # "Right Tail Lamp") each get their own lines; lines already
             # typed into this Annex A are not repeated.
-            suggestion = suggest(db, make=make, model=model, damaged_parts=[name], existing_items=existing)
+            suggestion = suggest(db, make=make, model=model, damaged_parts=[name], existing_items=existing,
+                                 unsided=part["unsided"])
             found = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
             # Another make's prices are no estimate for this car: with no
             # same-make history the part stays unpriced (the suggestions
@@ -444,7 +614,8 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
                 new_rows.append(_unpriced_row(part, row_part_name))
             continue
         # _rows_for gives one row per past line, in order.
-        for ln, row in zip(found["lines"], _rows_for(part, suggestion, found)):
+        floor = row_name(None, part["part"], vehicle, unsided=part["unsided"])
+        for ln, row in zip(found["lines"], _rows_for(part, suggestion, found, floor)):
             if _covered(row["part_name"], own_keys):
                 continue
             if ln.get("sided"):

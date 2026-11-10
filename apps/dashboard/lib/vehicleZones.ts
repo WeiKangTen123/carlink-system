@@ -90,6 +90,9 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Front Number Plate": "front_bumper",
   "Left Front Wheel Arch Liner": "l_fender",
   "Right Front Wheel Arch Liner": "r_fender",
+  // The arch's outside garnish: on the fender's mesh, as the liner.
+  "Left Front Wheel Arch Trim": "l_fender",
+  "Right Front Wheel Arch Trim": "r_fender",
 
   "Left Front Door": "l_door_front",
   "Right Front Door": "r_door_front",
@@ -101,6 +104,11 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Right Rear Door Glass": "r_door_glass_rear",
   "Left Wing Mirror": "l_mirror",
   "Right Wing Mirror": "r_mirror",
+  // Inside the door: no mesh of its own, so it marks its door.
+  "Left Front Window Regulator": "l_door_front",
+  "Right Front Window Regulator": "r_door_front",
+  "Left Rear Window Regulator": "l_door_rear",
+  "Right Rear Window Regulator": "r_door_rear",
 
   "Rear Bumper": "rear_bumper",
   "Boot Lid": "tailgate",
@@ -128,11 +136,18 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Right Boot Side Trim": null,
   "Left Rear Wheel Arch Liner": "l_fender",
   "Right Rear Wheel Arch Liner": "r_fender",
+  "Left Rear Wheel Arch Trim": "l_fender",
+  "Right Rear Wheel Arch Trim": "r_fender",
 
   "Left Front Wheel": "l_wheel_front",
   "Right Front Wheel": "r_wheel_front",
   "Left Rear Wheel": "l_wheel_rear",
   "Right Rear Wheel": "r_wheel_rear",
+  // The wheel's mesh is rim and tyre together.
+  "Left Front Tyre": "l_wheel_front",
+  "Right Front Tyre": "r_wheel_front",
+  "Left Rear Tyre": "l_wheel_rear",
+  "Right Rear Tyre": "r_wheel_rear",
 
   "Underbody / Chassis": "underbody",
   "Left Sill / Rocker Panel": "underbody",
@@ -174,6 +189,9 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Boot Lid Lamp (side undetermined)": "tailgate",
   "Wheel Arch Liner (side undetermined)": "l_fender",
   "Boot Side Trim (side undetermined)": null,
+  "Wheel Arch Trim (side undetermined)": "l_fender",
+  "Window Regulator (side undetermined)": "l_door_front",
+  "Tyre (side undetermined)": "l_wheel_front",
 
   "Other / Not Listed": null,
 };
