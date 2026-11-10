@@ -150,11 +150,11 @@ def main() -> int:
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 1"}}).status_code == 200
         assert pat.put(f"/reports/{case_id}", json={"draft": {"category": ["Other"], "description": "Edit 2"}}).status_code == 200
         # Signing off is for staff: an admin, or an account ticked "May sign off".
-        r = pat.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        r = pat.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
         assert admin.patch(f"/users/{pat_id}", json={"may_sign_off": True}).status_code == 200
         r = pat.post(f"/reports/{case_id}/sign-off", json={
-            "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True,
+            "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True, "open_items_ack": True,
             "signature_data_url": "http://169.254.169.254/latest/meta-data/",
         })
         assert r.status_code == 200, r.text
@@ -199,8 +199,9 @@ def main() -> int:
         history = pat.get(f"/reports/{case_id}").json()["history"]
         actions = [(h["action"], h["user_name"]) for h in history]
         assert actions == [("created", "Pat Surveyor (@pat)"), ("edited", "Pat Surveyor (@pat)"), ("signed_off", "Pat Surveyor (@pat)"), ("reopened", "Pat Surveyor (@pat)")], actions
-        assert history[2]["detail"] == "pat@example.com"
-        ok("history: created, edited (two saves = one entry), signed off (with the account email), reopened")
+        # The account email, then what the field review still had open (contract 7).
+        assert history[2]["detail"].startswith("pat@example.com; ") and "open" in history[2]["detail"], history[2]["detail"]
+        ok("history: created, edited (two saves = one entry), signed off (with the account email and what was open), reopened")
 
         for rid in (forged_id, forged_draft):
             assert admin.delete(f"/reports/{rid}").status_code == 200

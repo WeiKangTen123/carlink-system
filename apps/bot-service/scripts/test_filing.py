@@ -250,8 +250,11 @@ def intake_checks() -> None:
         finally:
             db.close()
         ok("a wizard case's photo_index comes from the sorted photos; the AI's draft is kept apart from the surveyor's version, its photo references turned into P-numbers")
+        # The parties guesses too (contract 7): None / {} where the AI said nothing.
         assert detail["ai_read"] == {"vehicle_info": {"plate_number": "SMV7530X", "make": "Honda", "model": "Vezel", "odometer_reading": "15,287 km",
-                                                      "color": "Red"}, "incident_datetime": "2026-11-01 09:00"}, detail["ai_read"]
+                                                      "color": "Red"}, "incident_datetime": "2026-11-01 09:00",
+                                     "location": None, "accident_type": "Rear-end collision",
+                                     "insurance_details": {}, "police_report": {}}, detail["ai_read"]
         assert detail["ai_read_photos"] == {"odometer_reading": "P02"}, detail["ai_read_photos"]
         assert "ai_read" not in detail["data"] and "Red" not in str(detail["data"])
         ok("GET /reports/{id}: ai_read is the AI's non-empty cover values (the surveyor's White stays in data), ai_read_photos names the odometer photo")

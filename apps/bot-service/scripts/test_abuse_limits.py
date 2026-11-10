@@ -250,10 +250,10 @@ def main() -> int:
 
         print("sign-off")
         d = signer.c.post("/intake").json()["id"]
-        r = signer.c.post(f"/reports/{d}/sign-off", json={"terms_accepted": True})
+        r = signer.c.post(f"/reports/{d}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 409, r.text
         case_id = new_case(plain)
-        r = plain.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        r = plain.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 403 and r.json()["code"] == "not_allowed" and "sign off" in r.json()["detail"], r.text
         assert stored(case_id).data["sign_off"]["status"] == "Draft"
         signer.c.delete(f"/reports/{d}")
@@ -298,7 +298,7 @@ def main() -> int:
         outsider = person(name="Otto Outside")
         case_id = new_case(outsider)
         RENDERED.clear()
-        r = staff.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True})
+        r = staff.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 200 and RENDERED and BANNER not in RENDERED[-1], r.text
         RENDERED.clear()
         assert admin.c.post(f"/reports/{case_id}/render-pdf").status_code == 200

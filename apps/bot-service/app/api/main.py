@@ -81,6 +81,7 @@ from app.reports import owners
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
+from app.reports.review import open_items, open_summary, review_state
 from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakeSession, Report, User, gen_id, iso_utc
@@ -326,7 +327,13 @@ def _attention_fields(
     None while a run or filing is under way, and for a filed case.
     unpriced_rows: a filed case's Annex A lines with no estimate yet, stale
     ones left out (prefill.unpriced_rows). reopened: signed off once,
-    reopened since, not signed off again (core.reopened_cases)."""
+    reopened since, not signed off again (core.reopened_cases).
+    needs_you / to_check: a filed case's field review (app/reports/
+    review.py) -- the items only a person can fill in that are still
+    empty (unpriced Annex A lines among them), and the AI guesses, usual
+    wordings and past-case prices nobody has confirmed; 0 for a draft
+    (the wizard shows its own) and for a signed-off case. From the row
+    as loaded (data and ai_draft): no query of its own."""
     if r.status != "intake":
         return {
             "intake_stage": None,
@@ -334,6 +341,7 @@ def _attention_fields(
             "draft_deletes_at": None,
             "unpriced_rows": unpriced_rows(data),
             "reopened": reopened,
+            **_review_totals(r, data),
         }
     stage = error_code = deletes_at = None
     if session is not None:
@@ -345,7 +353,26 @@ def _attention_fields(
         "draft_deletes_at": iso_utc(deletes_at) if deletes_at else None,
         "unpriced_rows": 0,
         "reopened": False,
+        "needs_you": 0,
+        "to_check": 0,
     }
+
+
+def _case_review(r: Report) -> dict:
+    """review.review_state for a filed case, from its own row."""
+    data = r.data or {}
+    return review_state(data, r.ai_draft, data.get("photo_index"), signed_off=_is_signed_off(r))
+
+
+def _review_totals(r: Report, data: dict) -> dict:
+    """GET /reports' needs_you / to_check. A case whose data can't be read
+    as a review counts 0 rather than failing the whole list."""
+    try:
+        needs, check = open_items(_case_review(r)["counts"])
+    except Exception:
+        logger.exception("Could not work out the field review of case %s for the list", r.id)
+        needs = check = 0
+    return {"needs_you": needs, "to_check": check}
 
 
 @app.get("/reports")
@@ -470,6 +497,7 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
                 "created_at": iso_utc(r.created_at),
                 "ai_read": None,  # the wizard reads the draft's AI values from GET /intake/{id}
                 "ai_read_photos": {},
+                "review": None,  # and its review
                 **access,
             }
 
@@ -521,6 +549,10 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             "history": report_history(db, r),
             "ai_read": ai_read,
             "ai_read_photos": ai_read_photos,
+            # Field review (app/reports/review.py): per field, damage item
+            # and Annex row whether the AI read it, it is to check, it needs
+            # a person, or a person confirmed it; with counts per section.
+            "review": _case_review(r),
             # What the AI did on this case and its draft (app/ai/runs.py),
             # newest first: the Case record drawer's list, and tab 1's "AI
             # read 14 of 41 photos" line (null when the AI never read it).
@@ -1017,6 +1049,10 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         # assessment, vehicle year...), and replacing the whole case with
         # it -- defaults filling every gap -- silently erased those.
         sent = body.draft.model_dump(exclude_unset=True)
+        # The field review's marks change only through PUT .../checked, and
+        # template_fields is the server's (app/reports/review.py).
+        sent.pop("checked", None)
+        sent.pop("template_fields", None)
         if "report_id" in sent:
             sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
         data = _merge_into(dict(r.data or {}), sent)
@@ -1407,7 +1443,15 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
     sign as anyone; any such fields in the body are now ignored.
 
     Signing puts the firm's stamp on the report, so only staff may: admins
-    and "May sign off" accounts (permissions.can_sign_off)."""
+    and "May sign off" accounts (permissions.can_sign_off).
+
+    The body must carry the declaration the sign-off box asks for
+    (terms_accepted: true; 400 declaration_required). While the field
+    review (app/reports/review.py) has items open -- empty fields only a
+    person can fill, guesses, usual wordings and past-case prices nobody
+    confirmed -- it also needs open_items_ack: true ("Sign off with N items
+    open"), else 409 {detail, code: "open_items", open, counts}: a
+    warning, never a block. The history entry records what was open."""
     import hashlib
     db = SessionLocal()
     try:
@@ -1426,11 +1470,8 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             body_data = {}
         if not isinstance(body_data, dict):
             body_data = {}
-
-        signed_at = datetime.now(timezone.utc).isoformat()
-        # Always computed here, never taken from the request.
-        canonical_str = f"{r.id}:{user.id}:{user.name}:{signed_at}"
-        sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
+        if body_data.get("terms_accepted") is not True:
+            raise ApiError(400, "Tick the declaration before signing off.", "declaration_required")
 
         # The figures Annex C prints: typed at sign-off when the body has
         # them, else what is saved on Annex C (PUT /reports/{id}/annex-c) --
@@ -1440,6 +1481,24 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         days = _number(body_data.get("turnaround_days"), int, annex_c_now.get("repair_days"))
         title = body_data.get("signatory_title")
         title = title.strip()[:120] if isinstance(title, str) and title.strip() else None
+
+        # What is still open, with the Annex C figures this sign-off sets.
+        as_signed = {**(r.data or {}), "annex_c": {**annex_c_now, "agreed_lump_sum": quantum, "repair_days": days}}
+        review = review_state(as_signed, r.ai_draft, as_signed.get("photo_index"), signed_off=False)
+        if review["open"] > 0 and body_data.get("open_items_ack") is not True:
+            n = review["open"]
+            return JSONResponse({
+                "detail": f"{n} item{'s are' if n != 1 else ' is'} still open (to fill in or check). "
+                          f"Tick \"Sign off with {n} item{'s' if n != 1 else ''} open\" to sign anyway.",
+                "code": "open_items",
+                "open": n,
+                "counts": review["counts"],
+            }, status_code=409)
+
+        signed_at = datetime.now(timezone.utc).isoformat()
+        # Always computed here, never taken from the request.
+        canonical_str = f"{r.id}:{user.id}:{user.name}:{signed_at}"
+        sig_hash = hashlib.sha256(canonical_str.encode()).hexdigest().upper()[:32]
 
         updates = {
             "status": "Signed Off",
@@ -1459,9 +1518,9 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
             "turnaround_days": days,
             "liability_opinion": body_data.get("liability_opinion"),
             "remarks": body_data.get("remarks"),
-            # Only what the surveyor actually ticked -- this defaulted to
-            # True, recording declarations nobody had accepted.
-            "terms_accepted": bool(body_data.get("terms_accepted", False)),
+            # Only what the surveyor actually ticked (required above) -- this
+            # defaulted to True, recording declarations nobody had accepted.
+            "terms_accepted": True,
             "signature_date": signed_at,
         }
 
@@ -1495,8 +1554,10 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         # loop -- the signed PDF used to keep the unsigned copy.
         r.pdf_path = await asyncio.to_thread(_render_after_change, user, r, "signed off")
 
-        # The account's email too: the name on a profile can be edited.
-        audit(db, user, "signed_off", r.id, detail=user.email)
+        # The account's email too: the name on a profile can be edited. And
+        # what the field review still had open ("no items open", or "3 items
+        # open: cover 2, Annex A 1"), acknowledged or not.
+        audit(db, user, "signed_off", r.id, detail=f"{user.email}; {open_summary(review)}")
         db.commit()
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url, "sign_off": r.data.get("sign_off")}

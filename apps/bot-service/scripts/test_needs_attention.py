@@ -394,14 +394,14 @@ def reopened() -> None:
         return listed(W.a)[case]["reopened"]
 
     check(flag() is False, "never signed off: not reopened")
-    r = W.a.post(f"/reports/{case}/sign-off", json={})
+    r = W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "signed off", brief(r))
     check(flag() is False, "signed off: not reopened")
     r = W.a.post(f"/reports/{case}/reopen")
     check(r.status_code == 200, "reopened", brief(r))
     check(flag() is True, "signed off then reopened: reopened")
     check(listed(W.p1)[case]["reopened"] is True, "...the owner's list says so too")
-    r = W.a.post(f"/reports/{case}/sign-off", json={})
+    r = W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "signed off again", brief(r))
     check(flag() is False, "reopen -> sign off again: not reopened")
     W.a.post(f"/reports/{case}/reopen")
@@ -504,7 +504,7 @@ def query_count() -> None:
         new_draft(W.u1 if i % 2 else W.u2, stage="failed" if i % 2 else "ready", error_code="ai_key_invalid",
                   photos=[(0, NOW), (1, NOW)])
         case = new_case(W.u2, annex_a={"items": [{"part_name": "Door", "workshop_est": 0}]})
-        W.a.post(f"/reports/{case}/sign-off", json={})
+        W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         W.a.post(f"/reports/{case}/reopen")
     taken = new_draft(W.u2, channel="telegram_public", stage="ready")
     db = SessionLocal()

@@ -76,6 +76,7 @@ from app.reports.models import (
     iso_utc,
 )
 from app.reports.owners import _vetted, assigned_detail, owner_dict, owners_by_id
+from app.reports.review import apply_template_defaults
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo
 from app.storage.files import (
     disk_space_low,
@@ -710,6 +711,9 @@ def save_submission(form, photo_paths, now: datetime | None = None) -> tuple[str
             reporter_contact=phone_display(fields["phone"]),
             vehicle_info=VehicleInfo(plate_number=fields["plate"]),
         ).model_dump()
+        # As a dashboard draft starts: the static check in the firm's usual
+        # wording, for whoever takes it to check (app/reports/review.py).
+        data = apply_template_defaults(data)
         db.add(Report(
             id=report_id,
             channel=PUBLIC_CHANNEL,
