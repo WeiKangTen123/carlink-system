@@ -138,6 +138,10 @@ class FakeInteractions:
 
 structured.get_client = lambda key=None: SimpleNamespace(interactions=FakeInteractions())
 structured.acquire = lambda key=None: 0.0
+# The "fail" answer is Google's "busy" (503, high demand), which a model is
+# asked once more after this wait (structured.is_overloaded); no wait here.
+structured.OVERLOADED_RETRY_SECONDS = 0.0
+structured.CHAIN_BUSY_RETRY_SECONDS = 0.0
 
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image  # noqa: E402
@@ -436,7 +440,9 @@ def test_failures(client: TestClient, files: list[Path]) -> None:
         assert [it["part"] for it in state["data"]["damage_summary"]] == ["Rear Bumper", "Boot Lid", "Left Tail Lamp"]
         look = state["data"]["second_look"]
         assert (look["status"], look["note"], look["items"]) == (status, note, []), look
-        assert calls["look"] - before == len(CHAIN), calls
+        # A busy model is asked twice (structured.is_overloaded), and a chain
+        # busy throughout once more.
+        assert calls["look"] - before == (4 if mode == "fail" else 1) * len(CHAIN), calls
         assert run_rows(rid)[-1] == ("second_look", "failed"), run_rows(rid)
         ok(f"every model failing ({mode}): the draft is ready, the second look '{status}' with a quiet note, its run failed")
         if mode == "day":

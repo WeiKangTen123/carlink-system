@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Camera, Eye, EyeOff, ZoomIn, ZoomOut, Maximize2, X, Sparkles, Layers, ChevronLeft, ChevronRight } from "lucide-react";
-import { type DamageSummaryItem, fileUrl } from "@/lib/api";
+import { type DamageSummaryItem, damagePartLabel, fileUrl } from "@/lib/api";
 import { severityClass } from "@/lib/caseFields";
 import { VEHICLE_ZONE_GROUPS, UNCLASSIFIED_ZONE_ID, classifyPhotos } from "@/lib/vehicleZones";
 import { evidenceCache } from "@/lib/evidenceCache";
@@ -501,7 +501,7 @@ export function CaseEvidenceTab({
                         <div key={i} className="ai-box-marker-glow" style={css}>
                           <div className="ai-box-tag-glow">
                             <Sparkles style={{ width: 10, height: 10 }} />
-                            <span>{item.part}</span>
+                            <span>{damagePartLabel(item)}</span>
                           </div>
                         </div>
                       ))}
@@ -517,7 +517,7 @@ export function CaseEvidenceTab({
                   currentPhotoDamage.map((item, i) => (
                     <span key={i} className={`chip-severity ${severityClass(item.severity)}`} style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
                       <Layers style={{ width: 11, height: 11 }} />
-                      <span>{item.part}</span>
+                      <span>{damagePartLabel(item)}</span>
                       {/* The firm's wording when the case has it ("Buckled/cut"), else the AI's damage type. */}
                       {item.condition || item.damage_type ? <span style={{ opacity: 0.85 }}>({item.condition || item.damage_type})</span> : null}
                       {item.bbox_2d ? <span title="The AI drew a box for this part">⊡</span> : null}
@@ -660,7 +660,7 @@ export function CaseEvidenceTab({
                       <div key={i} className="ai-box-marker-glow" style={css}>
                         <div className="ai-box-tag-glow">
                           <Sparkles style={{ width: 10, height: 10 }} />
-                          <span>{item.part}</span>
+                          <span>{damagePartLabel(item)}</span>
                         </div>
                       </div>
                     ))}

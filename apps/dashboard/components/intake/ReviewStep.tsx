@@ -3,7 +3,19 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ImagePlus, Plus, Trash2 } from "lucide-react";
-import { DAMAGE_REMARKS, conditionWordsOf, fileUrl, toDamageRemarks, type DamageSummaryItem, type ReportData, type Taxonomy } from "@/lib/api";
+import {
+  DAMAGE_REMARKS,
+  MAX_OTHER_NAME,
+  OTHER_PART,
+  cleanPartName,
+  conditionWordsOf,
+  damagePartLabel,
+  fileUrl,
+  toDamageRemarks,
+  type DamageSummaryItem,
+  type ReportData,
+  type Taxonomy,
+} from "@/lib/api";
 import { ConditionPicker, conditionWordsIn } from "@/components/ConditionPicker";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
@@ -203,6 +215,8 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
         return carryKey(it, {
           ...it,
           ...patch,
+          // The name is an Other's alone, as the API keeps it.
+          ...(partChanged && patch.part !== OTHER_PART ? { other_part_name: null } : {}),
           human_verified: sidePending ? it.human_verified : true,
           side_inferred: sidePending ? it.side_inferred : false,
         });
@@ -272,7 +286,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
       if (!photo) return [];
       // The viewer's "Condition" is the table's: the firm's wording, else the AI's type.
       return [
-        { key: rowKeys[i], photo, damage: { part: item.part, damageType: item.condition || item.damage_type, severity: item.severity, bbox: item.bbox_2d } },
+        { key: rowKeys[i], photo, damage: { part: damagePartLabel(item), damageType: item.condition || item.damage_type, severity: item.severity, bbox: item.bbox_2d } },
       ];
     });
     viewerIndex = viewerSlides.findIndex((s) => s.key === viewer.key);
@@ -368,7 +382,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                     const key = rowKeys[i];
                     const photo = photoForReference(item.photo_reference, photos);
                     const box = bboxStyle(item.bbox_2d);
-                    const partName = item.part || "this item";
+                    const partName = (item.part && damagePartLabel(item)) || "this item";
                     // The AI's own doubt, only until the surveyor checks the row.
                     const unsure = item.ai_confidence === "Low" && !item.human_verified;
                     const lit = highlighted === i || flashKey === key;
@@ -405,6 +419,24 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                             ariaLabel={`Vehicle parts description, item ${i + 1}`}
                             onChange={(val) => setItem(i, { part: val })}
                           />
+                          {/* What the Other is: Annex A prints and prices it
+                              by this name. Tidied (spaces, capital) when the
+                              field is left. */}
+                          {item.part === OTHER_PART && (
+                            <input
+                              className="annex-cell-input"
+                              style={{ marginTop: 4 }}
+                              value={item.other_part_name ?? ""}
+                              maxLength={MAX_OTHER_NAME}
+                              placeholder="Name the part…"
+                              aria-label={`Name of the part, item ${i + 1}`}
+                              onChange={(e) => setItem(i, { other_part_name: e.target.value })}
+                              onBlur={(e) => {
+                                const name = cleanPartName(e.target.value);
+                                if (name !== (item.other_part_name ?? null)) setItem(i, { other_part_name: name });
+                              }}
+                            />
+                          )}
                           {item.side_inferred && !item.human_verified && (
                             <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }} title="The AI guessed the side from nearby photos; check it">
                               side inferred

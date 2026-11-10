@@ -36,7 +36,9 @@ from app.ai import allowance, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
+from app.config import settings
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
+from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
@@ -119,11 +121,19 @@ OVERVIEW_BUDGET = 3
 UNSORTED_BUDGET = 4
 # Everything else goes to damage. ~32 x 200KB previews is ~8.5MB of base64 --
 # still one request, and the strongest model answers well inside the
-# 120-second reading timeout.
+# 120-second reading timeout. The default of the intake_max_read_photos
+# setting (read_limit): 40 is ~10.7MB, still one request.
 MAX_READ_PHOTOS = 32
 # Kinds whose photo still counts as damage evidence when it shows damage and
 # names the damaged part (e.g. a boot photo the sorter called interior).
+# An "other" photo showing damage counts with no part too: the sorter can't
+# name a part outside the list (triage._clean blanks "Other / Not Listed"),
+# so a removed, bent window regulator was never read.
 _DAMAGE_EVIDENCE_KINDS = {"interior", "other"}
+# The photos of the insured car that aren't damage close-ups, and the rest,
+# in the order they fill slots the budgets leave (_top_up_order).
+_CAR_KINDS = ("overview", "tyre", "interior", "other")
+_LAST_KINDS = ("third_party", "scene", "document", "log_card", "police_report", "vin_plate", "odometer")
 
 # Sorting batches in flight at once. Each is one lite-model call of about a
 # minute, so one after another a 65-photo case took ~7 minutes. Three at a
@@ -395,19 +405,59 @@ def _damage_order(pool: list[IntakePhoto]) -> list[IntakePhoto]:
     return showing + rest
 
 
+def read_limit() -> int:
+    """How many photos one reading sends: the intake_max_read_photos setting
+    when there is one, else MAX_READ_PHOTOS. Read per call, so a test or
+    the benchmark can try 40 without a restart."""
+    return getattr(settings, "intake_max_read_photos", None) or MAX_READ_PHOTOS
+
+
+def _is_damage_evidence(p: IntakePhoto) -> bool:
+    if p.kind == "damage":
+        return True
+    if not p.shows_damage or p.kind not in _DAMAGE_EVIDENCE_KINDS:
+        return False
+    return p.kind == "other" or bool(p.part)
+
+
+def _top_up_order(
+    usable: list[IntakePhoto],
+    by_kind: dict[str, list[IntakePhoto]],
+    damage_pool: list[IntakePhoto],
+    unsorted: list[IntakePhoto],
+) -> list[IntakePhoto]:
+    """Every usable photo, in the order it fills the slots left after the
+    budgets: the rest of the damage, then any other photo of the insured car
+    that shows damage, then the rest of the car (overviews, unsorted, tyre,
+    interior, other), and the other party's car, the scene and paperwork
+    last. Damage first, so that a light reader or a smaller limit still
+    gets the damage. Before this only damage, overview and unsorted photos
+    topped up, and a case with few damage photos left slots empty: a
+    right-side case read 28 of its 41 photos -- none of its 8 "other", 1 of
+    its 6 tyre close-ups (the wheel-arch trim's scrape was at the edge of
+    one) -- with 4 slots unused."""
+    showing = [p for p in usable if p.shows_damage and p.kind in _CAR_KINDS]
+    rest_of_car = [p for kind in ("tyre", "interior", "other") for p in _by_tiers(by_kind.get(kind, []))]
+    last = [p for kind in _LAST_KINDS for p in _by_tiers(by_kind.get(kind, []))]
+    # usable at the end: a kind none of the lists names still goes.
+    return (
+        _damage_order(damage_pool) + _damage_order(showing)
+        + _spread_order(by_kind.get("overview", [])) + unsorted + rest_of_car + last + usable
+    )
+
+
 def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
-    """The photos the drafting call sees, in case order. Excluded and
-    unusable photos never go; blurry ones only after sharp ones of the same
-    kind."""
+    """The photos the drafting call sees, in case order: up to read_limit(),
+    every slot filled while usable photos are left (_top_up_order). Excluded
+    and unusable photos never go; blurry ones only after sharp ones of the
+    same kind."""
+    cap = read_limit()
     usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
     for p in usable:
         by_kind.setdefault(p.kind or "unsorted", []).append(p)
 
-    damage_pool = [
-        p for p in usable
-        if p.kind == "damage" or (p.kind in _DAMAGE_EVIDENCE_KINDS and p.shows_damage and p.part)
-    ]
+    damage_pool = [p for p in usable if _is_damage_evidence(p)]
     overviews = by_kind.get("overview", [])
     areas: dict[str | None, list[IntakePhoto]] = {}
     for p in overviews:
@@ -418,7 +468,7 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
 
     def take(candidates: list[IntakePhoto], limit: int) -> None:
         for p in candidates:
-            if limit <= 0 or len(chosen) >= MAX_READ_PHOTOS:
+            if limit <= 0 or len(chosen) >= cap:
                 return
             if p.id not in chosen_ids:
                 chosen.append(p)
@@ -429,10 +479,10 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
         take(_by_tiers(by_kind.get(kind, [])), limit)
     take(_round_robin([_by_tiers(g) for g in areas.values()]), OVERVIEW_BUDGET)
     unsorted = _spread_order(by_kind.get("unsorted", []))
-    take(_damage_order(damage_pool), MAX_READ_PHOTOS - len(chosen) - min(UNSORTED_BUDGET, len(unsorted)))
+    take(_damage_order(damage_pool), cap - len(chosen) - min(UNSORTED_BUDGET, len(unsorted)))
     take(unsorted, UNSORTED_BUDGET)
-    # Room left over (a case with few damage photos): more of the rest.
-    take(_damage_order(damage_pool) + _spread_order(overviews) + unsorted, MAX_READ_PHOTOS)
+    # Room left over (a case with few damage photos): every other photo.
+    take(_top_up_order(usable, by_kind, damage_pool, unsorted), cap)
 
     order = {p.id: i for i, p in enumerate(photos)}
     return sorted(chosen, key=lambda p: order[p.id])
@@ -459,15 +509,16 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             return  # draft deleted mid-run
         photos = ordered_photos(db, report_id)
         labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
-        inputs = [
-            (labels[p.id], p.id, ai_input_path(p.path))
-            for p in select_for_reading(photos)
-            if Path(p.path).exists()
-        ]
+        selected = [p for p in select_for_reading(photos) if Path(p.path).exists()]
+        inputs = [(labels[p.id], p.id, ai_input_path(p.path)) for p in selected]
+        # What the sorter saw in each photo, for the reader's captions
+        # (extraction.photo_hint words them, without any side).
+        hints = [{"kind": p.kind, "area": p.area, "part": p.part, "note": p.note} for p in selected]
         notes = session.reporter_notes or ""
         # Every photo in camera order with where the sorter saw it taken,
         # read or not: resolve_sides places side-undetermined findings by it.
         photo_areas = voting_areas(photos)
+        sorter_parts = {p.id: p.part for p in photos if p.part}
     finally:
         db.close()
 
@@ -482,6 +533,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         notes,
         [path for _, _, path in inputs],
         photo_labels=[label for label, _, _ in inputs],
+        photo_hints=hints,
         timeout=120.0,
         actor=actor,
     )
@@ -497,6 +549,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if not photo_id:
             item["bbox_2d"] = None
 
+    if settings.intake_side_from_sorter:
+        side_from_sorter(data.get("damage_summary") or [], sorter_parts)
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -583,6 +637,30 @@ def _clear_side(votes: Counter) -> str | None:
     if lead == 0 or left == right or loser * 2 > lead:
         return None
     return winner
+
+
+def side_from_sorter(items: list[dict], sorter_parts: dict[str, str]) -> list[dict]:
+    """Each item whose photo the sorter tagged with the same part on the
+    other side ("Left Front Door" read on a photo tagged "Right Front Door")
+    takes the sorter's side, in place. The sorter names a photo's side only
+    after working out which way the car faces in it (triage._SIDES, an
+    "angle" per photo); a light reader, asked for a whole case at once,
+    flips a side all the way through a case (a benchmark case, 2026-11-10:
+    every right-side part read as left, every photo tagged right). Same part only:
+    a different part on the photo says nothing about this one.
+
+    sorter_parts: {photo id: the sorter's part}; items' photo_reference is
+    "@<photo id>" by now."""
+    for item in items:
+        base, side = split_side(item.get("part") or "")
+        tag = sorter_parts.get((item.get("photo_reference") or "").lstrip("@"))
+        if side is None or not tag:
+            continue
+        tag_base, tag_side = split_side(tag)
+        if tag_side and tag_base == base and tag_side != side:
+            logger.info("Side of %r taken from the sorter's tag on its photo: %r", item.get("part"), tag)
+            item["part"] = tag
+    return items
 
 
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
@@ -727,14 +805,19 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     merged["vehicle_info"] = new_v
 
     kept = [item for item in (current.get("damage_summary") or []) if item.get("human_verified")]
-    kept_parts = {item.get("part") for item in kept}
+    # By item_key, not the bare part: a checked "Other / Not Listed" item
+    # named "Rear air vent" would otherwise hide a newly read Other named
+    # "Window regulator motor" -- two unlisted parts, both "Other".
+    kept_keys = {item_key(item) for item in kept}
 
     def already_kept(item: dict) -> bool:
         # A part the resolver placed ("Left Tail Lamp", side_inferred) is
         # the same finding as one the surveyor checked as "Tail Lamp (side
         # undetermined)": the re-read must not add it beside theirs.
-        part = item.get("part")
-        return part in kept_parts or (bool(item.get("side_inferred")) and unsided_part(part or "") in kept_parts)
+        if item_key(item) in kept_keys:
+            return True
+        unsided = unsided_part(str(item.get("part") or ""))
+        return bool(item.get("side_inferred")) and bool(unsided) and item_key({"part": unsided}) in kept_keys
 
     merged["damage_summary"] = kept + [item for item in (new_ai.get("damage_summary") or []) if not already_kept(item)]
     merged["damaged_parts"] = [item.get("part") for item in merged["damage_summary"] if item.get("part")]

@@ -31,6 +31,7 @@ from app.ai.keys import (
     scrub,
 )
 from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
+from app.config import ANY, image_resolutions, read_tools, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,89 @@ mimetypes.add_type("image/webp", ".webp")
 mimetypes.add_type("image/heic", ".heic")
 
 
-def image_part(path: str) -> dict:
-    """An inline image input for client.interactions.create."""
+def image_part(path: str, kind: str | None = None) -> dict:
+    """An inline image input for client.interactions.create.
+
+    kind: the photo's kind as the sorter filed it (ai/triage.PHOTO_KINDS),
+    "unsorted" for a photo not sorted, on the reading call. The image then
+    carries the resolution settings.gemini_image_resolution names for that
+    kind (image_resolution). None -- sorting, the second look, the bot,
+    which know no kinds -- sends the image as before, at Gemini's default.
+    """
     media_type, _ = mimetypes.guess_type(path)
-    return {
+    part = {
         "type": "image",
         "data": base64.b64encode(Path(path).read_bytes()).decode("utf-8"),
         "mime_type": media_type or "image/jpeg",
     }
+    resolution = image_resolution(kind)
+    if resolution:
+        part["resolution"] = resolution
+    return part
+
+
+def image_resolution(kind: str | None) -> str | None:
+    """The "resolution" for a reading-call photo of this kind: its entry in
+    settings.gemini_image_resolution, else the "*" entry, else None (no key
+    sent: Gemini's default, "high" on Gemini 3). Per image because the
+    Interactions API has no request-wide media resolution, and per kind
+    because a close-up of a dent wants the detail an overview doesn't --
+    ultra_high is 2240 tokens a photo against 1120, on a 32-photo call."""
+    if kind is None:
+        return None
+    table = image_resolutions(settings.gemini_image_resolution)
+    return table.get(kind) or table.get(ANY)
+
+
+# call_structured's purpose -> the settings that tune that kind of call
+# (config.gemini_thinking_level_read / _sort / _second_look and
+# gemini_read_tools). Keyed by the purpose each caller already passes --
+# extraction.draft_report, triage.triage_photos, second_look.look -- so
+# none of them changes; the benchmark keys its accounting by them too. The
+# Telegram bot drafts through draft_report, so "draft" is its call as well.
+# A purpose not here (annex suggestions) is sent as it always was.
+CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look"}
+
+
+def request_settings(purpose: str, model_id: str) -> dict:
+    """The generation settings to add to one try's request: generation_config
+    with a thinking_level, and tools on the reading call. {} when none is
+    set -- the request is then byte for byte what it was before they
+    existed. Field names as google-genai 2.22.0's interactions.create takes
+    them (GenerationConfigParam.thinking_level, the code_execution
+    ToolParam)."""
+    kind = CALL_KINDS.get(purpose)
+    if kind is None:
+        return {}
+    extra: dict = {}
+    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{kind}", None))
+    level = levels.get(model_id) or levels.get(ANY)
+    if level:
+        extra["generation_config"] = {"thinking_level": level}
+    if kind == "read":
+        tools = read_tools(settings.gemini_read_tools)
+        if tools:
+            extra["tools"] = [{"type": name} for name in tools]
+    return extra
+
+
+# Seconds to wait before asking a busy model (is_overloaded) once more, and
+# before asking the whole chain again when every model was busy.
+OVERLOADED_RETRY_SECONDS = 8.0
+CHAIN_BUSY_RETRY_SECONDS = 20.0
+
+_OVERLOADED = re.compile(r"\b503\b|UNAVAILABLE|overloaded|high demand", re.IGNORECASE)
+
+
+def is_overloaded(error: Exception) -> bool:
+    """Google answered "busy, try again later" (503 UNAVAILABLE, "currently
+    experiencing high demand") rather than refusing this request."""
+    if isinstance(error, ValueError):
+        return False  # an answer that didn't parse, whatever it quotes
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    if isinstance(status, int):
+        return status == 503
+    return bool(_OVERLOADED.search(str(error)))
 
 
 def call_structured(
@@ -102,6 +178,7 @@ def call_structured(
     actor: AiActor,
     timeout: float = 45.0,
     judge_key: bool = True,
+    _busy_round: int = 0,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
     output parse() accepts.
@@ -141,11 +218,18 @@ def call_structured(
     # Whether every try so far failed for the day's allowance (a skip, or a
     # 429 per day / "limit: 0"): then the call ends in allowance.DayUsedUp.
     all_day = True
+    # Whether every model that was asked answered "busy" (is_overloaded):
+    # then the whole chain is asked once more after CHAIN_BUSY_RETRY_SECONDS.
+    # None until a model answers; a model skipped for its spent day leaves it
+    # as it is -- the strong model is spent most of the day, which is when
+    # the light ones being busy matters (review, 2026-11-10).
+    all_busy = None
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
     # The run log (ai/runs.py) gets the request's size once, and each try
     # below as it ends, through the calling thread's collector.
-    runs.note_input(_input_size(system_instruction, input_parts))
+    if not _busy_round:
+        runs.note_input(_input_size(system_instruction, input_parts))
 
     for key in keys:
         client = get_client(key)
@@ -178,6 +262,9 @@ def call_structured(
             # what tripped the quota during testing.
             waited = acquire(key.rate_limit_id)
             verdict = None
+            # Per model: a thinking level may be set for one model of the
+            # chain only.
+            extra = request_settings(purpose, model_id)
             # One retry per model on a per-minute 429, using the delay the
             # server itself supplies. Falling straight through to the next
             # model is pointless: it draws on the same per-key quota and
@@ -203,6 +290,10 @@ def call_structured(
                         # error), tying up a worker for no benefit since the
                         # point of the chain is to keep trying other models.
                         timeout=timeout,
+                        # A model that refuses a setting (a thinking level
+                        # it hasn't got) answers 400: that try fails like
+                        # any other error and the chain moves on.
+                        **extra,
                     )
                     raw_output = (interaction.output_text or "").strip()
                     if raw_output.startswith("```"):
@@ -220,6 +311,7 @@ def call_structured(
                 except Exception as exc:
                     last_error = key_error = exc
                     said = refusal(exc)
+                    all_busy = is_overloaded(exc) and all_busy is not False
                     if said not in DAY_VERDICTS:
                         all_day = False
                     # The day's allowance gone on this model: remembered
@@ -238,9 +330,15 @@ def call_structured(
                     # back in 30 seconds: no wait, straight to the next.
                     # Only a per-minute 429 (no verdict) is waited out.
                     delay = retry_after_seconds(exc) if said is None and is_rate_limit_error(exc) else None
+                    # Google "busy" (503, "high demand"): usually gone in
+                    # seconds, and the light models -- what most reads run
+                    # on -- see it most. One short wait on the same model
+                    # beats ending a run whose last models are both busy.
+                    if delay is None and said is None and is_overloaded(exc):
+                        delay = OVERLOADED_RETRY_SECONDS
                     if delay is not None and attempt == 1:
                         logger.warning(
-                            "Gemini model %r rate-limited on %s; waiting %.1fs as instructed",
+                            "Gemini model %r rate-limited or busy on %s; waiting %.1fs before asking again",
                             model_id, key.label, delay,
                         )
                         time.sleep(delay)
@@ -272,6 +370,16 @@ def call_structured(
         # than "the AI failed". (Not chained: the SDK's error stays in the
         # log lines above, scrubbed.)
         raise AiUnavailable(refused[-1]) from None
+    if all_busy and not _busy_round:
+        # Every model of the chain said "busy" (each already asked twice):
+        # a short pause and one more round, rather than failing a run when
+        # the light models -- what most reads run on -- are all busy at once.
+        logger.warning("Every Gemini model was busy; asking the chain again in %.0fs", CHAIN_BUSY_RETRY_SECONDS)
+        time.sleep(CHAIN_BUSY_RETRY_SECONDS)
+        return call_structured(
+            purpose=purpose, system_instruction=system_instruction, input_parts=input_parts, schema=schema,
+            parse=parse, models=models, actor=actor, timeout=timeout, judge_key=judge_key, _busy_round=1,
+        )
     raise (allowance.DayUsedUp if all_day and last_error is not None else RuntimeError)(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."
@@ -320,6 +428,27 @@ def _tokens(interaction) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _thought_tokens(interaction) -> int | None:
+    """Thinking tokens, when the response says: billed as output but
+    reported apart from it -- what a thinking level costs."""
+    usage = getattr(interaction, "usage", None)
+    if usage is not None:
+        return _count(getattr(usage, "total_thought_tokens", None))
+    meta = getattr(interaction, "usage_metadata", None)
+    if meta is not None:
+        return _count(getattr(meta, "thoughts_token_count", None))
+    return None
+
+
+def _tool_calls(interaction) -> int:
+    """Code the model ran on this try (its code_execution_call steps):
+    whether a tools trial used the tool at all."""
+    steps = getattr(interaction, "steps", None)
+    if not isinstance(steps, (list, tuple)):
+        return 0
+    return sum(1 for step in steps if getattr(step, "type", None) == "code_execution_call")
+
+
 def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
@@ -343,6 +472,12 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
             attempt["prompt_tokens"] = prompt_tokens
         if output_tokens is not None:
             attempt["output_tokens"] = output_tokens
+        thought_tokens = _thought_tokens(interaction) if interaction is not None else None
+        if thought_tokens is not None:
+            attempt["thought_tokens"] = thought_tokens
+        tool_calls = _tool_calls(interaction) if interaction is not None else 0
+        if tool_calls:
+            attempt["tool_calls"] = tool_calls
         runs.note_attempt(attempt)
     except Exception:
         logger.warning("AI run log: couldn't note a Gemini try", exc_info=True)

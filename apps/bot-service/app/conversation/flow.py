@@ -12,6 +12,7 @@ from typing import Optional
 
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor
+from app.parts.prefill import item_key, item_source
 from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
 from app.reports.taxonomy import CANONICAL_DAMAGE_TYPES, CANONICAL_PARTS, CANONICAL_SEVERITIES, body_type_for
 
@@ -88,9 +89,11 @@ def _carry_over_damage(draft: SecurityIncidentDraft, previous: SecurityIncidentD
         if previous.severity_level:
             draft.severity_level = previous.severity_level
         return draft
-    by_part = {item.part: item for item in previous.damage_summary}
+    # By item_key: two "Other / Not Listed" items are two parts by their
+    # names, and must not take each other's findings.
+    by_part = {item_key(item.model_dump()): item for item in previous.damage_summary}
     for item in draft.damage_summary or []:
-        prev = by_part.get(item.part)
+        prev = by_part.get(item_key(item.model_dump()))
         if prev is None:
             continue
         # condition and its words go together: words without the matching
@@ -133,8 +136,11 @@ def build_draft(description: str, photo_paths: list[str], session=None, *, actor
             # blank slate (see _carry_over_damage for the non-damage case).
             previous = getattr(session, "draft", None)
             if previous is not None and previous.damage_summary:
+                # An Other with its name ("Other / Not Listed: Rear air
+                # vent"), so the redraft keeps what it is.
                 known_facts["damage already identified from the photos"] = "; ".join(
-                    item.part + (f" ({item.damage_type}, {item.severity})" if item.damage_type or item.severity else "")
+                    item_source(item.model_dump())
+                    + (f" ({item.damage_type}, {item.severity})" if item.damage_type or item.severity else "")
                     for item in previous.damage_summary
                 )
                 if previous.severity_level:
@@ -331,7 +337,7 @@ def _damage_lines(draft: SecurityIncidentDraft) -> list[str]:
         # The condition in the firm's words first -- what Annex A will
         # print -- then the AI's damage type when it says something else.
         return [
-            f"{_severity_dot(i.severity)} {i.part}"
+            f"{_severity_dot(i.severity)} {item_source(i.model_dump())}"
             + "".join(f" · {v}" for v in dict.fromkeys(v for v in (i.condition, i.damage_type) if v))
             for i in items
         ]

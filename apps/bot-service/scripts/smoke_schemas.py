@@ -13,6 +13,16 @@ each.
 
     docker exec carlink_api python scripts/smoke_schemas.py --live
         [--models a,b] [--triage-models c,d] [--second-look-models e,f]
+        [--thinking-level-read L] [--thinking-level-sort L] [--thinking-level-second-look L]
+        [--read-tools code_execution] [--resolution R]
+
+The model settings (app/config.py) are sent as the app would send them
+(structured.request_settings): the configured ones, or these flags in their
+place. A schema can pass on its own and be refused with them -- a JSON
+schema together with code execution is a preview feature on Gemini 3, and
+gemini-3.8-flash has no "minimal" thinking -- so smoke a setting before it
+goes live. --resolution gives every image of every schema's request that
+"resolution" (low, medium, high, ultra_high): whether each model takes it.
 
 Schemas: "draft" (ai/extraction._response_schema, the wizard's reading and
 the bot's drafting), "sort" (ai/triage._RESPONSE_SCHEMA) and "second_look"
@@ -41,8 +51,12 @@ from app.ai import extraction, second_look, triage  # noqa: E402
 from app.ai.client import get_client  # noqa: E402
 from app.ai.keys import company_keys, http_status, scrub  # noqa: E402
 from app.ai.rate_limit import acquire  # noqa: E402
-from app.ai.structured import DEADLINE_MARGIN, _create_within, image_part  # noqa: E402
+from app.ai.structured import DEADLINE_MARGIN, _create_within, image_part, request_settings  # noqa: E402
+from app.config import IMAGE_RESOLUTIONS, normal_read_tools, normal_thinking_levels, settings  # noqa: E402
 from app.reports.taxonomy import CANONICAL_PARTS  # noqa: E402
+
+# Each schema's call_structured purpose: the one its model settings follow.
+PURPOSES = {"draft": "draft", "sort": "photo sort", "second_look": "second look"}
 
 TIMEOUT = 60.0
 
@@ -100,6 +114,23 @@ def _schemas(image: str) -> dict[str, dict]:
     }
 
 
+def request(name: str, spec: dict, model: str, resolution: str | None = None) -> dict:
+    """What call_structured would send for one schema on one model: its
+    model settings (request_settings) included, and --resolution on every
+    image."""
+    inputs = spec["input"]
+    if resolution:
+        inputs = [dict(part, resolution=resolution) if part.get("type") == "image" else part for part in inputs]
+    return dict(
+        model=model,
+        system_instruction=spec["system"],
+        input=inputs,
+        response_format={"type": "text", "mime_type": "application/json", "schema": spec["schema"]},
+        timeout=TIMEOUT,
+        **request_settings(PURPOSES[name], model),
+    )
+
+
 def _verdict(exc: Exception, key_value: str) -> tuple[str, str]:
     status = http_status(exc)
     detail = scrub(str(exc), key_value)
@@ -120,9 +151,25 @@ def main() -> int:
     parser.add_argument("--models", help="drafting chain to try instead of settings.gemini_model_chain")
     parser.add_argument("--triage-models", help="sorting chain to try instead of settings.gemini_triage_model_chain")
     parser.add_argument("--second-look-models", help="second-look chain to try instead of settings.gemini_second_look_chain")
+    parser.add_argument("--thinking-level-read", help="instead of settings.gemini_thinking_level_read (e.g. low, or "
+                                                      "gemini-3.5-flash-lite=medium)")
+    parser.add_argument("--thinking-level-sort", help="instead of settings.gemini_thinking_level_sort")
+    parser.add_argument("--thinking-level-second-look", help="instead of settings.gemini_thinking_level_second_look")
+    parser.add_argument("--read-tools", help="instead of settings.gemini_read_tools (code_execution)")
+    parser.add_argument("--resolution", choices=IMAGE_RESOLUTIONS, help="every image sent with this resolution")
     args = parser.parse_args()
     if not args.live:
         print("Refusing to run without --live: every line is a real Gemini call on the company key.")
+        return 2
+    try:
+        for flag, field, normal in (("thinking_level_read", "gemini_thinking_level_read", normal_thinking_levels),
+                                    ("thinking_level_sort", "gemini_thinking_level_sort", normal_thinking_levels),
+                                    ("thinking_level_second_look", "gemini_thinking_level_second_look", normal_thinking_levels),
+                                    ("read_tools", "gemini_read_tools", normal_read_tools)):
+            if getattr(args, flag) is not None:
+                setattr(settings, field, normal(getattr(args, flag)))
+    except ValueError as exc:
+        print(f"Bad setting: {exc}")
         return 2
 
     models = list(dict.fromkeys(
@@ -137,6 +184,11 @@ def main() -> int:
     key = keys[0]
     client = get_client(key)
     print(f"Key: {key.label}. Models: {', '.join(models)}.")
+    tried = {f: getattr(settings, f) for f in ("gemini_thinking_level_read", "gemini_thinking_level_sort",
+                                                 "gemini_thinking_level_second_look", "gemini_read_tools")
+             if getattr(settings, f)}
+    if tried or args.resolution:
+        print(f"Model settings: {tried}" + (f"; every image at {args.resolution}" if args.resolution else ""))
 
     results: list[tuple[str, str, str, str]] = []
     with tempfile.TemporaryDirectory(prefix="smoke-schemas-") as folder:
@@ -149,11 +201,7 @@ def main() -> int:
                     interaction = _create_within(
                         TIMEOUT + DEADLINE_MARGIN,
                         client.interactions.create,
-                        model=model,
-                        system_instruction=spec["system"],
-                        input=spec["input"],
-                        response_format={"type": "text", "mime_type": "application/json", "schema": spec["schema"]},
-                        timeout=TIMEOUT,
+                        **request(name, spec, model, args.resolution),
                     )
                     raw = (interaction.output_text or "").strip()
                     try:

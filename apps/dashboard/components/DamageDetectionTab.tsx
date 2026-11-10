@@ -3,7 +3,7 @@
 import React, { Component, useMemo, useState, useEffect, type ErrorInfo, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { Box, AlertTriangle, RotateCcw, Wrench } from "lucide-react";
-import { type AnnexAPartItem, type DamageItemsResponse, type ReportDetail, type DamageSummaryItem } from "@/lib/api";
+import { damagePartLabel, type AnnexAPartItem, type DamageItemsResponse, type ReportDetail, type DamageSummaryItem } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { severityClass } from "@/lib/caseFields";
 import { CaseEvidenceTab } from "./CaseEvidenceTab";
@@ -294,7 +294,7 @@ export function DamageDetectionTab({
                         const rowEl = document.getElementById(`damage-row-${idx}`);
                         rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
                       }}
-                      title={`Click to highlight ${item.part} in the parts table`}
+                      title={`Click to highlight ${damagePartLabel(item)} in the parts table`}
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
@@ -326,7 +326,7 @@ export function DamageDetectionTab({
                       >
                         {String(badgeNumber).padStart(2, "0")}
                       </span>
-                      <span style={{ fontWeight: 600 }}>{item.part}</span>
+                      <span style={{ fontWeight: 600 }}>{damagePartLabel(item)}</span>
                       <span className={`chip-severity ${sevClass}`} style={{ fontSize: 9, padding: "1px 6px" }}>
                         {item.severity || "—"}
                       </span>

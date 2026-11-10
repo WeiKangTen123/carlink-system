@@ -78,8 +78,7 @@ from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
 from app.reports import owners
-from app.parts.history import canonical_part
-from app.parts.prefill import sync_annex_a, unpriced_rows
+from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
 from app.intake.photos import photo_label
@@ -95,7 +94,9 @@ from app.reports.taxonomy import (
     FIRM_REMARKS,
     FIRM_WHOLE_CONDITIONS,
     MODEL_BODY_TYPES,
+    OTHER_PART,
     body_type_for,
+    clean_part_name,
     damage_type_from_tokens,
     firm_condition,
     parse_condition,
@@ -1065,6 +1066,10 @@ class DamageItemReviewRequest(BaseModel):
     is left alone (exclude_unset), and photo_reference sent as null clears
     the photo."""
     part: Optional[str] = None
+    # What an "Other / Not Listed" part is (schema.DamageSummaryItem.
+    # other_part_name), its own Annex A row; null or "" clears it, and so
+    # does any other part.
+    other_part_name: Optional[str] = None
     damage_type: Optional[str] = None
     # The Annex A Condition in the firm's words ("Grazed/cut", or Necessary
     # / Serviceable / Repair) and the Remarks (Replace / Repair); null or ""
@@ -1080,6 +1085,7 @@ class DamageItemReviewRequest(BaseModel):
 class DamageItemAddRequest(BaseModel):
     """A part the surveyor adds by hand (tab 1 "+ Add a part")."""
     part: str
+    other_part_name: Optional[str] = None
     damage_type: Optional[str] = None
     condition: Optional[str] = None
     remarks: Optional[str] = None
@@ -1099,6 +1105,10 @@ def _damage_item_fields(sent: dict, r: Report) -> dict:
         if part not in CANONICAL_PARTS:
             raise HTTPException(status_code=400, detail=f"'{part}' isn't a part on the list.")
         out["part"] = part
+    if "other_part_name" in sent:
+        # As the reader's is cleaned (schema.DamageSummaryItem): one line,
+        # at most taxonomy.MAX_OTHER_NAME characters, blank -> None.
+        out["other_part_name"] = clean_part_name(sent["other_part_name"])
     if "damage_type" in sent:
         damage_type = (sent["damage_type"] or "").strip() or None
         if damage_type is not None and damage_type not in CANONICAL_DAMAGE_TYPES:
@@ -1158,11 +1168,13 @@ def _damage_case(db, report_id: str) -> Report:
     return r
 
 
-def _undismiss(data: dict, part: str) -> None:
+def _undismiss(data: dict, item: dict) -> None:
     """A part the surveyor names again is theirs again: it leaves
-    dismissed_parts, so its Annex A rows come back on this sync."""
-    key = canonical_part(part) or part
-    data["dismissed_parts"] = [p for p in (data.get("dismissed_parts") or []) if (canonical_part(p) or p) != key]
+    dismissed_parts, so its Annex A rows come back on this sync. Keyed as
+    sync_annex_a keys parts (prefill.item_key): a named "Other / Not
+    Listed" part by its name."""
+    key = item_key(item)
+    data["dismissed_parts"] = [p for p in (data.get("dismissed_parts") or []) if item_key({"part": p}) != key]
 
 
 def _save_damage_items(db, user: CurrentUser, r: Report, data: dict, damage_summary: list[dict], action: str, detail: str) -> dict:
@@ -1193,11 +1205,11 @@ def _save_damage_items(db, user: CurrentUser, r: Report, data: dict, damage_summ
 def review_damage_item(
     report_id: str, item_index: int, body: DamageItemReviewRequest, user: CurrentUser = Depends(editable_case)
 ) -> dict:
-    """Changes one damage item: the part, damage type, condition (the
-    firm's words), remarks, severity, photo, the verified tick, the OEM part
-    number. Ticking Verified or renaming the part clears side_inferred. The
-    box the AI drew is dropped
-    when the photo changes (it was drawn on the old one). Answers the
+    """Changes one damage item: the part (and an Other's name), damage
+    type, condition (the firm's words), remarks, severity, photo, the
+    verified tick, the OEM part number. Ticking Verified or renaming the
+    part clears side_inferred. The box the AI drew is dropped when the
+    photo changes (it was drawn on the old one). Answers the
     whole damage list and the Annex A/C that now follow it.
 
     Deliberately NOT routed through PUT /reports/{id}: that replaces the
@@ -1222,10 +1234,17 @@ def review_damage_item(
         changes = _damage_item_fields(body.model_dump(exclude_unset=True), r)
         if "photo_reference" in changes and changes["photo_reference"] != item.get("photo_reference"):
             item["bbox_2d"] = None
-        renamed = "part" in changes and changes["part"] != item.get("part")
-        if renamed:
-            _undismiss(data, changes["part"])  # renamed to a part dismissed earlier: as POST
+        before = item_key(item)
+        part_changed = "part" in changes and changes["part"] != item.get("part")
         item.update(changes)
+        # The name is an Other's alone (schema.DamageSummaryItem): a part
+        # renamed off "Other / Not Listed" drops it.
+        if item.get("other_part_name") and str(item.get("part") or "").strip() != OTHER_PART:
+            item["other_part_name"] = None
+        # A new name for an Other is another part too (item_key).
+        renamed = part_changed or item_key(item) != before
+        if renamed:
+            _undismiss(data, item)  # renamed to a part dismissed earlier: as POST
         # A side the pipeline inferred (resolve_sides) is confirmed only by
         # a person saying so: ticking Verified, or naming the part (and so
         # its side) themselves. A new photo, OEM number, condition or remark
@@ -1241,7 +1260,7 @@ def review_damage_item(
             item["damage_type"] = damage_type_from_tokens(changes["condition_tokens"])
         damage_summary[item_index] = item
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_edited",
-                                 f"item {item_index + 1}: {item.get('part')}")
+                                 f"item {item_index + 1}: {item_source(item)}")
         return {"item_index": item_index, "item": item, **out}
     finally:
         db.close()
@@ -1269,8 +1288,8 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
             fields["damage_type"] = damage_type_from_tokens(fields["condition_tokens"])
         item = DamageSummaryItem(**fields, human_verified=True).model_dump()
         damage_summary.append(item)
-        _undismiss(data, item["part"])
-        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item["part"])
+        _undismiss(data, item)
+        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item_source(item))
         return {"item_index": len(damage_summary) - 1, "item": item, **out}
     finally:
         db.close()
@@ -1279,9 +1298,10 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
 @app.delete("/reports/{report_id}/damage-items/{item_index}")
 def remove_damage_item(report_id: str, item_index: int, user: CurrentUser = Depends(editable_case)) -> dict:
     """Removes one damage item. The part goes into dismissed_parts (its
-    canonical name) when no other item names it, so a later sync -- or a
-    re-detection (Phase 2) -- doesn't bring its rows back; Annex A rows a
-    person priced for it stay, flagged stale."""
+    canonical name, or a named Other's name: prefill.item_key) when no
+    other item names it, so a later sync -- or a re-detection (Phase 2) --
+    doesn't bring its rows back; Annex A rows a person priced for it stay,
+    flagged stale."""
     db = SessionLocal()
     try:
         r = _damage_case(db, report_id)
@@ -1293,13 +1313,16 @@ def remove_damage_item(report_id: str, item_index: int, user: CurrentUser = Depe
                 detail=f"Damage item {item_index} not found (report has {len(damage_summary)})",
             )
         removed = damage_summary.pop(item_index)
-        key = canonical_part(removed.get("part") or "") or (removed.get("part") or "").strip()
+        # Keyed as sync_annex_a keys parts (prefill.item_key): a named
+        # "Other / Not Listed" part is dismissed by its name, so another
+        # Other on the list neither keeps its rows nor loses its own.
+        key = item_key(removed)
         dismissed = list(data.get("dismissed_parts") or [])
-        still_listed = any((canonical_part(it.get("part") or "") or it.get("part")) == key for it in damage_summary)
+        still_listed = any(item_key(it) == key for it in damage_summary)
         if key and key not in dismissed and not still_listed:
             dismissed.append(key)
         data["dismissed_parts"] = dismissed
-        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_removed", str(removed.get("part") or ""))
+        out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_removed", item_source(removed))
         return {"item_index": item_index, "item": removed, **out}
     finally:
         db.close()
@@ -1588,7 +1611,12 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
     which the person filing it may throw away (permissions.can_delete_case).
     A public report in the inbox is refused (Discard it, with a reason:
     POST /inbox/{id}/discard); a taken one goes with its submission row,
-    and its history entry carries the reference (never a name or phone)."""
+    and its history entry carries the reference (never a name or phone).
+
+    A refusal says which rule refused. The filed-case one used to read
+    "Only an admin can delete a case.", which on a case its owner still
+    took for their draft looked like drafts being admin-only too
+    (scripts/test_delete_draft.py)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
@@ -1598,7 +1626,7 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
             if in_inbox(r):
                 raise not_allowed("This report is in the Public Inbox: use Discard, with a reason.")
             raise not_allowed(
-                "Only an admin can delete a case." if r.status != "intake"
+                "This case has been filed: only an admin can delete it." if r.status != "intake"
                 else "Only the person filing this draft, or an admin, can throw it away."
             )
 

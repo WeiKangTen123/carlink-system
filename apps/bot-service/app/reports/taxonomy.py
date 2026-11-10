@@ -43,6 +43,12 @@ CANONICAL_PARTS: list[str] = [
     "Front Number Plate",
     "Left Front Wheel Arch Liner",
     "Right Front Wheel Arch Liner",
+    # The garnish on the outside of the arch, apart from the liner (splash
+    # shield) inside it: the firm prices them as separate lines ("Front
+    # fender wheel arch garnish RH" beside "Front fender splash shield"),
+    # and with one name for both the reader could list only one of them.
+    "Left Front Wheel Arch Trim",
+    "Right Front Wheel Arch Trim",
     # Doors
     "Left Front Door",
     "Right Front Door",
@@ -54,6 +60,12 @@ CANONICAL_PARTS: list[str] = [
     "Right Rear Door Glass",
     "Left Wing Mirror",
     "Right Wing Mirror",
+    # Inside the door, priced apart from it (the regulator mechanism and its
+    # motor): a door torn open shows it, and the reader had no name for it.
+    "Left Front Window Regulator",
+    "Right Front Window Regulator",
+    "Left Rear Window Regulator",
+    "Right Rear Window Regulator",
     # Rear
     "Rear Bumper",
     "Boot Lid",
@@ -83,11 +95,19 @@ CANONICAL_PARTS: list[str] = [
     "Right Boot Side Trim",
     "Left Rear Wheel Arch Liner",
     "Right Rear Wheel Arch Liner",
-    # Wheels
+    "Left Rear Wheel Arch Trim",
+    "Right Rear Wheel Arch Trim",
+    # Wheels. "Wheel" is the rim; the tyre is its own line in the firm's
+    # sheets ("Sport rim" and "Front tyre"), often with its own finding (a
+    # grazed rim on a serviceable tyre).
     "Left Front Wheel",
     "Right Front Wheel",
     "Left Rear Wheel",
     "Right Rear Wheel",
+    "Left Front Tyre",
+    "Right Front Tyre",
+    "Left Rear Tyre",
+    "Right Rear Tyre",
     # Structure / body
     "Roof",
     "Underbody / Chassis",
@@ -141,11 +161,37 @@ CANONICAL_PARTS: list[str] = [
     "Boot Lid Lamp (side undetermined)",
     "Wheel Arch Liner (side undetermined)",
     "Boot Side Trim (side undetermined)",
+    "Wheel Arch Trim (side undetermined)",
+    "Window Regulator (side undetermined)",
+    "Tyre (side undetermined)",
     # Escape hatch. Without this the model is forced to mislabel anything
-    # genuinely outside the list; with it, unusual damage stays honest and
-    # the free-text detail survives in damage_type and the description.
+    # genuinely outside the list; with it, unusual damage stays honest, and
+    # the item names the part in other_part_name (schema.DamageSummaryItem)
+    # for Annex A to print and price (prefill.sync_annex_a).
     "Other / Not Listed",
 ]
+
+OTHER_PART = "Other / Not Listed"
+# A part's name as anyone writes it fits a report line ("Front door glass
+# regulator mechanism motor" is 42); longer is a sentence, not a name.
+MAX_OTHER_NAME = 80
+
+
+def clean_part_name(text) -> str | None:
+    """A name given for an "Other / Not Listed" part (DamageSummaryItem.
+    other_part_name), as it will print: spaces collapsed, first letter
+    capitalised, at most MAX_OTHER_NAME characters; None for blank."""
+    name = " ".join(str(text or "").split())[:MAX_OTHER_NAME].strip()
+    return (name[0].upper() + name[1:]) if name else None
+
+
+def other_part_name(item: dict) -> str | None:
+    """The name of an "Other / Not Listed" damage item, cleaned; None for a
+    listed part (the name is the part's) or an Other nobody named."""
+    if not isinstance(item, dict) or str(item.get("part") or "").strip() != OTHER_PART:
+        return None
+    return clean_part_name(item.get("other_part_name"))
+
 
 # A small controlled set replaces the 19 distinct free-text values six
 # reports managed to produce (e.g. "Grazed/slack/cut", "Distorted/jammed").
@@ -494,6 +540,8 @@ _FIRM_WORDING: dict[str, str] = {
     "Fog Lamp": "Fog lamp",
     "Front Number Plate": "Front number plate",
     "Front Wheel Arch Liner": "Front fender splash shield",
+    # The Vezel report's "wheel arch protector ganrish", typo left out.
+    "Front Wheel Arch Trim": "Front fender wheel arch garnish",
     "Front Door": "Front door assy",
     "Rear Door": "Rear door assy",
     "Front Door Glass": "Front door glass",
@@ -501,6 +549,9 @@ _FIRM_WORDING: dict[str, str] = {
     "Door": "Door assy",
     "Door Glass": "Door glass",
     "Wing Mirror": "Wing mirror",
+    "Front Window Regulator": "Front door glass regulator mechanism",
+    "Rear Window Regulator": "Rear door glass regulator mechanism",
+    "Window Regulator": "Door glass regulator mechanism",
     "Rear Bumper": "Rear bumper fascia",
     "Boot Lid": "Boot lid assy",
     "Rear Windscreen": "Rear windscreen glass",
@@ -520,10 +571,15 @@ _FIRM_WORDING: dict[str, str] = {
     "Boot Floor Board": "Spare tyre panel top board",
     "Boot Side Trim": "Rear fender inner trim",
     "Rear Wheel Arch Liner": "Rear bumper wheel arch protector",
+    "Rear Wheel Arch Trim": "Rear fender wheel arch garnish",
     "Front Wheel": "Front wheel rim",
     "Rear Wheel": "Rear wheel rim",
     "Wheel": "Wheel rim",
+    "Front Tyre": "Front tyre",
+    "Rear Tyre": "Rear tyre",
+    "Tyre": "Tyre",
     "Wheel Arch Liner": "Wheel arch protector",
+    "Wheel Arch Trim": "Wheel arch garnish",
     "Roof": "Roof panel",
     "Underbody / Chassis": "Chassis frame member",
     "Sill / Rocker Panel": "Side sill panel",
@@ -621,11 +677,12 @@ def unsided_part(part: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Placing a "(side undetermined)" part on a side (intake/pipeline.
 # resolve_sides). Doors and door glass are not placed: a side alone doesn't
-# say front or rear door. Wheels and wheel arch liners need the end too.
+# say front or rear door, nor so which door's regulator. Wheels, tyres and
+# the arch's liner and trim need the end too.
 # ---------------------------------------------------------------------------
 
-_NEEDS_END = {"Wheel", "Wheel Arch Liner"}
-_NOT_PLACED = {"Door", "Door Glass"}
+_NEEDS_END = {"Wheel", "Tyre", "Wheel Arch Liner", "Wheel Arch Trim"}
+_NOT_PLACED = {"Door", "Door Glass", "Window Regulator"}
 
 
 def sided_part(part: str, side: str | None, end: str | None = None) -> str | None:

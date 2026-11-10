@@ -1,7 +1,8 @@
-"""Offline tests of the intake benchmark's harness: scoring, summary,
-compare, AI accounting, sort cache, leave-one-out Annex A, and a whole
-benchmark run with a fake pipeline (scripts/benchmark_intake.py,
-scripts/bench/compare.py).
+"""Offline tests of the intake benchmark's harness: scoring (strict and
+fair), summary, compare, AI accounting (tokens per call), sort cache,
+leave-one-out Annex A, the model-setting flags, --scratch, --rescore of a
+stored result file, and a whole benchmark run with a fake pipeline
+(scripts/benchmark_intake.py, scripts/bench/compare.py).
 
     python scripts/test_benchmark_scoring.py
 
@@ -73,7 +74,8 @@ def test_cli() -> None:
     r = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     for flag in ("--repeat", "--sort-cache", "--reports", "--models", "--triage-models", "--label", "--ref",
-                 "--second-look-models", "--no-second-look"):
+                 "--second-look-models", "--no-second-look", "--thinking-level-read", "--thinking-level-sort",
+                 "--thinking-level-second-look", "--image-resolution", "--read-tools", "--rescore", "--scratch"):
         assert flag in r.stdout, flag
     ok("--help works without BENCHMARK_SCRATCH and lists the new options")
     out = Path(_tmp, "never.json")
@@ -137,6 +139,82 @@ def test_second_look_scoring() -> None:
     assert (m["look_calls"], m["look_s"], m["look_ok"]) == (1, 21.5, 1), m
     assert "look_found" not in bi.run_metrics({"parts": p, "vehicle": {}})
     ok("run metrics: look_found / added / extra / wrong side / suggested / calls / seconds; absent without one")
+
+
+# Made up: a side swipe down the right, the key in the firm's words.
+SIDE_KEY = [
+    {"part": "Right Front Fender", "surveyor": ["Front fender assy RH"]},
+    {"part": "Right Front Door", "surveyor": ["Front door assy RH", "Front door glass regulator mechanism"]},
+    {"part": "Right Front Wheel Arch Liner", "surveyor": ["Front fender splash shield"]},
+    {"part": "Right Front Wheel", "hidden": True, "surveyor": ["Front wheel rim RH"]},
+    {"part": "Right Rear Door", "surveyor": ["Rear door assy RH"]},
+]
+
+
+def test_fair_score() -> None:
+    print("fair score")
+    items = [
+        {"part": "Right Front Fender"},
+        {"part": "Right Rear Quarter Panel"},  # next to the missed rear door
+        {"part": "Right Sill / Rocker Panel"},  # next to the missed front door
+        {"part": "Left Front Fender"},  # the other side: nothing
+        {"part": "Wing Mirror (side undetermined)"},  # no side: never a neighbour
+        {"part": "Right Front Tyre"},  # the new name, next to the (hidden) wheel
+        {"part": "Other / Not Listed", "other_part_name": "Front door window regulator"},
+        {"part": "Other / Not Listed", "other_part_name": "Front badge"},  # "front" places, doesn't name
+        {"part": "Other / Not Listed"},
+        {"part": "Bonnet"},
+    ]
+    strict = bi.score_parts(SIDE_KEY, [i["part"] for i in items])
+    f = bi.score_fair(SIDE_KEY, items)
+    assert (strict["found"], len(strict["extra"])) == (1, 9), strict
+    assert (f["found"], f["strict_extra"]) == (1, 9), f
+    assert f["neighbour"] == [["Right Rear Quarter Panel", "Right Rear Door"], ["Right Sill / Rocker Panel", "Right Front Door"],
+                              ["Right Front Tyre", "Right Front Wheel"]], f["neighbour"]
+    assert (f["fair_found"], f["fair_visible_found"]) == (2.5, 2.0), f
+    assert f["other_named"] == [["Front door window regulator", "Right Front Door"]], f["other_named"]
+    assert f["extra"] == ["Left Front Fender", "Wing Mirror (side undetermined)", "Other / Not Listed", "Other / Not Listed",
+                          "Bonnet"] and f["fair_extra"] == 5, f["extra"]
+    assert f["contradicted"] is None
+    ok("neighbour on the same side at 0.5 (hidden key parts not in the visible count); Other named like a surveyor line not extra")
+    assert bi.score_fair(SIDE_KEY, items, strict) == f
+    ok("the strict numbers are score_parts' own, unchanged")
+
+    f = bi.score_fair([{"part": "Right Front Door"}], [{"part": "Right Front Door"}, {"part": "Right Rear Door"}])
+    assert f["neighbour"] == [] and f["extra"] == ["Right Rear Door"], f
+    f = bi.score_fair([{"part": "Right Rear Door"}], [{"part": "Right Front Door"}, {"part": "Right Rear Quarter Panel"}])
+    assert f["neighbour"] == [["Right Front Door", "Right Rear Door"]] and f["extra"] == ["Right Rear Quarter Panel"], f
+    f = bi.score_fair([{"part": "Right Front Door"}], [{"part": "Left Front Door"}, {"part": "Left Front Fender"}])
+    assert f["neighbour"] == [] and f["extra"] == ["Left Front Fender"] and f["fair_found"] == 0, f  # wrong side, not extra
+    ok("only next to a key part the strict score missed; one neighbour per key part; a wrong side is not a neighbour")
+    assert bi.neighbours("Left Front Wheel Arch Liner", "Left Front Wheel") and bi.neighbours("Left Rear Wheel Arch Trim", "Left Rear Quarter Panel")
+    assert bi.neighbours("Left Sill / Rocker Panel", "Left Rear Door") and not bi.neighbours("Left Front Fender", "Left Rear Door")
+    assert not bi.neighbours("Left Front Wheel Arch Liner", "Left Rear Wheel") and not bi.neighbours("Left Front Door", "Right Front Fender")
+    ok("the panels that meet: fender-front door-rear door-quarter, sill-doors, arch-fender/quarter, arch liner-wheel")
+
+    run = {"parts": strict, "drafted_parts": [i["part"] for i in items], "vehicle": {},
+           "parts_fair": bi.score_fair(SIDE_KEY, items, strict, [["Bonnet", "Bonnet assy"]])}
+    m = bi.run_metrics(run)
+    assert (m["fair_found"], m["fair_visible_found"], m["fair_extra"], m["neighbour"], m["other_named"], m["contradicted"]) == (
+        2.5, 2.0, 5, 3, 1, 1), m
+    assert "contradicted" not in bi.run_metrics(dict(run, parts_fair=bi.score_fair(SIDE_KEY, items, strict)))
+    ok("run metrics: fair found / visible / extra, neighbours, Other named, contradicted (absent without a report)")
+
+
+def test_contradicted() -> None:
+    print("contradicted by the report")
+    from app.parts import history
+
+    lines = [line("Front fender assy RH", "Dented"), line("Rear door assy RH", "Serviceable"),
+             line("Rear door moulding RH", "Serviceable"), line("Front door assy LH", "Serviceable"),
+             line("Front door trim RH", "Necessary"), line("Rear wheel rim LH", "Serviceable"),
+             line("Headlamps (x2)", "Serviceable")]
+    drafted = ["Right Front Fender", "Right Rear Door", "Right Front Door", "Left Front Wheel", "Left Headlamp", "Bonnet",
+               "Other / Not Listed", "Right Rear Door", None]
+    got = bi.contradicted_parts(drafted, lines, history.family_of, history.side_of, history.family_and_side)
+    assert got == [["Right Rear Door", "Rear door assy RH"], ["Left Headlamp", "Headlamps (x2)"]], got
+    ok("every line of the part's family, side and end Serviceable: flagged once; a damage or Necessary line, "
+       "another side or end, or no line at all: not")
 
 
 def test_vehicle() -> None:
@@ -333,7 +411,7 @@ def test_accounting() -> None:
     assert A.structured.call_structured._bench_wrapped and A.runs.note_attempt._bench_wrapped
     ok("call_structured is wrapped at its source, so triage and extraction call the counting wrapper")
 
-    def fake_gemini(*, purpose, script):
+    def fake_gemini(*, purpose, script, input_parts=None):
         # What call_structured reports per try (structured._note_attempt),
         # key fields included, through the real runs.note_attempt.
         for attempt in script:
@@ -375,6 +453,31 @@ def test_accounting() -> None:
     merged = bi.merge_accounting([s, s])
     assert merged["photo sort"]["calls"] == 4 and merged["photo sort"]["by_model"]["lite-a"]["seconds"] == 12.6
     ok("run metrics and the merge over runs")
+    assert "read_tok_in" not in m and "prompt_tokens" not in s["draft"], (m, s["draft"])
+    ok("no tokens reported: no token numbers (never a made-up 0)")
+
+    bi.ACCOUNTING.clear()
+    image = {"type": "image", "data": "x"}
+    counted(purpose="draft", input_parts=[{"type": "text", "text": "Photo P01:"}, dict(image, resolution="ultra_high"), image, image],
+            script=[{"model": "strong", "outcome": "error", "waited_s": 0, "ms": 100},
+                    {"model": "lite-b", "outcome": "ok", "waited_s": 0, "ms": 9000, "prompt_tokens": 30000,
+                     "output_tokens": 2000, "thought_tokens": 800, "tool_calls": 2}])
+    counted(purpose="draft", script=[{"model": "lite-b", "outcome": "ok", "waited_s": 0, "ms": 5000, "prompt_tokens": 1000,
+                                      "output_tokens": 100}])
+    calls = bi.ACCOUNTING.call_list()
+    assert calls[0] == {"purpose": "draft", "seconds": calls[0]["seconds"], "ok": True, "model": "lite-b", "attempts": 2,
+                        "images": {"ultra_high": 1, "default": 2}, "prompt_tokens": 30000, "output_tokens": 2000,
+                        "thought_tokens": 800, "tool_calls": 2}, calls[0]
+    assert "thought_tokens" not in calls[1] and "images" not in calls[1] and calls[1]["prompt_tokens"] == 1000, calls[1]
+    s = bi.ACCOUNTING.summary()
+    d = s["draft"]
+    assert (d["prompt_tokens"], d["output_tokens"], d["thought_tokens"], d["tool_calls"]) == (31000, 2100, 800, 2), d
+    assert d["by_model"]["lite-b"]["prompt_tokens"] == 31000 and "prompt_tokens" not in d["by_model"]["strong"], d["by_model"]
+    m = bi.run_metrics({"parts": bi.score_parts([], []), "vehicle": {}, "accounting": s})
+    assert (m["read_tok_in"], m["read_tok_out"], m["read_tok_think"], m["read_code_runs"]) == (31000, 2100, 800, 2), m
+    assert bi.merge_accounting([s, s])["draft"]["thought_tokens"] == 1600
+    ok("per call: the model that answered, tries, tokens (prompt, output, thinking), code runs, images by resolution; "
+       "summed per kind of call and model; read_tok_* run metrics")
 
 
 # ---------------------------------------------------------------- sort cache
@@ -450,6 +553,18 @@ def test_sort_cache() -> None:
     assert len({cache, other_chain, other_version, other_prompt}) == 4 and meta9["sort_prompt_version"] == "test-v9"
     assert bi.sort_cache_dir(root)[0] == cache
     ok("the cache is per triage chain, SORT_PROMPT_VERSION and prompt fingerprint")
+    import hashlib
+
+    chain_text = ",".join(m.strip() for m in A.settings.gemini_triage_model_chain.split(",") if m.strip())
+    old_tag = hashlib.sha256(f"{chain_text}|{meta['sort_prompt_version']}|{meta['prompt_fingerprint']}".encode("utf-8")).hexdigest()[:16]
+    assert cache.name == old_tag and "thinking_level_sort" not in meta
+    try:
+        A.settings.gemini_thinking_level_sort = "low"
+        thinking, meta_low = bi.sort_cache_dir(root)
+    finally:
+        A.settings.gemini_thinking_level_sort = None
+    assert thinking != cache and meta_low["thinking_level_sort"] == "low"
+    ok("a sorting thinking level gets its own folder; unset, the folder is the one filled before the setting existed")
 
 
 # ---------------------------------------------------------------- reports and Annex A
@@ -585,8 +700,11 @@ def test_benchmark_run() -> None:
     labels = {"p1.jpg": ("damage", "Boot Lid"), "p2.jpg": ("damage", "Tail Lamp (side undetermined)"), "p3.jpg": ("overview", None)}
     sent: list[int] = []
     history_seen: list[set] = []
-    gemini = bi._counting(lambda *, purpose: A.runs.note_attempt({"model": "test-model", "outcome": "ok", "waited_s": 0.5, "ms": 1000}))
+    gemini = bi._counting(lambda *, purpose, input_parts=None: A.runs.note_attempt(
+        {"model": "test-model", "outcome": "ok", "waited_s": 0.5, "ms": 1000, "prompt_tokens": 1000, "output_tokens": 100,
+         "thought_tokens": 40}))
     reads = {"n": 0}
+    settings_seen: list[tuple] = []
 
     def fake_sort(rid, actor):
         db = A.SessionLocal()
@@ -609,7 +727,8 @@ def test_benchmark_run() -> None:
             history_seen.append({r for (r,) in db.query(A.PastAnnexLine.case_ref).distinct()})
             if reads["n"] == 4:
                 raise RuntimeError("All Gemini fallback models (test-model) failed across 1 configured API key(s).")
-            gemini(purpose="draft")
+            settings_seen.append((A.settings.gemini_thinking_level_read, A.settings.gemini_image_resolution, A.settings.gemini_read_tools))
+            gemini(purpose="draft", input_parts=[{"type": "image", "resolution": "ultra_high"}, {"type": "image"}])
             report, session = db.get(A.Report, rid), db.get(A.IntakeSession, rid)
             photos = A.ordered_photos(db, rid)
             session.read_photo_ids = [photos[0].id, photos[2].id]
@@ -617,37 +736,62 @@ def test_benchmark_run() -> None:
             report.data = dict(report.data, vehicle_info={"plate_number": "TEST-A", "make": "Honda", "model": "Vezel"},
                                damage_summary=[{"part": "Boot Lid", "damage_type": "Dent", "condition": "Dented/bent"},
                                                {"part": "Tail Lamp (side undetermined)", "damage_type": "Crack"},
-                                               {"part": "Bonnet", "damage_type": "Scratch"}],
+                                               {"part": "Bonnet", "damage_type": "Scratch"},
+                                               {"part": "Other / Not Listed", "other_part_name": "Tail gate lock striker plate"}],
                                second_look={"status": "ok", "model": "test-look", "seconds": 0.0, "photos_sent": 2,
                                             "candidates": 30, "items": [{"part": "Boot Lid Lock"}, {"part": "Rear End Panel"}]})
             db.commit()
         finally:
             db.close()
 
+    model_fields = [field for _, field, _ in bi.MODEL_SETTINGS]
     saved = (A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain,
              A.settings.gemini_second_look_chain)
+    saved_settings = {f: getattr(A.settings, f) for f in model_fields}
     os.environ["BENCHMARK_SCRATCH"] = "1"
     A.pipeline._sort, A.pipeline._read = fake_sort, fake_read
     buf = io.StringIO()
     try:
+        for bad, says in ((["--thinking-level-read", "extreme"], "--thinking-level-read"),
+                          (["--image-resolution", "dmage=ultra_high"], "no such photo kind"),
+                          (["--image-resolution", "damage=8k"], "--image-resolution"),
+                          (["--read-tools", "google_search"], "--read-tools")):
+            try:
+                bi.main(["--cases", str(cases_dir), "--key", str(key_path), "--out", str(out)] + bad)
+                raise AssertionError(f"{bad} should be refused")
+            except SystemExit as exc:
+                assert says in str(exc.code), exc.code
+        assert not out.exists() and all(getattr(A.settings, f) == saved_settings[f] for f in model_fields)
+        ok("a model setting config refuses, or a photo kind the sorter hasn't, stops the run before anything")
         with contextlib.redirect_stdout(buf):
             code = bi.main(["--cases", str(cases_dir), "--key", str(key_path), "--out", str(out), "--repeat", "2",
                             "--sort-cache", str(cache_dir), "--reports", str(reports_dir), "--label", "test-run",
                             "--ref", "test-branch@0000000", "--models", "test-strong", "--triage-models", " test-lite-a, test-lite-b ",
-                            "--second-look-models", "test-look"])
+                            "--second-look-models", "test-look", "--thinking-level-read", " LOW, test-strong=high ",
+                            "--thinking-level-sort", "minimal", "--image-resolution", "damage=ultra_high,*=medium",
+                            "--read-tools", "code_execution"])
     finally:
         (A.pipeline._sort, A.pipeline._read, A.settings.gemini_model_chain, A.settings.gemini_triage_model_chain,
          A.settings.gemini_second_look_chain) = saved
+        for field, value in saved_settings.items():
+            setattr(A.settings, field, value)
         os.environ.pop("BENCHMARK_SCRATCH", None)
     text = buf.getvalue()
     assert code == 0, text
     doc = json.loads(out.read_text(encoding="utf-8"))
-    assert list(doc) == ["label", "git_ref", "args", "models", "sort_cache", "started", "finished", "runs", "summary"], list(doc)
+    assert list(doc) == ["label", "git_ref", "args", "models", "ai_settings", "sort_cache", "started", "finished", "runs",
+                         "summary"], list(doc)
     assert (doc["label"], doc["git_ref"], doc["args"]["repeat"]) == ("test-run", "test-branch@0000000", 2)
     assert doc["models"] == {"model_chain": "test-strong", "triage_model_chain": "test-lite-a,test-lite-b",
                              "second_look_chain": "test-look"}, doc["models"]
     assert doc["sort_cache"]["triage_model_chain"] == "test-lite-a,test-lite-b"
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
+    assert doc["ai_settings"] == {"thinking_level_read": "low,test-strong=high", "thinking_level_sort": "minimal",
+                                  "thinking_level_second_look": None, "image_resolution": "damage=ultra_high,*=medium",
+                                  "read_tools": "code_execution"}, doc["ai_settings"]
+    assert settings_seen[0] == ("low,test-strong=high", "damage=ultra_high,*=medium", "code_execution"), settings_seen
+    assert doc["sort_cache"]["thinking_level_sort"] == "minimal"
+    ok("the model-setting flags are on the app's settings while it reads, and in the result file (ai_settings)")
     runs = doc["runs"]
     assert [(r["case"], r["rep"]) for r in runs] == [("TEST CASE A", 1), ("TEST CASE B", 1), ("TEST CASE A", 2), ("TEST CASE B", 2)]
     assert sent == [3, 3, 0, 0], sent
@@ -656,10 +800,19 @@ def test_benchmark_run() -> None:
     assert runs[0]["calls"] == {"photo sort": 1, "draft": 1, "second look": 1}, runs[0]["calls"]
     assert runs[0]["answered_by"] == {"photo sort: test-model": 1, "draft: test-model": 1, "second look: test-model": 1}
     ok("run 1 sorts and fills the cache; run 2 takes every photo from it and makes no sorting call")
+    draft_call = next(c for c in runs[0]["ai_calls"] if c["purpose"] == "draft")
+    assert (draft_call["model"], draft_call["ok"], draft_call["attempts"], draft_call["prompt_tokens"], draft_call["output_tokens"],
+            draft_call["thought_tokens"], draft_call["images"]) == ("test-model", True, 1, 1000, 100, 40,
+                                                                     {"ultra_high": 1, "default": 1}), draft_call
+    assert [c["purpose"] for c in runs[0]["ai_calls"]] == ["photo sort", "draft", "second look"]
+    assert "call draft: test-model in" in text and "tokens in 1000 out 100 thinking 40" in text, text
+    assert "call photo sort" not in text
+    assert doc["summary"]["total"]["read_tok_think"]["mean"] == 80 and doc["summary"]["accounting"]["draft"]["thought_tokens"] == 120
+    ok("every call's model, tries, tokens and images in the result (ai_calls) and the log; tokens in the summary")
     assert history_seen[0] == {"CL 90002", "CL 90003"} and history_seen[1] == {"CL 90001", "CL 90003"}, history_seen
     ok("while a case is read, the history is every report but its own")
     a1 = runs[0]
-    assert a1["parts"]["found"] == 2 and a1["parts"]["extra"] == ["Bonnet"] and a1["parts"]["side_undetermined"] == ["Tail Lamp (side undetermined)"]
+    assert a1["parts"]["found"] == 2 and a1["parts"]["extra"] == ["Bonnet", "Other / Not Listed"] and a1["parts"]["side_undetermined"] == ["Tail Lamp (side undetermined)"]
     assert a1["drafted_items"][0] == {"part": "Boot Lid", "damage_type": "Dent", "condition": "Dented/bent"}
     assert a1["sorter"]["tagged_in_key"] == 2 and a1["sorter"]["key_photos_read"] == 1
     c = a1["conditions"]
@@ -669,6 +822,12 @@ def test_benchmark_run() -> None:
     assert an["perfect_covered"] >= 1 and an["extra"] >= 0 and isinstance(an["canonical_names"], list), an
     assert a1["vehicle"]["plate_number"]["verdict"] == "ok"
     ok("each run carries parts, sorter quality, conditions and the leave-one-out Annex A")
+    assert a1["drafted_items"][3] == {"part": "Other / Not Listed", "other_part_name": "Tail gate lock striker plate"}
+    fair = a1["parts_fair"]
+    assert (fair["found"], fair["strict_extra"], fair["other_named"], fair["extra"], fair["contradicted"]) == (
+        2, 2, [["Tail gate lock striker plate", "Boot Lid Lock"]], ["Bonnet"], []), fair
+    assert "fair: parts 2/3" in text and "FAIR parts" in text and "fair found" in text, text
+    ok("each run carries the fair score (an Other named like the key's lock is not extra; the report contradicts nothing)")
     look, ls = a1["second_look"], a1["parts_with_second_look"]
     assert (look["status"], look["model"], look["calls"], look["suggested"]) == ("ok", "test-look", 1, ["Boot Lid Lock", "Rear End Panel"]), look
     assert (ls["found"], ls["added"], ls["added_parts"], ls["extra"], ls["extra_parts"]) == (3, 1, ["Boot Lid Lock"], 1, ["Rear End Panel"]), ls
@@ -694,11 +853,135 @@ def test_benchmark_run() -> None:
         assert compare.main([str(out), str(out), "--total-only"]) == 0
     assert "same" in buf.getvalue() and "TEST CASE A" not in buf.getvalue()
     ok("compare.py on the result file (--total-only prints no case names)")
+    assert "thinking_level_read low,test-strong=high" in buf.getvalue() and "read_tools code_execution" in buf.getvalue()
+    assert "fair_found" in buf.getvalue() and "read_tok_think" in buf.getvalue(), buf.getvalue()
+    ok("compare.py names each side's model settings and compares the fair score and the reading's tokens")
+
+
+# ---------------------------------------------------------------- rescore, scratch
+
+
+def test_rescore() -> None:
+    print("--rescore a stored result file")
+    base = Path(_tmp, "rescore")
+    base.mkdir()
+    reports = base / "reports"
+    report_xlsx(reports / "CL 90009 TEST-R.xlsx", "CL 90009", "TEST-R", "Honda Vezel 1.5X CVT",
+                [("Tail gate assy", "Dented", 1, 1400, 1120), ("Tail gate lock striker", "Bent", 1, 90, 72),
+                 ("Rear bumper fascia", "Serviceable", 1, 0, 0)])
+    key = {"cases": [{"name": "TEST CASE R", "folder": "case_r", "vehicle": {"plate_number": "TEST-R"}, "parts": [
+        {"part": "Boot Lid", "surveyor": ["Tail gate assy"]}, {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},
+        {"part": "Left Rear Quarter Panel", "surveyor": ["Rear fender LH"]}]}]}
+    key_path = base / "key.json"
+    key_path.write_text(json.dumps(key), encoding="utf-8")
+    items = [{"part": "Boot Lid", "condition": "Dented"}, {"part": "Rear Bumper"}, {"part": "Left Rear Door"},
+             {"part": "Other / Not Listed", "other_part_name": "Tail gate striker plate"}, {"part": "Bonnet"}]
+    names = [i["part"] for i in items]
+
+    def stored(rep, parts):
+        return {"case": "TEST CASE R", "rep": rep, "drafted_parts": names, "drafted_items": items, "parts": parts,
+                "vehicle": {}, "checklist": ["Kept As Stored"]}
+
+    doc = {"label": "old-run", "git_ref": "test@0", "runs": [
+        stored(1, bi.score_parts(key["cases"][0]["parts"], names)),
+        stored(2, dict(bi.score_parts([], names), found=0)),  # scored with an older key
+        {"case": "NOT IN KEY", "rep": 1, "drafted_parts": ["Bonnet"], "parts": bi.score_parts([], ["Bonnet"]), "vehicle": {}},
+        {"case": "TEST CASE R", "rep": 3, "error": "RuntimeError: quota"},
+    ], "summary": {}}
+    source = base / "old.json"
+    source.write_text(json.dumps(doc), encoding="utf-8")
+    before = source.read_bytes()
+    out = base / "rescored.json"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert bi.main(["--rescore", str(source), "--key", str(key_path), "--reports", str(reports), "--out", str(out)]) == 0
+    text = buf.getvalue()
+    assert source.read_bytes() == before, "the stored file is never changed"
+    new = json.loads(out.read_text(encoding="utf-8"))
+    r1, r2, other, errored = new["runs"]
+    assert r1["parts"]["found"] == 1 and r2["parts"]["found"] == 1 and r2["parts"]["extra"] == r1["parts"]["extra"]
+    assert r1["checklist"] == ["Kept As Stored"] and "parts_fair" not in other and "parts_fair" not in errored
+    f = r1["parts_fair"]
+    assert f["neighbour"] == [["Left Rear Door", "Left Rear Quarter Panel"]] and f["fair_found"] == 1.5, f
+    assert f["other_named"] == [["Tail gate striker plate", "Boot Lid Lock"]] and f["extra"] == ["Rear Bumper", "Bonnet"], f
+    assert f["contradicted"] == [["Rear Bumper", "Rear bumper fascia"]], f["contradicted"]
+    assert new["summary"]["total"]["fair_found"]["mean"] == 1.5 and new["summary"]["complete_reps"] == [1]
+    assert new["rescored"]["from"] == str(source) and new["label"] == "old-run"
+    ok("each run scored again strict and fair from its drafted items; the stored file untouched; other numbers kept")
+    assert "differs from the stored one on 1 run(s)" in text and "not in the key, left as stored: 1 case(s)" in text, text
+    assert "FAIR parts 1.5/3" in text and "contradicted by the report 1" in text, text
+    ok("the console says which runs' strict score changed (an older key) and which cases the key hasn't")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert bi.main(["--rescore", str(source), "--key", str(key_path)]) == 0
+    assert "nothing flagged as contradicted" in buf.getvalue() and "contradicted by the report" not in buf.getvalue()
+    for argv, says in ((["--rescore", str(source)], "needs --key"),
+                       (["--rescore", str(source), "--key", str(key_path), "--out", str(source)], "another file")):
+        try:
+            bi.main(argv)
+            raise AssertionError(argv)
+        except SystemExit as exc:
+            assert says in str(exc.code), exc.code
+    assert source.read_bytes() == before
+    ok("without --reports nothing is flagged; no --key, or --out over the stored file: refused")
+
+
+def test_scratch() -> None:
+    print("--scratch and the paths from the environment")
+    folder = Path(_tmp, "scratch run")
+    env = bi.scratch_env(folder)
+    assert env == {"BENCHMARK_SCRATCH": "1", "DATABASE_URL": f"sqlite:///{(folder.resolve() / 'run.db').as_posix()}",
+                   "STORAGE_DIR": str(folder.resolve() / "storage")}, env
+    ok("--scratch DIR: the database and storage in DIR, and BENCHMARK_SCRATCH=1")
+    saved = {k: os.environ.get(k) for k in env}
+    try:
+        bi._use_scratch(folder)
+        raise AssertionError("an app loaded on another database must refuse")
+    except SystemExit as exc:
+        assert "already loaded" in str(exc.code), exc.code
+    assert {k: os.environ.get(k) for k in env} == saved
+    ok("with the app already loaded on another database it refuses, the environment untouched")
+    # The script on its own, as on a PC: no BENCHMARK_SCRATCH, DATABASE_URL,
+    # STORAGE_DIR or key. An unknown --only stops it after the app has made
+    # its database -- before any case, so before any Gemini call.
+    key_path = Path(_tmp, "scratch-key.json")
+    key_path.write_text(json.dumps({"cases": [{"name": "ONLY CASE", "folder": "x", "vehicle": {}, "parts": []}]}), encoding="utf-8")
+    child = {k: v for k, v in os.environ.items()
+             if k not in ("BENCHMARK_SCRATCH", "DATABASE_URL", "STORAGE_DIR", "GEMINI_API_KEY")}
+    child["PYTHONIOENCODING"] = "utf-8"
+    r = subprocess.run([sys.executable, str(SCRIPTS / "benchmark_intake.py"), "--scratch", str(folder), "--cases", _tmp,
+                        "--key", str(key_path), "--out", str(folder / "out.json"), "--only", "NOT A CASE"],
+                       capture_output=True, text=True, env=child)
+    assert r.returncode != 0 and "--only: not in the key" in r.stderr, (r.returncode, r.stderr[-800:])
+    assert (folder / "run.db").exists() and (folder / "storage").is_dir() and not (folder / "out.json").exists()
+    ok("a run with --scratch alone makes its database and storage in that folder")
+    try:
+        bi.main(["--out", str(Path(_tmp, "x.json"))])
+        raise AssertionError("missing --cases/--key must be refused")
+    except SystemExit as exc:
+        assert "--cases" in str(exc.code) and "--key" in str(exc.code), exc.code
+    names = ("BENCH_CASES", "BENCH_KEY", "BENCH_REPORTS", "BENCH_SORT_CACHE")
+    saved = {k: os.environ.get(k) for k in names}
+    try:
+        for name in names:
+            os.environ[name] = str(Path(_tmp, name.lower()))
+        args = bi.parse_args(["--out", "o.json"])
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    assert (args.cases, args.key, args.reports, args.sort_cache) == tuple(Path(_tmp, n.lower()) for n in names), args
+    ok("BENCH_CASES / BENCH_KEY / BENCH_REPORTS / BENCH_SORT_CACHE stand for the flags")
 
 
 def main() -> int:
     test_cli()
     test_score_parts()
+    test_fair_score()
+    test_contradicted()
     test_second_look_scoring()
     test_vehicle()
     test_sorter_quality()
@@ -711,6 +994,8 @@ def main() -> int:
     test_reports_and_history()
     test_annex_scoring()
     test_benchmark_run()
+    test_rescore()
+    test_scratch()
     print("all benchmark scoring tests passed")
     return 0
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import type { DamageSummaryItem } from "@/lib/api";
+import { damagePartLabel, type DamageSummaryItem } from "@/lib/api";
 import { SEVERITY_RANK, severityClass } from "@/lib/caseFields";
 import { resolveZones } from "@/lib/vehicleZones";
 
@@ -65,7 +65,7 @@ export function ImpactSketch({ damageEntries, pointOfImpact }: { damageEntries: 
     damageEntries.forEach((item, idx) => {
       const key = resolutions[idx]?.key;
       if (!key || !ZONE_SHAPES[key]) {
-        elsewhere.push(item.part);
+        elsewhere.push(damagePartLabel(item));
         return;
       }
       const sev = severityClass(item.severity);

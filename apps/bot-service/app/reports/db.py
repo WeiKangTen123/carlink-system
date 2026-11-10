@@ -241,6 +241,7 @@ def _once(name: str, step) -> None:
 
 
 def init_db() -> None:
+    from app.parts import history
     from app.reports import owners, synthesize_annexes
 
     _create_tables()
@@ -253,3 +254,8 @@ def init_db() -> None:
     # Annex A estimates typed per unit become the line totals the firm
     # writes (synthesize_annexes.convert_per_unit_estimates).
     _once("annex_a_line_totals_v1", synthesize_annexes.convert_per_unit_estimates)
+    # Imported past lines take the families, sides and models of the rules
+    # as of 2026-11-10 (the regulator, tyre and arch garnish apart; "HR-V"
+    # kept whole): the price book list shows the stored columns, which an
+    # import wrote under the old rules (history.refresh_lines).
+    _once("past_lines_refresh_v1", history.refresh_lines)

@@ -47,7 +47,9 @@ ANNEX = {"parts": [{"part": "Rear Bumper", "lines": [{"name": "Rear bumper", "qt
 
 
 class FakeInteractions:
-    def create(self, *, model, system_instruction, input, response_format, timeout):
+    # **settings: generation_config / tools (structured.request_settings), e.g.
+    # the light models' thinking level, set by default.
+    def create(self, *, model, system_instruction, input, response_format, timeout, **settings):
         import re
 
         props = response_format["schema"].get("properties", {})

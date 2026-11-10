@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation";
 import { ClipboardCheck, Image as ImageIcon, Link2Off, Plus, Trash2, X } from "lucide-react";
 import {
   DAMAGE_REMARKS,
+  MAX_OTHER_NAME,
+  OTHER_PART,
+  cleanPartName,
   conditionWordsOf,
+  damageItemSource,
+  damagePartLabel,
   fileUrl,
   toDamageRemarks,
   type AnnexAPartItem,
@@ -84,7 +89,13 @@ export function DetectedPartsTable({
   const [error, setError] = useState<string | null>(null);
   // Which row has its photo picker open (or "new" for the add row).
   const [pickerFor, setPickerFor] = useState<number | "new" | null>(null);
-  const [adding, setAdding] = useState<{ part: string; condition: string; remarks: string; photo_reference: string } | null>(null);
+  const [adding, setAdding] = useState<{
+    part: string;
+    other_part_name: string;
+    condition: string;
+    remarks: string;
+    photo_reference: string;
+  } | null>(null);
   // A condition or remark a row was just set to, kept visible while it
   // saves and after a refusal (so the choice isn't silently snapped back).
   const [conditionDraft, setConditionDraft] = useState<Record<number, string>>({});
@@ -107,11 +118,13 @@ export function DetectedPartsTable({
   const parts = taxonomy?.parts || [];
   const words = useMemo(() => conditionWordsOf(taxonomy), [taxonomy]);
 
+  // By the rows' source_part (damageItemSource): a named Other's lines are
+  // "Other / Not Listed: <name>", so two Others each count their own.
   const linesByPart = useMemo(
     () =>
       annexLinesByPart(
         annexAItems,
-        damageEntries.map((d) => d.part)
+        damageEntries.map(damageItemSource)
       ),
     [annexAItems, damageEntries]
   );
@@ -178,6 +191,14 @@ export function DetectedPartsTable({
     void patch(idx, { part });
   };
 
+  /** An Other's name, saved when the field is left. Only the name is sent,
+   * so nothing else on the row changes; blank clears it. */
+  const saveOtherName = (idx: number, item: DamageSummaryItem, value: string) => {
+    const name = cleanPartName(value);
+    if (readOnly || name === cleanPartName(item.other_part_name)) return;
+    void patch(idx, { other_part_name: name });
+  };
+
   const linkPhoto = (idx: number, photoIdx: number | null) => {
     setPickerFor(null);
     if (readOnly) return;
@@ -186,7 +207,7 @@ export function DetectedPartsTable({
 
   const remove = async (idx: number, item: DamageSummaryItem) => {
     if (readOnly) return;
-    if (!confirm(`Remove "${item.part}" from the detected parts? Its unpriced Annex A lines go too; priced lines are kept and flagged.`)) return;
+    if (!confirm(`Remove "${damagePartLabel(item)}" from the detected parts? Its unpriced Annex A lines go too; priced lines are kept and flagged.`)) return;
     const ok = await run(idx, () => removeDamageItemAction(reportId, idx));
     if (ok) {
       // Index-keyed state would now point at the next row.
@@ -203,6 +224,7 @@ export function DetectedPartsTable({
       // No damage_type: the add row asks for the firm's wording only.
       addDamageItemAction(reportId, {
         part: adding.part.trim(),
+        other_part_name: adding.part === OTHER_PART ? cleanPartName(adding.other_part_name) : null,
         condition: adding.condition || null,
         remarks: toDamageRemarks(adding.remarks),
         photo_reference: adding.photo_reference || null,
@@ -331,22 +353,43 @@ export function DetectedPartsTable({
                         also fire the row's own handler. */}
                     <td onClick={(e) => e.stopPropagation()}>
                       {readOnly ? (
-                        <strong>{item.part}</strong>
+                        <strong>{damagePartLabel(item)}</strong>
                       ) : (
-                        <select
-                          className="detected-part-select"
-                          value={item.part}
-                          disabled={savingIdx === idx}
-                          aria-label={`Part ${badgeNumber}`}
-                          onChange={(e) => changePart(idx, item, e.target.value)}
-                        >
-                          {!inVocabulary && <option value={item.part}>{item.part} (as recorded)</option>}
-                          {parts.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
+                        <>
+                          <select
+                            className="detected-part-select"
+                            value={item.part}
+                            disabled={savingIdx === idx}
+                            aria-label={`Part ${badgeNumber}`}
+                            onChange={(e) => changePart(idx, item, e.target.value)}
+                          >
+                            {!inVocabulary && <option value={item.part}>{item.part} (as recorded)</option>}
+                            {parts.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
+                          {/* What the Other is: Annex A prints and prices it
+                              by this name. Keyed on the saved name, so a save
+                              shows the name as the API cleaned it. */}
+                          {item.part === OTHER_PART && (
+                            <input
+                              key={`other-${idx}-${item.other_part_name ?? ""}`}
+                              className="detected-part-select"
+                              style={{ marginTop: 4, fontWeight: 400 }}
+                              defaultValue={item.other_part_name ?? ""}
+                              maxLength={MAX_OTHER_NAME}
+                              placeholder="Name the part…"
+                              disabled={savingIdx === idx}
+                              aria-label={`Name of part ${badgeNumber}`}
+                              onBlur={(e) => saveOtherName(idx, item, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                              }}
+                            />
+                          )}
+                        </>
                       )}
                       {/* The AI identified the panel but not which side it
                           was on, so no 3D marker is shown -- guessing a side
@@ -429,7 +472,7 @@ export function DetectedPartsTable({
                       </div>
                     </td>
                     <td onClick={(e) => e.stopPropagation()} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                      {annexCell(item.part)}
+                      {annexCell(damageItemSource(item))}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <button
@@ -483,6 +526,17 @@ export function DetectedPartsTable({
                           </option>
                         ))}
                       </select>
+                      {adding.part === OTHER_PART && (
+                        <input
+                          className="detected-part-select"
+                          style={{ marginTop: 4, fontWeight: 400 }}
+                          value={adding.other_part_name}
+                          maxLength={MAX_OTHER_NAME}
+                          placeholder="Name the part…"
+                          aria-label="Name of the new part"
+                          onChange={(e) => setAdding({ ...adding, other_part_name: e.target.value })}
+                        />
+                      )}
                     </td>
                     <td>
                       <ConditionPicker
@@ -548,7 +602,7 @@ export function DetectedPartsTable({
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
         {!readOnly && !adding ? (
-          <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 12px" }} onClick={() => setAdding({ part: "", condition: "", remarks: "", photo_reference: "" })}>
+          <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 12px" }} onClick={() => setAdding({ part: "", other_part_name: "", condition: "", remarks: "", photo_reference: "" })}>
             <Plus style={{ width: 13, height: 13 }} /> Add a part
           </button>
         ) : (

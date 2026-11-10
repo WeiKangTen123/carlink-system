@@ -24,24 +24,26 @@ import benchmark_intake as bench  # noqa: E402
 
 # Shown by default, in this order; --all adds every other metric present.
 KEY_METRICS = (
-    "found", "visible_found", "extra", "wrong_side", "side_undetermined", "facts_ok",
+    "found", "visible_found", "extra", "wrong_side", "side_undetermined",
+    "fair_found", "fair_visible_found", "fair_extra", "neighbour", "other_named", "contradicted", "facts_ok",
     "photos_read", "sort_s", "read_s", "calls", "n_429", "wait_429_s", "sort_cache_hits",
     "label_precision", "photographed_recall", "selection_coverage",
     "cond_exact_rate", "cond_first_token_rate", "cond_token_recall", "cond_firm_share",
     "annex_coverage", "annex_extra", "annex_unpriced", "annex_canonical", "annex_perfect_coverage",
     "look_found", "look_added", "look_extra", "look_wrong_side", "look_calls", "look_s",
+    "read_tok_in", "read_tok_out", "read_tok_think", "read_code_runs", "sort_tok_in", "sort_tok_think",
 )
 HIGHER_IS_BETTER = {
     "found", "visible_found", "facts_ok", "visible_recall", "checklist_found", "checklist_visible_found",
     "label_precision", "photographed_recall", "selection_coverage", "cond_exact", "cond_first_token",
     "cond_exact_rate", "cond_first_token_rate", "cond_token_recall", "cond_firm_share",
     "annex_covered", "annex_coverage", "annex_priced",
-    "look_found", "look_visible_found", "look_added", "look_ok",
+    "look_found", "look_visible_found", "look_added", "look_ok", "fair_found", "fair_visible_found",
 }
 LOWER_IS_BETTER = {
     "extra", "wrong_side", "side_undetermined", "checklist_extra", "sort_s", "read_s", "calls", "attempts",
     "n_429", "wait_429_s", "slot_wait_s", "annex_extra", "annex_unpriced", "annex_canonical",
-    "look_extra", "look_wrong_side", "look_calls", "look_s",
+    "look_extra", "look_wrong_side", "look_calls", "look_s", "fair_extra", "contradicted",
 }
 
 
@@ -53,6 +55,7 @@ def load(path: Path) -> dict:
     return {
         "label": data.get("label") or Path(path).stem,
         "git_ref": data.get("git_ref"),
+        "ai_settings": {k: v for k, v in (data.get("ai_settings") or {}).items() if v},
         "summary": bench.summarize(runs),
     }
 
@@ -108,8 +111,10 @@ def format_rows(title: str, rows: list[dict]) -> list[str]:
 def _side(name: str, doc: dict) -> str:
     s = doc["summary"]
     ref = f" ({doc['git_ref']})" if doc["git_ref"] else ""
+    # The model settings tried (none: the request as before they existed).
+    tried = "; ".join(f"{k} {v}" for k, v in doc.get("ai_settings", {}).items())
     return (f"{name}: {doc['label']}{ref} -- {s['reps']} run(s) of {s['cases_n']} case(s), "
-            f"{len(s['complete_reps'])} complete, {len(s['errors'])} error(s)")
+            f"{len(s['complete_reps'])} complete, {len(s['errors'])} error(s)" + (f" -- {tried}" if tried else ""))
 
 
 def main(argv=None) -> int:

@@ -871,6 +871,10 @@ export const toDamageRemarks = (value: string | null | undefined): DamageRemarks
 
 export type DamageSummaryItem = {
   part: string;
+  /** What an "Other / Not Listed" part is ("Rear air vent"): Annex A prints
+   * and prices it as a part of its own. Null on every other part (the API
+   * clears it) and on an Other nobody named. */
+  other_part_name?: string | null;
   damage_type?: string | null;
   severity?: string | null;
   photo_reference?: string | null;
@@ -898,6 +902,42 @@ export type DamageSummaryItem = {
    * from nearby photos. The API clears it once a person edits the part. */
   side_inferred?: boolean;
 };
+
+/** The part for anything outside the list (taxonomy.OTHER_PART); the item
+ * names it in other_part_name. */
+export const OTHER_PART = "Other / Not Listed";
+/** taxonomy.MAX_OTHER_NAME: a part's name, not a sentence. */
+export const MAX_OTHER_NAME = 80;
+
+/** An Other's name as the API keeps it (taxonomy.clean_part_name): spaces
+ * collapsed, first letter capitalised, at most MAX_OTHER_NAME characters;
+ * null for blank. */
+export function cleanPartName(text: string | null | undefined): string | null {
+  const name = (text || "").split(/\s+/).filter(Boolean).join(" ").slice(0, MAX_OTHER_NAME).trim();
+  return name ? name[0].toUpperCase() + name.slice(1) : null;
+}
+
+type PartFields = Pick<DamageSummaryItem, "part" | "other_part_name">;
+
+/** A named Other's name; null for a listed part or an unnamed Other
+ * (taxonomy.other_part_name). */
+export function otherPartName(item: PartFields): string | null {
+  return (item.part || "").trim() === OTHER_PART ? cleanPartName(item.other_part_name) : null;
+}
+
+/** The source_part its Annex A rows carry (prefill.item_source): the part,
+ * or "Other / Not Listed: <name>" for a named Other, so two unlisted parts
+ * each count their own lines. */
+export function damageItemSource(item: PartFields): string {
+  const other = otherPartName(item);
+  return other ? `${OTHER_PART}: ${other}` : (item.part || "").trim();
+}
+
+/** The part as shown: "Other: Rear air vent" for a named Other. */
+export function damagePartLabel(item: PartFields): string {
+  const other = otherPartName(item);
+  return other ? `Other: ${other}` : item.part;
+}
 
 export type TyreItem = {
   tread_depth_mm?: number | null;
@@ -1654,6 +1694,8 @@ export async function updateReport(
  * (400 otherwise); any change clears side_inferred. */
 export type DamageItemPatch = {
   part?: string;
+  /** An Other's name; null clears it. Sent only when it changes. */
+  other_part_name?: string | null;
   damage_type?: string | null;
   severity?: string | null;
   photo_reference?: string | null;
@@ -1666,6 +1708,7 @@ export type DamageItemPatch = {
 /** POST /reports/{id}/damage-items: what the add row sends. */
 export type NewDamageItem = {
   part: string;
+  other_part_name?: string | null;
   damage_type?: string | null;
   condition?: string | null;
   remarks?: DamageRemarks | null;

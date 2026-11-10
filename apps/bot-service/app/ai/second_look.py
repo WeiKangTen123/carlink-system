@@ -99,23 +99,32 @@ ZONES: dict[str, list[str]] = {
         "Left Boot Lid Lamp", "Right Boot Lid Lamp", "Left Tail Lamp", "Right Tail Lamp", "Rear End Panel",
         "Rear Windscreen", "Rear Number Plate", "Boot Floor Board", "Left Boot Side Trim", "Right Boot Side Trim",
         "Left Rear Quarter Panel", "Right Rear Quarter Panel", "Left Rear Wheel Arch Liner",
-        "Right Rear Wheel Arch Liner", "Rear Floor Panel", "Parking Sensor", "Reversing Camera", "Exhaust System",
+        "Right Rear Wheel Arch Liner", "Left Rear Wheel Arch Trim", "Right Rear Wheel Arch Trim", "Rear Floor Panel",
+        "Parking Sensor", "Reversing Camera", "Exhaust System",
     ],
     "front": [
         "Front Bumper", "Front Bumper Beam", "Front Grille", "Bonnet", "Left Headlamp", "Right Headlamp",
         "Left Fog Lamp", "Right Fog Lamp", "Front Number Plate", "Left Front Fender", "Right Front Fender",
-        "Left Front Wheel Arch Liner", "Right Front Wheel Arch Liner", "Front Windscreen", "Engine Undercover",
-        "Radiator", "Air Conditioning Condenser", "Front Subframe", "Parking Sensor",
+        "Left Front Wheel Arch Liner", "Right Front Wheel Arch Liner", "Left Front Wheel Arch Trim",
+        "Right Front Wheel Arch Trim", "Front Windscreen", "Engine Undercover", "Radiator",
+        "Air Conditioning Condenser", "Front Subframe", "Parking Sensor",
     ],
+    # The window regulators are inside the doors, the tyres on the wheels,
+    # the arch trims around them: a dented door or a kerbed rim makes them
+    # candidates (the regulator, tyre and arch trim are priced apart).
     "left": [
         "Left Front Fender", "Left Front Door", "Left Rear Door", "Left Front Door Glass", "Left Rear Door Glass",
-        "Left Wing Mirror", "Left Sill / Rocker Panel", "Left Rear Quarter Panel", "Left Front Wheel",
-        "Left Rear Wheel", "Left Front Wheel Arch Liner", "Left Rear Wheel Arch Liner",
+        "Left Front Window Regulator", "Left Rear Window Regulator", "Left Wing Mirror", "Left Sill / Rocker Panel",
+        "Left Rear Quarter Panel", "Left Front Wheel", "Left Rear Wheel", "Left Front Tyre", "Left Rear Tyre",
+        "Left Front Wheel Arch Liner", "Left Rear Wheel Arch Liner", "Left Front Wheel Arch Trim",
+        "Left Rear Wheel Arch Trim",
     ],
     "right": [
         "Right Front Fender", "Right Front Door", "Right Rear Door", "Right Front Door Glass", "Right Rear Door Glass",
-        "Right Wing Mirror", "Right Sill / Rocker Panel", "Right Rear Quarter Panel", "Right Front Wheel",
-        "Right Rear Wheel", "Right Front Wheel Arch Liner", "Right Rear Wheel Arch Liner",
+        "Right Front Window Regulator", "Right Rear Window Regulator", "Right Wing Mirror",
+        "Right Sill / Rocker Panel", "Right Rear Quarter Panel", "Right Front Wheel", "Right Rear Wheel",
+        "Right Front Tyre", "Right Rear Tyre", "Right Front Wheel Arch Liner", "Right Rear Wheel Arch Liner",
+        "Right Front Wheel Arch Trim", "Right Rear Wheel Arch Trim",
     ],
 }
 _SIDE_ZONES = {"left", "right"}
@@ -127,7 +136,9 @@ _AREA_ZONES: dict[str, set[str]] = {
 }
 # Kinds whose photo counts as damage evidence when it shows damage and names
 # a part (pipeline._DAMAGE_EVIDENCE_KINDS: a boot photo the sorter called
-# interior).
+# interior); an "other" photo showing damage counts with no part, as in the
+# reading (pipeline._is_damage_evidence): the sorter can't name a part off
+# the list, so a removed window regulator's photo was never looked at again.
 _EVIDENCE_KINDS = {"interior", "other"}
 _NOT_A_PART = "Other / Not Listed"
 _LABEL_RE = re.compile(r"^P0*(\d+)$")
@@ -281,7 +292,11 @@ def _photo_zones(photo) -> set[str]:
 
 
 def _is_evidence(photo) -> bool:
-    return photo.kind == "damage" or (photo.kind in _EVIDENCE_KINDS and photo.shows_damage and bool(photo.part))
+    if photo.kind == "damage":
+        return True
+    if not photo.shows_damage or photo.kind not in _EVIDENCE_KINDS:
+        return False
+    return photo.kind == "other" or bool(photo.part)
 
 
 def pick_photos(photos: list, *, zones: set[str], read_ids: set[str], candidate_parts: set[str],

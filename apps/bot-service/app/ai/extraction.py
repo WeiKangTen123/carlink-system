@@ -33,6 +33,7 @@ from app.reports.taxonomy import (
     FIRM_REMARKS,
     damage_type_from_tokens,
     firm_condition,
+    split_side,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,13 +78,25 @@ SYSTEM_PROMPT = (
     "striker, hinges, weatherstrip, inner trim board, and lamps set into it). A lamp on the body beside the boot opening is "
     "a 'Tail Lamp'; a reflector in the bumper is a 'Rear Bumper Reflector'. Photos taken with the boot open show the boot "
     "lid's inner side, its lock, the weatherstrip, the 'Rear End Panel' (the body panel below the boot opening), the "
-    "'Boot Floor Board' and the 'Boot Side Trim'. Use 'Other / Not Listed' only when no listed part fits.\n"
+    "'Boot Floor Board' and the 'Boot Side Trim'. Use 'Other / Not Listed' only when no listed part fits, and then put "
+    "the part's own name in 'other_part_name' -- never on a listed part.\n"
+    "   - 'Wheel' is the rim and 'Tyre' the tyre: rim damage goes on the Wheel (a scraped rim is Grazed), tyre damage on "
+    "the Tyre. Tyre marks a surveyor might pass as serviceable: list the Tyre with 'ai_confidence' 'Low' and no "
+    "'severity' rather than a guessed one.\n"
+    "   - A bent or removed window regulator: list the door AND its 'Window Regulator'. Another part from inside a door: "
+    "the door AND 'Other / Not Listed' with its name in 'other_part_name'.\n"
     "   - A surveyor photographs close up the parts they are checking. When a photo is a close-up of one part -- a lock, "
     "hinge, seal, trim board, lamp, reflector, floor board -- examine it carefully for subtle damage: bent or distorted "
     "metal, a cracked or chipped lens, a cut, torn or crushed seal, trim pushed out of line, paint cracked at a fold. "
     "Include the part when you can see such damage, with 'ai_confidence' 'Low' if it is slight; leave it out when the "
     "close-up shows the part intact.\n"
-    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward. If the reporter stated the side, use it.\n"
+    "   - LEFT and RIGHT mean the vehicle's own left and right as seen by its driver facing forward -- never the left "
+    "or right of the photo (cars here are right-hand drive: the steering wheel is on the car's right). Before naming a "
+    "side, work out which way the car's front (headlamps, grille, wing mirrors) points in the photo: toward the camera, "
+    "the car's RIGHT side is on the photo's LEFT; away from the camera, the car's left is on the photo's left; to the "
+    "photo's left, you are looking at the car's LEFT side; to the photo's right, at its RIGHT side. A close-up with none "
+    "of these clues shows the side of the wide shots taken just before it. If the reporter stated the side, use it; "
+    "when you still can't tell, use the '(side undetermined)' option -- a wrong side is worse than none.\n"
     "   - Set 'damaged_parts' array with the part names you actually identified.\n"
     "   - Set 'severity_level' only if the damage shown/described supports a clear Minor/Moderate/Severe judgment.\n"
     "4. Insurance & Workshop Details ('insurance_details'):\n"
@@ -221,12 +234,86 @@ def _model_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()]
 
 
+# ------------------------------------------------- the sorter's hints
+#
+# Dashboard intake sorts every photo first (ai/triage.py), and the reader
+# used to get only "Photo P07:" and the image: the sorter's kind, part and
+# note steered which photos went and nothing else. Now each photo's label is
+# followed by them as a short hint (photo_hint) -- never its side, which the
+# sorter judges from the camera's frame and flips. Off (SORTER_HINTS False):
+# the request is as before, for A/B runs of scripts/benchmark_intake.py.
+SORTER_HINTS = False
+
+_HINT_KINDS = {
+    "damage": "damage close-up",
+    "overview": "walk-around view",
+    "log_card": "log card",
+    "vin_plate": "VIN plate",
+    "police_report": "police report",
+    "document": "document",
+    "odometer": "odometer",
+    "tyre": "tyre",
+    "interior": "cabin interior",
+    "scene": "accident scene",
+    "third_party": "the other party's vehicle",
+    "other": "other",
+}
+# Only the kind for these: their area and part are of the insured car's
+# damage, which they don't show, and a note on a document may carry a
+# number the sorter misread -- the reader reads those off the photo itself.
+_KIND_ONLY = {"log_card", "vin_plate", "police_report", "document", "odometer", "scene", "third_party"}
+# The sorter's corners lose their side ("rear-left" -> rear); left and right
+# alone say nothing else and are dropped.
+_HINT_AREAS = {
+    "front": "front", "front-left": "front", "front-right": "front",
+    "rear": "rear", "rear-left": "rear", "rear-right": "rear",
+    "roof": "roof", "underbody": "underbody",
+}
+_SIDE_WORDS = re.compile(
+    r"[\s-]*\b(?:(?:left|right|driver'?s?|passenger'?s?)[\s-]?(?:hand[\s-]?)?side|near-?side|off-?side"
+    r"|(?:left|right)(?:[\s-]?hand)?|lhs?|rhs?|l/h|r/h)\b",
+    re.IGNORECASE,
+)
+
+
+def _without_side(text: str) -> str:
+    """"Rear bumper cracked near LH reflector" -> "Rear bumper cracked near
+    reflector"."""
+    text = _SIDE_WORDS.sub("", " ".join(text.split()))
+    return " ".join(text.split()).strip(" ,;:-")
+
+
+def photo_hint(hint: dict | None) -> str | None:
+    """One photo's caption from what the sorter saw -- {"kind", "area",
+    "part", "note"} (pipeline._read_into) -- e.g. "Sorter's hint: damage
+    close-up; area: rear; part: Rear Door; note: dent low on door near
+    handle". None for an unsorted photo."""
+    kind = (hint or {}).get("kind")
+    if not kind:
+        return None
+    bits = [_HINT_KINDS.get(kind, kind.replace("_", " "))]
+    if kind not in _KIND_ONLY:
+        area = _HINT_AREAS.get(hint.get("area") or "")
+        if area:
+            bits.append(f"area: {area}")
+        family = split_side(hint.get("part") or "")[0]
+        if family and family != "Other / Not Listed":
+            bits.append(f"part: {family}")
+        note = _without_side(hint.get("note") or "")
+        if note:
+            bits.append(f"note: {note}")
+    return "Sorter's hint: " + "; ".join(bits)
+
+
 def _build_input(
     description: str,
     photo_paths: list[str],
     known_facts: dict | None = None,
     photo_labels: list[str] | None = None,
+    photo_hints: list[dict | None] | None = None,
 ) -> list[dict]:
+    """photo_hints: what the sorter saw in each photo, in the order of
+    photo_paths (dashboard intake only; see photo_hint)."""
     parts: list[dict] = []
     if known_facts:
         # Facts the reporter already gave, passed so a PARTIAL correction can
@@ -249,25 +336,40 @@ def _build_input(
                 ),
             })
     parts.append({"type": "text", "text": f"Reporter's description:\n{description}"})
+    hints = list(photo_hints or [])
+    hints += [None] * (len(photo_paths) - len(hints))
+    captions = [photo_hint(h) if SORTER_HINTS else None for h in hints]
     if photo_labels:
         # Dashboard intake only sends a selection of a large case (see
         # intake/pipeline.py), so the labels skip numbers. Without saying so,
         # "labeled P01, P02... in the order given" in the system prompt
         # invites the model to renumber them from P01.
-        parts.append({
-            "type": "text",
-            "text": (
-                "Only a selection of this case's photos is shown below. Each is labelled with its "
-                "case photo number -- use exactly that label for 'photo_reference'."
-            ),
-        })
+        text = (
+            "Only a selection of this case's photos is shown below. Each is labelled with its "
+            "case photo number -- use exactly that label for 'photo_reference'."
+        )
+        if any(captions):
+            text += (
+                " A label may be followed by the photo sorter's hint: the kind of photo, front or rear, "
+                "the damaged part it noticed and a short note. The sorter is a quick first pass that is "
+                "sometimes wrong and never gives the side: use its hint to know where to look, but name "
+                "each part and side from what you see."
+            )
+        parts.append({"type": "text", "text": text})
     for i, path in enumerate(photo_paths, start=1):
         # Labeled so the model can honestly attribute a damage_summary item to
         # the specific photo it actually saw it in (photo_reference), matching
         # the P0x numbering the renderer uses in the gallery/PDF.
         label = photo_labels[i - 1] if photo_labels else f"P{i:02d}"
         parts.append({"type": "text", "text": f"Photo {label}:"})
-        parts.append(image_part(path))
+        # The hint is a text part of its own, after the label: "Photo P07:"
+        # stays exactly that, as everything that reads labels back expects.
+        if captions[i - 1]:
+            parts.append({"type": "text", "text": captions[i - 1]})
+        # The sorter's kind picks the image's resolution
+        # (settings.gemini_image_resolution); no kind -- the bots, a photo
+        # never sorted -- sends it at Gemini's default, as before.
+        parts.append(image_part(path, kind=(hints[i - 1] or {}).get("kind")))
     return parts
 
 
@@ -423,16 +525,18 @@ def draft_report(
     timeout: float = 45.0,
     *,
     actor: AiActor,
+    photo_hints: list[dict | None] | None = None,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
-    model attempt; intake raises it because it sends up to ~24 photos in one
+    model attempt; intake raises it because it sends up to ~32 photos in one
     call, where the bot's few photos fit comfortably in 45s. actor: who
-    pays (structured.call_structured)."""
+    pays (structured.call_structured). photo_hints: what the sorter saw in
+    each photo (dashboard intake; photo_hint)."""
     return call_structured(
         purpose="draft",
         system_instruction=SYSTEM_PROMPT,
-        input_parts=_build_input(description, photo_paths, known_facts, photo_labels),
+        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints),
         schema=_response_schema(),
         parse=_parse_draft,
         models=_model_chain(),

@@ -113,6 +113,11 @@ _REAL_GENAI_CLIENT = _genai.Client
 _genai.Client = _NoGoogle
 
 import app.ai.structured as structured  # noqa: E402
+
+# A busy model (503) is asked once more after this wait (is_overloaded,
+# scripts/test_busy_retry.py); here only the count matters.
+structured.OVERLOADED_RETRY_SECONDS = 0.0
+structured.CHAIN_BUSY_RETRY_SECONDS = 0.0
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from google.genai import types as genai_types  # noqa: E402
@@ -592,7 +597,10 @@ def call_fallback() -> None:
             outcome = exc.code
         except RuntimeError as exc:
             outcome = "RuntimeError" if "fallback models" in str(exc) else repr(exc)
-        check(outcome == "RuntimeError" and len(CALLS) == len(MODELS) and row_of(W.A).status == "ok",
+        # A busy model is asked twice (structured.is_overloaded), and a chain
+        # busy throughout is asked once more (CHAIN_BUSY_RETRY_SECONDS).
+        tries_each = 4 if how is busy else 1
+        check(outcome == "RuntimeError" and len(CALLS) == tries_each * len(MODELS) and row_of(W.A).status == "ok",
               f"{name} on every model: the usual RuntimeError, every model tried, key not marked", f"{outcome}, {len(CALLS)} calls")
     reset_fakes()
 
@@ -964,8 +972,9 @@ def real_sdk() -> None:
         fresh(W.A)
         SDK_ANSWER[W.A_KEY] = shapes["503"]
         got, _ = outcome(lambda: call(a))
-        check(got == "RuntimeError" and len(SDK_REQUESTS) == len(MODELS) and row_of(W.A).status == "ok",
-              "503 on every model: the usual RuntimeError, one request per model (the SDK retried 503s before)",
+        check(got == "RuntimeError" and len(SDK_REQUESTS) == 4 * len(MODELS) and row_of(W.A).status == "ok",
+              "503 on every model: the usual RuntimeError, two rounds of two requests per model -- our busy retries, "
+              "none from the SDK (it retried 503s before)",
               f"{got} {len(SDK_REQUESTS)}")
 
         print("  a ticked user falls back")
@@ -994,7 +1003,8 @@ def real_sdk() -> None:
             cause = exc.__cause__
         check(cause is not None and DB_KEY not in str(cause) and ENV_KEY not in str(cause) and "503" in str(cause),
               "the RuntimeError's cause is a scrubbed copy, company keys too", repr(str(cause))[:150])
-        check(len(SDK_REQUESTS) == 2 * len(MODELS), "company keys: every model on each, as before P4", str(len(SDK_REQUESTS)))
+        check(len(SDK_REQUESTS) == 3 * len(MODELS),
+              "company keys: every model on each, as before P4 (the busy one asked twice per model)", str(len(SDK_REQUESTS)))
 
         print("  an intake run on a real client")
         fresh(W.A)
