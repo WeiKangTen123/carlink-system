@@ -49,7 +49,7 @@ def main() -> int:
           "no photo: unchanged")
     check(parts([{"part": "Bonnet", "photo_reference": "@a"}], tags) == ["Bonnet"], "a part with no side: unchanged")
     check(parts([{"part": "Front Door (side undetermined)", "photo_reference": "@a"}], tags)
-          == ["Front Door (side undetermined)"] or True, "undetermined is left to resolve_sides")
+          == ["Front Door (side undetermined)"], "undetermined is left to resolve_sides")
     print(f"\ntest_side_from_sorter: {PASSED[0]} checks passed, {len(FAILURES)} failed")
     return 1 if FAILURES else 0
 
