@@ -31,6 +31,7 @@ from app.ai.keys import (
     scrub,
 )
 from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
+from app.config import ANY, image_resolutions, read_tools, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,70 @@ mimetypes.add_type("image/webp", ".webp")
 mimetypes.add_type("image/heic", ".heic")
 
 
-def image_part(path: str) -> dict:
-    """An inline image input for client.interactions.create."""
+def image_part(path: str, kind: str | None = None) -> dict:
+    """An inline image input for client.interactions.create.
+
+    kind: the photo's kind as the sorter filed it (ai/triage.PHOTO_KINDS),
+    "unsorted" for a photo not sorted, on the reading call. The image then
+    carries the resolution settings.gemini_image_resolution names for that
+    kind (image_resolution). None -- sorting, the second look, the bot,
+    which know no kinds -- sends the image as before, at Gemini's default.
+    """
     media_type, _ = mimetypes.guess_type(path)
-    return {
+    part = {
         "type": "image",
         "data": base64.b64encode(Path(path).read_bytes()).decode("utf-8"),
         "mime_type": media_type or "image/jpeg",
     }
+    resolution = image_resolution(kind)
+    if resolution:
+        part["resolution"] = resolution
+    return part
+
+
+def image_resolution(kind: str | None) -> str | None:
+    """The "resolution" for a reading-call photo of this kind: its entry in
+    settings.gemini_image_resolution, else the "*" entry, else None (no key
+    sent: Gemini's default, "high" on Gemini 3). Per image because the
+    Interactions API has no request-wide media resolution, and per kind
+    because a close-up of a dent wants the detail an overview doesn't --
+    ultra_high is 2240 tokens a photo against 1120, on a 32-photo call."""
+    if kind is None:
+        return None
+    table = image_resolutions(settings.gemini_image_resolution)
+    return table.get(kind) or table.get(ANY)
+
+
+# call_structured's purpose -> the settings that tune that kind of call
+# (config.gemini_thinking_level_read / _sort / _second_look and
+# gemini_read_tools). Keyed by the purpose each caller already passes --
+# extraction.draft_report, triage.triage_photos, second_look.look -- so
+# none of them changes; the benchmark keys its accounting by them too. The
+# Telegram bot drafts through draft_report, so "draft" is its call as well.
+# A purpose not here (annex suggestions) is sent as it always was.
+CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look"}
+
+
+def request_settings(purpose: str, model_id: str) -> dict:
+    """The generation settings to add to one try's request: generation_config
+    with a thinking_level, and tools on the reading call. {} when none is
+    set -- the request is then byte for byte what it was before they
+    existed. Field names as google-genai 2.22.0's interactions.create takes
+    them (GenerationConfigParam.thinking_level, the code_execution
+    ToolParam)."""
+    kind = CALL_KINDS.get(purpose)
+    if kind is None:
+        return {}
+    extra: dict = {}
+    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{kind}", None))
+    level = levels.get(model_id) or levels.get(ANY)
+    if level:
+        extra["generation_config"] = {"thinking_level": level}
+    if kind == "read":
+        tools = read_tools(settings.gemini_read_tools)
+        if tools:
+            extra["tools"] = [{"type": name} for name in tools]
+    return extra
 
 
 def call_structured(
@@ -178,6 +235,9 @@ def call_structured(
             # what tripped the quota during testing.
             waited = acquire(key.rate_limit_id)
             verdict = None
+            # Per model: a thinking level may be set for one model of the
+            # chain only.
+            extra = request_settings(purpose, model_id)
             # One retry per model on a per-minute 429, using the delay the
             # server itself supplies. Falling straight through to the next
             # model is pointless: it draws on the same per-key quota and
@@ -203,6 +263,10 @@ def call_structured(
                         # error), tying up a worker for no benefit since the
                         # point of the chain is to keep trying other models.
                         timeout=timeout,
+                        # A model that refuses a setting (a thinking level
+                        # it hasn't got) answers 400: that try fails like
+                        # any other error and the chain moves on.
+                        **extra,
                     )
                     raw_output = (interaction.output_text or "").strip()
                     if raw_output.startswith("```"):
@@ -320,6 +384,27 @@ def _tokens(interaction) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _thought_tokens(interaction) -> int | None:
+    """Thinking tokens, when the response says: billed as output but
+    reported apart from it -- what a thinking level costs."""
+    usage = getattr(interaction, "usage", None)
+    if usage is not None:
+        return _count(getattr(usage, "total_thought_tokens", None))
+    meta = getattr(interaction, "usage_metadata", None)
+    if meta is not None:
+        return _count(getattr(meta, "thoughts_token_count", None))
+    return None
+
+
+def _tool_calls(interaction) -> int:
+    """Code the model ran on this try (its code_execution_call steps):
+    whether a tools trial used the tool at all."""
+    steps = getattr(interaction, "steps", None)
+    if not isinstance(steps, (list, tuple)):
+        return 0
+    return sum(1 for step in steps if getattr(step, "type", None) == "code_execution_call")
+
+
 def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
@@ -343,6 +428,12 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
             attempt["prompt_tokens"] = prompt_tokens
         if output_tokens is not None:
             attempt["output_tokens"] = output_tokens
+        thought_tokens = _thought_tokens(interaction) if interaction is not None else None
+        if thought_tokens is not None:
+            attempt["thought_tokens"] = thought_tokens
+        tool_calls = _tool_calls(interaction) if interaction is not None else 0
+        if tool_calls:
+            attempt["tool_calls"] = tool_calls
         runs.note_attempt(attempt)
     except Exception:
         logger.warning("AI run log: couldn't note a Gemini try", exc_info=True)

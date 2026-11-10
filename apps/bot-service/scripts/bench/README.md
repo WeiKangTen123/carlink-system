@@ -73,7 +73,9 @@ bash ~/carlink-bench/run_bench.sh LABEL GIT_REF [benchmark_intake.py options]
 - `GIT_REF`: a branch, tag or commit on `origin`. The result records it with the commit
   (`--ref "GIT_REF@sha"`).
 - Options go on to the benchmark: `--repeat N`, `--only "<case name>"` (repeatable),
-  `--models CHAIN`, `--triage-models CHAIN`, `--keep-photos`.
+  `--models CHAIN`, `--triage-models CHAIN`, `--keep-photos`, and the model settings
+  (below): `--thinking-level-read`, `--thinking-level-sort`, `--thinking-level-second-look`,
+  `--image-resolution`, `--read-tools`.
 
 Examples:
 
@@ -86,6 +88,10 @@ BENCH_HARNESS_REF=feat/bench-harness bash ~/carlink-bench/run_bench.sh a1-3x fea
 
 # reading model A/B on the same frozen sort
 bash ~/carlink-bench/run_bench.sh read-36 feat/bench-harness --repeat 3 --models gemini-3.6-flash
+
+# the lite reader thinking more, its close-ups at 2240 tokens
+bash ~/carlink-bench/run_bench.sh lite-medium master --repeat 3 --models gemini-3.5-flash-lite \
+    --thinking-level-read medium --image-resolution 'damage=ultra_high,tyre=ultra_high,overview=medium'
 ```
 
 Environment overrides: `BENCH_HARNESS_REF` (above), `BENCH_NO_SORT_CACHE=1` (sort afresh every
@@ -116,11 +122,103 @@ without the sort cache (22 sorting batches of 12 photos, 4 reading calls) and 5-
 with the cache filled, 4 calls and about 2 minutes. `--repeat 3` from an empty cache: about 34
 calls, 10 minutes, plus waits when the live app is busy.
 
+## The model settings
+
+`app/config.py` has one setting per kind of reading call, all unset by default. Unset, a
+setting sends nothing: the request is byte for byte what it was before they existed, so a run
+without these flags measures what production does today. Each flag sets one for the run, and
+the result file keeps them under `ai_settings` (compare.py prints them beside each label).
+
+| flag | setting | what it sends |
+|---|---|---|
+| `--thinking-level-read LEVEL` | `gemini_thinking_level_read` | `generation_config: {thinking_level}` on the reading call (and the Telegram bot's drafting, the same call) |
+| `--thinking-level-sort LEVEL` | `gemini_thinking_level_sort` | the same on the sorting calls; a sort cache folder of its own |
+| `--thinking-level-second-look LEVEL` | `gemini_thinking_level_second_look` | the same on the second look |
+| `--image-resolution SPEC` | `gemini_image_resolution` | `"resolution"` on each image of the reading call, by the photo's kind |
+| `--read-tools code_execution` | `gemini_read_tools` | `tools: [{type: code_execution}]` on the reading call (Agentic Vision trial) |
+
+- LEVEL: `minimal`, `low`, `medium` or `high` for every model of the chain, or per model:
+  `gemini-3.5-flash-lite=medium`, or `low,gemini-3-flash-preview=high` (the bare level for the
+  models not named). A model given a level it refuses (gemini-3.8-flash has no `minimal`)
+  fails that try with a 400 and the chain moves on, as on any other error. Defaults per
+  Google: gemini-3.5-flash-lite `minimal`, gemini-3-flash-preview `high`.
+- SPEC: `kind=resolution` pairs, `*` for every other kind, e.g.
+  `damage=ultra_high,tyre=ultra_high,overview=medium`. Kinds are the sorter's
+  (`app/ai/triage.PHOTO_KINDS`) plus `unsorted`; resolutions `low`, `medium`, `high`,
+  `ultra_high` (280, 560, 1120, 2240 tokens a photo on Gemini 3; unset is Gemini's default,
+  1120). It reaches the request only where the reading's image builder passes each photo's
+  kind (`structured.image_part(path, kind=...)`); each call's `images` in the result shows it.
+- `code_execution` with a JSON schema is a preview feature on Gemini 3 and Google documents
+  image zoom/crop for Gemini 3 Flash only: try it on each model with `smoke_schemas.py --live
+  --read-tools code_execution` first. A try that used it counts `code runs`.
+
+Each run's `ai_calls` lists every Gemini call: purpose, the model that answered, seconds,
+tries, prompt / output / thinking tokens (when Google reports them), code runs, and the
+images it sent by resolution. The log prints one line per reading and second-look call.
+
+## The fair score
+
+The strict `parts` score is unchanged. Next to it, `parts_fair`:
+
+- **neighbour, half a part**: a drafted part on the same side next to a key part the strict
+  score missed -- front fender, front door, rear door, rear quarter in a row; the sill and
+  either door; the wheel-arch liner or trim and the fender (front) or quarter (rear); the
+  arch liner and the wheel at the same end; and, for the parts contract 6 splits out, the
+  arch trim and the liner, the tyre and the wheel. Not an extra. One neighbour per key part.
+- **Other named like a key part**: an "Other / Not Listed" item whose name
+  (`other_part_name`) shares a word of five letters or more (not front, right, upper, lower,
+  inner, outer, centre) with a key part's surveyor wording is not an extra.
+- **contradicted** (with `--reports`): a drafted part whose every line in the held-out report
+  (same family, side and end of the car) says Serviceable -- the surveyor looked and passed
+  it. A flag; no number changes.
+
+`fair_found`, `fair_visible_found`, `fair_extra`, `neighbour`, `other_named` and
+`contradicted` are metrics like the others (summary, compare.py).
+
+### Rescore a stored result
+
+```
+python scripts/benchmark_intake.py --rescore out/a1-3x.json --key key.json [--reports reports/] [--out a1-3x-rescored.json]
+```
+
+Scores every run of a result file again -- strict and fair -- from the drafted items it
+kept, against the key (and each case's report). No Gemini call, no database, no
+`BENCHMARK_SCRATCH`; the stored file is never written (`--out` must be another file). Runs
+from before `drafted_items` existed are scored from `drafted_parts`; their Other items have no
+name, so they stay extras. A run whose strict score comes out different was scored with an
+older key: the console says how many.
+
+## On a PC
+
+The same script runs on Windows. Nothing is shared with the server: the rate-limit window is
+the scratch folder's own, so with the company key the live app's per-minute quota is not
+counted -- run outside working hours, or with your own key. PowerShell, from
+`apps/bot-service`, with the venv:
+
+```
+$env:GEMINI_API_KEY = "<the key>"          # this process only; never in a file
+$env:PYTHONIOENCODING = "utf-8"
+$ex = "C:/Users/weika/OneDrive/Desktop/carlink-system-master/example_case"
+python scripts/benchmark_intake.py --scratch C:/bench/lite-medium `
+    --cases $ex --key $ex/_benchmark/key.json --reports $ex --sort-cache C:/bench/sortcache `
+    --out C:/bench/out/lite-medium.json --repeat 3 --models gemini-3.5-flash-lite --thinking-level-read medium
+```
+
+- `--scratch DIR` puts the run's database (`DIR/run.db`) and storage in DIR and stands for
+  `BENCHMARK_SCRATCH=1`; it refuses when the app is already loaded on another database.
+- `BENCH_CASES`, `BENCH_KEY`, `BENCH_REPORTS`, `BENCH_SORT_CACHE` give the defaults of
+  `--cases`, `--key`, `--reports`, `--sort-cache`.
+- `example_case` holds each case's photo folder under the key's `folder` names, and their
+  CL reports beside the photos: `--reports` finds them by plate. The photos there are the
+  camera originals; the app reads the 1600 px previews it makes of them, as on the server.
+- The sort cache starts empty on a PC: the first run sorts every photo (about 22 calls).
+
 ## The sort cache
 
 `/tmp/bench/sortcache` keeps each photo's sorting result by its sha256, in a folder per sorting
 setup: the triage model chain, `app.ai.triage.SORT_PROMPT_VERSION` ("v0" when the module has
-none) and a fingerprint of the sorting prompt and schema. The first run of a setup sorts and
+none), a fingerprint of the sorting prompt and schema, and the sorting thinking level when
+one is set (unset, the folder is the one filled before the setting existed). The first run of a setup sorts and
 fills it; every later run with the same setup -- any label, any branch whose sorting is
 unchanged -- takes the same sort and makes no sorting call. Reading changes are then measured
 without sorting's variance, and the run is much cheaper. A branch that changes the sorting
@@ -151,6 +249,8 @@ out when the output is to be pasted anywhere.
   "git_ref": "feat/bench-harness@<sha>",
   "args": {...the command line...},
   "models": {"model_chain": "...", "triage_model_chain": "..."},
+  "ai_settings": {"thinking_level_read", "thinking_level_sort", "thinking_level_second_look",
+                  "image_resolution", "read_tools"},          # null: unset, nothing sent
   "sort_cache": {"dir", "triage_model_chain", "sort_prompt_version", "prompt_fingerprint"} | null,
   "started": "...", "finished": "...",
   "runs": [ one per case per repetition: everything the earlier versions wrote per case
@@ -162,7 +262,14 @@ out when the output is to be pasted anywhere.
             parts.matched / parts.side_undetermined,
             accounting {purpose: {calls, failed_calls, seconds, attempts, outcomes, slot_wait_s,
                                   n_429, wait_429_s, by_model {model: {attempts, answered,
-                                  seconds, outcomes}}}},
+                                  seconds, outcomes, [tokens]}}, [tokens]}},
+                       [tokens] = prompt_tokens, output_tokens, thought_tokens, tool_calls
+                       when Google reported them,
+            ai_calls [{purpose, model, ok, seconds, attempts, [tokens], images {resolution: n}}],
+            parts_fair {expected, visible_expected, found, visible_found, fair_found,
+                        fair_visible_found, neighbour [[drafted, key part]],
+                        other_named [[name, key part]], strict_extra, extra, fair_extra,
+                        contradicted [[drafted, report wording]] | null},
             sort_cache {hits, misses, stored},
             sorter {tagged_photos, tagged_in_key, label_precision, key_parts,
                     key_parts_photographed, photographed_recall, key_photos, key_photos_read,
@@ -190,6 +297,9 @@ out when the output is to be pasted anywhere.
 |---|---|
 | `found`, `visible_found` | key parts the drafted damage list names (a "(side undetermined)" name counts for its family); visible = the key's non-hidden parts |
 | `extra`, `wrong_side` | drafted parts not in the key; a key part named on the wrong side (not counted as found) |
+| `fair_found`, `fair_visible_found`, `fair_extra` | the fair score (above): found plus half a part per neighbour; extras less neighbours and Other items named like a key part |
+| `neighbour`, `other_named`, `contradicted` | neighbours credited; Other items not counted as extra; drafted parts the report passed as Serviceable |
+| `read_tok_in`, `read_tok_out`, `read_tok_think`, `read_code_runs` | the reading call's prompt, output and thinking tokens and code runs (also `sort_tok_*`, `look_tok_*`) |
 | `side_undetermined` | drafted "(side undetermined)" names |
 | `facts_ok` | vehicle facts read right, of 7 (none of the four photo sets has a log card: 5 is the ceiling) |
 | `photos_read`, `sort_s`, `read_s` | photos sent to the reading call; seconds of each stage |

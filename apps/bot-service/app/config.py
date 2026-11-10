@@ -1,4 +1,6 @@
 from pathlib import Path
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BOT_SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -6,6 +8,68 @@ DEFAULT_DB_PATH = (BOT_SERVICE_DIR / "carlink.db").resolve()
 DEFAULT_STORAGE_DIR = (BOT_SERVICE_DIR / "storage").resolve()
 # /app/secrets in the container (BOT_SERVICE_DIR is /app there).
 DEFAULT_SECRETS_DIR = (BOT_SERVICE_DIR / "secrets").resolve()
+
+# The values Gemini's Interactions API takes (google-genai 2.22.0:
+# GenerationConfig.thinking_level, ImageContent.resolution, the
+# code_execution tool), for the model settings below.
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
+IMAGE_RESOLUTIONS = ("low", "medium", "high", "ultra_high")
+READ_TOOLS = ("code_execution",)
+# The entry of a model setting that applies to every model (or every photo
+# kind) not named in it.
+ANY = "*"
+
+
+def _entries(text: str | None) -> list[str]:
+    return [e.strip() for e in (text or "").split(",") if e.strip()]
+
+
+def thinking_levels(text: str | None) -> dict[str, str]:
+    """A gemini_thinking_level_* setting as {model: level}. "medium" is
+    {"*": "medium"}, every model; "gemini-3.5-flash-lite=medium" names one
+    model, and a model not named gets no level at all (its own default);
+    both together, "low,gemini-3-flash-preview=high", give the bare level to
+    the rest. Per model because one chain mixes the strong model (default
+    high) with the lite ones (default minimal): raising the lite reader's
+    level must not lower the strong one's. {} when unset. Raises ValueError
+    on a level Gemini doesn't have."""
+    out: dict[str, str] = {}
+    for entry in _entries(text):
+        model, _, level = entry.rpartition("=")
+        model, level = model.strip() or ANY, level.strip().lower()
+        if level not in THINKING_LEVELS:
+            raise ValueError(f"thinking level {level!r}: use one of {', '.join(THINKING_LEVELS)}")
+        out[model] = level
+    return out
+
+
+def image_resolutions(text: str | None) -> dict[str, str]:
+    """gemini_image_resolution as {photo kind: resolution}: "damage=ultra_high,
+    tyre=ultra_high,overview=medium"; "*=medium" for every kind not named.
+    {} when unset. Raises ValueError on a malformed entry or a resolution
+    Gemini doesn't have. The kinds are the sorter's (ai/triage.PHOTO_KINDS)
+    plus "unsorted"; not checked here (config can't import the sorter), the
+    benchmark checks them."""
+    out: dict[str, str] = {}
+    for entry in _entries(text):
+        kind, sep, resolution = entry.partition("=")
+        kind, resolution = kind.strip().lower(), resolution.strip().lower()
+        if not sep or not kind:
+            raise ValueError(f"image resolution {entry!r}: write it as kind=resolution, e.g. damage=ultra_high")
+        if resolution not in IMAGE_RESOLUTIONS:
+            raise ValueError(f"image resolution {resolution!r}: use one of {', '.join(IMAGE_RESOLUTIONS)}")
+        out[kind] = resolution
+    return out
+
+
+def read_tools(text: str | None) -> list[str]:
+    """gemini_read_tools as tool names. [] when unset. Raises ValueError on
+    a tool this code doesn't know how to send."""
+    names = list(dict.fromkeys(e.lower() for e in _entries(text)))
+    unknown = [n for n in names if n not in READ_TOOLS]
+    if unknown:
+        raise ValueError(f"read tools {unknown}: only {', '.join(READ_TOOLS)}")
+    return names
 
 
 class Settings(BaseSettings):
@@ -49,6 +113,32 @@ class Settings(BaseSettings):
     # Review step shows no suggestions. The benchmark turns it on for a run
     # given --second-look-models.
     second_look_enabled: bool = False
+    # Generation settings for each kind of reading call, all unset by
+    # default: an unset one sends nothing, so the request is exactly what
+    # it was before they existed (contract 6, 2026-11-10). The lite models
+    # read at their default thinking level, which is "minimal" on
+    # gemini-3.5-flash-lite. Set them to measure (scripts/benchmark_intake.py
+    # --thinking-level-read ...), then here once a level has earned it.
+    #
+    # Thinking level per call kind: "minimal", "low", "medium" or "high" for
+    # every model of the chain, or per model ("gemini-3.5-flash-lite=medium",
+    # see thinking_levels). A model that refuses a level (gemini-3.8-flash
+    # has no "minimal") fails that try like any other error and the chain
+    # moves on to the next model.
+    gemini_thinking_level_read: str | None = None
+    gemini_thinking_level_sort: str | None = None
+    gemini_thinking_level_second_look: str | None = None
+    # Per photo kind on the reading call, e.g. "damage=ultra_high,
+    # tyre=ultra_high,overview=medium" (image_resolutions). Each image item
+    # gets that "resolution" (low/medium/high/ultra_high = 280/560/1120/2240
+    # tokens on Gemini 3; Gemini's default is high); a kind not named is sent
+    # without one. Sorting and the second look are never given one.
+    gemini_image_resolution: str | None = None
+    # Tools for the reading call only: "code_execution" lets the model crop
+    # and zoom into a photo itself (Agentic Vision). With a JSON schema this
+    # is a preview feature on Gemini 3 (Google's structured-output docs),
+    # untested on the lite models: a trial setting.
+    gemini_read_tools: str | None = None
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
@@ -99,6 +189,45 @@ class Settings(BaseSettings):
     # /docs, /redoc and /openapi.json. Off: they list every route to anyone
     # who signs up.
     enable_api_docs: bool = False
+
+    # A typo in one of the model settings stops the app at start-up rather
+    # than being sent to Gemini (a 400 on every call) or silently ignored.
+    @field_validator("gemini_thinking_level_read", "gemini_thinking_level_sort", "gemini_thinking_level_second_look")
+    @classmethod
+    def _thinking_level(cls, value):
+        return normal_thinking_levels(value)
+
+    @field_validator("gemini_image_resolution")
+    @classmethod
+    def _image_resolution(cls, value):
+        return normal_image_resolutions(value)
+
+    @field_validator("gemini_read_tools")
+    @classmethod
+    def _read_tools(cls, value):
+        return normal_read_tools(value)
+
+
+# Each model setting written the one way, None when blank (unset). Raise
+# ValueError as the parsers above do. The benchmark checks its flags with
+# them before it sets them on `settings` (an assignment isn't validated).
+def normal_thinking_levels(value) -> str | None:
+    if value is None:
+        return None
+    levels = thinking_levels(str(value))
+    return ",".join(level if model == ANY else f"{model}={level}" for model, level in levels.items()) or None
+
+
+def normal_image_resolutions(value) -> str | None:
+    if value is None:
+        return None
+    return ",".join(f"{kind}={r}" for kind, r in image_resolutions(str(value)).items()) or None
+
+
+def normal_read_tools(value) -> str | None:
+    if value is None:
+        return None
+    return ",".join(read_tools(str(value))) or None
 
 
 settings = Settings()
