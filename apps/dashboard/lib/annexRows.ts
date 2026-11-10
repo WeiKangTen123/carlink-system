@@ -153,7 +153,8 @@ export function originLabel(it: Pick<AnnexAPartItem, "origin" | "suggested_from"
  * of them carry a price: the "Annex A: 3 lines, 2 priced" cell on tab 1.
  * Matched on source_part; a row without one (saved before source_part
  * existed, or typed by hand) counts for the detected part whose name it
- * matches, if any -- `parts` are the detected part names. */
+ * matches, if any -- `parts` are the detected parts' sources
+ * (damageItemSource: "Other / Not Listed: <name>" for a named Other). */
 export function annexLinesByPart(items: AnnexAPartItem[], parts: string[] = []): Map<string, { lines: number; priced: number }> {
   const byName = new Map(parts.map((p) => [sameLineKey(p), p] as const));
   const out = new Map<string, { lines: number; priced: number }>();

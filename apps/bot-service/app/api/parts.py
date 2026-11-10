@@ -161,7 +161,9 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
             prices = [round(g.adjusted_cost / (g.qty or 1), 2) for g in group if g.adjusted_cost and g.adjusted_cost > 0]
             names = [g.item for g in group]
             rows.append({
-                "item": max(set(names), key=names.count),
+                # Sorted first so a tie between wordings is decided the same
+                # way in every process, as history.suggest does.
+                "item": max(sorted(set(names)), key=names.count),
                 "family": group[0].family,
                 "make": mk,
                 "model": md,

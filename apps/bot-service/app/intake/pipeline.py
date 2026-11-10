@@ -38,6 +38,7 @@ from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
 from app.config import settings
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
+from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
@@ -804,14 +805,19 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     merged["vehicle_info"] = new_v
 
     kept = [item for item in (current.get("damage_summary") or []) if item.get("human_verified")]
-    kept_parts = {item.get("part") for item in kept}
+    # By item_key, not the bare part: a checked "Other / Not Listed" item
+    # named "Rear air vent" would otherwise hide a newly read Other named
+    # "Window regulator motor" -- two unlisted parts, both "Other".
+    kept_keys = {item_key(item) for item in kept}
 
     def already_kept(item: dict) -> bool:
         # A part the resolver placed ("Left Tail Lamp", side_inferred) is
         # the same finding as one the surveyor checked as "Tail Lamp (side
         # undetermined)": the re-read must not add it beside theirs.
-        part = item.get("part")
-        return part in kept_parts or (bool(item.get("side_inferred")) and unsided_part(part or "") in kept_parts)
+        if item_key(item) in kept_keys:
+            return True
+        unsided = unsided_part(str(item.get("part") or ""))
+        return bool(item.get("side_inferred")) and bool(unsided) and item_key({"part": unsided}) in kept_keys
 
     merged["damage_summary"] = kept + [item for item in (new_ai.get("damage_summary") or []) if not already_kept(item)]
     merged["damaged_parts"] = [item.get("part") for item in merged["damage_summary"] if item.get("part")]

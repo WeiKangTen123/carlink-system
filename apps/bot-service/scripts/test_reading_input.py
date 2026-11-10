@@ -227,7 +227,9 @@ def build_input() -> None:
               "SORTER_HINTS off (A/B): the request is as without hints")
     finally:
         extraction.SORTER_HINTS = True
-    check(extraction._image_resolution("damage") is None, "the per-kind resolution hook returns None until M's helper is wired in")
+    # The no-op hook became structured.image_part(path, kind) (c80aa10).
+    check(structured.image_resolution("damage") is None and image_part(str(img), kind="damage") == image_part(str(img)),
+          "no gemini_image_resolution setting: a photo's kind adds nothing (Gemini's default, as before)")
 
 
 def prompt_rules() -> None:
@@ -235,11 +237,18 @@ def prompt_rules() -> None:
     check(all(s in prompt for s in ("shut lines", "A dent on a door's skin, even low down, is the door",
                                     "the sill is the panel below the doors", "behind the rear door")),
           "door vs sill vs rear quarter by the shut lines")
-    check("When a door is damaged, check the panels either side of it" in prompt and "wheel-arch trim and splash shield" in prompt,
-          "a damaged door: check the fender, other door, quarter, sill and the wheel-arch trim / splash shield")
-    check("'Wheel' means the rim" in prompt and "Marks or cuts on the tyre are not rim damage" in prompt, "wheel = rim, tyre marks aren't")
-    check("window regulator" in prompt and "list the door AND that part" in prompt and "'other_part_name'" in prompt,
-          "door internals: the door and the part itself, named in other_part_name")
+    # The parts the rules name are listed parts since agent T's (Wheel Arch
+    # Trim, Tyre, Window Regulator).
+    check("When a door is damaged, check the panels either side of it" in prompt
+          and "the 'Wheel Arch Trim' (the garnish on the arch's edge) and the 'Wheel Arch Liner' (the splash shield" in prompt,
+          "a damaged door: check the fender, other door, quarter, sill and the Wheel Arch Trim / Liner")
+    check("'Wheel' is the rim and 'Tyre' the tyre" in prompt and "tyre damage on the Tyre" in prompt
+          and "list the Tyre with 'ai_confidence' 'Low' and no 'severity'" in prompt,
+          "rim damage on the Wheel, tyre damage on the Tyre; a maybe-serviceable tyre at Low confidence, no severity")
+    check("list the door AND its 'Window Regulator'" in prompt
+          and "the door AND 'Other / Not Listed' with its name in 'other_part_name'" in prompt
+          and "'other_part_name' -- never on a listed part" in prompt,
+          "a regulator: the door and the Window Regulator; other door internals named in other_part_name, only on an Other")
     check(all(s in prompt for s in ("'Boot Lid' means a boot lid, tailgate or hatch door", "'Rear End Panel'",
                                     "a reflector in the bumper is a 'Rear Bumper Reflector'")),
           "the boot rules are kept")

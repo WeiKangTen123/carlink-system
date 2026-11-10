@@ -48,28 +48,29 @@ def _annex_a_rows(data: Dict[str, Any], scaffold: bool = True) -> List[Dict[str,
     items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or [])]
     if items or not scaffold:
         return items
-    # A part the surveyor dismissed (DELETE /damage-items) gets no row back,
-    # even when the table is otherwise empty.
-    from app.parts.history import canonical_part
-    from app.reports.taxonomy import annex_condition, body_type_for, firm_part_name
+    # Here: prefill imports this module.
+    from app.parts.prefill import item_key, item_row_name, item_source, side_unconfirmed
+    from app.reports.taxonomy import annex_condition
 
-    dismissed = {canonical_part(p) or p.strip() for p in (data.get("dismissed_parts") or []) if p}
+    # A part the surveyor dismissed (DELETE /damage-items) gets no row back,
+    # even when the table is otherwise empty. Keyed as prefill keys them: a
+    # named "Other / Not Listed" part by its name ("Other / Not Listed: Rear
+    # air vent" read as a part name is the Rear Bumper).
+    dismissed = {item_key({"part": p}) for p in (data.get("dismissed_parts") or []) if p}
     damage = [it for it in (data.get("damage_summary") or []) if it.get("part")]
     if not damage:
         damage = [{"part": p} for p in (data.get("damaged_parts") or []) if p]
-    damage = [it for it in damage if (canonical_part(it["part"]) or str(it["part"]).strip()) not in dismissed]
+    damage = [it for it in damage if item_key(it) not in dismissed]
     vehicle = data.get("vehicle_info") or {}
-    body = vehicle.get("body_type") or body_type_for(vehicle.get("make"), vehicle.get("model"))
     # The firm's words, as prefill.sync_annex_a writes them: the floor
     # wording, not the canonical name (no database here for past wording),
-    # without LH / RH while an inferred side is unconfirmed; the condition
-    # in the firm's words, the remarks, "Repair" disallowed.
-    from app.parts.prefill import side_unconfirmed  # here: prefill imports this module
-
+    # without LH / RH while an inferred side is unconfirmed, and a named
+    # unlisted part by its name; the condition in the firm's words, the
+    # remarks, "Repair" disallowed.
     return [
         {
             "item_no": f"{i}.0",
-            "part_name": firm_part_name(it["part"], body, unsided=side_unconfirmed(it)) or it["part"],
+            "part_name": item_row_name(it, vehicle, unsided=side_unconfirmed(it)),
             "condition": annex_condition(it),
             "action": (it.get("remarks") or "").strip(),
             "qty": 1.0,
@@ -85,7 +86,7 @@ def _annex_a_rows(data: Dict[str, Any], scaffold: bool = True) -> List[Dict[str,
             # So a later sync (prefill.sync_annex_a) knows the row is the
             # machine's and which damaged part it stands for.
             "origin": "detection",
-            "source_part": it["part"],
+            "source_part": item_source(it),
             "stale": False,
             "main": True,  # the part's own row (schema.AnnexAPartItem.main)
         }
