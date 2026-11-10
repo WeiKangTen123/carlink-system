@@ -517,6 +517,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # Every photo in camera order with where the sorter saw it taken,
         # read or not: resolve_sides places side-undetermined findings by it.
         photo_areas = voting_areas(photos)
+        sorter_parts = {p.id: p.part for p in photos if p.part}
     finally:
         db.close()
 
@@ -547,6 +548,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if not photo_id:
             item["bbox_2d"] = None
 
+    if settings.intake_side_from_sorter:
+        side_from_sorter(data.get("damage_summary") or [], sorter_parts)
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -633,6 +636,30 @@ def _clear_side(votes: Counter) -> str | None:
     if lead == 0 or left == right or loser * 2 > lead:
         return None
     return winner
+
+
+def side_from_sorter(items: list[dict], sorter_parts: dict[str, str]) -> list[dict]:
+    """Each item whose photo the sorter tagged with the same part on the
+    other side ("Left Front Door" read on a photo tagged "Right Front Door")
+    takes the sorter's side, in place. The sorter names a photo's side only
+    after working out which way the car faces in it (triage._SIDES, an
+    "angle" per photo); a light reader, asked for a whole case at once,
+    flips a side all the way through a case (SLC 2502 Y, 2026-11-10: every
+    right-side part read as left, every photo tagged right). Same part only:
+    a different part on the photo says nothing about this one.
+
+    sorter_parts: {photo id: the sorter's part}; items' photo_reference is
+    "@<photo id>" by now."""
+    for item in items:
+        base, side = split_side(item.get("part") or "")
+        tag = sorter_parts.get((item.get("photo_reference") or "").lstrip("@"))
+        if side is None or not tag:
+            continue
+        tag_base, tag_side = split_side(tag)
+        if tag_side and tag_base == base and tag_side != side:
+            logger.info("Side of %r taken from the sorter's tag on its photo: %r", item.get("part"), tag)
+            item["part"] = tag
+    return items
 
 
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],

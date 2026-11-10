@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     # How many photos one intake reading sends (intake/pipeline.read_limit);
     # unset: pipeline.MAX_READ_PHOTOS (32).
     intake_max_read_photos: int | None = None
+    # A part the reader names on a photo the sorter tagged with the same
+    # part on the other side takes the sorter's side (intake/pipeline.
+    # side_from_sorter). Off: the reader's side stands, as before.
+    intake_side_from_sorter: bool = True
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
