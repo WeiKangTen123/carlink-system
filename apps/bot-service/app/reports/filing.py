@@ -15,7 +15,10 @@ the tail they all run, so every filed case starts the same way:
     part for anyone else;
   - data["photo_index"]: what each photo is, in P-number order, from the
     wizard's sort step; kind None for bot photos, which were never sorted,
-    so a later re-detection (Phase 2) sorts them first.
+    so a later re-detection (Phase 2) sorts them first;
+  - the static check's empty fields take the firm's usual wording
+    (review.apply_template_defaults), listed in data["template_fields"]
+    so the case shows them as "check" until a person confirms them.
 
 The AI's own draft (Report.ai_draft) is the caller's to store: the bot has
 no Report row yet when this runs (it files before the PDF renders).
@@ -26,6 +29,7 @@ from app.auth.permissions import can_view_all_cases
 from app.intake.photos import photo_label
 from app.parts.prefill import sync_annex_a
 from app.reports.db import SessionLocal
+from app.reports.review import apply_template_defaults, is_blank
 from app.reports.schema import SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 
@@ -94,6 +98,8 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     # case renumbers.
     data.pop("second_look", None)
     data["sign_off"] = SignOffInfo().model_dump()
+    # Only the fields still empty, and none a person marked (data.checked).
+    data = apply_template_defaults(data)
     data["annex_a"] = {}
     data["annex_b"] = {}
     data = synthesize_annexes_for_report(data)
@@ -109,11 +115,20 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
 
 
 # The cover fields the AI reads off the photos. The case page and the
-# wizard tag such a field "(P03)" while its value is still the AI's.
+# wizard tag such a field "(P03)" while its value is still the AI's. The
+# tyre table is one value (review.FIELD_RULES "vehicle_info.tyres").
 AI_COVER_FIELDS = (
     "plate_number", "make", "model", "date_of_registration", "engine_number", "vin", "odometer_reading",
     "transmission", "color", "paintwork_condition", "steering_condition", "brakes_condition", "point_of_impact",
+    "tyres",
 )
+# The other facts the AI guesses (review.FIELD_RULES "guess"): top-level,
+# and per section. Police: only whether it was reported.
+AI_TOP_FIELDS = ("incident_datetime", "location", "accident_type")
+AI_SECTION_FIELDS = {
+    "insurance_details": ("claim_type", "workshop_assigned", "insurer_name", "policy_number", "claim_number"),
+    "police_report": ("reported_to_police",),
+}
 # Which sorted photo a field is read from, by kind (ai/triage.PHOTO_KINDS),
 # first choice first. Only fields a document photo states outright: the
 # log card carries the plate, make, model, registration date, engine and
@@ -130,16 +145,23 @@ _FIELD_PHOTO_KINDS = {
 
 def ai_read_for(ai_draft: dict | None, photo_index: list[dict] | None) -> tuple[dict | None, dict]:
     """(ai_read, ai_read_photos) for GET /reports/{id} and GET /intake/{id}:
-    the AI's non-empty values for the cover fields ({vehicle_info: {...},
-    incident_datetime}), and per such field the photo it was read from
-    ("P03") when the photo index can tell. (None, {}) with no draft.
-    Nothing here is ever printed, and nothing comes from anywhere but the
-    AI's own draft."""
+    the AI's non-empty values for the cover and parties fields
+    ({vehicle_info: {...}, incident_datetime, location, accident_type,
+    insurance_details: {...}, police_report: {...}}; a top-level one None
+    and a section {} when the AI left it empty), and per vehicle field the
+    photo it was read from ("P03") when the photo index can tell. (None,
+    {}) with no draft. Nothing here is ever printed, and nothing comes from
+    anywhere but the AI's own draft."""
     if not ai_draft:
         return None, {}
     vehicle = ai_draft.get("vehicle_info") or {}
-    values = {key: vehicle[key] for key in AI_COVER_FIELDS if vehicle.get(key) not in (None, "", [])}
-    read = {"vehicle_info": values, "incident_datetime": ai_draft.get("incident_datetime") or None}
+    values = {key: vehicle[key] for key in AI_COVER_FIELDS if not is_blank(vehicle.get(key))}
+    read = {"vehicle_info": values}
+    for key in AI_TOP_FIELDS:
+        read[key] = None if is_blank(ai_draft.get(key)) else ai_draft.get(key)
+    for section, keys in AI_SECTION_FIELDS.items():
+        found = ai_draft.get(section) or {}
+        read[section] = {key: found[key] for key in keys if not is_blank(found.get(key))}
     first_of_kind: dict[str, str] = {}
     for entry in photo_index or []:
         if entry.get("kind") and entry.get("label"):

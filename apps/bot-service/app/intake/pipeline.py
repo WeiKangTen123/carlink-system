@@ -41,6 +41,7 @@ from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
+from app.reports.review import keep_checked
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -780,7 +781,10 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
         from what the AI said last time -- and otherwise takes the new
         reading (or keeps the old value if the new reading is empty);
       - damage items the surveyor checked (human_verified) are kept, and the
-        AI's items are added only for parts not already among them.
+        AI's items are added only for parts not already among them;
+      - what a person confirmed (data.checked, app/reports/review.py) and
+        the list of fields the firm's usual wording filled stay, and a
+        confirmed field keeps its value, whatever the new reading says.
     """
     previous_ai = previous_ai or {}
     merged = dict(new_ai)
@@ -826,4 +830,4 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     # (second_look._store). The reading itself never writes one.
     if current.get("second_look"):
         merged["second_look"] = current["second_look"]
-    return merged
+    return keep_checked(current, merged)

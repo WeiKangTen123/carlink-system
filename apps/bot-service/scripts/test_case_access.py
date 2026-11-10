@@ -631,11 +631,13 @@ def _probe_routes(B_id: str, photo_id: str) -> tuple[list, list]:
         ("GET", "/reports/{id}/annex-suggestions", dict),
         ("POST", "/reports/{id}/annex-suggestions/ai", lambda: {"json": {"parts": ["Rear Bumper"]}}),
         ("PUT", "/reports/{id}/annex-a", lambda: {"json": {"items": [{"part_name": "B's line", "workshop_est": 1}]}}),
-        ("POST", "/reports/{id}/sign-off", lambda: {"json": {"terms_accepted": True}}),
+        ("POST", "/reports/{id}/sign-off", lambda: {"json": {"terms_accepted": True, "open_items_ack": True}}),
         ("POST", "/reports/{id}/reopen", dict),
         ("PATCH", "/reports/{id}/owner", lambda: {"json": {"owner_id": B_id}}),
         ("GET", "/intake/{id}", dict),
         ("PUT", "/intake/{id}/data", lambda: {"json": {"data": {"description": "B was here", "category": ["Other"]}}}),
+        ("PUT", "/reports/{id}/checked", lambda: {"json": {"set": {"location": {}}}}),
+        ("PUT", "/intake/{id}/checked", lambda: {"json": {"set": {"location": {}}}}),
         ("PATCH", "/intake/{id}/photos/{photo}", lambda: {"json": {"excluded": True}}),
         ("POST", "/intake/{id}/photos", upload_kw),
         ("POST", "/intake/{id}/process", lambda: {"json": {"mode": "all"}}),
@@ -761,7 +763,7 @@ def who_may_do_what() -> None:
         r = call()
         check(r.status_code == 403 and code_of(r) == "not_allowed", f"S {label} on A's draft -> 403 not_allowed", brief(r))
     for label, call in (("PUT /reports/{id}", lambda: S.c.put(f"/reports/{MXD}", **edit("S"))),
-                        ("POST /reports/{id}/sign-off", lambda: S.c.post(f"/reports/{MXD}/sign-off", json={"terms_accepted": True}))):
+                        ("POST /reports/{id}/sign-off", lambda: S.c.post(f"/reports/{MXD}/sign-off", json={"terms_accepted": True, "open_items_ack": True}))):
         r = call()
         check(r.status_code in (403, 409), f"S {label} on A's draft is refused (403 or 409)", brief(r))
     r = A.c.get(f"/intake/{MXD}")
@@ -776,9 +778,9 @@ def who_may_do_what() -> None:
     _perm_check(admin, f"/intake/{MXD}", {"edit": True, "delete": True}, "admin on A's draft")
 
     print("  sign-off and reopen")
-    r = B.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True})
+    r = B.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 404, "B can't sign off A's case (404)", brief(r))
-    r = S.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True})
+    r = S.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "S (staff, may sign off) signs off A's case", brief(r))
     _perm_check(A, f"/reports/{MX}", {"reopen": False}, "A on a case S signed")
     _perm_check(S, f"/reports/{MX}", {"reopen": True}, "S on the case S signed")
@@ -789,7 +791,7 @@ def who_may_do_what() -> None:
     check(r.status_code == 404, "B can't reopen it (404)", brief(r))
     r = S.c.post(f"/reports/{MX}/reopen")
     check(r.status_code == 200, "S, the signer, reopens it", brief(r))
-    r = admin.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True})
+    r = admin.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "the admin signs off A's case", brief(r))
     r = A.c.post(f"/reports/{MX}/reopen")
     check(r.status_code == 403, "A can't reopen the admin's sign-off either", brief(r))

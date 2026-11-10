@@ -285,6 +285,7 @@ DECISIONS = {
     ("PUT", "/reports/{report_id}/cover-page"): ("case-edit", "Our Ref (report_id) staff only, as PUT /reports/{id}"),
     ("PUT", "/reports/{report_id}/annex-b"): ("case-edit", ""),
     ("PUT", "/reports/{report_id}/annex-c"): ("case-edit", ""),
+    ("PUT", "/reports/{report_id}/checked"): ("case-edit", "field review marks; 409 intake / signed off; tested in scripts/test_field_review.py"),
     ("POST", "/reports/{report_id}/annex-a/prefill"): ("case-edit", "then 403 not_allowed unless admin or sees_all_cases (the price book)"),
     ("POST", "/reports/{report_id}/upload-photos"): ("case-edit", "no AI (P4); 507 disk_full; 60 photos an hour for unvetted accounts (429 rate_limited)"),
     ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_limit; 2 renders at once (B2)"),
@@ -292,6 +293,7 @@ DECISIONS = {
     ("PATCH", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),
     ("DELETE", "/intake/{report_id}/photos/{photo_id}"): ("case-edit", ""),
     ("PUT", "/intake/{report_id}/data"): ("case-edit", ""),
+    ("PUT", "/intake/{report_id}/checked"): ("case-edit", "field review marks, as the autosave; tested in scripts/test_field_review.py"),
     ("POST", "/intake/{report_id}/finalize"): ("case-edit", "the owner stays whoever started the draft"),
 
     ("DELETE", "/reports/{report_id}"): ("special", "case-view; a draft: owner or admin; a filed case: admin only"),
@@ -563,7 +565,7 @@ def setup() -> None:
     W.A_F1 = new_case(W.A, plate="SAP1111A")
     W.A_F2 = new_case(W.A, plate="SAP2222A")
     W.A_F3 = new_case(W.A, plate="SAP3333A")
-    r = W.admin.c.post(f"/reports/{W.A_F3}/sign-off", json={"terms_accepted": True})
+    r = W.admin.c.post(f"/reports/{W.A_F3}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     need(r.status_code == 200, "the admin signs off one of A's cases", brief(r))
 
 
@@ -847,15 +849,15 @@ def b2_sign_off() -> None:
     check(sign_perm(S, a_case1) is False, "...and for S (sees all, no sign-off tick)", repr(sign_perm(S, a_case1)))
     check(sign_perm(M, m_case) is True, "...true for M (may sign off) on M's case", repr(sign_perm(M, m_case)))
     check(sign_perm(admin, a_case1) is True, "...true for the admin", repr(sign_perm(admin, a_case1)))
-    r = A.c.post(f"/reports/{a_case1}/sign-off", json={"terms_accepted": True})
+    r = A.c.post(f"/reports/{a_case1}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 403, "A (self-signup) can't sign off A's own case (403)", brief(r))
-    r = S.c.post(f"/reports/{a_case2}/sign-off", json={"terms_accepted": True})
+    r = S.c.post(f"/reports/{a_case2}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 403, "S (sees all, no sign-off tick) can't sign off A's case (403)", brief(r))
-    r = M.c.post(f"/reports/{a_case2}/sign-off", json={"terms_accepted": True})
+    r = M.c.post(f"/reports/{a_case2}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 404, "M can't sign off a case M can't see (404)", brief(r))
-    r = M.c.post(f"/reports/{m_case}/sign-off", json={"terms_accepted": True})
+    r = M.c.post(f"/reports/{m_case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "M (may sign off) signs off M's own case", brief(r))
-    r = admin.c.post(f"/reports/{a_case3}/sign-off", json={"terms_accepted": True})
+    r = admin.c.post(f"/reports/{a_case3}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "the admin signs off A's case", brief(r))
 
 

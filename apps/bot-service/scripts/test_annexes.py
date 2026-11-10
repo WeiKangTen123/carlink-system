@@ -622,7 +622,7 @@ def main() -> int:
     ok(f"download.xlsx answers the four-sheet workbook ({'agent A''s exporter' if REAL_XLSX else 'stand-in exporter'}) under the same name and gates")
 
     print("sign-off keeps Annex C")
-    r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "signatory_title": "Automotive Engineer Assessor"})
+    r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "open_items_ack": True, "signatory_title": "Automotive Engineer Assessor"})
     assert r.status_code == 200, r.text
     so = r.json()["sign_off"]
     assert so["status"] == "Signed Off" and so["surveyor_name"] == "Patrick Ng" and so["signatory_title"] == "Automotive Engineer Assessor"
@@ -633,7 +633,7 @@ def main() -> int:
     assert signed["insurance_details"]["final_approved_cost"] == "S$6,500.00"
     ok("a sign-off without figures keeps Annex C's lump sum and days, records the signatory title, and adds no GST")
     assert surveyor.post(f"/reports/{rid}/reopen").status_code == 200
-    r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "agreed_quantum": "6000", "turnaround_days": 12,
+    r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "open_items_ack": True, "agreed_quantum": "6000", "turnaround_days": 12,
                                                         "liability_opinion": "Third party fully at fault"})
     assert r.status_code == 200, r.text
     so = r.json()["sign_off"]
