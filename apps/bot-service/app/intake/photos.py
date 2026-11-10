@@ -2,6 +2,7 @@
 import shutil
 from pathlib import Path
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -43,6 +44,23 @@ def ordered_photos(db: Session, report_id: str) -> list[IntakePhoto]:
         .order_by(IntakePhoto.position, IntakePhoto.created_at)
         .all()
     )
+
+
+def first_photo_paths(db: Session, report_ids) -> dict[str, str]:
+    """{draft id: path of its first photo in ordered_photos' order}, in one
+    query for the whole case list (GET /reports' thumbnails), where it used
+    to be one query per draft. Drafts with no photo are left out."""
+    ids = [i for i in report_ids if i]
+    if not ids:
+        return {}
+    rank = (
+        func.row_number()
+        .over(partition_by=IntakePhoto.report_id, order_by=(IntakePhoto.position, IntakePhoto.created_at))
+        .label("rank")
+    )
+    ranked = db.query(IntakePhoto.report_id, IntakePhoto.path, rank).filter(IntakePhoto.report_id.in_(ids)).subquery()
+    rows = db.query(ranked.c.report_id, ranked.c.path).filter(ranked.c.rank == 1).all()
+    return {report_id: path for report_id, path in rows}
 
 
 def photo_label(index: int) -> str:

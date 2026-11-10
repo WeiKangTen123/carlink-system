@@ -168,21 +168,8 @@ def _error_by(db, user_id: str | None) -> dict | None:
 
 
 def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
-    stage, error, error_code, error_by = session.stage, session.error, session.error_code, session.error_by
-    # Left mid-run by a restart: the thread is gone but the row still says
-    # it's working, and the wizard would poll forever.
-    if stage in pipeline.RUNNING_STAGES and not pipeline.is_running(report.id):
-        stage = "failed"
-        error = (
-            "Processing stopped before finishing (the server restarted). "
-            "Press Retry to continue -- photos already sorted are kept."
-        )
-        error_code = error_by = None
-    # Left mid-filing by a restart: failed, with File case enabled again
-    # (the wizard words filing_interrupted and opens on the File case step).
-    if pipeline.filing_interrupted(session):
-        stage, error = "failed", pipeline.FILING_INTERRUPTED_MESSAGE
-        error_code, error_by = pipeline.FILING_INTERRUPTED, None
+    # A run or a filing a restart cut off reads as failed (pipeline.shown_state).
+    stage, error, error_code, error_by = pipeline.shown_state(session)
     photos = ordered_photos(db, report.id)
     # The AI's own values for the cover fields and the sorted photo each
     # was read from, so the wizard's cover page can tag them "(P03)";

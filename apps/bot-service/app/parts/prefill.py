@@ -486,3 +486,25 @@ def prefill_counts(data: dict) -> tuple[int, int]:
     filled = sum(1 for r in items if r.get("prefilled") and float(r.get("workshop_est") or 0) > 0)
     unpriced = sum(1 for r in items if float(r.get("workshop_est") or 0) <= 0)
     return filled, unpriced
+
+
+def unpriced_rows(data: dict) -> int:
+    """Annex A lines still without a workshop estimate, counted as the
+    Annex A tab counts "N lines unpriced" (a line with a description and
+    no estimate), stale lines left out: their part is no longer damaged,
+    so they wait on Keep or Remove, not on a price. From the rows as
+    stored (no sync_annex_a): GET /reports counts every case with it, so
+    a value that isn't a number counts as no estimate rather than failing
+    the whole list."""
+    annex = data.get("annex_a")
+    items = annex.get("items") if isinstance(annex, dict) else None
+
+    def unpriced(row) -> bool:
+        if not isinstance(row, dict) or row.get("stale") or not str(row.get("part_name") or "").strip():
+            return False
+        try:
+            return float(row.get("workshop_est") or 0) <= 0
+        except (TypeError, ValueError):
+            return True
+
+    return sum(1 for row in items or [] if unpriced(row))

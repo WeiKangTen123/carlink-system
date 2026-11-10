@@ -54,6 +54,10 @@ RUNNING_STAGES = {"sorting", "reading"}
 FINALIZE_STALE_AFTER = timedelta(minutes=10)
 FILING_INTERRUPTED = "filing_interrupted"
 FILING_INTERRUPTED_MESSAGE = "Filing stopped before it finished (the server restarted). Press File case again."
+RUN_INTERRUPTED_MESSAGE = (
+    "Processing stopped before finishing (the server restarted). "
+    "Press Retry to continue -- photos already sorted are kept."
+)
 
 
 def finalize_cutoff(now: datetime | None = None) -> datetime:
@@ -75,6 +79,22 @@ def filing_interrupted(session: IntakeSession, now: datetime | None = None) -> b
         return True
     since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
     return since < (now or datetime.now(timezone.utc)) - FINALIZE_STALE_AFTER
+
+
+def shown_state(session: IntakeSession, now: datetime | None = None) -> tuple[str, str | None, str | None, str | None]:
+    """(stage, error, error_code, error_by) as the wizard shows the draft
+    (GET /intake/{id}); GET /reports' intake_stage and intake_error_code
+    read the same, so the case list never calls "working" a draft the
+    wizard calls failed."""
+    # Left mid-run by a restart: the thread is gone but the row still says
+    # it's working, and the wizard would poll forever.
+    if session.stage in RUNNING_STAGES and not is_running(session.report_id):
+        return "failed", RUN_INTERRUPTED_MESSAGE, None, None
+    # Left mid-filing by a restart: failed, with File case enabled again
+    # (the wizard words filing_interrupted and opens on the File case step).
+    if filing_interrupted(session, now):
+        return "failed", FILING_INTERRUPTED_MESSAGE, FILING_INTERRUPTED, None
+    return session.stage, session.error, session.error_code, session.error_by
 
 
 # Photos that carry facts rather than damage, taken first. Documents are the

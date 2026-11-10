@@ -53,6 +53,53 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def last_photo_at(db, report_ids) -> dict[str, datetime]:
+    """{draft id: when its newest photo was uploaded}, in one query; drafts
+    with no photo are left out."""
+    ids = [i for i in report_ids if i]
+    if not ids:
+        return {}
+    rows = (
+        db.query(IntakePhoto.report_id, func.max(IntakePhoto.created_at))
+        .filter(IntakePhoto.report_id.in_(ids))
+        .group_by(IntakePhoto.report_id)
+        .all()
+    )
+    return {report_id: newest for report_id, newest in rows}
+
+
+def draft_deletes_at(
+    session: IntakeSession, report: Report | None, last_photo: datetime | None, now: datetime | None = None
+) -> datetime | None:
+    """When sweep() deletes this draft if nobody works on it: its last
+    activity + DRAFT_MAX_IDLE. None when the idle rule doesn't apply to it
+    at all. The one rule for the sweep and GET /reports' draft_deletes_at
+    (the Overview's "deleted in 2 days unless worked on"). last_photo: its
+    newest IntakePhoto.created_at (last_photo_at)."""
+    now = now or datetime.now(timezone.utc)
+    # Untaken public reports keep the date promised at consent
+    # (public.sweep_untaken), not this one (review H3).
+    if report is not None and in_inbox(report):
+        return None
+    # A filing a restart cut off (pipeline.filing_interrupted) is a failed
+    # draft like any other: skipped for good it was a leak. Likewise an AI
+    # run a restart cut off: the stage still says "sorting"/"reading" but
+    # no thread here runs it (the wizard already shows it as failed,
+    # pipeline.is_running); left out it was skipped forever, the same leak.
+    busy = (session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(session.report_id)) or (
+        session.stage == "finalizing" and not pipeline.filing_interrupted(session, now)
+    )
+    if busy:
+        return None
+    # Last activity is the latest of: draft created, session row changed
+    # (autosave, AI run, a public report taken), newest photo uploaded. The
+    # session row alone isn't enough -- uploads don't touch it.
+    candidates = [_as_utc(session.updated_at), _as_utc(last_photo)]
+    if report is not None:
+        candidates.append(_as_utc(report.created_at))
+    return max(c for c in candidates if c is not None) + DRAFT_MAX_IDLE
+
+
 def _sweep_intake_folders(now: datetime) -> int:
     """intake/{id}/ folders with no IntakeSession, last changed over
     ORPHAN_FOLDER_AGE ago. Returns how many were removed."""
@@ -93,33 +140,10 @@ def sweep(now: datetime | None = None) -> dict:
             if session is None:
                 continue
             report = db.get(Report, report_id)
-            # Untaken public reports keep the date promised at consent
-            # (public.sweep_untaken, below), not this one (review H3).
-            if report is not None and in_inbox(report):
-                continue
-            # Last activity is the latest of: draft created, session row
-            # changed (autosave, AI run, a public report taken), newest
-            # photo uploaded. The session row alone isn't enough -- uploads
-            # don't touch it.
-            last_photo = (
-                db.query(func.max(IntakePhoto.created_at))
-                .filter(IntakePhoto.report_id == report_id)
-                .scalar()
-            )
-            candidates = [_as_utc(session.updated_at), _as_utc(last_photo)]
-            if report is not None:
-                candidates.append(_as_utc(report.created_at))
-            last_activity = max(c for c in candidates if c is not None)
-            # A filing a restart cut off (pipeline.filing_interrupted) is a
-            # failed draft like any other: skipped for good it was a leak.
-            # Likewise an AI run a restart cut off: the stage still says
-            # "sorting"/"reading" but no thread here runs it (the wizard
-            # already shows it as failed, pipeline.is_running); left out it
-            # was skipped forever, the same leak.
-            busy = (session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id)) or (
-                session.stage == "finalizing" and not pipeline.filing_interrupted(session, now)
-            )
-            if busy or now - last_activity < DRAFT_MAX_IDLE:
+            # Not for untaken public reports (public.sweep_untaken, below)
+            # nor while a run or filing is under way: draft_deletes_at.
+            due = draft_deletes_at(session, report, last_photo_at(db, [report_id]).get(report_id), now)
+            if due is None or now < due:
                 continue
             if report is not None and is_public(report):
                 # A taken public draft: deleted with its submission row, and

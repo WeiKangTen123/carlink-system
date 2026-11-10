@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm import defer
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
 from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
 from app.auth import chat_links
-from app.auth.core import CurrentUser, audit, report_history
+from app.auth.core import CurrentUser, audit, reopened_cases, report_history
 from app.auth.deps import (
     CASE_NOT_FOUND,
     ApiError,
@@ -73,16 +74,17 @@ from app.auth.permissions import (
 )
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
-from app.intake import public
-from app.intake.photos import remove_intake_dir
+from app.intake import pipeline, public
+from app.intake.cleanup import draft_deletes_at, last_photo_at
+from app.intake.photos import first_photo_paths, remove_intake_dir
 from app.reports import owners
 from app.parts.history import canonical_part
-from app.parts.prefill import sync_annex_a
+from app.parts.prefill import sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
 from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
-from app.reports.models import ApiKey, AppSetting, IntakePhoto, Report, User, gen_id, iso_utc
+from app.reports.models import ApiKey, AppSetting, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.taxonomy import (
     BODY_TYPES,
     CANONICAL_DAMAGE_TYPES,
@@ -306,6 +308,45 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _attention_fields(
+    r: Report, data: dict, session: IntakeSession | None, last_photo: datetime | None, reopened: bool, now: datetime
+) -> dict:
+    """What GET /reports adds for the Overview's "Needs attention" list.
+    Never the run's free-text error or whose run it was (both may name a
+    person or quote Google), and nothing from a public sender's details.
+
+    intake_stage: a draft's stage as the wizard shows it -- a run or a
+    filing a restart cut off is "failed", the filing one with error code
+    filing_interrupted (pipeline.shown_state); None for a filed case, or a
+    draft with no progress row. intake_error_code: that code (ai/keys'
+    AiUnavailable codes, filing_interrupted) when the stage is failed.
+    draft_deletes_at: when the idle sweep would delete the draft if
+    nobody works on it (cleanup.draft_deletes_at, the sweep's own rule);
+    None while a run or filing is under way, and for a filed case.
+    unpriced_rows: a filed case's Annex A lines with no estimate yet, stale
+    ones left out (prefill.unpriced_rows). reopened: signed off once,
+    reopened since, not signed off again (core.reopened_cases)."""
+    if r.status != "intake":
+        return {
+            "intake_stage": None,
+            "intake_error_code": None,
+            "draft_deletes_at": None,
+            "unpriced_rows": unpriced_rows(data),
+            "reopened": reopened,
+        }
+    stage = error_code = deletes_at = None
+    if session is not None:
+        stage, _error, error_code, _error_by = pipeline.shown_state(session, now)
+        deletes_at = draft_deletes_at(session, r, last_photo, now)
+    return {
+        "intake_stage": stage,
+        "intake_error_code": error_code if stage == "failed" else None,
+        "draft_deletes_at": iso_utc(deletes_at) if deletes_at else None,
+        "unpriced_rows": 0,
+        "reopened": False,
+    }
+
+
 @app.get("/reports")
 def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user)) -> list[dict]:
     """?scope=mine|all|unassigned. Plain users only ever get their own
@@ -316,6 +357,19 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
         owner_rows = owners.owners_by_id(db, {r.owner_id for r in reports})
         # TG-... of the reports the public sent, in one query.
         references = public.references_for(db, [r.id for r in reports if r.channel == PUBLIC_CHANNEL])
+        # What the Overview's "Needs attention" reads, a query each for the
+        # whole list, never one per case: drafts' first photos and progress
+        # (the AI draft left unloaded: nothing here reads it), when the idle
+        # sweep would delete them, and which filed cases were reopened.
+        draft_ids = [r.id for r in reports if r.status == "intake"]
+        first_photos = first_photo_paths(db, draft_ids)
+        sessions = {}
+        if draft_ids:
+            query = db.query(IntakeSession).options(defer(IntakeSession.ai_draft))
+            sessions = {s.report_id: s for s in query.filter(IntakeSession.report_id.in_(draft_ids))}
+        last_photos = last_photo_at(db, draft_ids)
+        reopened = reopened_cases(db, [r.id for r in reports if r.status != "intake"])
+        now = datetime.now(timezone.utc)
         result = []
         for r in reports:
             data = r.data or {}
@@ -332,13 +386,7 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
                 # (see api/intake.py), and the guesses below would label a
                 # draft nobody has described yet as some specific car.
                 raw_vname = raw_vname or "New intake (in progress)"
-                first_photo = (
-                    db.query(IntakePhoto)
-                    .filter(IntakePhoto.report_id == r.id)
-                    .order_by(IntakePhoto.position, IntakePhoto.created_at)
-                    .first()
-                )
-                thumbnail_url = to_thumbnail_url(first_photo.path) if first_photo else None
+                thumbnail_url = to_thumbnail_url(first_photos[r.id]) if r.id in first_photos else None
             elif not raw_vname or raw_vname.strip() in ("", "None", "None None"):
                 # Unrecorded stays unrecorded (the dashboard shows "Vehicle
                 # not recorded"). This used to guess from description words
@@ -384,6 +432,7 @@ def list_reports(scope: Scope = None, user: CurrentUser = Depends(current_user))
                 # data only, never from a public sender's details.
                 "report_id": data.get("report_id") or None,
                 "requested_by": (data.get("cover_page") or {}).get("requested_by") or None,
+                **_attention_fields(r, data, sessions.get(r.id), last_photos.get(r.id), r.id in reopened, now),
             })
         return result
     finally:
