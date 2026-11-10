@@ -159,8 +159,12 @@ _OVERLOADED = re.compile(r"\b503\b|UNAVAILABLE|overloaded|high demand", re.IGNOR
 def is_overloaded(error: Exception) -> bool:
     """Google answered "busy, try again later" (503 UNAVAILABLE, "currently
     experiencing high demand") rather than refusing this request."""
+    if isinstance(error, ValueError):
+        return False  # an answer that didn't parse, whatever it quotes
     status = getattr(error, "status_code", None) or getattr(error, "code", None)
-    return status == 503 or bool(_OVERLOADED.search(str(error)))
+    if isinstance(status, int):
+        return status == 503
+    return bool(_OVERLOADED.search(str(error)))
 
 
 def call_structured(
@@ -214,8 +218,11 @@ def call_structured(
     # Whether every try so far failed for the day's allowance (a skip, or a
     # 429 per day / "limit: 0"): then the call ends in allowance.DayUsedUp.
     all_day = True
-    # Whether every try so far was Google answering "busy" (is_overloaded):
+    # Whether every model that was asked answered "busy" (is_overloaded):
     # then the whole chain is asked once more after CHAIN_BUSY_RETRY_SECONDS.
+    # None until a model answers; a model skipped for its spent day leaves it
+    # as it is -- the strong model is spent most of the day, which is when
+    # the light ones being busy matters (review, 2026-11-10).
     all_busy = None
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
@@ -248,7 +255,6 @@ def call_structured(
                 _note_attempt(key, model_id, "day_spent", 0.0, time.monotonic(), None, spent_until=spent_until)
                 verdicts.append("no_allowance" if allowance.limit(key.fingerprint, model_id) == 0 else "quota")
                 last_error = allowance.DaySpent(model_id)
-                all_busy = False
                 continue
             # Every attempt takes a slot, not just the first. Previously the
             # gate ran once before these loops, so a draft that fell through

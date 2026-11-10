@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from typing import Iterable
 
 from app.parts.history import (
+    END_FALLBACK,
     FITTING_CONDITIONS,
     _without_side,
     canonical_part,
@@ -194,6 +195,15 @@ def _covered(name: str, kept_keys: set) -> bool:
     the same side, or the same wording with no side at all."""
     norm, side = line_key(name)
     return (norm, side) in kept_keys or (norm, None) in kept_keys
+
+
+def _held_family(family: str) -> str:
+    """The family an end-less past line is held under: a rim or tyre line
+    with no front/rear ("Sport rim") is drawn from "Wheel"/"Tyre"
+    (history.END_FALLBACK) whichever wheel asked for it, so a kept row's
+    "Rear Wheel" and the line's "Wheel" must compare equal, or the next sync
+    prints it again (review, 2026-11-10)."""
+    return END_FALLBACK.get(family, family)
 
 
 def _family(part: str) -> str:
@@ -520,6 +530,13 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     damaged_keys = {p["key"] for p in damaged}
     dismissed = {_part_key(p) for p in (data.get("dismissed_parts") or []) if p}
 
+    # A row made for an unnamed "Other / Not Listed" (before other_part_name,
+    # or before the surveyor named it) goes with the one named Other on the
+    # list once the unnamed one is gone: naming it must not leave its priced
+    # row stale and add a second, unpriced one (review, 2026-11-10).
+    named_others = [p for p in damaged if p["other"]]
+    adopt = named_others[0]["source"] if len(named_others) == 1 and OTHER_PART not in damaged_keys else None
+
     kept = []
     for row in ((data.get("annex_a") or {}).get("items") or []):
         if _machine_owned(row, damaged_names):
@@ -527,6 +544,8 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
         row = dict(row)
         row["origin"] = origin_of(row, damaged_names)  # written back, so old rows are derived once
         row.setdefault("source_part", None)
+        if adopt and row["source_part"] and _part_key(row["source_part"]) == OTHER_PART:
+            row["source_part"] = adopt
         row["stale"] = bool(row["source_part"]) and _part_key(row["source_part"]) not in damaged_keys
         kept.append(row)
 
@@ -554,7 +573,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     seen: set[tuple] = set()
     # A past line no past case gave a side ("Taillamps assy" x2) stands for
     # its family: held once, by whichever damaged side's row has it.
-    family_held = {(_family(r["source_part"]), line_key(r.get("part_name", "")))
+    family_held = {(_held_family(_family(r["source_part"])), line_key(r.get("part_name", "")))
                    for r in kept if r.get("source_part") and not r["stale"]}
     # Named unlisted parts last, so one that a listed part's past lines
     # already hold (a "Rear air vent" in the Civic's bumper kit) isn't
@@ -627,7 +646,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
                 # "Taillamps assy" x2 printed once per lamp priced four
                 # lamps (live check, 2026-11-09). Once per family -- also
                 # when another side's kept row already has it.
-                fam_line = (ln.get("family") or _family(part["part"]), line_key(row["part_name"]))
+                fam_line = (_held_family(ln.get("family") or _family(part["part"])), line_key(row["part_name"]))
                 if fam_line in family_held:
                     continue
                 owner = ("family",) + fam_line

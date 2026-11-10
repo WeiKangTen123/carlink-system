@@ -96,7 +96,12 @@ def split_make_model(text: str) -> tuple[str, str]:
     ("Honda", "HR-V"); "Mercedes-Benz C200" -> ("Mercedes Benz", "C200").
     Only a make's hyphen splits: the model's used to as well, so HR-V was
     stored as "HR" and CX-3 and CX-5 were both "CX"."""
-    words = (text or "").split()
+    # Punctuation-only words ("Honda - Vezel") are no model (review,
+    # 2026-11-10); a make and model run together by a hyphen with nothing
+    # after it ("HONDA-VEZEL") are split.
+    words = [w for w in (text or "").split() if re.search(r"[0-9A-Za-z]", w)]
+    if len(words) == 1 and "-" in words[0].strip("-"):
+        words = words[0].split("-", 1)
     if words and "-" in words[0]:
         head = words[0].replace("-", " ").split()
         if " ".join(head[:2]).lower() in _TWO_WORD_MAKES:
@@ -390,6 +395,8 @@ _SIDED = {
 # either end's family when no past line in scope names that end: the
 # Civic's only rim line is "Sport rim".
 _END_FALLBACK = {"Front Wheel": "Wheel", "Rear Wheel": "Wheel", "Front Tyre": "Tyre", "Rear Tyre": "Tyre"}
+# For prefill, which holds an end-less line once whichever wheel drew it.
+END_FALLBACK = _END_FALLBACK
 
 
 @lru_cache(maxsize=4096)
