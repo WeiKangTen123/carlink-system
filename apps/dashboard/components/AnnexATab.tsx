@@ -23,6 +23,9 @@ import {
   type AnnexRow,
 } from "@/lib/annexRows";
 import { AnnexSuggestionsPanel } from "./AnnexSuggestionsPanel";
+import { ReviewBadge } from "./ReviewBadge";
+import { ReviewConfirmButton } from "./ReviewConfirmButton";
+import { CONFIRMED_ROW, annexAConfirmable, annexAState, annexATally, annexATallyText, isPastCasePrice } from "@/lib/reviewRows";
 import { LockedNote, SavedNote, UnsavedNote, fieldInputStyle } from "./SaveNotes";
 
 /** Tab 3, Annex A: the spare parts table (List Items / S/Nett Items,
@@ -87,6 +90,12 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   const detected = store.data.damage_summary || [];
   const verifiedCount = detected.filter((d) => d.human_verified).length;
   const unpricedCount = annexAItems.filter((r) => !r.stale && r.part_name.trim() && !r.workshop_est).length;
+
+  // Field review (contract 7), when the API sends one and the case is open:
+  // each line's state (Needs you / Check / You) from the line as it is now,
+  // so a typed price or a [✓] shows at once; the header counts them.
+  const reviewOn = Boolean(report.review) && !isSignedOff;
+  const tallyText = reviewOn ? annexATallyText(annexATally(annexAItems)) : "";
 
   // Every change goes into the store's Annex A draft and nothing is saved
   // until "Save Annex A"; adjusted costs follow from the row
@@ -216,6 +225,8 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   /** Where a row came from, under its description. The amber tag marks a
    * price from past cases that nobody has typed over yet. */
   const originNote = (item: AnnexRow) => {
+    // With field review on, the line's badge says "Check · from 3 past cases".
+    if (reviewOn && isPastCasePrice(item)) return null;
     if (item.prefilled && item.suggested_from) {
       return (
         <span className="annex-prefill-tag" title="The estimate was filled from past cases, not typed. Typing an estimate replaces it.">
@@ -228,6 +239,41 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
     }
     const label = originLabel(item);
     return label ? <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>{label}</div> : null;
+  };
+
+  /** Field review: the line's state, and [✓] Confirm on a price the
+   * machine put there (past cases above all) -- the price stays and the line
+   * is a person's (prefilled false, origin "typed"), saved with Save Annex A. */
+  const reviewLine = (item: AnnexRow, no: number) => {
+    if (!reviewOn) return null;
+    const state = annexAState(item);
+    if (state === "none") return null;
+    const label = item.part_name.trim() || `line ${no}`;
+    const detail =
+      state === "needs"
+        ? "no price yet"
+        : state === "check" && isPastCasePrice(item)
+          ? item.suggested_from
+            ? `from ${item.suggested_from}`
+            : "past-case price"
+          : state === "check" && !item.stale
+            ? item.workshop_est > 0
+              ? "price not confirmed"
+              : "Serviceable, no price"
+            : undefined;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginTop: 3 }}>
+        <ReviewBadge state={state} label={label} detail={detail} />
+        {!readOnly && annexAConfirmable(item) && (
+          <ReviewConfirmButton
+            label={label}
+            disabled={annexALocked}
+            title="Confirm: the price stands (checked against the quotation). Saved with Save Annex A."
+            onClick={() => updateAnnexRow(item._key, CONFIRMED_ROW)}
+          />
+        )}
+      </div>
+    );
   };
 
   /** A kept row whose part is no longer detected: the machine never deletes
@@ -263,6 +309,7 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
           <td data-label="Part" style={{ fontWeight: 600 }}>
             {item.part_name}
             {originNote(item)}
+            {reviewLine(item, no)}
             {staleNote(item, no)}
           </td>
           <td data-label="Condition">{item.condition || "—"}</td>
@@ -294,6 +341,7 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
             onChange={(e) => updateTypedRow(item._key, { part_name: e.target.value })}
           />
           {originNote(item)}
+          {reviewLine(item, no)}
           {staleNote(item, no)}
         </td>
         <td data-label="Condition" style={{ minWidth: 120 }}>
@@ -426,10 +474,17 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
           </div>
           {detected.length > 0 && (
             <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-              {verifiedCount} of {detected.length} detected part{detected.length === 1 ? "" : "s"} verified
+              {verifiedCount} of {detected.length} detected part{detected.length === 1 ? "" : "s"} {reviewOn ? "confirmed" : "verified"}
               {" · "}
-              {unpricedCount === 0 ? "every line priced" : `${unpricedCount} line${unpricedCount === 1 ? "" : "s"} unpriced`}
+              {reviewOn
+                ? tallyText || "no lines yet"
+                : unpricedCount === 0
+                  ? "every line priced"
+                  : `${unpricedCount} line${unpricedCount === 1 ? "" : "s"} unpriced`}
             </div>
+          )}
+          {reviewOn && detected.length === 0 && tallyText && (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{tallyText}</div>
           )}
           <LockedNote isSignedOff={isSignedOff} canEdit={canEdit} />
         </div>

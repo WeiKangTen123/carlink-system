@@ -11,6 +11,8 @@ import {
   removeDamageItem,
   getTaxonomy,
   signOffReport,
+  saveReportChecked,
+  OpenItemsError,
   uploadReportPhotos,
   getReport,
   getAnnexSuggestions,
@@ -50,7 +52,10 @@ import {
   type Owner,
   type SignOffRequest,
   type SignOffInfo,
+  type CheckedRequest,
+  type CheckedResponse,
 } from "@/lib/api";
+import type { Review } from "@/lib/review";
 import { buildReportPayload } from "./form-payload";
 
 export async function deleteReportAction(formData: FormData) {
@@ -151,7 +156,7 @@ export async function updateReportAction(id: string, formData: FormData): Promis
 export async function signOffReportAction(
   id: string,
   payload: SignOffRequest = {}
-): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo } | { error: string }> {
+): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo } | SignOffRefusal> {
   try {
     const result = await signOffReport(id, payload);
     revalidatePath(`/reports/${id}`);
@@ -161,7 +166,27 @@ export async function signOffReportAction(
   } catch (err) {
     // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
     unstable_rethrow(err);
+    // Fields still open and no "Sign off with N items open" tick (409):
+    // the count and the API's counts, so the box can offer the tick.
+    if (err instanceof OpenItemsError) return { error: err.message, openItems: { open: err.open, counts: err.counts } };
     return { error: err instanceof Error ? err.message : "Sign-off failed" };
+  }
+}
+
+/** A refused sign-off; openItems when the API refused it for open fields. */
+export type SignOffRefusal = { error: string; openItems?: { open: number; counts: Review["counts"] | null } };
+
+/** Confirms review fields, or takes a confirm back (PUT /reports/{id}/checked):
+ * "No labour" on Annex B is {set: {annex_b: {na: true}}}. */
+export async function saveReportCheckedAction(reportId: string, body: CheckedRequest): Promise<CheckedResponse | { error: string }> {
+  try {
+    const result = await saveReportChecked(reportId, body);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to save the confirm" };
   }
 }
 

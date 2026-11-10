@@ -17,6 +17,10 @@ import {
   type Taxonomy,
 } from "@/lib/api";
 import { ConditionPicker, conditionWordsIn } from "@/components/ConditionPicker";
+import { ReviewBadge } from "@/components/ReviewBadge";
+import { ReviewConfirmButton, ReviewUndoButton } from "@/components/ReviewConfirmButton";
+import type { Review } from "@/lib/review";
+import { damageCheckDetail, damageState } from "@/lib/reviewRows";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
@@ -46,6 +50,7 @@ type Props = {
    * field that still says what the AI said. */
   aiRead?: AiRead;
   aiReadPhotos?: Record<string, string> | null;
+  review?: Review | null;
   onBack: () => void;
   onNext: () => void;
 };
@@ -100,7 +105,7 @@ const meansStored = (key: CoverFormKey, raw: string, stored: string): boolean =>
 
 /** Step 3: the Cover Page (left, as printed) and the damaged parts as the
  * Annex A rows they become (right), with the photo evidence beside them. */
-export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, aiRead, aiReadPhotos, onBack, onNext }: Props) {
+export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, aiRead, aiReadPhotos, review, onBack, onNext }: Props) {
   const user = useCurrentUser();
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -356,7 +361,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
             <span className="intake-muted">These become the Annex A rows, unpriced.</span>
             {damage.length > 0 && (
               <span className={`intake-chip ${checked === damage.length ? "ok" : ""}`}>
-                {checked} of {damage.length} checked
+                {checked} of {damage.length} {review ? "confirmed" : "checked"}
               </span>
             )}
           </div>
@@ -373,7 +378,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                     <th style={{ width: 92 }}>Remarks</th>
                     <th style={{ width: 110 }}>Photo</th>
                     <th>Severity*</th>
-                    <th style={{ width: 70 }}>Verified</th>
+                    <th style={{ width: review ? 150 : 70 }}>{review ? "Review" : "Verified"}</th>
                     <th style={{ width: 36 }} aria-label="Remove" />
                   </tr>
                 </thead>
@@ -383,8 +388,10 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                     const photo = photoForReference(item.photo_reference, photos);
                     const box = bboxStyle(item.bbox_2d);
                     const partName = (item.part && damagePartLabel(item)) || "this item";
-                    // The AI's own doubt, only until the surveyor checks the row.
-                    const unsure = item.ai_confidence === "Low" && !item.human_verified;
+                    // The AI's own doubt, only until the surveyor checks the row
+                    // (the review badge says it instead, when the API sends one).
+                    const unsure = !review && item.ai_confidence === "Low" && !item.human_verified;
+                    const rowState = damageState(item);
                     const lit = highlighted === i || flashKey === key;
                     return (
                       <tr
@@ -437,7 +444,7 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                               }}
                             />
                           )}
-                          {item.side_inferred && !item.human_verified && (
+                          {!review && item.side_inferred && !item.human_verified && (
                             <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }} title="The AI guessed the side from nearby photos; check it">
                               side inferred
                             </span>
@@ -507,15 +514,34 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
                             onChange={(val) => setItem(i, { severity: val || null })}
                           />
                         </td>
-                        <td style={{ textAlign: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(item.human_verified)}
-                            onChange={(e) => setVerified(i, e.target.checked)}
-                            aria-label={`${partName} checked`}
-                            title={item.human_verified ? "Checked by you" : "Tick once you have checked this row against the photo"}
-                          />
-                        </td>
+                        {review ? (
+                          // Field review: the row's state, and [✓] to confirm it
+                          // (the old Verified tick) or undo a confirm.
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                              <ReviewBadge state={rowState} label={partName} detail={damageCheckDetail(item)} />
+                              {rowState === "you" ? (
+                                <ReviewUndoButton label={partName} onClick={() => setVerified(i, false)} />
+                              ) : (
+                                <ReviewConfirmButton
+                                  label={partName}
+                                  title="Confirm: you checked this part, its side and condition against the photo"
+                                  onClick={() => setVerified(i, true)}
+                                />
+                              )}
+                            </div>
+                          </td>
+                        ) : (
+                          <td style={{ textAlign: "center" }}>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.human_verified)}
+                              onChange={(e) => setVerified(i, e.target.checked)}
+                              aria-label={`${partName} checked`}
+                              title={item.human_verified ? "Checked by you" : "Tick once you have checked this row against the photo"}
+                            />
+                          </td>
+                        )}
                         <td>
                           <button type="button" className="annex-row-remove" onClick={() => removeItem(i)} aria-label={`Remove ${partName}`} title="Remove">
                             <Trash2 style={{ width: 14, height: 14 }} />

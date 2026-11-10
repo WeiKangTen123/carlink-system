@@ -1108,6 +1108,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiSkipped={aiSkipped}
           aiRead={state.ai_read}
           aiReadPhotos={state.ai_read_photos}
+          review={state.review}
           onBack={() => goTo(2)}
           onNext={() => goTo(4)}
         />

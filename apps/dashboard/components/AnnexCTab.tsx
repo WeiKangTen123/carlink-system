@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Eraser, FileSpreadsheet, FileText, RotateCcw, Save, Unlock } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Eraser, FileSpreadsheet, FileText, ListChecks, PenLine, RotateCcw, Save, Unlock } from "lucide-react";
 import { pdfDownloadUrl, xlsxDownloadUrl, type ReportDetail, type SignOffRequest } from "@/lib/api";
 import { reopenReportAction, saveAnnexCAction, signOffReportAction } from "@/app/reports/actions";
 import { useCurrentUser } from "@/components/CurrentUser";
@@ -10,8 +10,84 @@ import { formatSgd } from "@/lib/pastReports";
 import { annexCValues, type CaseStore } from "@/lib/caseState";
 import { isBadAmount, sumRows } from "@/lib/annexRows";
 import { LockedNote, Missing, SavedNote, UnsavedNote, Var, fieldInputStyle } from "./SaveNotes";
+import { ReviewBadge } from "./ReviewBadge";
+import { ANNEX_C_KEYS, annexCFieldState, openItemsLabel, openSections, openTotal, type OpenSection, type OpenTarget } from "@/lib/reviewRows";
 
 const DEFAULT_TITLE = "Automotive Engineer Assessor";
+
+/** A case tab an open item links to (components/StudioApp.tsx CaseTab). */
+type OpenTab = Exclude<OpenTarget, "record">;
+
+/** The sign-off box's "Open items" list (contract 7): each section with
+ * fields still needing a person or a check, linked to where it is fixed --
+ * its tab (?tab=, switched in place when the page passes onOpenTab), or the
+ * Case record drawer for the parties. */
+function OpenItemsList({
+  reportId,
+  sections,
+  total,
+  onOpenTab,
+  onOpenRecord,
+}: {
+  reportId: string;
+  sections: OpenSection[];
+  total: number;
+  onOpenTab?: (tab: OpenTab) => void;
+  onOpenRecord?: () => void;
+}) {
+  const link = (s: OpenSection) => {
+    if (s.target === "record") {
+      return onOpenRecord ? (
+        <button type="button" className="link-button" style={{ fontSize: 12 }} onClick={onOpenRecord}>
+          {s.label}
+        </button>
+      ) : (
+        <span>{s.label}</span>
+      );
+    }
+    // Annex C's own figures are on this tab, just above.
+    if (s.target === "annexC") return <span>{s.label}</span>;
+    const tab = s.target;
+    return (
+      <a
+        href={`/reports/${reportId}?tab=${tab}`}
+        className="setup-help-link"
+        onClick={(e) => {
+          if (!onOpenTab || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+          e.preventDefault();
+          onOpenTab(tab);
+        }}
+      >
+        {s.label}
+      </a>
+    );
+  };
+  return (
+    <div style={{ border: "1px solid var(--border-color)", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700 }}>
+        <ListChecks aria-hidden style={{ width: 14, height: 14, color: total ? "var(--badge-amber-text)" : "var(--badge-green-text)" }} />
+        {total ? `Open items (${total})` : "Nothing open: every field is filled in or confirmed"}
+      </div>
+      {sections.length > 0 && (
+        <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+          {sections.map((s) => {
+            const Icon = s.needs ? PenLine : AlertTriangle;
+            return (
+              <li key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+                <Icon
+                  aria-label={s.needs ? "Needs you" : "Check"}
+                  style={{ width: 12, height: 12, flexShrink: 0, color: s.needs ? "var(--badge-red-text)" : "var(--badge-amber-text)" }}
+                />
+                <span style={{ fontWeight: 600 }}>{link(s)}</span>
+                <span>{s.text}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 /** [Reopen]: a signed-off case back to editable, which only the signer or
  * an admin may do (the API refuses anyone else). Shown in the header and
@@ -72,6 +148,8 @@ export function AnnexCTab({
   canSignOff,
   canReopen,
   isSignedOff,
+  onOpenTab,
+  onOpenRecord,
 }: {
   report: ReportDetail;
   store: CaseStore;
@@ -80,6 +158,10 @@ export function AnnexCTab({
   canSignOff: boolean;
   canReopen: boolean;
   isSignedOff: boolean;
+  /** Opens another tab of the case in place (an open item's link). */
+  onOpenTab?: (tab: OpenTab) => void;
+  /** Opens the Case record drawer (the parties' open items). */
+  onOpenRecord?: () => void;
 }) {
   const router = useRouter();
   const { readOnly } = store;
@@ -145,6 +227,26 @@ export function AnnexCTab({
   const [declared, setDeclared] = useState<boolean>(isSignedOff && signOff?.terms_accepted === true);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [signOffError, setSignOffError] = useState<string | null>(null);
+
+  // ---- Open items (field review, contract 7) --------------------------------
+  // What still needs a person or a check, from the case as saved (sign-off
+  // takes it as saved). Owner decision 1: never a hard block -- a warning
+  // and an extra tick, sent as open_items_ack. An older API sends no
+  // review: then none of this shows and nothing new is sent.
+  const review = isSignedOff ? null : report.review;
+  const openList = review
+    ? openSections(review, { damage: d.damage_summary || [], annexA: store.annexABaseline, annexB: store.annexBBaseline, annexC: store.annexCBaseline })
+    : [];
+  const localOpen = openTotal(openList);
+  // The API's count when it refused a sign-off for open items (409), until
+  // the case is fetched again.
+  const [refusedOpen, setRefusedOpen] = useState<number | null>(null);
+  useEffect(() => setRefusedOpen(null), [report.review]);
+  const openN = refusedOpen ?? localOpen;
+  const needAck = (Boolean(review) && openN > 0) || refusedOpen !== null;
+  const [ackOpen, setAckOpen] = useState(false);
+  // The tick is for a number of open items: a new number asks again.
+  useEffect(() => setAckOpen(false), [openN]);
 
   // The signature pad. Only what was actually drawn is sent: an untouched
   // pad used to go out as a blank image.
@@ -213,6 +315,10 @@ export function AnnexCTab({
       setSignOffError("Tick the declaration before signing off.");
       return;
     }
+    if (needAck && !ackOpen) {
+      setSignOffError(`${openN === 1 ? "1 item is" : `${openN} items are`} still open. Finish ${openN === 1 ? "it" : "them"}, or tick "${openItemsLabel(openN)}".`);
+      return;
+    }
     // Sign-off locks the case with the tables as saved; unsaved rows would be lost.
     const unsaved = store.unsavedSections();
     if (unsaved.length > 0 || store.anySaving) {
@@ -231,11 +337,22 @@ export function AnnexCTab({
       remarks: remarks.trim() || undefined,
       // True only because the surveyor ticked it (checked above).
       terms_accepted: true,
+      // Only when they ticked "Sign off with N items open" (never sent to
+      // an older API, which shows no such tick).
+      ...(needAck && ackOpen ? { open_items_ack: true } : {}),
     };
 
     const res = await signOffReportAction(report.id, payload);
     if ("error" in res) {
-      setSignOffError(res.error);
+      if (res.openItems) {
+        // Refused for open items: say how many, and offer the extra tick.
+        const n = res.openItems.open;
+        setRefusedOpen(n);
+        setAckOpen(false);
+        setSignOffError(`Not signed off: ${res.error} Finish ${n === 1 ? "it" : "them"} (see Open items), or tick "${openItemsLabel(n)}" and sign off again.`);
+      } else {
+        setSignOffError(res.error);
+      }
       setIsSigningOff(false);
       return;
     }
@@ -310,7 +427,10 @@ export function AnnexCTab({
 
       <div className="annex-c-inputs">
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
-          Contract lump sum (S$)
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Contract lump sum (S$)
+            {review && <ReviewBadge state={annexCFieldState(lumpValue, review.fields?.[ANNEX_C_KEYS.lump])} review={review.fields?.[ANNEX_C_KEYS.lump]} label="Contract lump sum" />}
+          </span>
           <input
             type="text"
             inputMode="decimal"
@@ -323,7 +443,10 @@ export function AnnexCTab({
           />
         </label>
         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
-          Working days
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Working days
+            {review && <ReviewBadge state={annexCFieldState(daysValue, review.fields?.[ANNEX_C_KEYS.days])} review={review.fields?.[ANNEX_C_KEYS.days]} label="Working days" />}
+          </span>
           <input
             type="text"
             inputMode="numeric"
@@ -467,10 +590,21 @@ export function AnnexCTab({
           </div>
         </div>
 
+        {review && <OpenItemsList reportId={report.id} sections={openList} total={localOpen} onOpenTab={onOpenTab} onOpenRecord={onOpenRecord} />}
+
         <label className="compliance-check-item">
           <input type="checkbox" checked={declared} disabled={signOffLocked} onChange={(e) => setDeclared(e.target.checked)} />
           <span>I inspected the vehicle, and Annexes A to C are my assessment of the actual damage found, made strictly on a WITHOUT PREJUDICE basis; no repair was authorised.</span>
         </label>
+
+        {needAck && !signOffLocked && (
+          <label className="compliance-check-item" style={{ marginTop: 6 }}>
+            <input type="checkbox" checked={ackOpen} onChange={(e) => setAckOpen(e.target.checked)} />
+            <span>
+              <strong>{openItemsLabel(openN)}</strong>: blank fields print as &quot;Not recorded&quot;, and values nobody checked print as they stand.
+            </span>
+          </label>
+        )}
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 10, borderTop: "1px solid var(--border-color)", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>

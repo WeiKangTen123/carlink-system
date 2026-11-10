@@ -1198,6 +1198,10 @@ export type SignOffRequest = {
   /** How the signer is described under their name ("Automotive Engineer Assessor"). */
   signatory_title?: string;
   terms_accepted?: boolean;
+  /** The signer ticked "Sign off with N items open" (contract 7): without
+   * it the API answers 409 open_items while fields still need a person or
+   * a check. Sent only then -- an older API never asks for it. */
+  open_items_ack?: boolean;
 };
 
 export type SignOffInfo = {
@@ -1297,6 +1301,11 @@ export type ReportSummary = {
   unpriced_rows?: number;
   /** Signed off, reopened since, and not signed off again. */
   reopened?: boolean;
+  /** Field review (contract 7): fields only a person can fill that are
+   * still empty ("Needs you"), and AI values / past-case prices still to
+   * check. Absent from an older API. */
+  needs_you?: number;
+  to_check?: number;
 };
 
 export type ReportData = {
@@ -1767,8 +1776,39 @@ export async function reopenReport(id: string): Promise<{ id: string; status: st
   return res.json();
 }
 
+/** The sign-off was refused because fields are still open (409, code
+ * "open_items"): how many, and the API's counts per section, so the
+ * sign-off box can say so and offer "Sign off with N items open". */
+export class OpenItemsError extends ApiError {
+  readonly open: number;
+  readonly counts: Review["counts"] | null;
+
+  constructor(message: string, open: number, counts: Review["counts"] | null) {
+    super(message, 409, "open_items", message);
+    this.name = "OpenItemsError";
+    this.open = open;
+    this.counts = counts;
+  }
+}
+
+/** A 409 open_items body, whether the API sends its fields at the top
+ * ({detail, code, open, counts}) or inside detail (HTTPException(detail={...})). */
+function openItemsRefusal(body: unknown): OpenItemsError | null {
+  if (!body || typeof body !== "object") return null;
+  const top = body as Record<string, unknown>;
+  const inner = top.detail && typeof top.detail === "object" ? (top.detail as Record<string, unknown>) : null;
+  const src = top.code === "open_items" ? top : inner?.code === "open_items" ? inner : null;
+  if (!src) return null;
+  const open = typeof src.open === "number" ? src.open : 0;
+  const said = typeof src.detail === "string" && src.detail ? src.detail : null;
+  const words = said || `${open} ${open === 1 ? "item is" : "items are"} still open.`;
+  const counts = src.counts && typeof src.counts === "object" ? (src.counts as Review["counts"]) : null;
+  return new OpenItemsError(words, open, counts);
+}
+
 /** Signs as the signed-in user, with their own profile (My settings) --
- * the API ignores any name, licence or firm in the request. */
+ * the API ignores any name, licence or firm in the request. Fields still
+ * open without open_items_ack: an OpenItemsError (409). */
 export async function signOffReport(
   id: string,
   payload: SignOffRequest = {}
@@ -1778,8 +1818,36 @@ export async function signOffReport(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (res.status === 409) {
+    const body = await res.clone().json().catch(() => null);
+    const open = openItemsRefusal(body);
+    if (open) throw open;
+  }
   if (!res.ok) throw await apiError(res, "Failed to sign off report");
   return res.json();
+}
+
+/** A person's confirm of a field (contract 7): who and when; `na` when they
+ * said it rightly stays blank ("No labour" on Annex B). data.checked. */
+export type CheckedMark = { by?: string | null; by_id?: string | null; at?: string | null; na?: boolean };
+
+/** PUT /reports/{id}/checked: confirm keys (`set`, with na for N/A) or take
+ * a confirm back (`clear`). Keys are review field keys ("annex_b",
+ * "vehicle_info.make", "annex_c.repair_days"). */
+export type CheckedRequest = { set?: Record<string, { na?: boolean }>; clear?: string[] };
+
+/** The answer: the case's confirms and, when the API sends it, the review
+ * worked out again. Both optional -- the caller refreshes the page anyway. */
+export type CheckedResponse = { checked?: Record<string, CheckedMark>; review?: Review | null };
+
+export async function saveReportChecked(reportId: string, body: CheckedRequest): Promise<CheckedResponse> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/checked`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save the confirm");
+  return res.json().catch(() => ({}));
 }
 
 export async function renderReportPdf(id: string): Promise<{ id: string; status: string; pdf_url: string }> {

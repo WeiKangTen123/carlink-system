@@ -363,7 +363,16 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
       )}
       {opened.annexC && (
         <div style={tabPanelStyle("annexC")}>
-          <AnnexCTab report={report} store={store} canEdit={perms.edit} canSignOff={perms.sign_off} canReopen={perms.reopen} isSignedOff={isSignedOff} />
+          <AnnexCTab
+            report={report}
+            store={store}
+            canEdit={perms.edit}
+            canSignOff={perms.sign_off}
+            canReopen={perms.reopen}
+            isSignedOff={isSignedOff}
+            onOpenTab={showTab}
+            onOpenRecord={() => setRecordOpen(true)}
+          />
         </div>
       )}
 

@@ -366,6 +366,7 @@ export function DamageDetectionTab({
         onApplied={onDamageItemsApplied}
         onRemoved={onPartRemoved}
         onGoToAnnexA={onGoToAnnexA}
+        review={isSignedOff ? null : report.review}
       />
     </div>
   );

@@ -25,6 +25,10 @@ import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDa
 import { annexLinesByPart } from "@/lib/annexRows";
 import { severityClass } from "@/lib/caseFields";
 import { ConditionPicker } from "./ConditionPicker";
+import { ReviewBadge } from "./ReviewBadge";
+import { ReviewConfirmButton, ReviewUndoButton } from "./ReviewConfirmButton";
+import type { Review } from "@/lib/review";
+import { damageCheckDetail, damageState } from "@/lib/reviewRows";
 
 /** damage_summary.photo_reference is "P01", "P02"... in upload order (see schema.py) */
 const photoLabel = (index: number) => `P${String(index + 1).padStart(2, "0")}`;
@@ -52,12 +56,25 @@ interface Props {
   /** A row was removed: index-keyed state elsewhere (the highlight) is stale. */
   onRemoved?: (idx: number) => void;
   onGoToAnnexA?: () => void;
+  /** The case's field review (contract 7); null once signed off, absent
+   * from an older API -- then the table is as it was. While it is there,
+   * each row shows its state (AI / Check / You) with [✓], and an edit
+   * counts as confirming the part, as in the wizard. */
+  review?: Review | null;
 }
 
 /** The AI took this part's side from nearby photos, not its own: worth a
  * look until a person has touched the row. The API clears the flag on any
  * edit; a ticked row is hidden too, because the tick is that look. */
 const sideInferred = (item: DamageSummaryItem) => Boolean(item.side_inferred) && !item.human_verified;
+
+/** With field review on, an edit counts as the person checking the part,
+ * as in the wizard (ReviewStep setItem) -- except on a row whose side the
+ * AI only inferred: a new condition, remark or photo says nothing about
+ * the side, and a confirmed row prints LH / RH in Annex A. Such a row
+ * stays "Check" until [✓] or a change of the part itself. */
+const asConfirmed = (item: DamageSummaryItem, body: DamageItemPatch, partChanged: boolean): DamageItemPatch =>
+  item.human_verified || (Boolean(item.side_inferred) && !partChanged) ? body : { ...body, human_verified: true };
 
 /** Tab 1's "Detected parts": the damage_summary as an Annex A-shaped table
  * (Item | Vehicle Parts Description | Condition | Remarks | Photo | Annex A
@@ -83,6 +100,7 @@ export function DetectedPartsTable({
   onApplied,
   onRemoved,
   onGoToAnnexA,
+  review,
 }: Props) {
   const router = useRouter();
   const [savingIdx, setSavingIdx] = useState<number | "new" | null>(null);
@@ -142,12 +160,25 @@ export function DetectedPartsTable({
       setError(res.error);
       return false;
     }
-    if (Array.isArray(res.damage_summary)) onApplied(res);
-    else router.refresh();
+    if (Array.isArray(res.damage_summary)) {
+      onApplied(res);
+      // The case's review (the header's progress, Annex C's open items)
+      // is worked out by the API: fetched again after a change.
+      if (review) router.refresh();
+    } else router.refresh();
     return true;
   };
 
   const patch = (idx: number, body: DamageItemPatch) => run(idx, () => patchDamageItemAction(reportId, idx, body));
+  /** A person's edit of a row: with field review on, it confirms the part too. */
+  const edit = (idx: number, item: DamageSummaryItem, body: DamageItemPatch, partChanged = false) =>
+    patch(idx, review ? asConfirmed(item, body, partChanged) : body);
+
+  /** [✓] / undo beside the row's review badge: the Verified tick. */
+  const setVerified = (idx: number, verified: boolean) => {
+    if (readOnly) return;
+    void patch(idx, { human_verified: verified });
+  };
 
   const toggleVerified = (idx: number, item: DamageSummaryItem) => {
     if (readOnly) return;
@@ -162,7 +193,8 @@ export function DetectedPartsTable({
     value: string,
     saved: string,
     setDraft: (update: (s: Record<number, string>) => Record<number, string>) => void,
-    body: DamageItemPatch
+    body: DamageItemPatch,
+    item: DamageSummaryItem
   ) => {
     if (readOnly) return;
     const dropDraft = () =>
@@ -175,20 +207,20 @@ export function DetectedPartsTable({
     // the refused choice to stop showing.
     if (value === saved) return dropDraft();
     setDraft((s) => ({ ...s, [idx]: value }));
-    if (await patch(idx, body)) dropDraft();
+    if (await edit(idx, item, body)) dropDraft();
   };
 
   // The API only accepts the firm's words (400 otherwise), which is all the
   // editor offers. damage_type is left as the AI's category.
   const saveCondition = (idx: number, item: DamageSummaryItem, value: string) =>
-    saveDrafted(idx, value, item.condition || "", setConditionDraft, { condition: value });
+    saveDrafted(idx, value, item.condition || "", setConditionDraft, { condition: value }, item);
 
   const saveRemarks = (idx: number, item: DamageSummaryItem, value: string) =>
-    saveDrafted(idx, value, item.remarks || "", setRemarksDraft, { remarks: toDamageRemarks(value) });
+    saveDrafted(idx, value, item.remarks || "", setRemarksDraft, { remarks: toDamageRemarks(value) }, item);
 
   const changePart = (idx: number, item: DamageSummaryItem, part: string) => {
     if (readOnly || part === item.part) return;
-    void patch(idx, { part });
+    void edit(idx, item, { part }, true);
   };
 
   /** An Other's name, saved when the field is left. Only the name is sent,
@@ -196,13 +228,13 @@ export function DetectedPartsTable({
   const saveOtherName = (idx: number, item: DamageSummaryItem, value: string) => {
     const name = cleanPartName(value);
     if (readOnly || name === cleanPartName(item.other_part_name)) return;
-    void patch(idx, { other_part_name: name });
+    void edit(idx, item, { other_part_name: name });
   };
 
-  const linkPhoto = (idx: number, photoIdx: number | null) => {
+  const linkPhoto = (idx: number, item: DamageSummaryItem, photoIdx: number | null) => {
     setPickerFor(null);
     if (readOnly) return;
-    void patch(idx, { photo_reference: photoIdx == null ? null : photoLabel(photoIdx) });
+    void edit(idx, item, { photo_reference: photoIdx == null ? null : photoLabel(photoIdx) });
   };
 
   const remove = async (idx: number, item: DamageSummaryItem) => {
@@ -295,7 +327,7 @@ export function DetectedPartsTable({
           className={`chip-severity ${verifiedCount === damageEntries.length && damageEntries.length > 0 ? "minor" : "moderate"}`}
           style={{ fontSize: 10 }}
         >
-          {verifiedCount} of {damageEntries.length} verified
+          {verifiedCount} of {damageEntries.length} {review ? "confirmed" : "verified"}
         </span>
       </div>
 
@@ -314,7 +346,7 @@ export function DetectedPartsTable({
                 <th>Remarks</th>
                 <th>Photo</th>
                 <th>Annex A</th>
-                <th>Verified</th>
+                <th>{review ? "Review" : "Verified"}</th>
                 {!readOnly && <th style={{ width: 36 }} aria-label="Remove part" />}
               </tr>
             </thead>
@@ -399,7 +431,7 @@ export function DetectedPartsTable({
                           set side
                         </span>
                       )}
-                      {sideInferred(item) && (
+                      {!review && sideInferred(item) && (
                         <span className="chip-severity moderate" style={{ fontSize: 9, marginLeft: 6 }} title="The AI guessed the side from nearby photos; check it">
                           side inferred
                         </span>
@@ -475,16 +507,35 @@ export function DetectedPartsTable({
                       {annexCell(damageItemSource(item))}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        className={`verify-toggle-modern ${verified ? "verified" : ""}`}
-                        onClick={() => toggleVerified(idx, item)}
-                        disabled={readOnly || savingIdx === idx}
-                        style={{ cursor: readOnly ? "default" : "pointer", border: "none" }}
-                        title={readOnly ? "Report is locked" : verified ? "Mark as unverified" : "Mark as verified"}
-                      >
-                        {verified ? "✓ Verified" : "Pending"}
-                      </button>
+                      {review ? (
+                        // Field review: AI / Check (low confidence, side
+                        // inferred) / You, and [✓] to confirm or undo.
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                          <ReviewBadge state={damageState(item)} label={damagePartLabel(item)} detail={damageCheckDetail(item)} />
+                          {!readOnly &&
+                            (verified ? (
+                              <ReviewUndoButton label={damagePartLabel(item)} disabled={savingIdx === idx} onClick={() => setVerified(idx, false)} />
+                            ) : (
+                              <ReviewConfirmButton
+                                label={damagePartLabel(item)}
+                                disabled={savingIdx === idx}
+                                title="Confirm: you checked this part, its side and condition against the photo"
+                                onClick={() => setVerified(idx, true)}
+                              />
+                            ))}
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`verify-toggle-modern ${verified ? "verified" : ""}`}
+                          onClick={() => toggleVerified(idx, item)}
+                          disabled={readOnly || savingIdx === idx}
+                          style={{ cursor: readOnly ? "default" : "pointer", border: "none" }}
+                          title={readOnly ? "Report is locked" : verified ? "Mark as unverified" : "Mark as verified"}
+                        >
+                          {verified ? "✓ Verified" : "Pending"}
+                        </button>
+                      )}
                     </td>
                     {!readOnly && (
                       <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "center" }}>
@@ -502,7 +553,7 @@ export function DetectedPartsTable({
                     )}
                   </tr>,
                 ];
-                if (pickerFor === idx && !readOnly) rows.push(photoPicker(idx, item.photo_reference, (p) => linkPhoto(idx, p)));
+                if (pickerFor === idx && !readOnly) rows.push(photoPicker(idx, item.photo_reference, (p) => linkPhoto(idx, item, p)));
                 return rows;
               })}
 
