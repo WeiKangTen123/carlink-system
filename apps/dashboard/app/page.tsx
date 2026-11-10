@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowRight, BarChart3, ClipboardList, Clock, FilePlus2, FolderOpen, Inbox, UserX, type LucideIcon } from "lucide-react";
 import { listReports, firmWideScope, countInbox, getCurrentUser, ownerLabel, type InboxCount, type ReportSummary } from "@/lib/api";
 import { caseTitle, daysOpen, getOperationalStage, inferVehicleName, isAwaitingSignOff, statusKind, statusLabel } from "@/lib/caseFields";
-import { attentionFor } from "@/lib/attention";
+import { attentionFor, attentionRow } from "@/lib/attention";
 import { NeedsAttentionCard } from "@/components/NeedsAttentionCard";
 
 /** How many of the oldest open cases the overview lists. */
@@ -92,7 +92,9 @@ export default async function OverviewPage() {
     .slice(0, OLDEST_SHOWN);
   // Drafts and cases someone should act on, worst first (lib/attention.ts),
   // over the same list the counts come from.
-  const attention = attentionFor(reports);
+  const attention = attentionFor(reports, { viewer: me ? { id: me.id, admin } : undefined }).map((item) =>
+    attentionRow(item, seesAll),
+  );
   // The counts above are firm-wide for anyone who sees all cases, so their
   // links must open the same list: plain /reports defaults a non-admin to
   // "My cases", which would show fewer rows than the tile just counted.
@@ -158,7 +160,6 @@ export default async function OverviewPage() {
 
       <NeedsAttentionCard
         items={attention}
-        showOwner={seesAll}
         unassigned={admin ? unassigned : null}
         expiringSoon={seesAll && inbox ? inbox.expiring_soon : null}
       />

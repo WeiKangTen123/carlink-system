@@ -4,8 +4,8 @@
  * Pure (no React, no fetching), so the rules can be checked on their own.
  * Every reason reads a value the API recorded; none is a guess. A field an
  * older API doesn't send yet simply adds no reason. */
-import { aiRunErrorLabel, isUntakenPublic, type ReportSummary } from "./api";
-import { daysOpen, ourRefLabel, REF_TO_BE_ISSUED, statusKind } from "./caseFields";
+import { aiRunErrorLabel, isUntakenPublic, ownerLabel, type ReportSummary } from "./api";
+import { caseTitle, daysOpen, inferVehicleName, ourRefLabel, REF_TO_BE_ISSUED, statusKind } from "./caseFields";
 import { FILING_INTERRUPTED } from "./intake";
 
 /** Why a case is listed, worst first: the order of this list is the order
@@ -38,6 +38,25 @@ export type AttentionItem = {
 export type AttentionOptions = {
   /** Epoch ms to judge "today" and ages against; defaults to now. */
   now?: number;
+  /** Who is looking. Someone else's draft is left out unless they are an
+   * admin; left unset, every draft is listed. */
+  viewer?: { id: string; admin: boolean };
+};
+
+/** One listed report as the card prints it, and nothing more: the page
+ * hands these to the browser, not whole case summaries for rows the card
+ * may fold away. */
+export type AttentionRow = {
+  id: string;
+  title: string;
+  /** Only beside a real plate: caseTitle already falls back to the vehicle. */
+  vehicle: string | null;
+  /** ownerLabel(owner); null when the viewer isn't shown owners. */
+  owner: string | null;
+  unassigned: boolean;
+  reasons: Reason[];
+  href: string;
+  action: "Resume" | "Open";
 };
 
 /** A draft is listed once the idle clean-up will delete it within this many
@@ -135,6 +154,11 @@ export function attentionFor(reports: ReportSummary[], opts: AttentionOptions = 
   const now = opts.now ?? Date.now();
   const items: AttentionItem[] = [];
   for (const report of reports) {
+    // A draft is its owner's until it is filed: "see all" staff may look,
+    // not change it (permissions.can_edit_case), so "Resume" would only
+    // open it read-only. Admins may.
+    const viewer = opts.viewer;
+    if (viewer && !viewer.admin && report.status === "intake" && report.owner?.id !== viewer.id) continue;
     const reasons = reasonsFor(report, now);
     if (reasons.length === 0) continue;
     items.push({
@@ -146,4 +170,19 @@ export function attentionFor(reports: ReportSummary[], opts: AttentionOptions = 
   }
   const created = (r: ReportSummary) => Date.parse(r.created_at) || 0;
   return items.sort((a, b) => rank(a.reasons[0].kind) - rank(b.reasons[0].kind) || created(a.report) - created(b.report));
+}
+
+/** An item cut down to what the card prints (AttentionRow). */
+export function attentionRow(item: AttentionItem, showOwner: boolean): AttentionRow {
+  const r = item.report;
+  return {
+    id: r.id,
+    title: caseTitle(r),
+    vehicle: r.plate_number ? inferVehicleName(r) : null,
+    owner: showOwner ? ownerLabel(r.owner) : null,
+    unassigned: !r.owner,
+    reasons: item.reasons,
+    href: item.href,
+    action: item.action,
+  };
 }

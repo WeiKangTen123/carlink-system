@@ -3,9 +3,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, Inbox, UserX } from "lucide-react";
-import { ownerLabel } from "@/lib/api";
-import { caseTitle, inferVehicleName } from "@/lib/caseFields";
-import type { AttentionItem, ReasonKind } from "@/lib/attention";
+import type { AttentionRow as Row, ReasonKind } from "@/lib/attention";
 
 /** Rows shown before "Show all". */
 const FIRST_SHOWN = 8;
@@ -27,16 +25,15 @@ const REASON_TONE: Record<ReasonKind, CSSProperties> = {
 
 /** The Overview's "Needs attention" card. The list and its wording are
  * worked out on the server (lib/attention.ts); this only folds it to the
- * first rows. `unassigned` (admins) and `expiringSoon` (people who see all
- * cases) are null when not theirs to see; a zero shows no line. */
+ * first rows. A row's owner is null when the viewer isn't shown owners.
+ * `unassigned` (admins) and `expiringSoon` (people who see all cases) are
+ * null when not theirs to see; a zero shows no line. */
 export function NeedsAttentionCard({
   items,
-  showOwner,
   unassigned,
   expiringSoon,
 }: {
-  items: AttentionItem[];
-  showOwner: boolean;
+  items: Row[];
   unassigned: number | null;
   expiringSoon: number | null;
 }) {
@@ -65,7 +62,7 @@ export function NeedsAttentionCard({
       {items.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {shown.map((item) => (
-            <AttentionRow key={item.report.id} item={item} showOwner={showOwner} />
+            <AttentionRow key={item.id} item={item} />
           ))}
         </div>
       )}
@@ -104,21 +101,18 @@ export function NeedsAttentionCard({
 
 /** Laid out like the Overview's OldestCaseRow: plate, vehicle, owner, then
  * why it is listed and where it opens. */
-function AttentionRow({ item, showOwner }: { item: AttentionItem; showOwner: boolean }) {
-  const r = item.report;
+function AttentionRow({ item }: { item: Row }) {
   return (
     <Link href={item.href} prefetch={false} className="analytics-case-link" style={{ flexWrap: "wrap" }}>
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{caseTitle(r)}</span>
-      {/* caseTitle already falls back to the vehicle when there is no
-          plate, so the vehicle is only repeated beside a real plate. */}
-      {r.plate_number && (
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{item.title}</span>
+      {item.vehicle && (
         <span style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {inferVehicleName(r)}
+          {item.vehicle}
         </span>
       )}
-      {showOwner && (
-        <span style={{ fontSize: 11, color: r.owner ? "var(--text-muted)" : "var(--badge-amber-text)", whiteSpace: "nowrap" }}>
-          {ownerLabel(r.owner)}
+      {item.owner !== null && (
+        <span style={{ fontSize: 11, color: item.unassigned ? "var(--badge-amber-text)" : "var(--text-muted)", whiteSpace: "nowrap" }}>
+          {item.owner}
         </span>
       )}
       <span style={{ marginLeft: "auto", display: "inline-flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4 }}>

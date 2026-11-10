@@ -81,10 +81,12 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   const hasPricedParts = annexAItems.some((it) => it.workshop_est > 0);
 
   // "5 of 8 detected parts verified · 3 lines unpriced": from tab 1's parts
-  // and this table, counted, never scored.
+  // and this table, counted, never scored. A stale line (its part no longer
+  // damaged) waits on Keep or Remove, not on a price, so it isn't counted --
+  // nor in the Overview's "N Annex A rows unpriced" (prefill.unpriced_rows).
   const detected = store.data.damage_summary || [];
   const verifiedCount = detected.filter((d) => d.human_verified).length;
-  const unpricedCount = annexAItems.filter((r) => r.part_name.trim() && !r.workshop_est).length;
+  const unpricedCount = annexAItems.filter((r) => !r.stale && r.part_name.trim() && !r.workshop_est).length;
 
   // Every change goes into the store's Annex A draft and nothing is saved
   // until "Save Annex A"; adjusted costs follow from the row
