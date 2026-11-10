@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Bot, Clock, FileText, MapPin, Pencil, Shield, Users, X } from "lucide-react";
 import { aiKeySourceLabel, aiRunErrorLabel, aiRunKindLabel, channelLabel, PUBLIC_CHANNEL, type AiRunSummary, type ReportDetail } from "@/lib/api";
 import { formatSgtDateTime } from "@/lib/caseFields";
+import { fieldView, keysInState, PARTY_REVIEW_KEYS, valueAt, type CaseReview, type FieldView } from "@/lib/fieldReview";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
+import { ConfirmAiButton, FieldReviewControls } from "@/components/FieldReviewControls";
+import { ReviewProgress } from "@/components/ReviewProgress";
 
 const NOT_RECORDED = "Not recorded";
 
@@ -66,12 +69,20 @@ function runOutcome(run: AiRunSummary): { label: string; tone: "ok" | "danger" |
 }
 
 /** One labelled fact of the case record: the recorded value, or "Not
- * recorded" -- never a guessed one. */
-function DossierField({ label, value, mono }: { label: string; value?: string | number | null; mono?: boolean }) {
+ * recorded" -- never a guessed one. `review` (field review): its badge
+ * and buttons, beside the label. */
+function DossierField({ label, value, mono, review }: { label: string; value?: string | number | null; mono?: boolean; review?: ReactNode }) {
   const has = value !== undefined && value !== null && String(value).trim() !== "";
   return (
     <div className="dossier-field-cell">
-      <div className="dossier-field-label">{label}</div>
+      {review ? (
+        <div className="dossier-field-label review-label-row">
+          <span>{label}</span>
+          {review}
+        </div>
+      ) : (
+        <div className="dossier-field-label">{label}</div>
+      )}
       <div className={`dossier-field-value${mono && has ? " mono" : ""}`} style={has ? undefined : { color: "var(--text-muted)", fontWeight: 500 }}>
         {has ? String(value) : NOT_RECORDED}
       </div>
@@ -124,12 +135,16 @@ export function CaseRecordDrawer({
   onClose,
   isSignedOff,
   canEdit,
+  fieldReview,
 }: {
   report: ReportDetail;
   open: boolean;
   onClose: () => void;
   isSignedOff: boolean;
   canEdit: boolean;
+  /** Field review (contract 7): badges, and Confirm / N/A for whoever may
+   * edit the case. Without a review, nothing shows. */
+  fieldReview?: CaseReview;
 }) {
   // Esc closes; the page behind stops scrolling while the sheet is open.
   useEffect(() => {
@@ -163,6 +178,23 @@ export function CaseRecordDrawer({
   // Newest first from the API (at most 50). An older API sends none.
   const aiRuns = report.ai_runs || [];
 
+  // Field review: the drawer edits nothing, so each fact's state is the
+  // review's (with this person's Confirm / N/A shown at once).
+  const review = isSignedOff ? null : (fieldReview?.review ?? null);
+  const canReview = Boolean(fieldReview && canEdit && !isSignedOff);
+  const views: Record<string, FieldView> = {};
+  if (review) for (const key of [...Object.values(PARTY_REVIEW_KEYS), "incident_datetime"]) views[key] = fieldView(review, key, valueAt(d, key), valueAt(d, key));
+  const badge = (key: string, label: string) =>
+    review ? (
+      <FieldReviewControls
+        view={views[key]}
+        label={label}
+        onReview={canReview && fieldReview ? (k, action) => void fieldReview.apply([k], action) : undefined}
+        busy={fieldReview?.saving}
+      />
+    ) : undefined;
+  const K = PARTY_REVIEW_KEYS;
+
   return (
     <>
       <div className="record-drawer-backdrop" onClick={onClose} aria-hidden="true" />
@@ -171,6 +203,19 @@ export function CaseRecordDrawer({
           <div>
             <h3>Case record</h3>
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>What the report doesn&apos;t print. Every value is as recorded.</div>
+            {review && (
+              <div className="review-bar" style={{ margin: "6px 0 0" }}>
+                <ReviewProgress review={review} sections={["parties"]} />
+                {canReview && fieldReview && (
+                  <ConfirmAiButton keys={keysInState(views, "ai")} busy={fieldReview.saving} onConfirm={(keys) => void fieldReview.apply(keys, "confirm")} />
+                )}
+              </div>
+            )}
+            {fieldReview?.error && (
+              <div className="setup-error" role="alert" style={{ margin: "6px 0 0" }}>
+                {fieldReview.error}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {canEdit && !isSignedOff && (
@@ -201,7 +246,7 @@ export function CaseRecordDrawer({
               <DossierField label="Reporter" value={[d.reporter_name, d.reporter_role].filter(Boolean).join(" · ")} />
               <DossierField label="Reporter contact" value={d.reporter_contact || d.reporter_email} mono />
               <DossierField label="Company" value={d.company_name || d.reporter_department} />
-              <DossierField label="Accident date" value={d.incident_datetime} />
+              <DossierField label="Accident date" value={d.incident_datetime} review={badge("incident_datetime", "Accident date")} />
             </div>
           </section>
 
@@ -210,8 +255,8 @@ export function CaseRecordDrawer({
               <MapPin style={{ width: 12, height: 12 }} /> Location and description
             </div>
             <div className="record-grid" style={{ marginBottom: 8 }}>
-              <DossierField label="Location" value={d.location} />
-              <DossierField label="Type of accident" value={d.accident_type} />
+              <DossierField label="Location" value={d.location} review={badge(K.location, "Location")} />
+              <DossierField label="Type of accident" value={d.accident_type} review={badge(K.accident_type, "Type of accident")} />
             </div>
             <div className="dossier-field-label" style={{ marginBottom: 4 }}>Description (AI draft, as recorded)</div>
             <p className="record-note">{d.description?.trim() || NOT_RECORDED}</p>
@@ -222,15 +267,20 @@ export function CaseRecordDrawer({
               <Shield style={{ width: 12, height: 12 }} /> Police, insurer and other party
             </div>
             <div className="record-grid">
-              <DossierField label="Reported to police" value={reportedToPolice} />
-              <DossierField label="Police report no." value={pol?.report_number || pol?.reference_number} mono />
-              <DossierField label="Station" value={pol?.police_station} />
-              <DossierField label="Officer" value={pol?.officer_name} />
-              <DossierField label="Date reported" value={pol?.date_reported} />
-              <DossierField label="Insurer" value={ins?.insurer_name} />
-              <DossierField label="Policy no." value={ins?.policy_number} mono />
+              <DossierField label="Reported to police" value={reportedToPolice} review={badge(K.reported_to_police, "Reported to police")} />
+              <DossierField
+                label="Police report no."
+                value={pol?.report_number || pol?.reference_number}
+                mono
+                review={badge(K.report_number, "Police report no.")}
+              />
+              <DossierField label="Station" value={pol?.police_station} review={badge(K.police_station, "Station")} />
+              <DossierField label="Officer" value={pol?.officer_name} review={badge(K.officer_name, "Officer")} />
+              <DossierField label="Date reported" value={pol?.date_reported} review={badge(K.date_reported, "Date reported")} />
+              <DossierField label="Insurer" value={ins?.insurer_name} review={badge(K.insurer_name, "Insurer")} />
+              <DossierField label="Policy no." value={ins?.policy_number} mono review={badge(K.policy_number, "Policy no.")} />
               {/* The insurer's claim number only -- never a generated reference. */}
-              <DossierField label="Claim no." value={ins?.claim_number} mono />
+              <DossierField label="Claim no." value={ins?.claim_number} mono review={badge(K.claim_number, "Claim no.")} />
               <DossierField label="Other vehicle" value={tp?.plate_number} mono />
               <DossierField label="Other vehicle model" value={tp?.make_model} />
               <DossierField label="Other driver" value={tp?.driver_name} />

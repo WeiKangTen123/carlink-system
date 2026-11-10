@@ -65,6 +65,10 @@ export type Review = {
   open: number;
 };
 
+/** "guess" fields a case can't do without: empty, they need a person
+ * (app/reports/review.py says the same). */
+const NEEDED_GUESSES = new Set(["insurance_details.insurer_name", "insurance_details.claim_type"]);
+
 /** A field's state while a person is editing the form: what the server
  * said, unless the value has since changed (then it is theirs). */
 export function localState(
@@ -78,7 +82,7 @@ export function localState(
   if (JSON.stringify(value ?? null) !== JSON.stringify(savedValue ?? null)) {
     if (!blank(value)) return "you";
     const rule = review?.rules[key];
-    return rule === "office" || rule === "doc" ? "needs" : "none";
+    return rule === "office" || rule === "doc" || rule === "template" || NEEDED_GUESSES.has(key) ? "needs" : "none";
   }
   return server;
 }

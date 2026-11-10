@@ -26,6 +26,9 @@ import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
 import { DOCUMENT_KINDS, PHOTO_KIND_LABELS, photoForReference, type IntakePhoto } from "@/lib/intake";
 import { applyCoverPatch, bboxStyle } from "@/lib/intakeReview";
+import { COVER_REVIEW_KEYS, coverViews, dropNaFor, keysInState, markChecked, withStates, type ReviewAction } from "@/lib/fieldReview";
+import { ConfirmAiButton } from "@/components/FieldReviewControls";
+import { ReviewProgress } from "@/components/ReviewProgress";
 import { DamagePhotoViewer, type ViewerSlide } from "./DamagePhotoViewer";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
@@ -50,7 +53,10 @@ type Props = {
    * field that still says what the AI said. */
   aiRead?: AiRead;
   aiReadPhotos?: Record<string, string> | null;
+  /** Field review (IntakeState.review): absent from an older API. */
   review?: Review | null;
+  /** The draft as the server last sent it -- what `review` describes. */
+  savedData?: ReportData | null;
   onBack: () => void;
   onNext: () => void;
 };
@@ -105,7 +111,7 @@ const meansStored = (key: CoverFormKey, raw: string, stored: string): boolean =>
 
 /** Step 3: the Cover Page (left, as printed) and the damaged parts as the
  * Annex A rows they become (right), with the photo evidence beside them. */
-export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, aiRead, aiReadPhotos, review, onBack, onNext }: Props) {
+export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiSkipped, aiRead, aiReadPhotos, review, savedData, onBack, onNext }: Props) {
   const user = useCurrentUser();
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -134,12 +140,28 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
   }, [derived, typed]);
   const patchCover = (patch: Partial<CoverForm>) => {
     setTyped((prev) => ({ ...prev, ...patch }));
-    onChange((d) => applyCoverPatch(d, patch));
+    // A field given a value is no longer N/A (field review).
+    const filled = (Object.keys(patch) as CoverFormKey[]).filter((k) => patch[k]?.trim()).map((k) => COVER_REVIEW_KEYS[k]);
+    onChange((d) => {
+      const next = applyCoverPatch(d, patch);
+      const checked = dropNaFor(next.checked, filled);
+      return checked === next.checked ? next : { ...next, checked };
+    });
   };
   // Our Ref is the firm's file number: the API refuses a change from anyone
   // else (403), which would leave autosave stuck on "Not saved -- retrying".
   const ourRefEditable = isAdmin(user) || Boolean(user?.may_sign_off);
   const ai = useMemo(() => aiReadFrom(aiRead, aiReadPhotos), [aiRead, aiReadPhotos]);
+  // Field review (contract 7): each cover field's state -- the server's,
+  // what was typed since, and the draft's own Confirm / N/A (data.checked,
+  // saved with the draft) -- and the progress line from them.
+  const savedCover = useMemo(() => (savedData ? coverFormFrom(savedData) : null), [savedData]);
+  const coverReview = useMemo(
+    () => (savedCover ? coverViews(review, derived, savedCover, { checked: data.checked ?? {} }) : null),
+    [review, derived, savedCover, data.checked]
+  );
+  const shownReview = useMemo(() => (review ? withStates(review, coverReview) : null), [review, coverReview]);
+  const reviewFields = (keys: string[], action: ReviewAction) => onChange((d) => ({ ...d, checked: markChecked(d.checked, keys, action, user) }));
 
   // Client-only row keys, so editing or removing an item never remounts a
   // different row (an index key shifts every row below a removed one). Kept
@@ -313,6 +335,12 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
             <span className="intake-muted">As printed. Anything left blank prints as &quot;Not recorded&quot;.</span>
             {aiSkipped && <span className="intake-chip warn">Filled in by hand</span>}
           </div>
+          {shownReview && (
+            <div className="review-bar" style={{ marginTop: 10 }}>
+              <ReviewProgress review={shownReview} sections={["cover"]} />
+              <ConfirmAiButton keys={keysInState(coverReview, "ai")} onConfirm={(keys) => reviewFields(keys, "confirm")} />
+            </div>
+          )}
           {sources.length > 0 && (
             <div className="intake-sources">
               <span className="intake-muted">Read from</span>
@@ -333,6 +361,8 @@ export function ReviewStep({ data, onChange, photos, readPhotoIds, taxonomy, aiS
             aiRead={ai.tags}
             aiValues={ai.values}
             showUsualValues
+            review={coverReview}
+            onReview={(key, action) => reviewFields([key], action)}
           />
         </section>
 

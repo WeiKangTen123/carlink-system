@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Loader2, PencilLine, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Lightbulb, Loader2, PencilLine, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
 import { fileUrl } from "@/lib/api";
 import { formatBytes, UPLOAD_RETRY_DELAYS_MS, type IntakePhoto, type IntakeStage } from "@/lib/intake";
 
@@ -202,6 +202,12 @@ export function UploadStep({
           onChange={handleInput}
           {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
         />
+      </div>
+      {/* Field review (contract 7): with these the AI can read the vehicle
+          details; without them every one is left for a person. */}
+      <div className="intake-photo-tip">
+        <Lightbulb aria-hidden style={{ width: 14, height: 14, flexShrink: 0, marginTop: 1, color: "var(--badge-amber-text)" }} />
+        <span>Tip: also photograph the log card, the VIN/chassis plate and the odometer, so the AI can read them.</span>
       </div>
 
       {counted.length > 0 && (

@@ -3,6 +3,8 @@
 import React, { useId } from "react";
 import { CLAIM_TYPE_OPTIONS } from "@/lib/api";
 import { USUAL_STATIC_CHECK, type AiReadTags, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
+import { COVER_REVIEW_KEYS, TYRES_REVIEW_KEY, type FieldView, type ReviewAction } from "@/lib/fieldReview";
+import { FieldReviewControls } from "./FieldReviewControls";
 
 /** The Cover Page's six sections, with the firm's labels and in its order,
  * as a controlled form. Used by the case page's Cover tab and by the intake
@@ -17,6 +19,9 @@ export function CoverPageFields({
   aiValues,
   showUsualValues = true,
   sketch,
+  review,
+  onReview,
+  reviewBusy,
 }: {
   value: CoverForm;
   onChange: (patch: Partial<CoverForm>) => void;
@@ -34,6 +39,15 @@ export function CoverPageFields({
   showUsualValues?: boolean;
   /** Rendered under 5 POINT OF IMPACT (the host's top-view sketch). */
   sketch?: React.ReactNode;
+  /** Field review (contract 7): each field's state by review key, from
+   * coverViews(). A badge then shows beside each field, with the AI's
+   * photo folded in ("AI · P03") instead of the "(P03)" tag. Left out (an
+   * older API): no badges, and the tags show as before. */
+  review?: Record<string, FieldView> | null;
+  /** Confirm / N/A / Undo on one field (by review key). Left out, the
+   * badges show without buttons. */
+  onReview?: (key: string, action: ReviewAction) => void;
+  reviewBusy?: boolean;
 }) {
   // The datalists are shared by every input of the form; the ids are made
   // unique so two forms on one page (the wizard beside a case) don't clash.
@@ -49,16 +63,22 @@ export function CoverPageFields({
     const photo = aiRead[key];
     return photo ? `(${photo})` : "(AI)";
   };
+  // With a review the badge says it: "AI · P03" (the photo from the review,
+  // else from the tag while the field still says what the AI said).
+  const photoOf = (key: CoverFormKey): string | null => (tag(key) ? aiRead?.[key] || null : null);
+  const reviewProps = (key: CoverFormKey) =>
+    review ? { view: review[COVER_REVIEW_KEYS[key]] ?? null, photo: photoOf(key), onReview: disabled ? undefined : onReview, reviewBusy } : {};
   const field = (key: CoverFormKey, label: string, extra: { hint?: string; list?: string; wide?: boolean } = {}) => (
     <CoverField
       label={label}
       value={value[key]}
       onChange={set(key)}
       disabled={disabled}
-      aiTag={tag(key)}
+      aiTag={review ? null : tag(key)}
       hint={extra.hint}
       list={extra.list}
       wide={extra.wide}
+      {...reviewProps(key)}
     />
   );
   const usualValuesDiffer = (Object.keys(USUAL_STATIC_CHECK) as CoverFormKey[]).some((k) => value[k] !== USUAL_STATIC_CHECK[k]);
@@ -84,6 +104,8 @@ export function CoverPageFields({
         value={value.report_id}
         onChange={set("report_id")}
         disabled={disabled || !ourRefEditable}
+        {...reviewProps("report_id")}
+        onReview={disabled || !ourRefEditable ? undefined : onReview}
         hint={
           ourRefEditable
             ? "The firm's file number, e.g. CL 12330 SMV 7530 X. Blank prints as (to be issued)."
@@ -136,7 +158,12 @@ export function CoverPageFields({
       {field("modification", "Modification", { list: goodNilId })}
       {field("general_condition", "General condition", { list: goodNilId })}
 
-      <div className="cover-form-section">4 &nbsp;Tyre condition</div>
+      <div className="cover-form-section">
+        <span>4 &nbsp;Tyre condition</span>
+        {review && (
+          <FieldReviewControls view={review[TYRES_REVIEW_KEY]} label="Tyres" onReview={disabled ? undefined : onReview} busy={reviewBusy} />
+        )}
+      </div>
       <div className="cover-field wide">
         <div className="annex-table-wrapper">
           <table className="annex-table cover-tyre-table">
@@ -244,6 +271,10 @@ function CoverField({
   hint,
   list,
   aiTag,
+  view,
+  photo,
+  onReview,
+  reviewBusy,
 }: {
   label: string;
   value: string;
@@ -255,18 +286,37 @@ function CoverField({
   list?: string;
   /** "(P03)" while the field still says what the AI read from that photo. */
   aiTag?: string | null;
+  /** Field review: the badge and its buttons beside the label. */
+  view?: FieldView | null;
+  photo?: string | null;
+  onReview?: (key: string, action: ReviewAction) => void;
+  reviewBusy?: boolean;
 }) {
+  // The label points at the input by id: the Confirm / N/A buttons inside
+  // it would otherwise be what it labels.
+  const id = useId();
   return (
-    <label className={`cover-field${wide ? " wide" : ""}`}>
-      <span>
-        {label}
+    <label className={`cover-field${wide ? " wide" : ""}`} htmlFor={`${id}-input`}>
+      <span className={view ? "cover-field-head" : undefined}>
+        {view ? <span>{label}</span> : label}
         {aiTag && (
           <span className="cover-ai-tag" title="Read by the AI from the photos. Check it against the vehicle.">
             {aiTag}
           </span>
         )}
+        {view && <FieldReviewControls view={view} label={label} photo={photo} onReview={onReview} busy={reviewBusy} id={`${id}-review`} />}
       </span>
-      <input type="text" value={value} list={list} placeholder="Not recorded" disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+      <input
+        id={`${id}-input`}
+        type="text"
+        value={value}
+        list={list}
+        placeholder="Not recorded"
+        disabled={disabled}
+        aria-label={view ? label : undefined}
+        aria-describedby={view && view.state !== "none" ? `${id}-review` : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
       {hint && <span className="cover-field-hint">{hint}</span>}
     </label>
   );

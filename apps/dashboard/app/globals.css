@@ -8803,6 +8803,159 @@ html:has(.intake-footer) {
   color: var(--accent-cyan);
   cursor: help;
 }
+
+/* Field review (contract 7, FIELDS): a field's badge and its Confirm / N/A
+   buttons beside the label, the progress line, and the counts on the case
+   tabs. Theme tokens only, so both themes follow. */
+.cover-field-head,
+.review-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+}
+.review-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  /* Inside the wizard's upper-case labels. */
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+}
+.review-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 20px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+.review-btn.icon {
+  padding: 1px 6px;
+  color: var(--badge-green-text);
+}
+.review-btn:hover:not(:disabled) {
+  border-color: var(--border-glow);
+  color: var(--text-primary);
+}
+.review-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* A finger needs a bigger target than a pointer. */
+@media (pointer: coarse) {
+  .review-btn {
+    min-height: 28px;
+    min-width: 28px;
+    padding: 2px 10px;
+    font-size: 11px;
+  }
+}
+.review-confirm-all {
+  font-size: 11px !important;
+  padding: 4px 12px !important;
+}
+.review-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+.review-progress {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.review-progress-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.review-progress-seg.link {
+  cursor: pointer;
+  border-radius: 4px;
+}
+.review-progress-seg.link:hover .review-progress-name {
+  color: var(--accent-cyan);
+  text-decoration: underline;
+}
+.review-progress-name {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.review-progress-sep {
+  color: var(--text-muted);
+}
+.review-progress-icon {
+  width: 12px;
+  height: 12px;
+  vertical-align: -2px;
+}
+.review-tab-count {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.review-tab-count > span[aria-hidden] {
+  display: inline-flex;
+  gap: 5px;
+}
+.review-tab-count-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+.review-tab-count .review-progress-icon {
+  width: 11px;
+  height: 11px;
+}
+.review-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.intake-photo-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
 .cover-form-section {
   display: flex;
   align-items: center;

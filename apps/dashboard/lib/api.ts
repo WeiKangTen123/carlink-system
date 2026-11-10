@@ -1349,6 +1349,10 @@ export type ReportData = {
   authority_reference?: string | null;
   preventive_measures?: string | null;
   additional_comments?: string | null;
+  /** Field review (contract 7): the fields a person confirmed, or marked
+   * N/A, keyed by the field's dotted path ("vehicle_info.plate_number").
+   * Absent on older reports. */
+  checked?: Record<string, CheckedEntry> | null;
 };
 
 export type ReportDetail = {
@@ -2290,6 +2294,37 @@ export async function saveCoverPage(reportId: string, body: CoverPageRequest): P
   if (!res.ok) throw await apiError(res, "Failed to save the cover page");
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Field review: confirmations (contract 7, agent FIELDS). A person says a
+// field is right ("Confirm") or rightly blank ("N/A"); the API stores it in
+// data.checked with who and when, and works the review out again. The
+// case page calls confirmFields; the intake wizard saves the whole draft,
+// data.checked included, so it rarely needs confirmIntakeFields.
+
+/** One entry of data.checked. The API fills in by / by_id / at. */
+export type CheckedEntry = { by?: string | null; by_id?: string | null; at?: string | null; na?: boolean | null };
+
+/** The keys to confirm, by dotted path: {} confirms, {na: true} marks N/A. */
+export type CheckedSet = Record<string, { na?: boolean }>;
+
+/* What PUT .../checked answers: CheckedResponse, above (saveReportChecked). */
+
+async function putChecked(path: string, set: CheckedSet, clear: string[]): Promise<CheckedResponse> {
+  const res = await apiFetch(`${API_BASE_URL}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ set, clear }),
+  });
+  if (!res.ok) throw await apiError(res, "Couldn't save the confirmation");
+  return (await res.json().catch(() => ({}))) as CheckedResponse;
+}
+
+/** PUT /reports/{id}/checked: confirm `set`, take back `clear`. */
+export const confirmFields = (reportId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/reports/${reportId}/checked`, set, clear);
+
+/** PUT /intake/{id}/checked, the same for a draft. */
+export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/intake/${draftId}/checked`, set, clear);
 
 /** One imported past report. */
 export type PastReportCase = {
