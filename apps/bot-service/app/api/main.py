@@ -1588,7 +1588,12 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
     which the person filing it may throw away (permissions.can_delete_case).
     A public report in the inbox is refused (Discard it, with a reason:
     POST /inbox/{id}/discard); a taken one goes with its submission row,
-    and its history entry carries the reference (never a name or phone)."""
+    and its history entry carries the reference (never a name or phone).
+
+    A refusal says which rule refused. The filed-case one used to read
+    "Only an admin can delete a case.", which on a case its owner still
+    took for their draft looked like drafts being admin-only too
+    (scripts/test_delete_draft.py)."""
     db = SessionLocal()
     try:
         r = db.get(Report, report_id)
@@ -1598,7 +1603,7 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
             if in_inbox(r):
                 raise not_allowed("This report is in the Public Inbox: use Discard, with a reason.")
             raise not_allowed(
-                "Only an admin can delete a case." if r.status != "intake"
+                "This case has been filed: only an admin can delete it." if r.status != "intake"
                 else "Only the person filing this draft, or an admin, can throw it away."
             )
 

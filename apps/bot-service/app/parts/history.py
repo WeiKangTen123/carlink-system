@@ -24,6 +24,7 @@ import re
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -91,8 +92,15 @@ def _date(text: str) -> str | None:
 
 
 def split_make_model(text: str) -> tuple[str, str]:
-    """"Honda Vezel 1.5X CVT" -> ("Honda", "Vezel")."""
-    words = (text or "").replace("-", " ").split()
+    """"Honda Vezel 1.5X CVT" -> ("Honda", "Vezel"); "Honda HR-V 1.5" ->
+    ("Honda", "HR-V"); "Mercedes-Benz C200" -> ("Mercedes Benz", "C200").
+    Only a make's hyphen splits: the model's used to as well, so HR-V was
+    stored as "HR" and CX-3 and CX-5 were both "CX"."""
+    words = (text or "").split()
+    if words and "-" in words[0]:
+        head = words[0].replace("-", " ").split()
+        if " ".join(head[:2]).lower() in _TWO_WORD_MAKES:
+            words = head + words[1:]
     if len(words) >= 2 and " ".join(words[:2]).lower() in _TWO_WORD_MAKES:
         return " ".join(words[:2]).title(), (words[2] if len(words) > 2 else "")
     return (words[0].title() if words else ""), (words[1] if len(words) > 1 else "")
@@ -286,8 +294,13 @@ def side_of(text: str) -> str | None:
     return None
 
 
+# The outside of a wheel arch: its garnish (the Vezel's "wheel arch
+# protector ganrish", sic), moulding or flare, and the mudflap.
+_ARCH_TRIM = r"\barch\b.*\b(garnish|ganrish|moulding|molding|trim|flare|cladding)|mud ?flap"
+
 # First match wins, so the specific rules come before the general ones.
-# Families are canonical part names without the side (taxonomy.py).
+# Families are canonical part names without the side (taxonomy.py); one
+# ("Wheel Nut") has no canonical part and only comes up as a past line.
 _FAMILY_RULES: list[tuple[str, str]] = [
     (r"(tail ?gate|boot ?lid|back ?door).*(lock|striker|catch)|key lock", "Boot Lid Lock"),
     (r"(tail ?gate|boot ?lid|back ?door).*hinge", "Boot Lid Hinge"),
@@ -299,8 +312,17 @@ _FAMILY_RULES: list[tuple[str, str]] = [
     (r"front windscreen|windscreen", "Front Windscreen"),
     (r"rear bumper.*(beam|reinforcement)", "Rear Bumper Beam"),
     (r"rear bumper.*reflector", "Rear Bumper Reflector"),
-    (r"(rear bumper|rear fender).*(wheel arch|arch garnish|arch protector|mudflap)", "Rear Wheel Arch Liner"),
+    # The arch's outside garnish (and the mudflap behind it) before the
+    # liner inside it: one family held both, so a "wheel arch garnish" was
+    # priced and worded as the splash shield.
+    (rf"front\b.*({_ARCH_TRIM})", "Front Wheel Arch Trim"),
+    (rf"(rear|quarter)\b.*({_ARCH_TRIM})", "Rear Wheel Arch Trim"),
+    (_ARCH_TRIM, "Wheel Arch Trim"),
+    (r"(rear bumper|rear fender).*(wheel arch|arch protector)", "Rear Wheel Arch Liner"),
     (r"rear bumper", "Rear Bumper"),
+    # The pressure-relief vent behind the rear bumper (the Civic's "Rear air
+    # vent"): renewed with the bumper, and it had no family at all.
+    (r"rear\b.*\bair (vent|outlet|extractor)", "Rear Bumper"),
     (r"tail ?lamp", "Tail Lamp"),
     (r"(rear )?end panel|taillamp panel", "Rear End Panel"),
     (r"spare tyre panel top|floor panel (board|insulator|under|tool)|tool tray|spare tyre panel top", "Boot Floor Board"),
@@ -316,18 +338,41 @@ _FAMILY_RULES: list[tuple[str, str]] = [
     (r"head ?lamp", "Headlamp"),
     (r"front fender.*(splash|wheel arch|arch protector|liner)", "Front Wheel Arch Liner"),
     (r"front fender|wing panel", "Front Fender"),
+    # Inside the door, priced apart from it ("Front door glass regulator
+    # mechanism", "... motor"): it used to be folded into the door.
+    (r"front\b.*\b(door|window|glass)\b.*\bregulator", "Front Window Regulator"),
+    (r"rear\b.*\b(door|window|glass)\b.*\bregulator", "Rear Window Regulator"),
+    (r"(door|window|glass)\b.*\bregulator", "Window Regulator"),
     (r"front door", "Front Door"),
     (r"rear door", "Rear Door"),
+    (r"side sill|sill panel|rocker panel", "Sill / Rocker Panel"),
     (r"(wing|side) mirror", "Wing Mirror"),
     (r"reverse sensor|parking sensor", "Parking Sensor"),
     (r"reverse camera|reversing camera", "Reversing Camera"),
     (r"number plate", "Rear Number Plate"),
     (r"exhaust|silencer", "Exhaust System"),
+    (r"rear\b.*\b(cross member|subframe)", "Rear Subframe"),
     (r"cross member|subframe", "Front Subframe"),
+    (r"rear\b.*\b(lower arm|trailing arm|anti roll|stabili[sz]er|shock absorber|strut|axle beam|torsion beam)", "Suspension - Rear"),
     (r"lower arm|anti roll|stabili[sz]er|shock absorber|strut", "Suspension - Front"),
     (r"steering", "Steering Assembly"),
     (r"chassis|frame member", "Underbody / Chassis"),
-    (r"rim|tyre|wheel", "Wheel"),
+    (r"front\b.*\b(wheel arch|arch liner|arch protector|splash shield)", "Front Wheel Arch Liner"),
+    (r"rear\b.*\b(wheel arch|arch liner|arch protector|splash shield)", "Rear Wheel Arch Liner"),
+    (r"wheel arch|arch liner|arch protector|splash shield", "Wheel Arch Liner"),
+    # "Wheel" held the rims, the tyres and the spare wheel's nut, so a rim's
+    # kit priced the tyre and the nut too, and its main row could be either.
+    # Now the rim, the tyre and the nut each have their own family, and a
+    # rim or tyre that names its end is that end's: "Front tyre" is no rear
+    # tyre's line. The spare wheel's hold-down nut sits in the boot floor.
+    (r"spare (tyre|wheel)\b.*\b(nut|bolt|clamp)", "Boot Floor Board"),
+    (r"wheel (nut|bolt)s?|lug nut", "Wheel Nut"),
+    (r"front\b.*\b(tyre|tire)s?\b", "Front Tyre"),
+    (r"rear\b.*\b(tyre|tire)s?\b", "Rear Tyre"),
+    (r"\b(tyre|tire)s?\b", "Tyre"),
+    (r"front\b.*\b(rim|wheel)", "Front Wheel"),
+    (r"rear\b.*\b(rim|wheel)", "Rear Wheel"),
+    (r"\brims?\b|wheel", "Wheel"),
     (r"bonnet|hood", "Bonnet"),
     (r"roof", "Roof"),
 ]
@@ -335,11 +380,19 @@ _FAMILY_RULES: list[tuple[str, str]] = [
 # Families whose canonical names carry a side (taxonomy.CANONICAL_PARTS).
 _SIDED = {
     "Tail Lamp", "Headlamp", "Fog Lamp", "Rear Bumper Reflector", "Boot Lid Lamp", "Boot Side Trim",
-    "Rear Wheel Arch Liner", "Front Wheel Arch Liner", "Rear Quarter Panel", "Front Fender",
-    "Front Door", "Rear Door", "Wing Mirror",
+    "Rear Wheel Arch Liner", "Front Wheel Arch Liner", "Rear Wheel Arch Trim", "Front Wheel Arch Trim",
+    "Rear Quarter Panel", "Front Fender", "Front Door", "Rear Door", "Wing Mirror",
+    "Front Window Regulator", "Rear Window Regulator", "Sill / Rocker Panel",
+    "Front Wheel", "Rear Wheel", "Front Tyre", "Rear Tyre",
 }
 
+# A rim or tyre line that names no end ("Sport rim" x2) stands in for
+# either end's family when no past line in scope names that end: the
+# Civic's only rim line is "Sport rim".
+_END_FALLBACK = {"Front Wheel": "Wheel", "Rear Wheel": "Wheel", "Front Tyre": "Tyre", "Rear Tyre": "Tyre"}
 
+
+@lru_cache(maxsize=4096)
 def family_of(item: str) -> str | None:
     text = item.lower()
     for pattern, family in _FAMILY_RULES:
@@ -364,19 +417,50 @@ def canonical_part(text: str) -> str | None:
     return f"{side} {family}" if side and family in _SIDED else family
 
 
+def _line_family(line: PastAnnexLine) -> str | None:
+    """A past line's family by today's rules, from its wording. Not the
+    family column stored at import: the rules change (a regulator was the
+    door's until 2026-11-10), and the stored value would keep every past
+    import on the old ones until it was imported again. refresh_lines
+    brings the column up to date for what shows it (the price book list)."""
+    return family_of(line.item or "")
+
+
+def refresh_lines(db: Session) -> int:
+    """Re-reads every imported line's family, side and model by today's
+    rules (family_of, side_of, split_make_model), for a start-up step after
+    a rule change; labour lines take their case's model. Returns how many
+    lines changed; the caller commits."""
+    changed = 0
+    models: dict[str, str] = {}
+    for ln in db.query(PastAnnexLine).all():
+        model = split_make_model(ln.make_model_raw)[1] if ln.make_model_raw else ln.model
+        models.setdefault(ln.case_ref, model)
+        new = (family_of(ln.item or ""), side_of(ln.item or ""), model)
+        if (ln.family, ln.side, ln.model) != new:
+            ln.family, ln.side, ln.model = new
+            changed += 1
+    for job in db.query(PastLabourLine).all():
+        model = models.get(job.case_ref)
+        if model and job.model != model:
+            job.model = model
+            changed += 1
+    return changed
+
+
 def family_and_side(part: str) -> tuple[str, str | None]:
     """Canonical part name -> (family, side): "Left Tail Lamp" ->
-    ("Tail Lamp", "Left"); "Wheel (side undetermined)" -> ("Wheel", None)."""
+    ("Tail Lamp", "Left"); "Left Rear Wheel" -> ("Rear Wheel", "Left");
+    "Wheel (side undetermined)" -> ("Wheel", None), the rim lines that
+    name no end."""
     part = part.replace(" (side undetermined)", "")
     for side in ("Left", "Right"):
         if part.startswith(side + " "):
-            rest = part[len(side) + 1:]
-            # "Left Front Fender" -> family "Front Fender"; "Left Rear Wheel" -> "Wheel".
-            if rest in ("Front Wheel", "Rear Wheel"):
-                return "Wheel", side
-            if rest == "Rear Quarter Panel":
-                return "Rear Quarter Panel", side
-            return rest, side
+            return part[len(side) + 1:], side
+    # The only quarter panel is the rear one; "Quarter Panel" found no
+    # history under that name.
+    if part == "Quarter Panel":
+        return "Rear Quarter Panel", None
     return part, None
 
 
@@ -495,11 +579,29 @@ def _same(a: str | None, b: str | None) -> bool:
     return bool(a and b) and a.strip().lower() == b.strip().lower()
 
 
+# One car sold under two names: the home-market name on a parallel import,
+# the export name on a dealer car. A reader's "HR-V" found no Vezel history
+# and the scope widened to every Honda.
+_MODEL_TWINS = {
+    "hrv": "vezel", "jazz": "fit", "grace": "city", "altis": "corolla",
+    "mazda2": "demio", "mazda3": "axela", "mazda6": "atenza",
+    "qashqai": "dualis", "elantra": "avante", "forte": "cerato", "k3": "cerato", "crosstrek": "xv",
+}
+
+
+def _model_key(model: str | None) -> str:
+    """The model name's first word, letters and digits only ("HR-V" ->
+    "hrv"), as its twin's name ("vezel")."""
+    words = (model or "").strip().lower().split()
+    first = re.sub(r"[^a-z0-9]", "", words[0]) if words else ""
+    return _MODEL_TWINS.get(first, first)
+
+
 def _same_model(a: str | None, b: str | None) -> bool:
     """By the model name's first word: a case can say "Vezel 1.5X CVT"
-    where the history says "Vezel"."""
-    first = lambda s: (s or "").strip().split()[0].lower() if (s or "").strip() else ""  # noqa: E731
-    return bool(first(a)) and first(a) == first(b)
+    where the history says "Vezel", or its twin "HR-V" (_MODEL_TWINS)."""
+    key = _model_key(a)
+    return bool(key) and key == _model_key(b)
 
 
 def _unit_price(line: PastAnnexLine) -> float | None:
@@ -518,6 +620,7 @@ def suggest(
     damaged_parts: list[str],
     existing_items: list[str],
     exclude_ref: str | None = None,
+    unsided: bool = False,
 ) -> dict:
     """Annex A lines past cases wrote for these damaged parts.
 
@@ -527,6 +630,9 @@ def suggest(
     replaced with", families that appeared in most past cases where that
     part was damaged but aren't damaged here (the rear windscreen trims on a
     tailgate job). Lines already in this case's Annex A are left out.
+    unsided: nobody has established the parts' sides (prefill.
+    side_unconfirmed), so no line keeps a LH / RH; the end stays, which a
+    "(side undetermined)" name loses ("Left Rear Wheel" -> the rear rims).
     """
     lines = db.query(PastAnnexLine).all()
     if exclude_ref:
@@ -547,22 +653,25 @@ def suggest(
     undetermined: set[str] = set()
     for part in damaged_parts:
         fam, side = family_and_side(part)
+        if unsided:
+            side = None
         wanted.setdefault(fam, side)
-        if part.endswith(" (side undetermined)"):
+        if unsided or part.endswith(" (side undetermined)"):
             undetermined.add(fam)
 
     # Which families each past case had damaged (not just refitted).
+    fam_of = {id(ln): _line_family(ln) for ln in pool}
     damaged_by_case: dict[str, set[str]] = {}
     for ln in pool:
-        if ln.family and (ln.condition or "").strip().lower() not in FITTING_CONDITIONS:
-            damaged_by_case.setdefault(ln.case_ref, set()).add(ln.family)
+        if fam_of[id(ln)] and (ln.condition or "").strip().lower() not in FITTING_CONDITIONS:
+            damaged_by_case.setdefault(ln.case_ref, set()).add(fam_of[id(ln)])
 
     def lines_for(family: str, side: str | None, case_refs: set[str] | None = None, unsided: bool = False) -> list[dict]:
         """unsided: the damaged part's side is undetermined, so no line
         keeps a past case's LH / RH."""
         groups: dict[str, list[PastAnnexLine]] = {}
         for ln in pool:
-            if ln.family != family or (case_refs is not None and ln.case_ref not in case_refs):
+            if fam_of[id(ln)] != family or (case_refs is not None and ln.case_ref not in case_refs):
                 continue
             groups.setdefault(ln.item_key, []).append(ln)
         out = []
@@ -577,16 +686,29 @@ def suggest(
             ests = [round(g.workshop_est / (g.qty or 1), 2) for g in group if _unit_price(g) is not None and g.workshop_est > 0]
             qtys = [g.qty for g in group if g.qty]
             names = [g.item for g in group]
-            name = max(set(names), key=names.count)
+            # Most common wording; sorted first so a tie is decided the same
+            # way in every process (a set's order is not).
+            name = max(sorted(set(names)), key=names.count)
             conditions = sorted({g.condition for g in group if g.condition})
             fitting = all((g.condition or "").strip().lower() in FITTING_CONDITIONS for g in group)
-            qty = statistics.median(qtys) if qtys else 1.0
+            # A count some past case wrote: the plain median of a both-tyres
+            # line (2) and a one-tyre line (1) was 1.5 tyres, priced 1.5 x.
+            qty = statistics.median_low(qtys) if qtys else 1.0
             # "1set" when at least half the past lines were written as a
             # set (prefill prints it that way); the unit goes on the median.
             units = [re.sub(r"[\d.\s]", "", g.qty_text or "") for g in group if g.qty_text]
-            unit = max(set(units), key=units.count) if units and len(units) * 2 >= len(group) else ""
+            unit = max(sorted(set(units)), key=units.count) if units and len(units) * 2 >= len(group) else ""
+            if unsided:
+                name = _without_side(name)
+            elif side and family in _SIDED:
+                # This side's own line: "Front tyre RH" -> "Front tyre LH",
+                # and "Front tyre" (the wording most cases wrote) gets the
+                # side a past case gave it, as firm_wording does.
+                name = _with_side(name, side)
+                if side_of(name) is None and any(side_of(g.item) for g in group):
+                    name = f"{name} {'LH' if side == 'Left' else 'RH'}"
             out.append({
-                "name": _without_side(name) if unsided else _with_side(name, side if family in _SIDED else None),
+                "name": name,
                 "family": family,
                 "qty": qty,
                 "qty_text": f"{qty:g}{unit}" if unit else None,
@@ -612,13 +734,18 @@ def suggest(
 
     groups, without_history = [], []
     for family, side in wanted.items():
+        source = family
+        # Only within the same model: another model's "Sport rim" x2 is no
+        # line for this car's one rear wheel.
+        if family in _END_FALLBACK and by_model and family not in fam_of.values():
+            source = _END_FALLBACK[family]
         # A sided family with no side: a "(side undetermined)" part (or a
         # pre-taxonomy "Tail lamp"). The past lines' LH / RH said which side
         # THAT case had; printed here it read as this case's finding.
-        found = lines_for(family, side, unsided=side is None and (family in _SIDED or family in undetermined))
+        found = lines_for(source, side, unsided=side is None and (family in _SIDED or family in undetermined))
         if found:
             groups.append({"part": family if not side else f"{side} {family}", "reason": "damaged", "lines": found})
-        elif not any(ln.family == family for ln in pool):
+        elif source not in fam_of.values():
             # Only parts no past case covers. A part whose past lines are all
             # already in this Annex A is simply done -- calling it "no
             # history" sent surveyors to ask the AI for nothing.
@@ -632,7 +759,7 @@ def suggest(
             continue
         counts: dict[str, int] = {}
         for ref in with_it:
-            for fam in {ln.family for ln in pool if ln.case_ref == ref and ln.family}:
+            for fam in {fam_of[id(ln)] for ln in pool if ln.case_ref == ref and fam_of[id(ln)]}:
                 counts[fam] = counts.get(fam, 0) + 1
         for fam, n in sorted(counts.items(), key=lambda kv: -kv[1]):
             if fam in wanted or n < 2 or n * 2 < len(with_it):
@@ -645,11 +772,11 @@ def suggest(
     return {"scope": scope_label, "cases_used": len(cases), "groups": groups, "without_history": without_history}
 
 
-# Families whose history lumps together parts the canonical names keep
-# apart: "Wheel" holds front and rear rims, tyres and the spare's wheel nut,
-# so its usual wording could name the wrong wheel. Those take the floor
+# Families whose lines don't say which end of the car: "Wheel" and "Tyre"
+# hold the rim and tyre lines that name no end ("Sport rim"), so their
+# usual wording could name the wrong wheel. Those take the floor
 # (taxonomy.FIRM_PART_NAMES), which knows front from rear.
-_COARSE_FAMILIES = {"Wheel"}
+_COARSE_FAMILIES = {"Wheel", "Tyre"}
 
 
 def firm_wording(db: Session, part: str, make: str | None = None, model: str | None = None) -> str | None:
@@ -674,7 +801,7 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     family, side = family_and_side(canon)
     if family in _COARSE_FAMILIES:
         return None
-    lines = db.query(PastAnnexLine).filter(PastAnnexLine.family == family).all()
+    lines = [ln for ln in db.query(PastAnnexLine).all() if _line_family(ln) == family]
     scopes = (
         [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
         [ln for ln in lines if _same(ln.make, make)],
