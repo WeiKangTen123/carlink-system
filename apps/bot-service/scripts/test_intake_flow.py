@@ -76,6 +76,7 @@ class FakeInteractions:
             out.append({"label": "P999", "kind": "damage", "area": None, "quality": "good", "shows_damage": True, "note": None})
             return SimpleNamespace(output_text=json.dumps({"photos": out}))
         calls["draft"] += 1
+        calls["draft_input"] = input
         draft = {
             "description": "Insured vehicle was rear-ended.",
             "category": ["Vehicle Collision or Damage"],
@@ -152,6 +153,18 @@ def main() -> int:
         assert data["damage_summary"][1]["photo_reference"] is None and data["damage_summary"][1]["bbox_2d"] is None
         assert state["photos"][0]["id"] in state["read_photo_ids"]
         ok("sorted in 2 batches, read, references stored as photo ids, reporter fields kept")
+
+        # The reader's captions: each label followed by the sorter's hint
+        # (extraction.photo_hint), never a side -- the fake sorter puts
+        # every even photo on the "left".
+        texts = [part["text"] for part in calls["draft_input"] if part.get("type") == "text"]
+        captions = {texts[i]: texts[i + 1] for i, t in enumerate(texts[:-1]) if re.fullmatch(r"Photo P\d+:", t)}
+        assert captions["Photo P01:"] == "Sorter's hint: log card", captions
+        assert captions["Photo P03:"] == "Sorter's hint: walk-around view; area: rear; note: photo P03", captions
+        assert captions["Photo P04:"] == "Sorter's hint: damage close-up; note: photo P04", captions
+        assert len(captions) == len(state["read_photo_ids"]) and all(c.startswith("Sorter's hint: ") for c in captions.values())
+        assert not any("left" in c.lower() for c in captions.values())
+        ok("the reader gets each photo's sorter hint after its label: kind, front/rear, note -- no side")
 
         p2, p0 = state["photos"][2]["id"], state["photos"][0]["id"]
         assert client.patch(f"/intake/{rid}/photos/{p2}", json={"kind": "tyre"}).status_code == 200
