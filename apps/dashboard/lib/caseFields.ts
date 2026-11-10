@@ -77,8 +77,10 @@ export function caseTitle(r: ReportSummary): string {
   return r.plate_number || inferVehicleName(r) || r.category?.[0] || "Incident";
 }
 
-export function daysOpen(createdAt: string): number {
-  return Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000));
+/** Whole days since createdAt. `now` (epoch ms) is for callers that work
+ * several dates out against one moment (lib/attention.ts). */
+export function daysOpen(createdAt: string, now: number = Date.now()): number {
+  return Math.max(0, Math.floor((now - new Date(createdAt).getTime()) / 86400000));
 }
 
 /** The system's own reference for a case, from its id and filing year.

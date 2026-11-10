@@ -13,7 +13,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, update
+from sqlalchemy import case, delete, func, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -406,6 +406,33 @@ def report_history(db: Session, report: Report) -> list[dict]:
             "at": iso_utc(report.created_at),
         })
     return history
+
+
+def reopened_cases(db: Session, report_ids) -> set[str]:
+    """Those of these cases that were signed off, reopened since, and not
+    signed off again: the newer of their last "signed_off" and last
+    "reopened" history entries is the reopen. A reopen with no sign-off
+    before it doesn't count (POST /reports/{id}/reopen also takes a case
+    nobody signed). In one query, for GET /reports' reopened. Newer by
+    id: entries are numbered in the order they were written, while a
+    sign-off and a reopen in the same second tie on created_at."""
+    ids = [i for i in report_ids if i]
+    if not ids:
+        return set()
+    rows = (
+        db.query(
+            AuditEntry.report_id,
+            func.max(case((AuditEntry.action == "signed_off", AuditEntry.id))),
+            func.max(case((AuditEntry.action == "reopened", AuditEntry.id))),
+        )
+        .filter(AuditEntry.report_id.in_(ids), AuditEntry.action.in_(("signed_off", "reopened")))
+        .group_by(AuditEntry.report_id)
+        .all()
+    )
+    return {
+        report_id for report_id, signed, reopened in rows
+        if signed is not None and reopened is not None and reopened > signed
+    }
 
 
 def user_dict(user: User) -> dict:
