@@ -1501,6 +1501,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--read-tools", metavar="TOOLS",
                     help="tools for the reading call: 'code_execution' (Agentic Vision trial; "
                          "settings.gemini_read_tools)")
+    ap.add_argument("--no-side-from-sorter", action="store_true",
+                    help="ablation: the reader's sides stand (settings.intake_side_from_sorter off)")
+    ap.add_argument("--no-sorter-hints", action="store_true",
+                    help="ablation: no sorter's hint beside each photo (extraction.SORTER_HINTS off)")
+    ap.add_argument("--max-read", type=int, metavar="N", help="photos one reading sends (settings.intake_max_read_photos)")
+    ap.add_argument("--drop-rule", action="append", choices=sorted(READING_RULES),
+                    help="ablation: take one reading rule out of the prompt (repeatable)")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -1569,6 +1576,23 @@ def ai_settings(settings) -> dict:
     return {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
 
 
+# The reading rules --drop-rule can take out of the prompt, by the words
+# each starts with (app/ai/extraction.SYSTEM_PROMPT).
+READING_RULES = {
+    "shutlines": "   - Along the side of the car",
+    "neighbours": "   - When a door is damaged",
+    "tyre": "   - 'Wheel' is the rim",
+    "regulator": "   - A bent or removed window regulator",
+}
+
+
+def _drop_rule(prompt: str, start: str) -> str:
+    """The prompt without the one line that begins with start."""
+    i = prompt.index(start)
+    j = prompt.index("\n", i) + 1
+    return prompt[:i] + prompt[j:]
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.rescore:
@@ -1593,6 +1617,16 @@ def main(argv=None) -> int:
         A.settings.second_look_enabled = True
     if args.no_second_look:
         A.settings.second_look_enabled = False
+    # Ablation: one contract-6 piece off for this run, to see what it adds.
+    import app.ai.extraction as extraction
+    if args.no_side_from_sorter:
+        A.settings.intake_side_from_sorter = False
+    if args.no_sorter_hints:
+        extraction.SORTER_HINTS = False
+    if args.max_read:
+        A.settings.intake_max_read_photos = args.max_read
+    for rule in args.drop_rule or []:
+        extraction.SYSTEM_PROMPT = _drop_rule(extraction.SYSTEM_PROMPT, READING_RULES[rule])
     A.init_db()
     key = json.loads(args.key.read_text(encoding="utf-8"))
     unknown = sorted(set(args.only or []) - {c["name"] for c in key["cases"]})
