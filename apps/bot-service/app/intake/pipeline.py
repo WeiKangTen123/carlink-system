@@ -649,8 +649,8 @@ def side_from_sorter(items: list[dict], sorter_parts: dict[str, str]) -> list[di
     takes the sorter's side, in place. The sorter names a photo's side only
     after working out which way the car faces in it (triage._SIDES, an
     "angle" per photo); a light reader, asked for a whole case at once,
-    flips a side all the way through a case (SLC 2502 Y, 2026-11-10: every
-    right-side part read as left, every photo tagged right). Same part only:
+    flips a side all the way through a case (a benchmark case, 2026-11-10:
+    every right-side part read as left, every photo tagged right). Same part only:
     a different part on the photo says nothing about this one.
 
     sorter_parts: {photo id: the sorter's part}; items' photo_reference is
