@@ -193,6 +193,11 @@ def hints() -> None:
 
 
 def build_input() -> None:
+    # Off by default since the 2026-11-10 benchmark (no parts gained, more
+    # wrong sides); the hints themselves are still tested, switched on.
+    default = extraction.SORTER_HINTS
+    check(default is False, "sorter hints are off by default")
+    extraction.SORTER_HINTS = True
     img = Path(_tmp, "a.jpg")
     img.write_bytes(b"\xff\xd8\xff\xe0fake")
     paths = [str(img)] * 3
@@ -226,7 +231,7 @@ def build_input() -> None:
         check(extraction._build_input("Hit on the side.", paths, None, labels, hint_dicts) == expected,
               "SORTER_HINTS off (A/B): the request is as without hints")
     finally:
-        extraction.SORTER_HINTS = True
+        extraction.SORTER_HINTS = default
     # The no-op hook became structured.image_part(path, kind) (c80aa10).
     check(structured.image_resolution("damage") is None and image_part(str(img), kind="damage") == image_part(str(img)),
           "no gemini_image_resolution setting: a photo's kind adds nothing (Gemini's default, as before)")
@@ -234,14 +239,12 @@ def build_input() -> None:
 
 def prompt_rules() -> None:
     prompt = extraction.SYSTEM_PROMPT
-    check(all(s in prompt for s in ("shut lines", "A dent on a door's skin, even low down, is the door",
-                                    "the sill is the panel below the doors", "behind the rear door")),
-          "door vs sill vs rear quarter by the shut lines")
+    # Taken out after the 2026-11-10 benchmark: on the light reader they
+    # added no parts and more wrong sides and extras (bench --drop-rule).
+    check("shut lines" not in prompt and "check the panels either side of it" not in prompt,
+          "the shut-line and neighbouring-panel rules are out of the prompt")
     # The parts the rules name are listed parts since agent T's (Wheel Arch
     # Trim, Tyre, Window Regulator).
-    check("When a door is damaged, check the panels either side of it" in prompt
-          and "the 'Wheel Arch Trim' (the garnish on the arch's edge) and the 'Wheel Arch Liner' (the splash shield" in prompt,
-          "a damaged door: check the fender, other door, quarter, sill and the Wheel Arch Trim / Liner")
     check("'Wheel' is the rim and 'Tyre' the tyre" in prompt and "tyre damage on the Tyre" in prompt
           and "list the Tyre with 'ai_confidence' 'Low' and no 'severity'" in prompt,
           "rim damage on the Wheel, tyre damage on the Tyre; a maybe-serviceable tyre at Low confidence, no severity")

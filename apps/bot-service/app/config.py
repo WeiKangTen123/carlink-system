@@ -125,7 +125,11 @@ class Settings(BaseSettings):
     # see thinking_levels). A model that refuses a level (gemini-3.8-flash
     # has no "minimal") fails that try like any other error and the chain
     # moves on to the next model.
-    gemini_thinking_level_read: str | None = None
+    # The light models read with thinking "high": on the 4 benchmark cases
+    # gemini-3.5-flash-lite found 10 of 67 parts at its default (minimal)
+    # and 15 at high, wrong sides 4 -> 1 (2026-11-10). Thinking is free on
+    # the free tier. The strong models keep their own default (high).
+    gemini_thinking_level_read: str | None = "gemini-3.5-flash-lite=high,gemini-3.1-flash-lite=high"
     gemini_thinking_level_sort: str | None = None
     gemini_thinking_level_second_look: str | None = None
     # Per photo kind on the reading call, e.g. "damage=ultra_high,
@@ -145,7 +149,9 @@ class Settings(BaseSettings):
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
     # side_from_sorter). Off: the reader's side stands, as before.
-    intake_side_from_sorter: bool = True
+    # Off: measured on the light reader (2026-11-10) it added no parts and
+    # made sides worse when the sorter's own side was wrong.
+    intake_side_from_sorter: bool = False
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False

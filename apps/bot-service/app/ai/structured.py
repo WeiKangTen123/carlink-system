@@ -148,8 +148,10 @@ def request_settings(purpose: str, model_id: str) -> dict:
     return extra
 
 
-# Seconds to wait before asking a busy model (is_overloaded) once more.
+# Seconds to wait before asking a busy model (is_overloaded) once more, and
+# before asking the whole chain again when every model was busy.
 OVERLOADED_RETRY_SECONDS = 8.0
+CHAIN_BUSY_RETRY_SECONDS = 20.0
 
 _OVERLOADED = re.compile(r"\b503\b|UNAVAILABLE|overloaded|high demand", re.IGNORECASE)
 
@@ -172,6 +174,7 @@ def call_structured(
     actor: AiActor,
     timeout: float = 45.0,
     judge_key: bool = True,
+    _busy_round: int = 0,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
     output parse() accepts.
@@ -211,11 +214,15 @@ def call_structured(
     # Whether every try so far failed for the day's allowance (a skip, or a
     # 429 per day / "limit: 0"): then the call ends in allowance.DayUsedUp.
     all_day = True
+    # Whether every try so far was Google answering "busy" (is_overloaded):
+    # then the whole chain is asked once more after CHAIN_BUSY_RETRY_SECONDS.
+    all_busy = None
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
     # The run log (ai/runs.py) gets the request's size once, and each try
     # below as it ends, through the calling thread's collector.
-    runs.note_input(_input_size(system_instruction, input_parts))
+    if not _busy_round:
+        runs.note_input(_input_size(system_instruction, input_parts))
 
     for key in keys:
         client = get_client(key)
@@ -241,6 +248,7 @@ def call_structured(
                 _note_attempt(key, model_id, "day_spent", 0.0, time.monotonic(), None, spent_until=spent_until)
                 verdicts.append("no_allowance" if allowance.limit(key.fingerprint, model_id) == 0 else "quota")
                 last_error = allowance.DaySpent(model_id)
+                all_busy = False
                 continue
             # Every attempt takes a slot, not just the first. Previously the
             # gate ran once before these loops, so a draft that fell through
@@ -297,6 +305,7 @@ def call_structured(
                 except Exception as exc:
                     last_error = key_error = exc
                     said = refusal(exc)
+                    all_busy = is_overloaded(exc) and all_busy is not False
                     if said not in DAY_VERDICTS:
                         all_day = False
                     # The day's allowance gone on this model: remembered
@@ -355,6 +364,16 @@ def call_structured(
         # than "the AI failed". (Not chained: the SDK's error stays in the
         # log lines above, scrubbed.)
         raise AiUnavailable(refused[-1]) from None
+    if all_busy and not _busy_round:
+        # Every model of the chain said "busy" (each already asked twice):
+        # a short pause and one more round, rather than failing a run when
+        # the light models -- what most reads run on -- are all busy at once.
+        logger.warning("Every Gemini model was busy; asking the chain again in %.0fs", CHAIN_BUSY_RETRY_SECONDS)
+        time.sleep(CHAIN_BUSY_RETRY_SECONDS)
+        return call_structured(
+            purpose=purpose, system_instruction=system_instruction, input_parts=input_parts, schema=schema,
+            parse=parse, models=models, actor=actor, timeout=timeout, judge_key=judge_key, _busy_round=1,
+        )
     raise (allowance.DayUsedUp if all_day and last_error is not None else RuntimeError)(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."

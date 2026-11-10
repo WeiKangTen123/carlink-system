@@ -57,7 +57,9 @@ calls = {"sort": 0, "draft": 0, "fail": False}
 
 
 class FakeInteractions:
-    def create(self, *, model, system_instruction, input, response_format, timeout):
+    # **settings: generation_config / tools (structured.request_settings),
+    # e.g. the light models' thinking level, set by default.
+    def create(self, *, model, system_instruction, input, response_format, timeout, **settings):
         if calls["fail"]:
             raise RuntimeError(calls["fail"])
         labels = [m.group(1) for part in input if part.get("type") == "text"
@@ -98,6 +100,9 @@ class FakeInteractions:
 
 structured.get_client = lambda key=None: SimpleNamespace(interactions=FakeInteractions())
 structured.acquire = lambda key=None: 0.0
+# The busy retries (a model, then the whole chain) without real waiting.
+structured.OVERLOADED_RETRY_SECONDS = 0.0
+structured.CHAIN_BUSY_RETRY_SECONDS = 0.0
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -154,17 +159,13 @@ def main() -> int:
         assert state["photos"][0]["id"] in state["read_photo_ids"]
         ok("sorted in 2 batches, read, references stored as photo ids, reporter fields kept")
 
-        # The reader's captions: each label followed by the sorter's hint
-        # (extraction.photo_hint), never a side -- the fake sorter puts
-        # every even photo on the "left".
+        # The sorter's hints are off by default (extraction.SORTER_HINTS,
+        # benchmark 2026-11-10): the reader gets each label and its photo
+        # only. test_reading_input covers the hints themselves.
         texts = [part["text"] for part in calls["draft_input"] if part.get("type") == "text"]
-        captions = {texts[i]: texts[i + 1] for i, t in enumerate(texts[:-1]) if re.fullmatch(r"Photo P\d+:", t)}
-        assert captions["Photo P01:"] == "Sorter's hint: log card", captions
-        assert captions["Photo P03:"] == "Sorter's hint: walk-around view; area: rear; note: photo P03", captions
-        assert captions["Photo P04:"] == "Sorter's hint: damage close-up; note: photo P04", captions
-        assert len(captions) == len(state["read_photo_ids"]) and all(c.startswith("Sorter's hint: ") for c in captions.values())
-        assert not any("left" in c.lower() for c in captions.values())
-        ok("the reader gets each photo's sorter hint after its label: kind, front/rear, note -- no side")
+        assert not any(t.startswith("Sorter's hint") for t in texts), texts
+        assert sum(1 for t in texts if re.fullmatch(r"Photo P\d+:", t)) == len(state["read_photo_ids"])
+        ok("the reader gets each read photo's label, and no sorter's hint (off by default)")
 
         p2, p0 = state["photos"][2]["id"], state["photos"][0]["id"]
         assert client.patch(f"/intake/{rid}/photos/{p2}", json={"kind": "tyre"}).status_code == 200

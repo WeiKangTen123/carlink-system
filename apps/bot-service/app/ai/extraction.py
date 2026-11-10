@@ -80,13 +80,6 @@ SYSTEM_PROMPT = (
     "lid's inner side, its lock, the weatherstrip, the 'Rear End Panel' (the body panel below the boot opening), the "
     "'Boot Floor Board' and the 'Boot Side Trim'. Use 'Other / Not Listed' only when no listed part fits, and then put "
     "the part's own name in 'other_part_name' -- never on a listed part.\n"
-    "   - Along the side of the car the front fender, front door, rear door, rear quarter panel and sill are separate "
-    "parts: use the shut lines (the gaps between panels) to tell which panel the damage is on. A dent on a door's skin, "
-    "even low down, is the door; the sill is the panel below the doors; the rear quarter panel is behind the rear door, "
-    "around the rear wheel arch. Damage that crosses a shut line is on both panels -- list each.\n"
-    "   - When a door is damaged, check the panels either side of it (front fender, the other door, rear quarter panel, "
-    "sill), the 'Wheel Arch Trim' (the garnish on the arch's edge) and the 'Wheel Arch Liner' (the splash shield "
-    "inside), and list each one you can see damaged.\n"
     "   - 'Wheel' is the rim and 'Tyre' the tyre: rim damage goes on the Wheel (a scraped rim is Grazed), tyre damage on "
     "the Tyre. Tyre marks a surveyor might pass as serviceable: list the Tyre with 'ai_confidence' 'Low' and no "
     "'severity' rather than a guessed one.\n"
@@ -249,7 +242,7 @@ def _model_chain() -> list[str]:
 # followed by them as a short hint (photo_hint) -- never its side, which the
 # sorter judges from the camera's frame and flips. Off (SORTER_HINTS False):
 # the request is as before, for A/B runs of scripts/benchmark_intake.py.
-SORTER_HINTS = True
+SORTER_HINTS = False
 
 _HINT_KINDS = {
     "damage": "damage close-up",

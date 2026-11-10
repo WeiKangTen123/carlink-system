@@ -106,6 +106,25 @@ def main() -> int:
     check(CALLS == ["lite-a", "lite-a", "lite-b"], "two tries on lite-a, then lite-b", repr(CALLS))
     check(len(SLEPT) == 1, "waited once only", repr(SLEPT))
 
+    print("every model busy twice: the whole chain once more")
+    PLAN.clear()
+    PLAN["lite-a"] = [Busy(), Busy(), '{"ok": 3}']
+    PLAN["lite-b"] = [Busy(), Busy()]
+    out = call(["lite-a", "lite-b"])
+    check(out == '{"ok": 3}', "the second round's first model answers", repr(out))
+    check(CALLS == ["lite-a", "lite-a", "lite-b", "lite-b", "lite-a"], "a, a, b, b, then a again", repr(CALLS))
+    check(structured.CHAIN_BUSY_RETRY_SECONDS in SLEPT, "a longer pause before the second round", repr(SLEPT))
+
+    print("busy everywhere twice over: it gives up")
+    PLAN.clear()
+    PLAN["lite-a"] = [Busy()] * 4
+    PLAN["lite-b"] = [Busy()] * 4
+    try:
+        call(["lite-a", "lite-b"])
+        check(False, "raises after the second round")
+    except RuntimeError:
+        check(len(CALLS) == 8, "two rounds of two tries each, no third", repr(CALLS))
+
     print("other errors are not waited for")
     PLAN.clear()
     PLAN["lite-a"] = [BadRequest()]
