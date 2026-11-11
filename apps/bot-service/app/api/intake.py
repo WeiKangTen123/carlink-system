@@ -34,7 +34,7 @@ from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
-from app.auth.permissions import PUBLIC_CHANNEL, in_inbox
+from app.auth.permissions import PUBLIC_CHANNEL, in_inbox, is_staff
 from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
@@ -179,7 +179,11 @@ def _draft_review(report: Report, session: IntakeSession, sorted_photos: list[di
     """review.review_state for a draft. Before the AI's first reading every
     value is a person's (or the firm's usual wording), so a draft with no
     AI draft counts as an empty one ({}), not as an old case's unknown."""
-    return review.review_state(report.data, session.ai_draft or {}, sorted_photos, signed_off=False)
+    try:
+        return review.review_state(report.data, session.ai_draft or {}, sorted_photos, signed_off=False)
+    except Exception:
+        logger.exception("Could not work out the field review of draft %s", report.id)
+        return None
 
 
 def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
@@ -484,7 +488,14 @@ def keep_review_marks(data: dict, stored: dict | None, user: CurrentUser) -> Non
     this person's, now); none sent keeps the stored marks. template_fields
     is the server's: always the stored list."""
     stored = stored or {}
-    data["checked"] = review.merged_checked(data.get("checked"), stored.get("checked"), user) or None
+    checked = review.merged_checked(data.get("checked"), stored.get("checked"), user)
+    if not is_staff(user):
+        # Our Ref's mark is staff's: a non-staff save neither adds nor drops it.
+        checked.pop("report_id", None)
+        before = review.checked_of(stored).get("report_id")
+        if before:
+            checked["report_id"] = before
+    data["checked"] = checked or None
     data["template_fields"] = stored.get("template_fields") or None
 
 
@@ -511,6 +522,8 @@ def checked_change(stored: dict | None, body: CheckedChange, user: CurrentUser) 
     both = sorted(set(body.set) & set(body.clear))
     if both:
         raise ApiError(400, f"Both confirmed and cleared: {', '.join(both[:5])}", "set_and_cleared")
+    if ("report_id" in body.set or "report_id" in body.clear) and not is_staff(user):
+        raise ApiError(403, "Only staff can confirm Our Ref.", "not_allowed")
     checked = review.changed_checked(review.checked_of(stored), {k: v.na for k, v in body.set.items()}, body.clear, user)
     n, m = len(body.set), len(body.clear)
     detail = ", ".join(p for p in (

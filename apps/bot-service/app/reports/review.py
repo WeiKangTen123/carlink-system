@@ -251,7 +251,10 @@ def keep_checked(current: dict, merged: dict) -> dict:
     if checked:
         merged["checked"] = dict(checked)
     if current.get("template_fields"):
-        merged["template_fields"] = list(current["template_fields"])
+        merged["template_fields"] = [
+            key for key in current["template_fields"]
+            if same_value(value_at(merged, key), TEMPLATE_DEFAULTS.get(key))
+        ]
     for key in checked:
         if key in FIELD_RULES:
             merged = with_value(merged, key, value_at(current, key))
@@ -303,7 +306,7 @@ def _marked(mark, value) -> dict:
 def _field_state(key: str, data: dict, ai_draft: dict | None, photos: dict, checked: dict, signed_off: bool) -> dict:
     mark = checked.get(key)
     value = value_at(data, key)
-    if isinstance(mark, dict):
+    if isinstance(mark, dict) and (mark.get("na") or not is_blank(value)):
         return _marked(mark, value)
     if signed_off:
         return {"state": "none"}
@@ -368,6 +371,8 @@ def annex_a_state(row: dict, damaged_parts: set, signed_off: bool) -> tuple[str,
         return "needs", False
     if priced and row.get("prefilled"):
         return "check", True
+    if not row.get("origin") and not priced:
+        return "check", False  # dashboard reviewRows.annexAState reads it so too
     return ("you" if origin_of(row, damaged_parts) == "typed" else "check"), False
 
 
@@ -462,6 +467,20 @@ def review_state(report_data: dict | None, ai_draft: dict | None, photo_index: l
         "counts": counts,
         "open": needs + check,
     }
+
+
+def list_counts(review: dict) -> tuple[int, int]:
+    """(needs you, to check) for GET /reports and the Overview's "N fields
+    need you": cover and parties fields only, Our Ref left out (the
+    Overview has its own reasons for Our Ref and unpriced rows, and Annex
+    B/C are filled last on every case)."""
+    fields = review.get("fields") or {}
+    rules = review.get("rules") or {}
+    needs = sum(1 for key, f in fields.items()
+                if f.get("state") == "needs" and key != "report_id" and key in rules)
+    counts = review["counts"]
+    check = sum(counts[s]["check"] for s in ("cover", "parties", "damage", "annex_a", "annex_b", "annex_c"))
+    return needs, check
 
 
 def open_items(counts: dict) -> tuple[int, int]:

@@ -81,7 +81,7 @@ from app.reports import owners
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
-from app.reports.review import open_items, open_summary, review_state
+from app.reports.review import list_counts, open_summary, review_state
 from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakeSession, Report, User, gen_id, iso_utc
@@ -364,11 +364,21 @@ def _case_review(r: Report) -> dict:
     return review_state(data, r.ai_draft, data.get("photo_index"), signed_off=_is_signed_off(r))
 
 
+def _safe_review(r: Report) -> dict | None:
+    """GET /reports/{id}'s review, or None (the page shows no marks) when the
+    case's data can't be read as one -- never a failed page."""
+    try:
+        return _case_review(r)
+    except Exception:
+        logger.exception("Could not work out the field review of case %s", r.id)
+        return None
+
+
 def _review_totals(r: Report, data: dict) -> dict:
     """GET /reports' needs_you / to_check. A case whose data can't be read
     as a review counts 0 rather than failing the whole list."""
     try:
-        needs, check = open_items(_case_review(r)["counts"])
+        needs, check = list_counts(_case_review(r))
     except Exception:
         logger.exception("Could not work out the field review of case %s for the list", r.id)
         needs = check = 0
@@ -552,7 +562,7 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             # Field review (app/reports/review.py): per field, damage item
             # and Annex row whether the AI read it, it is to check, it needs
             # a person, or a person confirmed it; with counts per section.
-            "review": _case_review(r),
+            "review": _safe_review(r),
             # What the AI did on this case and its draft (app/ai/runs.py),
             # newest first: the Case record drawer's list, and tab 1's "AI
             # read 14 of 41 photos" line (null when the AI never read it).
@@ -1484,8 +1494,12 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
 
         # What is still open, with the Annex C figures this sign-off sets.
         as_signed = {**(r.data or {}), "annex_c": {**annex_c_now, "agreed_lump_sum": quantum, "repair_days": days}}
-        review = review_state(as_signed, r.ai_draft, as_signed.get("photo_index"), signed_off=False)
-        if review["open"] > 0 and body_data.get("open_items_ack") is not True:
+        try:
+            review = review_state(as_signed, r.ai_draft, as_signed.get("photo_index"), signed_off=False)
+        except Exception:
+            logger.exception("Could not work out the field review of case %s at sign-off", r.id)
+            review = None
+        if review and review["open"] > 0 and body_data.get("open_items_ack") is not True:
             n = review["open"]
             return JSONResponse({
                 "detail": f"{n} item{'s are' if n != 1 else ' is'} still open (to fill in or check). "

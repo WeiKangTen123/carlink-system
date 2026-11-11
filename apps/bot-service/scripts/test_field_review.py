@@ -652,9 +652,15 @@ def list_counts() -> None:
     rows = {row["id"]: row for row in W.o.get("/reports").json()}
     case = rows[W.case]
     rv = W.o.get(f"/reports/{W.case}").json()["review"]
-    needs, check_ = review.open_items(rv["counts"])
-    check(case["needs_you"] == needs and case["to_check"] == check_ and needs + check_ == rv["open"],
+    needs, check_ = review.list_counts(rv)
+    check(case["needs_you"] == needs and case["to_check"] == check_,
           f"GET /reports: needs_you {case['needs_you']}, to_check {case['to_check']} as the case's review", repr(case))
+    # "N fields need you" counts cover and parties fields only: not Our Ref,
+    # unpriced rows or Annex B/C, which the Overview shows otherwise.
+    fields_needed = sum(1 for k, f in rv["fields"].items()
+                        if f["state"] == "needs" and k != "report_id" and k in rv["rules"])
+    check(case["needs_you"] == fields_needed, "needs_you: cover and parties fields, Our Ref left out",
+          f"{case['needs_you']} vs {fields_needed}")
     draft = W.o.post("/intake").json()["id"]
     rows = {row["id"]: row for row in W.o.get("/reports").json()}
     check(rows[draft]["needs_you"] == 0 and rows[draft]["to_check"] == 0, "a draft: 0 and 0 (the wizard shows its own)")
@@ -697,14 +703,45 @@ def sign_off() -> None:
 
     # Everything confirmed: no ack needed.
     done = new_case(W.owner, blank(), ai_draft())
-    keys = {k: {} for k in review.CHECKABLE_KEYS if k != "annex_b"}
-    keys["annex_b"] = {"na": True}
+    # On a blank case every field is marked N/A: a confirm without a value
+    # is judged afresh (a confirmed field emptied since needs a person).
+    keys = {k: {"na": True} for k in review.CHECKABLE_KEYS if k != "report_id"}
+    r = W.o.put(f"/reports/{done}/checked", json={"set": {"report_id": {"na": True}}})
+    check(r.status_code == 403, "Our Ref: a non-staff owner can't confirm it or mark it N/A", brief(r))
     r = W.o.put(f"/reports/{done}/checked", json={"set": keys})
+    check(r.status_code == 200, "the owner marks the rest", brief(r))
+    r = W.a.put(f"/reports/{done}/checked", json={"set": {"report_id": {"na": True}}})
     check(r.status_code == 200 and r.json()["review"]["open"] == 0, "everything confirmed: open 0", brief(r))
     r = W.a.post(f"/reports/{done}/sign-off", json={"terms_accepted": True})
     check(r.status_code == 200, "nothing open: signs off without the ack", brief(r))
     entry = next((d for a, d in history(done) if a == "signed_off"), "")
     check(entry.endswith("; no items open"), "...history: no items open", repr(entry))
+
+
+def review_fixes() -> None:
+    """The fresh-eyes review of 2026-11-11."""
+    from app.intake.pipeline import merge_redraft
+    cur = {"vehicle_info": {"paintwork_condition": "Good", "steering_condition": "see annex(es)",
+                            "brakes_condition": "Operable"},
+           "template_fields": ["vehicle_info.paintwork_condition", "vehicle_info.steering_condition",
+                               "vehicle_info.brakes_condition"], "checked": {}}
+    new = {"vehicle_info": {"paintwork_condition": "Scratched", "steering_condition": None,
+                            "brakes_condition": "Impaired"}}
+    m = merge_redraft(cur, None, new)
+    v = m["vehicle_info"]
+    check(v["paintwork_condition"] == "Scratched", "the AI's reading replaces untouched usual wording", repr(v))
+    check(v["steering_condition"] == "see annex(es)", "the usual wording stays where the AI read nothing", repr(v))
+    check(v["brakes_condition"] == "Operable", "a person's own value stays", repr(v))
+    check(m.get("template_fields") == ["vehicle_info.steering_condition"],
+          "the template list keeps only fields still at the usual wording", repr(m.get("template_fields")))
+
+    data = {"vehicle_info": {"plate_number": ""}, "checked": {"vehicle_info.plate_number": {"by": "x", "at": "t"}}}
+    rv = review.review_state(data, {"vehicle_info": {"plate_number": "ABC"}}, [], signed_off=False)
+    check(rv["fields"]["vehicle_info.plate_number"]["state"] == "needs",
+          "a confirmed field emptied since needs a person again", repr(rv["fields"]["vehicle_info.plate_number"]))
+
+    st, _ = review.annex_a_state({"part_name": "Clip", "condition": "Serviceable", "workshop_est": 0}, set(), False)
+    check(st == "check", "an unpriced Serviceable line from before origins: check (as the Annex A tab reads it)", st)
 
 
 def no_ai() -> None:
@@ -715,6 +752,7 @@ def main_() -> int:
     for name, fn in (
         ("setup", setup),
         ("FIELD_RULES", rules),
+        ("the review fixes", review_fixes),
         ("each state, the counts and open", states),
         ("the firm's usual wording", template_defaults),
         ("PUT /reports/{id}/checked and PUT /intake/{id}/checked", checked_endpoints),
