@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Lightbulb, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import type { LabourSuggestionLine, LabourSuggestions, ReportDetail } from "@/lib/api";
-import { getLabourSuggestionsAction, saveAnnexBAction } from "@/app/reports/actions";
+import { getLabourSuggestionsAction, saveAnnexBAction, saveReportCheckedAction } from "@/app/reports/actions";
 import { formatAmount, formatSgd, sameLabourKey } from "@/lib/pastReports";
 import type { CaseStore } from "@/lib/caseState";
 import { BLANK_LABOUR_LINE, fromLabourRow, isBadAmount, parseAmount, sumRows, toLabourRow, type LabourRow } from "@/lib/annexRows";
 import { LockedNote, SavedNote, UnsavedNote } from "./SaveNotes";
+import { ReviewBadge } from "./ReviewBadge";
+import { ReviewConfirmButton, ReviewUndoButton } from "./ReviewConfirmButton";
+import { ANNEX_B_KEY, annexBState, labourRowState } from "@/lib/reviewRows";
 
 /** "Usual labour lines" above the Annex B table: what past reports listed
  * for this make and model (else any), with what each was usually adjusted
@@ -177,6 +180,35 @@ export function AnnexBTab({
   };
   const hasPricedLabour = annexBItems.some((it) => parseAmount(it._est) > 0 || parseAmount(it._adj) > 0);
 
+  // Field review (contract 7), when the API sends one and the case is open.
+  // Annex B "Needs you" while it has no lines, until someone says there is
+  // no labour on this case ("No labour": N/A, saved at once through PUT
+  // /reports/{id}/checked); a usual line's past-case price is "Check".
+  const reviewOn = Boolean(report.review) && !isSignedOff;
+  const serverB = report.review?.fields?.[ANNEX_B_KEY];
+  // What "No labour" / Undo just saved, shown until the refreshed review
+  // arrives with it.
+  const [naSaved, setNaSaved] = useState<boolean | null>(null);
+  const [naBusy, setNaBusy] = useState(false);
+  const [naError, setNaError] = useState<string | null>(null);
+  useEffect(() => setNaSaved(null), [report.review]);
+  const sectionServer = naSaved === null ? serverB : naSaved ? { ...serverB, state: "na" as const } : null;
+  const sectionState = annexBState(annexBItems, sectionServer);
+
+  const saveNoLabour = async (na: boolean) => {
+    if (readOnly || naBusy) return;
+    setNaBusy(true);
+    setNaError(null);
+    const res = await saveReportCheckedAction(report.id, na ? { set: { [ANNEX_B_KEY]: { na: true } } } : { clear: [ANNEX_B_KEY] });
+    setNaBusy(false);
+    if ("error" in res) {
+      setNaError(res.error);
+      return;
+    }
+    setNaSaved(na);
+    router.refresh();
+  };
+
   const updateLabourRow = (key: string, patch: Partial<LabourRow>) => {
     if (annexBLocked) return;
     store.setAnnexB((prev) => prev.map((row) => (row._key === key ? { ...row, ...patch } : row)));
@@ -247,6 +279,33 @@ export function AnnexBTab({
           {plate ? `${plate} — ` : ""}The adjusted cost is yours to set; there is no discount rule on labour.
         </div>
         <LockedNote isSignedOff={isSignedOff} canEdit={canEdit} />
+        {reviewOn && (sectionState === "needs" || sectionState === "na") && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 6, fontSize: 11, color: "var(--text-secondary)" }}>
+            {sectionState === "needs" ? (
+              <>
+                <ReviewBadge state="needs" label="Annex B" detail="no labour lines" />
+                {!readOnly && (
+                  <button
+                    type="button"
+                    className="btn-secondary-modern"
+                    style={{ fontSize: 11, padding: "3px 10px" }}
+                    disabled={naBusy}
+                    title="There is no labour or spray painting on this case: Annex B rightly stays empty (N/A)"
+                    onClick={() => void saveNoLabour(true)}
+                  >
+                    {naBusy ? "Saving…" : "No labour"}
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <ReviewBadge state="na" review={sectionServer} label="Annex B" detail="no labour on this case" />
+                {!readOnly && <ReviewUndoButton label="No labour" disabled={naBusy} onClick={() => void saveNoLabour(false)} />}
+              </>
+            )}
+            {naError && <span style={{ color: "var(--danger, #ef4444)" }}>{naError}</span>}
+          </div>
+        )}
       </div>
 
       {!readOnly && (
@@ -278,7 +337,18 @@ export function AnnexBTab({
                 return (
                   <tr key={lab._key}>
                     <td data-label="Item" style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{no}</td>
-                    <td data-label="Job" style={{ fontWeight: 600, whiteSpace: "pre-wrap" }}>{lab.description}</td>
+                    <td data-label="Job" style={{ fontWeight: 600, whiteSpace: "pre-wrap" }}>
+                      {lab.description}
+                      {reviewOn && labourRowState(lab) !== "none" && (
+                        <div style={{ marginTop: 3, fontWeight: 400 }}>
+                          <ReviewBadge
+                            state={labourRowState(lab)}
+                            label={lab.description.trim()}
+                            detail={lab.prefilled ? (lab.suggested_from ? `from ${lab.suggested_from}` : "past-case price") : undefined}
+                          />
+                        </div>
+                      )}
+                    </td>
                     <td data-label="Workshop Est." style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>{lab.workshop_est ? amt(lab.workshop_est) : "—"}</td>
                     <td data-label="Adjusted" style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent-cyan)" }}>
                       {lab.workshop_est || lab.adjusted_cost ? amt(lab.adjusted_cost) : "—"}
@@ -301,13 +371,31 @@ export function AnnexBTab({
                       disabled={annexBLocked}
                       onChange={(e) => updateLabourRow(lab._key, { description: e.target.value })}
                     />
-                    {lab.prefilled && lab.suggested_from ? (
+                    {/* With field review on, a past-case price's badge says "from ...". */}
+                    {lab.prefilled && lab.suggested_from && !reviewOn ? (
                       <span className="annex-prefill-tag" title="The price was filled from past cases, not typed. Typing a price replaces it.">
                         from {lab.suggested_from}
                       </span>
-                    ) : lab.suggested_from ? (
+                    ) : lab.suggested_from && !(reviewOn && lab.prefilled) ? (
                       <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>From {lab.suggested_from}</div>
                     ) : null}
+                    {reviewOn && labourRowState(lab) !== "none" && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginTop: 3 }}>
+                        <ReviewBadge
+                          state={labourRowState(lab)}
+                          label={lab.description.trim()}
+                          detail={lab.prefilled ? (lab.suggested_from ? `from ${lab.suggested_from}` : "past-case price") : undefined}
+                        />
+                        {lab.prefilled && (
+                          <ReviewConfirmButton
+                            label={lab.description.trim()}
+                            disabled={annexBLocked}
+                            title="Confirm: the price stands (checked against the quotation). Saved with Save Annex B."
+                            onClick={() => updateLabourRow(lab._key, { prefilled: false })}
+                          />
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td data-label="Workshop Est." style={{ textAlign: "right" }}>
                     <input

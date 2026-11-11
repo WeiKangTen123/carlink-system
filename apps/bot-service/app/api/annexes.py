@@ -7,6 +7,7 @@ recommendation letter's figures), and pricing Annex A from past cases.
     PUT  /reports/{id}/annex-c              the contract lump sum and working days
     GET  /reports/{id}/labour-suggestions   the firm's usual labour lines, with past prices
     POST /reports/{id}/annex-a/prefill      price Annex A from past cases (app/parts/prefill.py)
+    PUT  /reports/{id}/checked              confirm fields, or mark them N/A (field review)
 
 Annex A itself is saved in api/parts.py (PUT /annex-a), whose rules these
 follow: a change needs the right to edit the case (auth/deps.editable_case:
@@ -23,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api import limits
+from app.api.intake import CheckedChange, checked_change
 from app.api.parts import _report, _sees_price_book, _signed_off, price_book_for_case
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import editable_case, not_allowed, visible_case
@@ -30,6 +32,7 @@ from app.parts.history import suggest_labour
 from app.parts.prefill import prefill_annex_a, prefill_counts
 from app.reports.db import SessionLocal
 from app.reports.models import Report
+from app.reports.review import review_state
 from app.reports.schema import AnnexBLabourItem, CoverPageInfo, InsuranceDetails, TyreCondition, VehicleInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import body_type_for
@@ -236,5 +239,32 @@ def prefill_annex_a_route(report_id: str, user: CurrentUser = Depends(editable_c
         audit(db, user, "annex_a_prefilled", r.id, detail=f"{filled} row(s) priced from past cases, {unpriced} unpriced")
         db.commit()
         return {"annex_a": data["annex_a"], "annex_c": data["annex_c"], "filled": filled, "unpriced": unpriced}
+    finally:
+        db.close()
+
+
+# --------------------------------------------------------- field review
+
+
+@router.put("/reports/{report_id}/checked")
+def set_case_checked(report_id: str, body: CheckedChange, user: CurrentUser = Depends(editable_case)) -> dict:
+    """Confirms case fields, or marks them N/A (app/reports/review.py):
+    data.checked gains {by, by_id, at, na?} for each `set` key, signed by
+    this person now, and loses the `clear` keys. Keys: review.FIELD_RULES,
+    "annex_b" (N/A: no labour), "annex_c.agreed_lump_sum",
+    "annex_c.repair_days" (400 unknown_field otherwise). As every save
+    here: editable_case, 409 for a draft or a signed-off case. An Annex A
+    row is confirmed by PUT /annex-a instead (origin "typed", prefilled
+    false). The PDF is unchanged: nothing printed changes. Answers
+    data.checked and the new review."""
+    db = SessionLocal()
+    try:
+        r = _editable(db, report_id)
+        checked, detail = checked_change(r.data, body, user)
+        r.data = {**(r.data or {}), "checked": checked or None}
+        audit(db, user, "fields_confirmed", r.id, detail=detail)
+        db.commit()
+        data = r.data or {}
+        return {"checked": checked, "review": review_state(data, r.ai_draft, data.get("photo_index"), signed_off=False)}
     finally:
         db.close()

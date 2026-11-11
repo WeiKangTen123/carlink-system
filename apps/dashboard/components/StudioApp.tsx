@@ -14,6 +14,9 @@ import { AnnexATab } from "@/components/AnnexATab";
 import { AnnexBTab } from "@/components/AnnexBTab";
 import { AnnexCTab, ReopenCaseButton } from "@/components/AnnexCTab";
 import { CaseRecordDrawer } from "@/components/CaseRecordDrawer";
+import { useCurrentUser } from "@/components/CurrentUser";
+import { ReviewProgress, ReviewTabCount, type ReviewSection } from "@/components/ReviewProgress";
+import { useCaseReview } from "@/lib/fieldReview";
 import { useCaseState, type CaseSection } from "@/lib/caseState";
 import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { formatSgtDateTime } from "@/lib/caseFields";
@@ -25,12 +28,12 @@ export { severityClass } from "@/lib/caseFields";
  * never prints lives in the Case record drawer, not a sixth tab. */
 type CaseTab = "detection" | "cover" | "annexA" | "annexB" | "annexC";
 
-const TABS: { id: CaseTab; no: number; label: string; section?: CaseSection }[] = [
-  { id: "detection", no: 1, label: "Damage detection" },
-  { id: "cover", no: 2, label: "Cover page", section: "cover" },
-  { id: "annexA", no: 3, label: "Annex A", section: "annexA" },
-  { id: "annexB", no: 4, label: "Annex B", section: "annexB" },
-  { id: "annexC", no: 5, label: "Annex C", section: "annexC" },
+const TABS: { id: CaseTab; no: number; label: string; section?: CaseSection; review: ReviewSection }[] = [
+  { id: "detection", no: 1, label: "Damage detection", review: "damage" },
+  { id: "cover", no: 2, label: "Cover page", section: "cover", review: "cover" },
+  { id: "annexA", no: 3, label: "Annex A", section: "annexA", review: "annex_a" },
+  { id: "annexB", no: 4, label: "Annex B", section: "annexB", review: "annex_b" },
+  { id: "annexC", no: 5, label: "Annex C", section: "annexC", review: "annex_c" },
 ];
 
 /** `value` as one of the five tabs, or null for anything else (a ?tab= from
@@ -56,6 +59,10 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
   // editable tabs (lib/caseState.ts).
   const store = useCaseState(report, readOnly);
   const d = store.data;
+  // Field review (contract 7): what the AI filled, what to check, what only
+  // a person knows; Confirm / N/A save at once and refresh the page.
+  const user = useCurrentUser();
+  const fieldReview = useCaseReview(report, user, () => router.refresh());
   const v = d.vehicle_info;
 
   // Set by Assign, so the header shows the new owner before the refreshed
@@ -229,6 +236,7 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
         <div className="case-head-actions">
           <button type="button" className="btn-secondary-modern" onClick={() => setRecordOpen(true)} title="Intake facts, police, insurer, other party, people, witnesses and the case history">
             <FolderOpen style={{ width: 13, height: 13 }} /> Case record
+            {!isSignedOff && <ReviewTabCount review={fieldReview.review} section="parties" />}
           </button>
 
           {/* The report as the firm sends it. Unsigned, it prints as a draft. */}
@@ -294,6 +302,19 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
         </div>
       </div>
 
+      {/* The review in one line; a section opens its tab. Nothing once
+          signed off, or from an older API. */}
+      {!isSignedOff && (
+        <ReviewProgress
+          review={fieldReview.review}
+          style={{ margin: "-6px 0 14px" }}
+          onSelect={(section) => {
+            if (section === "parties") setRecordOpen(true);
+            else showTab(TABS.find((t) => t.review === section)?.id ?? "detection");
+          }}
+        />
+      )}
+
       <PdfPreviewModal reportId={report.id} pdfUrl={report.pdf_url} reportCode={previewCode} isOpen={previewOpen} onClose={() => setPreviewOpen(false)} trigger={null} />
 
       {/* The five tabs; a dot marks a tab with unsaved changes. */}
@@ -311,6 +332,7 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
               title={dirty ? `${tab.label}: unsaved changes` : undefined}
             >
               <span className="case-tab-no">{tab.no}</span> {tab.label}
+              {!isSignedOff && <ReviewTabCount review={fieldReview.review} section={tab.review} />}
               {dirty && <span className="case-tab-dirty-dot" aria-label="unsaved changes" />}
             </button>
           );
@@ -348,7 +370,7 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
       )}
       {opened.cover && (
         <div style={tabPanelStyle("cover")}>
-          <CoverTab report={report} store={store} canEdit={perms.edit} isSignedOff={isSignedOff} damageEntries={damageEntries} />
+          <CoverTab report={report} store={store} canEdit={perms.edit} isSignedOff={isSignedOff} damageEntries={damageEntries} fieldReview={fieldReview} />
         </div>
       )}
       {opened.annexA && (
@@ -363,11 +385,27 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
       )}
       {opened.annexC && (
         <div style={tabPanelStyle("annexC")}>
-          <AnnexCTab report={report} store={store} canEdit={perms.edit} canSignOff={perms.sign_off} canReopen={perms.reopen} isSignedOff={isSignedOff} />
+          <AnnexCTab
+            report={report}
+            store={store}
+            canEdit={perms.edit}
+            canSignOff={perms.sign_off}
+            canReopen={perms.reopen}
+            isSignedOff={isSignedOff}
+            onOpenTab={showTab}
+            onOpenRecord={() => setRecordOpen(true)}
+          />
         </div>
       )}
 
-      <CaseRecordDrawer report={report} open={recordOpen} onClose={() => setRecordOpen(false)} isSignedOff={isSignedOff} canEdit={perms.edit} />
+      <CaseRecordDrawer
+        report={report}
+        open={recordOpen}
+        onClose={() => setRecordOpen(false)}
+        isSignedOff={isSignedOff}
+        canEdit={perms.edit}
+        fieldReview={fieldReview}
+      />
 
       {assigning && (
         <AssignOwnerDialog

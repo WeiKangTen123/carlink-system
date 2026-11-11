@@ -10,6 +10,7 @@ which couldn't take a real case: the four sample cases are 41-78 photos and
     PATCH  /intake/{id}/photos/{photo_id}   surveyor regroups / excludes a photo
     DELETE /intake/{id}/photos/{photo_id}
     PUT    /intake/{id}/data                autosave the form
+    PUT    /intake/{id}/checked             confirm fields, or mark them N/A (field review)
     POST   /intake/{id}/process             start AI sorting + reading in the background
     POST   /intake/{id}/finalize            turn the draft into a case
 
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import exists, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
@@ -33,7 +34,7 @@ from app.ai.keys import AiActor
 from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
-from app.auth.permissions import PUBLIC_CHANNEL, in_inbox
+from app.auth.permissions import PUBLIC_CHANNEL, in_inbox, is_staff
 from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
@@ -47,6 +48,7 @@ from app.intake.photos import (
 from app.reports import owners
 from app.reports.db import SessionLocal
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data
+from app.reports import review
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.taxonomy import body_type_for
@@ -167,6 +169,23 @@ def _error_by(db, user_id: str | None) -> dict | None:
     return {"id": user_id, "name": who.name if who else None, "username": (who.username or None) if who else None}
 
 
+def _sorted_photos(photos: list[IntakePhoto]) -> list[dict]:
+    """The draft's photos as a photo index ({label, kind}), excluded ones
+    left out: which photo the AI read a cover field from."""
+    return [{"label": photo_label(i), "kind": p.kind} for i, p in enumerate(photos) if not p.excluded]
+
+
+def _draft_review(report: Report, session: IntakeSession, sorted_photos: list[dict]) -> dict:
+    """review.review_state for a draft. Before the AI's first reading every
+    value is a person's (or the firm's usual wording), so a draft with no
+    AI draft counts as an empty one ({}), not as an old case's unknown."""
+    try:
+        return review.review_state(report.data, session.ai_draft or {}, sorted_photos, signed_off=False)
+    except Exception:
+        logger.exception("Could not work out the field review of draft %s", report.id)
+        return None
+
+
 def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dict:
     # A run or a filing a restart cut off reads as failed (pipeline.shown_state).
     stage, error, error_code, error_by = pipeline.shown_state(session)
@@ -175,15 +194,18 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
     # was read from, so the wizard's cover page can tag them "(P03)";
     # null / {} before a read. From IntakeSession.ai_draft alone (never a
     # public sender's details), like GET /reports/{id} after filing.
-    ai_read, ai_read_photos = ai_read_for(
-        session.ai_draft, [{"label": photo_label(i), "kind": p.kind} for i, p in enumerate(photos) if not p.excluded]
-    )
+    sorted_photos = _sorted_photos(photos)
+    ai_read, ai_read_photos = ai_read_for(session.ai_draft, sorted_photos)
     return {
         "id": report.id,
         "status": report.status,
         "created_at": iso_utc(report.created_at),
         "ai_read": ai_read,
         "ai_read_photos": ai_read_photos,
+        # Field review (app/reports/review.py): per field whether the AI
+        # read it, it is to check, it needs a person, or a person confirmed
+        # it (_draft_review).
+        "review": _draft_review(report, session, sorted_photos),
         "stage": stage,
         "progress": {"done": session.progress_done, "total": session.progress_total},
         "stage_started_at": iso_utc(session.stage_started_at) if session.stage_started_at else None,
@@ -252,7 +274,11 @@ def create_intake(user: CurrentUser = Depends(current_user)) -> dict:
             # Full default shape, not a stub: the Cases Repository lists and
             # previews drafts like any other report, and reads nested fields
             # (people_involved, insurance_details...) without guarding.
-            data=SecurityIncidentDraft(description="", category=["Vehicle Collision or Damage"]).model_dump(),
+            # The static check starts with the firm's usual wording, for the
+            # surveyor to check (review.apply_template_defaults).
+            data=review.apply_template_defaults(
+                SecurityIncidentDraft(description="", category=["Vehicle Collision or Damage"]).model_dump()
+            ),
         )
         db.add(report)
         db.flush()
@@ -445,11 +471,83 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         data = SecurityIncidentDraft.model_validate(body.data).model_dump()
         data["sign_off"] = SignOffInfo().model_dump()
         data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), (report.data or {}).get("report_id"))
+        keep_review_marks(data, report.data, user)
         report.data = data
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
         return {"ok": True}
+    finally:
+        db.close()
+
+
+def keep_review_marks(data: dict, stored: dict | None, user: CurrentUser) -> None:
+    """A whole-draft save (autosave, finalize) carries the browser's copy of
+    data.checked: the keys it sends are the confirmed ones, stamped by the
+    server (review.merged_checked: a mark kept as stored, a new one as
+    this person's, now); none sent keeps the stored marks. template_fields
+    is the server's: always the stored list."""
+    stored = stored or {}
+    checked = review.merged_checked(data.get("checked"), stored.get("checked"), user)
+    if not is_staff(user):
+        # Our Ref's mark is staff's: a non-staff save neither adds nor drops it.
+        checked.pop("report_id", None)
+        before = review.checked_of(stored).get("report_id")
+        if before:
+            checked["report_id"] = before
+    data["checked"] = checked or None
+    data["template_fields"] = stored.get("template_fields") or None
+
+
+class CheckedMark(BaseModel):
+    na: bool = False
+
+
+class CheckedChange(BaseModel):
+    """PUT .../checked (here and api/annexes.py): confirm the `set` keys
+    (na: the field rightly stays blank), forget the marks of the `clear`
+    keys."""
+    set: dict[str, CheckedMark] = Field(default_factory=dict)
+    clear: list[str] = Field(default_factory=list, max_length=len(review.CHECKABLE_KEYS))
+
+
+def checked_change(stored: dict | None, body: CheckedChange, user: CurrentUser) -> tuple[dict, str]:
+    """(data.checked after the change, the history detail). 400
+    unknown_field for a key that isn't a reviewed field
+    (review.CHECKABLE_KEYS: FIELD_RULES, "annex_b", "annex_c.agreed_lump_sum",
+    "annex_c.repair_days"), 400 set_and_cleared for one sent in both."""
+    unknown = sorted({*body.set, *body.clear} - review.CHECKABLE_KEYS)
+    if unknown:
+        raise ApiError(400, f"Not a field that can be confirmed: {', '.join(unknown[:5])}", "unknown_field")
+    both = sorted(set(body.set) & set(body.clear))
+    if both:
+        raise ApiError(400, f"Both confirmed and cleared: {', '.join(both[:5])}", "set_and_cleared")
+    if ("report_id" in body.set or "report_id" in body.clear) and not is_staff(user):
+        raise ApiError(403, "Only staff can confirm Our Ref.", "not_allowed")
+    checked = review.changed_checked(review.checked_of(stored), {k: v.na for k, v in body.set.items()}, body.clear, user)
+    n, m = len(body.set), len(body.clear)
+    detail = ", ".join(p for p in (
+        f"confirmed {n} field{'s' if n != 1 else ''}" if n else "",
+        f"unconfirmed {m} field{'s' if m != 1 else ''}" if m else "",
+    ) if p)
+    return checked, detail
+
+
+@router.put("/{report_id}/checked")
+def set_intake_checked(report_id: str, body: CheckedChange, user: CurrentUser = Depends(editable_case)) -> dict:
+    """Confirms draft fields (or marks them N/A) for the wizard, as PUT
+    /reports/{id}/checked does for a case: the draft's owner or an admin
+    (editable_case: "see all" staff only look; nobody touches a public
+    report still in the inbox). Refused while the AI reads the draft, like
+    the autosave. Answers data.checked and the new review."""
+    db = SessionLocal()
+    try:
+        report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
+        checked, detail = checked_change(report.data, body, user)
+        report.data = {**(report.data or {}), "checked": checked or None}
+        audit(db, user, "fields_confirmed", report.id, detail=detail)
+        db.commit()
+        return {"checked": checked, "review": _draft_review(report, session, _sorted_photos(ordered_photos(db, report.id)))}
     finally:
         db.close()
 
@@ -620,6 +718,9 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         draft.damaged_parts = [item.part for item in draft.damage_summary]
 
     data = draft.model_dump()
+    # The confirmations as the wizard last sent them, stamped against the
+    # stored ones; the template list as stored (review).
+    keep_review_marks(data, report.data, user)
     # The filing step every channel shares (app/reports/filing.py): sign-off
     # blank, annexes rebuilt from the confirmed damage list and Annex A
     # priced for someone who may see the price book, photo_index from the

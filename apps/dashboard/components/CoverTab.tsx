@@ -6,9 +6,12 @@ import { RotateCcw, Save } from "lucide-react";
 import type { DamageSummaryItem, ReportDetail } from "@/lib/api";
 import { saveCoverPageAction } from "@/app/reports/actions";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
-import { aiReadFrom, coverRequestFrom } from "@/lib/coverForm";
+import { aiReadFrom, coverFormFrom, coverRequestFrom } from "@/lib/coverForm";
 import type { CaseStore } from "@/lib/caseState";
+import { coverViews, keysInState, withStates, type CaseReview } from "@/lib/fieldReview";
 import { CoverPageFields } from "./CoverPageFields";
+import { ConfirmAiButton } from "./FieldReviewControls";
+import { ReviewProgress } from "./ReviewProgress";
 import { ImpactSketch } from "./ImpactSketch";
 import { LockedNote, SavedNote, UnsavedNote } from "./SaveNotes";
 
@@ -23,12 +26,16 @@ export function CoverTab({
   canEdit,
   isSignedOff,
   damageEntries,
+  fieldReview,
 }: {
   report: ReportDetail;
   store: CaseStore;
   canEdit: boolean;
   isSignedOff: boolean;
   damageEntries: DamageSummaryItem[];
+  /** Field review (contract 7): the case's review and its Confirm / N/A
+   * (lib/fieldReview.ts useCaseReview). Without a review, nothing shows. */
+  fieldReview?: CaseReview;
 }) {
   const router = useRouter();
   const user = useCurrentUser();
@@ -41,6 +48,13 @@ export function CoverTab({
   const ourRefEditable = isAdmin(user) || Boolean(user?.may_sign_off);
   // "(P03)" beside a field while it still says what the AI read.
   const ai = useMemo(() => aiReadFrom(report.ai_read, report.ai_read_photos), [report.ai_read, report.ai_read_photos]);
+  // Field review: each field's state against the report the review was
+  // worked out from, so a field changed and not yet saved shows as yours.
+  const reviewed = fieldReview?.review ?? null;
+  const reviewBase = useMemo(() => coverFormFrom(report.data), [report.data]);
+  const views = useMemo(() => coverViews(reviewed, cover, reviewBase), [reviewed, cover, reviewBase]);
+  const shownReview = useMemo(() => (reviewed ? withStates(reviewed, views) : null), [reviewed, views]);
+  const canReview = Boolean(fieldReview && !readOnly);
 
   const handleSave = async () => {
     if (coverLocked) return;
@@ -71,6 +85,20 @@ export function CoverTab({
         <LockedNote isSignedOff={isSignedOff} canEdit={canEdit} />
       </div>
 
+      {shownReview && !isSignedOff && (
+        <div className="review-bar">
+          <ReviewProgress review={shownReview} sections={["cover"]} />
+          {canReview && fieldReview && (
+            <ConfirmAiButton keys={keysInState(views, "ai")} busy={fieldReview.saving || coverLocked} onConfirm={(keys) => void fieldReview.apply(keys, "confirm")} />
+          )}
+        </div>
+      )}
+      {fieldReview?.error && (
+        <div className="setup-error" role="alert" style={{ marginBottom: 12 }}>
+          {fieldReview.error}
+        </div>
+      )}
+
       <CoverPageFields
         value={cover}
         onChange={(patch) => {
@@ -81,6 +109,9 @@ export function CoverTab({
         aiRead={ai.tags}
         aiValues={ai.values}
         showUsualValues={!readOnly}
+        review={views}
+        onReview={canReview && fieldReview ? (key, action) => void fieldReview.apply([key], action) : undefined}
+        reviewBusy={fieldReview?.saving}
         sketch={<ImpactSketch damageEntries={damageEntries} pointOfImpact={cover.point_of_impact} />}
       />
 

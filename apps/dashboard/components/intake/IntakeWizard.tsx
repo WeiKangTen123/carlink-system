@@ -1108,6 +1108,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiSkipped={aiSkipped}
           aiRead={state.ai_read}
           aiReadPhotos={state.ai_read_photos}
+          review={state.review}
+          savedData={state.data}
           onBack={() => goTo(2)}
           onNext={() => goTo(4)}
         />
@@ -1117,6 +1119,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         <PartiesStep
           data={data}
           onChange={editData}
+          review={state.review}
+          savedData={state.data}
           // Also while the server is still filing it (after a reload
           // mid-filing): File case stays disabled until the poll settles it.
           finalizing={busy === "finalizing" || filing}

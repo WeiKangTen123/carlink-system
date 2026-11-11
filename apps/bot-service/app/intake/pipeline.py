@@ -41,6 +41,7 @@ from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
+from app.reports.review import TEMPLATE_DEFAULTS, keep_checked, same_value, value_at
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -780,7 +781,10 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
         from what the AI said last time -- and otherwise takes the new
         reading (or keeps the old value if the new reading is empty);
       - damage items the surveyor checked (human_verified) are kept, and the
-        AI's items are added only for parts not already among them.
+        AI's items are added only for parts not already among them;
+      - what a person confirmed (data.checked, app/reports/review.py) and
+        the list of fields the firm's usual wording filled stay, and a
+        confirmed field keeps its value, whatever the new reading says.
     """
     previous_ai = previous_ai or {}
     merged = dict(new_ai)
@@ -800,8 +804,18 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     cur_v = current.get("vehicle_info") or {}
     prev_v = previous_ai.get("vehicle_info") or {}
     new_v = dict(new_ai.get("vehicle_info") or {})
+    # A field still holding the firm's usual wording (put there when the
+    # draft was made, before any reading) is nobody's edit: what the AI
+    # reads ("Scratched" paintwork) takes its place (review, 2026-11-11).
+    usual = {
+        key for key in (current.get("template_fields") or [])
+        if isinstance(key, str) and same_value(value_at(current, key), TEMPLATE_DEFAULTS.get(key))
+    }
     for key in set(cur_v) | set(new_v):
-        new_v[key] = pick(cur_v.get(key), prev_v.get(key), new_v.get(key))
+        if f"vehicle_info.{key}" in usual:
+            new_v[key] = new_v.get(key) if _filled(new_v.get(key)) else cur_v.get(key)
+        else:
+            new_v[key] = pick(cur_v.get(key), prev_v.get(key), new_v.get(key))
     merged["vehicle_info"] = new_v
 
     kept = [item for item in (current.get("damage_summary") or []) if item.get("human_verified")]
@@ -826,4 +840,4 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     # (second_look._store). The reading itself never writes one.
     if current.get("second_look"):
         merged["second_look"] = current["second_look"]
-    return merged
+    return keep_checked(current, merged)

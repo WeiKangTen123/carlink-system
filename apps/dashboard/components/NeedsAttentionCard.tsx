@@ -20,6 +20,7 @@ const REASON_TONE: Record<ReasonKind, CSSProperties> = {
   reopened: AMBER,
   unpriced: AMBER,
   no_our_ref: AMBER,
+  needs_you: AMBER,
   open_long: {},
 };
 

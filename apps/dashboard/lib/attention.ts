@@ -17,6 +17,7 @@ export const REASON_KINDS = [
   "reopened",
   "unpriced",
   "no_our_ref",
+  "needs_you",
   "open_long",
 ] as const;
 export type ReasonKind = (typeof REASON_KINDS)[number];
@@ -71,6 +72,9 @@ const REASON_TAB: Partial<Record<ReasonKind, CaseTabId>> = {
   reopened: "annexC",
   unpriced: "annexA",
   no_our_ref: "cover",
+  // GET /reports says how many, not where: most are cover-page fields
+  // (Our Ref, dates, requester), so the case opens there.
+  needs_you: "cover",
 };
 
 const DAY_MS = 86_400_000;
@@ -133,6 +137,11 @@ export function reasonsFor(r: ReportSummary, now: number = Date.now()): Reason[]
   }
   if (ourRefLabel(r.report_id) === REF_TO_BE_ISSUED) {
     reasons.push({ kind: "no_our_ref", text: "No Our Ref yet" });
+  }
+  // Field review (contract 7): fields only a person can fill, still empty.
+  const needsYou = typeof r.needs_you === "number" ? r.needs_you : 0;
+  if (needsYou > 0) {
+    reasons.push({ kind: "needs_you", text: `${plural(needsYou, "field needs", "fields need")} you` });
   }
   const days = daysOpen(r.created_at, now);
   if (days > OPEN_LONG_DAYS) {

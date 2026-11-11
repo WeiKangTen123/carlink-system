@@ -482,6 +482,15 @@ class SecurityIncidentDraft(BaseModel):
     # grow (extraction._NOT_MODEL_OUTPUT). A field at all so the wizard's
     # autosave, validated through this model, keeps it.
     second_look: SkipJsonSchema[Optional[SecondLook]] = None
+    # Field review (app/reports/review.py): who confirmed which field
+    # ({key: {by, by_id, at, na?}}), and the static-check fields the firm's
+    # usual wording filled in. Out of the schema like second_look (a
+    # person's marks, never the model's); fields at all so the wizard's
+    # autosave and finalize, validated through this model, keep them. The
+    # server stamps the marks and owns template_fields: neither is ever
+    # stored as a browser sent it.
+    checked: SkipJsonSchema[Optional[dict]] = None
+    template_fields: SkipJsonSchema[Optional[list[str]]] = None
     bola_assessment: Optional[BolaLiabilityAssessment] = Field(default_factory=BolaLiabilityAssessment)
     reported_to_authorities: bool = False
     authority_reference: Optional[str] = None
