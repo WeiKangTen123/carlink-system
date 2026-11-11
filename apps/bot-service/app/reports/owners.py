@@ -31,7 +31,7 @@ SIGNED_OFF_STATUSES = ("Signed Off", "signed_off")
 # only ever worked through the tabs used to count for nothing.
 _EDIT_ACTIONS = (
     "edited", "annex_a_edited", "annex_a_prefilled", "annex_b_edited", "annex_c_edited", "cover_page_edited",
-    "damage_item_edited", "damage_item_added", "damage_item_removed",
+    "damage_item_edited", "damage_item_added", "damage_item_removed", "fields_confirmed",
 )
 
 

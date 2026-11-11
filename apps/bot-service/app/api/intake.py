@@ -532,7 +532,7 @@ def set_intake_checked(report_id: str, body: CheckedChange, user: CurrentUser = 
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         checked, detail = checked_change(report.data, body, user)
         report.data = {**(report.data or {}), "checked": checked or None}
-        audit(db, user, "edited", report.id, detail=detail)
+        audit(db, user, "fields_confirmed", report.id, detail=detail)
         db.commit()
         return {"checked": checked, "review": _draft_review(report, session, _sorted_photos(ordered_photos(db, report.id)))}
     finally:

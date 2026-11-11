@@ -93,6 +93,9 @@ function DossierField({ label, value, mono, review }: { label: string; value?: s
 const HISTORY_LABELS: Record<string, string> = {
   created: "Created",
   edited: "Edited",
+  // Detail: "confirmed 3 fields" / "unconfirmed 1 field" (contract 7). Its own
+  // action: "edited" entries are merged within 30 minutes, which lost the count.
+  fields_confirmed: "Fields confirmed",
   finalized: "Filed as a case",
   signed_off: "Signed off",
   reopened: "Reopened",

@@ -262,7 +262,7 @@ def set_case_checked(report_id: str, body: CheckedChange, user: CurrentUser = De
         r = _editable(db, report_id)
         checked, detail = checked_change(r.data, body, user)
         r.data = {**(r.data or {}), "checked": checked or None}
-        audit(db, user, "edited", r.id, detail=detail)
+        audit(db, user, "fields_confirmed", r.id, detail=detail)
         db.commit()
         data = r.data or {}
         return {"checked": checked, "review": review_state(data, r.ai_draft, data.get("photo_index"), signed_off=False)}

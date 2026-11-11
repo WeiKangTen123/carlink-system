@@ -498,7 +498,7 @@ def checked_endpoints() -> None:
     check(body["checked"]["cover_page.date_of_dismantle"].get("na") is True, "N/A: na true")
     check(state(body["review"], "cover_page.general_condition") == "you" and state(body["review"], "cover_page.date_of_dismantle") == "na",
           "the answer's review: you, na")
-    check(("edited", "confirmed 2 fields") in history(case), "history: edited, confirmed 2 fields", repr(history(case)))
+    check(("fields_confirmed", "confirmed 2 fields") in history(case), "history: fields_confirmed, confirmed 2 fields", repr(history(case)))
     detail = W.o.get(f"/reports/{case}").json()
     check(detail["data"]["checked"] == body["checked"] and state(detail["review"], "cover_page.general_condition") == "you",
           "GET /reports/{id}: data.checked and review")
