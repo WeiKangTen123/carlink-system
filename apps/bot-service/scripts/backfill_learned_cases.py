@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         db.close()
     verb = "learned" if apply else "would be learned"
     print(f"\n{len(signed)} signed-off case(s): {cases} {verb} ({stored} lines), "
-          f"{not_known} without a make and model or Annex A lines; "
+          f"{not_known} without a make and model or a priced Annex A line; "
           f"{len(gone)} case(s) no longer signed off {'taken out' if apply else 'to take out'}")
     if not apply:
         print("Dry run: nothing written. Run again with --apply to write.")

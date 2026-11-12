@@ -219,9 +219,14 @@ def machine_made(row: dict, damaged_parts=()) -> bool:
     looked-up or catalogue price -- whatever a person did to it since: made
     for a damaged part (source_part, which only the machine sets), or an
     origin other than "typed" (prefill.origin_of, for rows saved before
-    origins existed)."""
+    origins existed). A line a person picked from the suggestions panel is
+    theirs, as prefill._machine_owned reads it: it says where it came from
+    (suggested_from, saved with origin "history") but was never prefilled
+    nor made for a part."""
     if row.get("source_part"):
         return True
+    if row.get("suggested_from") and not row.get("prefilled"):
+        return False
     try:
         return origin_of(row, damaged_parts) != "typed"
     except Exception:

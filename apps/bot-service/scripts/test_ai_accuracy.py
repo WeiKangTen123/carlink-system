@@ -31,6 +31,7 @@ made-up data: no real plate, name or report value.
 import json
 import os
 import socket
+import sqlite3
 import sys
 import tempfile
 import traceback
@@ -51,7 +52,8 @@ STORAGE = (_tmp / "storage").resolve()
 STORAGE.mkdir()
 os.environ["STORAGE_DIR"] = str(STORAGE)
 os.environ["SECRETS_DIR"] = str((_tmp / "secrets").resolve())
-os.environ["DATABASE_URL"] = f"sqlite:///{(_tmp / 'test.db').as_posix()}"
+DB_FILE = _tmp / "test.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{DB_FILE.as_posix()}"
 os.environ["GEMINI_API_KEY"] = "AIzaSyFakeCompanyKeyForAccuracyTest0001"
 os.environ["RUN_BACKGROUND_CLEANUP"] = "false"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
@@ -92,7 +94,9 @@ import backfill_learned_cases  # noqa: E402
 from app.auth.core import SESSION_COOKIE, create_session  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.parts import learn  # noqa: E402
+from app.ai import second_look  # noqa: E402
 from app.parts.history import PastCase, PastLine, import_case, past_lines, restricted, suggest  # noqa: E402
+from app.parts.prefill import sync_annex_a  # noqa: E402
 from app.reports import accuracy  # noqa: E402
 from app.reports.db import SessionLocal, engine, init_db  # noqa: E402
 from app.reports.models import AiAccuracy, AiRun, PastAnnexLine, Report, User, gen_id  # noqa: E402
@@ -375,7 +379,7 @@ def compare_annex() -> None:
         row("Rear bumper fascia", 1150, source_part="Rear Bumper", suggested_from="1 past case"),  # price changed
         row("Rear bumper clips", 50, origin="history", prefilled=True, source_part="Rear Bumper"),  # untouched
         row("Tail lamp RH", 300, source_part="Right Tail Lamp"),  # same line, side now known, priced by a person
-        row("Rear bumper absorber", 0, suggested_from="2 past cases"),  # picked from the suggestions panel
+        row("Rear bumper absorber", 0, origin="history", suggested_from="2 past cases"),  # picked from the suggestions panel
         row("Towing charges", 120),  # typed
         row("Headlamp LH", 0, origin="detection", source_part="Left Headlamp"),  # for a part a person added
         row("   ", 10),  # no description: not a line
@@ -389,6 +393,11 @@ def compare_annex() -> None:
     check(a["removed_lines"] == ["Bonnet assy"] and sorted(a["added_lines"]) == ["Rear bumper absorber", "Towing charges"],
           "removed and added lines are named (not the machine's lines for an added part)", a)
     check((a["final"], a["final_machine"], a["final_typed"]) == (6, 4, 2), "the signed-off lines by origin", a)
+    check(not accuracy.machine_made(row("Rear bumper absorber", 0, origin="history", suggested_from="2 past cases"))
+          and accuracy.machine_made(row("Rear bumper fascia", 1150, source_part="Rear Bumper", suggested_from="1 past case"))
+          and accuracy.machine_made(row("Bonnet assy", 900, origin="history", prefilled=True, suggested_from="1 past case")),
+          "a line picked from the suggestions panel is a person's (as prefill._machine_owned reads it); "
+          "a machine row stays the machine's once a person confirms it")
     none = accuracy.compare({}, final)["annex_a"]
     check(none["machine"] is None and none["kept"] is None and none["final"] == 6 and none["final_machine"] == 4,
           "without the machine's Annex A: only the signed-off lines' origins", none)
@@ -468,9 +477,31 @@ def sign_off_records() -> None:
     check(PLATE not in json.dumps(row_.metrics), "no plate in the stored metrics")
     W.first_signed_at = row_.signed_off_at
 
-    # Reopen: the row goes. Edit, sign again: one row, the new answer.
-    r = W.admin.post(f"/reports/{W.case}/reopen")
-    check(r.status_code == 200 and accuracy_row(W.case) is None, "a reopen drops the row", brief(r))
+    # Reopen: the row goes -- and nothing is written before the PDF renders,
+    # or SQLite's write lock would be held through the render. Edit, sign
+    # again: one row, the new answer.
+    locked: list = []
+
+    def probing_render(*args, **kwargs):
+        con = sqlite3.connect(DB_FILE.as_posix(), timeout=0.2)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("ROLLBACK")
+            locked.append(False)
+        except sqlite3.OperationalError as exc:
+            locked.append(str(exc))
+        finally:
+            con.close()
+        _fake_render(*args, **kwargs)
+
+    main.render_pdf = probing_render
+    try:
+        r = W.admin.post(f"/reports/{W.case}/reopen")
+    finally:
+        main.render_pdf = _fake_render
+    check(r.status_code == 200 and accuracy_row(W.case) is None and not learned_lines(W.case),
+          "a reopen drops the row and the learned lines", brief(r))
+    check(locked == [False], "a reopen writes nothing before the PDF renders: no write lock held through it", locked)
     db = SessionLocal()
     try:
         rep = db.get(Report, W.case)
@@ -548,7 +579,21 @@ def learning() -> None:
     check(len(nett) == 1 and nett[0].discount is None and nett[0].adjusted_cost == 380.0 and nett[0].qty_text == "1set"
           and nett[0].line_no == 4, "a S/Nett line: no discount, the full figure, \"1set\" kept, numbered after the list items",
           [(n.item, n.discount, n.adjusted_cost, n.qty_text, n.line_no) for n in nett])
-    check(learned_lines(full)[0].source_file == "CL 90124", "\"CL-90124\" is read as the importer reads a CL reference")
+    check(learned_lines(full)[0].source_file == "CL 90124",
+          "Our Ref \"CL-90124\" is kept as \"CL 90124\": a CL reference one way (history.cl_ref)")
+
+    # Only the priced lines: an unpriced row is mostly one the machine made
+    # and nobody priced. The report's line numbers stay.
+    mixed = new_case(W.admin_id, case_data(FINAL_DAMAGE, [dict(r) for r in FINAL_ANNEX] + [row("Tail lamp clips", 0, source_part="Left Tail Lamp")],
+                                           ref="CL 90125"), ai_draft(AI_DAMAGE))
+    sign_off(W.admin, mixed)
+    got = [(ln.item, ln.line_no) for ln in learned_lines(mixed)]
+    check(got == [("Rear bumper fascia", 1), ("Rear bumper clips", 2), ("Tail lamp LH", 3), ("Reverse sensor", 5)],
+          "only the priced lines are learned, numbered as the report prints them", got)
+    bare = new_case(W.admin_id, case_data([item("Front Bumper")], [row("Front bumper", 0, origin="detection", source_part="Front Bumper")],
+                                          ref="CL 90126"), ai_draft([item("Front Bumper")]))
+    sign_off(W.admin, bare)
+    check(not learned_lines(bare) and accuracy_row(bare) is not None, "a case with no priced line teaches nothing")
 
     # Re-sign-off replaced the lines (4 -> 2 for W.case, checked above);
     # a reopen removes them, a sign-off brings them back, a delete removes.
@@ -564,6 +609,17 @@ def learning() -> None:
     sign_off(W.admin, unknown)
     check(not learned_lines(unknown) and accuracy_row(unknown) is not None, "no model known: nothing learned (the accuracy row is still kept)")
 
+    # A make only a learned case has: the second look's same-make history
+    # sees it while learning is on.
+    gamma = signed_case(make="Gammamotors", ref="CL 90127")
+    sign_off(W.admin, gamma)
+    db = SessionLocal()
+    try:
+        check(learned_lines(gamma) and second_look._same_make_history(db, "Gammamotors"),
+              "the second look counts a make whose only history is a learned case")
+    finally:
+        db.close()
+
     settings.learn_from_signed_off = False
     try:
         off = signed_case()
@@ -573,10 +629,18 @@ def learning() -> None:
         try:
             check(not any(ln.case_ref.startswith("carlink:") for ln in past_lines(db)),
                   "learning off: what was learned before is left out of every suggestion")
+            check(not second_look._same_make_history(db, "Gammamotors"), "learning off: nor does the second look count it")
         finally:
             db.close()
+        r = W.admin.get("/parts-history")
+        refs = {c["ref"] for c in r.json().get("cases", [])} if r.status_code == 200 else None
+        check(refs is not None and "CL 90001" in refs and not any(ref.startswith("carlink:") for ref in refs),
+              "learning off: the Knowledge page's price history lists no learned case", refs)
     finally:
         settings.learn_from_signed_off = True
+    r = W.admin.get("/parts-history")
+    refs = {c["ref"] for c in r.json().get("cases", [])} if r.status_code == 200 else set()
+    check(learn.case_ref(gamma) in refs, "learning on: the Knowledge page lists the learned cases", sorted(refs))
 
 
 def never_from_itself() -> None:
@@ -658,6 +722,64 @@ def never_from_itself() -> None:
     # W.case (Our Ref CL 90123) and the earlier no-model and failure cases
     # carry the same Our Ref: all of them give way to the spreadsheet.
     check(after < before + 1, "a case whose spreadsheet is imported too counts once", (before, after))
+
+    # However the spreadsheet's reference was read: "CL90123" as the
+    # importer keeps a cover page's "Ref: CL90123", or its file name when it
+    # fell back to that. Stored as read; compared one way (history.cl_ref).
+    for ref in ("CL90123", "CL-90123 made-up export"):
+        db = SessionLocal()
+        try:
+            check(learn.case_ref(W.case) in {ln.case_ref for ln in past_lines(db)}, f"(before {ref!r}: the learned case counts)")
+            case = PastCase(ref=ref, plate="", make=MAKE, model=MODEL, make_model_raw=f"{MAKE} {MODEL}", registered=None, surveyed=None)
+            case.lines = [PastLine(1, "list", "Rear bumper fascia", "Deformed", "Replace", 1.0, "1", 1000.0, 0.2, 800.0)]
+            import_case(db, case, f"{ref}.xlsx")
+            db.commit()
+            refs = {ln.case_ref for ln in past_lines(db)}
+            check(ref in refs and learn.case_ref(W.case) not in refs,
+                  f"a spreadsheet read as {ref!r} and the learned case of Our Ref \"CL 90123\" count once", sorted(refs))
+            stored_refs = {r for (r,) in db.query(PastAnnexLine.case_ref).filter(PastAnnexLine.source_file == f"{ref}.xlsx")}
+            check(stored_refs == {ref}, "the spreadsheet's reference is stored as the importer read it", stored_refs)
+            db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == ref).delete()
+            db.commit()
+        finally:
+            db.close()
+
+
+def make_fallback() -> None:
+    # The make's spreadsheet: another model, with a priced headlamp.
+    db = SessionLocal()
+    try:
+        case = PastCase(ref="CL 90300", plate="", make="Deltamotors", model="Modelthree", make_model_raw="Deltamotors Modelthree",
+                        registered=None, surveyed="2026-02-01")
+        case.lines = [PastLine(1, "list", "Head lamp LH", "Broken", "Replace", 1.0, "1", 900.0, 0.2, 720.0)]
+        import_case(db, case, "CL 90300 made-up.xlsx")
+        db.commit()
+    finally:
+        db.close()
+    # One signed-off case of a new model of that make: the model becomes
+    # suggest()'s scope -- and must not hide the make's headlamp.
+    jazz = new_case(W.admin_id, case_data([item("Front Bumper")], [row("Front bumper", 600, source_part="Front Bumper")],
+                                          make="Deltamotors", model="Modelfour", ref="CL 90301"), ai_draft([item("Front Bumper")]))
+    sign_off(W.admin, jazz)
+    db = SessionLocal()
+    try:
+        s = suggest(db, make="Deltamotors", model="Modelfour", damaged_parts=["Left Headlamp", "Front Bumper"], existing_items=[])
+        groups = {g["part"]: g for g in s["groups"]}
+        check(s["scope"] == "past Deltamotors Modelfour cases", "a learned case of a new model makes the model the scope", s["scope"])
+        head = groups.get("Left Headlamp") or {}
+        check(head.get("scope") == "past Deltamotors cases" and [ln["usual_unit_price"] for ln in head.get("lines", [])] == [720.0]
+              and not s["without_history"], "a part the model's cases never had takes the make's priced lines, and says so", s)
+        check((groups.get("Front Bumper") or {}).get("scope") == s["scope"], "a part the model's cases have keeps them", groups.get("Front Bumper"))
+        other = suggest(db, make="Deltamotors", model="Modelfour", damaged_parts=["Rear Bumper"], existing_items=[])
+        check(not other["groups"] and other["without_history"] == ["Rear Bumper"],
+              "never another make's lines for one part (only the whole answer's scope ever widens to every case)", other)
+        data = sync_annex_a(db, {"vehicle_info": {"make": "Deltamotors", "model": "Modelfour"}, "damage_summary": [item("Left Headlamp")],
+                                 "annex_a": {}}, price_book=True)
+        rows = data["annex_a"]["items"]
+        check(len(rows) == 1 and rows[0]["workshop_est"] == 900.0 and rows[0]["suggested_from"] == "1 past case (Deltamotors)",
+              "prefill prices it from the make's case and labels it with the make", rows)
+    finally:
+        db.close()
 
 
 # ============================================================ endpoint
@@ -752,6 +874,7 @@ def main_() -> int:
         ("sign-off never fails for it", sign_off_never_fails),
         ("signed-off cases teach the parts history", learning),
         ("a case never gets suggestions from its own lines", never_from_itself),
+        ("a learned model doesn't hide the make's lines", make_fallback),
         ("GET /admin/ai-accuracy", endpoint),
         ("the backfill scripts", backfills),
         ("no AI", no_ai),

@@ -9,11 +9,11 @@ again, removed when it is reopened or deleted -- and the next case of that
 make and model gets those lines and prices without anyone importing a file.
 
 Exactly what the spreadsheet importer stores (history.import_case), from
-the rows the firm's report prints (rendering/renderer.report_view): List
-Items then S/Nett Items, numbered in that order; W/shop Est the line total;
-Disc the fraction (none on a S/Nett line); the adjusted cost as the report
-works it out (synthesize_annexes.adjusted_cost), which is where a line's
-usual unit price comes from. Personal data: less than the importer keeps --
+the priced rows the firm's report prints (rendering/renderer.report_view):
+List Items then S/Nett Items, numbered in that order; W/shop Est the line
+total; Disc the fraction (none on a S/Nett line); the adjusted cost as the
+report works it out (synthesize_annexes.adjusted_cost), which is where a
+line's usual unit price comes from. Personal data: less than the importer keeps --
 no plate (the case id leads back to the case); the vehicle's make, model
 and registration date and the date of survey, as a spreadsheet has them.
 Only for a case whose make and model are known: a line under no model would
@@ -24,13 +24,12 @@ also leaves out what was learned before, and never lets a case be priced
 from its own lines. No Gemini call.
 """
 import logging
-import re
 from datetime import date
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.parts.history import LEARNED_PREFIX, PastCase, PastLine, _date, import_case, split_make_model
+from app.parts.history import LEARNED_PREFIX, PastCase, PastLine, _date, cl_ref, import_case, split_make_model
 from app.reports.models import PastAnnexLine, PastLabourLine, Report
 from app.reports.synthesize_annexes import adjusted_cost
 
@@ -59,13 +58,11 @@ def _iso_date(text) -> str | None:
 
 
 def our_ref(data: dict) -> str:
-    """The case's Our Ref as the importer reads one off a spreadsheet ("CL
-    12330"), so a case whose exported spreadsheet is imported too counts
-    once (history.past_lines); any other wording as typed; "" when none is
-    issued."""
-    ref = str((data or {}).get("report_id") or "").strip()
-    m = re.search(r"\bCL\s*-?\s*(\d+)", ref, re.I)
-    return f"CL {m.group(1)}" if m else ref[:60]
+    """The case's Our Ref, a CL reference written one way ("CL 12330",
+    history.cl_ref), so a case whose exported spreadsheet is imported too
+    counts once (history.past_lines compares both sides through cl_ref);
+    any other wording as typed; "" when none is issued."""
+    return cl_ref(str((data or {}).get("report_id") or ""))[:60]
 
 
 def _number(value) -> float:
@@ -77,8 +74,14 @@ def _number(value) -> float:
 
 def past_case_from(report: Report) -> PastCase | None:
     """The case's final Annex A as a past case, or None when there is
-    nothing to learn: make or model unknown, or no line with a
-    description."""
+    nothing to learn: make or model unknown, or no priced line.
+
+    Only the lines with a workshop estimate: an unpriced line on a Carlink
+    case is mostly a row the machine made that nobody priced, not the
+    surveyor's record of a line -- and a learned case of a new model with
+    nothing but such lines made that model the scope of suggest() and hid
+    the make's priced lines (review of contract 8 L, 2026-11-12). Line
+    numbers stay the report's."""
     data = report.data if isinstance(report.data, dict) else {}
     vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
     raw = " ".join(str(v).strip() for v in (vehicle.get("make"), vehicle.get("model")) if v and str(v).strip())
@@ -112,6 +115,8 @@ def past_case_from(report: Report) -> PastCase | None:
         nett = bool(row.get("is_net_item"))
         qty = _number(row.get("qty")) or 1.0
         est = round(_number(row.get("workshop_est")), 2)
+        if est <= 0:
+            continue
         discount = None if nett else _number(row.get("discount_pct"))
         qty_text = str(row.get("qty_text") or "").strip()
         case.lines.append(PastLine(
@@ -126,7 +131,7 @@ def past_case_from(report: Report) -> PastCase | None:
             discount=discount,
             adjusted_cost=adjusted_cost(est, discount, nett),
         ))
-    return case
+    return case if case.lines else None
 
 
 def forget(db: Session, report_id: str) -> int:

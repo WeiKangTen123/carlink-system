@@ -30,7 +30,7 @@ from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
-from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, restricted, suggest
+from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, past_lines, restricted, suggest
 from app.parts.learn import case_ref
 from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of, side_unconfirmed
 from app.reports.db import SessionLocal
@@ -136,7 +136,10 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
     admin = is_admin(user)
     db = SessionLocal()
     try:
-        lines = db.query(PastAnnexLine).all()
+        # The lines suggestions use (history.past_lines): a signed-off case
+        # learned into the history is listed while it counts, and not at all
+        # with learning switched off.
+        lines = past_lines(db)
         # Annex B lines per report, so the Knowledge page shows the import
         # read them (the picker itself is GET /reports/{id}/labour-suggestions).
         labour_counts = dict(db.query(PastLabourLine.case_ref, func.count()).group_by(PastLabourLine.case_ref).all())

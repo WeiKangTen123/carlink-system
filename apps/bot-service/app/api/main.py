@@ -1471,10 +1471,13 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
-        _forget_sign_off(db, r.id)
 
         r.pdf_path = _render_after_change(user, r, "reopened")
 
+        # After the render: its DELETEs take SQLite's write lock, which every
+        # other write in both containers would wait on while Chromium works.
+        # A sign-off record committed meanwhile is still caught here.
+        _forget_sign_off(db, r.id)
         audit(db, user, "reopened", r.id)
         db.commit()
         return {"id": r.id, "status": r.status}

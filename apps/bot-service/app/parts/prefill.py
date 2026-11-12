@@ -371,10 +371,17 @@ def _scope_vehicle(scope: str) -> str:
     return "all makes"
 
 
+def _scope_of(group: dict | None, suggestion: dict) -> str:
+    """Where a group's lines came from: its own scope when suggest() fell
+    back to the make's cases for that part alone (contract 8 L review), else
+    the answer's."""
+    return (group or {}).get("scope") or suggestion.get("scope") or ""
+
+
 def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = None) -> list[dict]:
     """The past cases' lines for one damaged part, as priced Annex A rows.
     floor: the part's own wording (row_name without past cases)."""
-    vehicle = _scope_vehicle(suggestion.get("scope") or "")
+    vehicle = _scope_vehicle(_scope_of(group, suggestion))
     lines = group["lines"]
     # The damaged part itself, which alone takes the item's condition and
     # remarks (_main_row_terms): the line worded as the part is ("Front
@@ -452,11 +459,10 @@ def _sided_namer(db: Session | None, part: dict, vehicle: dict):
         if db is not None:
             make, model = vehicle.get("make"), vehicle.get("model")
             suggestion = suggest(db, make=make, model=model, damaged_parts=[part["part"]], existing_items=[])
-            if suggestion.get("scope") != "all imported cases":
-                for group in suggestion["groups"]:
-                    if group["reason"] == "damaged":
-                        for ln in group["lines"]:
-                            names.setdefault(normalise_item(ln["name"]), ln["name"])
+            for group in suggestion["groups"]:
+                if group["reason"] == "damaged" and _scope_of(group, suggestion) != "all imported cases":
+                    for ln in group["lines"]:
+                        names.setdefault(normalise_item(ln["name"]), ln["name"])
         names.setdefault(normalise_item(row_name(None, part["part"], vehicle, unsided=True)), row_name(None, part["part"], vehicle))
         return names
 
@@ -482,9 +488,9 @@ def _other_rows(db: Session | None, part: dict, vehicle: dict, price_book: bool)
         make, model = vehicle.get("make"), vehicle.get("model")
         suggestion = suggest(db, make=make, model=model, damaged_parts=[family_part], existing_items=[], unsided=True)
         group = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
-        line = _matching_line(name, group["lines"]) if group and suggestion.get("scope") != "all imported cases" else None
+        line = _matching_line(name, group["lines"]) if group and _scope_of(group, suggestion) != "all imported cases" else None
         if line is not None:
-            row = _rows_for(part, suggestion, {"lines": [line]})[0]
+            row = _rows_for(part, suggestion, {"lines": [line], "scope": group.get("scope")})[0]
             row.update(_main_row_terms(part))
             side = side_of(name)
             if side:
@@ -621,7 +627,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # Another make's prices are no estimate for this car: with no
             # same-make history the part stays unpriced (the suggestions
             # panel still offers those lines, labelled, for a person to pick).
-            if found and suggestion.get("scope") == "all imported cases":
+            if found and _scope_of(found, suggestion) == "all imported cases":
                 found = None
         if not found:
             # No past case covers it (or its lines are all typed already):
