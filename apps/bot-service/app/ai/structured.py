@@ -124,6 +124,9 @@ def image_resolution(kind: str | None) -> str | None:
 # Telegram bot drafts through draft_report, so "draft" is its call as well.
 # A purpose not here (annex suggestions) is sent as it always was.
 CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look"}
+# Contract 8 D2: a zone call (ai/zone_read.py) is part of the reading and
+# runs on its chain, so it takes the reading's thinking level and tools.
+CALL_KINDS["draft_zone"] = "read"
 
 
 def request_settings(purpose: str, model_id: str) -> dict:

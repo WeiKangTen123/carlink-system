@@ -692,6 +692,25 @@ def _with_final_labels(ai_draft: dict | None, index_of: dict) -> dict | None:
             item["photo_reference"] = photo_label(index) if index is not None else None
             if index is None:
                 item["bbox_2d"] = None
+        if item.get("seen_in"):
+            item["seen_in"] = _final_refs(item["seen_in"], index_of)
+    return out
+
+
+def _final_refs(refs: list, index_of: dict) -> list[str]:
+    """Contract 8 D2: a damage item's seen_in (intake/zones.py) as the
+    case's P-numbers, the way its photo_reference is turned: "@<photo id>"
+    to its final label, a photo deleted since dropped."""
+    out: list[str] = []
+    for ref in refs or []:
+        ref = str(ref or "")
+        if ref.startswith("@"):
+            index = index_of.get(ref[1:])
+            if index is None:
+                continue
+            ref = photo_label(index)
+        if ref and ref not in out:
+            out.append(ref)
     return out
 
 
@@ -714,6 +733,8 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
             item.photo_reference = photo_label(index) if index is not None else None
             if index is None:
                 item.bbox_2d = None
+        if item.seen_in:
+            item.seen_in = _final_refs(item.seen_in, index_of)
     if draft.damage_summary:
         draft.damaged_parts = [item.part for item in draft.damage_summary]
 
@@ -737,7 +758,10 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         photo_kinds=[{"id": p.id, **{key: getattr(p, key) for key in PHOTO_INDEX_KEYS}} for p in photos],
         owner=owner, report_id=report_id, read_ids=set(read_ids),
     )
-    run_log.relabel_last_read(db, report_id, read_ids, {p.id: photo_label(i) for i, p in enumerate(photos)})
+    label_of = {p.id: photo_label(i) for i, p in enumerate(photos)}
+    run_log.relabel_last_read(db, report_id, read_ids, label_of)
+    # Contract 8 D2: the zone calls' photos, kept as "@<photo id>" until now.
+    run_log.relabel_zone_reads(db, report_id, label_of)
 
     new_paths = copy_into_case(report_id, photos)
     report.photo_paths = new_paths

@@ -220,6 +220,45 @@ class Settings(BaseSettings):
     def _read_tools(cls, value):
         return normal_read_tools(value)
 
+    # Contract 8 D2: reading the car one area at a time (intake/zones.py).
+    # "single": the one overall reading, as before. "zones": after it, one
+    # short call per area the photos show -- front, rear, left, right, and
+    # damage close-ups whose area isn't clear -- each with that area's
+    # checklist (ai/zone_read.py), at most 5 more calls a case; their finds
+    # are merged into the overall reading's, and a part only one read saw,
+    # on one photo, is marked Low for a person to check. Measured before it
+    # is turned on (scripts/benchmark_intake.py --read-mode zones).
+    intake_read_mode: str = "single"
+    # Zone calls only: each photo goes as a copy with a light 3x3 grid
+    # (A1..C3) drawn on it (ai/grid.py), and the model gives the cells the
+    # damage covers before it names the panel. Off: the photos as they are.
+    intake_grid_marks: bool = False
+
+    @field_validator("intake_read_mode")
+    @classmethod
+    def _read_mode(cls, value):
+        return normal_read_mode(value)
+
+
+READ_MODES = ("single", "zones")
+
+
+def normal_read_mode(value) -> str:
+    """intake_read_mode written the one way; None or blank is "single".
+    Raises ValueError on anything else, so a typo stops the app at start-up
+    rather than quietly reading the old way."""
+    mode = str(value or "").strip().lower() or "single"
+    if mode not in READ_MODES:
+        raise ValueError(f"read mode {value!r}: use one of {', '.join(READ_MODES)}")
+    return mode
+
+
+def normal_grid_marks(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+# (end of Contract 8 D2)
+
 
 # Each model setting written the one way, None when blank (unset). Raise
 # ValueError as the parsers above do. The benchmark checks its flags with

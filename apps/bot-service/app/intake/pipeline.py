@@ -22,6 +22,10 @@ already sorted stay sorted.
 Each stage is one row of the AI run log (ai/runs.py): "sort" (photos_sent
 {"count": n}), and "read" -- "redraft" for a re-read -- with the labels sent;
 the second look after a reading is a row of its own, "second_look".
+
+Contract 8 D2: with settings.intake_read_mode "zones" the reading also reads
+the car one area at a time after its one call, and merges what those calls
+find into its own (intake/zones.py; their row is "read_zones").
 """
 import logging
 import re
@@ -37,6 +41,7 @@ from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
 from app.config import settings
+from app.intake import zones
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
@@ -502,6 +507,9 @@ def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
 
 def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     _set_stage(report_id, "reading", 0, 1)
+    # Contract 8 D2: read once, so a reading is all one mode.
+    zone_mode = zones.zones_on()
+    zone_jobs: list[zones.ZoneJob] = []
     db = SessionLocal()
     try:
         session = db.get(IntakeSession, report_id)
@@ -520,6 +528,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # read or not: resolve_sides places side-undetermined findings by it.
         photo_areas = voting_areas(photos)
         sorter_parts = {p.id: p.part for p in photos if p.part}
+        if zone_mode:
+            # The areas to read one at a time, from every photo of the case.
+            zone_jobs = zones.jobs_for(photos, labels)
     finally:
         db.close()
 
@@ -530,6 +541,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         run.error_code = "nothing_to_read"
         raise ValueError("there is nothing to read -- every photo is excluded or unusable. Include some photos again.")
 
+    if zone_jobs:
+        # Progress over the overall reading and each zone call (GET
+        # /intake/{id}'s progress; the wizard shows reading without counts).
+        _set_stage(report_id, "reading", 0, 1 + len(zone_jobs))
     draft = draft_report(
         notes,
         [path for _, _, path in inputs],
@@ -552,6 +567,18 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
 
     if settings.intake_side_from_sorter:
         side_from_sorter(data.get("damage_summary") or [], sorter_parts)
+    # Contract 8 D2: the zone calls, their finds merged into the reading's
+    # (found_by / seen_in on every item). Never raises: a zone call that
+    # fails is skipped, and the overall reading is kept either way.
+    disputed: set[str] = set()
+    if zone_mode:
+        total = 1 + len(zone_jobs)
+        if zone_jobs:
+            _set_stage(report_id, "reading", 1, total)
+        data["damage_summary"], disputed = zones.read_and_merge(
+            report_id, actor, data.get("damage_summary") or [], zone_jobs,
+            progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
+        )
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -571,7 +598,12 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # stays so -- the AI's repeat of it isn't placed, and merge drops it.
         if data.get("damage_summary"):
             checked = {it.get("part") for it in (current.get("damage_summary") or []) if it.get("human_verified")}
-            data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas, keep_undetermined=checked)
+            # A side the reads disputed (zones.merge_reads) isn't placed from
+            # the sorter's areas either: they are where wrong sides came from.
+            data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
+                                                   keep_undetermined=checked | disputed)
+            if zone_mode:
+                zones.apply_agreement(data["damage_summary"])
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
         # Merged against the form as it is NOW (re-read inside this

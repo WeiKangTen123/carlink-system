@@ -99,6 +99,21 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="OEM replacement part number, e.g. '71501-T7A-A00' -- never invent this. Only set it if the reporter or surveyor actually supplied it; a human enters this during review, it is never looked up or guessed.",
     )
+    # Contract 8 D2 (the shared data contract): which reads saw this part,
+    # set by intake/zones.py when settings.intake_read_mode is "zones" and
+    # empty otherwise -- and on every case from before. Written by code,
+    # never by the model, so left out of the schema Gemini sees: the
+    # drafting schema, shared with the Telegram bot, must not change
+    # (extraction._NOT_MODEL_OUTPUT). seen_in: the photos the part was seen
+    # in across the reads, written as photo_reference is at the time
+    # ("@<photo id>" in a draft, "P07" once filed: api/intake relabels both).
+    # found_by: "overall" and/or "zone:front", "zone:rear", "zone:left",
+    # "zone:right", "zone:close". grid_cells: the cells (A1..C3) of
+    # photo_reference the damage covers, when a zone read had grid marks
+    # (settings.intake_grid_marks).
+    seen_in: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    found_by: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    grid_cells: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
     @field_validator("other_part_name", mode="before")
     @classmethod
