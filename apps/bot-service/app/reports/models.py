@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -606,3 +606,155 @@ class PastLabourLine(Base):
     workshop_est: Mapped[float] = mapped_column(Float, default=0.0)
     adjusted_cost: Mapped[float] = mapped_column(Float, default=0.0)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+# ------------------------------------------------- parts-catalogue look-up
+# A person asks for a case's damaged parts to be looked up in the online
+# parts catalogues (app/parts/catalogue.py, app/api/catalogue.py). The
+# server never contacts a parts site itself: the owner's PC runs a worker
+# (tools/parts_mcp) that claims the job, looks the parts up and sends the
+# rows back. Everything here is a reference for the surveyor: nothing is
+# printed, nothing fills an estimate, nothing becomes an Annex A row by
+# itself. New tables, made by create_all: nothing in db._ADDED_COLUMNS.
+
+
+class CatalogueJob(Base):
+    """One look-up of one case's damaged parts, from the click on [Look up
+    in catalogue] to the worker's result.
+
+    pending -> running (a worker claimed it) -> done | failed, or cancelled
+    by a person at any point before it finishes. A running job nobody has
+    heard from for 45 minutes goes back to pending (the PC went to sleep).
+    At most one pending or running job per case: the partial unique index
+    below refuses a second, so a double click can't queue two.
+
+    `payload` is the job exactly as the worker gets it, built when the
+    person asked (catalogue.job_payload): make, model, year and the damaged
+    parts' names. Never the plate, VIN, chassis or engine number, the case
+    id or anyone's name -- the worker knows the job by its own id only.
+    """
+    __tablename__ = "catalogue_jobs"
+    __table_args__ = (
+        # One open job per case. Also in db._ADDED_INDEXES.
+        Index(
+            "ux_catalogue_jobs_open", "report_id", unique=True,
+            sqlite_where=text("status IN ('pending', 'running')"),
+            postgresql_where=text("status IN ('pending', 'running')"),
+        ),
+        # The worker's claim: the oldest pending job. Also in db._ADDED_INDEXES.
+        Index("ix_catalogue_jobs_status_created_at", "status", "created_at"),
+        # Ids never come back: a deleted case takes its jobs, and a worker
+        # still holding one's id must not report into a newer job.
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="lookup")
+    # pending | running | done | failed | cancelled (catalogue.JOB_STATUSES).
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    # The catalogue car the surveyor picked with "Change car"; None lets
+    # the worker find one from make, model and year.
+    vehicle_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Who pressed the button: their id, and their name as the history shows
+    # it, copied at the time.
+    requested_by_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # The worker's name ("weika-pc").
+    claimed_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The last claim or progress report: 45 minutes without one and a
+    # running job goes back to pending.
+    last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    progress_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # A failed job's reason (catalogue.ERROR_CODES) and the worker's words.
+    error_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error_text: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cancelled_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # From the worker's result: the catalogue car it used, the other cars it
+    # could have been, what went wrong where, and per part the query and
+    # side with whether any diagram was found (the rows themselves are
+    # CatalogueSuggestion rows).
+    vehicle: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    candidates: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    failures: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    parts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+
+class CatalogueSuggestion(Base):
+    """One catalogue row (a part number on a diagram) suggested for one
+    damaged part of a case.
+
+    "suggested" until a person rejects it ("rejected"; undo puts it back)
+    or accepts it into Annex A ("accepted", Phase 2: PUT /annex-a carrying
+    catalogue_ref.suggestion_id). A new finished look-up replaces the
+    case's "suggested" rows; accepted and rejected ones stay, and the new
+    result doesn't add a row with the same part and part number again
+    (catalogue.store_result).
+    """
+    __tablename__ = "catalogue_suggestions"
+    # Ids never come back (SQLite would reuse the highest deleted one): a
+    # re-run deletes the "suggested" rows, and a page still showing one
+    # must not reject a newer row by its old id.
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # The damaged part it was found for, as the job named it (the
+    # damage_summary part), and the job's query and side for that part.
+    source_part: Mapped[str] = mapped_column(String, nullable=False)
+    part_query: Mapped[str] = mapped_column(String, nullable=False, default="")
+    part_side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The diagram it is on, and where: diagram_rank is the diagram's place
+    # among the part's (best first), row_rank the row's place on it.
+    diagram_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    diagram_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    diagram_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    diagram_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The row as the catalogue gave it (contract: Result.parts[].diagrams[].rows[]).
+    callout: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    part_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    superseded_from: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    name_original: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    qty: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The row's own side ("left" / "right"), when the catalogue says.
+    side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The site's own price: a reference only, in its currency, never the
+    # workshop's estimate.
+    ref_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ref_currency: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ref_tax_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # When the worker read it (ISO 8601, as sent), and whether that was
+    # from its cache past its freshness.
+    fetched_at: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # suggested | accepted | rejected (catalogue.SUGGESTION_STATUSES).
+    status: Mapped[str] = mapped_column(String, nullable=False, default="suggested")
+    decided_by_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    decided_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+
+
+class CatalogueWorker(Base):
+    """A PC worker the server has heard from: every claim and progress
+    report marks it seen, so the case page can say whether a look-up will
+    start soon ("online" = seen in the last 2 minutes)."""
+    __tablename__ = "catalogue_workers"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now)
+    version: Mapped[Optional[str]] = mapped_column(String, nullable=True)

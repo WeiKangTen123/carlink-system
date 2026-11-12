@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, BookOpen, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
 import { conditionWordsOf, type AnnexAPartItem, type ReportDetail } from "@/lib/api";
 import { getTaxonomyAction, prefillAnnexAAction, saveAnnexAAction } from "@/app/reports/actions";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
@@ -23,6 +23,25 @@ import {
   type AnnexRow,
 } from "@/lib/annexRows";
 import { AnnexSuggestionsPanel } from "./AnnexSuggestionsPanel";
+import { CatalogueSuggestionsPanel, useCatalogue } from "./CatalogueSuggestionsPanel";
+import {
+  applyCataloguePicks,
+  attachTargets,
+  clashingTargets,
+  defaultTarget,
+  detachFromLine,
+  findSuggestion,
+  lookupButton,
+  needsWording,
+  refLine,
+  refPrice,
+  resolvedTarget,
+  safeUrl,
+  tickOnly,
+  variantSiblings,
+  type CatalogueDiagram,
+  type CatalogueSuggestion,
+} from "@/lib/catalogue";
 import { ReviewBadge } from "./ReviewBadge";
 import { ReviewConfirmButton } from "./ReviewConfirmButton";
 import { CONFIRMED_ROW, annexAConfirmable, annexAState, annexATally, annexATallyText, isPastCasePrice } from "@/lib/reviewRows";
@@ -34,8 +53,25 @@ import { LockedNote, SavedNote, UnsavedNote, fieldInputStyle } from "./SaveNotes
  * through PUT /reports/{id}/annex-a; nothing is saved until "Save Annex A".
  * Rows carry source_part and origin so tab 1's detection can re-sync
  * without touching what a person priced. Moved from CaseAssessmentTab.tsx
- * on 2026-11-04. */
-export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: ReportDetail; store: CaseStore; canEdit: boolean; isSignedOff: boolean }) {
+ * on 2026-11-04. The parts-catalogue look-up (button and panel, reference
+ * only) is shown only when the API has it switched on; its rows can be
+ * ticked and put on a line or a new line of the draft ([Use N ticked]),
+ * which then shows the part number, site and the site's price under it --
+ * never in W/shop Est., never printed. */
+export function AnnexATab({
+  report,
+  store,
+  canEdit,
+  isSignedOff,
+  onOpenCover,
+}: {
+  report: ReportDetail;
+  store: CaseStore;
+  canEdit: boolean;
+  isSignedOff: boolean;
+  /** Opens tab 2, for the catalogue panel's "Confirm on Cover page". */
+  onOpenCover?: () => void;
+}) {
   const router = useRouter();
   const user = useCurrentUser();
   const { readOnly } = store;
@@ -46,6 +82,15 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   const [prefillBusy, setPrefillBusy] = useState(false);
   const [prefillNote, setPrefillNote] = useState<string | null>(null);
   const annexALocked = readOnly || status.save === "saving" || prefillBusy;
+
+  // The parts-catalogue look-up: asked only while the table can be edited,
+  // like the suggested lines. Off on the server -> null here, and neither
+  // the button nor the panel shows.
+  const catalogue = useCatalogue(report.id, !readOnly);
+  const catalogueButton = lookupButton(catalogue.state, { locked: annexALocked, busy: catalogue.busy });
+  // Ticked catalogue rows: suggestion id -> the line it goes on (a draft
+  // row's key, or NEW_LINE). Nothing reaches the table until [Use N ticked].
+  const [cataloguePicks, setCataloguePicks] = useState<Record<number, string>>({});
 
   // The Condition suggestions: the firm's most used wordings from GET
   // /taxonomy (so they follow the backend's list, not a copy kept here),
@@ -76,6 +121,27 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
   const annexAShown = inSections(annexAItems);
   const listRows = annexAShown.filter((r) => !r.is_net_item);
   const nettRows = annexAShown.filter((r) => r.is_net_item);
+
+  // The catalogue rows the draft already carries, by the line number shown.
+  const tableLines = annexAShown.map((r) => ({ key: r._key, part_name: r.part_name }));
+  const catalogueTargets = attachTargets(tableLines);
+  const draftLineOf = new Map<number, number>();
+  annexAShown.forEach((r, i) => {
+    const id = r.catalogue_ref?.suggestion_id;
+    if (typeof id === "number" && !draftLineOf.has(id)) draftLineOf.set(id, i + 1);
+  });
+  const catalogueInfo = catalogue.state?.enabled ? catalogue.state : null;
+  // Ticks still meaning something: the row is still listed, not hidden, and
+  // not already on a line of the draft.
+  const liveCataloguePicks = catalogueInfo
+    ? Object.entries(cataloguePicks)
+        .map(([id, target]) => ({ id: Number(id), target: resolvedTarget(target, tableLines) }))
+        .filter((p) => {
+          const found = findSuggestion(catalogueInfo, p.id);
+          return found !== null && found.row.status !== "rejected" && !draftLineOf.has(p.id);
+        })
+    : [];
+  const catalogueClashes = clashingTargets(liveCataloguePicks.map((p) => p.target));
   const liveParts = {
     est: annexAItems.reduce((acc, it) => acc + (it.workshop_est || 0), 0),
     adj: annexAItems.reduce((acc, it) => acc + rowAdjusted(it), 0),
@@ -178,6 +244,130 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
     store.discard("annexA");
   };
 
+  // [Use N ticked] in the catalogue panel: each ticked row onto its line
+  // (catalogue_ref, and the part number if the line had none -- name, qty
+  // and W/shop Est. untouched) or onto a new, unpriced line. Into the draft
+  // only: Save Annex A keeps it, and marks the rows accepted.
+  const handleUseCatalogue = () => {
+    if (annexALocked || !catalogueInfo || liveCataloguePicks.length === 0 || catalogueClashes.length > 0) return;
+    const picks = liveCataloguePicks.flatMap((p) => {
+      const found = findSuggestion(catalogueInfo, p.id);
+      return found ? [{ target: p.target, ...found }] : [];
+    });
+    store.setAnnexA((prev) => applyCataloguePicks(prev, picks, (line) => toAnnexRow(line)));
+    setCataloguePicks({});
+  };
+
+  // Unlink: the line stays, without its catalogue part (and the part number
+  // that came with it).
+  const handleUnlinkCatalogue = (key: string) => {
+    if (annexALocked) return;
+    store.setAnnexA((prev) => prev.map((row) => (row._key === key ? detachFromLine(row) : row)));
+  };
+
+  /** The tick box and line picker on a catalogue row, or where it is. A
+   * colour version (variant_key) shares its group with the others on the
+   * diagram: one of them per group, so ticking it unticks the others, and
+   * none can be ticked while another is on a line. */
+  const renderCatalogueAttach = (row: CatalogueSuggestion, _part: unknown, diagram: CatalogueDiagram) => {
+    const onLine = draftLineOf.get(row.id);
+    if (onLine) {
+      const saved = row.status === "accepted";
+      return (
+        <span className="annex-suggest-tag" title={saved ? "On this Annex A line" : "On this Annex A line; Save Annex A to keep it"}>
+          on line {onLine}
+          {saved ? "" : " (unsaved)"}
+        </span>
+      );
+    }
+    if (row.status === "rejected") return null;
+    const what = row.part_number || row.name || "this row";
+    const ticked = row.id in cataloguePicks;
+    const target = resolvedTarget(cataloguePicks[row.id], tableLines);
+    const siblings = variantSiblings(diagram.rows, row);
+    const siblingLine = siblings.map((x) => draftLineOf.get(x.id)).find((n): n is number => typeof n === "number");
+    return (
+      <span className="catalogue-attach">
+        <input
+          type="checkbox"
+          checked={ticked}
+          disabled={annexALocked || siblingLine !== undefined}
+          aria-label={`Use ${what} in Annex A`}
+          title={
+            siblingLine !== undefined
+              ? `Another colour version is on line ${siblingLine}: unlink it there first`
+              : siblings.length
+                ? "Tick the colour on the car (one per part)"
+                : "Tick to put this part on an Annex A line"
+          }
+          onChange={(e) => {
+            const on = e.target.checked;
+            setCataloguePicks((prev) => {
+              if (on) return tickOnly(prev, row.id, defaultTarget(row.match_hint, tableLines), siblings.map((x) => x.id));
+              const next = { ...prev };
+              delete next[row.id];
+              return next;
+            });
+          }}
+        />
+        {ticked && (
+          <select
+            value={target}
+            disabled={annexALocked}
+            aria-label={`Annex A line for ${what}`}
+            onChange={(e) => {
+              const value = e.target.value;
+              setCataloguePicks((prev) => ({ ...prev, [row.id]: value }));
+            }}
+            style={{ ...fieldInputStyle, padding: "1px 4px", fontSize: 11, maxWidth: 200 }}
+          >
+            {catalogueTargets.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        )}
+      </span>
+    );
+  };
+
+  /** Where a row of a folded colour group is, for the group's own line. */
+  const catalogueChosen = (row: CatalogueSuggestion): string | null => {
+    const onLine = draftLineOf.get(row.id);
+    if (onLine) return `on line ${onLine}${row.status === "accepted" ? "" : " (unsaved)"}`;
+    return row.id in cataloguePicks ? "ticked" : null;
+  };
+
+  /** The tidy name of the catalogue row on a line (the ref doesn't keep
+   * it): "check wording" shows while the line still carries it. */
+  const tidyNameOf = (item: AnnexRow): string | null => {
+    const id = item.catalogue_ref?.suggestion_id;
+    return catalogueInfo && typeof id === "number" ? (findSuggestion(catalogueInfo, id)?.row.tidy_name ?? null) : null;
+  };
+
+  const catalogueClashLabel = catalogueClashes.length ? catalogueTargets.find((t) => t.key === catalogueClashes[0])?.label : null;
+  const catalogueFooter = (
+    <>
+      <span>
+        Reference prices never fill W/shop Est.
+        {catalogueClashLabel && (
+          <span style={{ color: "var(--badge-amber-text)" }}> Two ticked rows are set to {catalogueClashLabel}: pick another line, or New line, for one.</span>
+        )}
+      </span>
+      <button
+        type="button"
+        className="btn-primary-modern"
+        style={{ fontSize: 11, padding: "6px 14px" }}
+        disabled={annexALocked || liveCataloguePicks.length === 0 || catalogueClashes.length > 0}
+        title="Puts the ticked parts on their Annex A lines (or new lines). Save Annex A to keep them."
+        onClick={handleUseCatalogue}
+      >
+        <Plus style={{ width: 13, height: 13 }} /> Use {liveCataloguePicks.length} ticked
+      </button>
+    </>
+  );
+
   const handleSaveAnnexA = async () => {
     if (annexALocked) return;
     store.setStatus("annexA", "saving");
@@ -191,6 +381,9 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
     // and without the lines that had no part description.
     store.applySaved("annexA", res);
     router.refresh();
+    // The save marked the catalogue rows on lines accepted (and the ones
+    // taken off suggested again): show them so.
+    if (catalogueInfo) catalogue.reload();
   };
 
   // POST /reports/{id}/annex-a/prefill works on the table as saved and saves
@@ -276,6 +469,48 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
     );
   };
 
+  /** The parts-catalogue row on a line: "# 04715T7WA90 · parts-honda.uk
+   * diagram", "check wording" while the name is still the catalogue's, and
+   * Unlink. A reference: not printed. */
+  const catalogueNote = (item: AnnexRow, no: number) => {
+    const ref = item.catalogue_ref;
+    if (!ref) return null;
+    const href = safeUrl(ref.diagram_url);
+    return (
+      <div className="annex-catalogue-ref" title="From the parts catalogue: a reference for the surveyor, not printed">
+        <span style={{ fontFamily: "var(--font-mono)" }}>{refLine(ref)}</span>
+        {href && (
+          <a href={href} target="_blank" rel="noopener noreferrer" className="setup-help-link" aria-label={`Open the catalogue diagram ${ref.diagram_name || ""} (new tab)`}>
+            diagram
+          </a>
+        )}
+        {needsWording(item, tidyNameOf(item)) && (
+          <span className="annex-suggest-tag" style={{ marginLeft: 0, color: "var(--badge-amber-text)" }} title="The catalogue's own wording: write it as the firm would">
+            check wording
+          </span>
+        )}
+        {!readOnly && (
+          <button type="button" className="catalogue-text-btn" disabled={annexALocked} onClick={() => handleUnlinkCatalogue(item._key)} aria-label={`Unlink the catalogue part from line ${no}`}>
+            Unlink
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  /** The site's own price under W/shop Est.: "ref EUR 309.41 ex VAT". */
+  const catalogueRefPrice = (item: AnnexRow) => {
+    const price = item.catalogue_ref ? refPrice(item.catalogue_ref) : null;
+    return price ? (
+      <div
+        title="The parts site's own price: a reference only, never the workshop's estimate, never printed."
+        style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2, cursor: "help", whiteSpace: "nowrap" }}
+      >
+        {price}
+      </div>
+    ) : null;
+  };
+
   /** A kept row whose part is no longer detected: the machine never deletes
    * it; the surveyor keeps or removes it (and saves). */
   const staleNote = (item: AnnexRow, no: number) =>
@@ -309,13 +544,17 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
           <td data-label="Part" style={{ fontWeight: 600 }}>
             {item.part_name}
             {originNote(item)}
+            {catalogueNote(item, no)}
             {reviewLine(item, no)}
             {staleNote(item, no)}
           </td>
           <td data-label="Condition">{item.condition || "—"}</td>
           <td data-label="Remarks">{item.action || ""}</td>
           <td data-label="Qty" style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{qtyShown}</td>
-          <td data-label="W/shop Est." style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{isUnpriced ? "—" : amt(item.workshop_est)}</td>
+          <td data-label="W/shop Est." style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
+            {isUnpriced ? "—" : amt(item.workshop_est)}
+            {catalogueRefPrice(item)}
+          </td>
           <td data-label="Disc" style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{item.is_net_item ? "" : `${Math.round(item.discount_pct * 100)}%`}</td>
           <td data-label="Adjusted" style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: isDisallowed ? "var(--text-muted)" : "var(--accent-cyan)" }}>
             {isUnpriced ? "—" : amt(item.adjusted_cost)}
@@ -341,6 +580,7 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
             onChange={(e) => updateTypedRow(item._key, { part_name: e.target.value })}
           />
           {originNote(item)}
+          {catalogueNote(item, no)}
           {reviewLine(item, no)}
           {staleNote(item, no)}
         </td>
@@ -408,6 +648,7 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
               usual {sgd(item.usual_unit_price)} /unit
             </div>
           )}
+          {catalogueRefPrice(item)}
         </td>
         <td data-label="Disc" style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>
           {item.is_net_item ? (
@@ -504,8 +745,36 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
                 <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> {prefillBusy ? "Filling prices…" : "Fill prices from past cases"}
               </button>
             )}
-            {/* "Look up prices (N unpriced)" goes here in Phase 3 (POST
-                /reports/{id}/annex-a/lookup, applied by [Use]). */}
+            {/* The parts-catalogue look-up (POST /reports/{id}/catalogue/
+                lookup): the catalogue worker reads the makers' catalogues;
+                the results show in the panel under Suggested lines. Hidden
+                while the API has the look-up off. */}
+            {catalogueButton && (
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary-modern"
+                  style={{ fontSize: 11, padding: "5px 12px" }}
+                  disabled={catalogueButton.disabled}
+                  title={catalogueButton.title}
+                  onClick={() => void catalogue.lookup(null)}
+                >
+                  <BookOpen style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> {catalogueButton.label}
+                </button>
+                {catalogueButton.showCancel && (
+                  <button
+                    type="button"
+                    className="btn-secondary-modern"
+                    style={{ fontSize: 11, padding: "5px 12px" }}
+                    disabled={catalogue.busy !== null}
+                    aria-label="Cancel the catalogue look-up"
+                    onClick={() => void catalogue.cancel()}
+                  >
+                    {catalogue.busy === "cancel" ? "Cancelling…" : "Cancel"}
+                  </button>
+                )}
+              </>
+            )}
             <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "5px 12px" }} disabled={annexALocked} onClick={handleApplyTradeDiscountToAll}>
               Set 20% on all List Items
             </button>
@@ -523,6 +792,20 @@ export function AnnexATab({ report, store, canEdit, isSignedOff }: { report: Rep
       )}
 
       {!readOnly && <AnnexSuggestionsPanel reportId={report.id} existingNames={annexAItems.map((r) => r.part_name)} onAdd={handleAddSuggestedLines} />}
+
+      {/* Ticked rows go into the draft ([Use N ticked]); a reference only:
+          never the estimate, never printed. */}
+      {!readOnly && (
+        <CatalogueSuggestionsPanel
+          catalogue={catalogue}
+          tableNames={annexAShown.map((r) => r.part_name)}
+          locked={annexALocked}
+          onOpenCover={onOpenCover}
+          renderAttach={renderCatalogueAttach}
+          chosenLabel={catalogueChosen}
+          footer={catalogueFooter}
+        />
+      )}
 
       <div className="annex-table-wrapper">
         <table className="annex-table annex-cards">

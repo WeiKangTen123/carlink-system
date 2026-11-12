@@ -102,6 +102,15 @@ _ADDED_INDEXES = [
     # gives report_id's index=True and the table's started_at Index.
     "CREATE INDEX IF NOT EXISTS ix_ai_runs_report_id ON ai_runs (report_id)",
     "CREATE INDEX IF NOT EXISTS ix_ai_runs_started_at ON ai_runs (started_at)",
+    # The parts-catalogue look-up (models.CatalogueJob / CatalogueSuggestion):
+    # the same names create_all gives them. The first is the one-open-job-
+    # per-case rule.
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_catalogue_jobs_open ON catalogue_jobs (report_id)"
+    " WHERE status IN ('pending', 'running')",
+    "CREATE INDEX IF NOT EXISTS ix_catalogue_jobs_status_created_at ON catalogue_jobs (status, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_catalogue_jobs_report_id ON catalogue_jobs (report_id)",
+    "CREATE INDEX IF NOT EXISTS ix_catalogue_suggestions_report_id ON catalogue_suggestions (report_id)",
+    "CREATE INDEX IF NOT EXISTS ix_catalogue_suggestions_job_id ON catalogue_suggestions (job_id)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

@@ -40,6 +40,7 @@ from app.api.ai_allowance import router as ai_allowance_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.ai_runs import router as ai_usage_router
 from app.api.annexes import router as annexes_router
+from app.api.catalogue import router as catalogue_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import price_book_for_case, router as parts_router
@@ -78,6 +79,7 @@ from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
 from app.reports import owners
+from app.parts import catalogue
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
@@ -176,6 +178,7 @@ app.include_router(telegram_link_router)
 app.include_router(inbox_router)
 app.include_router(ai_usage_router)
 app.include_router(ai_allowance_router)
+app.include_router(catalogue_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -1067,6 +1070,17 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
         data = _merge_into(dict(r.data or {}), sent)
         data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
+        if "annex_a" in sent:
+            # Annex A sent whole (the dashboard saves it with PUT .../annex-a,
+            # but this route takes it too): a line's parts-catalogue row must
+            # be the case's own, and the rows' statuses follow, as there.
+            items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)]
+            try:
+                catalogue.checked_refs(db, r.id, items)
+            except catalogue.BadCatalogueRef:
+                raise ApiError(422, "A catalogue part on Annex A is no longer on this case.", "catalogue_ref")
+            data["annex_a"] = {**(data.get("annex_a") or {}), "items": items}
+            catalogue.sync_accepted(db, r.id, items, user)
         r.data = data
 
         # New photos from this edit get appended after whatever's already
@@ -1728,6 +1742,8 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
         plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
         detail = "Unfinished intake" if r.status == "intake" else (plate or "")
         audit(db, user, "deleted", report_id, detail=" · ".join(p for p in (reference, detail) if p))
+        # Its parts-catalogue look-ups and suggestions go with it.
+        catalogue.forget_case(db, r.id)
         db.delete(r)
         db.commit()
         return {"deleted": report_id}

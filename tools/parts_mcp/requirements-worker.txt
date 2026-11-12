@@ -1,0 +1,22 @@
+# The catalogue worker's dependencies, for the parts-worker container
+# (tools/parts_mcp/Dockerfile). Only what `python -m parts_mcp.worker` imports:
+# the Microfiches source (curl_cffi, beautifulsoup4 + lxml) and the client for the
+# API (httpx2, the httpx fork the worker imports when httpx is not installed).
+# No MCP SDK: server.py (the MCP server for a PC) is not run in the image.
+# Pinned to the versions the tests run with (the parts venv, Nov 2026).
+curl_cffi==0.17.0
+beautifulsoup4==4.15.0
+lxml==6.1.3
+httpx2==2.16.0
+
+# What those need, pinned too, so a rebuild installs the same thing.
+anyio==4.16.0
+certifi==2026.10.23
+cffi==2.1.1
+h11==0.16.0
+httpcore2==2.16.0
+idna==3.20
+pycparser==3.12
+soupsieve==4.0.1
+truststore==0.10.5
+typing_extensions==4.16.0

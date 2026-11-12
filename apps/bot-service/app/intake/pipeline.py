@@ -38,6 +38,7 @@ from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, triage_photos
 from app.config import settings
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
+from app.parts import catalogue
 from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
@@ -582,6 +583,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         db.commit()
     finally:
         db.close()
+    # The reading is saved: the case's first parts-catalogue look-up, if it
+    # qualifies (catalogue.maybe_auto_lookup never raises; off by default).
+    catalogue.maybe_auto_lookup(report_id)
 
 
 # ---------------------------------------------------------- side resolver

@@ -1,0 +1,15 @@
+# Build context of the parts-worker image (Dockerfile here): only the
+# package's code goes in. No tests or fixtures, no local caches or logs,
+# no PC-only files, and never a token file.
+tests/
+data/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+worker.env
+*.env
+run_worker.ps1
+README.md
+Dockerfile
+.dockerignore
+.gitignore

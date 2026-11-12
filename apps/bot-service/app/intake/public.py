@@ -62,6 +62,7 @@ from app.auth.core import as_utc, audit, utc_now
 from app.auth.deps import ApiError
 from app.auth.permissions import PUBLIC_CHANNEL
 from app.intake.photos import intake_dir, is_readable_image, remove_intake_dir
+from app.parts import catalogue
 from app.reports.db import SessionLocal
 from app.reports.models import (
     AppSetting,
@@ -963,6 +964,9 @@ def _delete(
     # 3. The rest of it.
     db.execute(delete(IntakePhoto).where(IntakePhoto.report_id == report_id).execution_options(synchronize_session=False))
     db.execute(delete(IntakeSession).where(IntakeSession.report_id == report_id).execution_options(synchronize_session=False))
+    # Its parts-catalogue look-up too: one is queued by itself after the AI
+    # reading of a draft (catalogue.maybe_auto_lookup).
+    catalogue.forget_case(db, report_id)
     gone = db.execute(
         delete(PublicSubmission)
         .where(PublicSubmission.report_id == report_id)

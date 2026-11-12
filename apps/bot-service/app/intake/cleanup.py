@@ -33,6 +33,7 @@ from app.auth.permissions import in_inbox, is_public
 from app.config import settings
 from app.intake import pipeline, public
 from app.intake.photos import remove_intake_dir
+from app.parts import catalogue
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.storage.files import tmp_dir
@@ -164,6 +165,8 @@ def sweep(now: datetime | None = None) -> dict:
                 # public draft (public.delete_submission): before this a
                 # staff draft vanished after a week with no trace.
                 audit(db, None, "expired", report_id, detail=f"Not worked on for {DRAFT_MAX_IDLE.days} days")
+                # Its parts-catalogue look-up too (queued after the AI reading).
+                catalogue.forget_case(db, report_id)
             db.delete(session)
             db.commit()
             remove_intake_dir(report_id)

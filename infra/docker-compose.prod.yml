@@ -43,6 +43,13 @@ x-bot-service: &bot-service
     # Sweeps idle intake drafts / stale tmp uploads (app/intake/cleanup.py).
     # Only the api process acts on it; the bot process has no lifespan.
     - RUN_BACKGROUND_CLEANUP=true
+    # The parts-catalogue look-up (app/api/catalogue.py): off unless both
+    # are set in infra/.env -- the token is what the parts-worker container
+    # below sends, so the same value goes to both, from infra/.env only,
+    # never git. Only the api serves the look-up (the list above is shared,
+    # so the bot gets them too and ignores them). Empty token = off.
+    - CATALOGUE_ENABLED=${CATALOGUE_ENABLED:-false}
+    - CATALOGUE_WORKER_TOKEN=${CATALOGUE_WORKER_TOKEN:-}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 
@@ -116,9 +123,51 @@ services:
       - api
       - dashboard
 
+  # The parts-catalogue worker (tools/parts_mcp/worker.py, Dockerfile there):
+  # claims look-up jobs from the api over this compose network and reads the
+  # Microfiches catalogues (BMW, MINI, Honda) -- the only container that
+  # contacts a parts site, slowly (5-8 s apart, 500 a day per site). Plain
+  # http to "api" never leaves the VM; nginx.conf answers 404 to
+  # /api/catalogue-worker/ from outside, so only this container reaches those
+  # endpoints (with the token too). Without CATALOGUE_WORKER_TOKEN it idles;
+  # while the api answers 404 (CATALOGUE_ENABLED off) it asks every 5 min.
+  # Logs: docker logs carlink_parts_worker (one line per event).
+  parts-worker:
+    build:
+      context: ../tools/parts_mcp
+      dockerfile: Dockerfile
+    container_name: carlink_parts_worker
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - CARLINK_API_BASE=http://api:8000
+      - CATALOGUE_WORKER_TOKEN=${CATALOGUE_WORKER_TOKEN:-}
+      - PARTS_MCP_DATA_DIR=/data
+      # The log goes to docker logs only (capped by the logging options
+      # above), not to a second copy in the volume.
+      - PARTS_MCP_LOG_FILE=off
+      - WORKER_NAME=server
+    volumes:
+      # Page cache (pages.db) and catalogue store (catalogue.db): kept across
+      # rebuilds, so nothing already looked up is fetched again.
+      - parts_data:/data
+    # A look-up holds one page and its parse at a time; this caps a runaway
+    # at 512 MB on a VM other apps share. (deploy.resources is honoured by
+    # docker compose v2 outside swarm; mem_limit would break this file for
+    # docker-compose v1, which deploy.sh still prefers when present.)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    depends_on:
+      - api
+
 volumes:
   bot_data:
   # Own AI keys secret (see SECRETS_DIR above). Not in backup.sh on purpose:
   # the keys in the database backups are sealed with it, and the two
   # shouldn't travel together.
   ai_secrets:
+  # The parts-worker's caches. Not in backup.sh: everything in it can be
+  # fetched again from the catalogue sites.
+  parts_data:
