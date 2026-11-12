@@ -2,7 +2,9 @@
 fair), summary, compare, AI accounting (tokens per call), sort cache,
 leave-one-out Annex A, the model-setting flags, --scratch, --rescore of a
 stored result file, and a whole benchmark run with a fake pipeline
-(scripts/benchmark_intake.py, scripts/bench/compare.py).
+(scripts/benchmark_intake.py, scripts/bench/compare.py); contract 8: the
+found parts' sides, Replace / Repair and zones, the Annex A prices, and
+the owner's gate (scripts/bench/gate.py).
 
     python scripts/test_benchmark_scoring.py
 
@@ -39,6 +41,9 @@ import benchmark_intake as bi  # noqa: E402
 _spec = importlib.util.spec_from_file_location("bench_compare", SCRIPTS / "bench" / "compare.py")
 compare = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compare)
+_spec = importlib.util.spec_from_file_location("bench_gate", SCRIPTS / "bench" / "gate.py")
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
 
 
 def ok(label: str) -> None:
@@ -86,6 +91,9 @@ def test_cli() -> None:
     r = subprocess.run([sys.executable, str(SCRIPTS / "bench" / "compare.py"), "--help"], capture_output=True, text=True, env=env)
     assert r.returncode == 0 and "--total-only" in r.stdout, r.stderr
     ok("compare.py --help")
+    r = subprocess.run([sys.executable, str(SCRIPTS / "bench" / "gate.py"), "--help"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and "--key" in r.stdout and "candidates" in r.stdout, r.stderr
+    ok("gate.py --help")
 
 
 # ---------------------------------------------------------------- parts, facts, sorter
@@ -640,8 +648,8 @@ def test_annex_scoring() -> None:
     print("Annex A scoring")
     A = bi._app()
     held = SimpleNamespace(make="Honda", model="Vezel", lines=[
-        line("Tail gate assy", "Dented"), line("Tail gate lock striker", "Bent"),
-        line("Tail lamp LH", "Cracked"), line("Tail lamp RH", "Cracked")])
+        priced("Tail gate assy", 1050, 840), priced("Tail gate lock striker", 100, 80),
+        priced("Tail lamp LH", 500, 400), priced("Tail lamp RH", 500, 400)])
     seen = []
 
     def fake_prefill(db, data):
@@ -668,6 +676,12 @@ def test_annex_scoring() -> None:
     assert (a["canonical_rows"], a["canonical_names"]) == (2, ["Bonnet", "Rear Bumper"]), a
     assert (a["perfect_rows"], a["perfect_covered"], a["perfect_coverage"]) == (3, 3, 1.0), a
     ok("lines covered (LH/RH one wording, as eval_parts_kits counts), rows priced/unpriced, extra wordings, canonical names, perfect-detection ceiling")
+    # Tail gate 1000 for 1050 and the striker 90 for 100: both within 10%;
+    # perfect detection's 1200 and 80 are not, its lamp 500 against the
+    # two lamps' 1000 neither.
+    assert (a["price_total"], a["report_price_total"], a["price_diff"]) == (1140, 2150, -1010), a
+    assert (a["matched_priced"], a["within_10pct"], a["perfect_within_10pct"], a["perfect_price_diff"]) == (2, 2, 0, -370), a
+    ok("the prices of the rows against the surveyor's: totals, matched lines priced and within 10%, at the ceiling too")
 
 
 # ---------------------------------------------------------------- a whole run, faked
@@ -833,6 +847,20 @@ def test_benchmark_run() -> None:
     assert (ls["found"], ls["added"], ls["added_parts"], ls["extra"], ls["extra_parts"]) == (3, 1, ["Boot Lid Lock"], 1, ["Rear End Panel"]), ls
     assert "second look" in a1["accounting"] and a1["accounting"]["second look"]["calls"] == 1
     ok("each run scores the second look as if all ticked (found 3, added 1, extra 1) and counts its call apart")
+    sd, zn, rr = a1["part_sides"], a1["part_zones"], a1["part_remarks"]
+    assert (sd["sided_found"], sd["undetermined"], sd["right"], sd["wrong"]) == (1, 1, 0, 0), sd
+    assert zn["rear"] == {"expected": 3, "found": 2, "wrong_side": 0, "missed": 1, "extra": 0, "missed_parts": ["Boot Lid Lock"]}, zn
+    assert (zn["front"]["extra"], zn["other"]["extra"]) == (1, 1), zn  # the bonnet, the Other item
+    assert (rr["scored"], rr["agree"], rr["unsure"]) == (2, 0, 2), rr  # the report says Replace; no remarks drafted
+    assert an["report_price_total"] == 2242 and an["price_diff"] == round(an["price_total"] - 2242, 2), an
+    assert 0 <= an["within_10pct"] <= an["covered"] and an["matched_priced"] <= an["covered"], an
+    assert "sides of the found parts: right 0" in text and "by zone, found/expected: front 0/0 extra 1; rear 2/3" in text, text
+    assert "Replace/Repair: agree 0, disagree 0, unsure 2 of 2" in text and "Annex A prices: W/shop Est" in text, text
+    assert "side right" in text and "rear found" in text and "within 10%" in text, text
+    t = doc["summary"]["total"]
+    # Run 1, both cases: the boot lid in each, case A's tail lamp too.
+    assert (t["zone_rear_found"]["mean"], t["zone_rear_expected"]["mean"], t["remarks_scored"]["mean"]) == (3, 6, 3), t
+    ok("each run carries the found parts' sides, zones and Replace / Repair, and the Annex A's prices; in the log and summary")
     assert runs[3].get("error", "").startswith("RuntimeError: All Gemini fallback models")
     s = doc["summary"]
     assert s["complete_reps"] == [1] and s["errors"][0]["case"] == "TEST CASE B" and s["cases"]["TEST CASE A"]["metrics"]["found"]["n"] == 2
@@ -856,6 +884,273 @@ def test_benchmark_run() -> None:
     assert "thinking_level_read low,test-strong=high" in buf.getvalue() and "read_tools code_execution" in buf.getvalue()
     assert "fair_found" in buf.getvalue() and "read_tok_think" in buf.getvalue(), buf.getvalue()
     ok("compare.py names each side's model settings and compares the fair score and the reading's tokens")
+    assert "zone_rear_found" in buf.getvalue() and "remarks_agree_rate" in buf.getvalue() and "annex_within_10" in buf.getvalue()
+    ok("compare.py compares the found parts' detail and the Annex A prices")
+
+
+# ---------------------------------------------------------------- the found parts in detail (contract 8)
+
+
+def priced(item: str, est: float, adjusted: float, condition: str = "Dented") -> SimpleNamespace:
+    return SimpleNamespace(item=item, condition=condition, workshop_est=est, adjusted_cost=adjusted)
+
+
+def test_sides() -> None:
+    print("sides of the found parts")
+    key = [{"part": "Left Tail Lamp"}, {"part": "Right Tail Lamp"}, {"part": "Left Rear Bumper Reflector"},
+           {"part": "Rear Bumper"}, {"part": "Right Front Door"}, {"part": "Left Headlamp"}, {"part": "Right Rear Quarter Panel"}]
+    items = [
+        {"part": "Left Tail Lamp", "side_inferred": True},  # placed from the sorter's area, and right
+        {"part": "Tail Lamp (side undetermined)"},  # the right lamp, its side not said
+        {"part": "Right Rear Bumper Reflector", "side_inferred": True},  # placed, and wrong
+        {"part": "Rear Bumper"},  # no side: left out
+        {"part": "Left Front Door"},  # read on the wrong side
+        {"part": "Left Headlamp", "side_inferred": True}, {"part": "Left Headlamp"},  # also read there: not inferred
+        {"part": "Bonnet"},
+    ]
+    parts = bi.score_parts(key, [i["part"] for i in items])
+    s = bi.score_sides(key, items, parts)
+    assert (s["sided_found"], s["right"], s["wrong"], s["undetermined"]) == (5, 2, 2, 1), s
+    assert (s["right_inferred"], s["wrong_inferred"]) == (1, 1) and s["wrong"] == len(parts["wrong_side"]), s
+    by = {d["part"]: d for d in s["details"]}
+    assert by["Right Tail Lamp"] == {"part": "Right Tail Lamp", "drafted_as": "Tail Lamp (side undetermined)",
+                                     "side": "undetermined", "inferred": False}, by
+    assert by["Right Front Door"] == {"part": "Right Front Door", "drafted_as": "Left Front Door", "side": "wrong",
+                                      "inferred": False}, by
+    assert by["Left Rear Bumper Reflector"]["inferred"] and by["Left Tail Lamp"]["inferred"] and not by["Left Headlamp"]["inferred"]
+    assert "Rear Bumper" not in by and "Right Rear Quarter Panel" not in by
+    ok("right, wrong (score_parts' wrong side) and undetermined per found sided part; inferred only when no item of the name was read")
+    run = {"parts": parts, "drafted_parts": [i["part"] for i in items], "drafted_items": items, "vehicle": {}}
+    bi.score_details(run, {"parts": key})
+    m = bi.run_metrics(run)
+    assert (m["sided_found"], m["side_right"], m["side_undetermined_found"], m["side_right_inferred"], m["side_wrong_inferred"],
+            m["wrong_side"], m["side_right_rate"]) == (5, 2, 1, 1, 1, 2, 0.4), m
+    assert "part_remarks" not in run and "remarks_scored" not in m
+    ok("run metrics: with a side, right, undetermined, inferred; no Replace / Repair without a report or a key that says")
+
+
+def test_remarks() -> None:
+    print("Replace / Repair")
+    from app.parts import history
+
+    lines = [line("Tail gate assy", "Dented/bent"), line("Tail gate lock striker", "Necessary"),
+             line("Rear bumper fascia", "Repair"), line("Tail lamp LH", "Cracked"),
+             line("Rear bumper reflector LH", "Shifted")]
+    key = [{"part": "Boot Lid", "surveyor": ["Tail gate assy"]},
+           {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},  # refitted only: undecided
+           {"part": "Rear Bumper", "surveyor": ["Rear bumper fascia"]},
+           {"part": "Left Tail Lamp", "surveyor": ["Tail lamp LH"]},
+           {"part": "Left Rear Bumper Reflector", "surveyor": ["Rear bumper reflector LH"], "remarks": "Repair"},  # the key says
+           {"part": "Bonnet", "surveyor": ["Bonnet"]}]  # not found
+    by = {p["part"]: p for p in key}
+    sr = lambda part: bi.surveyor_remarks(by[part], lines, history.normalise_item, history.side_of)  # noqa: E731
+    assert [sr(p) for p in by] == ["Replace", None, "Repair", "Replace", "Repair", None], [sr(p) for p in by]
+    ok("the surveyor's: condition Repair is Repair, any other damage Replace, refitted only undecided; the key's own first")
+    items = [{"part": "Boot Lid", "remarks": "replace"}, {"part": "Boot Lid Lock", "remarks": "Replace"},
+             {"part": "Rear Bumper", "remarks": "Replace"}, {"part": "Tail Lamp (side undetermined)", "remarks": None},
+             {"part": "Left Rear Bumper Reflector", "remarks": "Repair"}]
+    parts = bi.score_parts(key, [i["part"] for i in items])
+    r = bi.score_remarks(key, parts["matched"], items, lines, history.normalise_item, history.side_of)
+    assert (r["scored"], r["agree"], r["disagree"], r["unsure"], r["surveyor_repair"], r["repair_agree"]) == (4, 2, 1, 1, 2, 1), r
+    assert [(d["part"], d["verdict"]) for d in r["details"]] == [
+        ("Boot Lid", "agree"), ("Rear Bumper", "disagree"), ("Left Tail Lamp", "unsure"), ("Left Rear Bumper Reflector", "agree")], r
+    assert bi._remarks("Fix it") is None and bi._remarks(" REPAIR ") == "Repair"
+    ok("per found part: agree (any case), disagree, unsure (null or not a firm word); Repair counted apart")
+    run = {"parts": parts, "drafted_parts": [i["part"] for i in items], "drafted_items": items, "vehicle": {}}
+    bi.score_details(run, {"parts": key})  # no report: the key's own remarks are enough
+    assert run["part_remarks"]["scored"] == 1 and run["part_remarks"]["agree"] == 1, run["part_remarks"]
+    bi.score_details(run, {"parts": key}, lines, history.normalise_item, history.side_of)
+    m = bi.run_metrics(run)
+    assert (m["remarks_scored"], m["remarks_agree"], m["remarks_disagree"], m["remarks_unsure"], m["remarks_repair"],
+            m["remarks_repair_agree"], m["remarks_agree_rate"]) == (4, 2, 1, 1, 2, 1, 0.5), m
+    ok("run metrics: scored, agree, disagree, unsure, the surveyor's Repairs and the agree rate")
+
+
+def test_zones() -> None:
+    print("zones")
+    names = ("Left Front Fender", "Right Rear Quarter Panel", "Left Front Tyre", "Left Headlamp", "Left Tail Lamp",
+             "Rear Bumper", "Bonnet", "Roof", "Parking Sensor", "Headlamp (side undetermined)", "Door (side undetermined)",
+             "Other / Not Listed")
+    assert [bi.part_zone(p) for p in names] == ["left", "right", "left", "front", "rear", "rear", "front", "other", "other",
+                                                "front", "other", "other"], [bi.part_zone(p) for p in names]
+    bi._app()  # second_look imports call_structured: after the benchmark has wrapped it
+    from app.ai import second_look
+    from app.reports.taxonomy import CANONICAL_PARTS
+
+    sides = {"left", "right"}
+    for part in CANONICAL_PARTS:
+        if part.endswith(bi.SIDE_UNDETERMINED) or part == bi.OTHER_PART:
+            continue
+        zones = {zone for zone, parts in second_look.ZONES.items() if part in parts}
+        ends = zones - sides
+        want = next(iter(zones & sides)) if zones & sides else next(iter(ends)) if len(ends) == 1 else "other"
+        assert bi.part_zone(part) == want, (part, zones, bi.part_zone(part))
+    ok("one zone a part: the flank's side even at a corner, else its end, else other -- as second_look.ZONES places them")
+
+    key = [{"part": "Rear Bumper"}, {"part": "Left Tail Lamp"}, {"part": "Right Tail Lamp"}, {"part": "Left Rear Quarter Panel"},
+           {"part": "Right Front Door"}, {"part": "Bonnet"}, {"part": "Rear Subframe", "hidden": True}]
+    drafted = ["Rear Bumper", "Tail Lamp (side undetermined)", "Left Front Door", "Front Bumper", "Other / Not Listed"]
+    parts = bi.score_parts(key, drafted)
+    z = bi.score_zones(key, parts)
+    assert list(z) == list(bi.ZONES)
+    assert z["rear"] == {"expected": 3, "found": 2, "wrong_side": 0, "missed": 1, "extra": 0, "missed_parts": ["Right Tail Lamp"]}, z
+    assert z["right"] == {"expected": 1, "found": 0, "wrong_side": 1, "missed": 0, "extra": 0, "missed_parts": []}, z
+    assert (z["left"]["missed_parts"], z["front"]["missed_parts"], z["other"]["missed_parts"]) == (
+        ["Left Rear Quarter Panel"], ["Bonnet"], ["Rear Subframe"]), z
+    assert (z["front"]["extra"], z["other"]["extra"]) == (1, 1), z
+    assert (sum(v["expected"] for v in z.values()), sum(v["found"] for v in z.values()),
+            sum(v["wrong_side"] for v in z.values()), sum(v["extra"] for v in z.values())) == (
+        len(key), parts["found"], len(parts["wrong_side"]), len(parts["extra"])), z
+    ok("found, wrong side and missed (named) by where the key part sits, extras by where they would; they add up to the score")
+    runs = []
+    for rep in (1, 2):
+        run = {"case": "CASE A", "rep": rep, "parts": parts, "drafted_parts": drafted, "vehicle": {}}
+        bi.score_details(run, {"parts": key})
+        runs.append(run)
+    m = bi.run_metrics(runs[0])
+    assert (m["zone_rear_found"], m["zone_rear_expected"], m["zone_rear_recall"], m["zone_front_extra"]) == (2, 3, 0.667, 1), m
+    t = bi.summarize(runs)["total"]
+    assert t["zone_rear_recall"]["mean"] == 0.667 and t["zone_left_recall"]["mean"] == 0.0, t
+    ok("run metrics per zone (found, expected, extra) and the recall from the summed counts")
+
+
+def test_prices() -> None:
+    print("Annex A prices against the surveyor's")
+    from app.parts import history
+    from eval_parts_kits import _matched, matched_pairs
+
+    lines = [priced("Tail gate assy", 1000, 800), priced("Tail gate lock striker", 100, 80),
+             priced("Tail lamp LH", 600, 480), priced("Tail lamp RH", 600, 480),
+             priced("Rear bumper fascia", 500, 400), priced("Rear bumper beam", 200, 160),
+             priced("Tail gate stopper", 400, 320, "Necessary")]  # no row for it: missed
+    rows = [{"part_name": "Tail gate assy", "workshop_est": 1050, "adjusted_cost": 840},  # 5% over
+            {"part_name": "Tail gate lock striker", "workshop_est": 110, "adjusted_cost": 88},  # 10% over: still within
+            {"part_name": "Tail lamp", "workshop_est": 1150, "adjusted_cost": 920},  # against the two lamps' 1200
+            {"part_name": "Rear bumper fascia", "workshop_est": 600, "adjusted_cost": 480},  # 20% over
+            {"part_name": "Rear bumper beam", "workshop_est": 0, "adjusted_cost": 0},  # unpriced
+            {"part_name": "Bonnet", "workshop_est": 300, "adjusted_cost": 240}]  # extra
+    real = {history.normalise_item(ln.item) for ln in lines}
+    keys = {history.normalise_item(r["part_name"]) for r in rows}
+    pairs = matched_pairs(real, keys)
+    assert set(pairs) == _matched(real, keys) and len(pairs) == 5 and pairs["tail lamp"] == "tail lamp", pairs
+    ok("matched_pairs pairs exactly the lines _matched covers")
+    p = bi.score_prices(lines, rows, pairs, history.normalise_item)
+    assert (p["price_total"], p["report_price_total"], p["price_diff"]) == (3210, 3400, -190), p
+    assert (p["adjusted_total"], p["report_adjusted_total"], p["adjusted_diff"]) == (2568, 2720, -152), p
+    assert (p["matched_priced"], p["within_10pct"], p["matched_abs_diff"]) == (4, 3, 410), p
+    ok("totals of the whole sheet (missed and extra lines in them), matched lines priced, within 10% (LH + RH one wording)")
+    run = {"parts": bi.score_parts([], []), "vehicle": {}, "annex_a": {
+        "real_lines": 6, "covered": 5, "rows": 6, "priced": 5, "unpriced": 1, "extra": 1, "canonical_rows": 0,
+        "perfect_covered": 6, **p, "perfect_within_10pct": 5, "perfect_price_diff": -50}}
+    m = bi.run_metrics(run)
+    assert (m["annex_price_diff"], m["annex_adjusted_diff"], m["annex_matched_priced"], m["annex_within_10"],
+            m["annex_price_abs_diff"], m["annex_perfect_within_10"], m["annex_within_10_rate"]) == (-190, -152, 4, 3, 410, 5, 0.6), m
+    assert m["annex_price_diff_rate"] == round(-190 / 3400, 3), m
+    stored = dict(run, annex_a={k: v for k, v in run["annex_a"].items() if k not in p})
+    assert "annex_price_diff" not in bi.run_metrics(stored) and bi.run_metrics(stored)["annex_covered"] == 5
+    ok("run metrics: price and adjusted difference, matched priced, within 10% (and its rate); absent in older files")
+
+
+def gate_doc(label: str, founds, wrongs, extras, *, expected: int = 10, errors=(), cases=("CASE A",)) -> dict:
+    """A result file of one run per repetition and case: found, wrong
+    sides and extras per run; 2 reading calls and a sorting one, 2000
+    prompt tokens, 20 seconds per case."""
+    runs = []
+    for rep, (found, wrong, extra) in enumerate(zip(founds, wrongs, extras), start=1):
+        for case in cases:
+            if rep in errors:
+                runs.append({"case": case, "rep": rep, "error": "RuntimeError: quota"})
+                continue
+            runs.append({
+                "case": case, "rep": rep, "read": 30, "sort_seconds": 1.5, "read_seconds": 18.5,
+                "drafted_parts": ["Rear Bumper"], "vehicle": {},
+                "parts": {"found": found, "expected": expected, "visible_found": found, "visible_expected": expected,
+                          "extra": ["Bonnet"] * extra, "wrong_side": [["Left Front Door", "Right Front Door"]] * wrong,
+                          "found_parts": {}, "missed": []},
+                "accounting": {"draft": {"calls": 2, "prompt_tokens": 2000}, "photo sort": {"calls": 1}},
+            })
+    return {"label": label, "git_ref": f"{label}@0000000", "ai_settings": {"read_tools": None}, "runs": runs, "summary": {}}
+
+
+def test_gate() -> None:
+    print("the gate")
+    folder = Path(_tmp, "gate")
+    folder.mkdir()
+
+    def saved(doc: dict) -> Path:
+        path = folder / f"{doc['label']}.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return path
+
+    base = gate.load(saved(gate_doc("base", [4, 5, 6], [3, 3, 3], [1, 1, 1])))
+    verdict = lambda doc: gate.judge(base, gate.load(saved(doc)))  # noqa: E731
+    better = verdict(gate_doc("better", [7, 8, 9], [3, 3, 3], [3, 3, 3]))
+    assert better["pass"] and [c["ok"] for c in better["checks"]] == [True, True, True], better
+    assert [c["noise"] for c in better["checks"]] == ["UP (better)", "same", "UP (worse)"], better
+    assert better["checks"][2]["says"] == "extras 3 <= 3 (baseline 1 + 2)", better["checks"][2]
+    ok("pass: found above the baseline, wrong sides at it, extras at the baseline + 2 (the limits are inclusive)")
+    same = verdict(gate_doc("same", [5, 5, 5], [3, 3, 3], [1, 1, 1]))
+    assert not same["pass"] and [c["ok"] for c in same["checks"]] == [False, True, True], same
+    assert same["checks"][0]["says"] == "parts found 5 not > 5 (baseline 5)" and same["checks"][0]["noise"] == "inside noise"
+    extras = verdict(gate_doc("extras", [7, 8, 9], [3, 3, 3], [4, 4, 4]))
+    assert not extras["pass"] and [c["ok"] for c in extras["checks"]] == [True, True, False], extras
+    ok("fail: found only equal to the baseline; extras above the baseline + 2")
+    low = gate.load(saved(gate_doc("low-sides", [4, 5, 6], [1, 1, 1], [1, 1, 1])))
+    sides = gate.judge(low, gate.load(saved(gate_doc("sides", [7, 8, 9], [3, 3, 2], [1, 1, 1]))))
+    assert not sides["pass"] and [c["ok"] for c in sides["checks"]] == [True, False, True], sides
+    assert sides["checks"][1]["limit"] == 2.5 and sides["checks"][1]["value"] == 2.667, sides
+    floor = gate.judge(low, gate.load(saved(gate_doc("floor", [7, 8, 9], [2, 3, 2], [1, 1, 1]))))
+    assert floor["pass"], floor  # 2.333 wrong sides: above the baseline's 1, under the floor of 2.5
+    ok("fail: wrong sides above the higher of the baseline and 2.5; under 2.5 passes though the baseline had fewer")
+    broken = gate.load(saved(gate_doc("broken", [7, 8, 9], [0, 0, 0], [0, 0, 0], errors=(1, 2, 3))))
+    v = gate.judge(base, broken)
+    assert not v["pass"] and all(not c["ok"] and c["value"] is None for c in v["checks"]), v
+    assert v["checks"][0]["says"].startswith("parts found: missing in the candidate"), v
+    assert gate.judge(broken, base)["checks"][1]["says"].startswith("wrong sides: missing in the baseline")
+    no_sides = gate.load(saved(gate_doc("no-sides", [7, 8, 9], [0, 0, 0], [1, 1, 1])))
+    del no_sides["summary"]["total"]["wrong_side"]  # a file from before the measure
+    v = gate.judge(base, no_sides)
+    assert not v["pass"] and [c["ok"] for c in v["checks"]] == [True, False, True], v
+    ok("fail: a measure missing in the candidate (no complete run, or an older file) or in the baseline")
+    other_key = verdict(gate_doc("other-key", [7, 8, 9], [3, 3, 3], [1, 1, 1], expected=9))
+    assert not other_key["pass"] and all(c["ok"] for c in other_key["checks"]), other_key
+    assert other_key["problems"] == ["scored on another key (9 key parts, the baseline 10): give --key"], other_key
+    ok("fail: scored on a key of another size")
+
+    two = gate.load(saved(gate_doc("two-cases", [7, 8, 9], [1, 1, 1], [1, 1, 1], cases=("CASE A", "CASE B"))))
+    assert (gate.per_case(two["summary"], "calls"), gate.per_case(two["summary"], "total_s"),
+            gate.per_case(two["summary"], "tok_in")) == (3, 20, 2000), two["summary"]["total"]
+    assert gate.per_case(gate.load(saved(gate_doc("none", [1], [0], [0], errors=(1,))))["summary"], "calls") is None
+    ok("calls, seconds and prompt tokens per case: TOTAL over the cases")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = gate.main([str(folder / "base.json"), str(folder / "better.json"), str(folder / "floor.json")])
+    text = out.getvalue()
+    assert code == 0, text
+    assert "strict parts score" in text and "calls/case" in text and "prompt tok/case" in text and "(baseline)" in text, text
+    assert "cand 1 better (better@0000000): PASS" in text and "ok   parts found 8 > 5 (baseline 5) -- UP (better)" in text, text
+    assert "3.00" in text and "2000" in text and "CASE A" not in text and "CASE B" not in text, text
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = gate.main([str(folder / "base.json"), str(folder / "better.json"), str(folder / "same.json")])
+    assert code == 1 and "cand 2 same (same@0000000): FAIL" in out.getvalue() and "FAIL parts found 5 not > 5" in out.getvalue()
+    ok("gate.py prints one table and a verdict per candidate, no case names; exit 0 when all pass, 1 when any fails")
+
+    # --key: files scored on different keys, scored again on one.
+    stored = gate_doc("old-key", [0, 0, 0], [0, 0, 0], [0, 0, 0], expected=3)
+    for run in stored["runs"]:
+        run["drafted_parts"] = ["Rear Bumper", "Left Tail Lamp", "Bonnet"]
+    key_path = folder / "key.json"
+    key_path.write_text(json.dumps({"cases": [{"name": "CASE A", "parts": KEY_PARTS}]}), encoding="utf-8")
+    key = {c["name"]: c for c in json.loads(key_path.read_text(encoding="utf-8"))["cases"]}
+    again = gate.load(saved(stored), key)["summary"]["total"]
+    assert (again["found"]["mean"], again["extra"]["mean"], again["expected"]["mean"]) == (2, 1, 8), again
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gate.main([str(folder / "old-key.json"), str(folder / "better.json"), "--key", str(key_path)])
+    assert "give --key" not in out.getvalue(), out.getvalue()
+    ok("--key scores every run's strict parts again on one key before the gate")
 
 
 # ---------------------------------------------------------------- rescore, scratch
@@ -927,6 +1222,62 @@ def test_rescore() -> None:
     ok("without --reports nothing is flagged; no --key, or --out over the stored file: refused")
 
 
+def test_rescore_chain() -> None:
+    print("--rescore: the found parts' detail, and Annex A built again on a scratch database")
+    A = bi._app()
+    A.init_db()
+    base = Path(_tmp, "rescore-chain")
+    reports = base / "reports"
+    make_reports(reports)
+    key = {"cases": [{"name": "TEST CASE A", "folder": "case_a", "vehicle": {"plate_number": "TEST-A"}, "parts": [
+        {"part": "Boot Lid", "surveyor": ["Tail gate assy"]}, {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},
+        {"part": "Left Tail Lamp", "surveyor": ["Tail lamp LH"]}]}]}
+    key_path = base / "key.json"
+    key_path.write_text(json.dumps(key), encoding="utf-8")
+    items = [{"part": "Boot Lid", "condition": "Dented/bent", "remarks": "Replace"},
+             {"part": "Right Tail Lamp", "side_inferred": True, "remarks": "Replace"},
+             {"part": "Boot Lid Lock", "remarks": "Repair"}, {"part": "Bonnet"}]
+    names = [i["part"] for i in items]
+    as_stored = {"real_lines": 99, "rows": 0, "priced": 0, "unpriced": 0, "covered": 0, "coverage": 0.0, "extra": 0,
+                 "canonical_rows": 0, "canonical_names": [], "perfect_rows": 0, "perfect_covered": 0, "perfect_coverage": 0.0}
+    doc = {"label": "old-chain", "runs": [{"case": "TEST CASE A", "rep": 1, "drafted_parts": names, "drafted_items": items,
+                                           "parts": bi.score_parts(key["cases"][0]["parts"], names), "vehicle": {},
+                                           "annex_a": as_stored}], "summary": {}}
+    source = base / "old.json"
+    source.write_text(json.dumps(doc), encoding="utf-8")
+    kept, rebuilt = base / "kept.json", base / "rebuilt.json"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert bi.main(["--rescore", str(source), "--key", str(key_path), "--reports", str(reports), "--out", str(kept)]) == 0
+    assert "Annex A kept as stored" in buf.getvalue(), buf.getvalue()
+    run = json.loads(kept.read_text(encoding="utf-8"))["runs"][0]
+    assert run["annex_a"] == as_stored
+    sd, zn, rr = run["part_sides"], run["part_zones"], run["part_remarks"]
+    assert (sd["sided_found"], sd["wrong"], sd["wrong_inferred"]) == (1, 1, 1), sd  # the tail lamp, placed on the wrong side
+    assert (zn["rear"]["found"], zn["rear"]["wrong_side"], zn["front"]["extra"]) == (2, 1, 1), zn
+    # The report: the tail gate and its striker are damaged -- Replace; the
+    # striker was drafted Repair.
+    assert [(d["part"], d["verdict"]) for d in rr["details"]] == [("Boot Lid", "agree"), ("Boot Lid Lock", "disagree")], rr
+    assert "sides of the found parts" not in buf.getvalue()  # the console stays the totals and the summary
+    ok("the found parts' detail scored again from the drafted items and the report; Annex A kept without a scratch database")
+
+    os.environ["BENCHMARK_SCRATCH"] = "1"
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert bi.main(["--rescore", str(source), "--key", str(key_path), "--reports", str(reports), "--out", str(rebuilt)]) == 0
+    finally:
+        os.environ.pop("BENCHMARK_SCRATCH", None)
+    new = json.loads(rebuilt.read_text(encoding="utf-8"))
+    an = new["runs"][0]["annex_a"]
+    assert "Annex A built again on the scratch database for 1 run(s)" in buf.getvalue(), buf.getvalue()
+    assert an["real_lines"] == 4 and an["rows"] == an["priced"] + an["unpriced"] and an["rows"] > 0, an
+    assert (an["report_price_total"], an["report_adjusted_total"]) == (2242, 1793.6), an
+    assert an["price_diff"] == round(an["price_total"] - 2242, 2) and 0 <= an["within_10pct"] <= an["covered"], an
+    assert new["rescored"]["annex_a_rebuilt"] == 1 and "annex_within_10" in new["summary"]["total"], new["rescored"]
+    ok("with a scratch database: prefill builds Annex A again from the drafted items, prices scored against the report")
+
+
 def test_scratch() -> None:
     print("--scratch and the paths from the environment")
     folder = Path(_tmp, "scratch run")
@@ -993,8 +1344,14 @@ def main() -> int:
     test_sort_cache()
     test_reports_and_history()
     test_annex_scoring()
+    test_sides()
+    test_remarks()
+    test_zones()
+    test_prices()
+    test_gate()
     test_benchmark_run()
     test_rescore()
+    test_rescore_chain()
     test_scratch()
     print("all benchmark scoring tests passed")
     return 0

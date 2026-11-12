@@ -45,6 +45,17 @@ scores a stored result file again with the current scoring, offline:
 
     python scripts/benchmark_intake.py --rescore out/a1-3x.json --key key.json [--reports DIR] [--out rescored.json]
 
+Each run also gives the detail of the parts found (contract 8): the side
+each was drafted on (part_sides: right, wrong, undetermined; inferred when
+the pipeline placed it from the sorter's areas), Replace or Repair against
+the surveyor's (part_remarks, with --reports), and found / missed by where
+each key part sits on the car (part_zones: front, rear, left, right,
+other). With --reports the Annex A score also sets its prices against the
+surveyor's (score_prices). --rescore scores the detail again, and with
+--reports and a scratch database (--scratch DIR) builds Annex A again,
+prices included. scripts/bench/gate.py passes or fails a candidate result
+file against a baseline by the owner's rule.
+
 On the server, scripts/bench/run_bench.sh runs this inside the live api
 container and scripts/bench/compare.py compares two result files; see
 scripts/bench/README.md, which also has the commands for a run on a PC
@@ -335,6 +346,182 @@ def score_fair(expected: list[dict], drafted_items: list[dict], parts: dict | No
     }
 
 
+# ---------------------------------------------------------------- sides, Replace / Repair, zones
+
+
+def score_sides(expected: list[dict], drafted_items: list[dict], parts: dict) -> dict:
+    """The side of every key part with one (Left / Right in its name) that
+    the strict score placed: right (drafted on its side), undetermined
+    (found by a "(side undetermined)" name) or wrong (its family drafted on
+    the other side: score_parts' wrong_side, not counted as found).
+    inferred: the drafted name's side came from the sorter's photo areas
+    (side_inferred, intake/pipeline.resolve_sides), not from the reader --
+    so a wrong side tells which of the two put it there. Key parts without
+    a side, and missed ones, are left out. parts: score_parts' result."""
+    items = [i for i in drafted_items if isinstance(i, dict) and i.get("part")]
+    # One item of a name read on its side is enough: the reader saw it there.
+    inferred = {i["part"] for i in items if i.get("side_inferred")} - {i["part"] for i in items if not i.get("side_inferred")}
+    wrong = {key: name for name, key in parts["wrong_side"]}
+    details = []
+    for entry in expected:
+        key = entry["part"]
+        if _side_and_place(key)[0] is None:
+            continue
+        name = parts["matched"].get(key)
+        if name is not None:
+            side = "undetermined" if name.endswith(SIDE_UNDETERMINED) else "right"
+        elif key in wrong:
+            name, side = wrong[key], "wrong"
+        else:
+            continue
+        details.append({"part": key, "drafted_as": name, "side": side, "inferred": name in inferred})
+
+    def count(side: str, inferred_only: bool = False) -> int:
+        return sum(1 for d in details if d["side"] == side and (d["inferred"] or not inferred_only))
+
+    return {
+        "sided_found": len(details),
+        "right": count("right"),
+        "wrong": count("wrong"),
+        "undetermined": count("undetermined"),
+        "right_inferred": count("right", True),
+        "wrong_inferred": count("wrong", True),
+        "details": details,
+    }
+
+
+# taxonomy.FIRM_REMARKS: what the drafted remarks field may say.
+REMARKS = ("Replace", "Repair")
+
+
+def _remarks(value) -> str | None:
+    text = str(value or "").strip().casefold()
+    return next((r for r in REMARKS if r.casefold() == text), None)
+
+
+def surveyor_remarks(part: dict, lines, normalise=None, side_of=None) -> str | None:
+    """Whether the surveyor renewed or repaired a key part: the key's own
+    "remarks" when it has one (key v2 has none), else the held-out
+    report's. The firm writes a part it repairs rather than renews with the
+    condition "Repair" (the line disallowed at 100%), while its Remarks
+    column says "Replace" on those lines too, or is blank on a whole report
+    -- so the condition of the line surveyor_condition picks decides:
+    Repair, else Replace. None: no damage line for the part."""
+    own = _remarks(part.get("remarks"))
+    if own:
+        return own
+    surveyor = surveyor_condition(part, lines or [], normalise, side_of)
+    if surveyor is None:
+        return None
+    return "Repair" if _squash(surveyor["condition"]) == "repair" else "Replace"
+
+
+def score_remarks(expected: list[dict], matched: dict[str, str], drafted_items: list[dict], lines,
+                  normalise=None, side_of=None) -> dict:
+    """Replace or Repair on every key part found (score_parts' matched):
+    the drafted item's remarks against the surveyor's (surveyor_remarks)
+    -- agree, disagree, or unsure (the reader left it null, as its prompt
+    asks when unsure). A part neither the key nor the report decides is
+    not scored. The surveyor repairs few parts (3 of key v2's 73), so
+    Repair is counted apart: always drafting Replace would agree on the
+    rest."""
+    by_part: dict[str, dict] = {}
+    for item in drafted_items:
+        by_part.setdefault(item.get("part"), item)
+    details = []
+    for entry in expected:
+        name = matched.get(entry["part"])
+        if name is None:
+            continue
+        want = surveyor_remarks(entry, lines, normalise, side_of)
+        if want is None:
+            continue
+        got = _remarks((by_part.get(name) or {}).get("remarks"))
+        verdict = "unsure" if got is None else "agree" if got == want else "disagree"
+        details.append({"part": entry["part"], "drafted_as": name, "surveyor": want, "drafted": got, "verdict": verdict})
+    repair = [d for d in details if d["surveyor"] == "Repair"]
+    return {
+        "scored": len(details),
+        "agree": sum(1 for d in details if d["verdict"] == "agree"),
+        "disagree": sum(1 for d in details if d["verdict"] == "disagree"),
+        "unsure": sum(1 for d in details if d["verdict"] == "unsure"),
+        "surveyor_repair": len(repair),
+        "repair_agree": sum(1 for d in repair if d["verdict"] == "agree"),
+        "details": details,
+    }
+
+
+# Where a part sits on the car, one zone each so the zones add up to the
+# whole key: a part on the car's flank (second_look.ZONES' left or right)
+# is that side's even at a corner -- a fender, a quarter panel and their
+# arches are photographed from the side that was hit; any other part is at
+# the end of the car it is on (a headlamp front, a tail lamp rear); a part
+# at both ends or neither (a parking sensor, the roof, the underbody, the
+# interior), and a flank part with no side, is "other". Repeated (not
+# imported) so scoring loads without the app; test_benchmark_scoring
+# checks it against second_look.ZONES.
+ZONES = ("front", "rear", "left", "right", "other")
+_FLANK = frozenset({
+    "Front Fender", "Front Door", "Rear Door", "Front Door Glass", "Rear Door Glass", "Front Window Regulator",
+    "Rear Window Regulator", "Wing Mirror", "Sill / Rocker Panel", "Rear Quarter Panel", "Front Wheel", "Rear Wheel",
+    "Front Tyre", "Rear Tyre", "Front Wheel Arch Liner", "Rear Wheel Arch Liner", "Front Wheel Arch Trim",
+    "Rear Wheel Arch Trim",
+})
+_FRONT_END = frozenset({
+    "Front Bumper", "Front Bumper Beam", "Front Grille", "Bonnet", "Headlamp", "Fog Lamp", "Front Number Plate",
+    "Front Windscreen", "Engine Undercover", "Radiator", "Air Conditioning Condenser", "Front Subframe",
+})
+_REAR_END = frozenset({
+    "Rear Bumper", "Rear Bumper Beam", "Rear Bumper Reflector", "Boot Lid", "Boot Lid Lock", "Boot Lid Hinge",
+    "Boot Lid Weatherstrip", "Boot Lid Inner Trim", "Boot Lid Lamp", "Tail Lamp", "Rear End Panel", "Rear Windscreen",
+    "Rear Number Plate", "Boot Floor Board", "Boot Side Trim", "Rear Floor Panel", "Reversing Camera", "Exhaust System",
+})
+
+
+def part_zone(part: str) -> str:
+    """front, rear, left, right or other: where the part sits (ZONES)."""
+    side, place = _side_and_place(part)
+    if side is not None and place in _FLANK:
+        return side.lower()
+    place = place.removesuffix(SIDE_UNDETERMINED)
+    return "front" if place in _FRONT_END else "rear" if place in _REAR_END else "other"
+
+
+def score_zones(expected: list[dict], parts: dict) -> dict:
+    """score_parts by where each key part sits (part_zone): per zone the
+    key parts expected, found, drafted on the wrong side and missed (named),
+    and the extras by where they would sit. A zone's found + wrong_side +
+    missed is its expected; the zones add up to score_parts' numbers."""
+    wrong = {key for _, key in parts["wrong_side"]}
+    out = {zone: {"expected": 0, "found": 0, "wrong_side": 0, "missed": 0, "extra": 0, "missed_parts": []}
+           for zone in ZONES}
+    for entry in expected:
+        key = entry["part"]
+        zone = out[part_zone(key)]
+        zone["expected"] += 1
+        if key in parts["found_parts"]:
+            zone["found"] += 1
+        elif key in wrong:
+            zone["wrong_side"] += 1
+        else:
+            zone["missed"] += 1
+            zone["missed_parts"].append(key)
+    for name in parts["extra"]:
+        out[part_zone(name)]["extra"] += 1
+    return out
+
+
+def score_details(run: dict, case: dict, lines=None, normalise=None, side_of=None) -> None:
+    """The detail of a scored run's found parts, from its strict parts and
+    drafted items: part_sides, part_zones and -- with the held-out report's
+    lines, or a key that says -- part_remarks. run_case and --rescore."""
+    items = run.get("drafted_items") or [{"part": p} for p in run.get("drafted_parts") or [] if p]
+    run["part_sides"] = score_sides(case["parts"], items, run["parts"])
+    run["part_zones"] = score_zones(case["parts"], run["parts"])
+    if lines is not None or any(_remarks(e.get("remarks")) for e in case["parts"]):
+        run["part_remarks"] = score_remarks(case["parts"], run["parts"]["matched"], items, lines, normalise, side_of)
+
+
 def sorter_quality(expected: list[dict], photos: list[dict]) -> dict:
     """How useful sorting's per-photo part labels were. photos: the run's
     sorted_photos ({"part", "read", ...} in case order).
@@ -542,7 +729,12 @@ RATIOS = (
     ("cond_firm_share", "cond_firm_only", "cond_drafted"),
     ("annex_coverage", "annex_covered", "annex_lines"),
     ("annex_perfect_coverage", "annex_perfect_covered", "annex_lines"),
-)
+    ("side_right_rate", "side_right", "sided_found"),
+    ("remarks_agree_rate", "remarks_agree", "remarks_scored"),
+    ("annex_within_10_rate", "annex_within_10", "annex_covered"),
+    # Signed: -0.8 is an Annex A priced at a fifth of the surveyor's.
+    ("annex_price_diff_rate", "annex_price_diff", "annex_report_price_total"),
+) + tuple((f"zone_{zone}_recall", f"zone_{zone}_found", f"zone_{zone}_expected") for zone in ZONES)
 _RATIO_NAMES = {name for name, _, _ in RATIOS}
 
 
@@ -607,6 +799,11 @@ def run_metrics(run: dict) -> dict:
             for field, suffix in _TOKEN_METRICS:
                 if stage.get(field) is not None:
                     m[f"{short}_{suffix}"] = stage[field]
+        # Every kind of call's prompt tokens together: what a reading mode
+        # costs, whatever its extra calls are named.
+        prompt = [s["prompt_tokens"] for s in accounting.values() if s.get("prompt_tokens") is not None]
+        if prompt:
+            m["tok_in"] = sum(prompt)
     cache = run.get("sort_cache")
     if cache:
         m["sort_cache_hits"] = cache.get("hits", 0)
@@ -628,6 +825,30 @@ def run_metrics(run: dict) -> dict:
         m.update(annex_lines=annex["real_lines"], annex_covered=annex["covered"], annex_rows=annex["rows"],
                  annex_priced=annex["priced"], annex_unpriced=annex["unpriced"], annex_extra=annex["extra"],
                  annex_canonical=annex["canonical_rows"], annex_perfect_covered=annex["perfect_covered"])
+        # The prices (score_prices): absent from files written before them.
+        m.update(annex_price_total=annex.get("price_total"), annex_report_price_total=annex.get("report_price_total"),
+                 annex_price_diff=annex.get("price_diff"), annex_adjusted_diff=annex.get("adjusted_diff"),
+                 annex_matched_priced=annex.get("matched_priced"), annex_within_10=annex.get("within_10pct"),
+                 annex_price_abs_diff=annex.get("matched_abs_diff"),
+                 annex_perfect_within_10=annex.get("perfect_within_10pct"))
+    sides = run.get("part_sides")
+    if sides:
+        m.update(sided_found=sides["sided_found"], side_right=sides["right"], side_undetermined_found=sides["undetermined"],
+                 side_right_inferred=sides["right_inferred"], side_wrong_inferred=sides["wrong_inferred"])
+    remarks = run.get("part_remarks")
+    if remarks:
+        m.update(remarks_scored=remarks["scored"], remarks_agree=remarks["agree"], remarks_disagree=remarks["disagree"],
+                 remarks_unsure=remarks["unsure"], remarks_repair=remarks["surveyor_repair"],
+                 remarks_repair_agree=remarks["repair_agree"])
+    zones = run.get("part_zones")
+    if zones:
+        for zone in ZONES:
+            z = zones.get(zone) or {}
+            m.update({f"zone_{zone}_expected": z.get("expected"), f"zone_{zone}_found": z.get("found"),
+                      f"zone_{zone}_extra": z.get("extra")})
+    if m.get("read_s") is not None:
+        # The case's wall-clock seconds: read_s leaves the second look out.
+        m["total_s"] = round(sum(m.get(k) or 0 for k in ("sort_s", "read_s", "look_s")), 1)
     m = {k: v for k, v in m.items() if v is not None}
     return with_ratios(m)
 
@@ -1129,6 +1350,54 @@ def load_history(items: list) -> None:
         db.close()
 
 
+def _money(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _within(ours: float, theirs: float, share: float = 0.10) -> bool:
+    # Half a cent of slack, so 110.00 against 100.00 is within 10% in floats.
+    return abs(ours - theirs) <= share * abs(theirs) + 0.005
+
+
+def score_prices(lines, rows: list[dict], pairs: dict[str, str], normalise) -> dict:
+    """An Annex A's prices against the held-out report's: the W/shop Est
+    and adjusted totals of the whole sheet (matched or not, so a missed or
+    an extra line shows in the difference), and for each matched line
+    (pairs: report wording -> row wording, both normalised, as
+    eval_parts_kits.matched_pairs pairs them) whether the row has a price
+    and whether it is within 10% of the surveyor's W/shop Est. That column,
+    not the adjusted cost, is what prefill writes (the workshop's usual
+    ask); the adjusted cost is the surveyor's decision on it. Lines or rows
+    that share a wording are added up: lamps written LH and RH are one."""
+    theirs: dict[str, float] = {}
+    for line in lines:
+        key = normalise(line.item)
+        theirs[key] = theirs.get(key, 0.0) + _money(getattr(line, "workshop_est", 0))
+    named = [r for r in rows if r.get("part_name")]
+    ours: dict[str, float] = {}
+    for row in named:
+        key = normalise(row["part_name"])
+        ours[key] = ours.get(key, 0.0) + _money(row.get("workshop_est"))
+    total = sum(_money(r.get("workshop_est")) for r in named)
+    report_total = sum(_money(getattr(line, "workshop_est", 0)) for line in lines)
+    adjusted = sum(_money(r.get("adjusted_cost")) for r in named)
+    report_adjusted = sum(_money(getattr(line, "adjusted_cost", 0)) for line in lines)
+    return {
+        "price_total": round(total, 2),
+        "report_price_total": round(report_total, 2),
+        "price_diff": round(total - report_total, 2),
+        "adjusted_total": round(adjusted, 2),
+        "report_adjusted_total": round(report_adjusted, 2),
+        "adjusted_diff": round(adjusted - report_adjusted, 2),
+        "matched_priced": sum(1 for s in pairs.values() if ours.get(s, 0.0) > 0),
+        "within_10pct": sum(1 for a, s in pairs.items() if _within(ours.get(s, 0.0), theirs.get(a, 0.0))),
+        "matched_abs_diff": round(sum(abs(ours.get(s, 0.0) - theirs.get(a, 0.0)) for a, s in pairs.items()), 2),
+    }
+
+
 def score_annex_a(held, drafted_items: list[dict]) -> dict:
     """Annex A as prefill builds it from the drafted damage list (make and
     model from the held-out report, history = the other reports, loaded by
@@ -1138,9 +1407,10 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
     match no real line; canonical rows = rows named exactly like a
     taxonomy part, which the firm never writes (target 0). The same with
     the report's own damaged parts as the damage list gives the ceiling
-    that history allows (perfect detection)."""
+    that history allows (perfect detection). The prices against the
+    surveyor's: score_prices, and its lines within 10% at that ceiling."""
     A = _app()
-    from eval_parts_kits import _matched, damaged_parts
+    from eval_parts_kits import damaged_parts, matched_pairs
 
     real = {A.normalise_item(line.item) for line in held.lines}
     canonical = set(A.CANONICAL_PARTS)
@@ -1161,8 +1431,11 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
         db.rollback()
         db.close()
     keys = {A.normalise_item(r["part_name"]) for r in rows if r.get("part_name")}
-    hit = _matched(real, keys)
-    perfect_hit = _matched(real, {A.normalise_item(r["part_name"]) for r in perfect if r.get("part_name")})
+    pairs = matched_pairs(real, keys)
+    hit = set(pairs)
+    perfect_pairs = matched_pairs(real, {A.normalise_item(r["part_name"]) for r in perfect if r.get("part_name")})
+    perfect_hit = set(perfect_pairs)
+    perfect_prices = score_prices(held.lines, perfect, perfect_pairs, A.normalise_item)
     priced = sum(1 for r in rows if float(r.get("workshop_est") or 0) > 0)
     named = [r["part_name"] for r in rows if r.get("part_name") in canonical]
     return {
@@ -1179,6 +1452,9 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
         "perfect_rows": len(perfect),
         "perfect_covered": len(perfect_hit),
         "perfect_coverage": _ratio(len(perfect_hit), len(real)),
+        **score_prices(held.lines, rows, pairs, A.normalise_item),
+        "perfect_price_diff": perfect_prices["price_diff"],
+        "perfect_within_10pct": perfect_prices["within_10pct"],
     }
 
 
@@ -1277,6 +1553,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["annex_a"] = score_annex_a(held[1], items)
         contradicted = contradicted_parts(drafted, held[1].lines, A.family_of, A.side_of, A.family_and_side)
     out["parts_fair"] = score_fair(case["parts"], out["drafted_items"], out["parts"], contradicted)
+    score_details(out, case, held[1].lines if held is not None else None, A.normalise_item, A.side_of)
     if not keep_photos:
         # A repeat run copies every case's photos again; on the live
         # server's small disk, a full disk stops the app taking uploads.
@@ -1314,6 +1591,7 @@ def detail_lines(r: dict) -> list[str]:
     f = r.get("parts_fair")
     if f:
         lines.append(fair_line(f))
+    lines += part_detail_lines(r)
     pc = r["parts_with_checklist"]
     lines.append(f"   + checklist {r['checklist']}")
     lines.append(f"   with checklist: parts {pc['found']}/{pc['expected']} (visible {pc['visible_found']}/{pc['visible_expected']}) "
@@ -1357,6 +1635,35 @@ def detail_lines(r: dict) -> list[str]:
         lines.append(f"   Annex A (leave-one-out): covered {a['covered']}/{a['real_lines']} ({_pct(a['coverage'])}); "
                      f"rows {a['rows']} (priced {a['priced']}, unpriced {a['unpriced']}, extra {a['extra']}, "
                      f"canonical names {a['canonical_rows']}); perfect detection {a['perfect_covered']}/{a['real_lines']}")
+        if "price_diff" in a:
+            lines.append(f"   Annex A prices: W/shop Est {a['price_total']:.0f} against the surveyor's "
+                         f"{a['report_price_total']:.0f} ({a['price_diff']:+.0f}), adjusted {a['adjusted_total']:.0f} "
+                         f"against {a['report_adjusted_total']:.0f} ({a['adjusted_diff']:+.0f}); matched lines priced "
+                         f"{a['matched_priced']}/{a['covered']}, within 10% {a['within_10pct']} "
+                         f"(perfect detection {a['perfect_within_10pct']})")
+    return lines
+
+
+def part_detail_lines(r: dict) -> list[str]:
+    """The sides, zones and Replace / Repair of a run's found parts."""
+    lines = []
+    sd = r.get("part_sides")
+    if sd:
+        lines.append(f"   sides of the found parts: right {sd['right']} (inferred {sd['right_inferred']}), wrong "
+                     f"{sd['wrong']} (inferred {sd['wrong_inferred']}), undetermined {sd['undetermined']}, "
+                     f"of {sd['sided_found']} with a side")
+    zn = r.get("part_zones")
+    if zn:
+        lines.append("   by zone, found/expected: " + "; ".join(
+            f"{zone} {z['found']}/{z['expected']}" + (f" wrong side {z['wrong_side']}" if z["wrong_side"] else "")
+            + (f" extra {z['extra']}" if z["extra"] else "")
+            for zone, z in zn.items() if z["expected"] or z["extra"]))
+    rr = r.get("part_remarks")
+    if rr:
+        off = [f"{d['part']} ({d['drafted']}, surveyor {d['surveyor']})" for d in rr["details"] if d["verdict"] == "disagree"]
+        lines.append(f"   Replace/Repair: agree {rr['agree']}, disagree {rr['disagree']}, unsure {rr['unsure']} of "
+                     f"{rr['scored']}; surveyor Repair {rr['surveyor_repair']}, drafted so {rr['repair_agree']}"
+                     + (f"; disagree {off}" if off else ""))
     return lines
 
 
@@ -1375,12 +1682,19 @@ def fair_line(f: dict) -> str:
             + ("" if contradicted is None else f"; contradicted (surveyor: Serviceable) {contradicted}"))
 
 
+def _num(value, digits: str = "g") -> str:
+    # Tokens and dollars in whole numbers: "1.052e+04" and "35730.1" say less.
+    return f"{value:.0f}" if abs(value) >= 1000 else f"{value:{digits}}"
+
+
 def _fmt(st: dict | None) -> str:
     if not st:
         return "-"
     if st["n"] == 1 or st["min"] == st["max"]:
-        return f"{st['mean']:g}"
-    return f"{st['mean']:.4g} [{st['min']:g}-{st['max']:g}]"
+        return _num(st["mean"])
+    # A price difference is below 0: "[-35730 to -34070]", not "[-35730--34070]".
+    sep = " to " if st["min"] < 0 else "-"
+    return f"{_num(st['mean'], '.4g')} [{_num(st['min'])}{sep}{_num(st['max'])}]"
 
 
 TABLES = (
@@ -1399,7 +1713,21 @@ TABLES = (
      ("contradicted", "contradicted")),
     (("read tok in", "read_tok_in"), ("read tok out", "read_tok_out"), ("read thinking", "read_tok_think"),
      ("read code runs", "read_code_runs"), ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
-     ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think")),
+     ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think"),
+     ("all tok in", "tok_in"), ("total s", "total_s")),
+    # The found parts in detail (score_details).
+    (("with a side", "sided_found"), ("side right", "side_right"), ("wrong side", "wrong_side"),
+     ("side undetermined", "side_undetermined_found"), ("right inferred", "side_right_inferred"),
+     ("wrong inferred", "side_wrong_inferred"), ("R/R scored", "remarks_scored"), ("R/R agree", "remarks_agree"),
+     ("R/R disagree", "remarks_disagree"), ("R/R unsure", "remarks_unsure"), ("surveyor Repair", "remarks_repair"),
+     ("Repair agree", "remarks_repair_agree")),
+    tuple(pair for zone in ZONES for pair in ((f"{zone} found", f"zone_{zone}_found"), (f"{zone} of", f"zone_{zone}_expected"))),
+    # The whole chain: the Annex A built from the drafted parts, its prices.
+    (("A lines", "annex_coverage"), ("A covered", "annex_covered"), ("A of", "annex_lines"), ("A extra", "annex_extra"),
+     ("A rows", "annex_rows"), ("A priced", "annex_priced"), ("price diff", "annex_price_diff"),
+     ("price diff share", "annex_price_diff_rate"), ("adjusted diff", "annex_adjusted_diff"), ("matched priced", "annex_matched_priced"),
+     ("within 10%", "annex_within_10"), ("matched |diff|", "annex_price_abs_diff"),
+     ("perfect within 10%", "annex_perfect_within_10")),
 )
 
 
@@ -1735,24 +2063,36 @@ def total_lines(runs: list[dict]) -> list[str]:
 def rescore(args: argparse.Namespace) -> int:
     """--rescore FILE: every run of a stored result file scored again, strict
     and fair, from its drafted items (drafted_parts in files older than
-    them), against --key and, with --reports, each case's held-out report
-    (contradicted parts). Offline: no Gemini call, no database. The other
-    numbers (conditions, Annex A, sorter) are kept as stored. Prints the
-    totals and the summary; --out writes the rescored file (never over FILE,
-    a measurement that can't be made again)."""
+    them), with the found parts' detail (score_details), against --key and,
+    with --reports, each case's held-out report (contradicted parts,
+    Replace / Repair). Offline: no Gemini call, no database. The other
+    numbers (conditions, Annex A, sorter) are kept as stored -- except
+    Annex A when --reports comes with a scratch database (--scratch DIR, or
+    BENCHMARK_SCRATCH=1 with DATABASE_URL pointing at one): prefill builds
+    it again from the drafted items, history = the other reports, and its
+    lines and prices are scored as a run scores them (prefill makes no
+    Gemini call either). Prints the totals and the summary; --out writes
+    the rescored file (never over FILE, a measurement that can't be made
+    again)."""
     if args.key is None:
         sys.exit("--rescore needs --key")
     if args.out is not None and args.out.resolve() == args.rescore.resolve():
         sys.exit("--rescore: --out must be another file; the stored result is kept as it is")
+    annex = args.reports is not None and (args.scratch is not None or os.environ.get("BENCHMARK_SCRATCH") == "1")
+    if annex and args.scratch is not None:
+        _use_scratch(args.scratch)  # before anything imports the app's database
     doc = json.loads(args.rescore.read_text(encoding="utf-8"))
     runs = doc.get("runs")
     if runs is None:
         runs = doc.get("results") or []  # before --repeat
     key = {c["name"]: c for c in json.loads(args.key.read_text(encoding="utf-8"))["cases"]}
     reports = ReportSet(args.reports) if args.reports else None
+    history = None
     if reports is not None:
-        from app.parts.history import family_and_side, family_of, side_of
-    changed, unknown = 0, set()
+        from app.parts import history
+    if annex:
+        _app().init_db()
+    changed, unknown, rebuilt = 0, set(), 0
     for run in runs:
         case = key.get(run.get("case"))
         if case is None:
@@ -1769,19 +2109,30 @@ def rescore(args: argparse.Namespace) -> int:
         contradicted = None
         held = reports.for_case(case) if reports is not None else None
         if held is not None:
-            contradicted = contradicted_parts(drafted, held[1].lines, family_of, side_of, family_and_side)
+            contradicted = contradicted_parts(drafted, held[1].lines, history.family_of, history.side_of,
+                                              history.family_and_side)
         run["parts_fair"] = score_fair(case["parts"], items, strict, contradicted)
+        score_details(run, case, held[1].lines if held is not None else None,
+                      history.normalise_item if history else None, history.side_of if history else None)
+        if annex and held is not None:
+            load_history(reports.others(held))
+            run["annex_a"] = score_annex_a(held[1], items)
+            rebuilt += 1
     doc["runs"] = runs
     doc.pop("results", None)
     doc["summary"] = summarize(runs)
     doc["rescored"] = {"from": str(args.rescore), "key": str(args.key), "reports": str(args.reports) if args.reports else None,
-                       "at": _now()}
+                       "annex_a_rebuilt": rebuilt, "at": _now()}
     print(f"rescored {len(runs)} run(s) of {doc.get('label') or args.rescore.stem}"
           + (f"; reports: {len(reports.items)} read" if reports is not None else "; no --reports: nothing flagged as contradicted"))
     if unknown:
         print(f"   not in the key, left as stored: {len(unknown)} case(s)")
     if changed:
         print(f"   the strict score differs from the stored one on {changed} run(s): the key changed since")
+    if annex:
+        print(f"   Annex A built again on the scratch database for {rebuilt} run(s), prices scored")
+    elif reports is not None:
+        print("   Annex A kept as stored (with --scratch DIR it is built again and its prices scored)")
     for line in total_lines(runs):
         print(line)
     print()

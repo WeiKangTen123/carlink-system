@@ -33,6 +33,12 @@ def _words(key: str) -> frozenset:
 def _matched(actual: set[str], suggested: set[str]) -> set[str]:
     """Annex A lines with a suggestion of the same meaning: same words, or
     one line's words (2+) all inside the other's. Each suggestion used once."""
+    return set(matched_pairs(actual, suggested))
+
+
+def matched_pairs(actual: set[str], suggested: set[str]) -> dict[str, str]:
+    """_matched with the suggestion each line was matched to: {line:
+    suggestion}. The benchmark compares the two prices of every pair."""
     pairs = []
     for a in actual:
         for s in suggested:
@@ -42,10 +48,11 @@ def _matched(actual: set[str], suggested: set[str]) -> set[str]:
             score = max(inter / len(wa | ws), (inter / small) * 0.9 if inter >= 2 or small == 1 else 0) if wa and ws else 0
             if score >= 0.6:
                 pairs.append((score, a, s))
-    hit, used = set(), set()
+    hit: dict[str, str] = {}
+    used = set()
     for _, a, s in sorted(pairs, reverse=True):
         if a not in hit and s not in used:
-            hit.add(a)
+            hit[a] = s
             used.add(s)
     return hit
 
