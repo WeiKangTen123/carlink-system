@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +36,7 @@ from app.ai import secretbox
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable
 from app.api import limits
+from app.api.ai_accuracy import router as ai_accuracy_router
 from app.api.ai_allowance import router as ai_allowance_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.ai_runs import router as ai_usage_router
@@ -77,7 +78,8 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
-from app.reports import owners
+from app.reports import accuracy, owners
+from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
@@ -176,6 +178,7 @@ app.include_router(telegram_link_router)
 app.include_router(inbox_router)
 app.include_router(ai_usage_router)
 app.include_router(ai_allowance_router)
+app.include_router(ai_accuracy_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -1416,6 +1419,39 @@ def _with_sign_off(report_data: dict, **updates) -> dict:
     return data
 
 
+def _after_sign_off(report_id: str, signature_date: str) -> None:
+    """What a sign-off records once its response is sent (a background
+    task): the AI accuracy record (app/reports/accuracy.py) and the case's
+    final Annex A in the parts history (app/parts/learn.py, when
+    settings.learn_from_signed_off). Neither may fail or slow a sign-off:
+    each runs on its own session, any error is logged and left -- the
+    backfill scripts (scripts/backfill_ai_accuracy.py, backfill_learned_
+    cases.py) redo what was missed. Both write only while the case is still
+    signed off by this sign-off (signature_date)."""
+    for what, step in (("AI accuracy", accuracy.record), ("parts history lines", learn.learn_case)):
+        db = SessionLocal()
+        try:
+            step(db, report_id, signature_date)
+        except Exception:
+            db.rollback()
+            logger.exception("Could not record the %s of case %s after its sign-off", what, report_id)
+        finally:
+            db.close()
+
+
+def _forget_sign_off(db, report_id: str) -> None:
+    """A case reopened or deleted is no longer a signed-off answer: its AI
+    accuracy row and its lines in the parts history go, in the caller's
+    transaction. Never fails the reopen or the delete: should it not get
+    done, history.past_lines still leaves out the lines of a case that
+    isn't signed off, and GET /admin/ai-accuracy its row."""
+    try:
+        accuracy.forget(db, report_id)
+        learn.forget(db, report_id)
+    except Exception:
+        logger.exception("Could not drop the sign-off records of case %s", report_id)
+
+
 @app.post("/reports/{report_id}/reopen")
 def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dict:
     """Explicitly unlocks a Signed Off report for editing -- a deliberate
@@ -1435,6 +1471,7 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
 
         r.status = "confirmed"
         r.data = _with_sign_off(r.data, status="Draft")
+        _forget_sign_off(db, r.id)
 
         r.pdf_path = _render_after_change(user, r, "reopened")
 
@@ -1446,7 +1483,9 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
 
 
 @app.post("/reports/{report_id}/sign-off")
-async def sign_off_report(report_id: str, request: Request, user: CurrentUser = Depends(editable_case)) -> dict:
+async def sign_off_report(
+    report_id: str, request: Request, background_tasks: BackgroundTasks, user: CurrentUser = Depends(editable_case)
+) -> dict:
     """Signs the case as the signed-in user, with their own profile
     (Account page). The name, qualifications, licence and firm used to come
     from the request -- defaulting to one fixed surveyor -- so anyone could
@@ -1573,6 +1612,8 @@ async def sign_off_report(report_id: str, request: Request, user: CurrentUser = 
         # open: cover 2, Annex A 1"), acknowledged or not.
         audit(db, user, "signed_off", r.id, detail=f"{user.email}; {open_summary(review)}")
         db.commit()
+        # After the response, never in its way (_after_sign_off).
+        background_tasks.add_task(_after_sign_off, r.id, signed_at)
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url, "sign_off": r.data.get("sign_off")}
     finally:
@@ -1728,6 +1769,7 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
         plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
         detail = "Unfinished intake" if r.status == "intake" else (plate or "")
         audit(db, user, "deleted", report_id, detail=" · ".join(p for p in (reference, detail) if p))
+        _forget_sign_off(db, r.id)
         db.delete(r)
         db.commit()
         return {"deleted": report_id}

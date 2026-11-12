@@ -260,6 +260,8 @@ DECISIONS = {
     ("GET", "/system/info"): ("admin", "round 3: last_backup from storage/.last_backup"),
     # Round 3 AI run log (app/api/ai_runs.py; tested in scripts/test_ai_runs.py).
     ("GET", "/ai-usage"): ("admin", "?days=7|30|90; every case's runs summed, never a key or public sender data"),
+    # Contract 8 L (app/api/ai_accuracy.py; tested in scripts/test_ai_accuracy.py).
+    ("GET", "/admin/ai-accuracy"): ("admin", "?since=YYYY-MM-DD; what surveyors kept of the AI's drafts, per case and month; never a plate"),
     ("GET", "/setup/llm-keys"): ("admin", ""),
     ("POST", "/setup/llm-keys"): ("admin", ""),
     ("DELETE", "/setup/llm-keys/{key_id}"): ("admin", ""),

@@ -30,7 +30,8 @@ from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
-from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
+from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, restricted, suggest
+from app.parts.learn import case_ref
 from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of, side_unconfirmed
 from app.reports.db import SessionLocal
 from app.reports.models import PastAnnexLine, PastLabourLine, Report, User
@@ -224,7 +225,10 @@ def annex_suggestions(report_id: str, user: CurrentUser = Depends(visible_case))
             if name and name != "Other / Not Listed" and name not in parts:
                 parts.append(name)
         if _sees_price_book(user):
-            result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
+            # Never the case's own lines: a signed-off case is in the history
+            # itself (contract 8 L, app/parts/learn.py).
+            with restricted(exclude_refs={case_ref(report_id)}):
+                result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
             result["hidden"] = False
         else:
             # Built from the price book, so nothing of it: as if no past

@@ -1549,6 +1549,118 @@ export async function getAiUsage(days: AiUsageDays = 30): Promise<AiUsage> {
   return res.json();
 }
 
+/** Contract 8 L: what surveyors kept of the AI's drafts before signing off
+ * (bot-service app/reports/accuracy.py). Damage parts are the AI's list
+ * against the signed-off one: kept (side_changed / side_set among them),
+ * removed by people, added by people (missed). */
+export type AiAccuracyDamage = {
+  ai_found: number;
+  final: number;
+  kept: number;
+  removed: number;
+  added: number;
+  side_changed: number;
+  side_set: number;
+  remarks_changed: number;
+  remarks_filled: number;
+  condition_changed: number;
+  condition_filled: number;
+};
+
+/** Annex A lines the machine writes from the AI's damage list against the
+ * signed-off lines. The compared counts are null on a case they couldn't be
+ * worked out for; the final_* counts are always there. */
+export type AiAccuracyAnnex = {
+  cases_compared?: number;
+  machine: number | null;
+  kept: number | null;
+  removed: number | null;
+  added: number | null;
+  added_machine: number | null;
+  added_suggested: number | null;
+  added_typed: number | null;
+  priced_kept: number | null;
+  price_changed: number | null;
+  price_filled: number | null;
+  final: number;
+  final_machine: number;
+  final_typed: number;
+};
+
+/** Cover and parties fields the AI can fill. */
+export type AiAccuracyFields = { ai_filled: number; kept: number; changed: number; emptied: number; filled: number; template: number };
+
+/** Shares 0..1, null when there is nothing to divide by (the API's
+ * app/api/ai_accuracy.py says what each is "of"). */
+export type AiAccuracyRates = {
+  parts_kept: number | null;
+  parts_removed: number | null;
+  parts_added: number | null;
+  wrong_side: number | null;
+  remarks_changed: number | null;
+  condition_changed: number | null;
+  lines_kept: number | null;
+  lines_removed: number | null;
+  lines_added: number | null;
+  price_changed: number | null;
+  fields_kept: number | null;
+  fields_changed: number | null;
+  fields_emptied: number | null;
+};
+
+export type AiAccuracyTop = Array<{ part: string; cases: number }>;
+
+export type AiAccuracySums = {
+  cases: number;
+  damage: AiAccuracyDamage;
+  annex_a: AiAccuracyAnnex;
+  fields: AiAccuracyFields;
+  rates: AiAccuracyRates;
+  most_missed?: AiAccuracyTop;
+  most_removed?: AiAccuracyTop;
+};
+
+export type AiAccuracyCase = {
+  report_id: string;
+  /** Our Ref as the case has it; null until one is issued. Never a plate. */
+  our_ref: string | null;
+  vehicle: string | null;
+  signed_off_at: string;
+  /** "2026-11", Singapore time. */
+  month: string;
+  /** The models whose reading drafted the case, from the run log. */
+  models: string[];
+  version: number;
+  metrics: {
+    damage?: Partial<AiAccuracyDamage> & { removed_parts?: string[]; added_parts?: string[] };
+    annex_a?: Partial<AiAccuracyAnnex>;
+    fields?: Partial<AiAccuracyFields>;
+  };
+};
+
+/** GET /admin/ai-accuracy (admins): every signed-off case's record, summed
+ * in all and per month (newest first). */
+export type AiAccuracy = {
+  since: string | null;
+  totals: AiAccuracySums;
+  months: Array<AiAccuracySums & { month: string }>;
+  cases: AiAccuracyCase[];
+  most_missed: AiAccuracyTop;
+  most_removed: AiAccuracyTop;
+  lines_added_most: Array<{ line: string; cases: number }>;
+  lines_removed_most: Array<{ line: string; cases: number }>;
+  /** Whether signed-off cases teach the parts history, and how many have. */
+  learning: { on: boolean; cases: number };
+};
+
+/** Admin only, like AI usage. since: a Singapore date, YYYY-MM-DD. */
+export async function getAiAccuracy(since?: string): Promise<AiAccuracy> {
+  const query = since ? `?since=${encodeURIComponent(since)}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/admin/ai-accuracy${query}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load AI accuracy");
+  return res.json();
+}
+
 export type HistoryEntry = {
   /** "assigned": the owner changed; detail is "Assigned to Name (@username)" or "Unassigned".
    * Public reports (release P6) add taken, returned_to_inbox, discarded,

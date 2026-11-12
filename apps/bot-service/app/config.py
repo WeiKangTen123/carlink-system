@@ -203,6 +203,18 @@ class Settings(BaseSettings):
     # who signs up.
     enable_api_docs: bool = False
 
+    # Contract 8 L: every signed-off case teaches the past-case parts lists.
+    # At sign-off its final Annex A joins the past-case history that Annex A
+    # suggestions and prices come from, as the past case "carlink:<report
+    # id>" (app/parts/learn.py) -- replaced on a re-sign-off, removed when
+    # the case is reopened or deleted -- so the kits improve without anyone
+    # importing spreadsheets. Off: nothing is learned, and the lines learned
+    # so far are left out of every suggestion (history.past_lines): the
+    # history is the imported spreadsheets alone, as before. No Gemini call
+    # either way; the AI accuracy record (app/reports/accuracy.py) is kept
+    # either way.
+    learn_from_signed_off: bool = True
+
     # A typo in one of the model settings stops the app at start-up rather
     # than being sent to Gemini (a 400 on every call) or silently ignored.
     @field_validator("gemini_thinking_level_read", "gemini_thinking_level_sort", "gemini_thinking_level_second_look")

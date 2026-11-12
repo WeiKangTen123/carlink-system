@@ -606,3 +606,28 @@ class PastLabourLine(Base):
     workshop_est: Mapped[float] = mapped_column(Float, default=0.0)
     adjusted_cost: Mapped[float] = mapped_column(Float, default=0.0)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class AiAccuracy(Base):
+    """How much of the AI's draft a signed-off case kept (contract 8 L,
+    2026-11-12): what the surveyor kept, removed, added or changed before
+    signing, worked out by app/reports/accuracy.py at sign-off. On a real
+    case there is no answer sheet; the signed-off report is the answer.
+    Read by GET /admin/ai-accuracy (Settings > AI accuracy).
+
+    One row per case: a re-sign-off replaces it, and it goes when the case
+    is reopened or deleted. models: the models that read the case, from
+    the run log (app/ai/runs.py). metrics: accuracy.compare()'s answer --
+    counts and canonical part names and Annex A wordings only, never a
+    value of the case (no plate, name or figure). version: which metric
+    definitions made it (accuracy.VERSION). New table, made by create_all:
+    nothing in db._ADDED_COLUMNS.
+    """
+    __tablename__ = "ai_accuracy"
+
+    report_id: Mapped[str] = mapped_column(String, primary_key=True)
+    signed_off_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    models: Mapped[list] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

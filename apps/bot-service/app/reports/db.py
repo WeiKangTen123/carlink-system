@@ -102,6 +102,9 @@ _ADDED_INDEXES = [
     # gives report_id's index=True and the table's started_at Index.
     "CREATE INDEX IF NOT EXISTS ix_ai_runs_report_id ON ai_runs (report_id)",
     "CREATE INDEX IF NOT EXISTS ix_ai_runs_started_at ON ai_runs (started_at)",
+    # The AI accuracy record (contract 8 L, models.AiAccuracy): the same name
+    # create_all gives signed_off_at's index=True.
+    "CREATE INDEX IF NOT EXISTS ix_ai_accuracy_signed_off_at ON ai_accuracy (signed_off_at)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

@@ -2,11 +2,11 @@ import { isAdminUser, settingsUser } from "./gate";
 import { SettingsTabs } from "./SettingsTabs";
 
 /** Settings: My settings (/settings, everyone), Users (/settings/users),
- * Company (/settings/company) and AI usage (/settings/ai-usage), the last
- * three for admins. Only admins get the tab bar; everyone else just has My
- * settings. Each admin page checks the role again itself before loading
- * anything (AdminOnly.tsx), since this layout isn't drawn again when moving
- * between tabs. */
+ * Company (/settings/company), AI usage (/settings/ai-usage) and AI
+ * accuracy (/settings/ai-accuracy), the last four for admins. Only admins
+ * get the tab bar; everyone else just has My settings. Each admin page
+ * checks the role again itself before loading anything (AdminOnly.tsx),
+ * since this layout isn't drawn again when moving between tabs. */
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const me = await settingsUser();
   const admin = isAdminUser(me);
