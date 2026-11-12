@@ -15,6 +15,7 @@ each.
         [--models a,b] [--triage-models c,d] [--second-look-models e,f]
         [--thinking-level-read L] [--thinking-level-sort L] [--thinking-level-second-look L]
         [--read-tools code_execution] [--resolution R]
+        [--read-tools-timeout S] [--zoom-hint] [--sort-damage-box]
 
 The model settings (app/config.py) are sent as the app would send them
 (structured.request_settings): the configured ones, or these flags in their
@@ -23,6 +24,14 @@ schema together with code execution is a preview feature on Gemini 3, and
 gemini-3.8-flash has no "minimal" thinking -- so smoke a setting before it
 goes live. --resolution gives every image of every schema's request that
 "resolution" (low, medium, high, ultra_high): whether each model takes it.
+
+Contract 8 D1: --read-tools takes the per-model form too
+("gemini-3.1-flash-lite=code_execution"); --read-tools-timeout and
+--zoom-hint send a try with tools as the reading would (its timeout, and
+extraction.ZOOM_NOTE after the prompt); --sort-damage-box smokes the sort
+schema and prompt with the damage box (triage.response_schema). A pass
+says how many code steps the model ran ("code runs"), and its answer is
+read as call_structured reads it (structured._parse_answer).
 
 Schemas: "draft" (ai/extraction._response_schema, the wizard's reading and
 the bot's drafting), "sort" (ai/triage._RESPONSE_SCHEMA) and "second_look"
@@ -51,7 +60,15 @@ from app.ai import extraction, second_look, triage  # noqa: E402
 from app.ai.client import get_client  # noqa: E402
 from app.ai.keys import company_keys, http_status, scrub  # noqa: E402
 from app.ai.rate_limit import acquire  # noqa: E402
-from app.ai.structured import DEADLINE_MARGIN, _create_within, image_part, request_settings  # noqa: E402
+from app.ai.structured import (  # noqa: E402
+    DEADLINE_MARGIN,
+    _create_within,
+    _parse_answer,
+    _tool_calls,
+    image_part,
+    request_settings,
+    tools_try,
+)
 from app.config import IMAGE_RESOLUTIONS, normal_read_tools, normal_thinking_levels, settings  # noqa: E402
 from app.reports.taxonomy import CANONICAL_PARTS  # noqa: E402
 
@@ -100,9 +117,10 @@ def _schemas(image: str) -> dict[str, dict]:
             "parse": extraction._parse_draft,
         },
         "sort": {
-            "system": triage.SYSTEM_PROMPT,
+            # As sent now: with the damage box under --sort-damage-box.
+            "system": triage.system_prompt(),
             "input": [{"type": "text", "text": "1 photos follow."}, {"type": "text", "text": "Photo P01:"}, image_part(image)],
-            "schema": triage._RESPONSE_SCHEMA,
+            "schema": triage.response_schema(),
             "parse": parse_sort,
         },
         "second_look": {
@@ -116,18 +134,21 @@ def _schemas(image: str) -> dict[str, dict]:
 
 def request(name: str, spec: dict, model: str, resolution: str | None = None) -> dict:
     """What call_structured would send for one schema on one model: its
-    model settings (request_settings) included, and --resolution on every
-    image."""
+    model settings (request_settings) included, a try with tools as
+    tools_try makes it, and --resolution on every image."""
     inputs = spec["input"]
     if resolution:
         inputs = [dict(part, resolution=resolution) if part.get("type") == "image" else part for part in inputs]
+    extra = request_settings(PURPOSES[name], model)
+    note = extraction.ZOOM_NOTE if name == "draft" and settings.gemini_read_zoom_hint else None
+    timeout, system = tools_try(extra, TIMEOUT, spec["system"], note)
     return dict(
         model=model,
-        system_instruction=spec["system"],
+        system_instruction=system,
         input=inputs,
         response_format={"type": "text", "mime_type": "application/json", "schema": spec["schema"]},
-        timeout=TIMEOUT,
-        **request_settings(PURPOSES[name], model),
+        timeout=timeout,
+        **extra,
     )
 
 
@@ -157,6 +178,12 @@ def main() -> int:
     parser.add_argument("--thinking-level-second-look", help="instead of settings.gemini_thinking_level_second_look")
     parser.add_argument("--read-tools", help="instead of settings.gemini_read_tools (code_execution)")
     parser.add_argument("--resolution", choices=IMAGE_RESOLUTIONS, help="every image sent with this resolution")
+    parser.add_argument("--read-tools-timeout", type=float, metavar="S",
+                        help="instead of settings.gemini_read_tools_timeout: seconds of a try with tools")
+    parser.add_argument("--zoom-hint", action="store_true",
+                        help="settings.gemini_read_zoom_hint on: ZOOM_NOTE after the prompt on a try with tools")
+    parser.add_argument("--sort-damage-box", action="store_true",
+                        help="settings.intake_sort_damage_box on: the sort schema and prompt with the damage box")
     args = parser.parse_args()
     if not args.live:
         print("Refusing to run without --live: every line is a real Gemini call on the company key.")
@@ -171,6 +198,15 @@ def main() -> int:
     except ValueError as exc:
         print(f"Bad setting: {exc}")
         return 2
+    if args.read_tools_timeout is not None:
+        if args.read_tools_timeout <= 0:
+            print("Bad setting: --read-tools-timeout must be more than 0")
+            return 2
+        settings.gemini_read_tools_timeout = args.read_tools_timeout
+    if args.zoom_hint:
+        settings.gemini_read_zoom_hint = True
+    if args.sort_damage_box:
+        settings.intake_sort_damage_box = True
 
     models = list(dict.fromkeys(
         (_chain(args.models) if args.models else extraction._model_chain())
@@ -185,7 +221,9 @@ def main() -> int:
     client = get_client(key)
     print(f"Key: {key.label}. Models: {', '.join(models)}.")
     tried = {f: getattr(settings, f) for f in ("gemini_thinking_level_read", "gemini_thinking_level_sort",
-                                                 "gemini_thinking_level_second_look", "gemini_read_tools")
+                                                 "gemini_thinking_level_second_look", "gemini_read_tools",
+                                                 "gemini_read_tools_timeout", "gemini_read_zoom_hint",
+                                                 "intake_sort_damage_box")
              if getattr(settings, f)}
     if tried or args.resolution:
         print(f"Model settings: {tried}" + (f"; every image at {args.resolution}" if args.resolution else ""))
@@ -197,16 +235,17 @@ def main() -> int:
             print(f"\n{name} schema: {len(json.dumps(spec['schema']))} characters")
             for model in models:
                 acquire(key.rate_limit_id)
+                sent = request(name, spec, model, args.resolution)
                 try:
                     interaction = _create_within(
-                        TIMEOUT + DEADLINE_MARGIN,
+                        sent["timeout"] + DEADLINE_MARGIN,
                         client.interactions.create,
-                        **request(name, spec, model, args.resolution),
+                        **sent,
                     )
-                    raw = (interaction.output_text or "").strip()
+                    runs = _tool_calls(interaction)
                     try:
-                        spec["parse"](raw)
-                        verdict, detail = "pass", ""
+                        _parse_answer(spec["parse"], interaction)
+                        verdict, detail = "pass" + (f" (code runs {runs})" if runs else ""), ""
                     except Exception as exc:
                         # Accepted the schema; the answer itself didn't parse.
                         # Not a 400, but worth seeing.

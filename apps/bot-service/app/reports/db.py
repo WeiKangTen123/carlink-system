@@ -73,6 +73,9 @@ _ADDED_COLUMNS = [
     ("past_annex_lines", "qty_text", "VARCHAR"),
     # What the AI last said about a case (models.Report.ai_draft, 2026-11-04).
     ("reports", "ai_draft", "JSON"),
+    # Where the sorter saw a photo's damage (models.IntakePhoto.damage_box,
+    # contract 8 D1).
+    ("intake_photos", "damage_box", "JSON"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

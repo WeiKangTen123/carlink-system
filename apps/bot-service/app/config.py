@@ -62,14 +62,33 @@ def image_resolutions(text: str | None) -> dict[str, str]:
     return out
 
 
+def read_tools_by_model(text: str | None) -> dict[str, list[str]]:
+    """gemini_read_tools as {model: [tool names]}, written like the
+    thinking levels: "code_execution" is {"*": ["code_execution"]}, every
+    model; "gemini-3.1-flash-lite=code_execution" names one model, and a
+    model not named gets no tools; a bare tool beside pairs goes to every
+    model not named. Per model because the tool is a trial not every model
+    of a chain takes well: on 12 Nov the drafting schema with code
+    execution passed on gemini-3.1-flash-lite and gemini-3-flash-preview,
+    while gemini-3.5-flash-lite was busy (503) and then ran out of time.
+    {} when unset. Raises ValueError on a tool this code doesn't know how
+    to send."""
+    out: dict[str, list[str]] = {}
+    for entry in _entries(text):
+        model, _, name = entry.rpartition("=")
+        model, name = model.strip() or ANY, name.strip().lower()
+        if name not in READ_TOOLS:
+            raise ValueError(f"read tool {name!r}: only {', '.join(READ_TOOLS)}")
+        tools = out.setdefault(model, [])
+        if name not in tools:
+            tools.append(name)
+    return out
+
+
 def read_tools(text: str | None) -> list[str]:
-    """gemini_read_tools as tool names. [] when unset. Raises ValueError on
-    a tool this code doesn't know how to send."""
-    names = list(dict.fromkeys(e.lower() for e in _entries(text)))
-    unknown = [n for n in names if n not in READ_TOOLS]
-    if unknown:
-        raise ValueError(f"read tools {unknown}: only {', '.join(READ_TOOLS)}")
-    return names
+    """Every tool gemini_read_tools names, for any model, once each. [] when
+    unset. Raises ValueError on a tool this code doesn't know how to send."""
+    return list(dict.fromkeys(name for names in read_tools_by_model(text).values() for name in names))
 
 
 class Settings(BaseSettings):
@@ -141,8 +160,40 @@ class Settings(BaseSettings):
     # Tools for the reading call only: "code_execution" lets the model crop
     # and zoom into a photo itself (Agentic Vision). With a JSON schema this
     # is a preview feature on Gemini 3 (Google's structured-output docs),
-    # untested on the lite models: a trial setting.
+    # untested on the lite models: a trial setting. For every model of the
+    # chain, or per model like the thinking levels
+    # ("gemini-3.1-flash-lite=code_execution", see read_tools_by_model).
     gemini_read_tools: str | None = None
+    # Contract 8 D1: the light reader looking closer -- Gemini zooming in
+    # itself (the code execution tool above) and our own close-ups of the
+    # damage the sorter boxed. All off by default, and off the requests are
+    # byte for byte today's. scripts/benchmark_intake.py measures each
+    # (--read-tools, --read-tools-timeout, --zoom-hint, --sort-damage-box,
+    # --read-crops) before it is turned on.
+    #
+    # Seconds per model try of a reading whose request carries tools: the
+    # model runs its code on Google's side before it answers, and a 32-photo
+    # reading can take longer than the caller's timeout (intake's 120 s).
+    # None: the caller's timeout, as before. A try that runs out still
+    # falls through to the next model.
+    gemini_read_tools_timeout: float | None = None
+    # extraction.ZOOM_NOTE added to the reading's system prompt -- crop and
+    # zoom into each damaged area before naming the part and its side -- on
+    # a try whose request carries tools, and only then. A setting of its
+    # own so the tool can be measured both asked and not asked to zoom.
+    gemini_read_zoom_hint: bool = False
+    # The sorter also boxes the damage on each photo showing it
+    # (IntakePhoto.damage_box, [ymin, xmin, ymax, xmax] on 0-1000). Changes
+    # the sort's prompt and schema, so sorts made with it are cached apart
+    # (triage.sort_prompt_version).
+    intake_sort_damage_box: bool = False
+    # Right after a photo the sorter boxed, the reading gets a close-up of
+    # that box cut from the largest copy of the photo we keep
+    # (intake/crops.py), as "Close-up of photo P07:" and the image. At most
+    # intake_read_crops_max per reading, damage close-ups first: each is one
+    # more image (~1120 tokens at Gemini 3's default resolution, high).
+    intake_read_crops: bool = False
+    intake_read_crops_max: int = 8
     # How many photos one intake reading sends (intake/pipeline.read_limit);
     # unset: pipeline.MAX_READ_PHOTOS (32).
     intake_max_read_photos: int | None = None
@@ -220,6 +271,24 @@ class Settings(BaseSettings):
     def _read_tools(cls, value):
         return normal_read_tools(value)
 
+    # Contract 8 D1: blank is unset; 0 or less is refused (a try that can
+    # never answer, or a negative number of close-ups).
+    @field_validator("gemini_read_tools_timeout", mode="before")
+    @classmethod
+    def _read_tools_timeout(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if float(value) <= 0:
+            raise ValueError("gemini_read_tools_timeout: seconds, more than 0")
+        return float(value)
+
+    @field_validator("intake_read_crops_max")
+    @classmethod
+    def _read_crops_max(cls, value):
+        if value < 0:
+            raise ValueError("intake_read_crops_max: 0 or more")
+        return value
+
 
 # Each model setting written the one way, None when blank (unset). Raise
 # ValueError as the parsers above do. The benchmark checks its flags with
@@ -240,7 +309,8 @@ def normal_image_resolutions(value) -> str | None:
 def normal_read_tools(value) -> str | None:
     if value is None:
         return None
-    return ",".join(read_tools(str(value))) or None
+    table = read_tools_by_model(str(value))
+    return ",".join(name if model == ANY else f"{model}={name}" for model, names in table.items() for name in names) or None
 
 
 settings = Settings()

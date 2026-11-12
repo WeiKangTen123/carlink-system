@@ -37,6 +37,15 @@ with --thinking-level-read / -sort / -second-look, --image-resolution and
 Gemini call's tokens (prompt, output, thinking) and seconds under each
 run's "ai_calls".
 
+Contract 8 D1 (the light reader looking closer): --read-tools takes the
+per-model form ("gemini-3.1-flash-lite=code_execution"), with
+--read-tools-timeout SECONDS for a try that carries the tool and
+--zoom-hint asking the model to zoom (extraction.ZOOM_NOTE); code runs and
+the tools' tokens are in the accounting. --sort-damage-box has the sorter
+box the damage (its own sort-cache folder), and --read-crops [N] sends a
+close-up of each box beside its photo, N at most (default the setting's 8);
+each call notes the close-ups it sent ("crops").
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -607,6 +616,10 @@ def run_metrics(run: dict) -> dict:
             for field, suffix in _TOKEN_METRICS:
                 if stage.get(field) is not None:
                     m[f"{short}_{suffix}"] = stage[field]
+    # The close-ups the reading sent (--read-crops).
+    crops = sum(c.get("crops", 0) for c in run.get("ai_calls") or [] if c.get("purpose") == "draft" and c.get("ok"))
+    if crops:
+        m["read_crops"] = crops
     cache = run.get("sort_cache")
     if cache:
         m["sort_cache_hits"] = cache.get("hits", 0)
@@ -697,11 +710,14 @@ def summarize(runs: list[dict]) -> dict:
 # What call_structured reports per try beside its outcome (its
 # _note_attempt), summed per call, kind of call and model when present --
 # never a made-up 0 when the SDK said nothing.
-TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls")
+TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls", "tool_tokens")
 # accounting's purposes -> the short name in run metrics ("read_tok_in").
 _SHORT_PURPOSES = {"draft": "read", "photo sort": "sort", "second look": "look"}
 _TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
-                  ("tool_calls", "code_runs"))
+                  ("tool_calls", "code_runs"), ("tool_tokens", "tok_tool"))
+# The label of a close-up's part (extraction._build_input, contract 8 D1):
+# how a call's close-ups are counted.
+CLOSE_UP_LABEL = "Close-up of photo "
 
 
 def _add_tokens(into: dict, source: dict) -> None:
@@ -831,6 +847,12 @@ def _images(input_parts) -> dict:
     return out
 
 
+def _close_ups(input_parts) -> int:
+    """The close-ups a call sends (--read-crops): one label part each."""
+    return sum(1 for part in input_parts or [] if isinstance(part, dict) and part.get("type") == "text"
+               and str(part.get("text") or "").startswith(CLOSE_UP_LABEL))
+
+
 def _counting(fn):
     """Wraps call_structured: each call's purpose and wall-clock time, and
     (through _note, on the same thread) its tries and tokens."""
@@ -841,6 +863,9 @@ def _counting(fn):
         images = _images(kwargs.get("input_parts"))
         if images:
             call["images"] = images
+        crops = _close_ups(kwargs.get("input_parts"))
+        if crops:
+            call["crops"] = crops
         _tls.purpose, _tls.last, _tls.call = purpose, None, call
         started = time.monotonic()
         try:
@@ -1003,8 +1028,13 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
     bumping a version must not be handed sorts made by the old prompt."""
     A = _app()
     chain = ",".join(m.strip() for m in A.settings.gemini_triage_model_chain.split(",") if m.strip())
-    version = str(getattr(A.triage, "SORT_PROMPT_VERSION", "v0"))
-    prompt = json.dumps([getattr(A.triage, "SYSTEM_PROMPT", ""), getattr(A.triage, "_RESPONSE_SCHEMA", None)],
+    # The sort as it is asked now (contract 8 D1: with or without the damage
+    # box); a branch from before those functions has only the constants.
+    version_of, prompt_of, schema_of = (getattr(A.triage, name, None)
+                                        for name in ("sort_prompt_version", "system_prompt", "response_schema"))
+    version = str(version_of() if callable(version_of) else getattr(A.triage, "SORT_PROMPT_VERSION", "v0"))
+    prompt = json.dumps([prompt_of() if callable(prompt_of) else getattr(A.triage, "SYSTEM_PROMPT", ""),
+                         schema_of() if callable(schema_of) else getattr(A.triage, "_RESPONSE_SCHEMA", None)],
                         sort_keys=True, default=str)
     fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
     # A sorting thinking level sorts differently: a folder of its own. Unset,
@@ -1023,11 +1053,19 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
     return folder, meta
 
 
+def _sort_fields() -> tuple:
+    """SORT_FIELDS, and the damage box while the sort makes one (contract 8
+    D1), whose sorts have a cache folder of their own (sort_cache_dir)."""
+    box_on = getattr(_app().triage, "damage_box_on", None)
+    return SORT_FIELDS + ("damage_box",) if callable(box_on) and box_on() else SORT_FIELDS
+
+
 def apply_sort_cache(report_id: str, cache: Path) -> int:
     """Gives every unsorted photo with a cached result that result, as
     sorting would have written it. Returns how many came from the cache;
     pipeline._sort then sends only the rest (none: no call at all)."""
     A = _app()
+    fields = _sort_fields()
     db = A.SessionLocal()
     hits = 0
     try:
@@ -1041,7 +1079,7 @@ def apply_sort_cache(report_id: str, cache: Path) -> int:
                 continue
             if not isinstance(entry, dict) or not entry.get("kind"):
                 continue
-            for field in SORT_FIELDS:
+            for field in fields:
                 setattr(photo, field, entry.get(field))
             photo.shows_damage = entry.get("shows_damage") is True
             hits += 1
@@ -1055,6 +1093,7 @@ def store_sort_cache(report_id: str, cache: Path) -> int:
     """Keeps every sorted photo's result that isn't cached yet. Returns how
     many were written."""
     A = _app()
+    fields = _sort_fields()
     db = A.SessionLocal()
     written = 0
     try:
@@ -1064,7 +1103,7 @@ def store_sort_cache(report_id: str, cache: Path) -> int:
             path = cache / f"{photo.sha256}.json"
             if path.exists():
                 continue
-            _write_json(path, {field: getattr(photo, field) for field in SORT_FIELDS})
+            _write_json(path, {field: getattr(photo, field) for field in fields})
             written += 1
     finally:
         db.close()
@@ -1235,9 +1274,12 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["read_kinds"] = dict(Counter(p.kind or "unsorted" for p in photos if p.id in read_ids))
         damage_photos = [p for p in photos if p.shows_damage]
         out["damage_photos_read"] = f"{len([p for p in damage_photos if p.id in read_ids])}/{len(damage_photos)}"
+        # The sorter's box too while it makes one (contract 8 D1).
+        boxes = "damage_box" in _sort_fields()
         out["sorted_photos"] = [
             {"n": i + 1, "file": p.original_name, "kind": p.kind, "area": p.area, "quality": p.quality,
-             "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note}
+             "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note,
+             **({"box": p.damage_box} if boxes else {})}
             for i, p in enumerate(photos)
         ]
         items = [item for item in data.get("damage_summary") or [] if isinstance(item, dict)]
@@ -1346,7 +1388,7 @@ def detail_lines(r: dict) -> list[str]:
         images = call.get("images")
         lines.append(f"   call {call['purpose']}: {call.get('model') or 'no answer'} in {call['seconds']}s, "
                      f"{call.get('attempts', 0)} tr{'y' if call.get('attempts') == 1 else 'ies'}{_tokens_text(call)}"
-                     + (f", images {images}" if images else ""))
+                     + (f", images {images}" if images else "") + (f", close-ups {call['crops']}" if call.get("crops") else ""))
     c = r.get("conditions")
     if c:
         lines.append(f"   conditions: {c['scored']} scored, exact {c['exact']}, first word {c['first_token']}, "
@@ -1362,7 +1404,8 @@ def detail_lines(r: dict) -> list[str]:
 
 def _tokens_text(source: dict) -> str:
     said = [f"{label} {source[field]}" for field, label in (
-        ("prompt_tokens", "in"), ("output_tokens", "out"), ("thought_tokens", "thinking"), ("tool_calls", "code runs"))
+        ("prompt_tokens", "in"), ("output_tokens", "out"), ("thought_tokens", "thinking"), ("tool_calls", "code runs"),
+        ("tool_tokens", "tool"))
         if source.get(field) is not None]
     return f", tokens {' '.join(said)}" if said else ""
 
@@ -1398,7 +1441,8 @@ TABLES = (
      ("fair extra", "fair_extra"), ("neighbour", "neighbour"), ("Other named", "other_named"),
      ("contradicted", "contradicted")),
     (("read tok in", "read_tok_in"), ("read tok out", "read_tok_out"), ("read thinking", "read_tok_think"),
-     ("read code runs", "read_code_runs"), ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
+     ("read code runs", "read_code_runs"), ("read tool tok", "read_tok_tool"), ("read crops", "read_crops"),
+     ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
      ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think")),
 )
 
@@ -1454,6 +1498,22 @@ MODEL_SETTINGS = (
     ("image_resolution", "gemini_image_resolution", "normal_image_resolutions"),
     ("read_tools", "gemini_read_tools", "normal_read_tools"),
 )
+# Contract 8 D1: flag -> the Settings field it turns on (model_settings).
+# In the result file's ai_settings only while on, so a run without them
+# reads exactly as before.
+D1_SETTINGS = (
+    ("read_tools_timeout", "gemini_read_tools_timeout"),
+    ("zoom_hint", "gemini_read_zoom_hint"),
+    ("sort_damage_box", "intake_sort_damage_box"),
+    ("read_crops", "intake_read_crops"),
+)
+
+
+def _seconds(text: str) -> float:
+    value = float(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be more than 0")
+    return value
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -1499,8 +1559,22 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "'damage=ultra_high,tyre=ultra_high,overview=medium' ('*' = every other kind; "
                          "low/medium/high/ultra_high; settings.gemini_image_resolution)")
     ap.add_argument("--read-tools", metavar="TOOLS",
-                    help="tools for the reading call: 'code_execution' (Agentic Vision trial; "
-                         "settings.gemini_read_tools)")
+                    help="tools for the reading call: 'code_execution' (Agentic Vision trial) for every model, or per "
+                         "model, e.g. 'gemini-3.1-flash-lite=code_execution,gemini-3-flash-preview=code_execution' "
+                         "(settings.gemini_read_tools)")
+    # Contract 8 D1: the light reader looking closer.
+    ap.add_argument("--read-tools-timeout", type=_seconds, metavar="SECONDS",
+                    help="seconds per model try of a reading that carries tools (the reading's own 120 when not "
+                         "given; settings.gemini_read_tools_timeout); needs --read-tools")
+    ap.add_argument("--zoom-hint", action="store_true",
+                    help="ask a model given the tool to crop and zoom into each damaged area "
+                         "(extraction.ZOOM_NOTE; settings.gemini_read_zoom_hint); needs --read-tools")
+    ap.add_argument("--sort-damage-box", action="store_true",
+                    help="the sorter boxes the damage on each photo showing some (settings.intake_sort_damage_box; "
+                         "its own sort-cache folder)")
+    ap.add_argument("--read-crops", nargs="?", type=_positive, const=0, metavar="N",
+                    help="a close-up of each box beside its photo, at most N per reading (default the setting's, 8; "
+                         "settings.intake_read_crops / intake_read_crops_max); needs --sort-damage-box")
     ap.add_argument("--no-side-from-sorter", action="store_true",
                     help="ablation: the reader's sides stand (settings.intake_side_from_sorter off)")
     ap.add_argument("--no-sorter-hints", action="store_true",
@@ -1568,12 +1642,37 @@ def model_settings(args: argparse.Namespace) -> dict:
     if kinds:
         sys.exit(f"--image-resolution: no such photo kind {sorted(kinds)}; the kinds are "
                  f"{', '.join(list(PHOTO_KINDS) + ['unsorted'])}, or '*'")
+    # Contract 8 D1. A flag that would change nothing stops the run: a
+    # benchmark spent measuring the baseline under another name.
+    tools = out.get("gemini_read_tools", config.settings.gemini_read_tools)
+    for flag in ("read_tools_timeout", "zoom_hint"):
+        if getattr(args, flag, None) not in (None, False) and not tools:
+            sys.exit(f"--{flag.replace('_', '-')}: goes only with tools on the reading; give --read-tools too")
+    if getattr(args, "read_tools_timeout", None) is not None:
+        out["gemini_read_tools_timeout"] = args.read_tools_timeout
+    if getattr(args, "zoom_hint", False):
+        out["gemini_read_zoom_hint"] = True
+    if getattr(args, "sort_damage_box", False):
+        out["intake_sort_damage_box"] = True
+    if getattr(args, "read_crops", None) is not None:
+        if not (out.get("intake_sort_damage_box") or config.settings.intake_sort_damage_box):
+            sys.exit("--read-crops: the close-ups are cut from the sorter's boxes; give --sort-damage-box too")
+        out["intake_read_crops"] = True
+        if args.read_crops:
+            out["intake_read_crops_max"] = args.read_crops
     return out
 
 
 def ai_settings(settings) -> dict:
-    """The model settings a run used, for the result file (None: unset)."""
-    return {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
+    """The model settings a run used, for the result file (None: unset), and
+    contract 8 D1's while on."""
+    out = {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
+    for _, field in D1_SETTINGS:
+        if getattr(settings, field, None):
+            out[field.removeprefix("gemini_")] = getattr(settings, field)
+    if getattr(settings, "intake_read_crops", False):
+        out["intake_read_crops_max"] = settings.intake_read_crops_max
+    return out
 
 
 # The reading rules --drop-rule can take out of the prompt, by the words

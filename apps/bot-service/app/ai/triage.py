@@ -8,8 +8,10 @@ request and would spend the strong models' small daily quota on photos of
 tyres, so a cheap pass labels every photo first and intake/pipeline.py picks
 the ones worth drafting from.
 """
+import copy
 import json
 import logging
+import math
 
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
@@ -153,11 +155,83 @@ _RESPONSE_SCHEMA = {
 }
 
 
+# Contract 8 D1: a box round the damage on each photo showing damage
+# (settings.intake_sort_damage_box), for the reading's close-ups
+# (intake/crops.py). Off, the sort asks exactly what it did before: the
+# prompt, schema and SORT_PROMPT_VERSION above are left as they are, and
+# these are only what the sort sends while the setting is on. Gemini's own
+# box form, as the reading's bbox_2d (reports/schema.DamageSummaryItem).
+# After part, so the box is drawn round the part just named.
+_BOX_RULE = (
+    "- damage_box: when shows_damage is true, the box round the visible damage (on the part named above, if any) "
+    "as [y_min, x_min, y_max, x_max], each 0-1000 with (0,0) the photo's top-left corner -- round the damage "
+    "itself, not the whole car. null when the photo shows no damage.\n"
+)
+_BOX_BEFORE = "- note: "
+# The same shape as bbox_2d's, which every model of the chains already
+# takes in the drafting schema.
+_BOX_FIELD = {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]}
+
+
+def damage_box_on() -> bool:
+    return bool(getattr(settings, "intake_sort_damage_box", False))
+
+
+def sort_prompt_version(box: bool | None = None) -> str:
+    """SORT_PROMPT_VERSION, marked while the sort also boxes the damage: the
+    benchmark's sort cache (--sort-cache) is kept per version, so sorts
+    made with and without boxes are never served for each other. box: as
+    the setting says when None."""
+    box = damage_box_on() if box is None else box
+    return SORT_PROMPT_VERSION + ("+damage-box" if box else "")
+
+
+def system_prompt(box: bool | None = None) -> str:
+    """The sort's system prompt: SYSTEM_PROMPT itself without boxes, else
+    with _BOX_RULE before the note's line."""
+    box = damage_box_on() if box is None else box
+    return SYSTEM_PROMPT.replace(_BOX_BEFORE, _BOX_RULE + _BOX_BEFORE, 1) if box else SYSTEM_PROMPT
+
+
+def response_schema(box: bool | None = None) -> dict:
+    """The sort's response schema: _RESPONSE_SCHEMA itself without boxes,
+    else a copy with damage_box after part, required like every field."""
+    box = damage_box_on() if box is None else box
+    if not box:
+        return _RESPONSE_SCHEMA
+    schema = copy.deepcopy(_RESPONSE_SCHEMA)
+    item = schema["properties"]["photos"]["items"]
+    fields: dict = {}
+    for name, field in item["properties"].items():
+        fields[name] = field
+        if name == "part":
+            fields["damage_box"] = copy.deepcopy(_BOX_FIELD)
+    item["properties"] = fields
+    item["required"] = list(fields)
+    return schema
+
+
+def clean_box(value) -> list[int] | None:
+    """A damage box as stored, [ymin, xmin, ymax, xmax] in whole numbers on
+    0-1000, or None for anything else: not four numbers, out of range,
+    inverted or with no area. A light model's box can be any of those, and
+    a crop cut from a wrong one only misleads the reader, so it is dropped
+    rather than mended."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value):
+        return None
+    ymin, xmin, ymax, xmax = (int(round(v)) for v in value)
+    if not (0 <= ymin < ymax <= 1000 and 0 <= xmin < xmax <= 1000):
+        return None
+    return [ymin, xmin, ymax, xmax]
+
+
 def _triage_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_triage_model_chain.split(",") if m.strip()]
 
 
-def _clean(item: dict) -> dict:
+def _clean(item: dict, box: bool = False) -> dict:
     """Constrains one entry to the known vocabulary -- same reasoning as
     extraction._sanitize_damage_summary: a stray value is safer nulled (or
     put in "other") than stored and shown. angle and batch_sides only steer
@@ -169,7 +243,11 @@ def _clean(item: dict) -> dict:
     which, and a wrong side is worse than none. Little is lost: the reader
     names sides on its own, and the photo still groups with its family's
     photos for reading (pipeline.select_for_reading). A sided part with no
-    side-undetermined name is dropped. The area is kept as it is."""
+    side-undetermined name is dropped. The area is kept as it is.
+
+    box: the sort asked for damage boxes (damage_box_on). The result then
+    carries "damage_box" too -- clean_box's, and only on a photo showing
+    damage; without it the result has exactly the keys it always had."""
     kind = item.get("kind")
     area = item.get("area")
     area = area if area in AREAS else None
@@ -180,7 +258,7 @@ def _clean(item: dict) -> dict:
         part = unsided_part(part)
     note = item.get("note")
     note = note.strip()[:120] if isinstance(note, str) and note.strip() else None
-    return {
+    out = {
         "kind": kind if kind in PHOTO_KINDS else "other",
         "area": area,
         "quality": quality if quality in QUALITIES else "good",
@@ -188,6 +266,9 @@ def _clean(item: dict) -> dict:
         "part": part,
         "note": note,
     }
+    if box:
+        out["damage_box"] = clean_box(item.get("damage_box")) if out["shows_damage"] else None
+    return out
 
 
 def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str, dict]:
@@ -205,6 +286,9 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
         parts.append(image_part(path))
 
     expected = {label for label, _ in photos}
+    # Read once: a setting changed mid-call (the benchmark) mustn't parse a
+    # boxed answer as an unboxed one.
+    box = damage_box_on()
 
     def parse(raw_output: str) -> dict[str, dict]:
         data = json.loads(raw_output)
@@ -214,16 +298,16 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
                 continue
             label = str(item.get("label") or "").strip().upper()
             if label in expected:
-                result[label] = _clean(item)
+                result[label] = _clean(item, box)
         if len(result) * 2 < len(expected):
             raise ValueError(f"model sorted only {len(result)} of {len(expected)} photos")
         return result
 
     return call_structured(
         purpose="photo sort",
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=system_prompt(box),
         input_parts=parts,
-        schema=_RESPONSE_SCHEMA,
+        schema=response_schema(box),
         parse=parse,
         models=_triage_chain(),
         actor=actor,
