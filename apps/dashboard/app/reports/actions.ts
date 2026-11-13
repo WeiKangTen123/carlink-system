@@ -24,6 +24,9 @@ import {
   saveAnnexC,
   getLabourSuggestions,
   saveCoverPage,
+  requestCatalogueLookup,
+  cancelCatalogueLookup,
+  decideCatalogueSuggestion,
   listReports,
   listUsers,
   setCaseOwner,
@@ -56,6 +59,7 @@ import {
   type CheckedResponse,
 } from "@/lib/api";
 import type { Review } from "@/lib/review";
+import type { CatalogueJob, CatalogueSuggestion } from "@/lib/catalogue";
 import { buildReportPayload } from "./form-payload";
 
 export async function deleteReportAction(formData: FormData) {
@@ -380,6 +384,57 @@ export async function getLabourSuggestionsAction(reportId: string): Promise<Labo
     // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to load the usual labour lines" };
+  }
+}
+
+// Parts-catalogue look-up (lib/catalogue.ts). GET is asked from the
+// browser (it is polled; see getCatalogue); the clicks come through here
+// like the rest of Annex A's. Nothing on the page changes with them, so no
+// revalidatePath. A refusal comes back with its code and status, for the
+// panel's own words (lookupRefusalText): 409 job_open, 400 no_make_model /
+// no_parts, 429 lookup_limit (with the API's words, in detail), 404 when
+// the look-up is off.
+
+export type CatalogueActionError = { error: string; code: string | null; status: number | null; detail: string | null };
+
+function catalogueError(err: unknown, fallback: string): CatalogueActionError {
+  // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
+  unstable_rethrow(err);
+  return {
+    error: err instanceof Error ? err.message : fallback,
+    code: errorCode(err),
+    status: err instanceof ApiError ? err.status : null,
+    detail: err instanceof ApiError ? err.detail : null,
+  };
+}
+
+/** [Look up in catalogue], or a car picked under "Change car". */
+export async function requestCatalogueLookupAction(reportId: string, vehicleKey: string | null): Promise<{ job: CatalogueJob } | CatalogueActionError> {
+  try {
+    return await requestCatalogueLookup(reportId, vehicleKey);
+  } catch (err) {
+    return catalogueError(err, "Couldn't start the catalogue look-up");
+  }
+}
+
+export async function cancelCatalogueLookupAction(reportId: string): Promise<{ job: CatalogueJob } | CatalogueActionError> {
+  try {
+    return await cancelCatalogueLookup(reportId);
+  } catch (err) {
+    return catalogueError(err, "Couldn't cancel the catalogue look-up");
+  }
+}
+
+/** [Hide] on a catalogue row ("reject"), or [Undo] ("undo"). */
+export async function decideCatalogueSuggestionAction(
+  reportId: string,
+  suggestionId: number,
+  action: "reject" | "undo"
+): Promise<{ suggestion: CatalogueSuggestion } | CatalogueActionError> {
+  try {
+    return await decideCatalogueSuggestion(reportId, suggestionId, action);
+  } catch (err) {
+    return catalogueError(err, action === "reject" ? "Couldn't hide the row" : "Couldn't bring the row back");
   }
 }
 

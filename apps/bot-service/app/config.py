@@ -202,6 +202,21 @@ class Settings(BaseSettings):
     # /docs, /redoc and /openapi.json. Off: they list every route to anyone
     # who signs up.
     enable_api_docs: bool = False
+    # The parts-catalogue look-up (app/api/catalogue.py): a case's damaged
+    # parts are looked up -- when a person asks, or by itself once the AI
+    # reading is saved -- and the catalogue worker (tools/parts_mcp, the
+    # "parts-worker" container) does the looking. Off unless BOTH are set:
+    # the flag, and the token the worker sends as "Authorization: Bearer
+    # <token>". While off, the case page doesn't show the feature and the
+    # worker's endpoints answer 404. Set in infra/.env, never in git.
+    catalogue_enabled: bool = False
+    catalogue_worker_token: str = ""
+    # The makes the worker can look up (comma-separated, any case: "Mini" is
+    # MINI). It reads the microfiches sites only (parts-honda.uk,
+    # bmw-spare-parts.com, mini-spare-parts.com). Another make is never
+    # looked up: GET .../catalogue says "make_not_covered", and nothing is
+    # queued after detection (catalogue.maybe_auto_lookup).
+    catalogue_makes: str = "Honda,BMW,MINI"
 
     # A typo in one of the model settings stops the app at start-up rather
     # than being sent to Gemini (a 400 on every call) or silently ignored.

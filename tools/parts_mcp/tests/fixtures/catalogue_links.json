@@ -1,0 +1,42 @@
+{
+  "about": "What the server takes in a worker result (apps/bot-service app/reports/schema.catalogue_link, app/parts/catalogue.py caps) and what the worker sends (parts_mcp/worker.py safe_url, apply_caps). Both sides test against this one file: tools/parts_mcp/tests/test_worker.py and apps/bot-service/scripts/test_catalogue_accept.py. pad_to: the url with letters a added up to that many characters. ok: the server accepts the link as sent; false: the worker nulls it, so a real result is never refused (422) for one link. hosts: the only sites a link may be on, with or without www. -- the worker's ALLOWED_HOSTS and the server's CATALOGUE_HOSTS are both exactly these.",
+  "hosts": ["bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"],
+  "caps": {
+    "parts": 40,
+    "diagrams": 3,
+    "rows": 250,
+    "candidates": 10,
+    "failures": 40,
+    "part_failures": 20,
+    "text": 400,
+    "year_from": 1900,
+    "year_to": 2100,
+    "ref_amount_max": 10000000
+  },
+  "links": [
+    {"url": "https://www.parts-honda.uk/honda-cars/HRV/30584", "ok": true},
+    {"url": "https://parts-honda.uk/x", "ok": true},
+    {"url": "https://bmw-spare-parts.com/a/b?c=d#e", "ok": true},
+    {"url": "https://www.mini-spare-parts.com/a", "ok": true},
+    {"url": "https://WWW.PARTS-HONDA.UK/x", "ok": true},
+    {"url": "https://www.parts-honda.uk:443/x", "ok": true},
+    {"url": "  https://www.parts-honda.uk/x  ", "ok": true},
+    {"url": "http://www.parts-honda.uk/x", "ok": false},
+    {"url": "https://www.parts-honda.uk:8443/x", "ok": false},
+    {"url": "https://www.parts-honda.uk:99999/x", "ok": false},
+    {"url": "https://www.parts-honda.uk:abc/x", "ok": false},
+    {"url": "https://user:pw@www.parts-honda.uk/x", "ok": false},
+    {"url": "https://user@www.parts-honda.uk/x", "ok": false},
+    {"url": "https://cdn.parts-honda.uk/img.png", "ok": false},
+    {"url": "https://www.www.parts-honda.uk/x", "ok": false},
+    {"url": "https://parts-honda.uk.evil.io/x", "ok": false},
+    {"url": "https://evil.example/x", "ok": false},
+    {"url": "https://www.example-parts.com/catalog/x", "ok": false},
+    {"url": "javascript:alert(1)", "ok": false},
+    {"url": "//www.parts-honda.uk/x", "ok": false},
+    {"url": "https://[::1/x", "ok": false},
+    {"url": "ftp://www.parts-honda.uk/x", "ok": false},
+    {"url": "https://www.parts-honda.uk/", "pad_to": 400, "ok": true},
+    {"url": "https://www.parts-honda.uk/", "pad_to": 401, "ok": false}
+  ]
+}

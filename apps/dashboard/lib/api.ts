@@ -4,6 +4,7 @@ import { cache } from "react";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { isPublicPage } from "./publicPages";
 import type { Review } from "./review";
+import { CATALOGUE_OFF, normalizeCatalogue, type CatalogueJob, type CatalogueRef, type CatalogueState, type CatalogueSuggestion } from "./catalogue";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -1050,7 +1051,7 @@ export type AnnexAPartItem = {
   prefilled?: boolean;
   /** Where the row came from: "detection" (one unpriced row per detected
    * part), "history" (wording and usual price from past cases), "lookup"
-   * (a price lookup, Phase 3), "typed" (a person wrote or priced it). Null
+   * (a line added from the parts catalogue, or a price lookup), "typed" (a person wrote or priced it). Null
    * on rows from before 2026-11-04; the API derives it on read. Shown as a
    * tag, never printed. The dashboard sends "typed" on any row a person
    * changed, so a later detection re-sync leaves it alone. */
@@ -1061,6 +1062,11 @@ export type AnnexAPartItem = {
   /** A kept row whose source_part is no longer detected: the machine never
    * deletes it, the surveyor keeps or removes it. */
   stale?: boolean;
+  /** The parts-catalogue row a person put on this line (lib/catalogue.ts,
+   * "Putting a row on an Annex A line"): its part number, site, diagram and
+   * the site's reference price, shown under the line. Never the estimate,
+   * never printed. Null (sent as null) takes it off on save. */
+  catalogue_ref?: CatalogueRef | null;
 };
 
 export type AnnexAOrigin = "detection" | "history" | "lookup" | "typed";
@@ -2292,6 +2298,59 @@ export async function saveCoverPage(reportId: string, body: CoverPageRequest): P
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await apiError(res, "Failed to save the cover page");
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Parts-catalogue look-up on Annex A (apps/bot-service catalogue routes;
+// types and words in lib/catalogue.ts). Off unless the server has
+// CATALOGUE_ENABLED: GET then answers {"enabled": false} and the dashboard
+// shows nothing of it. Reference only: nothing here touches Annex A.
+
+/** GET /reports/{id}/catalogue: the case's latest look-up and its rows.
+ * Asked straight from the browser (polled every 5 s while a job runs), not
+ * through a server action: see components/inbox/useInboxCount.ts. A 404 --
+ * an API from before the look-up -- is the same as off. */
+export async function getCatalogue(reportId: string): Promise<CatalogueState> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (res.status === 404) return CATALOGUE_OFF;
+  if (!res.ok) throw await apiError(res, "Failed to load the catalogue look-up");
+  return normalizeCatalogue(await res.json());
+}
+
+/** Queues a look-up (202). vehicle_key null: the API picks the catalogue
+ * car from the case's make, model and year; a key: the car the surveyor
+ * picked under "Change car". 409 job_open, 400 no_make_model / no_parts. */
+export async function requestCatalogueLookup(reportId: string, vehicleKey: string | null): Promise<{ job: CatalogueJob }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/lookup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vehicle_key: vehicleKey }),
+  });
+  if (!res.ok) throw await apiError(res, "Couldn't start the catalogue look-up");
+  return res.json();
+}
+
+/** Cancels the case's waiting or running look-up. */
+export async function cancelCatalogueLookup(reportId: string): Promise<{ job: CatalogueJob }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/cancel`, { method: "POST" });
+  if (!res.ok) throw await apiError(res, "Couldn't cancel the catalogue look-up");
+  return res.json();
+}
+
+/** Hide ("reject") a catalogue row, or take that back ("undo"). Accepting
+ * one is Phase 2, through PUT /annex-a. */
+export async function decideCatalogueSuggestion(
+  reportId: string,
+  suggestionId: number,
+  action: "reject" | "undo"
+): Promise<{ suggestion: CatalogueSuggestion }> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/suggestions/${suggestionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) throw await apiError(res, action === "reject" ? "Couldn't hide the row" : "Couldn't bring the row back");
   return res.json();
 }
 

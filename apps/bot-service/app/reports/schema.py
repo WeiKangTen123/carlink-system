@@ -13,12 +13,46 @@ lookup, etc.) in docs/proposal.md section F is still the target once claims
 volume justifies the added complexity; don't add more claim-specific fields
 here without checking whether that point has arrived.
 """
-from typing import Optional
+from typing import Annotated, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from app.reports.taxonomy import OTHER_PART, clean_part_name
+
+# The parts sites the catalogue worker reads (app/parts/catalogue.py,
+# plans/2026-11-12-parts-catalogue/CONTRACT.md): the three Microfiches
+# sites, so the only hosts a catalogue link may point to, with or without
+# "www." -- the same list as the worker's (tools/parts_mcp/worker.py
+# ALLOWED_HOSTS; both checked against tests/fixtures/catalogue_links.json).
+CATALOGUE_HOSTS = frozenset({"bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"})
+CATALOGUE_TEXT_MAX = 400
+
+
+def catalogue_link(value: str | None) -> str | None:
+    """A link from the parts catalogues: https on one of CATALOGUE_HOSTS,
+    no user name or password, the standard port -- anything else is
+    refused (ValueError), never stored, so no page ever shows it as a
+    link. The worker's result and an Annex A line's catalogue_ref are
+    checked by this one rule (the worker nulls what it would refuse:
+    tools/parts_mcp/worker.safe_url)."""
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        raise ValueError("links must be https:// on the parts sites") from None
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443):
+        raise ValueError("links must be https:// on the parts sites")
+    if host.removeprefix("www.") not in CATALOGUE_HOSTS:
+        raise ValueError(f"links must be on {', '.join(sorted(CATALOGUE_HOSTS))} (not {host or 'no host'})")
+    return value
+
+
+_CatalogueText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=CATALOGUE_TEXT_MAX)]
 
 
 class PersonInvolved(BaseModel):
@@ -219,6 +253,25 @@ class CoverPageInfo(BaseModel):
     point_of_impact_note: Optional[str] = None
 
 
+class CatalogueRef(BaseModel):
+    """The parts-catalogue row a surveyor put on an Annex A line (Phase 2 of
+    the catalogue look-up, app/parts/catalogue.py): which suggestion, its
+    part number and name, the diagram it is on and the site's own price.
+    A reference only -- it never sets the workshop's estimate and is never
+    printed. PUT /annex-a checks the suggestion is the case's own and
+    writes these facts from the stored row, whatever the client sent."""
+    suggestion_id: int = Field(ge=1)
+    source: Optional[_CatalogueText] = None
+    part_number: Optional[_CatalogueText] = None
+    name: Optional[_CatalogueText] = None
+    diagram_name: Optional[_CatalogueText] = None
+    diagram_url: Annotated[Optional[_CatalogueText], AfterValidator(catalogue_link)] = None
+    ref_amount: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    ref_currency: Optional[_CatalogueText] = None
+    ref_tax_note: Optional[_CatalogueText] = None
+    fetched_at: Optional[_CatalogueText] = None
+
+
 class AnnexAPartItem(BaseModel):
     item_no: str = Field(default="1.0", description="Item number e.g. '1.0'")
     part_name: str = Field(description="Part description e.g. 'Rear bumper fascia'")
@@ -265,6 +318,10 @@ class AnnexAPartItem(BaseModel):
     # them while the row isn't a person's (origin "typed") -- price
     # untouched (prefill.sync_annex_a). False on rows from before 2026-11-08.
     main: bool = False
+    # The parts-catalogue row a person attached to this line (CatalogueRef):
+    # a reference shown under the line, never its estimate, never printed.
+    # A row carrying one is a person's: a re-sync never rebuilds it.
+    catalogue_ref: Optional[CatalogueRef] = None
 
 
 class AnnexAInfo(BaseModel):

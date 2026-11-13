@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.auth.core import SESSION_COOKIE, resolve_session
+from app.parts.catalogue import worker_refusal
 from app.reports.db import SessionLocal
 
 PUBLIC_PATHS = {
@@ -33,6 +34,12 @@ PUBLIC_PATHS = {
     # the data-protection contact and the public line, nothing else.
     "/privacy/contact",
 }
+# The PC parts-catalogue worker's endpoints (app/api/catalogue.py). The
+# worker is a script, not a browser: no session cookie, and no Origin to
+# check. It sends "Authorization: Bearer <CATALOGUE_WORKER_TOKEN>" instead,
+# checked here before anything else (and again by the routes): 404 while
+# the feature is off, 401 for a wrong token. Only this prefix.
+WORKER_PREFIX = "/catalogue-worker/"
 # What a user who must change their password can still do.
 PASSWORD_CHANGE_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/password")}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -72,6 +79,14 @@ class AuthMiddleware:
             return
 
         request = Request(scope)
+        if scope["path"].startswith(WORKER_PREFIX):
+            refused = worker_refusal(request.headers.get("authorization"))
+            if refused:
+                status, body = refused
+                await JSONResponse(body, status_code=status)(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
         # Before the public-path exit too: another site must not be able to
         # sign a visitor in as someone else either.
         if scope["method"] not in _SAFE_METHODS and not origin_allowed(request):

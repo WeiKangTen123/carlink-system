@@ -40,6 +40,7 @@ from app.api.ai_allowance import router as ai_allowance_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.ai_runs import router as ai_usage_router
 from app.api.annexes import router as annexes_router
+from app.api.catalogue import router as catalogue_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import price_book_for_case, router as parts_router
@@ -78,6 +79,7 @@ from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
 from app.reports import owners
+from app.parts import catalogue
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
@@ -176,6 +178,7 @@ app.include_router(telegram_link_router)
 app.include_router(inbox_router)
 app.include_router(ai_usage_router)
 app.include_router(ai_allowance_router)
+app.include_router(catalogue_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -952,9 +955,13 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
     data["sign_off"] = blank_sign_off()
     data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), None)
     limits.require_disk_space()
+    report_id = gen_id()
     db = SessionLocal()
     try:
         limits.check_new_cases_today(db, user)
+        # A new case has no catalogue look-up, so no line can carry one of
+        # its rows: any catalogue_ref sent is taken off (never refused).
+        data = catalogue.without_bad_refs(db, report_id, data)
     finally:
         db.close()
 
@@ -962,7 +969,6 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
     # is held while Chromium renders (it used to flush the row first and
     # hold the lock for the whole render, failing other writers -- the
     # Telegram bot included -- with "database is locked").
-    report_id = gen_id()
     photo_paths = [
         save_photo(report_id, temp_path, i)
         for i, temp_path in enumerate(temp_paths)
@@ -1067,6 +1073,18 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
         data = _merge_into(dict(r.data or {}), sent)
         data["sign_off"] = (r.data or {}).get("sign_off") or blank_sign_off()
+        if "annex_a" in sent:
+            # Annex A sent whole (the dashboard saves it with PUT .../annex-a,
+            # but this route takes it too): a line's parts-catalogue row must
+            # be the case's own, as there -- refused now, before any photo is
+            # kept or the PDF rendered; checked again under the write lock
+            # below, where the rows' statuses follow.
+            items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)]
+            try:
+                catalogue.checked_refs(db, r.id, items)
+            except catalogue.BadCatalogueRef:
+                raise ApiError(422, "A catalogue part on Annex A is no longer on this case.", "catalogue_ref")
+            data["annex_a"] = {**(data.get("annex_a") or {}), "items": items}
         r.data = data
 
         # New photos from this edit get appended after whatever's already
@@ -1096,6 +1114,19 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         r.pdf_path = _render_after_change(user, r, "updated")
 
         audit(db, user, "edited", r.id)
+        if "annex_a" in sent:
+            # The render ran without the write lock; flushing takes it (to
+            # the commit), so the refs are checked again where no worker
+            # result (catalogue.store_result) can land before the commit.
+            # One that landed meanwhile and replaced a row only this save
+            # put on a line takes that ref off the line rather than failing
+            # the save (the photos are kept by now). Copies: the stored
+            # data is compared with these to see what changed.
+            db.flush()
+            items = [dict(it) for it in items]
+            catalogue.checked_refs(db, r.id, items, drop_invalid=True)
+            r.data = {**r.data, "annex_a": {**(r.data.get("annex_a") or {}), "items": items}}
+            catalogue.sync_accepted(db, r.id, items, user)
         db.commit()
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url}
@@ -1728,6 +1759,8 @@ def delete_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
         plate = ((r.data or {}).get("vehicle_info") or {}).get("plate_number")
         detail = "Unfinished intake" if r.status == "intake" else (plate or "")
         audit(db, user, "deleted", report_id, detail=" · ".join(p for p in (reference, detail) if p))
+        # Its parts-catalogue look-ups and suggestions go with it.
+        catalogue.forget_case(db, r.id)
         db.delete(r)
         db.commit()
         return {"deleted": report_id}

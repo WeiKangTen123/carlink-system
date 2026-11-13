@@ -375,7 +375,7 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
       )}
       {opened.annexA && (
         <div style={tabPanelStyle("annexA")}>
-          <AnnexATab report={report} store={store} canEdit={perms.edit} isSignedOff={isSignedOff} />
+          <AnnexATab report={report} store={store} canEdit={perms.edit} isSignedOff={isSignedOff} onOpenCover={() => showTab("cover")} />
         </div>
       )}
       {opened.annexB && (

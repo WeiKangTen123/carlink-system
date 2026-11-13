@@ -8,7 +8,10 @@
     PUT    /reports/{id}/annex-a               save the surveyor's Annex A
 
 Suggestions are never written into a case by themselves: the surveyor picks
-lines, and the dashboard saves the table with PUT /annex-a.
+lines, and the dashboard saves the table with PUT /annex-a. That save also
+settles the parts-catalogue rows put on lines (catalogue_ref): checked to
+be the case's own, and marked accepted -- or suggested again once no line
+carries them (parts/catalogue.sync_accepted).
 """
 import json
 import logging
@@ -20,7 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, update
 
 from app.ai import keys as ai_keys
 from app.ai import runs
@@ -30,6 +33,7 @@ from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
+from app.parts import catalogue
 from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, suggest
 from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of, side_unconfirmed
 from app.reports.db import SessionLocal
@@ -358,9 +362,29 @@ def _qty_fields(row: dict) -> None:
     row["qty"] = float(row.get("qty") or 1.0)
 
 
-def _row_facts(row: dict) -> tuple:
+def _catalogue_number(row: dict) -> bool:
+    """The row's part number is none, or the one its catalogue row brought
+    (catalogue_ref.part_number)."""
+    number = (row.get("oem_part_number") or "").strip()
+    return not number or number == ((row.get("catalogue_ref") or {}).get("part_number") or "").strip()
+
+
+def _attached_number(row: dict, before: dict) -> bool:
+    """The part number changed only because a catalogue row was put on the
+    line, unlinked or swapped: putting one on a line fills an empty part
+    number and unlinking takes it off again (dashboard lib/catalogue.ts
+    attachToLine / detachFromLine). That is not the person changing the
+    line -- its origin, and with it the "from past cases" tag and its
+    review state, stays."""
+    return _catalogue_number(row) and _catalogue_number(before)
+
+
+def _row_facts(row: dict, other: dict | None = None) -> tuple:
     """What a person can change on a row, normalised for comparing a saved
-    row with its stored one."""
+    row with its stored one (`other`: the row it is compared with -- a part
+    number only a catalogue row brought or took counts as unchanged,
+    _attached_number)."""
+    number = None if other is not None and _attached_number(row, other) else (row.get("oem_part_number") or None)
     return (
         str(row.get("condition") or "").strip(),
         str(row.get("action") or "").strip(),
@@ -369,7 +393,7 @@ def _row_facts(row: dict) -> tuple:
         round(float(row.get("workshop_est") or 0), 2),
         round(float(row.get("discount_pct") or 0), 4),
         bool(row.get("is_net_item")),
-        (row.get("oem_part_number") or None),
+        number,
     )
 
 
@@ -403,7 +427,7 @@ def _origin_after_edit(row: dict, before: dict | None, damaged_parts: set[str]) 
         # price is itself a change to the row; the client sends "typed" once a
         # person overtypes that price.
         return "lookup"
-    if _row_facts(row) != _row_facts(before):
+    if _row_facts(row, before) != _row_facts(before, row):
         return "typed"
     client = row.get("origin") if row.get("origin") in ORIGINS else None
     return client if client and ORIGIN_RANK[client] >= ORIGIN_RANK[stored] else stored
@@ -417,9 +441,26 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
     not x qty (synthesize_annexes.adjusted_cost). A row whose name or
     estimate changed becomes origin "typed" (the dashboard sends it so too),
     so no later sync rebuilds it; source_part carries over from the stored
-    row of the same name when the client leaves it out."""
+    row of the same name when the client leaves it out.
+
+    A row's catalogue_ref (a parts-catalogue row the surveyor put on it):
+    422 catalogue_ref unless the suggestion is this case's; its facts are
+    the stored row's, whatever was sent; it never touches the estimate.
+    After the save every suggestion a line carries is accepted and one no
+    line carries any more is suggested again (catalogue.sync_accepted)."""
     db = SessionLocal()
     try:
+        # A write first -- the PDF marked out of date, as the save does
+        # anyway -- so SQLite's write lock is held from here to the commit
+        # and the refs checked below can't change before it. A worker's
+        # result (catalogue.store_result, replacing the case's "suggested"
+        # rows) lands wholly before -- the check sees it -- or waits for the
+        # commit, by which time the rows on lines are accepted, which it
+        # keeps. (Read first, a result in between left a line pointing at a
+        # deleted row, or failed the save with StaleDataError.) Nothing is
+        # read before it in this session (as reports/db._once).
+        db.execute(update(Report).where(Report.id == report_id).values(pdf_path=None)
+                   .execution_options(synchronize_session=False))
         r = _report(db, report_id)
         if _signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
@@ -427,16 +468,36 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
         for it in ((r.data or {}).get("annex_a") or {}).get("items") or []:
             stored.setdefault(line_key(it.get("part_name") or ""), it)
         damaged_parts = {str(it.get("part") or "").strip() for it in ((r.data or {}).get("damage_summary") or [])}
-        items = []
+        items, sent = [], []
         for item in body.items:
             row = item.model_dump()
             row["part_name"] = row["part_name"].strip()
             if not row["part_name"]:
                 continue
             row["item_no"] = f"{len(items) + 1}.0"
+            before = stored.get(line_key(row["part_name"]))
+            # A client that doesn't know catalogue_ref (a page from before
+            # it) mustn't unlink a line's catalogue part by leaving it out;
+            # an explicit null is Unlink and sticks.
+            if "catalogue_ref" not in item.model_fields_set and before is not None:
+                row["catalogue_ref"] = before.get("catalogue_ref")
+            items.append(row)
+            sent.append((item, before))
+        # Before anything is worked out from them: the refs as stored.
+        try:
+            catalogue.checked_refs(db, r.id, items)
+        except catalogue.BadCatalogueRef as exc:
+            lines = [row["item_no"].split(".")[0] for row in items
+                     if (row.get("catalogue_ref") or {}).get("suggestion_id") in exc.ids]
+            raise ApiError(
+                422,
+                f"The catalogue part on line {', '.join(lines)} is no longer on this case (a newer look-up "
+                "replaced it). Unlink it and put it on the line again from the catalogue panel.",
+                "catalogue_ref",
+            )
+        for row, (item, before) in zip(items, sent):
             _qty_fields(row)
             row["adjusted_cost"] = adjusted_cost(row.get("workshop_est"), row.get("discount_pct"), bool(row.get("is_net_item")))
-            before = stored.get(line_key(row["part_name"]))
             row["origin"] = _origin_after_edit(row, before, damaged_parts)
             # source_part carries over from the stored row only when the
             # client left it OUT: an explicit null is [Keep] on a stale row
@@ -447,15 +508,22 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
             # client that doesn't know the field mustn't clear it.
             if "main" not in item.model_fields_set and before is not None:
                 row["main"] = bool(before.get("main"))
-            items.append(row)
         data = dict(r.data or {})
         data["annex_a"] = {"items": items}
         data = synthesize_annexes_for_report(data)
         r.data = data
-        # Rendered again on the next download (GET /reports/{id}/download).
+        # Rendered again on the next download (GET /reports/{id}/download):
+        # already cleared by the first statement.
         r.pdf_path = None
-        audit(db, user, "annex_a_edited", r.id, detail=f"{len(items)} line(s)")
+        accepted, released = catalogue.sync_accepted(db, r.id, items, user)
+        from_catalogue = sum(1 for row in items if row.get("catalogue_ref"))
+        detail = f"{len(items)} line(s)"
+        if from_catalogue or released:
+            detail += f", {from_catalogue} with a catalogue part"
+        audit(db, user, "annex_a_edited", r.id, detail=detail)
         db.commit()
+        if accepted or released:
+            logger.info("Annex A of %s: %d catalogue row(s) accepted, %d back to suggested", r.id, accepted, released)
         return {"annex_a": data["annex_a"], "annex_c": data["annex_c"]}
     finally:
         db.close()

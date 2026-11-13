@@ -50,10 +50,13 @@ export function qtyFromText(text: string): { qty: number; qty_text: string | nul
   return { qty: leadingNumber(t) || 1, qty_text: t };
 }
 
-/** The row as saved: editing-only fields dropped. */
+/** The row as saved: editing-only fields dropped. catalogue_ref is always
+ * sent, null when the line has none: the API keeps a stored line's ref only
+ * when a client leaves the field out (a page from before it), so a blank
+ * line typed with a removed line's name never inherits its catalogue part. */
 export function fromAnnexRow(row: AnnexRow): AnnexAPartItem {
   const { _key, _qty, _est, ...item } = row;
-  const parsed = { ...item, ...qtyFromText(_qty) };
+  const parsed = { ...item, ...qtyFromText(_qty), catalogue_ref: item.catalogue_ref ?? null };
   return { ...parsed, adjusted_cost: annexAdjustedCost(parsed) };
 }
 
@@ -64,7 +67,10 @@ export function inSections<T extends { is_net_item: boolean }>(rows: T[]): T[] {
   return [...rows.filter((r) => !r.is_net_item), ...rows.filter((r) => r.is_net_item)];
 }
 
-/** What a save would change -- to tell whether anything is unsaved. */
+/** What a save would change -- to tell whether anything is unsaved. A
+ * catalogue row put on a line (or unlinked) counts: its suggestion and part
+ * number, which is all of it a save can change (the API writes the rest
+ * from the stored row). */
 export function annexSignature(items: AnnexAPartItem[]): string {
   return JSON.stringify(
     inSections(items).map((it) => [
@@ -83,6 +89,8 @@ export function annexSignature(items: AnnexAPartItem[]): string {
       it.origin || null,
       it.source_part || null,
       Boolean(it.stale),
+      it.catalogue_ref?.suggestion_id ?? null,
+      it.catalogue_ref?.part_number ?? null,
     ])
   );
 }
@@ -131,16 +139,20 @@ export const DISCOUNT_OPTIONS: [number, string][] = [
   [1.0, "100%"],
 ];
 
-/** "from 2 past Honda Vezel cases", "detected", "lookup": the row's origin
- * in words, for the tag beside the part description. Null for a typed row
- * and for old rows with no origin (nothing to say). */
-export function originLabel(it: Pick<AnnexAPartItem, "origin" | "suggested_from" | "prefilled">): string | null {
+/** "from 2 past Honda Vezel cases", "detected", "from catalogue
+ * (parts-honda.uk)": the row's origin in words, for the tag beside the part
+ * description. Null for a typed row and for old rows with no origin
+ * (nothing to say). */
+export function originLabel(it: Pick<AnnexAPartItem, "origin" | "suggested_from" | "prefilled" | "catalogue_ref">): string | null {
   switch (it.origin) {
     case "history":
       return it.suggested_from ? `from ${it.suggested_from}` : "from past cases";
     case "detection":
       return "from detection";
     case "lookup":
+      // A line added from the parts catalogue (lib/catalogue.ts
+      // catalogueLine: suggested_from "catalogue (parts-honda.uk)").
+      if (it.catalogue_ref || it.suggested_from?.startsWith("catalogue")) return it.suggested_from ? `from ${it.suggested_from}` : "from the parts catalogue";
       return it.suggested_from ? `lookup: ${it.suggested_from}` : "from a price lookup";
     default:
       // Rows from before origins existed: the prefill tag still says where

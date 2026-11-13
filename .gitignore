@@ -50,3 +50,8 @@ Thumbs.db
 # Local sample case dumps & presentations
 *.pptx
 example_case/*/
+
+# Parts catalogue tools (tools/parts_mcp): caches, cookies, logs, worker token
+tools/parts_mcp/data/
+tools/parts_mcp/worker.env
+.pytest_cache/

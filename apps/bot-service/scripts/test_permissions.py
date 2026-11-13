@@ -317,6 +317,23 @@ DECISIONS = {
                                                         "inbox_finalizing / inbox_changed"),
     ("POST", "/inbox/{report_id}/discard"): ("special", "P6: case-view; untaken: admin or see-all; taken: the owner or an "
                                                         "admin; 422 no reason; 409 inbox_filed / inbox_changed / ai_running"),
+
+    # The parts-catalogue look-up (app/api/catalogue.py; tested in scripts/test_catalogue.py).
+    # Off unless CATALOGUE_ENABLED and CATALOGUE_WORKER_TOKEN are both set.
+    ("GET", "/reports/{report_id}/catalogue"): ("case-view", "{enabled: false} while off; blocked_reason readonly / draft / "
+                                                             "signed_off / no_make_model"),
+    ("POST", "/reports/{report_id}/catalogue/lookup"): ("case-edit", "404 while off (before the case rule); 409 draft / signed_off / "
+                                                                     "job_open; 400 no_make_model / no_parts; 429 "
+                                                                     "lookup_limit (3 a day unvetted, 20 an hour)"),
+    ("POST", "/reports/{report_id}/catalogue/cancel"): ("case-edit", "404 while off; 409 job_not_open"),
+    ("POST", "/reports/{report_id}/catalogue/suggestions/{suggestion_id}"): ("case-edit", "reject | undo; 404 while off; "
+                                                                                          "409 accepted / draft / signed_off"),
+    # The PC worker: no session (a script), so "public" to the sign-in rule; the
+    # middleware and the routes take Authorization: Bearer CATALOGUE_WORKER_TOKEN
+    # instead (401 worker_token) and answer 404 while the feature is off.
+    ("POST", "/catalogue-worker/claim"): ("public", "Bearer worker token; 404 while off"),
+    ("POST", "/catalogue-worker/jobs/{job_id}/progress"): ("public", "Bearer worker token; 404 while off"),
+    ("POST", "/catalogue-worker/jobs/{job_id}/result"): ("public", "Bearer worker token; 404 while off; 409 job_not_running"),
 }
 # Not in the OpenAPI document, so listed by hand.
 HAND_LISTED = {

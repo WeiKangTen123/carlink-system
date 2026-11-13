@@ -1,5 +1,6 @@
 """What an account may spend, beyond which cases it can see (app/auth/
-permissions.py): PDF renders, drafts and new cases, and disk. Signup is open
+permissions.py): PDF renders, drafts and new cases, parts-catalogue
+look-ups, and disk. Signup is open
 to strangers, and the api, the Telegram bot and another app share one small
 VM, so each of these is capped. Which AI key a person may use -- their own,
 or the company's for admins and ticked people -- is app/ai/keys.py's, whose
@@ -13,6 +14,9 @@ Every refusal is an ApiError with a code the dashboard explains:
     429 rate_limited     too many photos added in an hour (accounts without
                          staff access)
     429 ai_busy          this person already has an AI request running
+    429 lookup_limit     too many parts-catalogue look-ups lately (a few a
+                         day for accounts without staff access, a number an
+                         hour for everyone else)
     409 draft_limit      too many open drafts
     409 case_limit       too many new cases today (accounts without staff access)
     507 disk_full        the storage disk is nearly full
@@ -32,7 +36,7 @@ from sqlalchemy import func
 from app.auth.core import CurrentUser
 from app.auth.deps import ApiError, not_allowed
 from app.auth.permissions import is_admin, is_staff
-from app.reports.models import Report
+from app.reports.models import CatalogueJob, Report
 from app.storage.files import disk_space_low
 
 # ----------------------------------------------------------------- disk
@@ -266,6 +270,53 @@ def check_new_cases_today(db, user: CurrentUser) -> None:
             "without staff access. Try again later, or ask an admin.",
             "case_limit",
         )
+
+
+# ------------------------------------------------ parts-catalogue look-ups
+
+# POST /reports/{id}/catalogue/lookup (api/catalogue.py). Each look-up sends
+# the catalogue worker to the parts sites, which it reads at most 500 pages
+# a day per site (tools/parts_mcp/config.py daily_cap) -- a car not looked
+# up before costs tens of them. Without a cap a fresh signup could loop
+# "Change car" / look up / cancel and use up the day for every surveyor.
+# Counted from the jobs table (so a restart doesn't reset it): every look-up
+# a person queued, cancelled or failed ones too -- the worker may already
+# have read pages for it. The one queued by itself after the AI reading
+# (catalogue.maybe_auto_lookup) is nobody's and never counts. A filed case
+# -- the only kind a person can look up -- is deleted by an admin only, so
+# its jobs going with it hands nobody their look-ups back.
+LOOKUPS_PER_DAY_UNVETTED = 3
+LOOKUPS_PER_HOUR = 20
+_HOUR = timedelta(hours=1)
+
+
+def check_catalogue_lookups(db, user: CurrentUser) -> None:
+    """Called once the new look-up's row is flushed: the request then holds
+    SQLite's write lock and the count includes that row, so two clicks at
+    once can't both make the fourth. 429 lookup_limit (the caller rolls
+    back) when an account without staff access (_unvetted) has queued more
+    than LOOKUPS_PER_DAY_UNVETTED in 24 hours, or anyone else more than
+    LOOKUPS_PER_HOUR in an hour."""
+    if _unvetted(user):
+        limit, window, text = (
+            LOOKUPS_PER_DAY_UNVETTED, _DAY,
+            f"You've started {LOOKUPS_PER_DAY_UNVETTED} catalogue look-ups in the last 24 hours, the most for an "
+            "account without staff access. Try again tomorrow, or ask an admin.",
+        )
+    else:
+        limit, window, text = (
+            LOOKUPS_PER_HOUR, _HOUR,
+            f"You've started {LOOKUPS_PER_HOUR} catalogue look-ups in the last hour. Wait a while and try again.",
+        )
+    # Stored as naive UTC (SQLite drops the offset), and so is the cutoff.
+    since = (datetime.now(timezone.utc) - window).replace(tzinfo=None)
+    started = (
+        db.query(func.count(CatalogueJob.id))
+        .filter(CatalogueJob.requested_by_id == user.id, CatalogueJob.created_at >= since)
+        .scalar()
+    )
+    if started > limit:
+        raise ApiError(429, text, "lookup_limit")
 
 
 # --------------------------------------------------------------- Our Ref

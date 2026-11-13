@@ -118,6 +118,10 @@ const HISTORY_LABELS: Record<string, string> = {
   damage_item_edited: "Damaged part edited",
   damage_item_added: "Damaged part added",
   damage_item_removed: "Damaged part removed",
+  // The parts-catalogue look-up (app/api/catalogue.py). Detail: "3 part(s)"
+  // asked about / "was running".
+  catalogue_lookup_requested: "Catalogue look-up requested",
+  catalogue_lookup_cancelled: "Catalogue look-up cancelled",
   // A PDF or Excel made on download (detail: pdf / pdf-no-photos / xlsx);
   // a preview with no stored PDF yet renders one too, hence not "sent".
   exported: "Report downloaded",

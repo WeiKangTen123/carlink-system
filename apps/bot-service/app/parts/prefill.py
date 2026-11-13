@@ -177,8 +177,11 @@ def _machine_owned(row: dict, damaged_parts: Iterable[str]) -> bool:
     """A row sync may rebuild: the machine made it and nobody priced it.
     Everything else -- priced (from anywhere), typed even when unpriced,
     looked up, or picked by a person from the suggestions panel (it says
-    suggested_from but was never prefilled) -- is a person's and is kept
-    as it is."""
+    suggested_from but was never prefilled), or one a person put a
+    parts-catalogue row on (catalogue_ref, even an unpriced detection row)
+    -- is a person's and is kept as it is, its catalogue_ref with it."""
+    if row.get("catalogue_ref"):
+        return False
     if row.get("suggested_from") and not row.get("prefilled"):
         return False
     return origin_of(row, damaged_parts) in ("detection", "history") and _est(row) <= 0
@@ -498,7 +501,8 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     the annex totals worked out (synthesize_annexes_for_report).
 
     Kept as they are: every row a person priced, typed (origin "typed",
-    even unpriced) or looked up, and rows from past cases that carry a
+    even unpriced) or looked up, rows carrying a parts-catalogue row
+    (catalogue_ref, with it), and rows from past cases that carry a
     price. A kept row made for a part that is no longer damaged gets
     stale = True (and loses it when the part is damaged again); a line
     with no source_part is a hand-added one and is never stale.

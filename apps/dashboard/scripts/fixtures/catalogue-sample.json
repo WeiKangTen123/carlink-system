@@ -1,0 +1,123 @@
+{
+  "enabled": true,
+  "worker": { "last_seen_at": "2026-11-12T02:41:00+00:00", "online": true },
+  "can_request": true,
+  "blocked_reason": null,
+  "vehicle_hint": { "brand": "Honda", "model": "Vezel Hybrid", "year": 2017, "confirmed": false },
+  "job": {
+    "id": 12,
+    "status": "done",
+    "created_at": "2026-11-12T02:40:00+00:00",
+    "claimed_at": "2026-11-12T02:40:20+00:00",
+    "finished_at": "2026-11-12T02:42:00+00:00",
+    "requested_by": "S. Lee",
+    "progress": { "done_parts": 3, "total_parts": 3, "message": "Tail Lamp (Left): TAILLIGHT" },
+    "error_code": null,
+    "error_text": null
+  },
+  "vehicle": {
+    "key": "microfiches:30584",
+    "source": "microfiches",
+    "brand": "Honda",
+    "model": "HR-V",
+    "name": "HR-V 1.5 i-VTEC 5D",
+    "market": "Europe",
+    "year_from": 2015,
+    "year_to": 2019,
+    "url": "https://www.parts-honda.uk/car/30584",
+    "twin_of": "Vezel"
+  },
+  "candidates": [
+    {
+      "key": "microfiches:30584",
+      "source": "microfiches",
+      "brand": "Honda",
+      "model": "HR-V",
+      "name": "HR-V 1.5 i-VTEC 5D",
+      "market": "Europe",
+      "year_from": 2015,
+      "year_to": 2019,
+      "url": "https://www.parts-honda.uk/car/30584",
+      "twin_of": "Vezel"
+    },
+    {
+      "key": "microfiches:30611",
+      "source": "microfiches",
+      "brand": "Honda",
+      "model": "HR-V",
+      "name": "HR-V 1.6 i-DTEC 5D",
+      "market": "Europe",
+      "year_from": 2015,
+      "year_to": 2019,
+      "url": "https://www.parts-honda.uk/car/30611",
+      "twin_of": "Vezel"
+    },
+    {
+      "key": "microfiches:30700",
+      "source": "microfiches",
+      "brand": "Honda",
+      "model": "HR-V",
+      "name": "HR-V 1.5 i-VTEC 5D",
+      "market": "Europe",
+      "year_from": 2015,
+      "year_to": 2021,
+      "url": "https://www.parts-honda.uk/car/30700",
+      "twin_of": null
+    }
+  ],
+  "parts": [
+    {
+      "source_part": "Rear Bumper",
+      "query": "rear bumper",
+      "side": null,
+      "diagrams": [
+        {
+          "diagram_key": "microfiches:30584:B-11",
+          "diagram_name": "REAR BUMPER",
+          "diagram_url": "https://www.parts-honda.uk/car/30584/B-11",
+          "image_url": "https://www.parts-honda.uk/img/30584/B-11.png",
+          "match_score": 1.0,
+          "rows": [
+            { "id": 345, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "1", "part_number": "04715T7WA90", "superseded_from": null, "name": "FACE, RR. BUMPER", "tidy_name": "Rear bumper face", "name_original": null, "qty": "1", "side": null, "notes": null, "ref_amount": 309.41, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": "https://www.parts-honda.uk/part/04715T7WA90", "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": "line", "line_index": 1, "line_name": "Rear bumper" } },
+            { "id": 346, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "2", "part_number": "71510T7WA00", "superseded_from": "71510T7WA01", "name": "BEAM, RR. BUMPER", "tidy_name": "Rear bumper beam", "name_original": null, "qty": "1", "side": null, "notes": null, "ref_amount": 88.1, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": "https://www.parts-honda.uk/part/71510T7WA00", "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 347, "status": "rejected", "decided_by": "S. Lee", "decided_at": "2026-11-12T02:45:00+00:00", "callout": "3", "part_number": "71502T7WA00", "superseded_from": null, "name": "SPACER, RR. BUMPER", "tidy_name": "Rear bumper spacer", "name_original": null, "qty": "2", "side": null, "notes": null, "ref_amount": 6.2, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 348, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "10", "part_number": "90109SB0003", "superseded_from": null, "name": "BOLT, FLANGE (6X12)", "tidy_name": "Flange bolt (6X12)", "name_original": null, "qty": "4", "side": null, "notes": null, "ref_amount": null, "ref_currency": null, "ref_tax_note": null, "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 349, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "4", "part_number": "71570T7WA01", "superseded_from": null, "name": "REFLECTOR ASSY., L. RR.", "tidy_name": "Rear reflector assy LH", "name_original": null, "qty": "1", "side": "left", "notes": "Left side only", "ref_amount": 21.5, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-11T09:00:00+00:00", "stale": true, "match_hint": { "kind": null } },
+            { "id": 350, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "5", "part_number": "91503SZ3003", "superseded_from": null, "name": "CLIP, BUMPER", "tidy_name": "Bumper clip", "name_original": null, "qty": "8", "side": null, "notes": null, "ref_amount": 0.95, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 351, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "6", "part_number": "71598T7WA00", "superseded_from": null, "name": "GARNISH, RR. BUMPER", "tidy_name": "Rear bumper garnish", "name_original": null, "qty": "1", "side": null, "notes": null, "ref_amount": 45.0, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 352, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "7", "part_number": "71530T7WA00", "superseded_from": null, "name": "STAY, RR. BUMPER", "tidy_name": "Rear bumper stay", "name_original": null, "qty": "2", "side": null, "notes": null, "ref_amount": 12.3, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } },
+            { "id": 353, "status": "suggested", "decided_by": null, "decided_at": null, "callout": null, "part_number": "08P48T7W600", "superseded_from": null, "name": "MUDGUARD SET", "tidy_name": "Mudguard set", "name_original": null, "qty": "1", "side": null, "notes": null, "ref_amount": 59.99, "ref_currency": "EUR", "ref_tax_note": "excl. VAT", "source": "microfiches", "url": null, "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": null } }
+          ]
+        }
+      ]
+    },
+    {
+      "source_part": "Tail Lamp (Left)",
+      "query": "tail lamp",
+      "side": "left",
+      "diagrams": [
+        {
+          "diagram_key": "microfiches:30584:B-6",
+          "diagram_name": "TAILLIGHT",
+          "diagram_url": "https://www.parts-honda.uk/car/30584/B-6",
+          "image_url": null,
+          "match_score": 0.85,
+          "rows": [
+            { "id": 360, "status": "suggested", "decided_by": null, "decided_at": null, "callout": "1", "part_number": "33550T7WA01", "superseded_from": null, "name": "LIGHT ASSY., L. TAIL", "tidy_name": "Tail light assy LH", "name_original": null, "qty": "1", "side": "left", "notes": null, "ref_amount": 1250.0, "ref_currency": "SGD", "ref_tax_note": "incl. VAT", "source": "microfiches", "url": "https://www.parts-honda.uk/part/33550T7WA01", "fetched_at": "2026-11-12T02:42:00+00:00", "stale": false, "match_hint": { "kind": "line", "line_index": 0, "line_name": "Tail lamp LH" } }
+          ]
+        }
+      ]
+    },
+    {
+      "source_part": "Rear Number Plate",
+      "query": "rear number plate",
+      "side": null,
+      "diagrams": []
+    }
+  ],
+  "not_found": ["Rear Number Plate"],
+  "failures": [
+    { "source": "microfiches", "code": "site_blocked", "message": "challenge page twice" }
+  ],
+  "covered_makes": ["Honda", "BMW", "MINI"]
+}
