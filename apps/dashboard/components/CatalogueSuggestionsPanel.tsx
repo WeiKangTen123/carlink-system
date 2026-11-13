@@ -120,12 +120,12 @@ export function useCatalogue(reportId: string, enabled: boolean): CatalogueContr
 
   /** A refusal in the panel's words; 404 means the look-up was turned off
    * meanwhile, so all of it goes. */
-  const refused = (res: { error: string; code: string | null; status: number | null }) => {
+  const refused = (res: { error: string; code: string | null; status: number | null; detail?: string | null }) => {
     if (res.status === 404) {
       setState(CATALOGUE_OFF);
       return;
     }
-    setActionError(lookupRefusalText(res.code, res.status, state?.enabled ? blockedContext(state) : {}) ?? res.error);
+    setActionError(lookupRefusalText(res.code, res.status, state?.enabled ? blockedContext(state) : {}, res.detail) ?? res.error);
   };
 
   const lookup = async (vehicleKey: string | null) => {

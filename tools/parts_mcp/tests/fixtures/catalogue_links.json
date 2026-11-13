@@ -1,5 +1,6 @@
 {
-  "about": "What the server takes in a worker result (apps/bot-service app/reports/schema.catalogue_link, app/parts/catalogue.py caps) and what the worker sends (parts_mcp/worker.py safe_url, apply_caps). Both sides test against this one file: tools/parts_mcp/tests/test_worker.py and apps/bot-service/scripts/test_catalogue_accept.py. pad_to: the url with letters a added up to that many characters. ok: the server accepts the link as sent; false: the worker nulls it, so a real result is never refused (422) for one link. The worker keeps links on the three Microfiches sites only; the server's list may hold more hosts, which no case here uses.",
+  "about": "What the server takes in a worker result (apps/bot-service app/reports/schema.catalogue_link, app/parts/catalogue.py caps) and what the worker sends (parts_mcp/worker.py safe_url, apply_caps). Both sides test against this one file: tools/parts_mcp/tests/test_worker.py and apps/bot-service/scripts/test_catalogue_accept.py. pad_to: the url with letters a added up to that many characters. ok: the server accepts the link as sent; false: the worker nulls it, so a real result is never refused (422) for one link. hosts: the only sites a link may be on, with or without www. -- the worker's ALLOWED_HOSTS and the server's CATALOGUE_HOSTS are both exactly these.",
+  "hosts": ["bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"],
   "caps": {
     "parts": 40,
     "diagrams": 3,
@@ -30,6 +31,7 @@
     {"url": "https://www.www.parts-honda.uk/x", "ok": false},
     {"url": "https://parts-honda.uk.evil.io/x", "ok": false},
     {"url": "https://evil.example/x", "ok": false},
+    {"url": "https://www.example-parts.com/catalog/x", "ok": false},
     {"url": "javascript:alert(1)", "ok": false},
     {"url": "//www.parts-honda.uk/x", "ok": false},
     {"url": "https://[::1/x", "ok": false},

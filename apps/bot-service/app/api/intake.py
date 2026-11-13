@@ -45,6 +45,7 @@ from app.intake.photos import (
     remove_intake_dir,
     serialize_photo,
 )
+from app.parts import catalogue
 from app.reports import owners
 from app.reports.db import SessionLocal
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data
@@ -472,7 +473,9 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         data["sign_off"] = SignOffInfo().model_dump()
         data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), (report.data or {}).get("report_id"))
         keep_review_marks(data, report.data, user)
-        report.data = data
+        # Only a ref to one of this draft's own catalogue rows stays on a
+        # line (as the stored row has it); a draft save never fails over one.
+        report.data = catalogue.without_bad_refs(db, report_id, data)
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
@@ -738,6 +741,11 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         owner=owner, report_id=report_id, read_ids=set(read_ids),
     )
     run_log.relabel_last_read(db, report_id, read_ids, {p.id: photo_label(i) for i, p in enumerate(photos)})
+    # file_case_data rebuilds Annex A from the damage list, so no line
+    # carries a catalogue_ref now; checked all the same (as every save that
+    # carries Annex A), under the claim's write lock: only this case's own
+    # rows, never a refusal.
+    data = catalogue.without_bad_refs(db, report_id, data)
 
     new_paths = copy_into_case(report_id, photos)
     report.photo_paths = new_paths

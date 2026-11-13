@@ -323,7 +323,8 @@ DECISIONS = {
     ("GET", "/reports/{report_id}/catalogue"): ("case-view", "{enabled: false} while off; blocked_reason readonly / draft / "
                                                              "signed_off / no_make_model"),
     ("POST", "/reports/{report_id}/catalogue/lookup"): ("case-edit", "404 while off (before the case rule); 409 draft / signed_off / "
-                                                                     "job_open; 400 no_make_model / no_parts"),
+                                                                     "job_open; 400 no_make_model / no_parts; 429 "
+                                                                     "lookup_limit (3 a day unvetted, 20 an hour)"),
     ("POST", "/reports/{report_id}/catalogue/cancel"): ("case-edit", "404 while off; 409 job_not_open"),
     ("POST", "/reports/{report_id}/catalogue/suggestions/{suggestion_id}"): ("case-edit", "reject | undo; 404 while off; "
                                                                                           "409 accepted / draft / signed_off"),

@@ -36,6 +36,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 
+from app.api import limits
 from app.auth.core import CurrentUser, audit, display_name
 from app.auth.deps import CASE_NOT_FOUND, ApiError, editable_case, visible_case
 from app.parts import catalogue
@@ -107,7 +108,9 @@ def request_lookup(report_id: str, body: LookupRequest | None = None,
     running (the table's one-open-job rule decides a double click); 400
     make_not_covered (no catalogue for this make: CATALOGUE_MAKES),
     no_make_model (nothing to look the car up by) or no_parts (no damaged
-    part with a name)."""
+    part with a name); 429 lookup_limit when this person has started too
+    many lately (limits.check_catalogue_lookups: 3 a day without staff
+    access, 20 an hour otherwise; a refused request doesn't count)."""
     vehicle_key = body.vehicle_key if body else None
     db = SessionLocal()
     try:
@@ -135,10 +138,17 @@ def request_lookup(report_id: str, body: LookupRequest | None = None,
         )
         db.add(job)
         try:
+            # The write lock from here to the commit: the count below
+            # includes this job and holds.
             db.flush()
         except IntegrityError:
             db.rollback()
             raise ApiError(409, "A catalogue look-up is already queued or running for this case.", "job_open")
+        try:
+            limits.check_catalogue_lookups(db, user)
+        except ApiError:
+            db.rollback()
+            raise
         audit(db, user, "catalogue_lookup_requested", r.id, detail=f"{len(payload['parts'])} part(s)")
         db.commit()
         db.refresh(job)

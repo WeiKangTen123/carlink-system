@@ -92,6 +92,7 @@ from sqlalchemy import inspect, text  # noqa: E402
 from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 import app.api.main as main  # noqa: E402
+from app.api import limits  # noqa: E402
 from app.auth.core import SESSION_COOKIE, create_session, utc_now  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.parts import catalogue  # noqa: E402
@@ -283,7 +284,7 @@ VEHICLE = {"key": "microfiches:30584", "source": "microfiches", "brand": "Honda"
 def result(parts: list[dict], **over) -> dict:
     out = {"status": "done", "error_code": None, "error_text": None, "vehicle": VEHICLE,
            "candidates": [VEHICLE], "parts": parts,
-           "failures": [{"source": "partsouq", "code": "needs_human", "message": "made-up: a check page"}]}
+           "failures": [{"source": "microfiches", "code": "needs_human", "message": "made-up: a check page"}]}
     out.update(over)
     return out
 
@@ -322,6 +323,9 @@ def run_job(client: TestClient, report_id: str, body: dict, *, vehicle_key=None)
 # ---------------------------------------------------------------- sections
 def setup() -> None:
     init_db()
+    # These checks start dozens of look-ups as one person; the cap on that
+    # (limits.check_catalogue_lookups) is test_catalogue_accept.py's.
+    limits.LOOKUPS_PER_DAY_UNVETTED = limits.LOOKUPS_PER_HOUR = 10_000
     W.admin = new_user("Admin", role="admin")
     W.owner = new_user("Una")
     W.other = new_user("Ben")
@@ -727,7 +731,8 @@ def validation() -> None:
         "a link over http": one_part(diagram_url="http://www.parts-honda.uk/d/1"),
         "a link on another site": one_part(image_url="https://evil.example/x.png"),
         "a look-alike host": one_part(diagram_url="https://parts-honda.uk.evil.example/d"),
-        "a sub-domain other than www.": one_part(image_url="https://img.partsouq.com/x.png"),
+        "a sub-domain other than www.": one_part(image_url="https://img.parts-honda.uk/x.png"),
+        "a parts site the worker doesn't read": one_part(diagram_url="https://www.example-parts.com/d/1"),
         "a link with a user name in it": one_part(diagram_url="https://parts-honda.uk@evil.example/d"),
         "a link on another port": one_part(diagram_url="https://parts-honda.uk:8443/d"),
         "a javascript: link": one_part(diagram_url="javascript:alert(1)"),
@@ -756,11 +761,11 @@ def validation() -> None:
     r = W.o.post(f"/reports/{rid}/catalogue/lookup", json={})
     job_id = r.json()["job"]["id"]
     W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"})
-    okay = one_part(diagram_url="https://partsouq.com/d/1", image_url="https://www.bmw-spare-parts.com/i.png",
+    okay = one_part(diagram_url="https://parts-honda.uk/d/1", image_url="https://www.bmw-spare-parts.com/i.png",
                     rows=[{**good_row, "url": "https://mini-spare-parts.com/p", "name": "x" * 400, "callout": 7, "stale": None}])
     r = W.w.post(f"/catalogue-worker/jobs/{job_id}/result", json=okay)
     check(r.status_code == 200 and r.json()["suggestions"] == 1,
-          "the four sites with or without www., 400 characters, a numeric callout, stale null: accepted", brief(r))
+          "the three sites with or without www., 400 characters, a numeric callout, stale null: accepted", brief(r))
     s = rows_of(rid)[0] if rows_of(rid) else None
     check(s is not None and s.callout == "7" and s.stale is False, "stored as text and false", repr(s and (s.callout, s.stale)))
     r = W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"})

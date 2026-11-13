@@ -338,7 +338,6 @@ export function workerSeen(worker: CatalogueWorker | null | undefined, now: numb
  * "microfiches" is the one engine behind bmw-spare-parts.com,
  * mini-spare-parts.com and parts-honda.uk, so its URL names the site. */
 const SOURCE_NAMES: Record<string, string> = {
-  partsouq: "Partsouq",
   microfiches: "BMW/MINI/Honda catalogues",
 };
 
@@ -347,7 +346,7 @@ export function safeUrl(url: string | null | undefined): string | null {
   return typeof url === "string" && /^https:\/\/[^\s]+$/i.test(url) ? url : null;
 }
 
-/** "parts-honda.uk", "partsouq.com": the site a row or car came from, by
+/** "parts-honda.uk", "bmw-spare-parts.com": the site a row or car came from, by
  * its URL (else `fallbackUrl`, e.g. its diagram's); else the source's name. */
 export function siteLabel(source: string | null | undefined, url?: string | null, fallbackUrl?: string | null): string {
   for (const candidate of [url, fallbackUrl]) {
@@ -561,10 +560,21 @@ export function blockedReasonText(reason: string | null | undefined, ctx: Blocke
   }
 }
 
+/** 429 lookup_limit when the answer came without the API's own words
+ * (those say how many and for how long: 3 in 24 hours for an account
+ * without staff access, 20 in an hour for everyone else). */
+export const LOOKUP_LIMIT_TEXT = "You've started the most catalogue look-ups allowed for now. Try again later, or ask an admin.";
+
 /** A refused POST lookup / cancel / Hide, by its code or status; null to
  * use the API's own words (make_not_covered with no make known: the API's
- * sentence is the same one). */
-export function lookupRefusalText(code: string | null | undefined, status?: number | null, ctx: BlockedContext = {}): string | null {
+ * sentence is the same one). `said`: the API's own words, if any. */
+export function lookupRefusalText(
+  code: string | null | undefined,
+  status?: number | null,
+  ctx: BlockedContext = {},
+  said?: string | null,
+): string | null {
+  if (code === "lookup_limit") return (said || "").trim() || LOOKUP_LIMIT_TEXT;
   if (code === "job_open") return "A look-up is already waiting or running for this case.";
   if (code === "make_not_covered") return ctx.make ? blockedReasonText(code, ctx) : null;
   if (code === "no_make_model") return blockedReasonText("no_make_model");

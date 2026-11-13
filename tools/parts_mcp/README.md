@@ -67,22 +67,25 @@ starts it. It:
 ### Switch it on
 
 1. Make a token once: `openssl rand -hex 32`.
-2. On the server, in `/opt/carlink-system/infra/.env` (git-ignored; compose
-   reads it), set
+2. On the server, put both in `/opt/carlink-system/infra/.env` (git-ignored,
+   `chmod 600`):
 
    ```
    CATALOGUE_ENABLED=true
    CATALOGUE_WORKER_TOKEN=<the token>
    ```
 
-   (or export both in the shell that runs `deploy.sh`). Compose hands the
-   same `CATALOGUE_WORKER_TOKEN` to the api and to the worker; nothing else
-   needs it. The api's `CATALOGUE_MAKES` (default `Honda,BMW,MINI`) should
-   name only these makes.
+   That file is where they live, not the shell: `deploy.sh` runs
+   `docker compose -f infra/docker-compose.prod.yml ...`, whose project
+   folder is `infra/`, so compose v2 reads `infra/.env` on every deploy and
+   every later `up`, and a value exported in one shell would be gone the next
+   time. Compose hands the same `CATALOGUE_WORKER_TOKEN` to the api and to
+   the worker; nothing else needs it. The api's `CATALOGUE_MAKES` (default
+   `Honda,BMW,MINI`) should name only these makes.
 3. Deploy as usual. `docker logs carlink_parts_worker` then shows
    `... polling`, and the dashboard shows the look-up as ready.
 
-To switch it off, set `CATALOGUE_ENABLED=false` and deploy: the api answers
+To switch it off, set `CATALOGUE_ENABLED=false` in `infra/.env` and deploy: the api answers
 404, and the worker logs that once and asks again every 5 minutes, quietly.
 Without a token the worker logs one line and idles.
 

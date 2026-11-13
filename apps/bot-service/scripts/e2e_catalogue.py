@@ -25,7 +25,7 @@ Options:
                            this python)
     --data-dir PATH        the worker's data folder (default: $PARTS_MCP_DATA_DIR, or
                            ~/carlink-parts-data) -- its page cache is what keeps it polite
-    --sources LIST         the worker's sources (default: microfiches; never Partsouq here)
+    --sources LIST         the worker's sources (default: microfiches, the only one in this repo)
     --max-live N           stop the worker at N live requests to one host (default 20)
     --port N               the API's port (default: a free one)
     --hold                 after the run, seed a second case looked up with the same rows,
@@ -453,7 +453,10 @@ def run(args) -> int:
                    f"exit {out['exit']}, watchdog {out['watchdog']}")
             expect(all(n <= args.max_live for n in live.values()),
                    f"live site requests: {live or 'none (all from the cache)'} (at most {args.max_live} per host)")
-            expect(not any("partsouq" in h for h in live), "no request to Partsouq")
+            from app.reports.schema import CATALOGUE_HOSTS
+
+            expect(all(h.removeprefix("www.") in CATALOGUE_HOSTS for h in live),
+                   "requests to the Microfiches sites only", str(sorted(live)))
             expect(not any(token in line for line in out["log"]), "the token is not in the worker's output")
 
         step("5. The panel: rows grouped by damaged part")

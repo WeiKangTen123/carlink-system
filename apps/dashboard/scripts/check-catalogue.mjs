@@ -95,8 +95,10 @@ check("an unknown tax note is kept as written", () => {
 });
 check("site tag from the row's URL, else the source", () => {
   assert.equal(c.siteLabel("microfiches", "https://www.parts-honda.uk/part/1"), "parts-honda.uk");
-  assert.equal(c.siteLabel("partsouq", "https://partsouq.com/x"), "partsouq.com");
-  assert.equal(c.siteLabel("partsouq", null), "Partsouq");
+  assert.equal(c.siteLabel("microfiches", "https://bmw-spare-parts.com/x"), "bmw-spare-parts.com");
+  assert.equal(c.siteLabel("microfiches", null), "BMW/MINI/Honda catalogues");
+  // A source this page doesn't know: its key as sent.
+  assert.equal(c.siteLabel("othersite", null), "othersite");
   assert.equal(c.siteLabel("microfiches", "javascript:alert(1)"), "BMW/MINI/Honda catalogues");
   assert.equal(c.siteLabel("other", "http://insecure.example/x"), "other");
   // A row with no link of its own: its diagram's site.
@@ -198,12 +200,12 @@ check("failed job with an unknown or no code", () => {
   assert.equal(c.errorCodeText(null), "The look-up failed. Try again.");
 });
 check("a site's failure names the site, except a site check (one sentence whichever site)", () => {
-  assert.equal(c.failureText({ source: "partsouq", code: "needs_human", message: null }), CODE_TEXT.needs_human);
+  assert.equal(c.failureText({ source: "othersite", code: "needs_human", message: null }), CODE_TEXT.needs_human);
   assert.equal(c.failureText({ source: "microfiches", code: "internal", message: null }), `BMW/MINI/Honda catalogues: ${CODE_TEXT.internal}`);
   assert.equal(c.failureText({ source: "microfiches", code: "challenge_blocked", message: null }), "The parts site asked for a human check; try again later.");
 });
 check("failure lines: each said once, not repeating the job's own line", () => {
-  const s = { ...state, failures: [...state.failures, { source: "partsouq", code: "site_blocked", message: "again" }] };
+  const s = { ...state, failures: [...state.failures, { source: "othersite", code: "site_blocked", message: "again" }] };
   assert.deepEqual(c.failureLines(s), [CODE_TEXT.site_blocked]);
   const failedJob = { ...s, job: job({ status: "failed", error_code: "site_blocked" }) };
   assert.deepEqual(c.failureLines(failedJob), []);
@@ -228,6 +230,12 @@ check("refusals of POST lookup", () => {
   // No make known here: the API's own sentence (the same words) is shown.
   assert.equal(c.lookupRefusalText("make_not_covered", 400), null);
   assert.equal(c.lookupRefusalText(null, 500), null);
+  // 429 lookup_limit: the API's words (they say how many), else plain ones.
+  const said = "You've started 3 catalogue look-ups in the last 24 hours, the most for an account without staff access. Try again tomorrow, or ask an admin.";
+  assert.equal(c.lookupRefusalText("lookup_limit", 429, {}, said), said);
+  assert.equal(c.lookupRefusalText("lookup_limit", 429), c.LOOKUP_LIMIT_TEXT);
+  assert.equal(c.lookupRefusalText("lookup_limit", 429, {}, "  "), c.LOOKUP_LIMIT_TEXT);
+  assert.match(c.LOOKUP_LIMIT_TEXT, /^You've started the most catalogue look-ups allowed for now\./);
 });
 
 // ---------------------------------------------------------------------------

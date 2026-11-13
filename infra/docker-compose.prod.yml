@@ -44,10 +44,14 @@ x-bot-service: &bot-service
     # Only the api process acts on it; the bot process has no lifespan.
     - RUN_BACKGROUND_CLEANUP=true
     # The parts-catalogue look-up (app/api/catalogue.py): off unless both
-    # are set in infra/.env -- the token is what the parts-worker container
-    # below sends, so the same value goes to both, from infra/.env only,
-    # never git. Only the api serves the look-up (the list above is shared,
-    # so the bot gets them too and ignores them). Empty token = off.
+    # are set in infra/.env on the server (git-ignored; compose v2 reads it
+    # because this file's folder, infra/, is the project folder -- not the
+    # shell that runs deploy.sh, which a later `up` wouldn't have). The token
+    # is what the parts-worker container below sends, so the same value goes
+    # to both, from infra/.env only, never git. Only the api serves the
+    # look-up (the list above is shared, so the bot gets them too and
+    # ignores them). Empty token = off. tools/parts_mcp/README.md "Running
+    # on the server".
     - CATALOGUE_ENABLED=${CATALOGUE_ENABLED:-false}
     - CATALOGUE_WORKER_TOKEN=${CATALOGUE_WORKER_TOKEN:-}
   # volumes: set per service below -- the two mount ai_secrets differently,
@@ -141,6 +145,7 @@ services:
     logging: *default-logging
     environment:
       - CARLINK_API_BASE=http://api:8000
+      # From infra/.env, as the api's (above).
       - CATALOGUE_WORKER_TOKEN=${CATALOGUE_WORKER_TOKEN:-}
       - PARTS_MCP_DATA_DIR=/data
       # The log goes to docker logs only (capped by the logging options

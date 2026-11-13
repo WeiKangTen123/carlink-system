@@ -35,6 +35,17 @@ model, damaged parts and no look-up ever before, requested_by "auto (after
 detection)", in the case history, once -- and pipeline._read_into still
 saves the reading when the look-up breaks; a deleted or expired draft takes
 its look-up along.
+
+The review's fixes (PR #31): POST .../catalogue/lookup is capped per
+person -- 3 in 24 hours without staff access, 20 an hour otherwise, 429
+lookup_limit; cancelled ones count, refused and automatic ones don't; a
+worker result sent in the middle of an Annex A save waits for its commit
+(the save takes the write lock first) and keeps the row the line now
+carries; one landing during PUT /reports/{id}'s render takes the replaced
+ref off the line (200, never a 500); a new look-up never deletes a row a
+saved line carries; POST /reports, an intake draft's autosave and its
+filing keep only refs to the case's own rows (rewritten from the stored
+row) and take any other off instead of refusing.
 No Gemini, nothing outside this machine.
 
 Offline and self-contained, as scripts/test_catalogue.py: a temporary
@@ -50,6 +61,7 @@ import re
 import socket
 import sys
 import tempfile
+import threading
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,9 +118,11 @@ structured.get_client = _no_gemini
 from fastapi.testclient import TestClient  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 
+import app.api.catalogue as catalogue_api  # noqa: E402
 import app.api.main as main  # noqa: E402
 import app.rendering.renderer as renderer  # noqa: E402
 from app.ai.extraction import _response_schema  # noqa: E402
+from app.api import limits  # noqa: E402
 from app.auth.core import SESSION_COOKIE, create_session  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.parts import catalogue  # noqa: E402
@@ -356,9 +370,19 @@ def named(rows: list[dict], name: str) -> dict:
 
 
 # ---------------------------------------------------------------- sections
+# The real caps, for lookup_quota; every other section starts look-ups as
+# freely as it needs to.
+REAL_LOOKUP_CAPS = (limits.LOOKUPS_PER_DAY_UNVETTED, limits.LOOKUPS_PER_HOUR)
+
+
+def lift_lookup_caps() -> None:
+    limits.LOOKUPS_PER_DAY_UNVETTED = limits.LOOKUPS_PER_HOUR = 10_000
+
+
 def setup() -> None:
     init_db()
     turn_on()
+    lift_lookup_caps()
     W.admin = new_user("Admin", role="admin")
     W.owner = new_user("Una")
     W.other = new_user("Ben")
@@ -682,6 +706,8 @@ def worker_and_server_agree() -> None:
             if ok != case["ok"]:
                 wrong.append((model.__name__, url[:60], ok))
     check(not wrong, f"the server takes exactly the links the worker keeps ({len(fixture['links'])} shared cases)", str(wrong))
+    check(catalogue.ALLOWED_HOSTS == set(fixture["hosts"]) == {"bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"},
+          "the server's sites are the worker's: the three Microfiches sites", str(sorted(catalogue.ALLOWED_HOSTS)))
     caps = fixture["caps"]
     check((catalogue.MAX_PARTS, catalogue.MAX_DIAGRAMS, catalogue.MAX_ROWS, catalogue.MAX_CANDIDATES,
            catalogue.MAX_FAILURES, catalogue.MAX_PART_FAILURES, catalogue.MAX_TEXT)
@@ -1187,6 +1213,319 @@ def drafts_deleted() -> None:
     check(gone and _count(idle) == (0, 0), "swept after a week idle: the look-up goes too", repr(_count(idle)))
 
 
+# ------------------------------------------------------ the review's fixes
+
+
+def _lookups(client: TestClient, report_id: str):
+    return client.post(f"/reports/{report_id}/catalogue/lookup", json={})
+
+
+def _claim(job_id: int) -> dict:
+    """The worker's claim, until it hands out job_id: any older job still
+    waiting from earlier sections is ended (failed) on the way."""
+    for _ in range(50):
+        job = W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"}).json()["job"] or {}
+        if job.get("job_id") == job_id or not job:
+            return job
+        W.w.post(f"/catalogue-worker/jobs/{job['job_id']}/result", json={"status": "failed", "error_code": "internal"})
+    return {}
+
+
+def _drain() -> None:
+    """No job left waiting, so the next claim is the next look-up's."""
+    _claim(-1)
+
+
+def lookup_quota() -> None:
+    """POST .../catalogue/lookup is capped per person (limits.
+    check_catalogue_lookups): 3 in 24 hours without staff access, 20 in an
+    hour otherwise; cancelled look-ups count, refused ones and the one
+    queued by itself after detection don't."""
+    # Signed in afresh: the idle-draft sweep above ran 30 days ahead, which
+    # ended these sessions too.
+    W.a, W.o, W.b = (signed_in(u) for u in (W.admin, W.owner, W.other))
+    limits.LOOKUPS_PER_DAY_UNVETTED, limits.LOOKUPS_PER_HOUR = REAL_LOOKUP_CAPS
+    try:
+        check(REAL_LOOKUP_CAPS == (3, 20), "the caps: 3 a day without staff access, 20 an hour otherwise",
+              repr(REAL_LOOKUP_CAPS))
+        fay = new_user("Fay")
+        f = signed_in(fay)
+        case, other = new_case(fay), new_case(fay)
+        # Her draft's look-up after detection: nobody's, never counted.
+        draft = new_case(fay, case_data(), status="intake")
+        check(catalogue.maybe_auto_lookup(draft) is not None, "an automatic look-up on her draft (not counted)")
+        for i in range(3):
+            r = _lookups(f, case)
+            check(r.status_code == 202, f"look-up {i + 1} of 3: 202", brief(r))
+            if i == 0:
+                r = _lookups(f, case)
+                check(r.status_code == 409 and code_of(r) == "job_open",
+                      "a second click meanwhile: 409 job_open (not counted)", brief(r))
+            r = f.post(f"/reports/{case}/catalogue/cancel")
+            check(r.status_code == 200, "...cancelled (still counted)", brief(r))
+        before = len(_jobs(case))
+        r = _lookups(f, case)
+        check(r.status_code == 429 and code_of(r) == "lookup_limit", "the 4th in 24 hours: 429 lookup_limit", brief(r))
+        detail = r.json().get("detail", "")
+        check("3 catalogue look-ups in the last 24 hours" in detail and "staff access" in detail,
+              "...in plain words, with the number", detail)
+        check(len(_jobs(case)) == before and sum(a == "catalogue_lookup_requested" for a, _ in history(case)) == 3,
+              "...and nothing queued or written to the history", repr(history(case)[-2:]))
+        r = _lookups(f, other)
+        check(r.status_code == 429 and code_of(r) == "lookup_limit", "the count is the person's: another case of hers too",
+              brief(r))
+        gil = new_user("Gil")
+        r = _lookups(signed_in(gil), new_case(gil))
+        check(r.status_code == 202, "someone else meanwhile: 202", brief(r))
+        db = SessionLocal()
+        try:
+            from datetime import timedelta
+
+            for j in db.query(CatalogueJob).filter(CatalogueJob.requested_by_id == fay):
+                j.created_at = j.created_at - timedelta(hours=25)
+            db.commit()
+        finally:
+            db.close()
+        r = _lookups(f, other)
+        check(r.status_code == 202, "a day later: 202 again", brief(r))
+
+        sam = new_user("Sam", sees_all_cases=True)
+        s = signed_in(sam)
+        mine = new_case(sam)
+        codes = []
+        for _ in range(20):
+            codes.append(_lookups(s, mine).status_code)
+            s.post(f"/reports/{mine}/catalogue/cancel")
+        check(codes == [202] * 20, "staff (a tick): more than 3, up to 20 in an hour", repr(sorted(set(codes))))
+        r = _lookups(s, mine)
+        check(r.status_code == 429 and code_of(r) == "lookup_limit"
+              and "20 catalogue look-ups in the last hour" in r.json().get("detail", ""),
+              "the 21st in an hour: 429 lookup_limit", brief(r))
+        r = _lookups(W.a, new_case(W.admin))
+        check(r.status_code == 202, "an admin with none lately: 202", brief(r))
+    finally:
+        lift_lookup_caps()
+
+
+def _claimed_lookup(client: TestClient, report_id: str) -> tuple[int, dict]:
+    """A look-up queued and claimed by the worker, its result not sent yet:
+    (job id, the result it would send)."""
+    r = client.post(f"/reports/{report_id}/catalogue/lookup", json={})
+    assert r.status_code == 202, brief(r)
+    job_id = r.json()["job"]["id"]
+    job = _claim(job_id)
+    assert job.get("job_id") == job_id, job
+    asked = {p["source_part"] for p in job["parts"]}
+    body = the_result()
+    return job_id, {**body, "parts": [p for p in body["parts"] if p["source_part"] in asked]}
+
+
+def _send_result(job_id: int, body: dict, out: dict) -> None:
+    """The worker's POST .../result, called straight (on another thread)."""
+    try:
+        out["result"] = catalogue_api.worker_result(job_id, body)
+    except Exception as exc:  # noqa: BLE001 -- reported by the checks
+        out["result"] = exc
+
+
+def _refs_all_there(report_id: str) -> bool:
+    there = suggestions(report_id)
+    return all(
+        (it.get("catalogue_ref") or {}).get("suggestion_id") in there
+        for it in items_of(report_id) if it.get("catalogue_ref")
+    )
+
+
+def result_mid_annex_save() -> None:
+    """The worker's result is sent at the point where PUT /annex-a has
+    checked its refs and is about to mark them accepted, and given 1.5 s.
+    The save took SQLite's write lock with its first statement, so the
+    result waits for the save's commit, then keeps the row the line now
+    carries. (Before: the result went through at once and deleted that
+    row, leaving the line pointing at nothing -- or failed the save with
+    StaleDataError when it landed after sync_accepted.)"""
+    _drain()
+    case = new_case(W.owner)
+    look_up(W.o, case)
+    gate = by_number(case, GATE)
+    check(gate.status == "suggested", "a suggested row to put on a line")
+    job_id, body = _claimed_lookup(W.o, case)
+    rows = items_of(case)
+    named(rows, "Tail gate assy").update(catalogue_ref=ref_for(gate), oem_part_number=GATE)
+    out: dict = {}
+    real = catalogue.sync_accepted
+
+    def mid_save(*args, **kwargs):
+        t = threading.Thread(target=_send_result, args=(job_id, body, out), daemon=True)
+        t.start()
+        t.join(1.5)
+        out["thread"], out["done_mid_save"] = t, not t.is_alive()
+        return real(*args, **kwargs)
+
+    catalogue.sync_accepted = mid_save
+    try:
+        r = put(W.o, case, rows)
+    finally:
+        catalogue.sync_accepted = real
+    if "thread" in out:
+        out["thread"].join(10)
+    check(r.status_code == 200, "the save: 200", brief(r))
+    check(out.get("done_mid_save") is False, "the result waited for the save's commit (the write lock)",
+          repr(out.get("done_mid_save")))
+    check(isinstance(out.get("result"), dict) and out["result"].get("ok"), "...then was stored", repr(out.get("result")))
+    after = suggestions(case)
+    check(gate.id in after and after[gate.id].status == "accepted", "the line's row is still there, accepted",
+          repr(after.get(gate.id) and after[gate.id].status))
+    check(sum(s.part_number == GATE for s in after.values()) == 1, "...and the result didn't add it again")
+    check(_refs_all_there(case), "every ref on a line points at a row of the case")
+    r = put(W.o, case, items_of(case))
+    check(r.status_code == 200, "the next save goes through (no 422)", brief(r))
+
+
+def result_mid_put_reports() -> None:
+    """PUT /reports/{id} with Annex A renders the PDF without the write
+    lock; a worker's result landing then replaces a row only this save put
+    on a line. The refs are checked again under the lock: that one comes
+    off the line, and the save goes through (no StaleDataError, no 500)."""
+    _drain()
+    case = new_case(W.owner)
+    look_up(W.o, case)
+    gate = by_number(case, GATE)
+    job_id, body = _claimed_lookup(W.o, case)
+    data = report_data(case)
+    rows = [dict(it) for it in data["annex_a"]["items"]]
+    named(rows, "Tail gate assy")["catalogue_ref"] = ref_for(gate)
+    out: dict = {}
+    real = main._render_after_change
+
+    def render_meanwhile(user, r, what):
+        _send_result(job_id, body, out)
+        return r.pdf_path
+
+    main._render_after_change = render_meanwhile
+    try:
+        r = W.o.put(f"/reports/{case}", json={"draft": {"description": data["description"], "annex_a": {"items": rows}}})
+    finally:
+        main._render_after_change = real
+    check(isinstance(out.get("result"), dict) and out["result"].get("ok"), "the result landed during the render",
+          repr(out.get("result")))
+    check(r.status_code == 200, "the save: 200", brief(r))
+    check(gate.id not in suggestions(case), "the row it replaced is gone")
+    check(named(items_of(case), "Tail gate assy").get("catalogue_ref") is None and _refs_all_there(case),
+          "...and its ref came off the line (no line points at nothing)")
+
+
+def line_rows_survive() -> None:
+    """store_result never deletes a row a saved Annex A line carries, even
+    one whose status says "suggested" (stored that way by any path)."""
+    _drain()
+    case = new_case(W.owner)
+    look_up(W.o, case)
+    gate = by_number(case, GATE)
+    rows = items_of(case)
+    named(rows, "Tail gate assy")["catalogue_ref"] = ref_for(gate)
+    check(put(W.o, case, rows).status_code == 200, "a row on a line")
+    db = SessionLocal()
+    try:
+        db.get(CatalogueSuggestion, gate.id).status = "suggested"
+        db.commit()
+    finally:
+        db.close()
+    look_up(W.o, case)
+    after = suggestions(case)
+    check(gate.id in after, "a new look-up keeps it, whatever its status")
+    check(sum(s.part_number == GATE for s in after.values()) == 1, "...and doesn't add it again")
+    check(_refs_all_there(case), "every ref on a line points at a row of the case")
+
+
+def _draft_with_rows() -> str:
+    """A draft (with its intake session) whose look-up after detection has
+    come back."""
+    rid = new_case(W.owner, case_data(), status="intake")
+    db = SessionLocal()
+    try:
+        db.add(IntakeSession(report_id=rid, stage="ready", reporter_notes=""))
+        db.commit()
+    finally:
+        db.close()
+    job_id = catalogue.maybe_auto_lookup(rid)
+    job = _claim(job_id)
+    assert job.get("job_id") == job_id, job
+    asked = {p["source_part"] for p in job["parts"]}
+    body = the_result()
+    r = W.w.post(f"/catalogue-worker/jobs/{job_id}/result",
+                 json={**body, "parts": [p for p in body["parts"] if p["source_part"] in asked]})
+    assert r.status_code == 200, brief(r)
+    return rid
+
+
+def refs_on_other_paths() -> None:
+    """POST /reports, PUT /intake/{id}/data and filing an intake check a
+    line's catalogue_ref as PUT /annex-a does -- this case's own row, its
+    facts from the stored row -- but take a bad one off the line instead of
+    refusing the save."""
+    foreign = next(iter(suggestions(W.other_case).values()))
+    fake = {**ref_for(foreign), "suggestion_id": 999_999, "part_number": "MADE-UP-1", "ref_amount": 1.0}
+
+    def with_refs(data: dict, refs: dict) -> dict:
+        rows = [dict(it) for it in data["annex_a"]["items"]]
+        for name, ref in refs.items():
+            named(rows, name)["catalogue_ref"] = ref
+        return {**data, "annex_a": {"items": rows}}
+
+    renderer_saved = renderer.html_to_pdf
+    renderer.html_to_pdf = lambda html, out, slot_wait=None: Path(out).write_bytes(b"%PDF-1.4 test\n")
+    try:
+        # POST /reports (by an admin: the owner here is at the 10-new-cases cap).
+        draft = with_refs(case_data(), {"Tail gate assy": fake, "Tail lamp LH": ref_for(foreign)})
+        r = W.a.post("/reports", json={"draft": draft})
+        check(r.status_code == 200, "POST /reports with made-up refs: saved (never refused over one)", brief(r))
+        new = r.json().get("id") if r.status_code == 200 else None
+        lines = items_of(new) if new else []
+        check(bool(lines) and all(it.get("catalogue_ref") is None for it in lines),
+              "...with every ref taken off (a new case has no catalogue rows)",
+              json.dumps([it.get("catalogue_ref") for it in lines])[:200])
+        check(len(lines) == 4 and named(lines, "Tail gate assy")["part_name"] == "Tail gate assy",
+              "...the lines themselves kept")
+
+        # An intake draft's autosave.
+        rid = _draft_with_rows()
+        own = by_number(rid, GATE)
+        data = with_refs(case_data(), {"Tail gate assy": ref_for(own, ref_amount=1.0, part_number="FAKE-9"),
+                                       "Tail lamp LH": ref_for(foreign), "Rear bumper reinforcement": fake})
+        r = W.o.put(f"/intake/{rid}/data", json={"data": data})
+        check(r.status_code == 200, "PUT /intake/{id}/data with good and bad refs: 200", brief(r))
+        lines = items_of(rid)
+        check(named(lines, "Tail gate assy")["catalogue_ref"] == catalogue.ref_of(own),
+              "...the draft's own row kept, its facts the stored row's",
+              json.dumps(named(lines, "Tail gate assy")["catalogue_ref"]))
+        check(named(lines, "Tail lamp LH")["catalogue_ref"] is None
+              and named(lines, "Rear bumper reinforcement")["catalogue_ref"] is None,
+              "...another case's and a made-up one taken off")
+
+        # Filing it (an admin finishing it: the owner is at the new-case cap).
+        r = W.a.post(f"/intake/{rid}/finalize", json={"data": data})
+        check(r.status_code == 200, "filing the draft with bad refs: 200", brief(r))
+        filed_items = (report_data(rid).get("annex_a") or {}).get("items") or []
+        check(bool(filed_items) and all(
+            it.get("catalogue_ref") is None or it["catalogue_ref"] == catalogue.ref_of(own) for it in filed_items
+        ) and _refs_all_there(rid), "...the filed case carries no made-up or foreign ref",
+              json.dumps([it.get("catalogue_ref") for it in filed_items])[:200])
+    finally:
+        renderer.html_to_pdf = renderer_saved
+
+    # PUT /reports/{id} still refuses one (Phase 2), and so does PUT /annex-a.
+    data = report_data(W.case)
+    rows = [dict(it) for it in data["annex_a"]["items"]]
+    rows[0]["catalogue_ref"] = fake
+    r = W.o.put(f"/reports/{W.case}", json={"draft": {"description": data["description"], "annex_a": {"items": rows}}})
+    check(r.status_code == 422 and code_of(r) == "catalogue_ref", "PUT /reports/{id} with a made-up ref: still 422", brief(r))
+    rows = items_of(W.case)
+    rows[0]["catalogue_ref"] = fake
+    r = put(W.o, W.case, rows)
+    check(r.status_code == 422 and code_of(r) == "catalogue_ref", "PUT /annex-a with a made-up ref: still 422", brief(r))
+
+
 def set_vehicle_and_parts(report_id: str) -> None:
     db = SessionLocal()
     try:
@@ -1218,6 +1557,11 @@ def main_() -> int:
     run_section("Phase 3: the look-up after detection", auto_lookup)
     run_section("Phase 3: the hook in the AI reading", detection_hook)
     run_section("Phase 3: a deleted draft takes its look-up", drafts_deleted)
+    run_section("review fixes: the look-up cap", lookup_quota)
+    run_section("review fixes: a worker result in the middle of an Annex A save", result_mid_annex_save)
+    run_section("review fixes: a worker result during PUT /reports/{id}", result_mid_put_reports)
+    run_section("review fixes: a row on a line survives a new look-up", line_rows_survive)
+    run_section("review fixes: refs on the other save paths", refs_on_other_paths)
     run_section("no AI, no network", ai_schema_untouched)
     total = PASSED[0] + len(FAILURES)
     print(f"\ntest_catalogue_accept: {PASSED[0]} checks passed, {len(FAILURES)} failed (of {total})")

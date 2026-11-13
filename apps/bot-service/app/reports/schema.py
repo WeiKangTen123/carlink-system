@@ -21,10 +21,12 @@ from pydantic.json_schema import SkipJsonSchema
 
 from app.reports.taxonomy import OTHER_PART, clean_part_name
 
-# The parts sites the PC catalogue worker reads (app/parts/catalogue.py,
-# plans/2026-11-12-parts-catalogue/CONTRACT.md), so the only hosts a
-# catalogue link may point to, with or without "www.".
-CATALOGUE_HOSTS = frozenset({"bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk", "partsouq.com"})
+# The parts sites the catalogue worker reads (app/parts/catalogue.py,
+# plans/2026-11-12-parts-catalogue/CONTRACT.md): the three Microfiches
+# sites, so the only hosts a catalogue link may point to, with or without
+# "www." -- the same list as the worker's (tools/parts_mcp/worker.py
+# ALLOWED_HOSTS; both checked against tests/fixtures/catalogue_links.json).
+CATALOGUE_HOSTS = frozenset({"bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"})
 CATALOGUE_TEXT_MAX = 400
 
 

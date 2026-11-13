@@ -418,6 +418,8 @@ def test_caps_are_enforced():
     assert w.safe_url("https://fake.example/x") is None and w.safe_url("https://parts-honda.uk.evil.io/x") is None
     assert w.ALLOWED_HOSTS == {f"{www}{site}" for www in ("", "www.")
                                for site in ("bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk")}
+    # The same sites as the server's list (the shared fixture).
+    assert w.ALLOWED_HOSTS == {f"{www}{site}" for www in ("", "www.") for site in LINKS["hosts"]}
 
 
 # The server's side of the same cases: apps/bot-service/scripts/test_catalogue_accept.py.

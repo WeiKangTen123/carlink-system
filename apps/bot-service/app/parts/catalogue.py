@@ -573,12 +573,20 @@ def store_result(db: Session, job: CatalogueJob, result: WorkerResult) -> int:
     The job must have been ended with finish() in the same transaction.
 
     Done: the case's "suggested" rows (from any earlier look-up) are
-    replaced by these; rows a person accepted or rejected stay, and a new
-    row with the same part and part number as one of them -- or as a row
-    already taken from this result (the same clip on two diagrams) -- is
-    not added again. Failed: only the job's facts (the car, the other cars,
-    the failures) are kept; the earlier suggestions stay as they were.
-    The part's query and side are the job's own, not the worker's echo."""
+    replaced by these; rows a person accepted or rejected stay, and so does
+    any row a saved Annex A line carries, whatever its status (a line must
+    never point at a row that is gone: its next save would be refused); a
+    new row with the same part and part number as one of them -- or as a
+    row already taken from this result (the same clip on two diagrams) --
+    is not added again. Failed: only the job's facts (the car, the other
+    cars, the failures) are kept; the earlier suggestions stay as they
+    were. The part's query and side are the job's own, not the worker's
+    echo.
+
+    The caller's finish() was the transaction's first statement, so this
+    runs under SQLite's write lock: an Annex A save (which takes it before
+    checking its refs, api/parts.save_annex_a) lands wholly before this or
+    after it."""
     asked = {p.get("source_part"): p for p in ((job.payload or {}).get("parts") or [])}
     job.vehicle = result.vehicle.model_dump() if result.vehicle else None
     job.candidates = [c.model_dump() for c in result.candidates]
@@ -596,11 +604,14 @@ def store_result(db: Session, job: CatalogueJob, result: WorkerResult) -> int:
     if result.status != "done":
         return 0
 
-    db.execute(
-        delete(CatalogueSuggestion)
-        .where(CatalogueSuggestion.report_id == job.report_id, CatalogueSuggestion.status == "suggested")
-        .execution_options(synchronize_session=False)
+    replaced = delete(CatalogueSuggestion).where(
+        CatalogueSuggestion.report_id == job.report_id, CatalogueSuggestion.status == "suggested",
     )
+    report = db.get(Report, job.report_id)
+    on_lines = _ref_ids((((report.data or {}) if report else {}).get("annex_a") or {}).get("items") or [])
+    if on_lines:
+        replaced = replaced.where(CatalogueSuggestion.id.notin_(sorted(on_lines)))
+    db.execute(replaced.execution_options(synchronize_session=False))
     kept = {
         (s.source_part, key)
         for s in db.query(CatalogueSuggestion.source_part, CatalogueSuggestion.part_number)
@@ -1000,23 +1011,39 @@ def ref_of(s: CatalogueSuggestion) -> dict:
     }
 
 
+def _ref_id(row) -> int | None:
+    """The suggestion id a row's catalogue_ref names, or None (no ref, or
+    one without a usable id: schema.CatalogueRef never lets one in, but
+    store_result reads stored rows too)."""
+    ref = row.get("catalogue_ref") if isinstance(row, dict) else None
+    if not isinstance(ref, dict) or isinstance(ref.get("suggestion_id"), bool):
+        return None
+    try:
+        return int(ref.get("suggestion_id"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _ref_ids(rows: list[dict]) -> set[int]:
-    return {
-        int(ref["suggestion_id"])
-        for row in rows
-        for ref in [row.get("catalogue_ref")]
-        if isinstance(ref, dict) and ref.get("suggestion_id") is not None
-    }
+    return {i for i in map(_ref_id, rows) if i is not None}
 
 
-def checked_refs(db: Session, report_id: str, rows: list[dict]) -> None:
+def checked_refs(db: Session, report_id: str, rows: list[dict], *, drop_invalid: bool = False) -> None:
     """Each Annex A row's catalogue_ref as the catalogue has it, in place:
-    the suggestion must be this case's (else BadCatalogueRef), and its
-    facts -- part number, name, diagram, the site's price -- are written
-    from the stored row, so no client can make a line show a part number
-    or price the catalogue didn't. Nothing here touches the estimate."""
+    the suggestion must be this case's, and its facts -- part number,
+    name, diagram, the site's price -- are written from the stored row, so
+    no client can make a line show a part number or price the catalogue
+    didn't. Nothing here touches the estimate.
+
+    A ref naming no suggestion of this case (another case's id, one a newer
+    look-up replaced, a made-up one): BadCatalogueRef -- PUT /annex-a and
+    PUT /reports/{id} refuse the save (422 catalogue_ref) -- or, with
+    drop_invalid, the ref is taken off its line (None) and the rest saved,
+    for the saves that must never fail over it: a new case (POST /reports,
+    which has no suggestions yet), an intake draft's autosave and its
+    filing."""
     for row in rows:
-        if not isinstance(row.get("catalogue_ref"), dict):
+        if _ref_id(row) is None:
             row["catalogue_ref"] = None
     ids = _ref_ids(rows)
     if not ids:
@@ -1027,11 +1054,31 @@ def checked_refs(db: Session, report_id: str, rows: list[dict]) -> None:
         .filter(CatalogueSuggestion.report_id == report_id, CatalogueSuggestion.id.in_(sorted(ids)))
     }
     missing = sorted(ids - set(found))
-    if missing:
+    if missing and not drop_invalid:
         raise BadCatalogueRef(missing)
     for row in rows:
-        if row["catalogue_ref"]:
-            row["catalogue_ref"] = ref_of(found[int(row["catalogue_ref"]["suggestion_id"])])
+        sid = _ref_id(row)
+        if sid is not None:
+            row["catalogue_ref"] = ref_of(found[sid]) if sid in found else None
+
+
+def without_bad_refs(db: Session, report_id: str, data: dict) -> dict:
+    """The case data with its Annex A refs checked as checked_refs(...,
+    drop_invalid=True) does: kept and written from the stored row when the
+    suggestion is this case's, taken off the line otherwise. For the saves
+    that carry Annex A without being the Annex A editor's -- POST /reports,
+    an intake draft's autosave (PUT /intake/{id}/data) and its filing --
+    so a crafted request can't store a made-up part number or price under
+    a catalogue ref, and the save itself never fails over one. Rows'
+    statuses are left alone (sync_accepted is the editor's). A new list:
+    `data` is not changed."""
+    annex = data.get("annex_a")
+    rows = annex.get("items") if isinstance(annex, dict) else None
+    if not any(isinstance(it, dict) and it.get("catalogue_ref") is not None for it in rows or []):
+        return data
+    items = [dict(it) if isinstance(it, dict) else it for it in rows]
+    checked_refs(db, report_id, [it for it in items if isinstance(it, dict)], drop_invalid=True)
+    return {**data, "annex_a": {**annex, "items": items}}
 
 
 def sync_accepted(db: Session, report_id: str, rows: list[dict], user) -> tuple[int, int]:

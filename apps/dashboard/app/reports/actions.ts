@@ -392,9 +392,10 @@ export async function getLabourSuggestionsAction(reportId: string): Promise<Labo
 // like the rest of Annex A's. Nothing on the page changes with them, so no
 // revalidatePath. A refusal comes back with its code and status, for the
 // panel's own words (lookupRefusalText): 409 job_open, 400 no_make_model /
-// no_parts, 404 when the look-up is off.
+// no_parts, 429 lookup_limit (with the API's words, in detail), 404 when
+// the look-up is off.
 
-export type CatalogueActionError = { error: string; code: string | null; status: number | null };
+export type CatalogueActionError = { error: string; code: string | null; status: number | null; detail: string | null };
 
 function catalogueError(err: unknown, fallback: string): CatalogueActionError {
   // A redirect to sign-in (lib/api.ts) must reach Next, not become an error message.
@@ -403,6 +404,7 @@ function catalogueError(err: unknown, fallback: string): CatalogueActionError {
     error: err instanceof Error ? err.message : fallback,
     code: errorCode(err),
     status: err instanceof ApiError ? err.status : null,
+    detail: err instanceof ApiError ? err.detail : null,
   };
 }
 

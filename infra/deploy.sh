@@ -17,6 +17,10 @@
 #
 #   TELEGRAM_BOT_TOKEN=xxx GEMINI_API_KEY=yyy NGINX_PORT=8080 ./deploy.sh
 #
+# The parts-catalogue look-up's CATALOGUE_ENABLED and CATALOGUE_WORKER_TOKEN
+# live in infra/.env on the server instead (git-ignored; compose v2 reads it,
+# infra/ being the project folder): see tools/parts_mcp/README.md.
+#
 # It backs up first (infra/backup.sh) and refuses to deploy when it can't:
 # backups not configured, or the backup or its upload failed. Only
 #
@@ -106,11 +110,29 @@ fi
 # nginx looks up the api/dashboard container addresses once, when it starts.
 # `up --build` recreates those two containers (new addresses) but leaves an
 # unchanged nginx running, which then proxies to addresses that no longer
-# exist: every /api/ and /files/ request returns 502 until nginx is reloaded.
+# exist: every /api/ and /files/ request returns 502 until nginx is told.
 # Hit on the 2026-10-20 deploy (and evidently the one before it, judging by
-# nginx's uptime). A reload re-resolves them with no downtime.
-echo "🔁 Reloading nginx so it picks up the recreated containers..."
-docker exec carlink_nginx nginx -s reload || docker restart carlink_nginx
+# nginx's uptime).
+#
+# A restart, not `nginx -s reload`: nginx.conf is bind-mounted as a single
+# file (docker-compose.prod.yml), and `git pull` above replaces that file
+# (a new inode) rather than writing into it, so the running container still
+# sees the OLD file and a reload only re-reads that -- a changed nginx.conf
+# (e.g. 12 Nov 2026's `location ^~ /api/catalogue-worker/` 404) would stay
+# inactive. A restart mounts the file afresh; it costs a second or two.
+# The new file is checked first (nginx -t in a throwaway container on the
+# same network, so api/dashboard resolve): if it is broken, the running
+# nginx keeps its old config -- reloaded, so it at least finds the new
+# containers -- and the deploy stops with an error.
+echo "🔁 Restarting nginx so it picks up nginx.conf and the recreated containers..."
+NGINX_NET=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' carlink_nginx 2>/dev/null | awk '{print $1}')
+if [ -n "$NGINX_NET" ] && ! docker run --rm --network "$NGINX_NET" \
+        -v "$APP_DIR/infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro" nginx:alpine nginx -t -q; then
+    echo "❌ infra/nginx.conf fails nginx -t -- nginx keeps its old config. Fix the file, then: docker restart carlink_nginx"
+    docker exec carlink_nginx nginx -s reload || true
+    exit 1
+fi
+docker restart carlink_nginx
 
 # Dashboard sign-in (bot-service app/auth): nobody can use the dashboard
 # until the first admin account exists. Admins add everyone else from

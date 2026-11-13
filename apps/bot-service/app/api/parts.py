@@ -23,7 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, update
 
 from app.ai import keys as ai_keys
 from app.ai import runs
@@ -450,6 +450,17 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
     line carries any more is suggested again (catalogue.sync_accepted)."""
     db = SessionLocal()
     try:
+        # A write first -- the PDF marked out of date, as the save does
+        # anyway -- so SQLite's write lock is held from here to the commit
+        # and the refs checked below can't change before it. A worker's
+        # result (catalogue.store_result, replacing the case's "suggested"
+        # rows) lands wholly before -- the check sees it -- or waits for the
+        # commit, by which time the rows on lines are accepted, which it
+        # keeps. (Read first, a result in between left a line pointing at a
+        # deleted row, or failed the save with StaleDataError.) Nothing is
+        # read before it in this session (as reports/db._once).
+        db.execute(update(Report).where(Report.id == report_id).values(pdf_path=None)
+                   .execution_options(synchronize_session=False))
         r = _report(db, report_id)
         if _signed_off(r):
             raise HTTPException(status_code=409, detail="Report is signed off and locked. Reopen it before editing.")
@@ -501,7 +512,8 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
         data["annex_a"] = {"items": items}
         data = synthesize_annexes_for_report(data)
         r.data = data
-        # Rendered again on the next download (GET /reports/{id}/download).
+        # Rendered again on the next download (GET /reports/{id}/download):
+        # already cleared by the first statement.
         r.pdf_path = None
         accepted, released = catalogue.sync_accepted(db, r.id, items, user)
         from_catalogue = sum(1 for row in items if row.get("catalogue_ref"))
