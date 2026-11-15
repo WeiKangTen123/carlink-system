@@ -357,10 +357,23 @@ class Settings(BaseSettings):
     # with no store field (the benchmark's --store-on, for an A/B).
     gemini_store_off: bool = True
 
+    # Option B (zone mode only, settings.intake_read_mode "zones"):
+    # "suggest" keeps the damage list to the parts the overall reading found
+    # and makes the parts only zone reads found suggestions a person adds
+    # (intake/zones.split_suggestions); "list" puts every find in the list
+    # (contract 8's m5/m6 runs). Measured offline on m6: the list's wrong
+    # sides and extras fall, the zone-only finds wait for a person.
+    intake_zone_only: str = "suggest"
+
     @field_validator("gemini_zone_chain")
     @classmethod
     def _zone_chain(cls, value):
         return normal_chain(value, "gemini_zone_chain")
+
+    @field_validator("intake_zone_only")
+    @classmethod
+    def _zone_only(cls, value):
+        return normal_zone_only(value)
 
 
 READ_MODES = ("single", "zones")
@@ -397,6 +410,17 @@ def normal_chain(value, name: str = "the chain") -> str:
     if not models:
         raise ValueError(f"{name}: at least one model name")
     return ",".join(models)
+
+
+ZONE_ONLY = ("suggest", "list")
+
+
+def normal_zone_only(value) -> str:
+    """intake_zone_only written the one way; None or blank is "suggest"."""
+    mode = str(value or "").strip().lower() or "suggest"
+    if mode not in ZONE_ONLY:
+        raise ValueError(f"intake_zone_only {value!r}: use one of {', '.join(ZONE_ONLY)}")
+    return mode
 # (end of Contract 9)
 
 

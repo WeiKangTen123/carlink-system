@@ -51,6 +51,9 @@ os.environ["GEMINI_STORE_OFF"] = "false"
 # The zone calls on one lite, as they were on the reading chain here
 # before contract 9 gave them their own (test_c9_base.py).
 os.environ["GEMINI_ZONE_CHAIN"] = "gemini-3.5-flash-lite"
+# Contract 8's merge: every find in the list. Contract 9's option B split
+# (the default, "suggest") is test_c9_base.py's.
+os.environ["INTAKE_ZONE_ONLY"] = "list"
 
 import app.ai.structured as structured  # noqa: E402
 

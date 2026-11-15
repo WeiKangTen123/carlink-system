@@ -10,7 +10,14 @@ Covers:
     tools; the sort chain without the strong model; second_look._store
     rebuilding the suggestions from the zone reads' finds with the second
     look off (key, cap, dismissed, decisions, reads); the sweep of old
-    ai_derived files; the benchmark's --zone-models / --store-on.
+    ai_derived files; the benchmark's --zone-models / --store-on;
+  - option B (intake_zone_only "suggest"): single mode unchanged whatever
+    it says; a part only zone reads found never reaching the damage list
+    but the suggestions, with the second look off; the agreement rule and
+    the side resolver on the list only; a dismissed suggestion staying out
+    after a re-read; the catalogue's auto look-up seeing the list only;
+    "list" as contract 8's runs; the benchmark scoring the suggestions
+    with the second look off.
 
     python scripts/test_c9_base.py
 
@@ -522,6 +529,185 @@ def bench_flags() -> None:
           "while they act, the result file records them", shown)
 
 
+# ---------------------------------------------------------------- option B
+
+# P01 log card, P02 rear overview, P03 / P04 rear damage, P05 left damage,
+# P06 a close-up whose area wasn't clear.
+B_CASE = CASE + [("damage", None, None, True)]
+
+
+def b_draft(kwargs, labels):
+    return {"description": "Hit at the rear.", "category": ["Vehicle Collision or Damage"],
+            "damage_summary": [
+                {"part": "Rear Bumper", "photo_reference": "P03", "ai_confidence": "High", "condition_tokens": ["Cracked"]},
+                {"part": "Boot Lid", "photo_reference": "P04", "ai_confidence": "Medium"}],
+            "vehicle_info": {"make": "Gammamotors", "model": "Vezel"}}
+
+
+def b_zone(kwargs, labels):
+    if "P06" in labels:
+        return {"zone_side_seen": "unclear", "checked_intact": [], "damage": [
+            {"photo_reference": "P06", "part": "Wheel (side undetermined)", "ai_confidence": "Medium"}]}
+    if "P05" in labels:
+        return {"zone_side_seen": "left", "checked_intact": [], "damage": [
+            {"photo_reference": "P05", "part": "Rear Door", "ai_confidence": "High", "condition_tokens": ["Dented"]}]}
+    return {"zone_side_seen": "rear", "checked_intact": [], "damage": [
+        {"photo_reference": "P03", "part": "Rear Bumper", "ai_confidence": "High"},
+        {"photo_reference": "P04", "part": "Boot Lid Lock", "ai_confidence": "Medium", "condition_tokens": ["Bent"],
+         "severity": "Minor", "remarks": "Replace"}]}
+
+
+ZONE_ONLY_PARTS = {"Boot Lid Lock", "Left Rear Door", "Wheel (side undetermined)"}
+
+
+def option_b_single() -> None:
+    HANDLERS["draft"] = b_draft
+    got, requests = {}, {}
+    for mode in ("suggest", "list"):
+        REQUESTS.clear()
+        with Settings(intake_read_mode="single", intake_zone_only=mode):
+            make_case(f"c9-b-single-{mode}", B_CASE)
+            pipeline._read(f"c9-b-single-{mode}", AiActor.cli())
+        requests[mode] = [json.dumps(r, sort_keys=True, default=str) for r in REQUESTS]
+        # The same case under two ids: compared with the id taken out.
+        got[mode] = json.loads(json.dumps(saved(f"c9-b-single-{mode}"), default=str).replace(f"c9-b-single-{mode}", "ID"))
+    check(requests["suggest"] == requests["list"] and len(requests["suggest"]) == 1,
+          "zone mode off: the same requests (one) whatever intake_zone_only says")
+    check(got["suggest"] == got["list"], "...and the same saved list, form and AI draft")
+    check(not {"zone_suggestions", "zone_reads"} & set(got["suggest"]["ai_draft"]),
+          "single mode's AI draft holds nothing new")
+
+
+def option_b() -> None:
+    HANDLERS.update(draft=b_draft, zone=b_zone)
+    seen_by_lookup: list = []
+    real_lookup = pipeline.catalogue.maybe_auto_lookup
+
+    def lookup(report_id):
+        seen_by_lookup.append([it["part"] for it in saved(report_id)["data"]["damage_summary"]])
+        return real_lookup(report_id)
+
+    pipeline.catalogue.maybe_auto_lookup = lookup
+    REQUESTS.clear()
+    try:
+        with Settings(intake_read_mode="zones"):
+            check(settings.intake_zone_only == "suggest", "intake_zone_only: \"suggest\" by default")
+            make_case("c9-b", B_CASE)
+            pipeline._read("c9-b", AiActor.cli())
+    finally:
+        pipeline.catalogue.maybe_auto_lookup = real_lookup
+    zone_calls = [r for r in REQUESTS if kind_of(r) == "zone"]
+    got = saved("c9-b")
+    data, ai_draft = got["data"], got["ai_draft"]
+    listed = [it["part"] for it in data["damage_summary"]]
+    check(len(zone_calls) == 3, "three zones read (rear, left, close)", len(zone_calls))
+    check(listed == ["Rear Bumper", "Boot Lid"] and data["damaged_parts"] == listed,
+          "the list: what the overall reading found", listed)
+    check(not ZONE_ONLY_PARTS & set(listed + data["damaged_parts"] + [it["part"] for it in ai_draft["damage_summary"]]),
+          "a part only zone reads found never reaches damage_summary (form or AI draft)")
+    bumper = data["damage_summary"][0]
+    check(bumper["found_by"] == ["overall", "zone:rear"] and bumper["ai_confidence"] == "High",
+          "a part both found: the zone read's agreement on the list item")
+    check(data["damage_summary"][1]["ai_confidence"] == "Low",
+          "the agreement rule on the list: found once, on one photo, is Low (Check)")
+    sugg = {s["part"]: s for s in ai_draft["zone_suggestions"]}
+    check(set(sugg) == ZONE_ONLY_PARTS and all(s["source"] == "zone" for s in sugg.values()),
+          "the zone-only finds: ai_draft[\"zone_suggestions\"], source zone", sorted(sugg))
+    lock = sugg["Boot Lid Lock"]
+    check(lock["key"] == "Boot Lid Lock" and lock["found_by"] == ["zone:rear"] and lock["seen_in"] == ["@c9-b-3"]
+          and lock["photo_reference"] == "@c9-b-3" and lock["confidence"] == "Medium" and lock["severity"] == "Minor"
+          and lock["remarks"] == "Replace" and lock["condition_tokens"] == ["Bent"],
+          "as SecondLookItem dicts: key, the read and photo ('@<photo id>'), the zone's confidence and words", lock)
+    check(sugg["Wheel (side undetermined)"]["confidence"] == "Medium",
+          "a suggestion keeps the model's confidence and side: no agreement rule, no side resolver")
+    check(ai_draft["zone_reads"] == ["overall", "zone:rear", "zone:left", "zone:close"],
+          "ai_draft[\"zone_reads\"]: the reads that answered", ai_draft["zone_reads"])
+    check("zone_suggestions" not in data and "zone_reads" not in data, "never in Report.data")
+    look = data["second_look"]
+    keys_ = {it["key"] for it in look["items"]}
+    check(look["status"] == "skipped" and keys_ == ZONE_ONLY_PARTS and look["reads"] == ai_draft["zone_reads"],
+          "with the second look off, the suggestions are second_look.items after _store", sorted(keys_))
+    check(seen_by_lookup == [listed], "the catalogue's auto look-up runs after the commit and sees the list only",
+          seen_by_lookup)
+
+    # A person marks one Not damaged; the re-read keeps it out.
+    db = SessionLocal()
+    try:
+        report = db.get(Report, "c9-b")
+        look = dict(report.data["second_look"])
+        look["dismissed"] = ["Boot Lid Lock"]
+        report.data = {**report.data, "second_look": look}
+        db.commit()
+    finally:
+        db.close()
+    with Settings(intake_read_mode="zones"):
+        pipeline._read("c9-b", AiActor.cli(), kind="redraft")
+    data = saved("c9-b")["data"]
+    keys_ = {it["key"] for it in data["second_look"]["items"]}
+    check(keys_ == ZONE_ONLY_PARTS - {"Boot Lid Lock"} and data["second_look"]["dismissed"] == ["Boot Lid Lock"],
+          "a dismissed suggestion stays out after a re-read; dismissed is kept", sorted(keys_))
+    check([it["part"] for it in data["damage_summary"]] == ["Rear Bumper", "Boot Lid"], "and the list is still the list")
+
+    # "list": contract 8's runs -- every find in the list.
+    with Settings(intake_read_mode="zones", intake_zone_only="list"):
+        make_case("c9-b-list", B_CASE)
+        pipeline._read("c9-b-list", AiActor.cli())
+    got = saved("c9-b-list")
+    listed = {it["part"] for it in got["data"]["damage_summary"]}
+    check(ZONE_ONLY_PARTS - {"Wheel (side undetermined)"} <= listed and "zone_suggestions" not in got["ai_draft"]
+          and got["ai_draft"]["zone_reads"] == ["overall", "zone:rear", "zone:left", "zone:close"]
+          and not got["data"]["second_look"]["items"],
+          "\"list\": the zone-only finds in the list, no suggestions", sorted(listed))
+
+
+def option_b_bench() -> None:
+    import benchmark_intake as bench
+
+    args = bench.parse_args(["--read-mode", "zones", "--zone-only", "list"])
+    check(bench.model_settings(args) == {"intake_read_mode": "zones", "intake_zone_only": "list"},
+          "--zone-only sets intake_zone_only")
+    try:
+        bench.model_settings(bench.parse_args(["--zone-only", "suggest"]))
+        check(False, "--zone-only without zones is refused")
+    except SystemExit as exc:
+        check("--zone-only" in str(exc.code), "--zone-only without zones stops the run", exc.code)
+    with Settings(intake_read_mode="zones"):
+        check(bench.ai_settings(settings).get("intake_zone_only") == "suggest", "recorded in zone mode")
+
+    # A whole case through the benchmark's run_case, the real pipeline on the
+    # fake Gemini, the second look off (--no-second-look): the suggestions
+    # are the zone reads', scored as if all ticked.
+    folder = Path(_tmp, "bench-cases", "case_b")
+    folder.mkdir(parents=True)
+    for i in range(3):
+        Image.new("RGB", (64, 48), ("red", "green", "blue")[i]).save(folder / f"p{i + 1}.jpg", "JPEG")
+
+    def draft(kwargs, labels):
+        return {"description": "Rear-ended.", "damage_summary": [
+            {"part": "Rear Bumper", "photo_reference": "P01", "ai_confidence": "High"}]}
+
+    def zone(kwargs, labels):
+        return {"zone_side_seen": "rear", "checked_intact": [], "damage": [
+            {"photo_reference": "P01", "part": "Rear Bumper", "ai_confidence": "High"},
+            {"photo_reference": "P02", "part": "Boot Lid Lock", "ai_confidence": "Medium"}]}
+
+    HANDLERS.update(draft=draft, zone=zone)
+    vehicle = {"make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-B", "color": "White",
+               "vin": "TESTVIN0000000002", "engine_number": "TESTENG2", "date_of_registration": "2017-01-12"}
+    case = {"name": "TEST CASE B", "folder": "case_b", "vehicle": vehicle, "parts": [
+        {"part": "Rear Bumper"}, {"part": "Boot Lid Lock"}, {"part": "Left Tail Lamp"}]}
+    with Settings(intake_read_mode="zones", second_look_enabled=False):
+        out = bench.run_case(case, folder.parent)
+    check("error" not in out, "the run answered", out.get("error"))
+    check(out["drafted_parts"] == ["Rear Bumper"] and out["parts"]["found"] == 1,
+          "the list scores the overall reading's parts", out.get("drafted_parts"))
+    check(out.get("second_look", {}).get("suggested") == ["Boot Lid Lock"] and out["second_look"]["calls"] == 0,
+          "the suggestions are the zone-only find; no second-look call", out.get("second_look"))
+    ls = out.get("parts_with_second_look") or {}
+    check((ls.get("found"), ls.get("added"), ls.get("extra")) == (2, 1, 0),
+          "score_second_look scores them (found 2, added 1, extra 0)", ls)
+
+
 def main() -> int:
     init_db()
     for name, fn in (
@@ -532,6 +718,9 @@ def main() -> int:
         ("second_look._store: rebuilt from the zone reads, the second look off", store_rebuild),
         ("cleanup: old ai_derived files", sweep_derived),
         ("the benchmark: --zone-models, --store-on", bench_flags),
+        ("option B: zone mode off is unchanged", option_b_single),
+        ("option B: the list, the suggestions, a re-read, the catalogue", option_b),
+        ("option B in the benchmark: --zone-only, the suggestions scored", option_b_bench),
     ):
         run_section(name, fn)
     print(f"\ntest_c9_base: {PASSED[0]} checks passed, {len(FAILURES)} failed")

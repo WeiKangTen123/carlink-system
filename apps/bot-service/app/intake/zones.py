@@ -45,6 +45,14 @@ person's allowance gone -- is skipped and noted in the run log; the
 reading never fails for it. All the zone calls are one run of the log
 (runs.ZONES_KIND), whose photos_sent says per zone what was sent and what
 came back, the parts seen intact included (they go nowhere else).
+
+Contract 9, option B (settings.intake_zone_only "suggest", the default; it
+acts only in zone mode): the damage list keeps the parts the overall
+reading found, with what the zone reads that agree add (found_by, seen_in,
+a photo); a part ONLY zone reads found becomes a suggestion for a person to
+add (split_suggestions), never a list item -- measured offline on m6, the
+list then has fewer wrong sides and extras. "list": every find in the list
+(contract 8's m5/m6 behaviour).
 """
 import logging
 import threading
@@ -56,11 +64,12 @@ from typing import Callable
 
 from app.ai import allowance, runs
 from app.ai.keys import AiActor, AiUnavailable
-from app.ai.second_look import ZONES
+from app.ai.second_look import ZONES, covers_of
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import chain, settings
 from app.intake.photos import ai_input_path
 from app.parts.prefill import item_key
+from app.reports.schema import SecondLookItem
 from app.reports.taxonomy import CANONICAL_PARTS, OTHER_PART, UNDETERMINED_SUFFIX, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -100,6 +109,11 @@ def zone_chain() -> list[str]:
 
 def grid_on() -> bool:
     return bool(getattr(settings, "intake_grid_marks", False))
+
+
+def suggest_zone_only() -> bool:
+    """Option B: zone-only finds are suggestions (settings.intake_zone_only)."""
+    return getattr(settings, "intake_zone_only", "suggest") == "suggest"
 
 
 # ------------------------------------------------------------ zoning
@@ -357,6 +371,35 @@ def merge_reads(overall: list[dict], reads: list[tuple[str, list[dict]]]) -> tup
     return out, disputed_names
 
 
+def as_suggestion(item: dict) -> dict:
+    """A merged item only zone reads found, as a SecondLookItem dict
+    (source "zone"): the model's own confidence and side, untouched by
+    resolve_sides and the agreement rule, which are for the list. Its name
+    in the firm's words are second_look._store's."""
+    part = str(item.get("part") or "")
+    return SecondLookItem(
+        key=item_key(item) or part, part=part, photo_reference=item.get("photo_reference") or None,
+        condition_tokens=list(item.get("condition_tokens") or []), condition=item.get("condition"),
+        damage_type=item.get("damage_type"), confidence=item.get("ai_confidence"), source="zone",
+        covers=covers_of(part), found_by=list(item.get("found_by") or []), seen_in=list(item.get("seen_in") or []),
+        other_part_name=item.get("other_part_name"), severity=item.get("severity"), remarks=item.get("remarks"),
+    ).model_dump()
+
+
+def split_suggestions(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Option B (contract 9): merge_reads' items as (the list, the
+    suggestions). An item the overall reading found stays in the list, with
+    what agreeing zone reads added; one only zone reads found becomes a
+    suggestion (as_suggestion), in the order found."""
+    listed, suggested = [], []
+    for item in items:
+        if OVERALL in (item.get("found_by") or []):
+            listed.append(item)
+        elif item.get("part"):
+            suggested.append(as_suggestion(item))
+    return listed, suggested
+
+
 def apply_agreement(items: list[dict]) -> list[dict]:
     """The contract's agreement rule, in place (zone mode only): a part
     found by one read AND seen in at most one photo is ai_confidence Low --
@@ -384,23 +427,26 @@ def read_and_merge(
     items: list[dict],
     jobs: list[ZoneJob],
     progress: Callable[[int], None] | None = None,
-) -> tuple[list[dict], set[str]]:
+) -> tuple[list[dict], set[str], list[str]]:
     """The zone stage, for pipeline._read_into once the overall reading has
     answered: one call per job, then merge_reads. items: the overall
     reading's damage items ("@<photo id>" references). progress(n) after
-    each zone call ends, n of len(jobs). Returns (items, disputed names).
-    Never raises: whatever goes wrong, the overall reading's items stand
-    (with found_by "overall")."""
+    each zone call ends, n of len(jobs). Returns (items, disputed names,
+    the reads that answered: "overall" and each zone read's name, for
+    SecondLook.reads). Never raises: whatever goes wrong, the overall
+    reading's items stand (with found_by "overall")."""
     try:
         reads = _read_zones(report_id, actor, jobs, progress) if jobs else []
     except Exception:
         logger.exception("Zone reading for %s failed; the overall reading stands", report_id)
         reads = []
+    answered = [OVERALL] + [name for name, _ in reads]
     try:
-        return merge_reads(items, reads)
+        merged, disputed = merge_reads(items, reads)
+        return merged, disputed, answered
     except Exception:
         logger.exception("Zone reading for %s: couldn't merge; the overall reading stands", report_id)
-        return items, set()
+        return items, set(), [OVERALL]
 
 
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],

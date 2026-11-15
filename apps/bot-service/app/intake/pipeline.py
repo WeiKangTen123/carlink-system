@@ -26,6 +26,10 @@ the second look after a reading is a row of its own, "second_look".
 Contract 8 D2: with settings.intake_read_mode "zones" the reading also reads
 the car one area at a time after its one call, and merges what those calls
 find into its own (intake/zones.py; their row is "read_zones").
+Contract 9, option B (settings.intake_zone_only "suggest"): the parts only
+the zone calls found are kept apart, in IntakeSession.ai_draft
+["zone_suggestions"], and shown as suggestions (second_look._store) --
+never in the damage list until a person adds one.
 """
 import logging
 import re
@@ -617,14 +621,23 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     # (found_by / seen_in on every item). Never raises: a zone call that
     # fails is skipped, and the overall reading is kept either way.
     disputed: set[str] = set()
+    zone_draft: dict = {}
     if zone_mode:
         total = 1 + len(zone_jobs)
         if zone_jobs:
             _set_stage(report_id, "reading", 1, total)
-        data["damage_summary"], disputed = zones.read_and_merge(
+        data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
             report_id, actor, data.get("damage_summary") or [], zone_jobs,
             progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
         )
+        # Contract 9: kept beside the AI draft, never in Report.data
+        # (second_look._store reads them).
+        zone_draft["zone_reads"] = zone_reads
+        if zones.suggest_zone_only():
+            # Option B: the list is what the overall reading found; the rest
+            # are suggestions. resolve_sides and the agreement rule below
+            # then see the list only.
+            data["damage_summary"], zone_draft["zone_suggestions"] = zones.split_suggestions(data["damage_summary"])
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -655,7 +668,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # Merged against the form as it is NOW (re-read inside this
         # transaction), not as it was when the run started.
         report.data = merge_redraft(current, session.ai_draft, data)
-        session.ai_draft = data
+        session.ai_draft = {**data, **zone_draft} if zone_draft else data
         session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
         db.commit()
     finally:
