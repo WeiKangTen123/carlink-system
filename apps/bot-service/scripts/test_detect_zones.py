@@ -120,6 +120,10 @@ GOLDEN_SCHEMA = "7ccb5ce425dc1fe68971672f41992753e1431b535edf941c45aa648e3d6d18d
 GOLDEN_REQUEST = "b5df170069a5cbd04fcc231ceea2c957f18e125aa447054c85bd4526593b1b24"
 GOLDEN_SAVED = "0a6566dffaa451e5f15ec1141782b6b931244fef95e2592664b249bb18588e0d"
 NEW_FIELDS = ("seen_in", "found_by", "grid_cells")
+# Contract 9's, after these (test_c9_base.py): also taken out before the
+# saved data is compared with master's.
+C9_ITEM_FIELDS = ("reason", "evidence", "check", "added_from")
+C9_LOOK_FIELDS = ("reads", "decisions", "check")
 
 # (kind, area, part, shows damage) per photo, P01 first: the golden case.
 GOLDEN_CASE = [
@@ -199,8 +203,12 @@ def saved(rid: str) -> dict:
 
 def strip_new(data: dict | None) -> dict | None:
     for item in (data or {}).get("damage_summary") or []:
-        for key in NEW_FIELDS:
+        for key in NEW_FIELDS + C9_ITEM_FIELDS:
             item.pop(key, None)
+    look = (data or {}).get("second_look")
+    if isinstance(look, dict):
+        for key in C9_LOOK_FIELDS:
+            look.pop(key, None)
     return data
 
 
