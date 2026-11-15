@@ -42,6 +42,9 @@ os.environ["GEMINI_API_KEY"] = "AIzaSyDetectZoomTestKeyxxxxxxxxxxxxxxxxx"
 os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "0"
 os.environ["GEMINI_MAX_REQUESTS_PER_MINUTE"] = "100000"
 os.environ["SECOND_LOOK_ENABLED"] = "false"
+# Today's requests exactly: contract 9's store=False (on by default) is
+# tested both ways in test_c9_base.py.
+os.environ["GEMINI_STORE_OFF"] = "false"
 for _name in ("GEMINI_THINKING_LEVEL_READ", "GEMINI_THINKING_LEVEL_SORT", "GEMINI_IMAGE_RESOLUTION", "GEMINI_READ_TOOLS",
               "GEMINI_READ_TOOLS_TIMEOUT", "GEMINI_READ_ZOOM_HINT", "INTAKE_SORT_DAMAGE_BOX", "INTAKE_READ_CROPS",
               "INTAKE_READ_CROPS_MAX"):
@@ -773,9 +776,11 @@ def benchmark_flags() -> None:
         except SystemExit:
             check(True, f"{bad} is refused")
 
-    # The zone settings (contract 8 D2) are always in ai_settings, on or off;
-    # what this checks is that none of D1's are while D1 is off.
-    shown = {k: v for k, v in bi.ai_settings(settings).items() if k not in ("intake_read_mode", "intake_grid_marks")}
+    # The zone settings (contract 8 D2) are always in ai_settings, on or off,
+    # and store_off while this test turns it off (its header); what this
+    # checks is that none of D1's are while D1 is off.
+    shown = {k: v for k, v in bi.ai_settings(settings).items()
+             if k not in ("intake_read_mode", "intake_grid_marks", "store_off")}
     check(shown == {"thinking_level_read": settings.gemini_thinking_level_read,
                     "thinking_level_sort": settings.gemini_thinking_level_sort,
                     "thinking_level_second_look": settings.gemini_thinking_level_second_look,

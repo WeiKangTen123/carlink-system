@@ -52,6 +52,11 @@ box the damage (its own sort-cache folder), and --read-crops [N] sends a
 close-up of each box beside its photo, N at most (default the setting's 8);
 each call notes the close-ups it sent ("crops").
 
+Contract 9: --zone-models CHAIN sets the zone calls' own chain
+(settings.gemini_zone_chain, the two lites by default; never the reading's),
+and --store-on sends the requests without store=False, as before contract 9
+-- for an A/B only. Each is in ai_settings while it acts.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -1983,6 +1988,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--grid-marks", action="store_const", const=True, default=None,
                     help="zone calls only: a 3x3 grid (A1..C3) drawn on each photo's copy, the model asked for the "
                          "cells the damage covers (settings.intake_grid_marks)")
+    # Contract 9.
+    ap.add_argument("--zone-models", type=_chain, metavar="CHAIN",
+                    help="the zone calls' model chain (settings.gemini_zone_chain; default the two lites, never the "
+                         "reading's); needs --read-mode zones")
+    ap.add_argument("--store-on", action="store_true",
+                    help="A/B only: the requests without store=False, as before contract 9 "
+                         "(settings.gemini_store_off off)")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2061,6 +2073,14 @@ def model_settings(args: argparse.Namespace) -> dict:
         out["intake_read_crops"] = True
         if args.read_crops:
             out["intake_read_crops_max"] = args.read_crops
+    # Contract 9. Likewise: a zone flag without zone reading stops the run.
+    zones_on = out.get("intake_read_mode", config.settings.intake_read_mode) == "zones"
+    if getattr(args, "zone_models", None):
+        if not zones_on:
+            sys.exit("--zone-models: the zone calls' models; give --read-mode zones too")
+        out["gemini_zone_chain"] = config.normal_chain(args.zone_models, "--zone-models")
+    if getattr(args, "store_on", False):
+        out["gemini_store_off"] = False
     return out
 
 
@@ -2073,6 +2093,13 @@ def ai_settings(settings) -> dict:
             out[field.removeprefix("gemini_")] = getattr(settings, field)
     if getattr(settings, "intake_read_crops", False):
         out["intake_read_crops_max"] = settings.intake_read_crops_max
+    # Contract 9's (--zone-models, --store-on) only while they act -- the
+    # zone chain in zone mode, store_off when turned off -- so a run without
+    # them reads as before.
+    if getattr(settings, "intake_read_mode", "single") == "zones":
+        out["zone_chain"] = getattr(settings, "gemini_zone_chain", None)
+    if not getattr(settings, "gemini_store_off", True):
+        out["store_off"] = False
     return out
 
 

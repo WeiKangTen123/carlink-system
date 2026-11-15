@@ -71,7 +71,9 @@ MAX_PHOTOS = 16
 # with 400 (2ae2183); the sorter's 87-name enum works, this stays well under.
 MAX_CANDIDATES = 40
 # What the Review step lists: past this, more ticks to read than parts found.
-MAX_SUGGESTIONS = 10
+# Contract 9 (conflict #22): 16, the zone reads giving about 13 a case; the
+# re-check sorts the doubtful ones last.
+MAX_SUGGESTIONS = 16
 # Past wordings shown per kit candidate ("Tail gate hinge LH").
 MAX_HINTS = 3
 CONFIDENCES = ["High", "Medium", "Low"]
@@ -657,13 +659,32 @@ def _ask(report_id: str, actor: AiActor) -> dict | None:
 _RANK = {c: i for i, c in enumerate(CONFIDENCES)}
 
 
+def _listed_as(item: dict, listed: set[str], listed_keys: set) -> bool:
+    """Whether a suggestion is on the damage list already (or on `listed`):
+    a named "Other / Not Listed" by its name -- two unlisted parts are two
+    -- anything else by covers_of."""
+    if item["part"] == _NOT_A_PART:
+        return item.get("key") in listed_keys
+    return is_listed(item["part"], listed)
+
+
 def _store(report_id: str, result: dict) -> None:
-    """Writes the answer onto the draft as data["second_look"], against the
-    form as it is now: suggestions for parts listed (or dismissed) by then
-    are dropped, the rest named in the firm's words, surest first, at most
-    MAX_SUGGESTIONS. The dismissed list is kept (pipeline.merge_redraft
-    carries it over a re-read)."""
-    from app.parts.prefill import row_name
+    """Writes the suggestions onto the draft as data["second_look"], against
+    the form as it is now.
+
+    Contract 9 (conflict #13): rebuilt on every read from the parts only
+    the zone reads found (IntakeSession.ai_draft["zone_suggestions"],
+    pipeline's option B split) and this second look's own items -- so the
+    zone suggestions show whether the second look ran, failed or is
+    switched off. Each gets its key (prefill.item_key). Those listed or
+    dismissed by then are dropped, the rest named in the firm's words,
+    surest first, one per part (a sided name and its "(side undetermined)"
+    twin are one), at most MAX_SUGGESTIONS. What a person decided --
+    dismissed, decisions -- is kept (pipeline.merge_redraft carries
+    second_look over a re-read); reads are this reading's
+    (ai_draft["zone_reads"]); the re-check's answer, about the items this
+    replaces, goes."""
+    from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
     from app.reports.schema import SecondLook
@@ -675,19 +696,30 @@ def _store(report_id: str, result: dict) -> None:
         if report is None or session is None or report.status != "intake":
             return
         data = dict(report.data or {})
-        dismissed = list(((data.get("second_look") or {}).get("dismissed")) or [])
+        previous = data.get("second_look") or {}
+        dismissed = list(previous.get("dismissed") or [])
+        decisions = list(previous.get("decisions") or [])
+        ai_draft = session.ai_draft or {}
+        zone_items = [dict(it) for it in ai_draft.get("zone_suggestions") or [] if isinstance(it, dict) and it.get("part")]
+        reads = [r for r in ai_draft.get("zone_reads") or [] if isinstance(r, str)]
         listed = listed_parts(data)
+        listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         vehicle = data.get("vehicle_info") or {}
-        items = [
-            it for it in result.get("items") or []
-            if it["part"] not in dismissed and not is_listed(it["part"], listed)
-        ]
+        items = []
+        for it in zone_items + [dict(it) for it in result.get("items") or []]:
+            it["key"] = it.get("key") or item_key(it) or it["part"]
+            # An old dismissed list holds part names: the keys of canonical parts.
+            if it["key"] in dismissed or it["part"] in dismissed or _listed_as(it, listed, listed_keys):
+                continue
+            items.append(it)
         items.sort(key=lambda it: (_RANK.get(it.get("confidence"), len(CONFIDENCES)), it.get("source") != "kit"))
         kept: list[dict] = []
         for it in items:
             # "Left Tail Lamp" and "Tail Lamp (side undetermined)" both: one
-            # lamp seen twice, the surer kept -- ticking both would list it twice.
-            if is_listed(it["part"], {k["part"] for k in kept}):
+            # lamp seen twice, the surer kept -- ticking both would list it
+            # twice. A zone read and the second look naming the same part:
+            # the surer too.
+            if _listed_as(it, {k["part"] for k in kept}, {k["key"] for k in kept}):
                 continue
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
@@ -697,7 +729,7 @@ def _store(report_id: str, result: dict) -> None:
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),
             photos_sent=result.get("photos_sent") or 0, candidates=result.get("candidates") or 0,
-            items=items[:MAX_SUGGESTIONS], dismissed=dismissed,
+            items=items[:MAX_SUGGESTIONS], dismissed=dismissed, reads=reads, decisions=decisions,
         )
         report.data = {**data, "second_look": stored.model_dump()}
         db.commit()

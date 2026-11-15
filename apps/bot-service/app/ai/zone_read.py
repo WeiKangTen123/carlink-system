@@ -26,7 +26,8 @@ what the photos really show first (zone_side_seen), and that decides:
     part without a side: a lamp filling the frame shows no LH or RH.
 
 intake/zones.py plans the zones, makes the calls (purpose "draft_zone": the
-reading's model chain, thinking level and tools -- structured.CALL_KINDS)
+light models' own chain, settings.gemini_zone_chain, with the reading's
+thinking level per model and never its tools -- structured.CALL_KINDS)
 and merges the answers.
 """
 import json

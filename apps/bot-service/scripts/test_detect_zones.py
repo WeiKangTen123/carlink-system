@@ -45,6 +45,12 @@ os.environ["GEMINI_API_KEY"] = "fake"
 os.environ["SECOND_LOOK_ENABLED"] = "false"
 os.environ["RUN_BACKGROUND_CLEANUP"] = "false"
 os.environ["MIN_FREE_DISK_GB"] = "0"
+# Today's requests exactly: contract 9's store=False (on by default) is
+# tested both ways in test_c9_base.py.
+os.environ["GEMINI_STORE_OFF"] = "false"
+# The zone calls on one lite, as they were on the reading chain here
+# before contract 9 gave them their own (test_c9_base.py).
+os.environ["GEMINI_ZONE_CHAIN"] = "gemini-3.5-flash-lite"
 
 import app.ai.structured as structured  # noqa: E402
 
@@ -572,7 +578,7 @@ def zone_mode_pipeline() -> None:
           "paperwork, cabin, scene or other party", sent)
     check(all(r["model"] == LITE and r["generation_config"] == {"thinking_level": "high"} for r in zcalls)
           and all(r["timeout"] == zone_read.ZONE_TIMEOUT for r in zcalls),
-          "the reading's chain and thinking level (structured.request_settings by purpose)")
+          "the zone chain, with the reading's thinking level (structured.request_settings by purpose)")
     check(all(r["input"][0]["text"].endswith("photos follow.") for r in zcalls)
           and all(len(r["system_instruction"]) < 2500 for r in zcalls), "a short prompt")
     got = saved("zt-zones")

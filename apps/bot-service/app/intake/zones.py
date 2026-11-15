@@ -36,8 +36,10 @@ Zones (plan_zones / photo_zones):
 
 Calls: one per zone read, at most MAX_ZONE_CALLS, so with the overall
 reading at most MAX_READ_CALLS per case (there are five zones). On the
-reading's model chain, for the same actor and keys, through the same rate
-limit (structured.call_structured), ZONE_WORKERS at a time. A zone call
+light models' own chain (settings.gemini_zone_chain, contract 9: never the
+reading's, whose first model has ~20 calls a day on the free tier), for
+the same actor and keys, through the same rate limit
+(structured.call_structured), ZONE_WORKERS at a time. A zone call
 that fails -- busy, quota, timeout, an answer that doesn't parse, the
 person's allowance gone -- is skipped and noted in the run log; the
 reading never fails for it. All the zone calls are one run of the log
@@ -56,7 +58,7 @@ from app.ai import allowance, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.second_look import ZONES
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
-from app.config import settings
+from app.config import chain, settings
 from app.intake.photos import ai_input_path
 from app.parts.prefill import item_key
 from app.reports.taxonomy import CANONICAL_PARTS, OTHER_PART, UNDETERMINED_SUFFIX, split_side, unsided_part
@@ -89,6 +91,11 @@ _PLAIN_AREAS = ("front", "rear", "left", "right")
 
 def zones_on() -> bool:
     return getattr(settings, "intake_read_mode", "single") == "zones"
+
+
+def zone_chain() -> list[str]:
+    """The zone calls' models (settings.gemini_zone_chain)."""
+    return chain(settings.gemini_zone_chain)
 
 
 def grid_on() -> bool:
@@ -398,9 +405,7 @@ def read_and_merge(
 
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 progress: Callable[[int], None] | None) -> list[tuple[str, list[dict]]]:
-    from app.ai.extraction import _model_chain
-
-    models = _model_chain()
+    models = zone_chain()
     grid = grid_on()
     started = time.monotonic()
     answers: dict[int, ZoneAnswer] = {}

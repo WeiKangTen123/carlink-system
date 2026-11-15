@@ -124,9 +124,14 @@ def image_resolution(kind: str | None) -> str | None:
 # Telegram bot drafts through draft_report, so "draft" is its call as well.
 # A purpose not here (annex suggestions) is sent as it always was.
 CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look"}
-# Contract 8 D2: a zone call (ai/zone_read.py) is part of the reading and
-# runs on its chain, so it takes the reading's thinking level and tools.
-CALL_KINDS["draft_zone"] = "read"
+# Contract 8 D2: a zone call (ai/zone_read.py) is part of the reading.
+# Contract 9: on its own light chain (settings.gemini_zone_chain), it takes
+# the reading's thinking level for each model -- the lites read at "high"
+# -- but never the reading's tools: zoom measured no gain, and a zone call
+# isn't asked to use them.
+CALL_KINDS["draft_zone"] = "zone"
+# A kind of call that takes another kind's thinking level setting.
+THINKING_OF = {"zone": "read"}
 
 
 def request_settings(purpose: str, model_id: str) -> dict:
@@ -140,7 +145,7 @@ def request_settings(purpose: str, model_id: str) -> dict:
     if kind is None:
         return {}
     extra: dict = {}
-    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{kind}", None))
+    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{THINKING_OF.get(kind, kind)}", None))
     level = levels.get(model_id) or levels.get(ANY)
     if level:
         extra["generation_config"] = {"thinking_level": level}
@@ -150,6 +155,14 @@ def request_settings(purpose: str, model_id: str) -> dict:
         if tools:
             extra["tools"] = [{"type": name} for name in tools]
     return extra
+
+
+def store_setting() -> dict:
+    """{"store": False} while settings.gemini_store_off (contract 9, the
+    default): Google keeps nothing of the call -- the photos included --
+    for later retrieval, which nothing here asks for. {} when off: the
+    request as before, with no store field."""
+    return {"store": False} if getattr(settings, "gemini_store_off", True) else {}
 
 
 def tools_try(extra: dict, timeout: float, system_instruction: str, tools_note: str | None = None) -> tuple[float, str]:
@@ -319,6 +332,7 @@ def call_structured(
                         # it hasn't got) answers 400: that try fails like
                         # any other error and the chain moves on.
                         **extra,
+                        **store_setting(),
                     )
                     result = _parse_answer(parse, interaction)
                     # Which model actually answered. The fallbacks return

@@ -117,9 +117,13 @@ class Settings(BaseSettings):
     gemini_model_chain: str = "gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     # Dashboard intake sorts every photo of a case (often 40-80) before the
     # real drafting call. Sorting needs no bounding boxes -- the one thing
-    # only the stronger models do -- so it runs lite-first, keeping the
-    # stronger models' much smaller daily quota for the drafting call.
-    gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
+    # only the stronger models do -- so it runs on the lite models only,
+    # keeping the stronger models' much smaller daily quota for the
+    # drafting call. Contract 9 (conflict #15): the strong model is no
+    # longer the last resort. With both lites busy, a sort batch spent one
+    # of its ~20 calls a day; now that batch fails, the finished ones stay
+    # sorted and the wizard offers Retry.
+    gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     # The second look after an intake reading (ai/second_look.py): ONE call
     # per read on its own chain, so it never draws on the reading model's
     # small free daily allowance. Provisional: chosen after measuring models
@@ -335,6 +339,29 @@ class Settings(BaseSettings):
     def _read_mode(cls, value):
         return normal_read_mode(value)
 
+    # Contract 9: a reason, a photo box and a 3D link for every finding,
+    # on the free tier. Every default sends today's requests byte for byte,
+    # but two the owner agreed to: the sort chain above no longer ends in
+    # the strong model, and store=False goes on every call
+    # (gemini_store_off).
+    #
+    # The zone calls' models (intake/zones.py), never the reading chain:
+    # the reading's first model has ~20 calls a day on the free tier, and
+    # ~5 zone calls a case would spend them in ~3 cases (conflict #14).
+    gemini_zone_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # store=False on every Gemini call (structured.call_structured): on the
+    # free tier Google otherwise keeps each request -- the case's photos --
+    # for a day so it can be fetched again, which nothing here does. Checked
+    # on 15 Nov on the pinned google-genai 2.22.0 (3.1-flash-lite and
+    # gemini-4-hydrogen): the answers are the same. False: today's request,
+    # with no store field (the benchmark's --store-on, for an A/B).
+    gemini_store_off: bool = True
+
+    @field_validator("gemini_zone_chain")
+    @classmethod
+    def _zone_chain(cls, value):
+        return normal_chain(value, "gemini_zone_chain")
+
 
 READ_MODES = ("single", "zones")
 
@@ -354,6 +381,23 @@ def normal_grid_marks(value) -> bool:
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
 # (end of Contract 8 D2)
+
+
+# Contract 9's parsers. Each raises ValueError, so a typo stops the app at
+# start-up; the benchmark checks its flags with them.
+def chain(text: str | None) -> list[str]:
+    """A model chain setting as its model names, in order, once each."""
+    return list(dict.fromkeys(_entries(text)))
+
+
+def normal_chain(value, name: str = "the chain") -> str:
+    """A model chain written the one way, "a,b". Blank is refused: every
+    call on it would fail."""
+    models = chain(str(value or ""))
+    if not models:
+        raise ValueError(f"{name}: at least one model name")
+    return ",".join(models)
+# (end of Contract 9)
 
 
 # Each model setting written the one way, None when blank (unset). Raise

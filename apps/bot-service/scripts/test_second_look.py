@@ -88,7 +88,8 @@ def _look_answer(enum: list[str], labels: list[str]) -> dict:
 
 
 class FakeInteractions:
-    def create(self, *, model, system_instruction, input, response_format, timeout):
+    # **_settings: thinking level, store=False (structured.call_structured).
+    def create(self, *, model, system_instruction, input, response_format, timeout, **_settings):
         schema = response_format["schema"]
         props = schema.get("properties", {})
         labels = _labels(input)
