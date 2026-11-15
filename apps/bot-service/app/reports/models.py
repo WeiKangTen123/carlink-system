@@ -177,6 +177,13 @@ class IntakePhoto(Base):
     # photo is "rear". (Added after the table shipped: see db._ADDED_COLUMNS.)
     part: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Where the sorter saw the damage, [ymin, xmin, ymax, xmax] on 0-1000
+    # of the image it was sent (triage.clean_box), when it was asked to box
+    # it (settings.intake_sort_damage_box, contract 8 D1); the reading's
+    # close-ups are cut from it (intake/crops.py). JSON, so the four numbers
+    # take one column and no migration beyond db._ADDED_COLUMNS. None: not
+    # asked, no damage seen, or a box that made no sense.
+    damage_box: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     kind_source: Mapped[str] = mapped_column(String, default="ai")
     # Kept in the case file but never sent to the AI.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)

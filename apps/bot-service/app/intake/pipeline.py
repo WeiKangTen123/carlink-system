@@ -39,9 +39,9 @@ from pathlib import Path
 from app.ai import allowance, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
-from app.ai.triage import BATCH_SIZE, triage_photos
+from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
 from app.config import settings
-from app.intake import zones
+from app.intake import crops, zones
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts import catalogue
 from app.parts.prefill import item_key
@@ -322,6 +322,10 @@ def _sort(report_id: str, actor: AiActor) -> None:
                 photo.shows_damage = found["shows_damage"]
                 photo.part = found["part"]
                 photo.note = found["note"]
+                # Only a sort asked for boxes says anything about one
+                # (settings.intake_sort_damage_box).
+                if "damage_box" in found:
+                    photo.damage_box = found["damage_box"]
             with done_lock:
                 done += len(batch)
                 progress = done
@@ -495,6 +499,37 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     return sorted(chosen, key=lambda p: order[p.id])
 
 
+# Contract 8 D1: the photos a close-up may be cut from -- the insured car's
+# (crops.py). The other party's car, the scene and paperwork never get one,
+# whatever box a photo regrouped by the surveyor still carries.
+CROP_KINDS = ("damage",) + _CAR_KINDS
+
+
+def crop_candidates(selected: list[IntakePhoto]) -> list[tuple[str, list[str], list[int]]]:
+    """The reading's photos a close-up may be cut from, best first, as
+    (photo id, its copies largest first, its box): those of the insured car
+    showing damage with a sensible box, the damage close-ups first, each
+    group spread over the camera order (_spread_order) so a cap doesn't
+    spend itself on the first corner photographed."""
+    boxed = [p for p in selected if p.shows_damage and p.kind in CROP_KINDS and clean_box(p.damage_box)]
+    ordered = _spread_order([p for p in boxed if p.kind == "damage"]) + _spread_order(
+        [p for p in boxed if p.kind != "damage"])
+    return [(p.id, [p.path, ai_input_path(p.path)], clean_box(p.damage_box)) for p in ordered]
+
+
+def read_crops(candidates: list[tuple[str, list[str], list[int]]], limit: int) -> dict[str, str]:
+    """{photo id: its close-up} for up to `limit` of crop_candidates, in
+    their order; one that can't be cut gives its place to the next."""
+    out: dict[str, str] = {}
+    for photo_id, sources, box in candidates:
+        if len(out) >= limit:
+            break
+        path = crops.make_crop(sources, box)
+        if path:
+            out[photo_id] = path
+    return out
+
+
 def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
     """The reading stage, as one run of the log (ai/runs.py): kind "read",
     or "redraft" for a re-read -- then the second look at the damage it
@@ -532,6 +567,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if zone_mode:
             # The areas to read one at a time, from every photo of the case.
             zone_jobs = zones.jobs_for(photos, labels)
+        # Contract 8 D1: close-ups beside the photos the sorter boxed. Off:
+        # no box is read and the request is as before.
+        with_crops = bool(getattr(settings, "intake_read_crops", False))
+        candidates = crop_candidates(selected) if with_crops else []
     finally:
         db.close()
 
@@ -546,6 +585,11 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # Progress over the overall reading and each zone call (GET
         # /intake/{id}'s progress; the wizard shows reading without counts).
         _set_stage(report_id, "reading", 0, 1 + len(zone_jobs))
+    extra: dict = {}
+    if with_crops:
+        made = read_crops(candidates, settings.intake_read_crops_max)
+        extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
+        logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
     draft = draft_report(
         notes,
         [path for _, _, path in inputs],
@@ -553,6 +597,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         photo_hints=hints,
         timeout=120.0,
         actor=actor,
+        **extra,
     )
     data = draft.model_dump()
 

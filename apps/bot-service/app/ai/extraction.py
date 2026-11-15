@@ -117,6 +117,28 @@ SYSTEM_PROMPT = (
     "Never fabricate names, phone numbers, plate numbers, VINs, claim numbers, timestamps, or confidence scores."
 )
 
+# Contract 8 D1. ZOOM_NOTE goes after the prompt only on a try whose request
+# carries the code execution tool, and only while the gemini_read_zoom_hint
+# setting is on (structured.tools_try): the tool lets the model cut and
+# enlarge parts of a photo itself (Agentic Vision), but a light model given
+# it may never use it unless asked. Kept to the part and its side -- what
+# the light reader gets wrong -- and ends by holding it to the JSON, since
+# its answer now comes after the code it ran.
+ZOOM_NOTE = (
+    "You can run Python code on the photos: before naming a damaged part and its side, crop and zoom into each "
+    "damaged area and the panels round it, to see which part it is and where it sits on the car. Your answer is "
+    "still only the JSON."
+)
+# Said once before the photos when any close-up follows (the
+# intake_read_crops setting, pipeline.read_crops): a close-up is cut from
+# the photo before it, so it must not be counted as a photo of its own,
+# cited by a label of its own, or used for a bounding box.
+CLOSE_UP_NOTE = (
+    "Some photos are followed by a close-up of their damage, cut from that same photo to show it larger. It is "
+    "not another photo: a part seen in it is the photo's own, with that photo's label as 'photo_reference', and "
+    "'bbox_2d' is always on the whole photo, never on the close-up."
+)
+
 
 
 # Fields the model must EMIT rather than silently skip.
@@ -311,9 +333,13 @@ def _build_input(
     known_facts: dict | None = None,
     photo_labels: list[str] | None = None,
     photo_hints: list[dict | None] | None = None,
+    photo_crops: list[str | None] | None = None,
 ) -> list[dict]:
     """photo_hints: what the sorter saw in each photo, in the order of
-    photo_paths (dashboard intake only; see photo_hint)."""
+    photo_paths (dashboard intake only; see photo_hint). photo_crops: the
+    close-up of each photo's damage, or None (intake with
+    settings.intake_read_crops only, pipeline.read_crops), sent right after
+    its photo; None or no close-up at all: the request is as before."""
     parts: list[dict] = []
     if known_facts:
         # Facts the reporter already gave, passed so a PARTIAL correction can
@@ -356,6 +382,10 @@ def _build_input(
                 "each part and side from what you see."
             )
         parts.append({"type": "text", "text": text})
+    closeups = list(photo_crops or [])
+    closeups += [None] * (len(photo_paths) - len(closeups))
+    if any(closeups):
+        parts.append({"type": "text", "text": CLOSE_UP_NOTE})
     for i, path in enumerate(photo_paths, start=1):
         # Labeled so the model can honestly attribute a damage_summary item to
         # the specific photo it actually saw it in (photo_reference), matching
@@ -370,6 +400,12 @@ def _build_input(
         # (settings.gemini_image_resolution); no kind -- the bots, a photo
         # never sorted -- sends it at Gemini's default, as before.
         parts.append(image_part(path, kind=(hints[i - 1] or {}).get("kind")))
+        # The close-up has a label part of its own, after the photo: the
+        # photo's own "Photo P07:" stays exactly that, and the model still
+        # cites P07. Its photo's kind, so it gets the same resolution.
+        if closeups[i - 1]:
+            parts.append({"type": "text", "text": f"Close-up of photo {label}:"})
+            parts.append(image_part(closeups[i - 1], kind=(hints[i - 1] or {}).get("kind")))
     return parts
 
 
@@ -526,20 +562,26 @@ def draft_report(
     *,
     actor: AiActor,
     photo_hints: list[dict | None] | None = None,
+    photo_crops: list[str | None] | None = None,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
     model attempt; intake raises it because it sends up to ~32 photos in one
     call, where the bot's few photos fit comfortably in 45s. actor: who
     pays (structured.call_structured). photo_hints: what the sorter saw in
-    each photo (dashboard intake; photo_hint)."""
+    each photo (dashboard intake; photo_hint). photo_crops: a close-up to
+    send after each photo, or None (_build_input)."""
+    # Contract 8 D1: passed only when set, so call_structured is called
+    # exactly as before otherwise.
+    extra = {"tools_note": ZOOM_NOTE} if settings.gemini_read_zoom_hint else {}
     return call_structured(
         purpose="draft",
         system_instruction=SYSTEM_PROMPT,
-        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints),
+        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints, photo_crops),
         schema=_response_schema(),
         parse=_parse_draft,
         models=_model_chain(),
         actor=actor,
         timeout=timeout,
+        **extra,
     )

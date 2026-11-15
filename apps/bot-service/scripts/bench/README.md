@@ -8,6 +8,7 @@ folder holds what runs it on the server and compares two runs:
 |---|---|
 | `run_bench.sh` | on the server, as user `weika`: runs the benchmark for one git ref inside the live `carlink_api` container, on a scratch database, and copies the result out |
 | `compare.py` | before/after table of two result files, with ranges and a noise verdict |
+| `probe_crops.py` | contract 8 D1: only the sorter, with its damage box, on a few photos of one case; writes the boxes and the close-ups cut from them, to judge the light sorter's boxes before a `--read-crops` run (its docstring has the command) |
 | `../test_benchmark_scoring.py` | offline tests of the scoring (synthetic data, no Gemini) |
 
 ## Rules
