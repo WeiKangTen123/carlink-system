@@ -37,6 +37,12 @@ with --thinking-level-read / -sort / -second-look, --image-resolution and
 Gemini call's tokens (prompt, output, thinking) and seconds under each
 run's "ai_calls".
 
+Contract 8 D2: --read-mode zones reads the car one area at a time after the
+overall reading (intake/zones.py), --grid-marks draws the grid on the zone
+calls' photos. The zone calls are their own stage ("draft_zone": calls,
+tokens, seconds), and each run keeps what every zone sent and saw under
+"zones".
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -607,6 +613,23 @@ def run_metrics(run: dict) -> dict:
             for field, suffix in _TOKEN_METRICS:
                 if stage.get(field) is not None:
                     m[f"{short}_{suffix}"] = stage[field]
+    # Contract 8 D2: the zone stage -- its calls, failures and seconds; the
+    # side zones whose photos showed the other side than the sorter's; and
+    # the parts only a zone found, or both kinds of read.
+    zone_stage = (accounting or {}).get("draft_zone")
+    if zone_stage:
+        m.update(zone_calls=zone_stage.get("calls"), zone_failed=zone_stage.get("failed_calls"),
+                 zone_s=zone_stage.get("seconds"))
+    zones = (run.get("zones") or {}).get("zones")
+    if zones is not None:
+        m["zone_side_flips"] = sum(1 for z in zones if z.get("zone") in ("left", "right")
+                                   and z.get("side_seen") in ("left", "right") and z.get("side_seen") != z.get("zone"))
+        m["zone_other_end"] = sum(1 for z in zones if z.get("zone") in ("front", "rear")
+                                  and z.get("side_seen") in ("front", "rear") and z.get("side_seen") != z.get("zone"))
+    found_by = [i.get("found_by") for i in run.get("drafted_items") or [] if i.get("found_by")]
+    if found_by:
+        m["zone_only_parts"] = sum(1 for f in found_by if "overall" not in f)
+        m["both_parts"] = sum(1 for f in found_by if "overall" in f and len(f) > 1)
     cache = run.get("sort_cache")
     if cache:
         m["sort_cache_hits"] = cache.get("hits", 0)
@@ -700,6 +723,8 @@ def summarize(runs: list[dict]) -> dict:
 TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls")
 # accounting's purposes -> the short name in run metrics ("read_tok_in").
 _SHORT_PURPOSES = {"draft": "read", "photo sort": "sort", "second look": "look"}
+# Contract 8 D2: the zone calls (ai/zone_read.PURPOSE), "zone_tok_in"...
+_SHORT_PURPOSES["draft_zone"] = "zone"
 _TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
                   ("tool_calls", "code_runs"))
 
@@ -925,7 +950,9 @@ def _app() -> SimpleNamespace:
     import app.ai.second_look as second_look
     import app.ai.triage as triage
 
-    for module in (triage, extraction, second_look):  # imported before the wrap (not today)
+    import app.ai.zone_read as zone_read
+
+    for module in (triage, extraction, second_look, zone_read):  # imported before the wrap (not today)
         if not getattr(module.call_structured, "_bench_wrapped", False):
             module.call_structured = structured.call_structured
 
@@ -1186,6 +1213,8 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
 
 _ITEM_FIELDS = ("part", "other_part_name", "damage_type", "condition", "condition_tokens", "remarks", "severity",
                 "ai_confidence", "side_inferred")
+# Contract 8 D2: which reads found the part, in which photos, which cells.
+_ITEM_FIELDS += ("found_by", "seen_in", "grid_cells")
 
 
 def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, reports: ReportSet | None = None,
@@ -1267,6 +1296,17 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                 out["read_seconds"] = round(max(0.0, out["read_seconds"] - look["seconds"]), 1)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
+        # Contract 8 D2: what each zone call sent and saw, from the run log's
+        # zone row (runs.ZONES_KIND), photos by case label.
+        AiRun = A.runs.AiRun
+        zone_row = (db.query(AiRun).filter(AiRun.report_id == rid, AiRun.kind == A.runs.ZONES_KIND)
+                    .order_by(AiRun.started_at.desc()).first())
+        if zone_row is not None:
+            label_of = {f"@{p.id}": f"P{i + 1:02d}" for i, p in enumerate(photos)}
+            detail = copy.deepcopy(zone_row.photos_sent) if isinstance(zone_row.photos_sent, dict) else {}
+            for zone in detail.get("zones") or []:
+                zone["photos"] = [label_of.get(ref, ref) for ref in zone.get("photos") or []]
+            out["zones"] = {"status": zone_row.status, "error_code": zone_row.error_code, **detail}
     finally:
         db.close()
 
@@ -1338,6 +1378,20 @@ def detail_lines(r: dict) -> list[str]:
         stages.append(f"{purpose}: {st['calls']} call(s) {st['seconds']}s, tries {st['attempts']} [{models}], "
                       f"slot wait {st['slot_wait_s']}s, 429 x{st['n_429']} waited {st['wait_429_s']}s{_tokens_text(st)}")
     lines.append("   AI: " + ("; ".join(stages) if stages else "no calls"))
+    # Contract 8 D2: one line for the zone calls.
+    zones = (r.get("zones") or {}).get("zones")
+    if zones is not None:
+        said = []
+        for z in zones:
+            text = f"{z.get('zone')} {z.get('status')} ({len(z.get('photos') or [])} photos"
+            if z.get("status") == "ok":
+                text += f", saw {z.get('side_seen')}, found {z.get('found')}, intact {len(z.get('intact') or [])}"
+            if z.get("error_code"):
+                text += f", {z['error_code']}"
+            if z.get("note"):
+                text += f"; {z['note']}"
+            said.append(text + ")")
+        lines.append("   zones: " + ("; ".join(said) if said else "none to read"))
     # Every call but sorting's batches (summed in the line above), one line
     # each: what a thinking level or a resolution cost.
     for call in r.get("ai_calls") or []:
@@ -1401,6 +1455,13 @@ TABLES = (
      ("read code runs", "read_code_runs"), ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
      ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think")),
 )
+# Contract 8 D2: the zone stage.
+TABLES += (
+    (("zone calls", "zone_calls"), ("zone failed", "zone_failed"), ("zone s", "zone_s"),
+     ("zone tok in", "zone_tok_in"), ("zone tok out", "zone_tok_out"), ("zone thinking", "zone_tok_think"),
+     ("zone only", "zone_only_parts"), ("both reads", "both_parts"), ("side flips", "zone_side_flips"),
+     ("other end", "zone_other_end")),
+)
 
 
 def summary_table(summary: dict) -> list[str]:
@@ -1453,6 +1514,11 @@ MODEL_SETTINGS = (
     ("thinking_level_second_look", "gemini_thinking_level_second_look", "normal_thinking_levels"),
     ("image_resolution", "gemini_image_resolution", "normal_image_resolutions"),
     ("read_tools", "gemini_read_tools", "normal_read_tools"),
+)
+# Contract 8 D2: zone reading and its grid marks (--read-mode, --grid-marks).
+MODEL_SETTINGS += (
+    ("read_mode", "intake_read_mode", "normal_read_mode"),
+    ("grid_marks", "intake_grid_marks", "normal_grid_marks"),
 )
 
 
@@ -1508,6 +1574,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--max-read", type=int, metavar="N", help="photos one reading sends (settings.intake_max_read_photos)")
     ap.add_argument("--drop-rule", action="append", choices=sorted(READING_RULES),
                     help="ablation: take one reading rule out of the prompt (repeatable)")
+    # Contract 8 D2: reading the car one area at a time.
+    ap.add_argument("--read-mode", choices=("single", "zones"),
+                    help="'zones': after the overall reading, one call per area of the car with that area's "
+                         "checklist, merged in (settings.intake_read_mode; default single)")
+    ap.add_argument("--grid-marks", action="store_const", const=True, default=None,
+                    help="zone calls only: a 3x3 grid (A1..C3) drawn on each photo's copy, the model asked for the "
+                         "cells the damage covers (settings.intake_grid_marks)")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")

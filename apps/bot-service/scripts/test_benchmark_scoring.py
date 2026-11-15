@@ -788,7 +788,9 @@ def test_benchmark_run() -> None:
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
     assert doc["ai_settings"] == {"thinking_level_read": "low,test-strong=high", "thinking_level_sort": "minimal",
                                   "thinking_level_second_look": None, "image_resolution": "damage=ultra_high,*=medium",
-                                  "read_tools": "code_execution"}, doc["ai_settings"]
+                                  "read_tools": "code_execution",
+                                  # Contract 8 D2: zone reading, at its defaults.
+                                  "intake_read_mode": "single", "intake_grid_marks": False}, doc["ai_settings"]
     assert settings_seen[0] == ("low,test-strong=high", "damage=ultra_high,*=medium", "code_execution"), settings_seen
     assert doc["sort_cache"]["thinking_level_sort"] == "minimal"
     ok("the model-setting flags are on the app's settings while it reads, and in the result file (ai_settings)")

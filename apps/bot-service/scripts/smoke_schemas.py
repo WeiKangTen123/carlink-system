@@ -36,6 +36,11 @@ carlink_api), and takes a slot from the shared rate-limit window per call
 12-per-minute quota. ~3 x (models) calls. The key is never printed: errors
 are scrubbed (ai/keys.scrub).
 
+Contract 8 D2: --zones adds the zone calls' schemas (ai/zone_read.py, purpose
+"draft_zone", on the reading's chain): "zone_rear" as sent without grid marks
+and "zone_close_grid", the largest (every outside part, grid cells) --
+2 x (models) calls more.
+
 Exit status: 0 when no model answered 400; 1 when any did; 2 when it could
 not run (no --live, no key).
 """
@@ -114,6 +119,23 @@ def _schemas(image: str) -> dict[str, dict]:
     }
 
 
+def _zone_schemas(image: str) -> dict[str, dict]:
+    """Contract 8 D2: a zone call's request as intake/zones sends it, for
+    the rear (no grid) and close-ups with grid marks (the largest)."""
+    from app.ai import zone_read
+
+    out = {}
+    for name, zone, grid in (("zone_rear", "rear", False), ("zone_close_grid", "close", True)):
+        PURPOSES[name] = zone_read.PURPOSE
+        out[name] = {
+            "system": zone_read.system_prompt(zone, grid),
+            "input": zone_read.build_input([("P01", image, "damage")], grid),
+            "schema": zone_read.response_schema(zone, ["P01"], grid),
+            "parse": lambda raw, zone=zone, grid=grid: zone_read.parse_answer(zone, raw, ["P01"], grid),
+        }
+    return out
+
+
 def request(name: str, spec: dict, model: str, resolution: str | None = None) -> dict:
     """What call_structured would send for one schema on one model: its
     model settings (request_settings) included, and --resolution on every
@@ -157,6 +179,8 @@ def main() -> int:
     parser.add_argument("--thinking-level-second-look", help="instead of settings.gemini_thinking_level_second_look")
     parser.add_argument("--read-tools", help="instead of settings.gemini_read_tools (code_execution)")
     parser.add_argument("--resolution", choices=IMAGE_RESOLUTIONS, help="every image sent with this resolution")
+    # Contract 8 D2: the zone calls' schemas too.
+    parser.add_argument("--zones", action="store_true", help="also the zone calls' schemas (ai/zone_read.py)")
     args = parser.parse_args()
     if not args.live:
         print("Refusing to run without --live: every line is a real Gemini call on the company key.")
@@ -193,6 +217,8 @@ def main() -> int:
     results: list[tuple[str, str, str, str]] = []
     with tempfile.TemporaryDirectory(prefix="smoke-schemas-") as folder:
         schemas = _schemas(_tiny_image(Path(folder)))
+        if args.zones:
+            schemas.update(_zone_schemas(_tiny_image(Path(folder))))
         for name, spec in schemas.items():
             print(f"\n{name} schema: {len(json.dumps(spec['schema']))} characters")
             for model in models:

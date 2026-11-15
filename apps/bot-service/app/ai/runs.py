@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 # check (ai/second_look.py) -- its own row, so the reading's time and model
 # ("AI read 14 of 41 photos (48 s)") stay the reading's.
 KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup", "second_look")
+# Contract 8 D2: the zone calls after an intake reading (intake/zones.py,
+# settings.intake_read_mode "zones"), one row for all of them, like the
+# sorting stage's batches. Its photos_sent says per zone what was sent and
+# what came back (intake/zones.read_and_merge); not a READ_KIND, so "AI
+# read 14 of 41 photos" stays the overall reading's.
+ZONES_KIND = "read_zones"
+KINDS += (ZONES_KIND,)
 CHANNELS = ("dashboard", "telegram", "whatsapp", "system")
 STATUSES = ("running", "ok", "failed", "refused", "aborted")
 # What counts as a failure on GET /ai-usage and in the case's list.
@@ -538,3 +545,28 @@ def relabel_last_read(db, report_id: str, read_ids: list[str], label_of: dict[st
     if row is None or len(row.photos_sent) != len(read_ids):
         return
     row.photos_sent = [label_of[photo_id] for photo_id in read_ids if photo_id in label_of]
+
+
+def relabel_zone_reads(db, report_id: str, label_of: dict[str, str]) -> None:
+    """Contract 8 D2, at filing beside relabel_last_read (no commit here):
+    the zone rows' photos, kept as "@<photo id>" as damage items' references
+    are in a draft, under the case's final P-numbers; a photo deleted since
+    drops out. Every zone row of the case: the photo rows are deleted at
+    filing, so an "@id" left behind would point at nothing."""
+    rows = db.query(AiRun).filter(AiRun.report_id == report_id, AiRun.kind == ZONES_KIND).all()
+    for row in rows:
+        detail = row.photos_sent
+        if not isinstance(detail, dict) or not isinstance(detail.get("zones"), list):
+            continue
+        zones = []
+        for zone in detail["zones"]:
+            zone = dict(zone) if isinstance(zone, dict) else zone
+            if isinstance(zone, dict) and isinstance(zone.get("photos"), list):
+                zone["photos"] = [
+                    label_of.get(ref[1:]) if str(ref).startswith("@") else ref
+                    for ref in zone["photos"]
+                    if not str(ref).startswith("@") or ref[1:] in label_of
+                ]
+            zones.append(zone)
+        # A new object, so the JSON column is seen to change.
+        row.photos_sent = {**detail, "zones": zones}
