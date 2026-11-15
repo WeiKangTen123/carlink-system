@@ -41,8 +41,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from sqlalchemy import func
-
 from app.ai import allowance, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured, image_part
@@ -217,13 +215,15 @@ def _sided_names(family: str) -> list[str]:
 def _same_make_history(db, make: str | None) -> bool:
     """Whether the firm has done a case of this make before. history.suggest
     falls back to every imported case; a Toyota's kit is no guide to a
-    Honda's, so the kit candidates are same-make only."""
-    from app.reports.models import PastAnnexLine
+    Honda's, so the kit candidates are same-make only. Over the lines
+    suggest itself uses (history.past_lines): a learned case counts only
+    while it is signed off and learning is on."""
+    from app.parts.history import past_lines
 
     if not (make or "").strip():
         return False
     wanted = make.strip().lower()
-    return db.query(PastAnnexLine.id).filter(func.lower(func.trim(PastAnnexLine.make)) == wanted).first() is not None
+    return any((ln.make or "").strip().lower() == wanted for ln in past_lines(db))
 
 
 def candidates(db, *, make: str | None, model: str | None, listed: set[str], dismissed: set[str],

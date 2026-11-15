@@ -111,6 +111,9 @@ _ADDED_INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_catalogue_jobs_report_id ON catalogue_jobs (report_id)",
     "CREATE INDEX IF NOT EXISTS ix_catalogue_suggestions_report_id ON catalogue_suggestions (report_id)",
     "CREATE INDEX IF NOT EXISTS ix_catalogue_suggestions_job_id ON catalogue_suggestions (job_id)",
+    # The AI accuracy record (contract 8 L, models.AiAccuracy): the same name
+    # create_all gives signed_off_at's index=True.
+    "CREATE INDEX IF NOT EXISTS ix_ai_accuracy_signed_off_at ON ai_accuracy (signed_off_at)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

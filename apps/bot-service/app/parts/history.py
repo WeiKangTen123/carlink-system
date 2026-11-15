@@ -22,14 +22,17 @@ priced Annex A rows from it, tagged prefilled, for the surveyor to check).
 import hashlib
 import re
 import statistics
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.reports.models import PastAnnexLine, PastLabourLine
+from app.config import settings
+from app.reports.models import PastAnnexLine, PastLabourLine, Report
 
 # Conditions that mean "renewed on refit" or "kept", not "damaged".
 FITTING_CONDITIONS = {"necessary", "serviceable"}
@@ -579,6 +582,93 @@ def file_digest(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# ------------------------------------------- which past lines may answer
+
+# Contract 8 L: a case signed off in Carlink joins the history as the past
+# case "carlink:<report id>" (app/parts/learn.py), next to the imported CL
+# spreadsheets.
+LEARNED_PREFIX = "carlink:"
+
+_CL_REF = re.compile(r"\bCL\s*-?\s*(\d+)", re.I)
+
+
+def cl_ref(text: str | None) -> str:
+    """A CL reference written one way ("CL 12330"), however it was typed or
+    read: "CL12330" as the importer keeps a cover page's "Ref: CL12330",
+    "CL-12330 ..." when it fell back to the file name, "CL 12330" as
+    learn.py keeps a case's Our Ref; anything else as it is, trimmed. For
+    comparing only: what is stored stays as it was written (a re-import
+    finds its earlier lines by the importer's own spelling)."""
+    m = _CL_REF.search(text or "")
+    return f"CL {m.group(1)}" if m else (text or "").strip()
+
+
+# (case refs left out, only lines imported before this naive-UTC moment):
+# set for one piece of work by restricted(). A ContextVar, so a background
+# task's restriction never reaches a request on another thread.
+_VIEW: ContextVar[tuple[frozenset, datetime | None]] = ContextVar("past_lines_view", default=(frozenset(), None))
+
+
+@contextmanager
+def restricted(exclude_refs=(), imported_before: datetime | None = None):
+    """Within the block, suggest() and firm_wording() leave out the past
+    cases in exclude_refs and every line imported at or after
+    imported_before. For the AI accuracy record (app/reports/accuracy.py),
+    which rebuilds the Annex A the machine would have written when the case
+    was filed: never from the case's own lines, nor from lines that only
+    came in later; and for a signed-off case asking for suggestions."""
+    if imported_before is not None and imported_before.tzinfo is not None:
+        imported_before = imported_before.astimezone(timezone.utc).replace(tzinfo=None)
+    token = _VIEW.set((frozenset(exclude_refs), imported_before))
+    try:
+        yield
+    finally:
+        _VIEW.reset(token)
+
+
+def _naive_utc(value: datetime | None) -> datetime | None:
+    """SQLite hands DateTime columns back naive; a fresh row holds an aware one."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def past_lines(db: Session) -> list[PastAnnexLine]:
+    """Every past Annex A line suggestions may use. A Carlink case's own
+    lines (LEARNED_PREFIX) count only while that case is signed off, and
+    only while learning is on (settings.learn_from_signed_off): a reopened
+    or deleted case's lines are removed with it (learn.forget), and this
+    makes sure a removal that failed, or a sign-off still being recorded
+    when the case was reopened, can never let a case be priced from its own
+    lines. A case whose spreadsheet was imported as well (its Our Ref is a
+    CL reference here) counts once, as the spreadsheet."""
+    lines = db.query(PastAnnexLine).all()
+    excluded, before = _VIEW.get()
+    if excluded or before is not None:
+        lines = [
+            ln for ln in lines
+            if ln.case_ref not in excluded
+            and (before is None or (ln.imported_at is not None and _naive_utc(ln.imported_at) < before))
+        ]
+    if not any(is_learned(ln.case_ref) for ln in lines):
+        return lines
+    if not settings.learn_from_signed_off:
+        return [ln for ln in lines if not is_learned(ln.case_ref)]
+    signed = {LEARNED_PREFIX + rid for (rid,) in db.query(Report.id).filter(Report.status == "Signed Off")}
+    imported = {cl_ref(ln.case_ref) for ln in lines if not is_learned(ln.case_ref)}
+    return [
+        ln for ln in lines
+        if not is_learned(ln.case_ref)
+        or (ln.case_ref in signed and not (ln.source_file and cl_ref(ln.source_file) in imported))
+    ]
+
+
+def is_learned(case_ref: str | None) -> bool:
+    """A past case that is a signed-off Carlink case (learn.py), not a
+    spreadsheet."""
+    return (case_ref or "").startswith(LEARNED_PREFIX)
+
+
 # --------------------------------------------------------- suggestions
 
 
@@ -632,16 +722,19 @@ def suggest(
     """Annex A lines past cases wrote for these damaged parts.
 
     Scope: the same make and model when there is history for it, else the
-    same make, else every imported case -- said in the answer. Per damaged
-    part, the lines its family had in past cases; plus, under "often
-    replaced with", families that appeared in most past cases where that
-    part was damaged but aren't damaged here (the rear windscreen trims on a
-    tailgate job). Lines already in this case's Annex A are left out.
+    same make, else every imported case -- said in the answer. A damaged
+    part the model's cases have no line for takes the same make's lines,
+    that part alone; every group says which scope its lines came from
+    ("scope"). Per damaged part, the lines its family had in past cases;
+    plus, under "often replaced with", families that appeared in most past
+    cases where that part was damaged but aren't damaged here (the rear
+    windscreen trims on a tailgate job). Lines already in this case's Annex
+    A are left out.
     unsided: nobody has established the parts' sides (prefill.
     side_unconfirmed), so no line keeps a LH / RH; the end stays, which a
     "(side undetermined)" name loses ("Left Rear Wheel" -> the rear rims).
     """
-    lines = db.query(PastAnnexLine).all()
+    lines = past_lines(db)
     if exclude_ref:
         lines = [ln for ln in lines if ln.case_ref != exclude_ref]
     scope_label, pool = "all imported cases", lines
@@ -651,6 +744,13 @@ def suggest(
         scope_label, pool = f"past {make} {by_model[0].model} cases", by_model
     elif by_make:
         scope_label, pool = f"past {make} cases", by_make
+    # A part the model's cases never had falls back, on its own, to the
+    # make's cases: one signed-off case of a new model (learn.py) made the
+    # model the scope and hid the make's priced lines for every other part
+    # (review of contract 8 L, 2026-11-12). Never to another make's per
+    # part: that stays the whole answer's scope, when the make has no
+    # history at all, as before.
+    make_scope = (f"past {make} cases", by_make) if pool is by_model else None
 
     cases = sorted({ln.case_ref for ln in pool})
     have = {normalise_item(i) for i in existing_items}
@@ -666,18 +766,22 @@ def suggest(
         if unsided or part.endswith(" (side undetermined)"):
             undetermined.add(fam)
 
-    # Which families each past case had damaged (not just refitted).
-    fam_of = {id(ln): _line_family(ln) for ln in pool}
+    # Which families each past case had damaged (not just refitted). Every
+    # line's family, as the make's fallback reads them too.
+    fam_of = {id(ln): _line_family(ln) for ln in lines}
+    pool_families = {fam_of[id(ln)] for ln in pool}
     damaged_by_case: dict[str, set[str]] = {}
     for ln in pool:
         if fam_of[id(ln)] and (ln.condition or "").strip().lower() not in FITTING_CONDITIONS:
             damaged_by_case.setdefault(ln.case_ref, set()).add(fam_of[id(ln)])
 
-    def lines_for(family: str, side: str | None, case_refs: set[str] | None = None, unsided: bool = False) -> list[dict]:
+    def lines_for(family: str, side: str | None, case_refs: set[str] | None = None, unsided: bool = False,
+                  within: list[PastAnnexLine] | None = None) -> list[dict]:
         """unsided: the damaged part's side is undetermined, so no line
-        keeps a past case's LH / RH."""
+        keeps a past case's LH / RH. within: other lines than the scope's
+        (the make's fallback)."""
         groups: dict[str, list[PastAnnexLine]] = {}
-        for ln in pool:
+        for ln in pool if within is None else within:
             if fam_of[id(ln)] != family or (case_refs is not None and ln.case_ref not in case_refs):
                 continue
             groups.setdefault(ln.item_key, []).append(ln)
@@ -744,15 +848,23 @@ def suggest(
         source = family
         # Only within the same model: another model's "Sport rim" x2 is no
         # line for this car's one rear wheel.
-        if family in _END_FALLBACK and by_model and family not in fam_of.values():
+        if family in _END_FALLBACK and by_model and family not in pool_families:
             source = _END_FALLBACK[family]
         # A sided family with no side: a "(side undetermined)" part (or a
         # pre-taxonomy "Tail lamp"). The past lines' LH / RH said which side
         # THAT case had; printed here it read as this case's finding.
-        found = lines_for(source, side, unsided=side is None and (family in _SIDED or family in undetermined))
+        no_side = side is None and (family in _SIDED or family in undetermined)
+        found = lines_for(source, side, unsided=no_side)
+        group_scope, covered = scope_label, source in pool_families
+        if not covered and make_scope and any(fam_of[id(ln)] == family for ln in make_scope[1]):
+            # The family itself, not the end-less rim lines: another model's
+            # "Sport rim" x2 is no line for this car's one rear wheel.
+            group_scope, covered = make_scope[0], True
+            found = lines_for(family, side, unsided=no_side, within=make_scope[1])
         if found:
-            groups.append({"part": family if not side else f"{side} {family}", "reason": "damaged", "lines": found})
-        elif source not in fam_of.values():
+            groups.append({"part": family if not side else f"{side} {family}", "reason": "damaged", "lines": found,
+                           "scope": group_scope})
+        elif not covered:
             # Only parts no past case covers. A part whose past lines are all
             # already in this Annex A is simply done -- calling it "no
             # history" sent surveyors to ask the AI for nothing.
@@ -773,7 +885,8 @@ def suggest(
                 continue
             found = lines_for(fam, None, with_it)
             if found:
-                groups.append({"part": fam, "reason": f"often replaced with {family} ({n} of {len(with_it)} cases)", "lines": found})
+                groups.append({"part": fam, "reason": f"often replaced with {family} ({n} of {len(with_it)} cases)", "lines": found,
+                               "scope": scope_label})
                 wanted[fam] = None  # list each companion once
 
     return {"scope": scope_label, "cases_used": len(cases), "groups": groups, "without_history": without_history}
@@ -808,7 +921,7 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     family, side = family_and_side(canon)
     if family in _COARSE_FAMILIES:
         return None
-    lines = [ln for ln in db.query(PastAnnexLine).all() if _line_family(ln) == family]
+    lines = [ln for ln in past_lines(db) if _line_family(ln) == family]
     scopes = (
         [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
         [ln for ln in lines if _same(ln.make, make)],

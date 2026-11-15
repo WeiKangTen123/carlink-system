@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Building2, UserCog, Users } from "lucide-react";
+import { Activity, Building2, Gauge, UserCog, Users } from "lucide-react";
 
-/** The four Settings tabs, each its own address. Admins only: the layout
+/** The five Settings tabs, each its own address. Admins only: the layout
  * doesn't draw this for anyone else, who only have My settings. A client
  * component because the layout isn't drawn again when moving between tabs,
  * so the highlighted tab has to follow the address here. */
@@ -14,6 +14,9 @@ const TABS = [
   { href: "/settings/company", label: "Company", icon: Building2 },
   // The AI run log summed (round 3, B3): GET /ai-usage is admin only.
   { href: "/settings/ai-usage", label: "AI usage", icon: Activity },
+  // What surveyors kept of the AI's drafts (contract 8 L): GET
+  // /admin/ai-accuracy is admin only.
+  { href: "/settings/ai-accuracy", label: "AI accuracy", icon: Gauge },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
