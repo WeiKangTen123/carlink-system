@@ -59,9 +59,15 @@ log = logging.getLogger(__name__)
 JOB_STATUSES = ("pending", "running", "done", "failed", "cancelled")
 OPEN_STATUSES = ("pending", "running")
 SUGGESTION_STATUSES = ("suggested", "accepted", "rejected")
-# A failed job's reason, as the worker names it.
+# A failed job's reason, as the worker names it (the same list as the
+# worker's, tools/parts_mcp/tests/fixtures/catalogue_links.json
+# "error_codes"). need_year: the case has no year (vehicle_info.year or
+# date_of_registration, case_year) and the catalogue names its cars by
+# year; the failed job's candidates are cars to pick from instead, newest
+# first, and one picked is the next look-up's vehicle_key (Phase 4).
 ERROR_CODES = (
-    "not_supported", "no_vehicle", "needs_human", "challenge_blocked", "site_blocked", "daily_cap_reached", "internal",
+    "not_supported", "no_vehicle", "need_year", "needs_human", "challenge_blocked", "site_blocked", "daily_cap_reached",
+    "internal",
 )
 # Why a person can't start a look-up (GET .../catalogue blocked_reason).
 BLOCKED_REASONS = ("make_not_covered", "no_make_model", "no_parts", "draft", "signed_off", "readonly")
@@ -1188,7 +1194,9 @@ def catalogue_view(db: Session, report: Report, user) -> dict:
     vehicle    the catalogue car of the latest finished one ("done")
     candidates, failures
                of the latest look-up that ended (done or failed): a failed
-               "no_vehicle" one may still list cars to pick from
+               "no_vehicle" one may still list cars to pick from, and a
+               failed "need_year" one (no year on the case) lists the cars
+               to pick from instead
     parts      the case's rows grouped by damaged part, then diagram:
                the latest done look-up's parts in its order (diagrams it
                found with no row left -- each already kept -- show empty),
