@@ -61,6 +61,12 @@ interface Props {
    * each row shows its state (AI / Check / You) with [✓], and an edit
    * counts as confirming the part, as in the wizard. */
   review?: Review | null;
+  /** Contract 9 (section 7.2): a row's [Evidence] opens the evidence viewer
+   * on it, its [Map] selects it on the 3D damage map. Signatures only until
+   * the evidence UI agent adds the buttons; a page that doesn't pass them
+   * shows neither. */
+  onShowEvidence?: (index: number) => void;
+  onShowOnMap?: (index: number) => void;
 }
 
 /** The AI took this part's side from nearby photos, not its own: worth a

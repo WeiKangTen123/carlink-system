@@ -1682,6 +1682,11 @@ a:hover {
   z-index: 4;
 }
 
+/* ---- Contract 9 B: damage map ---- */
+/* DamageMapPanel and the 3D map's selection (contract9.md section 7; the
+   3D damage map agent's block). Its rules go between these two lines. */
+/* ---- end Contract 9 B: damage map ---- */
+
 /* ==========================================================================
    3. PHOTO EVIDENCE INSPECTOR HUD
    ========================================================================== */
@@ -6311,6 +6316,12 @@ button.intake-tile:hover {
   }
 }
 /* ---- end P3: review step ---- */
+
+/* ---- Contract 9 E: evidence ---- */
+/* EvidenceViewer, PhotoBoxes and SuggestionPanel (contract9.md section 7;
+   the evidence UI agent's block, after DamagePhotoViewer's rules above,
+   which it replaces). Its rules go between these two lines. */
+/* ---- end Contract 9 E: evidence ---- */
 
 /* ---- P3: upload, sort, viewer ---- */
 

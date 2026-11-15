@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BOT_SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -364,16 +364,85 @@ class Settings(BaseSettings):
     # (contract 8's m5/m6 runs). Measured offline on m6: the list's wrong
     # sides and extras fall, the zone-only finds wait for a person.
     intake_zone_only: str = "suggest"
+    # The zone reads' tail fields (ai/zone_read.py, section 4.7): "off" asks
+    # for nothing new; "reason" adds each find's reason; "reason_box" also
+    # its box_2d. Turned on after the R2 run (reason_box only with R3's box
+    # probe at 14/20 or better).
+    intake_zone_evidence: str = "off"
+    # The re-check of the suggestions (ai/check.py, section 4.7): "off";
+    # "decision", the Decisions API; "lite", one batched call on
+    # gemini_check_chain; "decision_then_lite", the lite call when the
+    # Decisions API fails. It labels and sorts the suggestions, never adds
+    # or removes one. Turned on after the R4 / R5 runs.
+    intake_check_mode: str = "off"
+    # The Decisions API's model (a plain httpx call: it is not in the SDK).
+    gemini_decision_model: str = "gemini-decision-1"
+    # The lite re-check's models: never the strong one.
+    gemini_check_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # The lite re-check's thinking level, written like the others above
+    # (thinking_levels); unset sends none.
+    gemini_thinking_level_check: str | None = None
+    # The resolution of the photos sent to the Decisions API: low, medium,
+    # high or ultra_high (266 tokens a photo at low).
+    intake_check_resolution: str = "medium"
+    # The Decisions API's yes-probability p: "yes" at intake_check_yes or
+    # more, "no" at intake_check_no or less, "unsure" between. Set from
+    # R4's offline sweep.
+    intake_check_yes: float = 0.7
+    intake_check_no: float = 0.3
 
-    @field_validator("gemini_zone_chain")
+    @field_validator("gemini_zone_chain", "gemini_check_chain")
     @classmethod
-    def _zone_chain(cls, value):
-        return normal_chain(value, "gemini_zone_chain")
+    def _chains(cls, value, info):
+        return normal_chain(value, info.field_name)
 
     @field_validator("intake_zone_only")
     @classmethod
     def _zone_only(cls, value):
         return normal_zone_only(value)
+
+    @field_validator("intake_zone_evidence")
+    @classmethod
+    def _zone_evidence(cls, value):
+        return normal_zone_evidence(value)
+
+    @field_validator("intake_check_mode")
+    @classmethod
+    def _check_mode(cls, value):
+        return normal_check_mode(value)
+
+    @field_validator("gemini_decision_model")
+    @classmethod
+    def _decision_model(cls, value):
+        model = str(value or "").strip()
+        if not model:
+            raise ValueError("gemini_decision_model: a model name")
+        return model
+
+    @field_validator("gemini_thinking_level_check")
+    @classmethod
+    def _thinking_level_check(cls, value):
+        return normal_thinking_levels(value)
+
+    @field_validator("intake_check_resolution")
+    @classmethod
+    def _check_resolution(cls, value):
+        return normal_check_resolution(value)
+
+    @field_validator("intake_check_yes", "intake_check_no")
+    @classmethod
+    def _check_cut(cls, value, info):
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError(f"{info.field_name}: a probability, 0 to 1")
+        return float(value)
+
+    @model_validator(mode="after")
+    def _check_cuts_in_order(self):
+        # "no" at or under intake_check_no, "yes" at or over intake_check_yes:
+        # the other way round, one p would be both.
+        if self.intake_check_no >= self.intake_check_yes:
+            raise ValueError("intake_check_no must be under intake_check_yes")
+        return self
 
 
 READ_MODES = ("single", "zones")
@@ -412,15 +481,40 @@ def normal_chain(value, name: str = "the chain") -> str:
     return ",".join(models)
 
 
+def _one_of(value, choices: tuple, name: str) -> str:
+    """A choice setting written the one way; None or blank is the first."""
+    choice = str(value or "").strip().lower() or choices[0]
+    if choice not in choices:
+        raise ValueError(f"{name} {value!r}: use one of {', '.join(choices)}")
+    return choice
+
+
 ZONE_ONLY = ("suggest", "list")
+ZONE_EVIDENCE = ("off", "reason", "reason_box")
+CHECK_MODES = ("off", "decision", "lite", "decision_then_lite")
 
 
 def normal_zone_only(value) -> str:
     """intake_zone_only written the one way; None or blank is "suggest"."""
-    mode = str(value or "").strip().lower() or "suggest"
-    if mode not in ZONE_ONLY:
-        raise ValueError(f"intake_zone_only {value!r}: use one of {', '.join(ZONE_ONLY)}")
-    return mode
+    return _one_of(value, ZONE_ONLY, "intake_zone_only")
+
+
+def normal_zone_evidence(value) -> str:
+    """intake_zone_evidence written the one way; None or blank is "off"."""
+    return _one_of(value, ZONE_EVIDENCE, "intake_zone_evidence")
+
+
+def normal_check_mode(value) -> str:
+    """intake_check_mode written the one way; None or blank is "off"."""
+    return _one_of(value, CHECK_MODES, "intake_check_mode")
+
+
+def normal_check_resolution(value) -> str:
+    """intake_check_resolution: one of IMAGE_RESOLUTIONS; blank is medium."""
+    resolution = str(value or "").strip().lower() or "medium"
+    if resolution not in IMAGE_RESOLUTIONS:
+        raise ValueError(f"intake_check_resolution {value!r}: use one of {', '.join(IMAGE_RESOLUTIONS)}")
+    return resolution
 # (end of Contract 9)
 
 

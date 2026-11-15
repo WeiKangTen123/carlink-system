@@ -903,6 +903,146 @@ export type DamageSummaryItem = {
   /** The AI could not see the side on this part's own photo and took it
    * from nearby photos. The API clears it once a person edits the part. */
   side_inferred?: boolean;
+  /** Contract 8 D2 (zone reading): the photos the part was seen in, as
+   * photo_reference is written ("@<photo id>" in a draft, "P07" once
+   * filed); the reads that found it ("overall", "zone:rear"...); the grid
+   * cells of photo_reference (grid marks, off). Empty on older cases. */
+  seen_in?: string[];
+  found_by?: string[];
+  grid_cells?: string[];
+  /** Contract 9 (bot-service reports/schema.py section 4.1), all code-set:
+   * the AI's own words for why the part is damaged; each photo's proof,
+   * at most 4, best first ([0] is photo_reference's); the re-check's
+   * answer, copied from a suggestion a person added; "suggestion" when it
+   * came from one. Absent on older cases (lib/findings.evidenceOf). */
+  reason?: string | null;
+  evidence?: Evidence[];
+  check?: SuggestionCheck | null;
+  added_from?: "suggestion" | null;
+};
+
+// ---- Contract 9: the evidence for every finding ------------------------------
+// Mirrors bot-service reports/schema.py (contract9.md section 4.8). Frozen:
+// change them only with the lead's OK.
+
+/** [ymin, xmin, ymax, xmax], each 0-1000, on the upright AI-input frame. */
+export type Box = [number, number, number, number];
+
+/** One photo's proof for one finding. box_kind is null exactly when box is. */
+export type Evidence = {
+  photo: string;
+  box: Box | null;
+  box_kind: "ai" | "sort" | null;
+  /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look" */
+  by: string;
+  reason: string | null;
+  confidence: "High" | "Medium" | "Low" | null;
+  /** The size of the image the box was drawn on (PhotoBoxes hides a box
+   * drawn on another frame). */
+  img_w: number | null;
+  img_h: number | null;
+};
+
+/** The re-check's answer on one suggestion. p: the Decisions API's
+ * yes-probability (never shown as a percentage). */
+export type SuggestionCheck = {
+  verdict: "yes" | "no" | "unsure";
+  p: number | null;
+  by: "decision" | "lite";
+  model: string | null;
+  reason: string | null;
+};
+
+/** A person's add / dismiss / undo on a suggestion, stamped by the server. */
+export type SuggestionDecision = {
+  key: string;
+  part: string;
+  action: "added" | "dismissed" | "undone";
+  by_id: string | null;
+  by_name: string | null;
+  at: string;
+  looked: boolean;
+  where: "intake" | "case";
+};
+
+/** One suggested part (bot-service reports/schema.SecondLookItem): never a
+ * finding until a person adds it. key: prefill.item_key, the same over
+ * re-reads (an old item without one goes by part). */
+export type SecondLookItem = {
+  key: string;
+  part: string;
+  /** The firm's wording for the part. */
+  name: string | null;
+  /** "@<photo id>" while a draft, "P07" once filed. */
+  photo_reference: string | null;
+  note: string | null;
+  condition_tokens: string[];
+  condition: string | null;
+  damage_type: string | null;
+  confidence: string | null;
+  /** "kit": past cases of the same make had it with a part found here;
+   * "nearby": next to a part found here; "zone": only a zone read found it. */
+  source: "kit" | "nearby" | "zone" | null;
+  /** Damage-list names that mean the part is listed already. */
+  covers: string[];
+  reason: string | null;
+  evidence: Evidence[];
+  found_by: string[];
+  seen_in: string[];
+  check: SuggestionCheck | null;
+  /** The list's part of the same family on the other side ("Right Tail Lamp"). */
+  other_side_listed: string | null;
+  other_part_name: string | null;
+  severity: string | null;
+  remarks: string | null;
+};
+
+/** What the re-check step did on this read. */
+export type CheckRun = {
+  status: "ok" | "skipped" | "failed";
+  by: "decision" | "lite" | null;
+  model: string | null;
+  note: string | null;
+  seconds: number | null;
+  calls: number;
+};
+
+/** data.second_look: the suggestions for a case and what people decided.
+ * Server-owned: the browser's copy is never saved. status / model / note
+ * describe the second-look call itself; the items show whatever it says. */
+export type SecondLook = {
+  status: string;
+  model: string | null;
+  note: string | null;
+  /** "past Honda Vezel cases" when the firm's history supplied candidates. */
+  scope: string | null;
+  seconds: number | null;
+  photos_sent: number;
+  candidates: number;
+  items: SecondLookItem[];
+  /** Keys a person marked Not damaged: never suggested again on this case. */
+  dismissed: string[];
+  /** The reads that answered ("overall", "zone:rear"...). */
+  reads: string[];
+  decisions: SuggestionDecision[];
+  check: CheckRun | null;
+};
+
+export type DecideAction = "add" | "dismiss" | "undo";
+/** POST /intake/{id}/suggestions and /reports/{id}/suggestions. */
+export type DecideResult = { second_look: SecondLook; item: DamageSummaryItem | null; item_index: number | null };
+
+/** One case photo as filing indexed it (bot-service reports/filing.
+ * photo_index_for), in P-number order: P07 is index 6. */
+export type PhotoIndexEntry = {
+  label: string;
+  kind: string | null;
+  area: string | null;
+  part: string | null;
+  shows_damage: boolean | null;
+  quality: string | null;
+  /** The AI's last reading was sent this photo. */
+  read?: boolean;
 };
 
 /** The part for anything outside the list (taxonomy.OTHER_PART); the item
@@ -1359,6 +1499,11 @@ export type ReportData = {
    * N/A, keyed by the field's dotted path ("vehicle_info.plate_number").
    * Absent on older reports. */
   checked?: Record<string, CheckedEntry> | null;
+  /** Contract 9: the suggestions and the decisions on them; absent when
+   * there were none (no panel). */
+  second_look?: SecondLook | null;
+  /** What each photo is, from filing (absent on a draft and on older cases). */
+  photo_index?: PhotoIndexEntry[] | null;
 };
 
 export type ReportDetail = {
@@ -1420,7 +1565,16 @@ export type AiReadInfo = {
 
 /** What the call was for. Kept open (string) so a kind a newer API adds
  * still shows, under its raw name. */
-export type AiRunKind = "sort" | "read" | "redraft" | "annex_suggest" | "redetect" | "lookup" | "second_look";
+export type AiRunKind =
+  | "sort"
+  | "read"
+  | "redraft"
+  | "annex_suggest"
+  | "redetect"
+  | "lookup"
+  | "second_look"
+  | "read_zones"
+  | "check";
 export type AiRunStatus = "running" | "ok" | "failed" | "refused" | "aborted";
 export type AiRunChannel = "dashboard" | "telegram" | "whatsapp" | "system";
 export type AiKeySource = "own" | "company" | "none";
@@ -1524,6 +1678,8 @@ const AI_RUN_KIND_LABELS: Record<string, string> = {
   redetect: "Re-run detection",
   lookup: "Price lookup",
   second_look: "Second look",
+  read_zones: "Zone reads",
+  check: "Suggestion re-check",
 };
 
 export function aiRunKindLabel(kind: string | null | undefined): string {
@@ -1616,6 +1772,19 @@ export type AiAccuracyRates = {
 
 export type AiAccuracyTop = Array<{ part: string; cases: number }>;
 
+/** Contract 9 (accuracy VERSION 2): what became of the suggestions, by part
+ * name only. An outcome is "added" when the key is in the signed-off list,
+ * "dismissed" when a person marked it Not damaged, else "left". */
+export type AiAccuracySuggestionCounts = { shown: number; added: number; dismissed: number; left: number };
+export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
+  /** Added after opening the evidence viewer on it. */
+  looked_first: number;
+  by_source: Partial<Record<"zone" | "kit" | "nearby", AiAccuracySuggestionCounts>>;
+  /** By read: "zone:front", "zone:rear"... */
+  by_read: Record<string, AiAccuracySuggestionCounts>;
+  by_check: Partial<Record<"yes" | "no" | "unsure" | "none", AiAccuracySuggestionCounts>>;
+};
+
 export type AiAccuracySums = {
   cases: number;
   damage: AiAccuracyDamage;
@@ -1624,6 +1793,8 @@ export type AiAccuracySums = {
   rates: AiAccuracyRates;
   most_missed?: AiAccuracyTop;
   most_removed?: AiAccuracyTop;
+  /** Contract 9; absent from an API before it. */
+  suggestions?: AiAccuracySuggestions;
 };
 
 export type AiAccuracyCase = {
@@ -1641,6 +1812,7 @@ export type AiAccuracyCase = {
     damage?: Partial<AiAccuracyDamage> & { removed_parts?: string[]; added_parts?: string[] };
     annex_a?: Partial<AiAccuracyAnnex>;
     fields?: Partial<AiAccuracyFields>;
+    suggestions?: Partial<AiAccuracySuggestions>;
   };
 };
 

@@ -17,7 +17,10 @@ Covers:
     the side resolver on the list only; a dismissed suggestion staying out
     after a re-read; the catalogue's auto look-up seeing the list only;
     "list" as contract 8's runs; the benchmark scoring the suggestions
-    with the second look off.
+    with the second look off;
+  - scaffolding: section 6's settings and their checks; the re-check's
+    place right after the second look, doing nothing while off; the
+    dashboard's shared fixture loading through the draft model.
 
     python scripts/test_c9_base.py
 
@@ -708,6 +711,97 @@ def option_b_bench() -> None:
           "score_second_look scores them (found 2, added 1, extra 0)", ls)
 
 
+# ---------------------------------------------------------------- scaffolding
+
+
+def settings_block() -> None:
+    from pydantic import ValidationError
+
+    from app import config
+
+    s = config.Settings()
+    want = {"gemini_zone_chain": f"{LITE_A},{LITE_B}", "gemini_triage_model_chain": f"{LITE_A},{LITE_B}",
+            "gemini_store_off": True, "intake_zone_only": "suggest", "intake_read_mode": "single",
+            "intake_zone_evidence": "off", "intake_sort_damage_box": False, "intake_check_mode": "off",
+            "gemini_decision_model": "gemini-decision-1", "gemini_check_chain": f"{LITE_A},{LITE_B}",
+            "gemini_thinking_level_check": None, "intake_check_resolution": "medium", "intake_check_yes": 0.7,
+            "intake_check_no": 0.3, "intake_read_crops": False, "second_look_enabled": False}
+    got = {k: getattr(s, k) for k in want}
+    check(got == want, "section 6's settings and defaults", {k: v for k, v in got.items() if want[k] != v})
+    check(STRONG not in s.gemini_zone_chain + s.gemini_triage_model_chain + s.gemini_check_chain,
+          "no light chain holds the strong model")
+    written = config.Settings(intake_zone_only=" LIST ", intake_zone_evidence="Reason_Box", intake_check_mode="",
+                              gemini_check_chain=" a ,b,a ", gemini_thinking_level_check=" LOW ",
+                              intake_check_resolution="", intake_check_yes="0.8", intake_check_no=0)
+    check((written.intake_zone_only, written.intake_zone_evidence, written.intake_check_mode, written.gemini_check_chain,
+           written.gemini_thinking_level_check, written.intake_check_resolution, written.intake_check_yes,
+           written.intake_check_no) == ("list", "reason_box", "off", "a,b", "low", "medium", 0.8, 0.0),
+          "each written the one way; blank is the default")
+    for field, bad in (("intake_zone_only", "both"), ("intake_zone_evidence", "box"), ("intake_check_mode", "on"),
+                       ("gemini_zone_chain", " , "), ("gemini_check_chain", ""), ("gemini_decision_model", " "),
+                       ("gemini_thinking_level_check", "extreme"), ("intake_check_resolution", "4k"),
+                       ("intake_check_yes", 1.2), ("intake_check_no", -0.1)):
+        try:
+            config.Settings(**{field: bad})
+            check(False, f"{field}={bad!r} stops the app at start-up")
+        except ValidationError:
+            check(True, f"{field}={bad!r} stops the app at start-up")
+    try:
+        config.Settings(intake_check_yes=0.4, intake_check_no=0.6)
+        check(False, "the cut-offs the wrong way round stop the app")
+    except ValidationError:
+        check(True, "the cut-offs the wrong way round stop the app")
+
+
+def check_step() -> None:
+    from app.ai import check as recheck
+
+    order: list[str] = []
+    real = (pipeline.second_look.run_for_intake, pipeline.check.run_for_intake)
+    pipeline.second_look.run_for_intake = lambda rid, actor: (order.append("second_look"), real[0](rid, actor))
+    pipeline.check.run_for_intake = lambda rid, actor: (order.append("check"), real[1](rid, actor))
+    try:
+        make_case("c9-check", CASE)
+        REQUESTS.clear()
+        pipeline._read("c9-check", AiActor.cli())
+    finally:
+        pipeline.second_look.run_for_intake, pipeline.check.run_for_intake = real
+    check(order == ["second_look", "check"], "pipeline._read: the re-check right after the second look", order)
+    before = saved("c9-check")
+    REQUESTS.clear()
+    for mode in ("off", "decision"):
+        with Settings(intake_check_mode=mode):
+            check(recheck.run_for_intake("c9-check", AiActor.cli()) is None and not REQUESTS
+                  and saved("c9-check") == before, f"mode {mode}: no call, nothing written (Step 1's stub)")
+
+
+def fixture() -> None:
+    path = ROOT.parent / "dashboard" / "scripts" / "fixtures" / "evidence-sample.json"
+    if not path.exists():
+        check(True, "the dashboard isn't beside this checkout: skipped")
+        return
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    draft = SecurityIncidentDraft.model_validate(doc["data"])
+    look = draft.second_look
+    check(len(doc["photos"]) == 12 and sum(1 for p in doc["photos"] if p.get("deleted")) == 1
+          and any(p["h"] > p["w"] for p in doc["photos"]), "12 photos, one portrait, one deleted")
+    check(len(draft.damage_summary) == 6 and len(look.items) == 5 and len(look.decisions) == 3,
+          "6 list items, 5 suggestions, 3 decisions -- loading through the draft model")
+    kinds = {e.box_kind for it in draft.damage_summary for e in it.evidence}
+    check({"ai", "sort", None} <= kinds and any(not it.evidence for it in draft.damage_summary),
+          "list items with an AI box, a sorter box, no box, and one old-style (no evidence)")
+    check({it.check.verdict for it in look.items if it.check} == {"yes", "no", "unsure"}
+          and any(it.other_side_listed for it in look.items) and any(it.key in look.dismissed for it in look.items),
+          "suggestions: each re-check verdict, one with other_side_listed, one dismissed")
+    from app.reports.taxonomy import CANONICAL_PARTS
+    check(all(it.part in CANONICAL_PARTS for it in list(draft.damage_summary) + list(look.items)),
+          "canonical parts only")
+    check(all(it.key == item_key(it.model_dump()) for it in look.items), "each suggestion's key is prefill.item_key")
+    text = path.read_text(encoding="utf-8")
+    check(not re.search(r"\b[A-Z]{1,3}\d{1,4}[A-Z]\b", text.replace("data:image/svg+xml;base64,", "")),
+          "nothing shaped like a plate")
+
+
 def main() -> int:
     init_db()
     for name, fn in (
@@ -721,6 +815,9 @@ def main() -> int:
         ("option B: zone mode off is unchanged", option_b_single),
         ("option B: the list, the suggestions, a re-read, the catalogue", option_b),
         ("option B in the benchmark: --zone-only, the suggestions scored", option_b_bench),
+        ("section 6: the Contract 9 settings", settings_block),
+        ("the re-check's place (ai/check.py, Step 1's stub)", check_step),
+        ("the dashboard's shared fixture", fixture),
     ):
         run_section(name, fn)
     print(f"\ntest_c9_base: {PASSED[0]} checks passed, {len(FAILURES)} failed")

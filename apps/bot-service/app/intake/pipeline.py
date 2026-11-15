@@ -40,7 +40,7 @@ from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import allowance, runs, second_look
+from app.ai import allowance, check, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
@@ -538,11 +538,14 @@ def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
     """The reading stage, as one run of the log (ai/runs.py): kind "read",
     or "redraft" for a re-read -- then the second look at the damage it
     found (ai/second_look.py, its own run), which only adds suggestions,
-    never raises and is time-boxed: the reading is saved by then."""
+    never raises and is time-boxed: the reading is saved by then. Then the
+    re-check of those suggestions (contract 9, ai/check.py): it labels and
+    sorts them, never raises, and does nothing while it is off."""
     with runs.recorded(report_id, kind, actor) as run:
         _read_into(report_id, actor, run)
     if not run.aborted:
         second_look.run_for_intake(report_id, actor)
+        check.run_for_intake(report_id, actor)
 
 
 def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
