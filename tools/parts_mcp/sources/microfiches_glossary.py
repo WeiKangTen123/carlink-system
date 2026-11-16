@@ -280,9 +280,12 @@ def translate(name: str | None) -> str | None:
 
 _LEFT = {"SX", "SIN", "SN", "SINISTRA", "SINISTRO", "SINISTRE", "SINISTRI", "LEFT", "LH"}
 _RIGHT = {"DX", "DES", "DS", "DESTRA", "DESTRO", "DESTRE", "DESTRI", "RIGHT", "RH"}
-# Honda English: "SPACER, R. RR. BUMPER SIDE" (R. = right; RR. = rear is not a side)
-_HONDA_L = re.compile(r"(?<![A-Z0-9.])L\.|\(L\)")
-_HONDA_R = re.compile(r"(?<![A-Z0-9.])R\.|\(R\)")
+# Honda English: "SPACER, R. RR. BUMPER SIDE" (R. = right; RR. = rear is not a side).
+# The site cuts long names, which also drops the dot: "PANEL R, FR FENDER",
+# "HINGE R RR DOOR U". So a lone R or L counts when a comma follows it, or
+# an end (FR/RR) does. Never a trailing "L" cut from "LINING" ("... DOOR L").
+_HONDA_L = re.compile(r"(?<![A-Z0-9.])L(?:\.|(?=,|\s+(?:FR|RR)\b))|\(L\)")
+_HONDA_R = re.compile(r"(?<![A-Z0-9.])R(?:\.|(?=,|\s+(?:FR|RR)\b))|\(R\)")
 
 
 def side_of(name: str | None) -> Side | None:
