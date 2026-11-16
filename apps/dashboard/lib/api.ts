@@ -1032,6 +1032,15 @@ export type DecideAction = "add" | "dismiss" | "undo";
 /** POST /intake/{id}/suggestions and /reports/{id}/suggestions. */
 export type DecideResult = { second_look: SecondLook; item: DamageSummaryItem | null; item_index: number | null };
 
+// Added by the evidence UI (not part of the frozen mirror above):
+/** The decide endpoints' body: what was decided, and whether the person
+ * opened the evidence viewer on the suggestion first. */
+export type DecideRequest = { key: string; action: DecideAction; looked: boolean };
+/** POST /reports/{id}/suggestions also answers with what POST
+ * /reports/{id}/damage-items does (the parts as saved, the re-synced Annex
+ * A, the Annex C totals), so the case page updates without a reload. */
+export type CaseDecideResult = DecideResult & Partial<DamageItemsResponse>;
+
 /** One case photo as filing indexed it (bot-service reports/filing.
  * photo_index_for), in P-number order: P07 is index 6. */
 export type PhotoIndexEntry = {
@@ -2061,6 +2070,19 @@ export async function addDamageItem(reportId: string, body: NewDamageItem): Prom
 export async function removeDamageItem(reportId: string, itemIndex: number): Promise<DamageItemsResponse> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to remove the part");
+  return res.json();
+}
+
+/** POST /reports/{id}/suggestions: Add / Not damaged / Undo on a filed
+ * case's suggestion (contract9.md section 4.4). The server stamps who and
+ * when; a signed-off case answers 409 "signed_off". */
+export async function decideReportSuggestion(reportId: string, body: DecideRequest): Promise<CaseDecideResult> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/suggestions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save the decision");
   return res.json();
 }
 

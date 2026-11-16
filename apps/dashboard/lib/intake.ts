@@ -16,6 +16,8 @@ import {
   refusalMessage,
   type CasePermissions,
   type DamageSummaryItem,
+  type DecideRequest,
+  type DecideResult,
   type Owner,
   type PublicSubmissionInfo,
   type ReportData,
@@ -371,7 +373,16 @@ export const processIntake = (id: string, mode: "all" | "read") =>
 export const finalizeIntake = (id: string, data: ReportData) =>
   call<{ id: string }>(`/${id}/finalize`, jsonInit("POST", { data: prepareForSave(data) }));
 
-/** The draft as PUT /intake/{id}/data and finalize take it: blank people
+/** Add / Not damaged / Undo on a draft's suggestion (contract9.md section
+ * 4.4): POST /intake/{id}/suggestions. The server stamps who and when and
+ * keeps second_look itself (a whole-draft save never changes it); an add
+ * answers with the item it appended, for the wizard's local draft. 409
+ * "running" while the AI reads the case. */
+export const decideIntakeSuggestion = (id: string, body: DecideRequest) =>
+  call<DecideResult>(`/${id}/suggestions`, jsonInit("POST", body));
+
+/** The draft as PUT /intake/{id}/data and finalize take it (without
+ * second_look, which the server keeps itself): blank people
  * rows dropped, the police flags mirrored into the flat fields older readers
  * use, damaged_parts kept in step with damage_summary. The whole draft goes,
  * cover_page included (the server protects it on a re-read). The old
@@ -379,6 +390,12 @@ export const finalizeIntake = (id: string, data: ReportData) =>
  * it, and the case page falls back to it only when vehicle_info has no
  * plate, make or model -- which the cover page on step 3 asks for. */
 export function prepareForSave(data: ReportData): ReportData {
+  // second_look is the server's (contract 9): it is never sent back, so a
+  // stale copy can't be taken for a decision, and the keepalive save stays
+  // small.
+  const { second_look: _serverOwned, ...rest } = data;
+  void _serverOwned;
+  data = rest;
   const police = data.police_report || { reported_to_police: false };
   const reported = Boolean(police.reported_to_police);
   const damage: DamageSummaryItem[] = (data.damage_summary || []).filter((d) => d.part && d.part.trim());
