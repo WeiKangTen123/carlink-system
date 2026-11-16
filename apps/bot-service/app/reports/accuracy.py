@@ -347,14 +347,14 @@ def _suggestion_counts() -> dict:
 def _suggestions(ai_draft: dict, final_data: dict) -> dict:
     """What became of the AI's suggestions (data.second_look, server-owned
     since contract 9). Shown: the keys of its items, of the decisions on
-    them and of the dismissed list -- a key re-read away from the items
-    (second_look._store drops listed and dismissed ones) is still one a
-    person saw. Each is "added" when the key is on the signed-off damage
-    list (whoever put it there), else "dismissed" when it is in dismissed,
-    else "left". What a suggestion was -- its source, the reads that found
-    it, the re-check's verdict -- from the case's items, else the AI's
-    frozen zone suggestions (Report.ai_draft, filing), else the item added
-    from it."""
+    them and of the dismissed list, each once -- a decided one is in items
+    too (second_look._store keeps it), and one an old draft's re-read
+    dropped from them is still one a person saw. Each is "added" when the
+    key is on the signed-off damage list (whoever put it there), else
+    "dismissed" when it is in dismissed, else "left". What a suggestion
+    was -- its source, the reads that found it, the re-check's verdict --
+    from the case's items, else the AI's frozen zone suggestions
+    (Report.ai_draft, filing), else the item added from it."""
     look = final_data.get("second_look") if isinstance(final_data.get("second_look"), dict) else {}
     items = [it for it in _dicts(look.get("items")) if key_of(it)]
     decisions = [d for d in _dicts(look.get("decisions")) if d.get("key")]

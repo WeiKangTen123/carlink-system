@@ -567,6 +567,10 @@ def set_intake_checked(report_id: str, body: CheckedChange, user: CurrentUser = 
     the autosave. Answers data.checked and the new review."""
     db = SessionLocal()
     try:
+        # Before the draft is read, as the autosave: this writes all of
+        # Report.data back, so a decision on a suggestion committing in
+        # between would otherwise be lost.
+        hold_write_lock(db, report_id)
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         checked, detail = checked_change(report.data, body, user)
         report.data = {**(report.data or {}), "checked": checked or None}
@@ -822,8 +826,10 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     )
     label_of = {p.id: photo_label(i) for i, p in enumerate(photos)}
     run_log.relabel_last_read(db, report_id, read_ids, label_of)
-    # Contract 8 D2: the zone calls' photos, kept as "@<photo id>" until now.
+    # Contract 8 D2: the zone calls' photos, kept as "@<photo id>" until now;
+    # contract 9: the re-check's too.
     run_log.relabel_zone_reads(db, report_id, label_of)
+    run_log.relabel_check_runs(db, report_id, label_of)
     # file_case_data rebuilds Annex A from the damage list, so no line
     # carries a catalogue_ref now; checked all the same (as every save that
     # carries Annex A), under the claim's write lock: only this case's own

@@ -131,6 +131,20 @@ def _cut(data: bytes, box: list[int], dest: Path) -> bool:
     return True
 
 
+def _reused(dest: Path) -> bool:
+    """Whether a close-up made before is there to send again. Touched
+    first: cleanup._sweep_ai_derived removes ai_derived files last changed
+    over a week ago, and must not take one between here and the read that
+    sends it."""
+    try:
+        if dest.is_file() and dest.stat().st_size > 0:
+            os.utime(dest)
+            return True
+    except OSError:
+        pass  # gone meanwhile (swept): cut again
+    return False
+
+
 def make_crop(sources: list[str], box) -> str | None:
     """The path of the close-up of `box`, cut from the first of `sources`
     (the largest copy first: the original, then the AI copy) that Pillow
@@ -147,7 +161,7 @@ def make_crop(sources: list[str], box) -> str | None:
             continue
         dest = crop_dir() / _name(data, box)
         try:
-            if dest.is_file() and dest.stat().st_size > 0:
+            if _reused(dest):
                 return str(dest)
             # Same picture at every size: a box too large on one copy is
             # too large on the others.

@@ -101,13 +101,17 @@ def item_from_suggestion(sug: dict) -> dict:
     """The damage item a person adds from a suggestion: what the AI said
     about the part (its words, reason, evidence, the reads and photos that
     found it, the re-check's answer) on the photo of its best evidence, with
-    that photo's box -- so the table draws it as it drew the suggestion --
-    and the AI's confidence. Checked by the person who added it
-    (human_verified), and marked as come from a suggestion (added_from).
+    that photo's box when the AI drew it -- so the table draws it as it
+    drew the suggestion -- and the AI's confidence. Checked by the person
+    who added it (human_verified), and marked as come from a suggestion
+    (added_from).
     One builder for both pages (conflict #10)."""
     evidence = [e for e in sug.get("evidence") or [] if isinstance(e, dict) and e.get("photo")]
     photo = evidence[0]["photo"] if evidence else (sug.get("photo_reference") or None)
-    box = (evidence[0].get("box") or None) if evidence else None
+    # bbox_2d is the AI's box (the table and the evidence viewer label it
+    # "AI box"): a sorter's box stays on its evidence entry, as "Sorter's
+    # box", and the item gets none.
+    box = (evidence[0].get("box") or None) if evidence and evidence[0].get("box_kind") == "ai" else None
     tokens = list(sug.get("condition_tokens") or [])
     condition = sug.get("condition") or None
     damage_type = sug.get("damage_type") or None
@@ -173,9 +177,9 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
     sug = _find(look["items"], key)
     dismissed = list(look["dismissed"])
     damage_summary = [dict(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)]
-    # The decision an undo takes back. A re-read drops a listed or
-    # dismissed suggestion from items (second_look._store), so its part
-    # then comes from that decision.
+    # The decision an undo takes back. A decided suggestion stays in items
+    # over a re-read (second_look._store), but an old draft's re-read
+    # dropped it, so its part may come from that decision.
     latest = (standing(look["decisions"]).get(key) or [None])[-1] if action == "undo" else None
     part = str((sug or latest or {}).get("part") or key)
     done = Decided(data=data, second_look=look, part=item_source(sug) if sug else key)

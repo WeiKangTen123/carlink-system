@@ -711,6 +711,27 @@ def _join_twin(kept: dict, other: dict) -> None:
         kept["reason"] = other["reason"]
 
 
+def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:
+    """(the suggestions still open, those a person settled): settled is
+    dismissed -- its key, or on an old draft its part, in
+    second_look.dismissed -- or on the damage list already (_listed_as).
+    The Review step lists the open ones; the settled ones stay in items
+    for "Show decided" and undo (_store), and the re-check never asks
+    about them (ai/check.py)."""
+    from app.parts.prefill import item_key
+
+    look = data.get("second_look") if isinstance(data.get("second_look"), dict) else {}
+    dismissed = set(look.get("dismissed") or [])
+    listed = listed_parts(data)
+    listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+    open_items, settled = [], []
+    for it in items:
+        key = str(it.get("key") or it.get("part") or "")
+        gone = key in dismissed or it.get("part") in dismissed or _listed_as(it, listed, listed_keys)
+        (settled if gone else open_items).append(it)
+    return open_items, settled
+
+
 def _store(report_id: str, result: dict) -> None:
     """Writes the suggestions onto the draft as data["second_look"], against
     the form as it is now.
@@ -720,18 +741,26 @@ def _store(report_id: str, result: dict) -> None:
     pipeline's option B split) and this second look's own items -- so the
     zone suggestions show whether the second look ran, failed or is
     switched off. Each gets its key (prefill.item_key). Those listed or
-    dismissed by then are dropped, the rest named in the firm's words,
-    surest first, one per part (a sided name and its "(side undetermined)"
-    twin are one: the surer kept, the other's reads, photos and evidence
-    joined to it), at most MAX_SUGGESTIONS; other_side_listed against the
-    form. What a person decided -- dismissed, decisions -- is kept
-    (pipeline.merge_redraft carries second_look over a re-read); reads are
-    this reading's (ai_draft["zone_reads"]); the re-check's answer, about
-    the items this replaces, goes."""
+    dismissed by then are left out of the open ones, the rest named in the
+    firm's words, surest first, one per part (a sided name and its "(side
+    undetermined)" twin are one: the surer kept, the other's reads, photos
+    and evidence joined to it), at most MAX_SUGGESTIONS; other_side_listed
+    against the form. What a person decided -- dismissed, decisions -- is
+    kept (pipeline.merge_redraft carries second_look over a re-read), and
+    so are the suggestions they decided on, after the open ones (outside
+    MAX_SUGGESTIONS): a dismissed one, and one on the list by an add still
+    standing -- as the previous read stored it (what the person decided
+    on), else as this read found it; one per key, never joined to a twin.
+    The panel hides them from its list; "Show decided" and undo use them
+    -- on the case page too, where no read comes again. A part a person
+    listed by hand stays out. reads are this reading's
+    (ai_draft["zone_reads"]); the re-check's answer, about the open items
+    this replaces, goes."""
     from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
     from app.reports.schema import SecondLook
+    from app.reports.suggestions import standing
 
     db = SessionLocal()
     try:
@@ -749,13 +778,24 @@ def _store(report_id: str, result: dict) -> None:
         listed = listed_parts(data)
         listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         vehicle = data.get("vehicle_info") or {}
-        items = []
-        for it in zone_items + [_own_evidence(dict(it)) for it in result.get("items") or []]:
+        added = {key for key, still in standing(decisions).items() if any(d.get("action") == "added" for d in still)}
+        items: list[dict] = []
+        decided: dict[str, dict] = {}
+        previous_items = [dict(it) for it in previous.get("items") or [] if isinstance(it, dict) and it.get("part")]
+        found = zone_items + [_own_evidence(dict(it)) for it in result.get("items") or []]
+        # The previous read's first: an open one of those is left for this
+        # read to suggest again (or not); a decided one is kept as the
+        # person saw it.
+        for n, it in enumerate(previous_items + found):
             it["key"] = it.get("key") or item_key(it) or it["part"]
             # An old dismissed list holds part names: the keys of canonical parts.
-            if it["key"] in dismissed or it["part"] in dismissed or _listed_as(it, listed, listed_keys):
+            gone = it["key"] in dismissed or it["part"] in dismissed
+            if gone or _listed_as(it, listed, listed_keys):
+                if gone or it["key"] in added:
+                    decided.setdefault(it["key"], it)
                 continue
-            items.append(it)
+            if n >= len(previous_items):
+                items.append(it)
         items.sort(key=lambda it: (_RANK.get(it.get("confidence"), len(CONFIDENCES)), it.get("source") != "kit"))
         kept: list[dict] = []
         for it in items:
@@ -767,16 +807,18 @@ def _store(report_id: str, result: dict) -> None:
             if twin is not None:
                 _join_twin(twin, it)
                 continue
+            kept.append(it)
+        settled = list(decided.values())
+        for it in kept + settled:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
             it["other_side_listed"] = other_side_listed(it["part"], listed)
-            kept.append(it)
-        items = [evidence.settle(it) for it in kept]
+        items = [evidence.settle(it) for it in kept[:MAX_SUGGESTIONS] + settled]
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),
             photos_sent=result.get("photos_sent") or 0, candidates=result.get("candidates") or 0,
-            items=items[:MAX_SUGGESTIONS], dismissed=dismissed, reads=reads, decisions=decisions,
+            items=items, dismissed=dismissed, reads=reads, decisions=decisions,
         )
         report.data = {**data, "second_look": stored.model_dump()}
         db.commit()

@@ -54,6 +54,11 @@ SORT = "sort"
 # plate, a VIN, a part or policy number): the reason is shown without it.
 _DIGITS = re.compile(r"\d")
 _LETTERS = re.compile(r"[A-Za-z]")
+# A photo's label as the model was sent it ("P07", "P07/P08"): numbered as
+# the draft was then, which filing renumbers when a photo was deleted -- a
+# reason quoting one could point at another photo. Left out like a plate;
+# the evidence entry already says which photo it is.
+_PHOTO_LABEL = re.compile(r"(?:P\d{1,3}[/,&+-]?)+", re.IGNORECASE)
 _QUOTES = "\"'`“”‘’"
 
 
@@ -87,6 +92,11 @@ def clean_box(box, raw_original: bool = False) -> list[int] | None:
     return values
 
 
+def _photo_label(token: str) -> bool:
+    core = token.strip(".,;:!?()[]{}<>\"'`#").removesuffix("'s")
+    return bool(core) and _PHOTO_LABEL.fullmatch(core) is not None
+
+
 def _identifying(token: str) -> bool:
     digits = len(_DIGITS.findall(token))
     if digits >= 3:
@@ -98,11 +108,12 @@ def _identifying(token: str) -> bool:
 def clean_reason(text) -> str | None:
     """The model's reason as it may be shown: whitespace collapsed, quotes
     round it dropped, any plate-, VIN- or phone-shaped token left out (a
-    reason can quote the plate it saw), at most REASON_MAX characters cut
-    at a word. None when nothing is left."""
+    reason can quote the plate it saw), and any photo label ("P07": the
+    draft's numbering), at most REASON_MAX characters cut at a word. None
+    when nothing is left."""
     if not isinstance(text, str):
         return None
-    words = [w for w in text.split() if not _identifying(w)]
+    words = [w for w in text.split() if not _identifying(w) and not _photo_label(w)]
     out = " ".join(words)
     if len(out) >= 2 and out[0] in _QUOTES and out[-1] in _QUOTES:
         out = out[1:-1].strip()

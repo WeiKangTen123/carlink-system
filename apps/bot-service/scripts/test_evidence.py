@@ -333,8 +333,11 @@ def reasons() -> None:
         f"Bumper cracked below plate {PLATE}."))
     check(cr(f"Sill dented near VIN {VIN} stamp") == "Sill dented near VIN stamp", "a VIN is left out")
     check(cr(f"Owner {PHONE} said door jams") == "Owner said door jams", "a phone number is left out")
-    check(cr("Code AB12C on the lamp") == "Code on the lamp" and cr("dent 10cm wide on P07") == "dent 10cm wide on P07",
-          "letters+digits of 5 characters or more go; a size or a photo label stays")
+    check(cr("Code AB12C on the lamp") == "Code on the lamp" and cr("dent 10cm wide") == "dent 10cm wide",
+          "letters+digits of 5 characters or more go; a size stays")
+    check(cr("dent 10cm wide on P07") == "dent 10cm wide on" and cr("Lens cracked (P07/P08), see P3's edge") ==
+          "Lens cracked see edge" and cr("p12: Panel dented") == "Panel dented",
+          "a photo label goes: the draft's numbering, which filing renumbers", cr("Lens cracked (P07/P08), see P3's edge"))
     check(cr("Dented 2026-11-15") == "Dented" and cr("Tail lamp (SBA-123-X) broken") == "Tail lamp broken",
           "3+ digits however written go")
     check(cr('"lens cracked at the edge"') == "lens cracked at the edge" and cr("panel 'pushed in'") == "panel 'pushed in'",
@@ -740,10 +743,13 @@ def pipeline_e2e() -> None:
         db.close()
     with Settings(intake_read_mode="zones", intake_zone_evidence="reason_box"):
         pipeline._read(rid, AiActor.cli(), kind="redraft")
-    look = saved(rid)["data"]["second_look"]
-    keys_ = {it["key"] for it in look["items"]}
-    check(keys_ == {"Boot Lid Lock", "Left Tail Lamp"} and look["dismissed"] == ["Left Rear Door"]
-          and look["decisions"] == [decision], "after a re-read: the dismissed one stays out, the decision is kept")
+    data = saved(rid)["data"]
+    look = data["second_look"]
+    open_items, settled = second_look.split_settled(look["items"], data)
+    check({it["key"] for it in open_items} == {"Boot Lid Lock", "Left Tail Lamp"} and look["dismissed"] == ["Left Rear Door"]
+          and look["decisions"] == [decision], "after a re-read: the dismissed one is not suggested again, the decision is kept")
+    check([it["key"] for it in settled] == ["Left Rear Door"] and look["items"][-1]["key"] == "Left Rear Door",
+          "...but stays in items after the open ones, with its evidence (\"Show decided\", undo)", [it["key"] for it in look["items"]])
     check(all(it["evidence"] for it in look["items"]), "and the others keep their evidence")
 
 
@@ -819,10 +825,14 @@ def old_drafts() -> None:
     make_case("ev-old", [("damage", "rear", None, True)], data=data,
               ai_draft={"damage_summary": data["damage_summary"], "zone_suggestions": [old_sugg]})
     second_look.run_for_intake("ev-old", AiActor.cli())
-    look = saved("ev-old")["data"]["second_look"]
-    check([(it["key"], it["evidence"], it["reason"]) for it in look["items"]] == [("Boot Lid Lock", [], None)]
+    data = saved("ev-old")["data"]
+    look = data["second_look"]
+    open_items, settled = second_look.split_settled(look["items"], data)
+    check([(it["key"], it["evidence"], it["reason"]) for it in open_items] == [("Boot Lid Lock", [], None)]
           and look["dismissed"] == ["Boot Lid Hinge"],
           "an old draft's zone suggestion (no key, evidence or reason): kept, keyed, nothing invented", look["items"])
+    check([(it["key"], it["evidence"]) for it in settled] == [("Boot Lid Hinge", [])],
+          "an old item dismissed by part name: kept after it, keyed, nothing invented", look["items"])
     evidence.finish([{"part": "Rear Bumper"}], [{"part": "Boot Lid Lock"}], {})
     check(True, "finish on items with no photo or evidence at all doesn't fail")
     check(item_key({"part": "Boot Lid Lock"}) == "Boot Lid Lock", "keys as before")
