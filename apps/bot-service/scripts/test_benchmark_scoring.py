@@ -2,7 +2,12 @@
 fair), summary, compare, AI accounting (tokens per call), sort cache,
 leave-one-out Annex A, the model-setting flags, --scratch, --rescore of a
 stored result file, and a whole benchmark run with a fake pipeline
-(scripts/benchmark_intake.py, scripts/bench/compare.py).
+(scripts/benchmark_intake.py, scripts/bench/compare.py); contract 8: the
+found parts' sides, Replace / Repair and zones, the Annex A prices, and
+the owner's gate (scripts/bench/gate.py); contract 9: the suggestions'
+evidence and the re-check in the metrics, its flags, a run's suggestions in
+detail, scripts/bench/replay_check.py (the Decisions API on a mock
+transport) and its cut-off sweep, and scripts/bench/probe_boxes.py.
 
     python scripts/test_benchmark_scoring.py
 
@@ -39,6 +44,9 @@ import benchmark_intake as bi  # noqa: E402
 _spec = importlib.util.spec_from_file_location("bench_compare", SCRIPTS / "bench" / "compare.py")
 compare = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compare)
+_spec = importlib.util.spec_from_file_location("bench_gate", SCRIPTS / "bench" / "gate.py")
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
 
 
 def ok(label: str) -> None:
@@ -86,6 +94,9 @@ def test_cli() -> None:
     r = subprocess.run([sys.executable, str(SCRIPTS / "bench" / "compare.py"), "--help"], capture_output=True, text=True, env=env)
     assert r.returncode == 0 and "--total-only" in r.stdout, r.stderr
     ok("compare.py --help")
+    r = subprocess.run([sys.executable, str(SCRIPTS / "bench" / "gate.py"), "--help"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and "--key" in r.stdout and "candidates" in r.stdout, r.stderr
+    ok("gate.py --help")
 
 
 # ---------------------------------------------------------------- parts, facts, sorter
@@ -640,8 +651,8 @@ def test_annex_scoring() -> None:
     print("Annex A scoring")
     A = bi._app()
     held = SimpleNamespace(make="Honda", model="Vezel", lines=[
-        line("Tail gate assy", "Dented"), line("Tail gate lock striker", "Bent"),
-        line("Tail lamp LH", "Cracked"), line("Tail lamp RH", "Cracked")])
+        priced("Tail gate assy", 1050, 840), priced("Tail gate lock striker", 100, 80),
+        priced("Tail lamp LH", 500, 400), priced("Tail lamp RH", 500, 400)])
     seen = []
 
     def fake_prefill(db, data):
@@ -668,6 +679,12 @@ def test_annex_scoring() -> None:
     assert (a["canonical_rows"], a["canonical_names"]) == (2, ["Bonnet", "Rear Bumper"]), a
     assert (a["perfect_rows"], a["perfect_covered"], a["perfect_coverage"]) == (3, 3, 1.0), a
     ok("lines covered (LH/RH one wording, as eval_parts_kits counts), rows priced/unpriced, extra wordings, canonical names, perfect-detection ceiling")
+    # Tail gate 1000 for 1050 and the striker 90 for 100: both within 10%;
+    # perfect detection's 1200 and 80 are not, its lamp 500 against the
+    # two lamps' 1000 neither.
+    assert (a["price_total"], a["report_price_total"], a["price_diff"]) == (1140, 2150, -1010), a
+    assert (a["matched_priced"], a["within_10pct"], a["perfect_within_10pct"], a["perfect_price_diff"]) == (2, 2, 0, -370), a
+    ok("the prices of the rows against the surveyor's: totals, matched lines priced and within 10%, at the ceiling too")
 
 
 # ---------------------------------------------------------------- a whole run, faked
@@ -788,7 +805,9 @@ def test_benchmark_run() -> None:
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
     assert doc["ai_settings"] == {"thinking_level_read": "low,test-strong=high", "thinking_level_sort": "minimal",
                                   "thinking_level_second_look": None, "image_resolution": "damage=ultra_high,*=medium",
-                                  "read_tools": "code_execution"}, doc["ai_settings"]
+                                  "read_tools": "code_execution",
+                                  # Contract 8 D2: zone reading, at its defaults.
+                                  "intake_read_mode": "single", "intake_grid_marks": False}, doc["ai_settings"]
     assert settings_seen[0] == ("low,test-strong=high", "damage=ultra_high,*=medium", "code_execution"), settings_seen
     assert doc["sort_cache"]["thinking_level_sort"] == "minimal"
     ok("the model-setting flags are on the app's settings while it reads, and in the result file (ai_settings)")
@@ -833,6 +852,20 @@ def test_benchmark_run() -> None:
     assert (ls["found"], ls["added"], ls["added_parts"], ls["extra"], ls["extra_parts"]) == (3, 1, ["Boot Lid Lock"], 1, ["Rear End Panel"]), ls
     assert "second look" in a1["accounting"] and a1["accounting"]["second look"]["calls"] == 1
     ok("each run scores the second look as if all ticked (found 3, added 1, extra 1) and counts its call apart")
+    sd, zn, rr = a1["part_sides"], a1["part_zones"], a1["part_remarks"]
+    assert (sd["sided_found"], sd["undetermined"], sd["right"], sd["wrong"]) == (1, 1, 0, 0), sd
+    assert zn["rear"] == {"expected": 3, "found": 2, "wrong_side": 0, "missed": 1, "extra": 0, "missed_parts": ["Boot Lid Lock"]}, zn
+    assert (zn["front"]["extra"], zn["other"]["extra"]) == (1, 1), zn  # the bonnet, the Other item
+    assert (rr["scored"], rr["agree"], rr["unsure"]) == (2, 0, 2), rr  # the report says Replace; no remarks drafted
+    assert an["report_price_total"] == 2242 and an["price_diff"] == round(an["price_total"] - 2242, 2), an
+    assert 0 <= an["within_10pct"] <= an["covered"] and an["matched_priced"] <= an["covered"], an
+    assert "sides of the found parts: right 0" in text and "by zone, found/expected: front 0/0 extra 1; rear 2/3" in text, text
+    assert "Replace/Repair: agree 0, disagree 0, unsure 2 of 2" in text and "Annex A prices: W/shop Est" in text, text
+    assert "side right" in text and "rear found" in text and "within 10%" in text, text
+    t = doc["summary"]["total"]
+    # Run 1, both cases: the boot lid in each, case A's tail lamp too.
+    assert (t["zone_rear_found"]["mean"], t["zone_rear_expected"]["mean"], t["remarks_scored"]["mean"]) == (3, 6, 3), t
+    ok("each run carries the found parts' sides, zones and Replace / Repair, and the Annex A's prices; in the log and summary")
     assert runs[3].get("error", "").startswith("RuntimeError: All Gemini fallback models")
     s = doc["summary"]
     assert s["complete_reps"] == [1] and s["errors"][0]["case"] == "TEST CASE B" and s["cases"]["TEST CASE A"]["metrics"]["found"]["n"] == 2
@@ -856,6 +889,273 @@ def test_benchmark_run() -> None:
     assert "thinking_level_read low,test-strong=high" in buf.getvalue() and "read_tools code_execution" in buf.getvalue()
     assert "fair_found" in buf.getvalue() and "read_tok_think" in buf.getvalue(), buf.getvalue()
     ok("compare.py names each side's model settings and compares the fair score and the reading's tokens")
+    assert "zone_rear_found" in buf.getvalue() and "remarks_agree_rate" in buf.getvalue() and "annex_within_10" in buf.getvalue()
+    ok("compare.py compares the found parts' detail and the Annex A prices")
+
+
+# ---------------------------------------------------------------- the found parts in detail (contract 8)
+
+
+def priced(item: str, est: float, adjusted: float, condition: str = "Dented") -> SimpleNamespace:
+    return SimpleNamespace(item=item, condition=condition, workshop_est=est, adjusted_cost=adjusted)
+
+
+def test_sides() -> None:
+    print("sides of the found parts")
+    key = [{"part": "Left Tail Lamp"}, {"part": "Right Tail Lamp"}, {"part": "Left Rear Bumper Reflector"},
+           {"part": "Rear Bumper"}, {"part": "Right Front Door"}, {"part": "Left Headlamp"}, {"part": "Right Rear Quarter Panel"}]
+    items = [
+        {"part": "Left Tail Lamp", "side_inferred": True},  # placed from the sorter's area, and right
+        {"part": "Tail Lamp (side undetermined)"},  # the right lamp, its side not said
+        {"part": "Right Rear Bumper Reflector", "side_inferred": True},  # placed, and wrong
+        {"part": "Rear Bumper"},  # no side: left out
+        {"part": "Left Front Door"},  # read on the wrong side
+        {"part": "Left Headlamp", "side_inferred": True}, {"part": "Left Headlamp"},  # also read there: not inferred
+        {"part": "Bonnet"},
+    ]
+    parts = bi.score_parts(key, [i["part"] for i in items])
+    s = bi.score_sides(key, items, parts)
+    assert (s["sided_found"], s["right"], s["wrong"], s["undetermined"]) == (5, 2, 2, 1), s
+    assert (s["right_inferred"], s["wrong_inferred"]) == (1, 1) and s["wrong"] == len(parts["wrong_side"]), s
+    by = {d["part"]: d for d in s["details"]}
+    assert by["Right Tail Lamp"] == {"part": "Right Tail Lamp", "drafted_as": "Tail Lamp (side undetermined)",
+                                     "side": "undetermined", "inferred": False}, by
+    assert by["Right Front Door"] == {"part": "Right Front Door", "drafted_as": "Left Front Door", "side": "wrong",
+                                      "inferred": False}, by
+    assert by["Left Rear Bumper Reflector"]["inferred"] and by["Left Tail Lamp"]["inferred"] and not by["Left Headlamp"]["inferred"]
+    assert "Rear Bumper" not in by and "Right Rear Quarter Panel" not in by
+    ok("right, wrong (score_parts' wrong side) and undetermined per found sided part; inferred only when no item of the name was read")
+    run = {"parts": parts, "drafted_parts": [i["part"] for i in items], "drafted_items": items, "vehicle": {}}
+    bi.score_details(run, {"parts": key})
+    m = bi.run_metrics(run)
+    assert (m["sided_found"], m["side_right"], m["side_undetermined_found"], m["side_right_inferred"], m["side_wrong_inferred"],
+            m["wrong_side"], m["side_right_rate"]) == (5, 2, 1, 1, 1, 2, 0.4), m
+    assert "part_remarks" not in run and "remarks_scored" not in m
+    ok("run metrics: with a side, right, undetermined, inferred; no Replace / Repair without a report or a key that says")
+
+
+def test_remarks() -> None:
+    print("Replace / Repair")
+    from app.parts import history
+
+    lines = [line("Tail gate assy", "Dented/bent"), line("Tail gate lock striker", "Necessary"),
+             line("Rear bumper fascia", "Repair"), line("Tail lamp LH", "Cracked"),
+             line("Rear bumper reflector LH", "Shifted")]
+    key = [{"part": "Boot Lid", "surveyor": ["Tail gate assy"]},
+           {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},  # refitted only: undecided
+           {"part": "Rear Bumper", "surveyor": ["Rear bumper fascia"]},
+           {"part": "Left Tail Lamp", "surveyor": ["Tail lamp LH"]},
+           {"part": "Left Rear Bumper Reflector", "surveyor": ["Rear bumper reflector LH"], "remarks": "Repair"},  # the key says
+           {"part": "Bonnet", "surveyor": ["Bonnet"]}]  # not found
+    by = {p["part"]: p for p in key}
+    sr = lambda part: bi.surveyor_remarks(by[part], lines, history.normalise_item, history.side_of)  # noqa: E731
+    assert [sr(p) for p in by] == ["Replace", None, "Repair", "Replace", "Repair", None], [sr(p) for p in by]
+    ok("the surveyor's: condition Repair is Repair, any other damage Replace, refitted only undecided; the key's own first")
+    items = [{"part": "Boot Lid", "remarks": "replace"}, {"part": "Boot Lid Lock", "remarks": "Replace"},
+             {"part": "Rear Bumper", "remarks": "Replace"}, {"part": "Tail Lamp (side undetermined)", "remarks": None},
+             {"part": "Left Rear Bumper Reflector", "remarks": "Repair"}]
+    parts = bi.score_parts(key, [i["part"] for i in items])
+    r = bi.score_remarks(key, parts["matched"], items, lines, history.normalise_item, history.side_of)
+    assert (r["scored"], r["agree"], r["disagree"], r["unsure"], r["surveyor_repair"], r["repair_agree"]) == (4, 2, 1, 1, 2, 1), r
+    assert [(d["part"], d["verdict"]) for d in r["details"]] == [
+        ("Boot Lid", "agree"), ("Rear Bumper", "disagree"), ("Left Tail Lamp", "unsure"), ("Left Rear Bumper Reflector", "agree")], r
+    assert bi._remarks("Fix it") is None and bi._remarks(" REPAIR ") == "Repair"
+    ok("per found part: agree (any case), disagree, unsure (null or not a firm word); Repair counted apart")
+    run = {"parts": parts, "drafted_parts": [i["part"] for i in items], "drafted_items": items, "vehicle": {}}
+    bi.score_details(run, {"parts": key})  # no report: the key's own remarks are enough
+    assert run["part_remarks"]["scored"] == 1 and run["part_remarks"]["agree"] == 1, run["part_remarks"]
+    bi.score_details(run, {"parts": key}, lines, history.normalise_item, history.side_of)
+    m = bi.run_metrics(run)
+    assert (m["remarks_scored"], m["remarks_agree"], m["remarks_disagree"], m["remarks_unsure"], m["remarks_repair"],
+            m["remarks_repair_agree"], m["remarks_agree_rate"]) == (4, 2, 1, 1, 2, 1, 0.5), m
+    ok("run metrics: scored, agree, disagree, unsure, the surveyor's Repairs and the agree rate")
+
+
+def test_zones() -> None:
+    print("zones")
+    names = ("Left Front Fender", "Right Rear Quarter Panel", "Left Front Tyre", "Left Headlamp", "Left Tail Lamp",
+             "Rear Bumper", "Bonnet", "Roof", "Parking Sensor", "Headlamp (side undetermined)", "Door (side undetermined)",
+             "Other / Not Listed")
+    assert [bi.part_zone(p) for p in names] == ["left", "right", "left", "front", "rear", "rear", "front", "other", "other",
+                                                "front", "other", "other"], [bi.part_zone(p) for p in names]
+    bi._app()  # second_look imports call_structured: after the benchmark has wrapped it
+    from app.ai import second_look
+    from app.reports.taxonomy import CANONICAL_PARTS
+
+    sides = {"left", "right"}
+    for part in CANONICAL_PARTS:
+        if part.endswith(bi.SIDE_UNDETERMINED) or part == bi.OTHER_PART:
+            continue
+        zones = {zone for zone, parts in second_look.ZONES.items() if part in parts}
+        ends = zones - sides
+        want = next(iter(zones & sides)) if zones & sides else next(iter(ends)) if len(ends) == 1 else "other"
+        assert bi.part_zone(part) == want, (part, zones, bi.part_zone(part))
+    ok("one zone a part: the flank's side even at a corner, else its end, else other -- as second_look.ZONES places them")
+
+    key = [{"part": "Rear Bumper"}, {"part": "Left Tail Lamp"}, {"part": "Right Tail Lamp"}, {"part": "Left Rear Quarter Panel"},
+           {"part": "Right Front Door"}, {"part": "Bonnet"}, {"part": "Rear Subframe", "hidden": True}]
+    drafted = ["Rear Bumper", "Tail Lamp (side undetermined)", "Left Front Door", "Front Bumper", "Other / Not Listed"]
+    parts = bi.score_parts(key, drafted)
+    z = bi.score_zones(key, parts)
+    assert list(z) == list(bi.ZONES)
+    assert z["rear"] == {"expected": 3, "found": 2, "wrong_side": 0, "missed": 1, "extra": 0, "missed_parts": ["Right Tail Lamp"]}, z
+    assert z["right"] == {"expected": 1, "found": 0, "wrong_side": 1, "missed": 0, "extra": 0, "missed_parts": []}, z
+    assert (z["left"]["missed_parts"], z["front"]["missed_parts"], z["other"]["missed_parts"]) == (
+        ["Left Rear Quarter Panel"], ["Bonnet"], ["Rear Subframe"]), z
+    assert (z["front"]["extra"], z["other"]["extra"]) == (1, 1), z
+    assert (sum(v["expected"] for v in z.values()), sum(v["found"] for v in z.values()),
+            sum(v["wrong_side"] for v in z.values()), sum(v["extra"] for v in z.values())) == (
+        len(key), parts["found"], len(parts["wrong_side"]), len(parts["extra"])), z
+    ok("found, wrong side and missed (named) by where the key part sits, extras by where they would; they add up to the score")
+    runs = []
+    for rep in (1, 2):
+        run = {"case": "CASE A", "rep": rep, "parts": parts, "drafted_parts": drafted, "vehicle": {}}
+        bi.score_details(run, {"parts": key})
+        runs.append(run)
+    m = bi.run_metrics(runs[0])
+    assert (m["zone_rear_found"], m["zone_rear_expected"], m["zone_rear_recall"], m["zone_front_extra"]) == (2, 3, 0.667, 1), m
+    t = bi.summarize(runs)["total"]
+    assert t["zone_rear_recall"]["mean"] == 0.667 and t["zone_left_recall"]["mean"] == 0.0, t
+    ok("run metrics per zone (found, expected, extra) and the recall from the summed counts")
+
+
+def test_prices() -> None:
+    print("Annex A prices against the surveyor's")
+    from app.parts import history
+    from eval_parts_kits import _matched, matched_pairs
+
+    lines = [priced("Tail gate assy", 1000, 800), priced("Tail gate lock striker", 100, 80),
+             priced("Tail lamp LH", 600, 480), priced("Tail lamp RH", 600, 480),
+             priced("Rear bumper fascia", 500, 400), priced("Rear bumper beam", 200, 160),
+             priced("Tail gate stopper", 400, 320, "Necessary")]  # no row for it: missed
+    rows = [{"part_name": "Tail gate assy", "workshop_est": 1050, "adjusted_cost": 840},  # 5% over
+            {"part_name": "Tail gate lock striker", "workshop_est": 110, "adjusted_cost": 88},  # 10% over: still within
+            {"part_name": "Tail lamp", "workshop_est": 1150, "adjusted_cost": 920},  # against the two lamps' 1200
+            {"part_name": "Rear bumper fascia", "workshop_est": 600, "adjusted_cost": 480},  # 20% over
+            {"part_name": "Rear bumper beam", "workshop_est": 0, "adjusted_cost": 0},  # unpriced
+            {"part_name": "Bonnet", "workshop_est": 300, "adjusted_cost": 240}]  # extra
+    real = {history.normalise_item(ln.item) for ln in lines}
+    keys = {history.normalise_item(r["part_name"]) for r in rows}
+    pairs = matched_pairs(real, keys)
+    assert set(pairs) == _matched(real, keys) and len(pairs) == 5 and pairs["tail lamp"] == "tail lamp", pairs
+    ok("matched_pairs pairs exactly the lines _matched covers")
+    p = bi.score_prices(lines, rows, pairs, history.normalise_item)
+    assert (p["price_total"], p["report_price_total"], p["price_diff"]) == (3210, 3400, -190), p
+    assert (p["adjusted_total"], p["report_adjusted_total"], p["adjusted_diff"]) == (2568, 2720, -152), p
+    assert (p["matched_priced"], p["within_10pct"], p["matched_abs_diff"]) == (4, 3, 410), p
+    ok("totals of the whole sheet (missed and extra lines in them), matched lines priced, within 10% (LH + RH one wording)")
+    run = {"parts": bi.score_parts([], []), "vehicle": {}, "annex_a": {
+        "real_lines": 6, "covered": 5, "rows": 6, "priced": 5, "unpriced": 1, "extra": 1, "canonical_rows": 0,
+        "perfect_covered": 6, **p, "perfect_within_10pct": 5, "perfect_price_diff": -50}}
+    m = bi.run_metrics(run)
+    assert (m["annex_price_diff"], m["annex_adjusted_diff"], m["annex_matched_priced"], m["annex_within_10"],
+            m["annex_price_abs_diff"], m["annex_perfect_within_10"], m["annex_within_10_rate"]) == (-190, -152, 4, 3, 410, 5, 0.6), m
+    assert m["annex_price_diff_rate"] == round(-190 / 3400, 3), m
+    stored = dict(run, annex_a={k: v for k, v in run["annex_a"].items() if k not in p})
+    assert "annex_price_diff" not in bi.run_metrics(stored) and bi.run_metrics(stored)["annex_covered"] == 5
+    ok("run metrics: price and adjusted difference, matched priced, within 10% (and its rate); absent in older files")
+
+
+def gate_doc(label: str, founds, wrongs, extras, *, expected: int = 10, errors=(), cases=("CASE A",)) -> dict:
+    """A result file of one run per repetition and case: found, wrong
+    sides and extras per run; 2 reading calls and a sorting one, 2000
+    prompt tokens, 20 seconds per case."""
+    runs = []
+    for rep, (found, wrong, extra) in enumerate(zip(founds, wrongs, extras), start=1):
+        for case in cases:
+            if rep in errors:
+                runs.append({"case": case, "rep": rep, "error": "RuntimeError: quota"})
+                continue
+            runs.append({
+                "case": case, "rep": rep, "read": 30, "sort_seconds": 1.5, "read_seconds": 18.5,
+                "drafted_parts": ["Rear Bumper"], "vehicle": {},
+                "parts": {"found": found, "expected": expected, "visible_found": found, "visible_expected": expected,
+                          "extra": ["Bonnet"] * extra, "wrong_side": [["Left Front Door", "Right Front Door"]] * wrong,
+                          "found_parts": {}, "missed": []},
+                "accounting": {"draft": {"calls": 2, "prompt_tokens": 2000}, "photo sort": {"calls": 1}},
+            })
+    return {"label": label, "git_ref": f"{label}@0000000", "ai_settings": {"read_tools": None}, "runs": runs, "summary": {}}
+
+
+def test_gate() -> None:
+    print("the gate")
+    folder = Path(_tmp, "gate")
+    folder.mkdir()
+
+    def saved(doc: dict) -> Path:
+        path = folder / f"{doc['label']}.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return path
+
+    base = gate.load(saved(gate_doc("base", [4, 5, 6], [3, 3, 3], [1, 1, 1])))
+    verdict = lambda doc: gate.judge(base, gate.load(saved(doc)))  # noqa: E731
+    better = verdict(gate_doc("better", [7, 8, 9], [3, 3, 3], [3, 3, 3]))
+    assert better["pass"] and [c["ok"] for c in better["checks"]] == [True, True, True], better
+    assert [c["noise"] for c in better["checks"]] == ["UP (better)", "same", "UP (worse)"], better
+    assert better["checks"][2]["says"] == "extras 3 <= 3 (baseline 1 + 2)", better["checks"][2]
+    ok("pass: found above the baseline, wrong sides at it, extras at the baseline + 2 (the limits are inclusive)")
+    same = verdict(gate_doc("same", [5, 5, 5], [3, 3, 3], [1, 1, 1]))
+    assert not same["pass"] and [c["ok"] for c in same["checks"]] == [False, True, True], same
+    assert same["checks"][0]["says"] == "parts found 5 not > 5 (baseline 5)" and same["checks"][0]["noise"] == "inside noise"
+    extras = verdict(gate_doc("extras", [7, 8, 9], [3, 3, 3], [4, 4, 4]))
+    assert not extras["pass"] and [c["ok"] for c in extras["checks"]] == [True, True, False], extras
+    ok("fail: found only equal to the baseline; extras above the baseline + 2")
+    low = gate.load(saved(gate_doc("low-sides", [4, 5, 6], [1, 1, 1], [1, 1, 1])))
+    sides = gate.judge(low, gate.load(saved(gate_doc("sides", [7, 8, 9], [3, 3, 2], [1, 1, 1]))))
+    assert not sides["pass"] and [c["ok"] for c in sides["checks"]] == [True, False, True], sides
+    assert sides["checks"][1]["limit"] == 2.5 and sides["checks"][1]["value"] == 2.667, sides
+    floor = gate.judge(low, gate.load(saved(gate_doc("floor", [7, 8, 9], [2, 3, 2], [1, 1, 1]))))
+    assert floor["pass"], floor  # 2.333 wrong sides: above the baseline's 1, under the floor of 2.5
+    ok("fail: wrong sides above the higher of the baseline and 2.5; under 2.5 passes though the baseline had fewer")
+    broken = gate.load(saved(gate_doc("broken", [7, 8, 9], [0, 0, 0], [0, 0, 0], errors=(1, 2, 3))))
+    v = gate.judge(base, broken)
+    assert not v["pass"] and all(not c["ok"] and c["value"] is None for c in v["checks"]), v
+    assert v["checks"][0]["says"].startswith("parts found: missing in the candidate"), v
+    assert gate.judge(broken, base)["checks"][1]["says"].startswith("wrong sides: missing in the baseline")
+    no_sides = gate.load(saved(gate_doc("no-sides", [7, 8, 9], [0, 0, 0], [1, 1, 1])))
+    del no_sides["summary"]["total"]["wrong_side"]  # a file from before the measure
+    v = gate.judge(base, no_sides)
+    assert not v["pass"] and [c["ok"] for c in v["checks"]] == [True, False, True], v
+    ok("fail: a measure missing in the candidate (no complete run, or an older file) or in the baseline")
+    other_key = verdict(gate_doc("other-key", [7, 8, 9], [3, 3, 3], [1, 1, 1], expected=9))
+    assert not other_key["pass"] and all(c["ok"] for c in other_key["checks"]), other_key
+    assert other_key["problems"] == ["scored on another key (9 key parts, the baseline 10): give --key"], other_key
+    ok("fail: scored on a key of another size")
+
+    two = gate.load(saved(gate_doc("two-cases", [7, 8, 9], [1, 1, 1], [1, 1, 1], cases=("CASE A", "CASE B"))))
+    assert (gate.per_case(two["summary"], "calls"), gate.per_case(two["summary"], "total_s"),
+            gate.per_case(two["summary"], "tok_in")) == (3, 20, 2000), two["summary"]["total"]
+    assert gate.per_case(gate.load(saved(gate_doc("none", [1], [0], [0], errors=(1,))))["summary"], "calls") is None
+    ok("calls, seconds and prompt tokens per case: TOTAL over the cases")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = gate.main([str(folder / "base.json"), str(folder / "better.json"), str(folder / "floor.json")])
+    text = out.getvalue()
+    assert code == 0, text
+    assert "strict parts score" in text and "calls/case" in text and "prompt tok/case" in text and "(baseline)" in text, text
+    assert "cand 1 better (better@0000000): PASS" in text and "ok   parts found 8 > 5 (baseline 5) -- UP (better)" in text, text
+    assert "3.00" in text and "2000" in text and "CASE A" not in text and "CASE B" not in text, text
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = gate.main([str(folder / "base.json"), str(folder / "better.json"), str(folder / "same.json")])
+    assert code == 1 and "cand 2 same (same@0000000): FAIL" in out.getvalue() and "FAIL parts found 5 not > 5" in out.getvalue()
+    ok("gate.py prints one table and a verdict per candidate, no case names; exit 0 when all pass, 1 when any fails")
+
+    # --key: files scored on different keys, scored again on one.
+    stored = gate_doc("old-key", [0, 0, 0], [0, 0, 0], [0, 0, 0], expected=3)
+    for run in stored["runs"]:
+        run["drafted_parts"] = ["Rear Bumper", "Left Tail Lamp", "Bonnet"]
+    key_path = folder / "key.json"
+    key_path.write_text(json.dumps({"cases": [{"name": "CASE A", "parts": KEY_PARTS}]}), encoding="utf-8")
+    key = {c["name"]: c for c in json.loads(key_path.read_text(encoding="utf-8"))["cases"]}
+    again = gate.load(saved(stored), key)["summary"]["total"]
+    assert (again["found"]["mean"], again["extra"]["mean"], again["expected"]["mean"]) == (2, 1, 8), again
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gate.main([str(folder / "old-key.json"), str(folder / "better.json"), "--key", str(key_path)])
+    assert "give --key" not in out.getvalue(), out.getvalue()
+    ok("--key scores every run's strict parts again on one key before the gate")
 
 
 # ---------------------------------------------------------------- rescore, scratch
@@ -927,6 +1227,62 @@ def test_rescore() -> None:
     ok("without --reports nothing is flagged; no --key, or --out over the stored file: refused")
 
 
+def test_rescore_chain() -> None:
+    print("--rescore: the found parts' detail, and Annex A built again on a scratch database")
+    A = bi._app()
+    A.init_db()
+    base = Path(_tmp, "rescore-chain")
+    reports = base / "reports"
+    make_reports(reports)
+    key = {"cases": [{"name": "TEST CASE A", "folder": "case_a", "vehicle": {"plate_number": "TEST-A"}, "parts": [
+        {"part": "Boot Lid", "surveyor": ["Tail gate assy"]}, {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},
+        {"part": "Left Tail Lamp", "surveyor": ["Tail lamp LH"]}]}]}
+    key_path = base / "key.json"
+    key_path.write_text(json.dumps(key), encoding="utf-8")
+    items = [{"part": "Boot Lid", "condition": "Dented/bent", "remarks": "Replace"},
+             {"part": "Right Tail Lamp", "side_inferred": True, "remarks": "Replace"},
+             {"part": "Boot Lid Lock", "remarks": "Repair"}, {"part": "Bonnet"}]
+    names = [i["part"] for i in items]
+    as_stored = {"real_lines": 99, "rows": 0, "priced": 0, "unpriced": 0, "covered": 0, "coverage": 0.0, "extra": 0,
+                 "canonical_rows": 0, "canonical_names": [], "perfect_rows": 0, "perfect_covered": 0, "perfect_coverage": 0.0}
+    doc = {"label": "old-chain", "runs": [{"case": "TEST CASE A", "rep": 1, "drafted_parts": names, "drafted_items": items,
+                                           "parts": bi.score_parts(key["cases"][0]["parts"], names), "vehicle": {},
+                                           "annex_a": as_stored}], "summary": {}}
+    source = base / "old.json"
+    source.write_text(json.dumps(doc), encoding="utf-8")
+    kept, rebuilt = base / "kept.json", base / "rebuilt.json"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert bi.main(["--rescore", str(source), "--key", str(key_path), "--reports", str(reports), "--out", str(kept)]) == 0
+    assert "Annex A kept as stored" in buf.getvalue(), buf.getvalue()
+    run = json.loads(kept.read_text(encoding="utf-8"))["runs"][0]
+    assert run["annex_a"] == as_stored
+    sd, zn, rr = run["part_sides"], run["part_zones"], run["part_remarks"]
+    assert (sd["sided_found"], sd["wrong"], sd["wrong_inferred"]) == (1, 1, 1), sd  # the tail lamp, placed on the wrong side
+    assert (zn["rear"]["found"], zn["rear"]["wrong_side"], zn["front"]["extra"]) == (2, 1, 1), zn
+    # The report: the tail gate and its striker are damaged -- Replace; the
+    # striker was drafted Repair.
+    assert [(d["part"], d["verdict"]) for d in rr["details"]] == [("Boot Lid", "agree"), ("Boot Lid Lock", "disagree")], rr
+    assert "sides of the found parts" not in buf.getvalue()  # the console stays the totals and the summary
+    ok("the found parts' detail scored again from the drafted items and the report; Annex A kept without a scratch database")
+
+    os.environ["BENCHMARK_SCRATCH"] = "1"
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert bi.main(["--rescore", str(source), "--key", str(key_path), "--reports", str(reports), "--out", str(rebuilt)]) == 0
+    finally:
+        os.environ.pop("BENCHMARK_SCRATCH", None)
+    new = json.loads(rebuilt.read_text(encoding="utf-8"))
+    an = new["runs"][0]["annex_a"]
+    assert "Annex A built again on the scratch database for 1 run(s)" in buf.getvalue(), buf.getvalue()
+    assert an["real_lines"] == 4 and an["rows"] == an["priced"] + an["unpriced"] and an["rows"] > 0, an
+    assert (an["report_price_total"], an["report_adjusted_total"]) == (2242, 1793.6), an
+    assert an["price_diff"] == round(an["price_total"] - 2242, 2) and 0 <= an["within_10pct"] <= an["covered"], an
+    assert new["rescored"]["annex_a_rebuilt"] == 1 and "annex_within_10" in new["summary"]["total"], new["rescored"]
+    ok("with a scratch database: prefill builds Annex A again from the drafted items, prices scored against the report")
+
+
 def test_scratch() -> None:
     print("--scratch and the paths from the environment")
     folder = Path(_tmp, "scratch run")
@@ -977,6 +1333,416 @@ def test_scratch() -> None:
     ok("BENCH_CASES / BENCH_KEY / BENCH_REPORTS / BENCH_SORT_CACHE stand for the flags")
 
 
+# ---------------------------------------------------------------- contract 9 (G): evidence, the re-check
+
+
+def _load_bench(name: str):
+    spec = importlib.util.spec_from_file_location(f"bench_{name}", SCRIPTS / "bench" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Made up, as the key's other cases.
+C9_VEHICLE = {"make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-C", "color": "White",
+              "vin": "TESTVIN0000000003", "engine_number": "TESTENG3", "date_of_registration": "2017-01-12"}
+
+
+def c9_suggestion(part: str, truth: str | None = None, *, box=None, box_kind="ai", reason=None, verdict=None, p=None,
+                  photo="P02") -> dict:
+    row = {"key": part, "part": part, "source": "zone", "confidence": "Medium", "found_by": ["zone:rear"],
+           "photo_reference": photo, "seen_in": [photo], "reason": None,
+           "evidence": [{"photo": photo, "box": box, "box_kind": box_kind if box else None, "by": "zone:rear",
+                         "reason": reason, "confidence": "Medium", "img_w": None, "img_h": None}],
+           "check": {"verdict": verdict, "p": p, "by": "decision", "model": "gemini-decision-1", "reason": None}
+           if verdict else None}
+    if truth:
+        row["truth"] = truth
+    return row
+
+
+def test_c9_metrics() -> None:
+    print("contract 9: the suggestions' evidence, against the key, and the re-check's verdicts")
+    parts = bi.score_parts(KEY_PARTS, ["Rear Bumper", "Boot Lid"])
+    suggested = ["Boot Lid Lock", "Right Tail Lamp", "Rear End Panel", "Tail Lamp (side undetermined)", "Boot Lid Lock"]
+    got = bi.classify_suggestions(KEY_PARTS, parts, suggested)
+    assert got == ["real", "wrong_side", "extra", "extra", "extra"], got
+    look = bi.score_second_look(KEY_PARTS, parts, ["Rear Bumper", "Boot Lid"], suggested)
+    assert got.count("real") == look["added"] and got.count("wrong_side") == look["wrong_side"], look
+    ok("each suggestion real / wrong_side / extra, as score_second_look counts them (a part suggested twice: the "
+       "second is one more untick)")
+
+    sugg = [c9_suggestion("Boot Lid Lock", "real", box=[100, 100, 300, 300], reason="latch bent", verdict="yes", p=0.9),
+            c9_suggestion("Left Rear Bumper Reflector", "real", box=[1, 1, 50, 50], box_kind="sort", verdict="unsure", p=0.5),
+            c9_suggestion("Left Headlamp", "real", reason="lens cracked", verdict="no", p=0.2),
+            c9_suggestion("Rear End Panel", "extra", box=[10, 10, 90, 90], reason="dent", verdict="no", p=0.1),
+            c9_suggestion("Right Tail Lamp", "wrong_side", verdict="yes", p=0.8),
+            c9_suggestion("Bonnet", "extra")]
+    items = [{"part": "Rear Bumper", "photo_reference": "P01", "bbox_2d": [5, 5, 60, 60]},
+             {"part": "Boot Lid", "evidence": [{"photo": "P02", "box": None, "reason": "dented"}]},
+             {"part": "Roof", "evidence": []}]
+    run = {"parts": parts, "vehicle": {}, "drafted_items": items, "suggestions": sugg, "read_seconds": 10.0,
+           "second_look": {"status": "skipped", "check": {"status": "ok", "by": "decision", "seconds": 1.4, "calls": 1}}}
+    m = bi.run_metrics(run)
+    want = {"sug_n": 6, "sug_box": 2, "sug_sort_box": 1, "sug_any_box": 3, "sug_reason": 3, "sug_real": 3, "sug_wrong": 3, "sug_checked": 5,
+            "chk_real_yes": 1, "chk_real_unsure": 1, "chk_real_no": 1, "chk_real_none": 0, "chk_wrong_yes": 1,
+            "chk_wrong_unsure": 0, "chk_wrong_no": 1, "chk_wrong_none": 1, "chk_real_kept": 2,
+            "list_n": 3, "list_box": 1, "list_reason": 1, "recheck_s": 1.4, "total_s": 11.4}
+    assert {k: m.get(k) for k in want} == want, {k: m.get(k) for k in want}
+    assert (m["sug_box_fill"], m["sug_reason_fill"], m["chk_real_kept_rate"], m["chk_wrong_no_rate"], m["sug_checked_rate"],
+            m["list_box_fill"], m["list_reason_fill"], m["sug_any_box_fill"]) == (
+        0.333, 0.5, 0.667, 0.333, 0.833, 0.333, 0.333, 0.5), m
+    ok("box fill (the AI's boxes; the sorter's apart; either), reason fill, real / wrong, the verdicts on each, kept and 'no' rates; "
+       "the list's fill; the re-check's seconds in the case's total")
+    old = bi.run_metrics({"parts": parts, "vehicle": {}, "drafted_items": [{"part": "Rear Bumper"}],
+                          "accounting": {"draft": {"calls": 1, "attempts": 1, "n_429": 0}}})
+    assert not {k for k in old if k.startswith(("sug_", "chk_", "list_", "dec_", "check_")) or k in ("n_503", "recheck_s")}, old
+    ok("a file from before contract 9: none of them (no made-up zeros), no 503 count")
+    unchecked = bi.run_metrics({"parts": parts, "vehicle": {}, "suggestions": [c9_suggestion("Bonnet", "extra")],
+                                "second_look": {"status": "skipped"}})
+    assert unchecked["sug_n"] == 1 and "sug_checked" not in unchecked and "chk_wrong_none" not in unchecked, unchecked
+    ok("no re-check: the suggestions' numbers without the verdicts'")
+
+    # The 503s and the calls per model.
+    counted = bi._counting(lambda *, purpose, script, input_parts=None: [
+        bi._app().runs.note_attempt(dict(a, key_source="company", key_last4="ZZZZ")) for a in script])
+    bi.ACCOUNTING.clear()
+    counted(purpose="decision", script=[{"model": "gemini-decision-1", "outcome": "error", "busy": True, "http_status": 503,
+                                         "waited_s": 0, "ms": 200},
+                                        {"model": "gemini-decision-1", "outcome": "ok", "waited_s": 0, "ms": 900}])
+    counted(purpose="check", script=[{"model": "lite-a", "outcome": "429", "waited_s": 0, "ms": 100},
+                                     {"model": "lite-a", "outcome": "ok", "waited_s": 3, "ms": 9000, "prompt_tokens": 8000}])
+    s = bi.ACCOUNTING.summary()
+    assert (s["decision"]["n_503"], s["decision"]["by_model"]["gemini-decision-1"]["n_503"], s["check"]["n_503"]) == (1, 1, 0), s
+    assert "n_503" not in s["check"]["by_model"]["lite-a"], s["check"]["by_model"]
+    m = bi.run_metrics({"parts": parts, "vehicle": {}, "accounting": s})
+    assert (m["n_503"], m["n_429"], m["dec_calls"], m["check_calls"], m["check_tok_in"]) == (1, 1, 1, 1, 8000), m
+    assert bi.model_calls(bi.merge_accounting([s, s])) == {
+        "gemini-decision-1": {"answered": 2, "attempts": 4, "n_429": 0, "n_503": 2},
+        "lite-a": {"answered": 2, "attempts": 4, "n_429": 2, "n_503": 0}}
+    ok("a busy try (503) counted apart, per kind of call and model; the calls per model over every kind of call")
+
+    runs = [dict(run, case="CASE A", rep=1, accounting=s), dict(run, case="CASE A", rep=2, accounting=s)]
+    summary = bi.summarize(runs)
+    assert summary["by_model"]["lite-a"]["answered"] == 2 and summary["total"]["sug_real"]["mean"] == 3
+    assert summary["total"]["chk_wrong_no_rate"]["mean"] == 0.333 and summary["total"]["sug_box_fill"]["mean"] == 0.333
+    table = "\n".join(bi.summary_table(summary))
+    assert "box fill" in table and "no on wrong" in table and "calls per model (answered/tries, 429s, 503s): " \
+        "gemini-decision-1 2/4 503 x2; lite-a 2/4 429 x2" in table, table
+    detail = "\n".join(bi.detail_lines(dict(runs[0], **{"parts": parts, "vehicle": {}, "photos": 3, "read": 2,
+                                                         "damage_photos_read": "1/1", "parts_with_checklist": parts,
+                                                         "checklist": [], "sorter": bi.sorter_quality(KEY_PARTS, []),
+                                                         "answered_by": {}})))
+    assert "suggestions: 6 (real 3, wrong 3); AI box 2/6 (any box 3), reason 3/6 | list: AI box 1/3, reason 1/3"         in detail, detail
+    assert "re-check: ok by decision in 1.4s, 1 call(s); real yes 1 unsure 1 no 1 none 0; wrong yes 1 unsure 0 no 1 none 1" \
+        in detail, detail
+    totals = "\n".join(bi.total_lines(runs))
+    assert "SUGGESTIONS 6: real 3, wrong 3; AI box 2, reason 3; RE-CHECK kept 2 of the real, said no to 1 of the wrong" \
+        in totals, totals
+    ok("the summary (calls per model too), the run's log lines and the console totals")
+    path = Path(_tmp, "c9-metrics.json")
+    path.write_text(json.dumps({"label": "c9", "runs": runs, "summary": summary}), encoding="utf-8")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        compare.main([str(path), str(path), "--total-only"])
+    assert "sug_box_fill" in buf.getvalue() and "chk_wrong_no_rate" in buf.getvalue() and "n_503" in buf.getvalue()
+    ok("compare.py compares them")
+
+
+def test_c9_flags() -> None:
+    print("contract 9: --zone-evidence, --check and the re-check's tuning")
+    A = bi._app()
+    args = bi.parse_args(["--read-mode", "zones", "--zone-evidence", "Reason_Box", "--check", "decision",
+                          "--decision-model", " gemini-decision-2 ", "--check-resolution", "LOW", "--check-yes", "0.8",
+                          "--check-no", "0.2"])
+    got = bi.model_settings(args)
+    assert got == {"intake_read_mode": "zones", "intake_zone_evidence": "reason_box", "intake_check_mode": "decision",
+                   "gemini_decision_model": "gemini-decision-2", "intake_check_resolution": "low",
+                   "intake_check_yes": 0.8, "intake_check_no": 0.2}, got
+    got = bi.model_settings(bi.parse_args(["--check", "lite", "--check-models", " lite-a , lite-b ",
+                                           "--thinking-level-check", "LOW"]))
+    assert got == {"intake_check_mode": "lite", "gemini_check_chain": "lite-a,lite-b",
+                   "gemini_thinking_level_check": "low"}, got
+    ok("each flag to its setting, written the one way (config's parsers)")
+    for bad, says in ((["--zone-evidence", "reason"], "--read-mode zones"),
+                      (["--read-mode", "zones", "--zone-evidence", "box"], "--zone-evidence"),
+                      (["--check", "on"], "--check"),
+                      (["--decision-model", "gemini-decision-2"], "give --check too"),
+                      (["--check-models", "lite-a"], "give --check too"),
+                      (["--check", "decision", "--check-yes", "1.5"], "a probability"),
+                      (["--check", "decision", "--check-yes", "0.6", "--check-no", "0.6"], "must be under"),
+                      (["--check", "decision", "--check-resolution", "4k"], "--check-resolution"),
+                      (["--check", "lite", "--thinking-level-check", "extreme"], "--thinking-level-check")):
+        try:
+            bi.model_settings(bi.parse_args(bad))
+            raise AssertionError(f"{bad} should stop the run")
+        except SystemExit as exc:
+            assert says in str(exc.code), (bad, exc.code)
+    ok("a value config refuses, a flag that would change nothing, or cut-offs the wrong way round stop the run")
+
+    plain = bi.ai_settings(A.settings)
+    assert not {"intake_zone_evidence", "intake_check_mode", "decision_model", "check_chain"} & set(plain), plain
+    names = ("intake_read_mode", "intake_zone_evidence", "intake_check_mode", "gemini_decision_model",
+             "gemini_check_chain", "gemini_thinking_level_check", "intake_check_resolution", "intake_check_yes",
+             "intake_check_no")
+    saved = {n: getattr(A.settings, n) for n in names}
+    try:
+        for field, value in {"intake_read_mode": "zones", "intake_zone_evidence": "reason", "intake_check_mode": "decision"}.items():
+            setattr(A.settings, field, value)
+        shown = bi.ai_settings(A.settings)
+        assert (shown["intake_zone_evidence"], shown["intake_check_mode"], shown["decision_model"],
+                shown["intake_check_resolution"], shown["intake_check_yes"], shown["intake_check_no"]) == (
+            "reason", "decision", "gemini-decision-1", "medium", 0.7, 0.3) and "check_chain" not in shown, shown
+        A.settings.intake_check_mode = "decision_then_lite"
+        A.settings.gemini_thinking_level_check = "low"
+        shown = bi.ai_settings(A.settings)
+        assert shown["check_chain"] == "gemini-3.5-flash-lite,gemini-3.1-flash-lite" and shown["thinking_level_check"] == "low"
+    finally:
+        for field, value in saved.items():
+            setattr(A.settings, field, value)
+    ok("ai_settings: at the defaults as before; the zone evidence and the re-check's settings while they act")
+
+
+def test_c9_run() -> None:
+    print("contract 9: a run keeps its suggestions in detail, photos by case label")
+    A = bi._app()
+    A.init_db()
+    folder = Path(_tmp, "c9-run", "case_c")
+    folder.mkdir(parents=True)
+    for i, colour in enumerate(("red", "green", "blue")):
+        Image.new("RGB", (48, 32), colour).save(folder / f"p{i + 1}.jpg", "JPEG")
+    case = {"name": "TEST CASE C", "folder": "case_c", "vehicle": C9_VEHICLE, "parts": [
+        {"part": "Rear Bumper"}, {"part": "Boot Lid Lock"}, {"part": "Left Tail Lamp"}]}
+
+    def fake_sort(rid, actor):
+        db = A.SessionLocal()
+        try:
+            for p in A.ordered_photos(db, rid):
+                p.kind, p.area, p.quality, p.shows_damage = "damage", "rear", "good", True
+            db.commit()
+        finally:
+            db.close()
+
+    def fake_read(rid, actor):
+        db = A.SessionLocal()
+        try:
+            report = db.get(A.Report, rid)
+            ids = [p.id for p in A.ordered_photos(db, rid)]
+            ev = lambda i, box=None: {"photo": f"@{ids[i]}", "box": box, "box_kind": "ai" if box else None,  # noqa: E731
+                                      "by": "zone:rear", "reason": "dent", "confidence": "High", "img_w": 48, "img_h": 32}
+            report.data = dict(report.data, damage_summary=[
+                {"part": "Rear Bumper", "photo_reference": f"@{ids[0]}", "bbox_2d": [10, 10, 500, 500], "reason": "cracked",
+                 "evidence": [ev(0, [10, 10, 500, 500]), ev(2)], "seen_in": [f"@{ids[0]}", f"@{ids[2]}"]}],
+                second_look={"status": "skipped", "seconds": 0.0, "check": {"status": "ok", "by": "decision", "seconds": 2.0,
+                                                                             "calls": 1},
+                             "items": [{"key": "Boot Lid Lock", "part": "Boot Lid Lock", "source": "zone",
+                                        "photo_reference": f"@{ids[1]}", "seen_in": [f"@{ids[1]}"], "found_by": ["zone:rear"],
+                                        "evidence": [ev(1, [100, 200, 300, 400])], "covers": ["Boot Lid Lock"],
+                                        "check": {"verdict": "yes", "p": 0.88, "by": "decision", "model": "gemini-decision-1"}},
+                                       {"key": "Right Tail Lamp", "part": "Right Tail Lamp", "source": "zone",
+                                        "photo_reference": f"@{ids[2]}", "evidence": []}]})
+            db.commit()
+        finally:
+            db.close()
+
+    saved = (A.pipeline._sort, A.pipeline._read)
+    A.pipeline._sort, A.pipeline._read = fake_sort, fake_read
+    try:
+        out = bi.run_case(case, folder.parent)
+    finally:
+        A.pipeline._sort, A.pipeline._read = saved
+    assert "error" not in out, out.get("error")
+    item = out["drafted_items"][0]
+    assert item["photo_reference"] == "P01" and item["seen_in"] == ["P01", "P03"] and [e["photo"] for e in item["evidence"]] == [
+        "P01", "P03"] and item["bbox_2d"] == [10, 10, 500, 500] and item["reason"] == "cracked", item
+    ok("the list's items: their photo, box, reason and evidence, photos by case label")
+    lock, lamp = out["suggestions"]
+    assert (lock["key"], lock["photo_reference"], lock["seen_in"], lock["evidence"][0]["photo"], lock["evidence"][0]["box"],
+            lock["check"]["p"], lock["truth"]) == ("Boot Lid Lock", "P02", ["P02"], "P02", [100, 200, 300, 400], 0.88, "real"), lock
+    assert lamp["truth"] == "wrong_side" and "covers" not in lock, lamp
+    assert out["second_look"]["check"]["seconds"] == 2.0 and out["second_look"]["suggested"] == ["Boot Lid Lock", "Right Tail Lamp"]
+    m = bi.run_metrics(out)
+    assert (m["sug_n"], m["sug_real"], m["sug_box"], m["chk_real_yes"], m["chk_wrong_none"], m["list_box"]) == (2, 1, 1, 1, 1, 1), m
+    ok("the suggestions in detail (key, photos, evidence, the re-check's verdict), real or wrong by the key; the step")
+    out["suggestions"][1].pop("truth")
+    rescored = Path(_tmp, "c9-run.json")
+    rescored.write_text(json.dumps({"label": "c9-run", "runs": [dict(out, rep=1)]}), encoding="utf-8")
+    key_path = Path(_tmp, "c9-run-key.json")
+    key_path.write_text(json.dumps({"cases": [case]}), encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        bi.main(["--rescore", str(rescored), "--key", str(key_path), "--out", str(Path(_tmp, "c9-run-rescored.json"))])
+    again = json.loads(Path(_tmp, "c9-run-rescored.json").read_text(encoding="utf-8"))
+    assert [s["truth"] for s in again["runs"][0]["suggestions"]] == ["real", "wrong_side"], again["runs"][0]["suggestions"]
+    ok("--rescore marks the suggestions' truth again on the key")
+
+
+def _replay_fixture(base: Path) -> tuple[Path, Path, Path, dict]:
+    cases = base / "cases"
+    (cases / "case_r").mkdir(parents=True)
+    for i, colour in enumerate(("red", "green", "blue", "white")):
+        Image.new("RGB", (64, 48), colour).save(cases / "case_r" / f"r{i + 1}.jpg", "JPEG")
+    case = {"name": "TEST CASE R", "folder": "case_r", "vehicle": C9_VEHICLE, "parts": [
+        {"part": "Rear Bumper"}, {"part": "Boot Lid Lock"}, {"part": "Left Tail Lamp"}]}
+    key_path = base / "key.json"
+    key_path.write_text(json.dumps({"cases": [case]}), encoding="utf-8")
+    sorted_photos = [{"n": 1, "file": "r1.jpg", "kind": "log_card", "area": None, "quality": "good", "damage": False,
+                      "part": None, "note": None},
+                     {"n": 2, "file": "r2.jpg", "kind": "damage", "area": "rear", "quality": "good", "damage": True,
+                      "part": "Rear Bumper", "note": None},
+                     {"n": 3, "file": "r3.jpg", "kind": "damage", "area": "rear", "quality": "good", "damage": True,
+                      "part": None, "note": None},
+                     {"n": 4, "file": "r4.jpg", "kind": "overview", "area": "rear", "quality": "good", "damage": False,
+                      "part": None, "note": None}]
+    drafted = ["Rear Bumper"]
+    run = {"case": "TEST CASE R", "rep": 1, "parts": bi.score_parts(case["parts"], drafted), "drafted_parts": drafted,
+           "drafted_items": [{"part": "Rear Bumper", "photo_reference": "P02"}], "vehicle": {},
+           "sorted_photos": sorted_photos,
+           "suggestions": [
+               dict(c9_suggestion("Boot Lid Lock", "real", box=[100, 100, 400, 400], verdict="no", p=0.1, photo="P03")),
+               dict(c9_suggestion("Rear End Panel", "extra", photo="P01"), seen_in=["P01", "P04"]),
+               dict(c9_suggestion("Right Tail Lamp", "extra", photo="P03"))]}
+    result = base / "r2.json"
+    result.write_text(json.dumps({"label": "r2", "runs": [run, dict(run, rep=2, error="RuntimeError: quota")]}),
+                      encoding="utf-8")
+    return cases, key_path, result, case
+
+
+def test_replay_check() -> None:
+    print("contract 9: replay_check.py -- the re-check alone on a stored result, and the cut-off sweep")
+    import httpx
+
+    replay = _load_bench("replay_check")
+    A = bi._app()
+    A.init_db()
+    from app.ai import decisions
+
+    base = Path(_tmp, "replay")
+    cases, key_path, result, case = _replay_fixture(base)
+    bodies: list[dict] = []
+    p_of = {"boot lid lock": 0.92, "rear end panel": 0.05, "right tail lamp": 0.4}
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        return httpx.Response(200, json={"answers": {
+            k: {"noul": next(p for w, p in p_of.items() if f"car's {w} damaged" in q["instructions"])}
+            for k, q in body["questions"].items()}})
+
+    saved = (decisions.TRANSPORT, decisions.acquire, {f: getattr(A.settings, f) for f in (
+        "intake_check_mode", "gemini_decision_model", "intake_check_resolution", "intake_check_yes", "intake_check_no")})
+    decisions.TRANSPORT, decisions.acquire = httpx.MockTransport(handler), lambda key=None: 0.0
+    os.environ["BENCHMARK_SCRATCH"] = "1"
+    out = base / "out" / "replay.json"
+    buf = io.StringIO()
+    try:
+        for bad, says in (([str(result), "--cases", str(cases), "--key", str(key_path), "--out", str(out)], "--check"),
+                          ([str(result), "--cases", str(cases), "--key", str(key_path), "--out", str(result),
+                            "--check", "decision"], "another file")):
+            try:
+                replay.main(bad)
+                raise AssertionError(f"{bad} should be refused")
+            except SystemExit as exc:
+                assert says in str(exc.code), exc.code
+        with contextlib.redirect_stdout(buf):
+            code = replay.main([str(result), "--cases", str(cases), "--key", str(key_path), "--out", str(out),
+                                "--check", "decision", "--check-resolution", "low", "--label", "c9-check-dec"])
+    finally:
+        decisions.TRANSPORT, decisions.acquire = saved[0], saved[1]
+        for field, value in saved[2].items():
+            setattr(A.settings, field, value)
+        os.environ.pop("BENCHMARK_SCRATCH", None)
+    text = buf.getvalue()
+    assert code == 0, text
+    ok("refused without --check, or with --out over the stored result")
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert len(bodies) == 1 and len(doc["runs"]) == 1, (len(bodies), len(doc["runs"]))
+    body = bodies[0]
+    labels = [p["text"] for p in body["input"] if p["type"] == "text"]
+    assert labels == ["Photo P03:", "Photo P04:"] and {p["resolution"] for p in body["input"] if p["type"] == "image"} == {"low"}
+    assert len(body["questions"]) == 3, body["questions"]
+    ok("one request for the stored run that scored (an errored one is skipped): the photos by the run's labels, the "
+       "log card never sent, the flags' resolution")
+    rows = doc["runs"][0]["suggestions"]
+    assert [(r["part"], r["truth"], r["check"]["verdict"], r["check"]["p"]) for r in rows] == [
+        ("Boot Lid Lock", "real", "yes", 0.92), ("Rear End Panel", "extra", "no", 0.05),
+        ("Right Tail Lamp", "wrong_side", "unsure", 0.4)], rows
+    ok("each answer against the truth, scored again from the run's list (Right Tail Lamp: the wrong side)")
+    s = doc["summary"]
+    assert (s["real"], s["wrong"], s["real_kept"], s["wrong_no"], s["checked"]) == (1, 2, 1.0, 0.5, 1.0), s
+    assert s["gate"] == {"wrong_no": True, "real_kept": True, "median_s": True} and s["decision_s"]["n"] == 1, s
+    assert s["by_model"]["gemini-decision-1"]["answered"] == 1 and doc["ai_settings"]["intake_check_resolution"] == "low"
+    assert "REPLAY: 1 run(s), 3 suggestions: 1 real, 2 wrong" in text and "SWEEP over 1 real and 2 wrong" in text, text
+    assert doc["sweep"]["best_no"] == 0.5, doc["sweep"]
+    ok("the summary: verdicts on the real and the wrong, the gate's shares and seconds, calls per model; the sweep")
+    sweep = replay.sweep([{"truth": "real", "check": {"p": p}} for p in (0.9, 0.8, 0.6, 0.35)]
+                         + [{"truth": "extra", "check": {"p": p}} for p in (0.05, 0.1, 0.25, 0.4, 0.7)]
+                         + [{"truth": "real", "check": {"p": None}}])
+    by_no = {row["no"]: row for row in sweep["no"]}
+    assert (sweep["real"], sweep["wrong"]) == (4, 5) and by_no[0.3] == {"no": 0.3, "wrong_no": 0.6, "real_kept": 1.0,
+                                                                        "passes": True}, by_no[0.3]
+    assert by_no[0.4]["real_kept"] == 0.75 and not by_no[0.4]["passes"] and sweep["best_no"] == 0.3, sweep
+    assert {row["yes"]: row["real_yes"] for row in sweep["yes"]}[0.8] == 0.5
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert replay.main(["--sweep", str(out)]) == 0
+    assert "<= 0.3" in buf.getvalue() and "PASS" in buf.getvalue()
+    ok("--sweep, offline: wrong said no and real kept per 'no' cut-off, real and wrong per 'yes' cut-off")
+    # A case folder that isn't the run's: an error, the next run goes on.
+    Image.new("RGB", (64, 48), "yellow").save(cases / "case_r" / "r5.jpg", "JPEG")
+    os.environ["BENCHMARK_SCRATCH"] = "1"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            replay.main([str(result), "--cases", str(cases), "--key", str(key_path), "--out", str(out), "--check", "decision"])
+    finally:
+        os.environ.pop("BENCHMARK_SCRATCH", None)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert "not the run's" in doc["runs"][0]["error"] and doc["summary"]["errors"], doc["runs"][0]
+    ok("photos that aren't the run's: the run is an error, never re-checked on the wrong photos")
+
+
+def test_probe_boxes() -> None:
+    print("contract 9: probe_boxes.py -- evidence boxes drawn for a person to judge")
+    probe = _load_bench("probe_boxes")
+    base = Path(_tmp, "probe")
+    cases, key_path, result, case = _replay_fixture(base)
+    doc = json.loads(result.read_text(encoding="utf-8"))
+    run = doc["runs"][0]
+    run["suggestions"][1]["evidence"][0].update(box=[200, 300, 600, 700], box_kind="sort")
+    run["drafted_items"] = [{"part": "Rear Bumper", "photo_reference": "P02", "bbox_2d": [100, 100, 900, 500]}]
+    run["suggestions"][0]["evidence"][0].update(img_w=640, img_h=480)
+    result.write_text(json.dumps(doc), encoding="utf-8")
+    pool = probe.candidates(doc, {"TEST CASE R": 1})
+    assert sorted((c["where"], c["part"], c["photo"]) for c in pool) == [
+        ("list", "Rear Bumper", "P02"), ("suggestion", "Boot Lid Lock", "P03")], pool
+    assert len(probe.candidates(doc, {"TEST CASE R": 1}, kind="sort")) == 1 and \
+        len(probe.candidates(doc, {"TEST CASE R": 1}, source="suggestions", kind="any")) == 2
+    ok("the AI's boxes of the scored runs (an old item's own bbox_2d too); --kind / --from narrow it")
+    try:
+        probe.main([str(result), "--cases", str(cases), "--key", str(key_path), "--out-dir", str(SCRIPTS / "probe-out")])
+        raise AssertionError("an --out-dir in the repository must be refused")
+    except SystemExit as exc:
+        assert "inside the repository" in str(exc.code)
+    out = base / "out"
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert probe.main([str(result), "--cases", str(cases), "--key", str(key_path), "--out-dir", str(out), "--n", "5"]) == 0
+    index = json.loads((out / "index.json").read_text(encoding="utf-8"))
+    files = sorted(p.name for p in out.iterdir())
+    assert files == ["box01.jpg", "box02.jpg", "index.csv", "index.json"], files
+    csv_text = (out / "index.csv").read_text(encoding="utf-8")
+    assert csv_text.splitlines()[0] == "file,case_no,run,photo,part,where,by,box_kind,frame_differs,on_target", csv_text
+    assert "TEST CASE R" not in csv_text and "TEST CASE R" not in json.dumps(index["boxes"]), index
+    lock = next(b for b in index["boxes"] if b["part"] == "Boot Lid Lock")
+    assert lock["frame_differs"] is False and lock["case_no"] == 1 and lock["box"] == [100, 100, 400, 400]
+    with Image.open(out / lock["file"]) as drawn:
+        w, band = drawn.size[0], drawn.size[1] - 48
+        r, g, b = drawn.convert("RGB").getpixel((round(100 * w / 1000) + 1, band + round(250 * 48 / 1000)))
+        top = drawn.convert("RGB").getpixel((40, band + 40))
+    assert w == 64 and band > 0 and r > 180 and g < 90 and b < 90 and top[2] > 150, (w, band, (r, g, b), top)
+    ok("box01.jpg... with the box in red where it says, index.csv with an on_target column, no case name")
+    assert probe.frame_differs([640, 480], (64, 48)) is False and probe.frame_differs([480, 640], (64, 48)) is True
+    ok("a box drawn on another frame's shape is flagged (the app hides it)")
+
+
 def main() -> int:
     test_cli()
     test_score_parts()
@@ -993,9 +1759,21 @@ def main() -> int:
     test_sort_cache()
     test_reports_and_history()
     test_annex_scoring()
+    test_sides()
+    test_remarks()
+    test_zones()
+    test_prices()
+    test_gate()
     test_benchmark_run()
     test_rescore()
+    test_rescore_chain()
     test_scratch()
+    # Contract 9 (G).
+    test_c9_metrics()
+    test_c9_flags()
+    test_c9_run()
+    test_replay_check()
+    test_probe_boxes()
     print("all benchmark scoring tests passed")
     return 0
 

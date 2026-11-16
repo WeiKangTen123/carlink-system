@@ -33,7 +33,10 @@ x-bot-service: &bot-service
     # why this order (bbox-capable models first, -lite models as the
     # always-available fallback) and why antigravity was dropped (no
     # image input support, so it could never serve a photo-analysis call).
-    - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite}
+    # Contract 9 (owner, 15 Nov): 3.6-flash shares the 20/day bucket of the
+    # free tier's 3.5-flash and 3.7-flash only ever answered 503, so after
+    # the strong model the light models take over directly.
+    - GEMINI_MODEL_CHAIN=${GEMINI_MODEL_CHAIN:-gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite}
     - STORAGE_DIR=/app/storage
     - DATABASE_URL=sqlite:////app/storage/carlink.db
     # ai-keys.secret, which seals people's own AI keys (app/ai/secretbox.py).
@@ -54,6 +57,14 @@ x-bot-service: &bot-service
     # on the server".
     - CATALOGUE_ENABLED=${CATALOGUE_ENABLED:-false}
     - CATALOGUE_WORKER_TOKEN=${CATALOGUE_WORKER_TOKEN:-}
+    # Contract 9 reading (app/config.py): zone reads, zone-only finds as
+    # tick-to-add suggestions, and their reasons/boxes. The defaults here are
+    # config.py's (today's single read); the live values are set in
+    # infra/.env on the server, like the catalogue's.
+    - INTAKE_READ_MODE=${INTAKE_READ_MODE:-single}
+    - INTAKE_ZONE_ONLY=${INTAKE_ZONE_ONLY:-suggest}
+    - INTAKE_ZONE_EVIDENCE=${INTAKE_ZONE_EVIDENCE:-off}
+    - INTAKE_CHECK_MODE=${INTAKE_CHECK_MODE:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

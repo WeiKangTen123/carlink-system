@@ -31,7 +31,7 @@ from app.ai.keys import (
     scrub,
 )
 from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
-from app.config import ANY, image_resolutions, read_tools, settings, thinking_levels
+from app.config import ANY, image_resolutions, read_tools_by_model, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
 
@@ -124,28 +124,64 @@ def image_resolution(kind: str | None) -> str | None:
 # Telegram bot drafts through draft_report, so "draft" is its call as well.
 # A purpose not here (annex suggestions) is sent as it always was.
 CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look"}
+# Contract 8 D2: a zone call (ai/zone_read.py) is part of the reading.
+# Contract 9: on its own light chain (settings.gemini_zone_chain), it takes
+# the reading's thinking level for each model -- the lites read at "high"
+# -- but never the reading's tools: zoom measured no gain, and a zone call
+# isn't asked to use them.
+CALL_KINDS["draft_zone"] = "zone"
+# Contract 9: the lite re-check of the suggestions (ai/check.py), on its
+# own chain (settings.gemini_check_chain) with its own thinking level
+# (settings.gemini_thinking_level_check, unset: none sent).
+CALL_KINDS["check"] = "check"
+# A kind of call that takes another kind's thinking level setting.
+THINKING_OF = {"zone": "read"}
 
 
 def request_settings(purpose: str, model_id: str) -> dict:
     """The generation settings to add to one try's request: generation_config
-    with a thinking_level, and tools on the reading call. {} when none is
-    set -- the request is then byte for byte what it was before they
-    existed. Field names as google-genai 2.22.0's interactions.create takes
-    them (GenerationConfigParam.thinking_level, the code_execution
-    ToolParam)."""
+    with a thinking_level, and tools on the reading call -- each for this
+    model of the chain, or for every model. {} when none is set -- the
+    request is then byte for byte what it was before they existed. Field
+    names as google-genai 2.22.0's interactions.create takes them
+    (GenerationConfigParam.thinking_level, the code_execution ToolParam)."""
     kind = CALL_KINDS.get(purpose)
     if kind is None:
         return {}
     extra: dict = {}
-    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{kind}", None))
+    levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{THINKING_OF.get(kind, kind)}", None))
     level = levels.get(model_id) or levels.get(ANY)
     if level:
         extra["generation_config"] = {"thinking_level": level}
     if kind == "read":
-        tools = read_tools(settings.gemini_read_tools)
+        table = read_tools_by_model(settings.gemini_read_tools)
+        tools = table.get(model_id) or table.get(ANY)
         if tools:
             extra["tools"] = [{"type": name} for name in tools]
     return extra
+
+
+def store_setting() -> dict:
+    """{"store": False} while settings.gemini_store_off (contract 9, the
+    default): Google keeps nothing of the call -- the photos included --
+    for later retrieval, which nothing here asks for. {} when off: the
+    request as before, with no store field."""
+    return {"store": False} if getattr(settings, "gemini_store_off", True) else {}
+
+
+def tools_try(extra: dict, timeout: float, system_instruction: str, tools_note: str | None = None) -> tuple[float, str]:
+    """(timeout, system instruction) of one try, given its request_settings
+    (contract 8 D1). A try carrying tools gets settings.gemini_read_tools_
+    timeout when set -- the model runs its code before it answers -- and
+    the caller's tools_note on a line of its own after the prompt: a model
+    given a tool it isn't asked to use may never use it. A try without
+    tools is sent exactly as before, whatever is set."""
+    if not extra.get("tools"):
+        return timeout, system_instruction
+    timeout = settings.gemini_read_tools_timeout or timeout
+    if tools_note:
+        system_instruction = f"{system_instruction}\n{tools_note}"
+    return timeout, system_instruction
 
 
 # Seconds to wait before asking a busy model (is_overloaded) once more, and
@@ -178,6 +214,7 @@ def call_structured(
     actor: AiActor,
     timeout: float = 45.0,
     judge_key: bool = True,
+    tools_note: str | None = None,
     _busy_round: int = 0,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
@@ -206,6 +243,10 @@ def call_structured(
     up says nothing about the reading's models, and storing "quota" (or
     "invalid" for "limit: 0") would switch the person's key off for every
     AI call (review, 2026-11-09).
+
+    tools_note: words added to the system prompt on a try whose request
+    carries tools (tools_try), e.g. the reading's ZOOM_NOTE; never on any
+    other try.
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each key, since every model
@@ -262,9 +303,10 @@ def call_structured(
             # what tripped the quota during testing.
             waited = acquire(key.rate_limit_id)
             verdict = None
-            # Per model: a thinking level may be set for one model of the
-            # chain only.
+            # Per model: a thinking level or a tool may be set for one model
+            # of the chain only.
             extra = request_settings(purpose, model_id)
+            try_timeout, system = tools_try(extra, timeout, system_instruction, tools_note)
             # One retry per model on a per-minute 429, using the delay the
             # server itself supplies. Falling straight through to the next
             # model is pointless: it draws on the same per-key quota and
@@ -274,10 +316,10 @@ def call_structured(
                 interaction = None
                 try:
                     interaction = _create_within(
-                        timeout + DEADLINE_MARGIN,
+                        try_timeout + DEADLINE_MARGIN,
                         client.interactions.create,
                         model=model_id,
-                        system_instruction=system_instruction,
+                        system_instruction=system,
                         input=input_parts,
                         response_format={
                             "type": "text",
@@ -289,17 +331,14 @@ def call_structured(
                         # one call sat for 100+s with no response and no
                         # error), tying up a worker for no benefit since the
                         # point of the chain is to keep trying other models.
-                        timeout=timeout,
+                        timeout=try_timeout,
                         # A model that refuses a setting (a thinking level
                         # it hasn't got) answers 400: that try fails like
                         # any other error and the chain moves on.
                         **extra,
+                        **store_setting(),
                     )
-                    raw_output = (interaction.output_text or "").strip()
-                    if raw_output.startswith("```"):
-                        raw_output = re.sub(r"^```(?:json)?\s*", "", raw_output)
-                        raw_output = re.sub(r"\s*```$", "", raw_output)
-                    result = parse(raw_output)
+                    result = _parse_answer(parse, interaction)
                     # Which model actually answered. The fallbacks return
                     # visibly thinner analyses (no photo reference, bounding
                     # box or confidence), and without this line a thin draft
@@ -321,7 +360,8 @@ def call_structured(
                     if said in DAY_VERDICTS:
                         spent_until = allowance.mark_spent(key.fingerprint, model_id, allowance.limit_from(exc))
                     _note_attempt(
-                        key, model_id, _outcome(exc, interaction), waited, started, interaction, spent_until=spent_until
+                        key, model_id, _outcome(exc, interaction), waited, started, interaction, spent_until=spent_until,
+                        busy=interaction is None and is_overloaded(exc),
                     )
                     # What it says about the key itself is kept for an own
                     # key only; a company key's row is left as before P4.
@@ -378,12 +418,97 @@ def call_structured(
         time.sleep(CHAIN_BUSY_RETRY_SECONDS)
         return call_structured(
             purpose=purpose, system_instruction=system_instruction, input_parts=input_parts, schema=schema,
-            parse=parse, models=models, actor=actor, timeout=timeout, judge_key=judge_key, _busy_round=1,
+            parse=parse, models=models, actor=actor, timeout=timeout, judge_key=judge_key, tools_note=tools_note,
+            _busy_round=1,
         )
     raise (allowance.DayUsedUp if all_day and last_error is not None else RuntimeError)(
         f"All Gemini fallback models ({', '.join(models)}) failed "
         f"across {len(keys)} configured API key(s)."
     ) from _scrubbed(last_error, keys)
+
+
+def _without_fences(text: str | None) -> str:
+    """The answer without a ```json ... ``` fence round it."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
+
+
+def _get(item, name: str):
+    """A field of an SDK object, or of the same as a plain dict."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+
+def _steps(interaction) -> list:
+    steps = _get(interaction, "steps")
+    return list(steps) if isinstance(steps, (list, tuple)) else []
+
+
+def _code_ran(interaction) -> bool:
+    return any(str(_get(step, "type") or "").startswith("code_execution") for step in _steps(interaction))
+
+
+# How many of the model's last text items are looked through for its JSON
+# answer when the SDK's output_text isn't it (_answer_candidates).
+ANSWER_TEXTS_TRIED = 6
+
+
+def _answer_candidates(interaction) -> list[str]:
+    """Where else the JSON answer may be once the model ran code (contract 8
+    D1). The interaction's steps are then its thoughts, code, the code's
+    results, and text; the SDK's output_text (google-genai 2.22.0,
+    _gaos/google_genai.py _output_properties_from_steps) is the run of text
+    items that ends the last model output after the last code step -- the
+    answer, normally. But a run of two items ("Here is the JSON:" and the
+    JSON) comes back joined, and an answer written before a last code step
+    leaves a closing remark as output_text. So: each text item of the
+    model's output since the request, newest first, and the {...} inside
+    each."""
+    texts: list[str] = []
+    for step in reversed(_steps(interaction)):
+        kind = _get(step, "type")
+        if kind == "user_input":
+            break
+        if kind != "model_output":
+            continue
+        for item in reversed(_get(step, "content") or []):
+            text = _get(item, "text")
+            if _get(item, "type") == "text" and isinstance(text, str) and text.strip():
+                texts.append(text)
+    out: list[str] = []
+    for text in texts[:ANSWER_TEXTS_TRIED]:
+        text = _without_fences(text)
+        out.append(text)
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            out.append(text[start:end + 1])
+    return list(dict.fromkeys(out))
+
+
+def _parse_answer(parse: Callable[[str], T], interaction) -> T:
+    """parse() of the answer: the SDK's output_text, as always. Only when
+    that fails and the model ran code are the other text items tried
+    (_answer_candidates); the first parse() accepts is the answer, and when
+    none is, output_text's own error is raised -- the try fails as
+    "schema", as before. A reading without tools is parsed exactly as it
+    was."""
+    raw_output = _without_fences(_get(interaction, "output_text"))
+    try:
+        return parse(raw_output)
+    except Exception as exc:
+        if not _code_ran(interaction):
+            raise
+        error = exc
+    for text in _answer_candidates(interaction):
+        if text == raw_output:
+            continue
+        try:
+            return parse(text)
+        except Exception:
+            continue
+    raise error
 
 
 def _input_size(system_instruction: str, input_parts: list[dict]) -> int:
@@ -443,19 +568,28 @@ def _thought_tokens(interaction) -> int | None:
 def _tool_calls(interaction) -> int:
     """Code the model ran on this try (its code_execution_call steps):
     whether a tools trial used the tool at all."""
-    steps = getattr(interaction, "steps", None)
-    if not isinstance(steps, (list, tuple)):
-        return 0
-    return sum(1 for step in steps if getattr(step, "type", None) == "code_execution_call")
+    return sum(1 for step in _steps(interaction) if _get(step, "type") == "code_execution_call")
 
 
-def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None) -> None:
+def _tool_tokens(interaction) -> int | None:
+    """Tokens of what the tools handed back to the model (the code's output,
+    the crops it made), when the response says: usage.total_tool_use_tokens
+    -- what zooming costs on top of the photos."""
+    usage = getattr(interaction, "usage", None)
+    return _count(getattr(usage, "total_tool_use_tokens", None)) if usage is not None else None
+
+
+def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None,
+                  busy: bool = False) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
     before the try was sent (a rate-limit slot, or the delay a 429 asked
     for). spent_until: when the model's free day on this key comes back,
     on a try skipped for it (day_spent) or a 429 that said it was used up
-    -- what the review step's "Read by the backup model" notice is told."""
+    -- what the review step's "Read by the backup model" notice is told.
+    busy: Google said "busy, try again" (503, is_overloaded) -- kept on the
+    try (contract 9), so the run log and the benchmark can count 503s apart
+    from the other errors."""
     try:
         attempt = {
             "model": model_id,
@@ -467,6 +601,8 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
         }
         if spent_until is not None:
             attempt["spent_until"] = allowance.iso(spent_until)
+        if busy:
+            attempt["busy"] = True
         prompt_tokens, output_tokens = _tokens(interaction) if interaction is not None else (None, None)
         if prompt_tokens is not None:
             attempt["prompt_tokens"] = prompt_tokens
@@ -478,6 +614,9 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
         tool_calls = _tool_calls(interaction) if interaction is not None else 0
         if tool_calls:
             attempt["tool_calls"] = tool_calls
+        tool_tokens = _tool_tokens(interaction) if interaction is not None else None
+        if tool_tokens is not None:
+            attempt["tool_tokens"] = tool_tokens
         runs.note_attempt(attempt)
     except Exception:
         logger.warning("AI run log: couldn't note a Gemini try", exc_info=True)

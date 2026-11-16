@@ -12,6 +12,7 @@ which couldn't take a real case: the four sample cases are 41-78 photos and
     PUT    /intake/{id}/data                autosave the form
     PUT    /intake/{id}/checked             confirm fields, or mark them N/A (field review)
     POST   /intake/{id}/process             start AI sorting + reading in the background
+    POST   /intake/{id}/suggestions         add / dismiss / undo one AI suggestion (contract 9)
     POST   /intake/{id}/finalize            turn the draft into a case
 
 The Telegram/WhatsApp bots and the edit form keep using draft_report directly.
@@ -46,7 +47,7 @@ from app.intake.photos import (
     serialize_photo,
 )
 from app.parts import catalogue
-from app.reports import owners
+from app.reports import owners, suggestions
 from app.reports.db import SessionLocal
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data
 from app.reports import review
@@ -465,14 +466,24 @@ class IntakeDataRequest(BaseModel):
 def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     db = SessionLocal()
     try:
+        # Before the draft is read: a decision on a suggestion (POST
+        # .../suggestions) committing between this save's read and its
+        # write would otherwise be overwritten with the copy read before it.
+        hold_write_lock(db, report_id)
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         # Validated so a draft always has the shape every other reader of
         # Report.data (list, analytics, PDF) expects. sign_off is never
-        # taken from the browser (see main.blank_sign_off).
-        data = SecurityIncidentDraft.model_validate(body.data).model_dump()
+        # taken from the browser (see main.blank_sign_off), nor the
+        # suggestions: left out before validating, so an old tab's copy
+        # can't fail the save either.
+        data = SecurityIncidentDraft.model_validate({k: v for k, v in body.data.items() if k != "second_look"}).model_dump()
         data["sign_off"] = SignOffInfo().model_dump()
         data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), (report.data or {}).get("report_id"))
         keep_review_marks(data, report.data, user)
+        # Contract 9: the suggestions and the decisions on them are the
+        # server's (decide_intake_suggestion), like template_fields: always
+        # as stored, whatever the browser's copy says.
+        data["second_look"] = (report.data or {}).get("second_look")
         # Only a ref to one of this draft's own catalogue rows stays on a
         # line (as the stored row has it); a draft save never fails over one.
         report.data = catalogue.without_bad_refs(db, report_id, data)
@@ -482,6 +493,17 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         return {"ok": True}
     finally:
         db.close()
+
+
+def hold_write_lock(db, report_id: str) -> None:
+    """Takes SQLite's write lock for the rest of the transaction with a
+    write that changes nothing, before the case is read: a read-modify-
+    write of Report.data then can't lose a decision another request
+    committed in between (as api/parts.py's Annex A save)."""
+    db.execute(
+        update(Report).where(Report.id == report_id).values(pdf_path=Report.pdf_path)
+        .execution_options(synchronize_session=False)
+    )
 
 
 def keep_review_marks(data: dict, stored: dict | None, user: CurrentUser) -> None:
@@ -545,6 +567,10 @@ def set_intake_checked(report_id: str, body: CheckedChange, user: CurrentUser = 
     the autosave. Answers data.checked and the new review."""
     db = SessionLocal()
     try:
+        # Before the draft is read, as the autosave: this writes all of
+        # Report.data back, so a decision on a suggestion committing in
+        # between would otherwise be lost.
+        hold_write_lock(db, report_id)
         report, session = _load_draft(db, report_id, mutating=True, block_while_running=True)
         checked, detail = checked_change(report.data, body, user)
         report.data = {**(report.data or {}), "checked": checked or None}
@@ -597,6 +623,64 @@ def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Dep
             raise
         db.refresh(session)
         return _state(db, report, session, user)
+    finally:
+        db.close()
+
+
+class SuggestionDecideRequest(BaseModel):
+    """POST .../suggestions, here and on a filed case (api/main.py): the
+    suggestion's key (prefill.item_key), what the person did, and whether
+    they opened the evidence viewer on it first."""
+    key: str = Field(min_length=1, max_length=suggestions.MAX_KEY)
+    # Checked in the route: 400 bad_action, not FastAPI's 422.
+    action: str
+    looked: bool = False
+
+
+def bad_action(action: str) -> ApiError | None:
+    """400 bad_action for anything but add, dismiss or undo; else None."""
+    if action in suggestions.ACTIONS:
+        return None
+    return ApiError(400, f"Not a decision on a suggestion: {str(action)[:40]!r} (add, dismiss or undo).", "bad_action")
+
+
+UNKNOWN_SUGGESTION = "That suggestion isn't on this case any more. Reload the page."
+
+
+@router.post("/{report_id}/suggestions")
+def decide_intake_suggestion(
+    report_id: str, body: SuggestionDecideRequest, user: CurrentUser = Depends(editable_case)
+) -> dict:
+    """Adds, dismisses or undoes one of the AI's suggestions on a draft
+    (app/reports/suggestions.py), stamped with who and when -- the
+    autosave never changes data.second_look. An added part is appended to
+    the stored damage list and returned: the wizard puts it into its own
+    copy of the draft at once (its next autosave carries it). Undoing an
+    add takes that item off the stored list and returns it (item,
+    item_index), for the wizard to take off its copy. A repeated click
+    changes nothing (item null).
+
+    {second_look, item, item_index}. 409 running while the AI reads the
+    draft (its result is merged into the form when it ends), 404
+    unknown_suggestion, 400 bad_action."""
+    refused = bad_action(body.action)
+    if refused:
+        raise refused
+    db = SessionLocal()
+    try:
+        hold_write_lock(db, report_id)
+        report, session = _load_draft(db, report_id, mutating=True)
+        if session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
+            raise ApiError(409, "Wait for the AI to finish reading this case.", "running")
+        try:
+            done = suggestions.decide(report.data or {}, body.key, body.action, body.looked, user, where="intake")
+        except suggestions.UnknownSuggestion:
+            raise ApiError(404, UNKNOWN_SUGGESTION, "unknown_suggestion")
+        if done.action:
+            report.data = done.data
+            audit(db, user, suggestions.HISTORY[done.action], report.id, detail=done.part)
+            db.commit()
+        return done.answer()
     finally:
         db.close()
 
@@ -688,13 +772,13 @@ def _with_final_labels(ai_draft: dict | None, index_of: dict) -> dict | None:
     if not ai_draft:
         return ai_draft
     out = copy.deepcopy(ai_draft)
-    for item in out.get("damage_summary") or []:
-        ref = str(item.get("photo_reference") or "")
-        if ref.startswith("@"):
-            index = index_of.get(ref[1:])
-            item["photo_reference"] = photo_label(index) if index is not None else None
-            if index is None:
-                item["bbox_2d"] = None
+    # The damage list (photo_reference, contract 8's seen_in, contract 9's
+    # evidence), and the parts only zone reads found (contract 9), frozen
+    # here as "what the AI suggested": suggestions.relabel_item, a deleted
+    # photo's references dropped.
+    for key in ("damage_summary", "zone_suggestions"):
+        if isinstance(out.get(key), list):
+            out[key] = [suggestions.relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
     return out
 
 
@@ -709,21 +793,21 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     if draft.vehicle_info:
         v = draft.vehicle_info
         v.body_type = body_type_for(v.make, v.model, v.body_type)
-    # "@<photo id>" -> its final P-number, now that the order is fixed.
-    for item in draft.damage_summary:
-        ref = item.photo_reference or ""
-        if ref.startswith("@"):
-            index = index_of.get(ref[1:])
-            item.photo_reference = photo_label(index) if index is not None else None
-            if index is None:
-                item.bbox_2d = None
-    if draft.damage_summary:
-        draft.damaged_parts = [item.part for item in draft.damage_summary]
-
     data = draft.model_dump()
+    # "@<photo id>" -> its final P-number, now that the order is fixed:
+    # photo_reference (a deleted photo's box goes with it), seen_in and
+    # the evidence (suggestions.relabel_item).
+    data["damage_summary"] = [suggestions.relabel_item(item, index_of) for item in data["damage_summary"]]
+    if data["damage_summary"]:
+        data["damaged_parts"] = [item["part"] for item in data["damage_summary"]]
     # The confirmations as the wizard last sent them, stamped against the
     # stored ones; the template list as stored (review).
     keep_review_marks(data, report.data, user)
+    # Contract 9: the suggestions and the decisions on them as stored (the
+    # browser's copy is ignored, as on autosave), kept on the case -- the
+    # surveyor may still decide on the case page until sign-off -- with
+    # their photos as P-numbers.
+    data["second_look"] = suggestions.relabel_second_look((report.data or {}).get("second_look"), index_of)
     # The filing step every channel shares (app/reports/filing.py): sign-off
     # blank, annexes rebuilt from the confirmed damage list and Annex A
     # priced for someone who may see the price book, photo_index from the
@@ -740,7 +824,12 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         photo_kinds=[{"id": p.id, **{key: getattr(p, key) for key in PHOTO_INDEX_KEYS}} for p in photos],
         owner=owner, report_id=report_id, read_ids=set(read_ids),
     )
-    run_log.relabel_last_read(db, report_id, read_ids, {p.id: photo_label(i) for i, p in enumerate(photos)})
+    label_of = {p.id: photo_label(i) for i, p in enumerate(photos)}
+    run_log.relabel_last_read(db, report_id, read_ids, label_of)
+    # Contract 8 D2: the zone calls' photos, kept as "@<photo id>" until now;
+    # contract 9: the re-check's too.
+    run_log.relabel_zone_reads(db, report_id, label_of)
+    run_log.relabel_check_runs(db, report_id, label_of)
     # file_case_data rebuilds Annex A from the damage list, so no line
     # carries a catalogue_ref now; checked all the same (as every save that
     # carries Annex A), under the claim's write lock: only this case's own

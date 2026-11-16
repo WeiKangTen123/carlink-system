@@ -37,6 +37,46 @@ with --thinking-level-read / -sort / -second-look, --image-resolution and
 Gemini call's tokens (prompt, output, thinking) and seconds under each
 run's "ai_calls".
 
+Contract 8 D2: --read-mode zones reads the car one area at a time after the
+overall reading (intake/zones.py), --grid-marks draws the grid on the zone
+calls' photos. The zone calls are their own stage ("draft_zone": calls,
+tokens, seconds), and each run keeps what every zone sent and saw under
+"zones".
+
+Contract 8 D1 (the light reader looking closer): --read-tools takes the
+per-model form ("gemini-3.1-flash-lite=code_execution"), with
+--read-tools-timeout SECONDS for a try that carries the tool and
+--zoom-hint asking the model to zoom (extraction.ZOOM_NOTE); code runs and
+the tools' tokens are in the accounting. --sort-damage-box has the sorter
+box the damage (its own sort-cache folder), and --read-crops [N] sends a
+close-up of each box beside its photo, N at most (default the setting's 8);
+each call notes the close-ups it sent ("crops").
+
+Contract 9: --zone-models CHAIN sets the zone calls' own chain
+(settings.gemini_zone_chain, the two lites by default; never the reading's),
+--zone-only suggest|list says where the parts only zone reads found go
+(option B: suggestions, scored as the second look's are, "if all ticked";
+list: the damage list, as m5/m6), and --store-on sends the requests without
+store=False, as before contract 9 -- for an A/B only. Each is in
+ai_settings while it acts.
+
+Contract 9, the evidence and the re-check: --zone-evidence reason|reason_box
+asks the zone reads for each find's reason and box (settings.
+intake_zone_evidence; needs --read-mode zones), and --check decision|lite|
+decision_then_lite re-checks the suggestions after the second look
+(settings.intake_check_mode, app/ai/check.py), tuned by --decision-model,
+--check-models, --thinking-level-check, --check-resolution and the cut-offs
+--check-yes / --check-no (each needs --check). Every run keeps its
+suggestions in detail ("suggestions": part, reads, photos by case label,
+evidence boxes and reasons, the re-check's verdict and p, and "truth": real,
+wrong_side or extra against the key) and the re-check's step
+(second_look.check); the metrics add the box and reason fill of the
+suggestions and of the list, the suggestions real and wrong, the re-check's
+verdicts on each, its calls and seconds, the 503s beside the 429s, and the
+summary the calls per model. scripts/bench/replay_check.py runs the
+re-check alone on a stored result's suggestions; scripts/bench/
+probe_boxes.py draws its evidence boxes for a person to judge.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -44,6 +84,17 @@ parts the surveyor passed as Serviceable (score_fair). --rescore FILE
 scores a stored result file again with the current scoring, offline:
 
     python scripts/benchmark_intake.py --rescore out/a1-3x.json --key key.json [--reports DIR] [--out rescored.json]
+
+Each run also gives the detail of the parts found (contract 8): the side
+each was drafted on (part_sides: right, wrong, undetermined; inferred when
+the pipeline placed it from the sorter's areas), Replace or Repair against
+the surveyor's (part_remarks, with --reports), and found / missed by where
+each key part sits on the car (part_zones: front, rear, left, right,
+other). With --reports the Annex A score also sets its prices against the
+surveyor's (score_prices). --rescore scores the detail again, and with
+--reports and a scratch database (--scratch DIR) builds Annex A again,
+prices included. scripts/bench/gate.py passes or fails a candidate result
+file against a baseline by the owner's rule.
 
 On the server, scripts/bench/run_bench.sh runs this inside the live api
 container and scripts/bench/compare.py compares two result files; see
@@ -194,6 +245,94 @@ def score_second_look(expected: list[dict], parts: dict, drafted: list[str], sug
     }
 
 
+def classify_suggestions(expected: list[dict], parts: dict, suggested: list[str]) -> list[str]:
+    """Each suggestion against the key, in order (contract 9): "real" -- it
+    finds a key part the list missed (score_second_look's added) --,
+    "wrong_side" -- that part's family on the other side --, or "extra":
+    the names score_second_look counts."""
+    missed = [e for e in expected if e["part"] in parts["missed"]]
+    gain = score_parts(missed, [p for p in suggested if p])
+    real = Counter(gain["matched"].values())
+    wrong = Counter(part for part, _ in gain["wrong_side"])
+    out = []
+    for part in suggested:
+        if part and real[part] > 0:
+            real[part] -= 1
+            out.append("real")
+        elif part and wrong[part] > 0:
+            wrong[part] -= 1
+            out.append("wrong_side")
+        else:
+            out.append("extra")
+    return out
+
+
+def mark_truth(rows: list[dict], expected: list[dict], parts: dict) -> None:
+    """Sets each suggestion row's "truth" (classify_suggestions), in place."""
+    for row, truth in zip(rows, classify_suggestions(expected, parts, [r.get("part") for r in rows])):
+        row["truth"] = truth
+
+
+def has_ai_box(entry: dict) -> bool:
+    """An item or a suggestion the AI boxed: an evidence entry with an AI
+    box, or (a list item) its bbox_2d. A sorter's box doesn't count."""
+    if any(isinstance(e, dict) and e.get("box") and e.get("box_kind") in ("ai", None)
+           for e in entry.get("evidence") or []):
+        return True
+    return bool(entry.get("bbox_2d"))
+
+
+def has_box(entry: dict, kind: str | None = None) -> bool:
+    """An evidence box of that kind ("ai", "sort"), or of any kind."""
+    return any(isinstance(e, dict) and e.get("box") and (kind is None or (e.get("box_kind") or "ai") == kind)
+               for e in entry.get("evidence") or [])
+
+
+def has_reason(entry: dict) -> bool:
+    return bool(entry.get("reason")) or any(isinstance(e, dict) and e.get("reason") for e in entry.get("evidence") or [])
+
+
+VERDICTS = ("yes", "unsure", "no", "none")
+
+
+def evidence_metrics(run: dict) -> dict:
+    """Contract 9: the suggestions' evidence, against the key, and the
+    re-check's verdicts on the real and the wrong ones; the list's box and
+    reason fill. Nothing from a file written before them."""
+    m: dict = {}
+    sugg = run.get("suggestions")
+    if sugg is not None:
+        # Box fill split by who drew the box (the AI's, the sorter's), and
+        # either: R2's gate reads them.
+        m.update(sug_n=len(sugg), sug_box=sum(1 for s in sugg if has_ai_box(s)),
+                 sug_sort_box=sum(1 for s in sugg if has_box(s, "sort")),
+                 sug_any_box=sum(1 for s in sugg if has_box(s)),
+                 sug_reason=sum(1 for s in sugg if has_reason(s)))
+        verdicts = [((s.get("check") or {}).get("verdict") or "none") for s in sugg]
+        checked = any(v != "none" for v in verdicts) or bool((run.get("second_look") or {}).get("check"))
+        if checked:
+            m["sug_checked"] = sum(1 for v in verdicts if v != "none")
+        if all(s.get("truth") for s in sugg):
+            m.update(sug_real=sum(1 for s in sugg if s["truth"] == "real"),
+                     sug_wrong=sum(1 for s in sugg if s["truth"] != "real"))
+            if checked:
+                for group in ("real", "wrong"):
+                    for v in VERDICTS:
+                        m[f"chk_{group}_{v}"] = 0
+                for s, v in zip(sugg, verdicts):
+                    m[f"chk_{'real' if s['truth'] == 'real' else 'wrong'}_{v}"] += 1
+                m["chk_real_kept"] = m["chk_real_yes"] + m["chk_real_unsure"]
+    items = run.get("drafted_items") or []
+    if any("evidence" in i or "bbox_2d" in i for i in items):
+        m.update(list_n=len(items), list_box=sum(1 for i in items if has_ai_box(i)),
+                 list_reason=sum(1 for i in items if has_reason(i)))
+    look = run.get("second_look") or {}
+    check = look.get("check")
+    if isinstance(check, dict) and isinstance(check.get("seconds"), (int, float)):
+        m["recheck_s"] = check["seconds"]
+    return m
+
+
 # ---------------------------------------------------------------- the fair score
 
 # Panels that meet along one side of the car (contract 6). A reader that
@@ -333,6 +472,182 @@ def score_fair(expected: list[dict], drafted_items: list[dict], parts: dict | No
         "fair_extra": len(left),
         "contradicted": contradicted,
     }
+
+
+# ---------------------------------------------------------------- sides, Replace / Repair, zones
+
+
+def score_sides(expected: list[dict], drafted_items: list[dict], parts: dict) -> dict:
+    """The side of every key part with one (Left / Right in its name) that
+    the strict score placed: right (drafted on its side), undetermined
+    (found by a "(side undetermined)" name) or wrong (its family drafted on
+    the other side: score_parts' wrong_side, not counted as found).
+    inferred: the drafted name's side came from the sorter's photo areas
+    (side_inferred, intake/pipeline.resolve_sides), not from the reader --
+    so a wrong side tells which of the two put it there. Key parts without
+    a side, and missed ones, are left out. parts: score_parts' result."""
+    items = [i for i in drafted_items if isinstance(i, dict) and i.get("part")]
+    # One item of a name read on its side is enough: the reader saw it there.
+    inferred = {i["part"] for i in items if i.get("side_inferred")} - {i["part"] for i in items if not i.get("side_inferred")}
+    wrong = {key: name for name, key in parts["wrong_side"]}
+    details = []
+    for entry in expected:
+        key = entry["part"]
+        if _side_and_place(key)[0] is None:
+            continue
+        name = parts["matched"].get(key)
+        if name is not None:
+            side = "undetermined" if name.endswith(SIDE_UNDETERMINED) else "right"
+        elif key in wrong:
+            name, side = wrong[key], "wrong"
+        else:
+            continue
+        details.append({"part": key, "drafted_as": name, "side": side, "inferred": name in inferred})
+
+    def count(side: str, inferred_only: bool = False) -> int:
+        return sum(1 for d in details if d["side"] == side and (d["inferred"] or not inferred_only))
+
+    return {
+        "sided_found": len(details),
+        "right": count("right"),
+        "wrong": count("wrong"),
+        "undetermined": count("undetermined"),
+        "right_inferred": count("right", True),
+        "wrong_inferred": count("wrong", True),
+        "details": details,
+    }
+
+
+# taxonomy.FIRM_REMARKS: what the drafted remarks field may say.
+REMARKS = ("Replace", "Repair")
+
+
+def _remarks(value) -> str | None:
+    text = str(value or "").strip().casefold()
+    return next((r for r in REMARKS if r.casefold() == text), None)
+
+
+def surveyor_remarks(part: dict, lines, normalise=None, side_of=None) -> str | None:
+    """Whether the surveyor renewed or repaired a key part: the key's own
+    "remarks" when it has one (key v2 has none), else the held-out
+    report's. The firm writes a part it repairs rather than renews with the
+    condition "Repair" (the line disallowed at 100%), while its Remarks
+    column says "Replace" on those lines too, or is blank on a whole report
+    -- so the condition of the line surveyor_condition picks decides:
+    Repair, else Replace. None: no damage line for the part."""
+    own = _remarks(part.get("remarks"))
+    if own:
+        return own
+    surveyor = surveyor_condition(part, lines or [], normalise, side_of)
+    if surveyor is None:
+        return None
+    return "Repair" if _squash(surveyor["condition"]) == "repair" else "Replace"
+
+
+def score_remarks(expected: list[dict], matched: dict[str, str], drafted_items: list[dict], lines,
+                  normalise=None, side_of=None) -> dict:
+    """Replace or Repair on every key part found (score_parts' matched):
+    the drafted item's remarks against the surveyor's (surveyor_remarks)
+    -- agree, disagree, or unsure (the reader left it null, as its prompt
+    asks when unsure). A part neither the key nor the report decides is
+    not scored. The surveyor repairs few parts (3 of key v2's 73), so
+    Repair is counted apart: always drafting Replace would agree on the
+    rest."""
+    by_part: dict[str, dict] = {}
+    for item in drafted_items:
+        by_part.setdefault(item.get("part"), item)
+    details = []
+    for entry in expected:
+        name = matched.get(entry["part"])
+        if name is None:
+            continue
+        want = surveyor_remarks(entry, lines, normalise, side_of)
+        if want is None:
+            continue
+        got = _remarks((by_part.get(name) or {}).get("remarks"))
+        verdict = "unsure" if got is None else "agree" if got == want else "disagree"
+        details.append({"part": entry["part"], "drafted_as": name, "surveyor": want, "drafted": got, "verdict": verdict})
+    repair = [d for d in details if d["surveyor"] == "Repair"]
+    return {
+        "scored": len(details),
+        "agree": sum(1 for d in details if d["verdict"] == "agree"),
+        "disagree": sum(1 for d in details if d["verdict"] == "disagree"),
+        "unsure": sum(1 for d in details if d["verdict"] == "unsure"),
+        "surveyor_repair": len(repair),
+        "repair_agree": sum(1 for d in repair if d["verdict"] == "agree"),
+        "details": details,
+    }
+
+
+# Where a part sits on the car, one zone each so the zones add up to the
+# whole key: a part on the car's flank (second_look.ZONES' left or right)
+# is that side's even at a corner -- a fender, a quarter panel and their
+# arches are photographed from the side that was hit; any other part is at
+# the end of the car it is on (a headlamp front, a tail lamp rear); a part
+# at both ends or neither (a parking sensor, the roof, the underbody, the
+# interior), and a flank part with no side, is "other". Repeated (not
+# imported) so scoring loads without the app; test_benchmark_scoring
+# checks it against second_look.ZONES.
+ZONES = ("front", "rear", "left", "right", "other")
+_FLANK = frozenset({
+    "Front Fender", "Front Door", "Rear Door", "Front Door Glass", "Rear Door Glass", "Front Window Regulator",
+    "Rear Window Regulator", "Wing Mirror", "Sill / Rocker Panel", "Rear Quarter Panel", "Front Wheel", "Rear Wheel",
+    "Front Tyre", "Rear Tyre", "Front Wheel Arch Liner", "Rear Wheel Arch Liner", "Front Wheel Arch Trim",
+    "Rear Wheel Arch Trim",
+})
+_FRONT_END = frozenset({
+    "Front Bumper", "Front Bumper Beam", "Front Grille", "Bonnet", "Headlamp", "Fog Lamp", "Front Number Plate",
+    "Front Windscreen", "Engine Undercover", "Radiator", "Air Conditioning Condenser", "Front Subframe",
+})
+_REAR_END = frozenset({
+    "Rear Bumper", "Rear Bumper Beam", "Rear Bumper Reflector", "Boot Lid", "Boot Lid Lock", "Boot Lid Hinge",
+    "Boot Lid Weatherstrip", "Boot Lid Inner Trim", "Boot Lid Lamp", "Tail Lamp", "Rear End Panel", "Rear Windscreen",
+    "Rear Number Plate", "Boot Floor Board", "Boot Side Trim", "Rear Floor Panel", "Reversing Camera", "Exhaust System",
+})
+
+
+def part_zone(part: str) -> str:
+    """front, rear, left, right or other: where the part sits (ZONES)."""
+    side, place = _side_and_place(part)
+    if side is not None and place in _FLANK:
+        return side.lower()
+    place = place.removesuffix(SIDE_UNDETERMINED)
+    return "front" if place in _FRONT_END else "rear" if place in _REAR_END else "other"
+
+
+def score_zones(expected: list[dict], parts: dict) -> dict:
+    """score_parts by where each key part sits (part_zone): per zone the
+    key parts expected, found, drafted on the wrong side and missed (named),
+    and the extras by where they would sit. A zone's found + wrong_side +
+    missed is its expected; the zones add up to score_parts' numbers."""
+    wrong = {key for _, key in parts["wrong_side"]}
+    out = {zone: {"expected": 0, "found": 0, "wrong_side": 0, "missed": 0, "extra": 0, "missed_parts": []}
+           for zone in ZONES}
+    for entry in expected:
+        key = entry["part"]
+        zone = out[part_zone(key)]
+        zone["expected"] += 1
+        if key in parts["found_parts"]:
+            zone["found"] += 1
+        elif key in wrong:
+            zone["wrong_side"] += 1
+        else:
+            zone["missed"] += 1
+            zone["missed_parts"].append(key)
+    for name in parts["extra"]:
+        out[part_zone(name)]["extra"] += 1
+    return out
+
+
+def score_details(run: dict, case: dict, lines=None, normalise=None, side_of=None) -> None:
+    """The detail of a scored run's found parts, from its strict parts and
+    drafted items: part_sides, part_zones and -- with the held-out report's
+    lines, or a key that says -- part_remarks. run_case and --rescore."""
+    items = run.get("drafted_items") or [{"part": p} for p in run.get("drafted_parts") or [] if p]
+    run["part_sides"] = score_sides(case["parts"], items, run["parts"])
+    run["part_zones"] = score_zones(case["parts"], run["parts"])
+    if lines is not None or any(_remarks(e.get("remarks")) for e in case["parts"]):
+        run["part_remarks"] = score_remarks(case["parts"], run["parts"]["matched"], items, lines, normalise, side_of)
 
 
 def sorter_quality(expected: list[dict], photos: list[dict]) -> dict:
@@ -542,6 +857,24 @@ RATIOS = (
     ("cond_firm_share", "cond_firm_only", "cond_drafted"),
     ("annex_coverage", "annex_covered", "annex_lines"),
     ("annex_perfect_coverage", "annex_perfect_covered", "annex_lines"),
+    ("side_right_rate", "side_right", "sided_found"),
+    ("remarks_agree_rate", "remarks_agree", "remarks_scored"),
+    ("annex_within_10_rate", "annex_within_10", "annex_covered"),
+    # Signed: -0.8 is an Annex A priced at a fifth of the surveyor's.
+    ("annex_price_diff_rate", "annex_price_diff", "annex_report_price_total"),
+) + tuple((f"zone_{zone}_recall", f"zone_{zone}_found", f"zone_{zone}_expected") for zone in ZONES)
+# Contract 9: the evidence's fill, and the re-check: the real suggestions
+# it kept (yes or unsure), the wrong ones it called "no", and how many it
+# answered at all.
+RATIOS += (
+    ("sug_box_fill", "sug_box", "sug_n"),
+    ("sug_any_box_fill", "sug_any_box", "sug_n"),
+    ("sug_reason_fill", "sug_reason", "sug_n"),
+    ("list_box_fill", "list_box", "list_n"),
+    ("list_reason_fill", "list_reason", "list_n"),
+    ("chk_real_kept_rate", "chk_real_kept", "sug_real"),
+    ("chk_wrong_no_rate", "chk_wrong_no", "sug_wrong"),
+    ("sug_checked_rate", "sug_checked", "sug_n"),
 )
 _RATIO_NAMES = {name for name, _, _ in RATIOS}
 
@@ -601,12 +934,49 @@ def run_metrics(run: dict) -> dict:
             wait_429_s=round(sum(s.get("wait_429_s", 0.0) for s in accounting.values()), 1),
             slot_wait_s=round(sum(s.get("slot_wait_s", 0.0) for s in accounting.values()), 1),
         )
+        # Contract 9: Google's "busy" (503) apart from the other errors, in
+        # the files that count them.
+        if any("n_503" in s for s in accounting.values()):
+            m["n_503"] = sum(s.get("n_503", 0) for s in accounting.values())
         # Tokens per kind of call, when the SDK reported them.
         for purpose, short in _SHORT_PURPOSES.items():
             stage = accounting.get(purpose) or {}
             for field, suffix in _TOKEN_METRICS:
                 if stage.get(field) is not None:
                     m[f"{short}_{suffix}"] = stage[field]
+        # Every kind of call's prompt tokens together: what a reading mode
+        # costs, whatever its extra calls are named.
+        prompt = [s["prompt_tokens"] for s in accounting.values() if s.get("prompt_tokens") is not None]
+        if prompt:
+            m["tok_in"] = sum(prompt)
+    # Contract 8 D2: the zone stage -- its calls, failures and seconds; the
+    # side zones whose photos showed the other side than the sorter's; and
+    # the parts only a zone found, or both kinds of read.
+    zone_stage = (accounting or {}).get("draft_zone")
+    if zone_stage:
+        m.update(zone_calls=zone_stage.get("calls"), zone_failed=zone_stage.get("failed_calls"),
+                 zone_s=zone_stage.get("seconds"))
+    # Contract 9: the re-check's Decisions API requests and its lite call.
+    for purpose, short in (("decision", "dec"), ("check", "check")):
+        stage = (accounting or {}).get(purpose)
+        if stage:
+            m.update({f"{short}_calls": stage.get("calls"), f"{short}_failed": stage.get("failed_calls"),
+                      f"{short}_s": stage.get("seconds")})
+    m.update(evidence_metrics(run))
+    zones = (run.get("zones") or {}).get("zones")
+    if zones is not None:
+        m["zone_side_flips"] = sum(1 for z in zones if z.get("zone") in ("left", "right")
+                                   and z.get("side_seen") in ("left", "right") and z.get("side_seen") != z.get("zone"))
+        m["zone_other_end"] = sum(1 for z in zones if z.get("zone") in ("front", "rear")
+                                  and z.get("side_seen") in ("front", "rear") and z.get("side_seen") != z.get("zone"))
+    found_by = [i.get("found_by") for i in run.get("drafted_items") or [] if i.get("found_by")]
+    if found_by:
+        m["zone_only_parts"] = sum(1 for f in found_by if "overall" not in f)
+        m["both_parts"] = sum(1 for f in found_by if "overall" in f and len(f) > 1)
+    # The close-ups the reading sent (--read-crops).
+    crops = sum(c.get("crops", 0) for c in run.get("ai_calls") or [] if c.get("purpose") == "draft" and c.get("ok"))
+    if crops:
+        m["read_crops"] = crops
     cache = run.get("sort_cache")
     if cache:
         m["sort_cache_hits"] = cache.get("hits", 0)
@@ -628,6 +998,31 @@ def run_metrics(run: dict) -> dict:
         m.update(annex_lines=annex["real_lines"], annex_covered=annex["covered"], annex_rows=annex["rows"],
                  annex_priced=annex["priced"], annex_unpriced=annex["unpriced"], annex_extra=annex["extra"],
                  annex_canonical=annex["canonical_rows"], annex_perfect_covered=annex["perfect_covered"])
+        # The prices (score_prices): absent from files written before them.
+        m.update(annex_price_total=annex.get("price_total"), annex_report_price_total=annex.get("report_price_total"),
+                 annex_price_diff=annex.get("price_diff"), annex_adjusted_diff=annex.get("adjusted_diff"),
+                 annex_matched_priced=annex.get("matched_priced"), annex_within_10=annex.get("within_10pct"),
+                 annex_price_abs_diff=annex.get("matched_abs_diff"),
+                 annex_perfect_within_10=annex.get("perfect_within_10pct"))
+    sides = run.get("part_sides")
+    if sides:
+        m.update(sided_found=sides["sided_found"], side_right=sides["right"], side_undetermined_found=sides["undetermined"],
+                 side_right_inferred=sides["right_inferred"], side_wrong_inferred=sides["wrong_inferred"])
+    remarks = run.get("part_remarks")
+    if remarks:
+        m.update(remarks_scored=remarks["scored"], remarks_agree=remarks["agree"], remarks_disagree=remarks["disagree"],
+                 remarks_unsure=remarks["unsure"], remarks_repair=remarks["surveyor_repair"],
+                 remarks_repair_agree=remarks["repair_agree"])
+    zones = run.get("part_zones")
+    if zones:
+        for zone in ZONES:
+            z = zones.get(zone) or {}
+            m.update({f"zone_{zone}_expected": z.get("expected"), f"zone_{zone}_found": z.get("found"),
+                      f"zone_{zone}_extra": z.get("extra")})
+    if m.get("read_s") is not None:
+        # The case's wall-clock seconds: read_s leaves the second look and
+        # the re-check out.
+        m["total_s"] = round(sum(m.get(k) or 0 for k in ("sort_s", "read_s", "look_s", "recheck_s")), 1)
     m = {k: v for k, v in m.items() if v is not None}
     return with_ratios(m)
 
@@ -685,6 +1080,8 @@ def summarize(runs: list[dict]) -> dict:
         "total": _stats_table(totals),
         "errors": [{"case": r.get("case"), "rep": int(r.get("rep") or 1), "error": r.get("error")} for r in runs if not run_ok(r)],
         "accounting": merge_accounting([r["accounting"] for r in runs if r.get("accounting")]),
+        # Contract 9: every kind of call together, per model.
+        "by_model": model_calls(merge_accounting([r["accounting"] for r in runs if r.get("accounting")])),
         "sort_cache": {
             "hits": sum((r.get("sort_cache") or {}).get("hits", 0) for r in runs),
             "misses": sum((r.get("sort_cache") or {}).get("misses", 0) for r in runs),
@@ -697,11 +1094,19 @@ def summarize(runs: list[dict]) -> dict:
 # What call_structured reports per try beside its outcome (its
 # _note_attempt), summed per call, kind of call and model when present --
 # never a made-up 0 when the SDK said nothing.
-TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls")
+TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls", "tool_tokens")
 # accounting's purposes -> the short name in run metrics ("read_tok_in").
 _SHORT_PURPOSES = {"draft": "read", "photo sort": "sort", "second look": "look"}
+# Contract 8 D2: the zone calls (ai/zone_read.PURPOSE), "zone_tok_in"...
+_SHORT_PURPOSES["draft_zone"] = "zone"
+# Contract 9: the re-check -- the Decisions API's requests (ai/decisions.
+# PURPOSE) and the lite call ("dec_tok_in", "check_tok_in"...).
+_SHORT_PURPOSES.update({"decision": "dec", "check": "check"})
 _TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
-                  ("tool_calls", "code_runs"))
+                  ("tool_calls", "code_runs"), ("tool_tokens", "tok_tool"))
+# The label of a close-up's part (extraction._build_input, contract 8 D1):
+# how a call's close-ups are counted.
+CLOSE_UP_LABEL = "Close-up of photo "
 
 
 def _add_tokens(into: dict, source: dict) -> None:
@@ -713,7 +1118,7 @@ def _add_tokens(into: dict, source: dict) -> None:
 
 def _empty_stage() -> dict:
     return {"calls": 0, "failed_calls": 0, "seconds": 0.0, "attempts": 0, "outcomes": {},
-            "slot_wait_s": 0.0, "n_429": 0, "wait_429_s": 0.0, "by_model": {}}
+            "slot_wait_s": 0.0, "n_429": 0, "wait_429_s": 0.0, "n_503": 0, "by_model": {}}
 
 
 def _empty_model() -> dict:
@@ -738,9 +1143,12 @@ def accounting_summary(calls: list[dict], attempts: list[dict]) -> dict:
         s["slot_wait_s"] += a["slot_wait_s"]
         s["wait_429_s"] += a["wait_429_s"]
         s["n_429"] += 1 if a["outcome"] == "429" else 0
+        s["n_503"] += 1 if a.get("busy") else 0
         m = s["by_model"].setdefault(a["model"], _empty_model())
         m["attempts"] += 1
         m["answered"] += 1 if a["outcome"] == "ok" else 0
+        if a.get("busy"):
+            m["n_503"] = m.get("n_503", 0) + 1
         m["seconds"] += a["seconds"]
         m["outcomes"][a["outcome"]] = m["outcomes"].get(a["outcome"], 0) + 1
         _add_tokens(s, a)
@@ -753,7 +1161,7 @@ def merge_accounting(summaries: list[dict]) -> dict:
     for summary in summaries:
         for purpose, s in summary.items():
             t = out.setdefault(purpose, _empty_stage())
-            for k in ("calls", "failed_calls", "attempts", "n_429"):
+            for k in ("calls", "failed_calls", "attempts", "n_429", "n_503"):
                 t[k] += s.get(k, 0)
             for k in ("seconds", "slot_wait_s", "wait_429_s"):
                 t[k] = round(t[k] + s.get(k, 0.0), 1)
@@ -767,7 +1175,23 @@ def merge_accounting(summaries: list[dict]) -> dict:
                 tm["seconds"] = round(tm["seconds"] + ms.get("seconds", 0.0), 1)
                 for outcome, n in (ms.get("outcomes") or {}).items():
                     tm["outcomes"][outcome] = tm["outcomes"].get(outcome, 0) + n
+                if ms.get("n_503"):
+                    tm["n_503"] = tm.get("n_503", 0) + ms["n_503"]
                 _add_tokens(tm, ms)
+    return out
+
+
+def model_calls(accounting: dict) -> dict:
+    """Contract 9: every kind of call's tries per model -- answered, tries,
+    429s, 503s: what each free bucket was asked for."""
+    out: dict = {}
+    for stage in accounting.values():
+        for model, ms in (stage.get("by_model") or {}).items():
+            t = out.setdefault(model, {"answered": 0, "attempts": 0, "n_429": 0, "n_503": 0})
+            t["answered"] += ms.get("answered", 0)
+            t["attempts"] += ms.get("attempts", 0)
+            t["n_429"] += (ms.get("outcomes") or {}).get("429", 0)
+            t["n_503"] += ms.get("n_503", 0)
     return out
 
 
@@ -831,6 +1255,12 @@ def _images(input_parts) -> dict:
     return out
 
 
+def _close_ups(input_parts) -> int:
+    """The close-ups a call sends (--read-crops): one label part each."""
+    return sum(1 for part in input_parts or [] if isinstance(part, dict) and part.get("type") == "text"
+               and str(part.get("text") or "").startswith(CLOSE_UP_LABEL))
+
+
 def _counting(fn):
     """Wraps call_structured: each call's purpose and wall-clock time, and
     (through _note, on the same thread) its tries and tokens."""
@@ -841,6 +1271,9 @@ def _counting(fn):
         images = _images(kwargs.get("input_parts"))
         if images:
             call["images"] = images
+        crops = _close_ups(kwargs.get("input_parts"))
+        if crops:
+            call["crops"] = crops
         _tls.purpose, _tls.last, _tls.call = purpose, None, call
         started = time.monotonic()
         try:
@@ -874,6 +1307,8 @@ def _note(attempt: dict) -> None:
             "slot_wait_s": 0.0 if after_429 else waited,
             "wait_429_s": waited if after_429 else 0.0,
         }
+        if attempt.get("busy"):
+            kept["busy"] = True
         _add_tokens(kept, attempt)
         ACCOUNTING.add_attempt(kept)
         call = getattr(_tls, "call", None)
@@ -925,9 +1360,18 @@ def _app() -> SimpleNamespace:
     import app.ai.second_look as second_look
     import app.ai.triage as triage
 
-    for module in (triage, extraction, second_look):  # imported before the wrap (not today)
+    import app.ai.zone_read as zone_read
+
+    # Contract 9: the re-check's lite call, and its Decisions API requests
+    # (not call_structured: ai/decisions.decide, counted the same way).
+    import app.ai.check as check
+    import app.ai.decisions as decisions
+
+    for module in (triage, extraction, second_look, zone_read, check):  # imported before the wrap (not today)
         if not getattr(module.call_structured, "_bench_wrapped", False):
             module.call_structured = structured.call_structured
+    if not getattr(decisions.decide, "_bench_wrapped", False):
+        decisions.decide = _counting(decisions.decide)
 
     from app.ai.keys import AiActor
     from app.config import settings
@@ -1003,8 +1447,13 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
     bumping a version must not be handed sorts made by the old prompt."""
     A = _app()
     chain = ",".join(m.strip() for m in A.settings.gemini_triage_model_chain.split(",") if m.strip())
-    version = str(getattr(A.triage, "SORT_PROMPT_VERSION", "v0"))
-    prompt = json.dumps([getattr(A.triage, "SYSTEM_PROMPT", ""), getattr(A.triage, "_RESPONSE_SCHEMA", None)],
+    # The sort as it is asked now (contract 8 D1: with or without the damage
+    # box); a branch from before those functions has only the constants.
+    version_of, prompt_of, schema_of = (getattr(A.triage, name, None)
+                                        for name in ("sort_prompt_version", "system_prompt", "response_schema"))
+    version = str(version_of() if callable(version_of) else getattr(A.triage, "SORT_PROMPT_VERSION", "v0"))
+    prompt = json.dumps([prompt_of() if callable(prompt_of) else getattr(A.triage, "SYSTEM_PROMPT", ""),
+                         schema_of() if callable(schema_of) else getattr(A.triage, "_RESPONSE_SCHEMA", None)],
                         sort_keys=True, default=str)
     fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
     # A sorting thinking level sorts differently: a folder of its own. Unset,
@@ -1023,11 +1472,19 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
     return folder, meta
 
 
+def _sort_fields() -> tuple:
+    """SORT_FIELDS, and the damage box while the sort makes one (contract 8
+    D1), whose sorts have a cache folder of their own (sort_cache_dir)."""
+    box_on = getattr(_app().triage, "damage_box_on", None)
+    return SORT_FIELDS + ("damage_box",) if callable(box_on) and box_on() else SORT_FIELDS
+
+
 def apply_sort_cache(report_id: str, cache: Path) -> int:
     """Gives every unsorted photo with a cached result that result, as
     sorting would have written it. Returns how many came from the cache;
     pipeline._sort then sends only the rest (none: no call at all)."""
     A = _app()
+    fields = _sort_fields()
     db = A.SessionLocal()
     hits = 0
     try:
@@ -1041,7 +1498,7 @@ def apply_sort_cache(report_id: str, cache: Path) -> int:
                 continue
             if not isinstance(entry, dict) or not entry.get("kind"):
                 continue
-            for field in SORT_FIELDS:
+            for field in fields:
                 setattr(photo, field, entry.get(field))
             photo.shows_damage = entry.get("shows_damage") is True
             hits += 1
@@ -1055,6 +1512,7 @@ def store_sort_cache(report_id: str, cache: Path) -> int:
     """Keeps every sorted photo's result that isn't cached yet. Returns how
     many were written."""
     A = _app()
+    fields = _sort_fields()
     db = A.SessionLocal()
     written = 0
     try:
@@ -1064,7 +1522,7 @@ def store_sort_cache(report_id: str, cache: Path) -> int:
             path = cache / f"{photo.sha256}.json"
             if path.exists():
                 continue
-            _write_json(path, {field: getattr(photo, field) for field in SORT_FIELDS})
+            _write_json(path, {field: getattr(photo, field) for field in fields})
             written += 1
     finally:
         db.close()
@@ -1129,6 +1587,54 @@ def load_history(items: list) -> None:
         db.close()
 
 
+def _money(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _within(ours: float, theirs: float, share: float = 0.10) -> bool:
+    # Half a cent of slack, so 110.00 against 100.00 is within 10% in floats.
+    return abs(ours - theirs) <= share * abs(theirs) + 0.005
+
+
+def score_prices(lines, rows: list[dict], pairs: dict[str, str], normalise) -> dict:
+    """An Annex A's prices against the held-out report's: the W/shop Est
+    and adjusted totals of the whole sheet (matched or not, so a missed or
+    an extra line shows in the difference), and for each matched line
+    (pairs: report wording -> row wording, both normalised, as
+    eval_parts_kits.matched_pairs pairs them) whether the row has a price
+    and whether it is within 10% of the surveyor's W/shop Est. That column,
+    not the adjusted cost, is what prefill writes (the workshop's usual
+    ask); the adjusted cost is the surveyor's decision on it. Lines or rows
+    that share a wording are added up: lamps written LH and RH are one."""
+    theirs: dict[str, float] = {}
+    for line in lines:
+        key = normalise(line.item)
+        theirs[key] = theirs.get(key, 0.0) + _money(getattr(line, "workshop_est", 0))
+    named = [r for r in rows if r.get("part_name")]
+    ours: dict[str, float] = {}
+    for row in named:
+        key = normalise(row["part_name"])
+        ours[key] = ours.get(key, 0.0) + _money(row.get("workshop_est"))
+    total = sum(_money(r.get("workshop_est")) for r in named)
+    report_total = sum(_money(getattr(line, "workshop_est", 0)) for line in lines)
+    adjusted = sum(_money(r.get("adjusted_cost")) for r in named)
+    report_adjusted = sum(_money(getattr(line, "adjusted_cost", 0)) for line in lines)
+    return {
+        "price_total": round(total, 2),
+        "report_price_total": round(report_total, 2),
+        "price_diff": round(total - report_total, 2),
+        "adjusted_total": round(adjusted, 2),
+        "report_adjusted_total": round(report_adjusted, 2),
+        "adjusted_diff": round(adjusted - report_adjusted, 2),
+        "matched_priced": sum(1 for s in pairs.values() if ours.get(s, 0.0) > 0),
+        "within_10pct": sum(1 for a, s in pairs.items() if _within(ours.get(s, 0.0), theirs.get(a, 0.0))),
+        "matched_abs_diff": round(sum(abs(ours.get(s, 0.0) - theirs.get(a, 0.0)) for a, s in pairs.items()), 2),
+    }
+
+
 def score_annex_a(held, drafted_items: list[dict]) -> dict:
     """Annex A as prefill builds it from the drafted damage list (make and
     model from the held-out report, history = the other reports, loaded by
@@ -1138,9 +1644,10 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
     match no real line; canonical rows = rows named exactly like a
     taxonomy part, which the firm never writes (target 0). The same with
     the report's own damaged parts as the damage list gives the ceiling
-    that history allows (perfect detection)."""
+    that history allows (perfect detection). The prices against the
+    surveyor's: score_prices, and its lines within 10% at that ceiling."""
     A = _app()
-    from eval_parts_kits import _matched, damaged_parts
+    from eval_parts_kits import damaged_parts, matched_pairs
 
     real = {A.normalise_item(line.item) for line in held.lines}
     canonical = set(A.CANONICAL_PARTS)
@@ -1161,8 +1668,11 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
         db.rollback()
         db.close()
     keys = {A.normalise_item(r["part_name"]) for r in rows if r.get("part_name")}
-    hit = _matched(real, keys)
-    perfect_hit = _matched(real, {A.normalise_item(r["part_name"]) for r in perfect if r.get("part_name")})
+    pairs = matched_pairs(real, keys)
+    hit = set(pairs)
+    perfect_pairs = matched_pairs(real, {A.normalise_item(r["part_name"]) for r in perfect if r.get("part_name")})
+    perfect_hit = set(perfect_pairs)
+    perfect_prices = score_prices(held.lines, perfect, perfect_pairs, A.normalise_item)
     priced = sum(1 for r in rows if float(r.get("workshop_est") or 0) > 0)
     named = [r["part_name"] for r in rows if r.get("part_name") in canonical]
     return {
@@ -1179,6 +1689,9 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
         "perfect_rows": len(perfect),
         "perfect_covered": len(perfect_hit),
         "perfect_coverage": _ratio(len(perfect_hit), len(real)),
+        **score_prices(held.lines, rows, pairs, A.normalise_item),
+        "perfect_price_diff": perfect_prices["price_diff"],
+        "perfect_within_10pct": perfect_prices["within_10pct"],
     }
 
 
@@ -1186,6 +1699,35 @@ def score_annex_a(held, drafted_items: list[dict]) -> dict:
 
 _ITEM_FIELDS = ("part", "other_part_name", "damage_type", "condition", "condition_tokens", "remarks", "severity",
                 "ai_confidence", "side_inferred")
+# Contract 8 D2: which reads found the part, in which photos, which cells.
+_ITEM_FIELDS += ("found_by", "seen_in", "grid_cells")
+# Contract 9: its photo and box, the AI's reason and its evidence (photos by
+# case label: relabel_refs).
+_ITEM_FIELDS += ("photo_reference", "bbox_2d", "reason", "evidence")
+# A suggestion as a run keeps it (second_look.items; contract 9).
+_SUGGESTION_FIELDS = ("key", "part", "name", "other_part_name", "source", "confidence", "found_by", "photo_reference",
+                      "seen_in", "reason", "evidence", "check")
+
+
+def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
+    """A copy with its photos ("@<photo id>" in a draft) by case label, as
+    the run's sorted_photos number them: photo_reference, seen_in, each
+    evidence entry's photo. A photo gone since keeps its "@id"."""
+    out = dict(entry)
+    if isinstance(out.get("photo_reference"), str):
+        out["photo_reference"] = label_of.get(out["photo_reference"], out["photo_reference"])
+    if isinstance(out.get("seen_in"), list):
+        out["seen_in"] = [label_of.get(r, r) for r in out["seen_in"]]
+    if isinstance(out.get("evidence"), list):
+        out["evidence"] = [dict(e, photo=label_of.get(e.get("photo"), e.get("photo"))) if isinstance(e, dict) else e
+                           for e in out["evidence"]]
+    return out
+
+
+def suggestion_rows(look: dict, label_of: dict[str, str]) -> list[dict]:
+    """The second look's items (zone finds and its own) as a run keeps them."""
+    return [relabel_refs({k: it.get(k) for k in _SUGGESTION_FIELDS if k in it}, label_of)
+            for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
 
 
 def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, reports: ReportSet | None = None,
@@ -1235,15 +1777,20 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["read_kinds"] = dict(Counter(p.kind or "unsorted" for p in photos if p.id in read_ids))
         damage_photos = [p for p in photos if p.shows_damage]
         out["damage_photos_read"] = f"{len([p for p in damage_photos if p.id in read_ids])}/{len(damage_photos)}"
+        # The sorter's box too while it makes one (contract 8 D1).
+        boxes = "damage_box" in _sort_fields()
         out["sorted_photos"] = [
             {"n": i + 1, "file": p.original_name, "kind": p.kind, "area": p.area, "quality": p.quality,
-             "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note}
+             "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note,
+             **({"box": p.damage_box} if boxes else {})}
             for i, p in enumerate(photos)
         ]
         items = [item for item in data.get("damage_summary") or [] if isinstance(item, dict)]
         drafted = [item.get("part") for item in items]
+        label_of = {f"@{p.id}": f"P{i + 1:02d}" for i, p in enumerate(photos)}
         out["drafted_parts"] = drafted
-        out["drafted_items"] = [{k: item.get(k) for k in _ITEM_FIELDS if k in item} for item in items]
+        out["drafted_items"] = [relabel_refs({k: item.get(k) for k in _ITEM_FIELDS if k in item}, label_of)
+                                for item in items]
         out["parts"] = score_parts(case["parts"], drafted)
         # What a "parts to check" list would add: every part the sorter named
         # on a photo of the insured vehicle, damage visible or not -- surveyors
@@ -1261,12 +1808,30 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                 "calls": out["calls"].get("second look", 0),
             }
             out["parts_with_second_look"] = score_second_look(case["parts"], out["parts"], drafted, suggested)
-            # _read runs the second look after the reading: read_seconds stays
-            # the reading's own, comparable with runs from before it.
-            if isinstance(look.get("seconds"), (int, float)) and "read_seconds" in out:
-                out["read_seconds"] = round(max(0.0, out["read_seconds"] - look["seconds"]), 1)
+            # Contract 9: each suggestion in detail, real or wrong by the key,
+            # and what the re-check did.
+            out["suggestions"] = suggestion_rows(look, label_of)
+            mark_truth(out["suggestions"], case["parts"], out["parts"])
+            out["second_look"]["check"] = look.get("check")
+            # _read runs the second look and the re-check after the reading:
+            # read_seconds stays the reading's own, comparable with runs from
+            # before them.
+            after = [look.get("seconds"), (look.get("check") or {}).get("seconds")]
+            after = sum(x for x in after if isinstance(x, (int, float)) and not isinstance(x, bool))
+            if after and "read_seconds" in out:
+                out["read_seconds"] = round(max(0.0, out["read_seconds"] - after), 1)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
+        # Contract 8 D2: what each zone call sent and saw, from the run log's
+        # zone row (runs.ZONES_KIND), photos by case label.
+        AiRun = A.runs.AiRun
+        zone_row = (db.query(AiRun).filter(AiRun.report_id == rid, AiRun.kind == A.runs.ZONES_KIND)
+                    .order_by(AiRun.started_at.desc()).first())
+        if zone_row is not None:
+            detail = copy.deepcopy(zone_row.photos_sent) if isinstance(zone_row.photos_sent, dict) else {}
+            for zone in detail.get("zones") or []:
+                zone["photos"] = [label_of.get(ref, ref) for ref in zone.get("photos") or []]
+            out["zones"] = {"status": zone_row.status, "error_code": zone_row.error_code, **detail}
     finally:
         db.close()
 
@@ -1277,6 +1842,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["annex_a"] = score_annex_a(held[1], items)
         contradicted = contradicted_parts(drafted, held[1].lines, A.family_of, A.side_of, A.family_and_side)
     out["parts_fair"] = score_fair(case["parts"], out["drafted_items"], out["parts"], contradicted)
+    score_details(out, case, held[1].lines if held is not None else None, A.normalise_item, A.side_of)
     if not keep_photos:
         # A repeat run copies every case's photos again; on the live
         # server's small disk, a full disk stops the app taking uploads.
@@ -1314,6 +1880,7 @@ def detail_lines(r: dict) -> list[str]:
     f = r.get("parts_fair")
     if f:
         lines.append(fair_line(f))
+    lines += part_detail_lines(r)
     pc = r["parts_with_checklist"]
     lines.append(f"   + checklist {r['checklist']}")
     lines.append(f"   with checklist: parts {pc['found']}/{pc['expected']} (visible {pc['visible_found']}/{pc['visible_expected']}) "
@@ -1326,6 +1893,7 @@ def detail_lines(r: dict) -> list[str]:
         lines.append(f"   if every suggestion were ticked: parts {ls['found']}/{r['parts']['expected']} "
                      f"(visible {ls['visible_found']}/{r['parts']['visible_expected']}), added {ls['added']} "
                      f"{ls['added_parts']}, extra {ls['extra']} {ls['extra_parts']}, wrong side {ls['wrong_side']}")
+    lines += evidence_lines(r)
     s = r["sorter"]
     cache = r.get("sort_cache")
     lines.append(f"   sorter: labels in key {s['tagged_in_key']}/{s['tagged_photos']} ({_pct(s['label_precision'])}), "
@@ -1338,6 +1906,20 @@ def detail_lines(r: dict) -> list[str]:
         stages.append(f"{purpose}: {st['calls']} call(s) {st['seconds']}s, tries {st['attempts']} [{models}], "
                       f"slot wait {st['slot_wait_s']}s, 429 x{st['n_429']} waited {st['wait_429_s']}s{_tokens_text(st)}")
     lines.append("   AI: " + ("; ".join(stages) if stages else "no calls"))
+    # Contract 8 D2: one line for the zone calls.
+    zones = (r.get("zones") or {}).get("zones")
+    if zones is not None:
+        said = []
+        for z in zones:
+            text = f"{z.get('zone')} {z.get('status')} ({len(z.get('photos') or [])} photos"
+            if z.get("status") == "ok":
+                text += f", saw {z.get('side_seen')}, found {z.get('found')}, intact {len(z.get('intact') or [])}"
+            if z.get("error_code"):
+                text += f", {z['error_code']}"
+            if z.get("note"):
+                text += f"; {z['note']}"
+            said.append(text + ")")
+        lines.append("   zones: " + ("; ".join(said) if said else "none to read"))
     # Every call but sorting's batches (summed in the line above), one line
     # each: what a thinking level or a resolution cost.
     for call in r.get("ai_calls") or []:
@@ -1346,7 +1928,7 @@ def detail_lines(r: dict) -> list[str]:
         images = call.get("images")
         lines.append(f"   call {call['purpose']}: {call.get('model') or 'no answer'} in {call['seconds']}s, "
                      f"{call.get('attempts', 0)} tr{'y' if call.get('attempts') == 1 else 'ies'}{_tokens_text(call)}"
-                     + (f", images {images}" if images else ""))
+                     + (f", images {images}" if images else "") + (f", close-ups {call['crops']}" if call.get("crops") else ""))
     c = r.get("conditions")
     if c:
         lines.append(f"   conditions: {c['scored']} scored, exact {c['exact']}, first word {c['first_token']}, "
@@ -1357,12 +1939,68 @@ def detail_lines(r: dict) -> list[str]:
         lines.append(f"   Annex A (leave-one-out): covered {a['covered']}/{a['real_lines']} ({_pct(a['coverage'])}); "
                      f"rows {a['rows']} (priced {a['priced']}, unpriced {a['unpriced']}, extra {a['extra']}, "
                      f"canonical names {a['canonical_rows']}); perfect detection {a['perfect_covered']}/{a['real_lines']}")
+        if "price_diff" in a:
+            lines.append(f"   Annex A prices: W/shop Est {a['price_total']:.0f} against the surveyor's "
+                         f"{a['report_price_total']:.0f} ({a['price_diff']:+.0f}), adjusted {a['adjusted_total']:.0f} "
+                         f"against {a['report_adjusted_total']:.0f} ({a['adjusted_diff']:+.0f}); matched lines priced "
+                         f"{a['matched_priced']}/{a['covered']}, within 10% {a['within_10pct']} "
+                         f"(perfect detection {a['perfect_within_10pct']})")
+    return lines
+
+
+def evidence_lines(r: dict) -> list[str]:
+    """Contract 9: the suggestions' and the list's boxes and reasons, and the
+    re-check's verdicts on the real and the wrong suggestions."""
+    m = evidence_metrics(r)
+    lines = []
+    if "sug_n" in m:
+        said = f"   suggestions: {m['sug_n']}"
+        if "sug_real" in m:
+            said += f" (real {m['sug_real']}, wrong {m['sug_wrong']})"
+        said += (f"; AI box {m['sug_box']}/{m['sug_n']} (any box {m['sug_any_box']}), "
+                 f"reason {m['sug_reason']}/{m['sug_n']}")
+        if "list_n" in m:
+            said += f" | list: AI box {m['list_box']}/{m['list_n']}, reason {m['list_reason']}/{m['list_n']}"
+        lines.append(said)
+    check = (r.get("second_look") or {}).get("check")
+    if isinstance(check, dict):
+        said = (f"   re-check: {check.get('status')}" + (f" by {check['by']}" if check.get("by") else "")
+                + (f" on {check['model']}" if check.get("model") else "") + f" in {check.get('seconds')}s, "
+                f"{check.get('calls', 0)} call(s)" + (f" ({check['note']})" if check.get("note") else ""))
+        if "chk_real_yes" in m:
+            said += "; " + "; ".join(f"{group} " + " ".join(f"{v} {m[f'chk_{group}_{v}']}" for v in VERDICTS)
+                                     for group in ("real", "wrong"))
+        lines.append(said)
+    return lines
+
+
+def part_detail_lines(r: dict) -> list[str]:
+    """The sides, zones and Replace / Repair of a run's found parts."""
+    lines = []
+    sd = r.get("part_sides")
+    if sd:
+        lines.append(f"   sides of the found parts: right {sd['right']} (inferred {sd['right_inferred']}), wrong "
+                     f"{sd['wrong']} (inferred {sd['wrong_inferred']}), undetermined {sd['undetermined']}, "
+                     f"of {sd['sided_found']} with a side")
+    zn = r.get("part_zones")
+    if zn:
+        lines.append("   by zone, found/expected: " + "; ".join(
+            f"{zone} {z['found']}/{z['expected']}" + (f" wrong side {z['wrong_side']}" if z["wrong_side"] else "")
+            + (f" extra {z['extra']}" if z["extra"] else "")
+            for zone, z in zn.items() if z["expected"] or z["extra"]))
+    rr = r.get("part_remarks")
+    if rr:
+        off = [f"{d['part']} ({d['drafted']}, surveyor {d['surveyor']})" for d in rr["details"] if d["verdict"] == "disagree"]
+        lines.append(f"   Replace/Repair: agree {rr['agree']}, disagree {rr['disagree']}, unsure {rr['unsure']} of "
+                     f"{rr['scored']}; surveyor Repair {rr['surveyor_repair']}, drafted so {rr['repair_agree']}"
+                     + (f"; disagree {off}" if off else ""))
     return lines
 
 
 def _tokens_text(source: dict) -> str:
     said = [f"{label} {source[field]}" for field, label in (
-        ("prompt_tokens", "in"), ("output_tokens", "out"), ("thought_tokens", "thinking"), ("tool_calls", "code runs"))
+        ("prompt_tokens", "in"), ("output_tokens", "out"), ("thought_tokens", "thinking"), ("tool_calls", "code runs"),
+        ("tool_tokens", "tool"))
         if source.get(field) is not None]
     return f", tokens {' '.join(said)}" if said else ""
 
@@ -1375,12 +2013,19 @@ def fair_line(f: dict) -> str:
             + ("" if contradicted is None else f"; contradicted (surveyor: Serviceable) {contradicted}"))
 
 
+def _num(value, digits: str = "g") -> str:
+    # Tokens and dollars in whole numbers: "1.052e+04" and "35730.1" say less.
+    return f"{value:.0f}" if abs(value) >= 1000 else f"{value:{digits}}"
+
+
 def _fmt(st: dict | None) -> str:
     if not st:
         return "-"
     if st["n"] == 1 or st["min"] == st["max"]:
-        return f"{st['mean']:g}"
-    return f"{st['mean']:.4g} [{st['min']:g}-{st['max']:g}]"
+        return _num(st["mean"])
+    # A price difference is below 0: "[-35730 to -34070]", not "[-35730--34070]".
+    sep = " to " if st["min"] < 0 else "-"
+    return f"{_num(st['mean'], '.4g')} [{_num(st['min'])}{sep}{_num(st['max'])}]"
 
 
 TABLES = (
@@ -1398,9 +2043,53 @@ TABLES = (
      ("fair extra", "fair_extra"), ("neighbour", "neighbour"), ("Other named", "other_named"),
      ("contradicted", "contradicted")),
     (("read tok in", "read_tok_in"), ("read tok out", "read_tok_out"), ("read thinking", "read_tok_think"),
-     ("read code runs", "read_code_runs"), ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
-     ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think")),
+     ("read code runs", "read_code_runs"), ("read tool tok", "read_tok_tool"), ("read crops", "read_crops"),
+     ("sort tok in", "sort_tok_in"), ("sort tok out", "sort_tok_out"),
+     ("sort thinking", "sort_tok_think"), ("look tok in", "look_tok_in"), ("look thinking", "look_tok_think"),
+     ("all tok in", "tok_in"), ("total s", "total_s")),
+    # The found parts in detail (score_details).
+    (("with a side", "sided_found"), ("side right", "side_right"), ("wrong side", "wrong_side"),
+     ("side undetermined", "side_undetermined_found"), ("right inferred", "side_right_inferred"),
+     ("wrong inferred", "side_wrong_inferred"), ("R/R scored", "remarks_scored"), ("R/R agree", "remarks_agree"),
+     ("R/R disagree", "remarks_disagree"), ("R/R unsure", "remarks_unsure"), ("surveyor Repair", "remarks_repair"),
+     ("Repair agree", "remarks_repair_agree")),
+    tuple(pair for zone in ZONES for pair in ((f"{zone} found", f"zone_{zone}_found"), (f"{zone} of", f"zone_{zone}_expected"))),
+    # The whole chain: the Annex A built from the drafted parts, its prices.
+    (("A lines", "annex_coverage"), ("A covered", "annex_covered"), ("A of", "annex_lines"), ("A extra", "annex_extra"),
+     ("A rows", "annex_rows"), ("A priced", "annex_priced"), ("price diff", "annex_price_diff"),
+     ("price diff share", "annex_price_diff_rate"), ("adjusted diff", "annex_adjusted_diff"), ("matched priced", "annex_matched_priced"),
+     ("within 10%", "annex_within_10"), ("matched |diff|", "annex_price_abs_diff"),
+     ("perfect within 10%", "annex_perfect_within_10")),
 )
+# Contract 8 D2: the zone stage.
+TABLES += (
+    (("zone calls", "zone_calls"), ("zone failed", "zone_failed"), ("zone s", "zone_s"),
+     ("zone tok in", "zone_tok_in"), ("zone tok out", "zone_tok_out"), ("zone thinking", "zone_tok_think"),
+     ("zone only", "zone_only_parts"), ("both reads", "both_parts"), ("side flips", "zone_side_flips"),
+     ("other end", "zone_other_end")),
+)
+
+
+# Contract 9: the suggestions' evidence, and the re-check.
+TABLES += (
+    (("sugg", "sug_n"), ("real", "sug_real"), ("wrong", "sug_wrong"), ("AI box", "sug_box"), ("box fill", "sug_box_fill"),
+     ("sorter box", "sug_sort_box"), ("any box fill", "sug_any_box_fill"), ("reason", "sug_reason"), ("reason fill", "sug_reason_fill"), ("list box fill", "list_box_fill"),
+     ("list reason fill", "list_reason_fill")),
+    (("checked", "sug_checked"), ("real yes", "chk_real_yes"), ("real unsure", "chk_real_unsure"),
+     ("real no", "chk_real_no"), ("wrong yes", "chk_wrong_yes"), ("wrong unsure", "chk_wrong_unsure"),
+     ("wrong no", "chk_wrong_no"), ("real kept", "chk_real_kept_rate"), ("no on wrong", "chk_wrong_no_rate"),
+     ("dec calls", "dec_calls"), ("dec s", "dec_s"), ("lite check calls", "check_calls"),
+     ("re-check s", "recheck_s"), ("429", "n_429"), ("503", "n_503")),
+)
+
+
+def model_lines(by_model: dict) -> list[str]:
+    """Contract 9: the calls per model, every kind of call together."""
+    if not by_model:
+        return []
+    return ["", "calls per model (answered/tries, 429s, 503s): " + "; ".join(
+        f"{model} {t['answered']}/{t['attempts']}" + (f" 429 x{t['n_429']}" if t["n_429"] else "")
+        + (f" 503 x{t['n_503']}" if t["n_503"] else "") for model, t in by_model.items())]
 
 
 def summary_table(summary: dict) -> list[str]:
@@ -1416,6 +2105,7 @@ def summary_table(summary: dict) -> list[str]:
         widths = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
         out.append("")
         out += ["  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in cells]
+    out += model_lines(summary.get("by_model") or {})
     if summary["errors"]:
         out.append(f"\nERRORS ({len(summary['errors'])}, left out of the numbers above):")
         out += [f"  {e['case']} run {e['rep']}: {e['error']}" for e in summary["errors"]]
@@ -1454,6 +2144,27 @@ MODEL_SETTINGS = (
     ("image_resolution", "gemini_image_resolution", "normal_image_resolutions"),
     ("read_tools", "gemini_read_tools", "normal_read_tools"),
 )
+# Contract 8 D2: zone reading and its grid marks (--read-mode, --grid-marks).
+MODEL_SETTINGS += (
+    ("read_mode", "intake_read_mode", "normal_read_mode"),
+    ("grid_marks", "intake_grid_marks", "normal_grid_marks"),
+)
+# Contract 8 D1: flag -> the Settings field it turns on (model_settings).
+# In the result file's ai_settings only while on, so a run without them
+# reads exactly as before.
+D1_SETTINGS = (
+    ("read_tools_timeout", "gemini_read_tools_timeout"),
+    ("zoom_hint", "gemini_read_zoom_hint"),
+    ("sort_damage_box", "intake_sort_damage_box"),
+    ("read_crops", "intake_read_crops"),
+)
+
+
+def _seconds(text: str) -> float:
+    value = float(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be more than 0")
+    return value
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -1499,8 +2210,22 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "'damage=ultra_high,tyre=ultra_high,overview=medium' ('*' = every other kind; "
                          "low/medium/high/ultra_high; settings.gemini_image_resolution)")
     ap.add_argument("--read-tools", metavar="TOOLS",
-                    help="tools for the reading call: 'code_execution' (Agentic Vision trial; "
-                         "settings.gemini_read_tools)")
+                    help="tools for the reading call: 'code_execution' (Agentic Vision trial) for every model, or per "
+                         "model, e.g. 'gemini-3.1-flash-lite=code_execution,gemini-3-flash-preview=code_execution' "
+                         "(settings.gemini_read_tools)")
+    # Contract 8 D1: the light reader looking closer.
+    ap.add_argument("--read-tools-timeout", type=_seconds, metavar="SECONDS",
+                    help="seconds per model try of a reading that carries tools (the reading's own 120 when not "
+                         "given; settings.gemini_read_tools_timeout); needs --read-tools")
+    ap.add_argument("--zoom-hint", action="store_true",
+                    help="ask a model given the tool to crop and zoom into each damaged area "
+                         "(extraction.ZOOM_NOTE; settings.gemini_read_zoom_hint); needs --read-tools")
+    ap.add_argument("--sort-damage-box", action="store_true",
+                    help="the sorter boxes the damage on each photo showing some (settings.intake_sort_damage_box; "
+                         "its own sort-cache folder)")
+    ap.add_argument("--read-crops", nargs="?", type=_positive, const=0, metavar="N",
+                    help="a close-up of each box beside its photo, at most N per reading (default the setting's, 8; "
+                         "settings.intake_read_crops / intake_read_crops_max); needs --sort-damage-box")
     ap.add_argument("--no-side-from-sorter", action="store_true",
                     help="ablation: the reader's sides stand (settings.intake_side_from_sorter off)")
     ap.add_argument("--no-sorter-hints", action="store_true",
@@ -1508,6 +2233,45 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--max-read", type=int, metavar="N", help="photos one reading sends (settings.intake_max_read_photos)")
     ap.add_argument("--drop-rule", action="append", choices=sorted(READING_RULES),
                     help="ablation: take one reading rule out of the prompt (repeatable)")
+    # Contract 8 D2: reading the car one area at a time.
+    ap.add_argument("--read-mode", choices=("single", "zones"),
+                    help="'zones': after the overall reading, one call per area of the car with that area's "
+                         "checklist, merged in (settings.intake_read_mode; default single)")
+    ap.add_argument("--grid-marks", action="store_const", const=True, default=None,
+                    help="zone calls only: a 3x3 grid (A1..C3) drawn on each photo's copy, the model asked for the "
+                         "cells the damage covers (settings.intake_grid_marks)")
+    # Contract 9.
+    ap.add_argument("--zone-models", type=_chain, metavar="CHAIN",
+                    help="the zone calls' model chain (settings.gemini_zone_chain; default the two lites, never the "
+                         "reading's); needs --read-mode zones")
+    ap.add_argument("--zone-only", choices=("suggest", "list"),
+                    help="the parts only zone reads found: 'suggest' (option B, the default) keeps them out of the "
+                         "list as suggestions, scored like the second look's; 'list' puts them in the list "
+                         "(settings.intake_zone_only); needs --read-mode zones")
+    ap.add_argument("--store-on", action="store_true",
+                    help="A/B only: the requests without store=False, as before contract 9 "
+                         "(settings.gemini_store_off off)")
+    ap.add_argument("--zone-evidence", metavar="MODE",
+                    help="the zone reads' tail fields: 'reason', 'reason_box' or 'off' "
+                         "(settings.intake_zone_evidence); needs --read-mode zones")
+    ap.add_argument("--check", metavar="MODE",
+                    help="re-check the suggestions: 'decision' (the Decisions API), 'lite', 'decision_then_lite' "
+                         "or 'off' (settings.intake_check_mode; app/ai/check.py)")
+    ap.add_argument("--decision-model", metavar="MODEL",
+                    help="the Decisions API's model (settings.gemini_decision_model); needs --check")
+    ap.add_argument("--check-models", type=_chain, metavar="CHAIN",
+                    help="the lite re-check's chain (settings.gemini_check_chain); needs --check")
+    ap.add_argument("--thinking-level-check", metavar="LEVEL",
+                    help="the lite re-check's thinking level, written as --thinking-level-read "
+                         "(settings.gemini_thinking_level_check); needs --check")
+    ap.add_argument("--check-resolution", metavar="RES",
+                    help="the photos' resolution on the Decisions API: low, medium, high or ultra_high "
+                         "(settings.intake_check_resolution); needs --check")
+    ap.add_argument("--check-yes", type=float, metavar="P",
+                    help="p at or over which the Decisions API's answer is 'yes' (settings.intake_check_yes); "
+                         "needs --check")
+    ap.add_argument("--check-no", type=float, metavar="P",
+                    help="p at or under which it is 'no' (settings.intake_check_no); needs --check")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -1568,12 +2332,131 @@ def model_settings(args: argparse.Namespace) -> dict:
     if kinds:
         sys.exit(f"--image-resolution: no such photo kind {sorted(kinds)}; the kinds are "
                  f"{', '.join(list(PHOTO_KINDS) + ['unsorted'])}, or '*'")
+    # Contract 8 D1. A flag that would change nothing stops the run: a
+    # benchmark spent measuring the baseline under another name.
+    tools = out.get("gemini_read_tools", config.settings.gemini_read_tools)
+    for flag in ("read_tools_timeout", "zoom_hint"):
+        if getattr(args, flag, None) not in (None, False) and not tools:
+            sys.exit(f"--{flag.replace('_', '-')}: goes only with tools on the reading; give --read-tools too")
+    if getattr(args, "read_tools_timeout", None) is not None:
+        out["gemini_read_tools_timeout"] = args.read_tools_timeout
+    if getattr(args, "zoom_hint", False):
+        out["gemini_read_zoom_hint"] = True
+    if getattr(args, "sort_damage_box", False):
+        out["intake_sort_damage_box"] = True
+    if getattr(args, "read_crops", None) is not None:
+        if not (out.get("intake_sort_damage_box") or config.settings.intake_sort_damage_box):
+            sys.exit("--read-crops: the close-ups are cut from the sorter's boxes; give --sort-damage-box too")
+        out["intake_read_crops"] = True
+        if args.read_crops:
+            out["intake_read_crops_max"] = args.read_crops
+    # Contract 9. Likewise: a zone flag without zone reading stops the run.
+    zones_on = out.get("intake_read_mode", config.settings.intake_read_mode) == "zones"
+    if getattr(args, "zone_models", None):
+        if not zones_on:
+            sys.exit("--zone-models: the zone calls' models; give --read-mode zones too")
+        out["gemini_zone_chain"] = config.normal_chain(args.zone_models, "--zone-models")
+    if getattr(args, "zone_only", None):
+        if not zones_on:
+            sys.exit("--zone-only: where the zone reads' finds go; give --read-mode zones too")
+        out["intake_zone_only"] = config.normal_zone_only(args.zone_only)
+    if getattr(args, "store_on", False):
+        out["gemini_store_off"] = False
+    out.update(check_settings(args, config, zones_on))
+    return out
+
+
+# Contract 9: the re-check's tuning flags -> (Settings field, config's
+# normaliser). Each needs --check: alone it would change nothing.
+CHECK_FLAGS = (
+    ("decision_model", "gemini_decision_model", None),
+    ("check_models", "gemini_check_chain", "normal_chain"),
+    ("thinking_level_check", "gemini_thinking_level_check", "normal_thinking_levels"),
+    ("check_resolution", "intake_check_resolution", "normal_check_resolution"),
+)
+
+
+def check_settings(args: argparse.Namespace, config, zones_on: bool) -> dict:
+    """Contract 9's --zone-evidence, --check and the re-check's tuning, as
+    {Settings field: value}. Exits on a value config refuses, or a flag
+    that would change nothing (a benchmark spent measuring the baseline
+    under another name)."""
+    out: dict = {}
+    if getattr(args, "zone_evidence", None) is not None:
+        if not zones_on:
+            sys.exit("--zone-evidence: the zone reads' reasons and boxes; give --read-mode zones too")
+        try:
+            out["intake_zone_evidence"] = config.normal_zone_evidence(args.zone_evidence)
+        except ValueError as exc:
+            sys.exit(f"--zone-evidence: {exc}")
+    mode = config.settings.intake_check_mode
+    if getattr(args, "check", None) is not None:
+        try:
+            mode = out["intake_check_mode"] = config.normal_check_mode(args.check)
+        except ValueError as exc:
+            sys.exit(f"--check: {exc}")
+    for flag, field, normaliser in CHECK_FLAGS + (("check_yes", "intake_check_yes", None),
+                                                  ("check_no", "intake_check_no", None)):
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        if mode == "off":
+            sys.exit(f"--{flag.replace('_', '-')}: tunes the re-check; give --check too")
+        if flag == "decision_model":
+            value = str(value).strip()
+            if not value:
+                sys.exit("--decision-model: a model name")
+        elif flag in ("check_yes", "check_no"):
+            if not 0.0 <= value <= 1.0:
+                sys.exit(f"--{flag.replace('_', '-')}: a probability, 0 to 1")
+        else:
+            try:
+                value = getattr(config, normaliser)(value)
+            except ValueError as exc:
+                sys.exit(f"--{flag.replace('_', '-')}: {exc}")
+        out[field] = value
+    yes = out.get("intake_check_yes", config.settings.intake_check_yes)
+    no = out.get("intake_check_no", config.settings.intake_check_no)
+    if no >= yes:
+        sys.exit(f"--check-no {no} must be under --check-yes {yes}")
     return out
 
 
 def ai_settings(settings) -> dict:
-    """The model settings a run used, for the result file (None: unset)."""
-    return {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
+    """The model settings a run used, for the result file (None: unset), and
+    contract 8 D1's while on."""
+    out = {field.removeprefix("gemini_"): getattr(settings, field, None) for _, field, _ in MODEL_SETTINGS}
+    for _, field in D1_SETTINGS:
+        if getattr(settings, field, None):
+            out[field.removeprefix("gemini_")] = getattr(settings, field)
+    if getattr(settings, "intake_read_crops", False):
+        out["intake_read_crops_max"] = settings.intake_read_crops_max
+    # Contract 9's (--zone-models, --zone-only, --store-on) only while they
+    # act -- the zone chain and zone_only in zone mode, store_off when turned
+    # off -- so a run without them reads as before.
+    if getattr(settings, "intake_read_mode", "single") == "zones":
+        out["zone_chain"] = getattr(settings, "gemini_zone_chain", None)
+        out["intake_zone_only"] = getattr(settings, "intake_zone_only", "suggest")
+    if not getattr(settings, "gemini_store_off", True):
+        out["store_off"] = False
+    # Contract 9 (G): the zone reads' evidence in zone mode when asked for,
+    # and the re-check's settings while it runs -- the Decisions API's for
+    # its modes, the lite chain's for its.
+    evidence = getattr(settings, "intake_zone_evidence", "off")
+    if getattr(settings, "intake_read_mode", "single") == "zones" and evidence != "off":
+        out["intake_zone_evidence"] = evidence
+    mode = getattr(settings, "intake_check_mode", "off")
+    if mode != "off":
+        out["intake_check_mode"] = mode
+        if mode in ("decision", "decision_then_lite"):
+            out["decision_model"] = getattr(settings, "gemini_decision_model", None)
+            out["intake_check_resolution"] = getattr(settings, "intake_check_resolution", None)
+            out["intake_check_yes"] = getattr(settings, "intake_check_yes", None)
+            out["intake_check_no"] = getattr(settings, "intake_check_no", None)
+        if mode in ("lite", "decision_then_lite"):
+            out["check_chain"] = getattr(settings, "gemini_check_chain", None)
+            out["thinking_level_check"] = getattr(settings, "gemini_thinking_level_check", None)
+    return out
 
 
 # The reading rules --drop-rule can take out of the prompt, by the words
@@ -1697,6 +2580,12 @@ def total_lines(runs: list[dict]) -> list[str]:
                 if r.get("parts_with_checklist"):
                     totals["checklist_runs"] += 1
                     totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
+                em = evidence_metrics(r)
+                if "sug_real" in em:
+                    totals["sug_runs"] += 1
+                    for k in ("sug_n", "sug_real", "sug_wrong", "sug_box", "sug_reason", "chk_real_kept", "chk_wrong_no"):
+                        totals[k] += em.get(k, 0)
+                    totals["chk_runs"] += 1 if "chk_real_yes" in em else 0
                 ls = r.get("parts_with_second_look")
                 if ls:
                     totals["look_runs"] += 1
@@ -1723,6 +2612,11 @@ def total_lines(runs: list[dict]) -> list[str]:
                        f"visible {totals['look_visible_found']}/{totals['visible_expected']}: added {totals['look_added']} "
                        f"from {totals['look_suggested']} suggestions, extra {totals['look_extra']}, "
                        f"wrong side {totals['look_wrong_side']}")
+        if totals["sug_runs"]:
+            out.append(f"{head}SUGGESTIONS {totals['sug_n']}: real {totals['sug_real']}, wrong {totals['sug_wrong']}; "
+                       f"AI box {totals['sug_box']}, reason {totals['sug_reason']}"
+                       + (f"; RE-CHECK kept {totals['chk_real_kept']} of the real, said no to {totals['chk_wrong_no']} "
+                          f"of the wrong" if totals["chk_runs"] else ""))
         if totals["fair_runs"]:
             out.append(f"{head}FAIR parts {totals['fair_found']:g}/{totals['expected']}, visible "
                        f"{totals['fair_visible_found']:g}/{totals['visible_expected']} ({totals['neighbour']} neighbours "
@@ -1735,24 +2629,36 @@ def total_lines(runs: list[dict]) -> list[str]:
 def rescore(args: argparse.Namespace) -> int:
     """--rescore FILE: every run of a stored result file scored again, strict
     and fair, from its drafted items (drafted_parts in files older than
-    them), against --key and, with --reports, each case's held-out report
-    (contradicted parts). Offline: no Gemini call, no database. The other
-    numbers (conditions, Annex A, sorter) are kept as stored. Prints the
-    totals and the summary; --out writes the rescored file (never over FILE,
-    a measurement that can't be made again)."""
+    them), with the found parts' detail (score_details), against --key and,
+    with --reports, each case's held-out report (contradicted parts,
+    Replace / Repair). Offline: no Gemini call, no database. The other
+    numbers (conditions, Annex A, sorter) are kept as stored -- except
+    Annex A when --reports comes with a scratch database (--scratch DIR, or
+    BENCHMARK_SCRATCH=1 with DATABASE_URL pointing at one): prefill builds
+    it again from the drafted items, history = the other reports, and its
+    lines and prices are scored as a run scores them (prefill makes no
+    Gemini call either). Prints the totals and the summary; --out writes
+    the rescored file (never over FILE, a measurement that can't be made
+    again)."""
     if args.key is None:
         sys.exit("--rescore needs --key")
     if args.out is not None and args.out.resolve() == args.rescore.resolve():
         sys.exit("--rescore: --out must be another file; the stored result is kept as it is")
+    annex = args.reports is not None and (args.scratch is not None or os.environ.get("BENCHMARK_SCRATCH") == "1")
+    if annex and args.scratch is not None:
+        _use_scratch(args.scratch)  # before anything imports the app's database
     doc = json.loads(args.rescore.read_text(encoding="utf-8"))
     runs = doc.get("runs")
     if runs is None:
         runs = doc.get("results") or []  # before --repeat
     key = {c["name"]: c for c in json.loads(args.key.read_text(encoding="utf-8"))["cases"]}
     reports = ReportSet(args.reports) if args.reports else None
+    history = None
     if reports is not None:
-        from app.parts.history import family_and_side, family_of, side_of
-    changed, unknown = 0, set()
+        from app.parts import history
+    if annex:
+        _app().init_db()
+    changed, unknown, rebuilt = 0, set(), 0
     for run in runs:
         case = key.get(run.get("case"))
         if case is None:
@@ -1769,19 +2675,32 @@ def rescore(args: argparse.Namespace) -> int:
         contradicted = None
         held = reports.for_case(case) if reports is not None else None
         if held is not None:
-            contradicted = contradicted_parts(drafted, held[1].lines, family_of, side_of, family_and_side)
+            contradicted = contradicted_parts(drafted, held[1].lines, history.family_of, history.side_of,
+                                              history.family_and_side)
         run["parts_fair"] = score_fair(case["parts"], items, strict, contradicted)
+        if isinstance(run.get("suggestions"), list):
+            mark_truth(run["suggestions"], case["parts"], strict)
+        score_details(run, case, held[1].lines if held is not None else None,
+                      history.normalise_item if history else None, history.side_of if history else None)
+        if annex and held is not None:
+            load_history(reports.others(held))
+            run["annex_a"] = score_annex_a(held[1], items)
+            rebuilt += 1
     doc["runs"] = runs
     doc.pop("results", None)
     doc["summary"] = summarize(runs)
     doc["rescored"] = {"from": str(args.rescore), "key": str(args.key), "reports": str(args.reports) if args.reports else None,
-                       "at": _now()}
+                       "annex_a_rebuilt": rebuilt, "at": _now()}
     print(f"rescored {len(runs)} run(s) of {doc.get('label') or args.rescore.stem}"
           + (f"; reports: {len(reports.items)} read" if reports is not None else "; no --reports: nothing flagged as contradicted"))
     if unknown:
         print(f"   not in the key, left as stored: {len(unknown)} case(s)")
     if changed:
         print(f"   the strict score differs from the stored one on {changed} run(s): the key changed since")
+    if annex:
+        print(f"   Annex A built again on the scratch database for {rebuilt} run(s), prices scored")
+    elif reports is not None:
+        print("   Annex A kept as stored (with --scratch DIR it is built again and its prices scored)")
     for line in total_lines(runs):
         print(line)
     print()

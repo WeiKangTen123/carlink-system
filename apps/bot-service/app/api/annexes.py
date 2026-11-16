@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api import limits
-from app.api.intake import CheckedChange, checked_change
+from app.api.intake import CheckedChange, checked_change, hold_write_lock
 from app.api.parts import _report, _sees_price_book, _signed_off, price_book_for_case
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import editable_case, not_allowed, visible_case
@@ -46,7 +46,11 @@ PRICE_BOOK_ONLY = "Prices from past cases are the firm's price book: for admins 
 
 def _editable(db, report_id: str) -> Report:
     """The case, when it may be changed: 404 / 409 intake (_report), 409
-    when signed off."""
+    when signed off. SQLite's write lock is taken first and held to the
+    route's commit: every save here writes all of Report.data back, so a
+    decision on a suggestion (POST .../suggestions) committing between its
+    read and its write would otherwise be lost."""
+    hold_write_lock(db, report_id)
     r = _report(db, report_id)
     if _signed_off(r):
         raise HTTPException(status_code=409, detail=LOCKED)

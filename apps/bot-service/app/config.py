@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BOT_SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -62,14 +62,33 @@ def image_resolutions(text: str | None) -> dict[str, str]:
     return out
 
 
+def read_tools_by_model(text: str | None) -> dict[str, list[str]]:
+    """gemini_read_tools as {model: [tool names]}, written like the
+    thinking levels: "code_execution" is {"*": ["code_execution"]}, every
+    model; "gemini-3.1-flash-lite=code_execution" names one model, and a
+    model not named gets no tools; a bare tool beside pairs goes to every
+    model not named. Per model because the tool is a trial not every model
+    of a chain takes well: on 12 Nov the drafting schema with code
+    execution passed on gemini-3.1-flash-lite and gemini-3-flash-preview,
+    while gemini-3.5-flash-lite was busy (503) and then ran out of time.
+    {} when unset. Raises ValueError on a tool this code doesn't know how
+    to send."""
+    out: dict[str, list[str]] = {}
+    for entry in _entries(text):
+        model, _, name = entry.rpartition("=")
+        model, name = model.strip() or ANY, name.strip().lower()
+        if name not in READ_TOOLS:
+            raise ValueError(f"read tool {name!r}: only {', '.join(READ_TOOLS)}")
+        tools = out.setdefault(model, [])
+        if name not in tools:
+            tools.append(name)
+    return out
+
+
 def read_tools(text: str | None) -> list[str]:
-    """gemini_read_tools as tool names. [] when unset. Raises ValueError on
-    a tool this code doesn't know how to send."""
-    names = list(dict.fromkeys(e.lower() for e in _entries(text)))
-    unknown = [n for n in names if n not in READ_TOOLS]
-    if unknown:
-        raise ValueError(f"read tools {unknown}: only {', '.join(READ_TOOLS)}")
-    return names
+    """Every tool gemini_read_tools names, for any model, once each. [] when
+    unset. Raises ValueError on a tool this code doesn't know how to send."""
+    return list(dict.fromkeys(name for names in read_tools_by_model(text).values() for name in names))
 
 
 class Settings(BaseSettings):
@@ -98,9 +117,13 @@ class Settings(BaseSettings):
     gemini_model_chain: str = "gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     # Dashboard intake sorts every photo of a case (often 40-80) before the
     # real drafting call. Sorting needs no bounding boxes -- the one thing
-    # only the stronger models do -- so it runs lite-first, keeping the
-    # stronger models' much smaller daily quota for the drafting call.
-    gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
+    # only the stronger models do -- so it runs on the lite models only,
+    # keeping the stronger models' much smaller daily quota for the
+    # drafting call. Contract 9 (conflict #15): the strong model is no
+    # longer the last resort. With both lites busy, a sort batch spent one
+    # of its ~20 calls a day; now that batch fails, the finished ones stay
+    # sorted and the wizard offers Retry.
+    gemini_triage_model_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     # The second look after an intake reading (ai/second_look.py): ONE call
     # per read on its own chain, so it never draws on the reading model's
     # small free daily allowance. Provisional: chosen after measuring models
@@ -141,8 +164,40 @@ class Settings(BaseSettings):
     # Tools for the reading call only: "code_execution" lets the model crop
     # and zoom into a photo itself (Agentic Vision). With a JSON schema this
     # is a preview feature on Gemini 3 (Google's structured-output docs),
-    # untested on the lite models: a trial setting.
+    # untested on the lite models: a trial setting. For every model of the
+    # chain, or per model like the thinking levels
+    # ("gemini-3.1-flash-lite=code_execution", see read_tools_by_model).
     gemini_read_tools: str | None = None
+    # Contract 8 D1: the light reader looking closer -- Gemini zooming in
+    # itself (the code execution tool above) and our own close-ups of the
+    # damage the sorter boxed. All off by default, and off the requests are
+    # byte for byte today's. scripts/benchmark_intake.py measures each
+    # (--read-tools, --read-tools-timeout, --zoom-hint, --sort-damage-box,
+    # --read-crops) before it is turned on.
+    #
+    # Seconds per model try of a reading whose request carries tools: the
+    # model runs its code on Google's side before it answers, and a 32-photo
+    # reading can take longer than the caller's timeout (intake's 120 s).
+    # None: the caller's timeout, as before. A try that runs out still
+    # falls through to the next model.
+    gemini_read_tools_timeout: float | None = None
+    # extraction.ZOOM_NOTE added to the reading's system prompt -- crop and
+    # zoom into each damaged area before naming the part and its side -- on
+    # a try whose request carries tools, and only then. A setting of its
+    # own so the tool can be measured both asked and not asked to zoom.
+    gemini_read_zoom_hint: bool = False
+    # The sorter also boxes the damage on each photo showing it
+    # (IntakePhoto.damage_box, [ymin, xmin, ymax, xmax] on 0-1000). Changes
+    # the sort's prompt and schema, so sorts made with it are cached apart
+    # (triage.sort_prompt_version).
+    intake_sort_damage_box: bool = False
+    # Right after a photo the sorter boxed, the reading gets a close-up of
+    # that box cut from the largest copy of the photo we keep
+    # (intake/crops.py), as "Close-up of photo P07:" and the image. At most
+    # intake_read_crops_max per reading, damage close-ups first: each is one
+    # more image (~1120 tokens at Gemini 3's default resolution, high).
+    intake_read_crops: bool = False
+    intake_read_crops_max: int = 8
     # How many photos one intake reading sends (intake/pipeline.read_limit);
     # unset: pipeline.MAX_READ_PHOTOS (32).
     intake_max_read_photos: int | None = None
@@ -218,6 +273,18 @@ class Settings(BaseSettings):
     # queued after detection (catalogue.maybe_auto_lookup).
     catalogue_makes: str = "Honda,BMW,MINI"
 
+    # Contract 8 L: every signed-off case teaches the past-case parts lists.
+    # At sign-off its final Annex A joins the past-case history that Annex A
+    # suggestions and prices come from, as the past case "carlink:<report
+    # id>" (app/parts/learn.py) -- replaced on a re-sign-off, removed when
+    # the case is reopened or deleted -- so the kits improve without anyone
+    # importing spreadsheets. Off: nothing is learned, and the lines learned
+    # so far are left out of every suggestion (history.past_lines): the
+    # history is the imported spreadsheets alone, as before. No Gemini call
+    # either way; the AI accuracy record (app/reports/accuracy.py) is kept
+    # either way.
+    learn_from_signed_off: bool = True
+
     # A typo in one of the model settings stops the app at start-up rather
     # than being sent to Gemini (a 400 on every call) or silently ignored.
     @field_validator("gemini_thinking_level_read", "gemini_thinking_level_sort", "gemini_thinking_level_second_look")
@@ -234,6 +301,221 @@ class Settings(BaseSettings):
     @classmethod
     def _read_tools(cls, value):
         return normal_read_tools(value)
+
+    # Contract 8 D1: blank is unset; 0 or less is refused (a try that can
+    # never answer, or a negative number of close-ups).
+    @field_validator("gemini_read_tools_timeout", mode="before")
+    @classmethod
+    def _read_tools_timeout(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if float(value) <= 0:
+            raise ValueError("gemini_read_tools_timeout: seconds, more than 0")
+        return float(value)
+
+    @field_validator("intake_read_crops_max")
+    @classmethod
+    def _read_crops_max(cls, value):
+        if value < 0:
+            raise ValueError("intake_read_crops_max: 0 or more")
+        return value
+
+    # Contract 8 D2: reading the car one area at a time (intake/zones.py).
+    # "single": the one overall reading, as before. "zones": after it, one
+    # short call per area the photos show -- front, rear, left, right, and
+    # damage close-ups whose area isn't clear -- each with that area's
+    # checklist (ai/zone_read.py), at most 5 more calls a case; their finds
+    # are merged into the overall reading's, and a part only one read saw,
+    # on one photo, is marked Low for a person to check. Measured before it
+    # is turned on (scripts/benchmark_intake.py --read-mode zones).
+    intake_read_mode: str = "single"
+    # Zone calls only: each photo goes as a copy with a light 3x3 grid
+    # (A1..C3) drawn on it (ai/grid.py), and the model gives the cells the
+    # damage covers before it names the panel. Off: the photos as they are.
+    intake_grid_marks: bool = False
+
+    @field_validator("intake_read_mode")
+    @classmethod
+    def _read_mode(cls, value):
+        return normal_read_mode(value)
+
+    # Contract 9: a reason, a photo box and a 3D link for every finding,
+    # on the free tier. Every default sends today's requests byte for byte,
+    # but two the owner agreed to: the sort chain above no longer ends in
+    # the strong model, and store=False goes on every call
+    # (gemini_store_off).
+    #
+    # The zone calls' models (intake/zones.py), never the reading chain:
+    # the reading's first model has ~20 calls a day on the free tier, and
+    # ~5 zone calls a case would spend them in ~3 cases (conflict #14).
+    gemini_zone_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # store=False on every Gemini call (structured.call_structured): on the
+    # free tier Google otherwise keeps each request -- the case's photos --
+    # for a day so it can be fetched again, which nothing here does. Checked
+    # on 15 Nov on the pinned google-genai 2.22.0 (3.1-flash-lite and
+    # gemini-4-hydrogen): the answers are the same. False: today's request,
+    # with no store field (the benchmark's --store-on, for an A/B).
+    gemini_store_off: bool = True
+
+    # Option B (zone mode only, settings.intake_read_mode "zones"):
+    # "suggest" keeps the damage list to the parts the overall reading found
+    # and makes the parts only zone reads found suggestions a person adds
+    # (intake/zones.split_suggestions); "list" puts every find in the list
+    # (contract 8's m5/m6 runs). Measured offline on m6: the list's wrong
+    # sides and extras fall, the zone-only finds wait for a person.
+    intake_zone_only: str = "suggest"
+    # The zone reads' tail fields (ai/zone_read.py, section 4.7): "off" asks
+    # for nothing new; "reason" adds each find's reason; "reason_box" also
+    # its box_2d. Turned on after the R2 run (reason_box only with R3's box
+    # probe at 14/20 or better).
+    intake_zone_evidence: str = "off"
+    # The re-check of the suggestions (ai/check.py, section 4.7): "off";
+    # "decision", the Decisions API; "lite", one batched call on
+    # gemini_check_chain; "decision_then_lite", the lite call when the
+    # Decisions API fails. It labels and sorts the suggestions, never adds
+    # or removes one. Turned on after the R4 / R5 runs.
+    intake_check_mode: str = "off"
+    # The Decisions API's model (a plain httpx call: it is not in the SDK).
+    gemini_decision_model: str = "gemini-decision-1"
+    # The lite re-check's models: never the strong one.
+    gemini_check_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # The lite re-check's thinking level, written like the others above
+    # (thinking_levels); unset sends none.
+    gemini_thinking_level_check: str | None = None
+    # The resolution of the photos sent to the Decisions API: low, medium,
+    # high or ultra_high (266 tokens a photo at low).
+    intake_check_resolution: str = "medium"
+    # The Decisions API's yes-probability p: "yes" at intake_check_yes or
+    # more, "no" at intake_check_no or less, "unsure" between. Set from
+    # R4's offline sweep.
+    intake_check_yes: float = 0.7
+    intake_check_no: float = 0.3
+
+    @field_validator("gemini_zone_chain", "gemini_check_chain")
+    @classmethod
+    def _chains(cls, value, info):
+        return normal_chain(value, info.field_name)
+
+    @field_validator("intake_zone_only")
+    @classmethod
+    def _zone_only(cls, value):
+        return normal_zone_only(value)
+
+    @field_validator("intake_zone_evidence")
+    @classmethod
+    def _zone_evidence(cls, value):
+        return normal_zone_evidence(value)
+
+    @field_validator("intake_check_mode")
+    @classmethod
+    def _check_mode(cls, value):
+        return normal_check_mode(value)
+
+    @field_validator("gemini_decision_model")
+    @classmethod
+    def _decision_model(cls, value):
+        model = str(value or "").strip()
+        if not model:
+            raise ValueError("gemini_decision_model: a model name")
+        return model
+
+    @field_validator("gemini_thinking_level_check")
+    @classmethod
+    def _thinking_level_check(cls, value):
+        return normal_thinking_levels(value)
+
+    @field_validator("intake_check_resolution")
+    @classmethod
+    def _check_resolution(cls, value):
+        return normal_check_resolution(value)
+
+    @field_validator("intake_check_yes", "intake_check_no")
+    @classmethod
+    def _check_cut(cls, value, info):
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError(f"{info.field_name}: a probability, 0 to 1")
+        return float(value)
+
+    @model_validator(mode="after")
+    def _check_cuts_in_order(self):
+        # "no" at or under intake_check_no, "yes" at or over intake_check_yes:
+        # the other way round, one p would be both.
+        if self.intake_check_no >= self.intake_check_yes:
+            raise ValueError("intake_check_no must be under intake_check_yes")
+        return self
+
+
+READ_MODES = ("single", "zones")
+
+
+def normal_read_mode(value) -> str:
+    """intake_read_mode written the one way; None or blank is "single".
+    Raises ValueError on anything else, so a typo stops the app at start-up
+    rather than quietly reading the old way."""
+    mode = str(value or "").strip().lower() or "single"
+    if mode not in READ_MODES:
+        raise ValueError(f"read mode {value!r}: use one of {', '.join(READ_MODES)}")
+    return mode
+
+
+def normal_grid_marks(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+# (end of Contract 8 D2)
+
+
+# Contract 9's parsers. Each raises ValueError, so a typo stops the app at
+# start-up; the benchmark checks its flags with them.
+def chain(text: str | None) -> list[str]:
+    """A model chain setting as its model names, in order, once each."""
+    return list(dict.fromkeys(_entries(text)))
+
+
+def normal_chain(value, name: str = "the chain") -> str:
+    """A model chain written the one way, "a,b". Blank is refused: every
+    call on it would fail."""
+    models = chain(str(value or ""))
+    if not models:
+        raise ValueError(f"{name}: at least one model name")
+    return ",".join(models)
+
+
+def _one_of(value, choices: tuple, name: str) -> str:
+    """A choice setting written the one way; None or blank is the first."""
+    choice = str(value or "").strip().lower() or choices[0]
+    if choice not in choices:
+        raise ValueError(f"{name} {value!r}: use one of {', '.join(choices)}")
+    return choice
+
+
+ZONE_ONLY = ("suggest", "list")
+ZONE_EVIDENCE = ("off", "reason", "reason_box")
+CHECK_MODES = ("off", "decision", "lite", "decision_then_lite")
+
+
+def normal_zone_only(value) -> str:
+    """intake_zone_only written the one way; None or blank is "suggest"."""
+    return _one_of(value, ZONE_ONLY, "intake_zone_only")
+
+
+def normal_zone_evidence(value) -> str:
+    """intake_zone_evidence written the one way; None or blank is "off"."""
+    return _one_of(value, ZONE_EVIDENCE, "intake_zone_evidence")
+
+
+def normal_check_mode(value) -> str:
+    """intake_check_mode written the one way; None or blank is "off"."""
+    return _one_of(value, CHECK_MODES, "intake_check_mode")
+
+
+def normal_check_resolution(value) -> str:
+    """intake_check_resolution: one of IMAGE_RESOLUTIONS; blank is medium."""
+    resolution = str(value or "").strip().lower() or "medium"
+    if resolution not in IMAGE_RESOLUTIONS:
+        raise ValueError(f"intake_check_resolution {value!r}: use one of {', '.join(IMAGE_RESOLUTIONS)}")
+    return resolution
+# (end of Contract 9)
 
 
 # Each model setting written the one way, None when blank (unset). Raise
@@ -255,7 +537,8 @@ def normal_image_resolutions(value) -> str | None:
 def normal_read_tools(value) -> str | None:
     if value is None:
         return None
-    return ",".join(read_tools(str(value))) or None
+    table = read_tools_by_model(str(value))
+    return ",".join(name if model == ANY else f"{model}={name}" for model, names in table.items() for name in names) or None
 
 
 settings = Settings()

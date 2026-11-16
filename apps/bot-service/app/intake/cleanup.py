@@ -13,6 +13,8 @@
 - Public reports' leftovers: submission rows whose report is gone, spam
   blocks that have run out, and intake/ folders with no draft behind them
   (a finalize or save stopped half-way) once ORPHAN_FOLDER_AGE old.
+- STORAGE_DIR/ai_derived/ files (the zone calls' grid copies, the reading's
+  close-ups) unchanged for DRAFT_MAX_IDLE (contract 9).
 
 Runs in the api process (started from main.py's lifespan), every
 SWEEP_EVERY. The telegram-bot process doesn't run it.
@@ -128,6 +130,28 @@ def _sweep_intake_folders(now: datetime) -> int:
         db.close()
 
 
+def _sweep_ai_derived(now: datetime) -> int:
+    """Files under STORAGE_DIR/ai_derived/ -- the zone calls' grid copies
+    (ai/grid.py), the reading's close-ups (intake/crops.py) -- last changed
+    over DRAFT_MAX_IDLE ago. Named by their photo's content, they outlive
+    the draft and nothing else removes them; one a reading needs again is
+    made again from its photo. Returns how many were removed."""
+    root = Path(settings.storage_dir) / "ai_derived"
+    if not root.is_dir():
+        return 0
+    cutoff = (now - DRAFT_MAX_IDLE).timestamp()
+    removed = 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def sweep(now: datetime | None = None) -> dict:
     """One pass. Returns what it removed, for logging and tests."""
     now = now or datetime.now(timezone.utc)
@@ -173,6 +197,7 @@ def sweep(now: datetime | None = None) -> dict:
             removed_drafts.append(report_id)
     finally:
         db.close()
+    removed_derived = _sweep_ai_derived(now)
 
     # Public reports nobody took within 30 days, and their leftovers.
     db = SessionLocal()
@@ -207,11 +232,12 @@ def sweep(now: datetime | None = None) -> dict:
     finally:
         db.close()
 
-    if removed_drafts or removed_tmp or removed_sessions or removed_links or removed_codes:
+    if removed_drafts or removed_tmp or removed_sessions or removed_links or removed_codes or removed_derived:
         logger.info(
-            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d expired session(s), "
-            "%d old account link(s) and %d old Telegram code(s)",
-            len(removed_drafts), removed_drafts, removed_tmp, removed_sessions, removed_links, removed_codes,
+            "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d AI-derived file(s), "
+            "%d expired session(s), %d old account link(s) and %d old Telegram code(s)",
+            len(removed_drafts), removed_drafts, removed_tmp, removed_derived, removed_sessions, removed_links,
+            removed_codes,
         )
     if expired_public or orphan_public or expired_blocks or orphan_folders:
         # Ids and counts only: never who sent them.
@@ -232,6 +258,8 @@ def sweep(now: datetime | None = None) -> dict:
         "public_orphans": orphan_public,
         "public_blocks": expired_blocks,
         "intake_folders": orphan_folders,
+        # Contract 9: grid copies and close-ups past DRAFT_MAX_IDLE.
+        "ai_derived": removed_derived,
     }
 
 

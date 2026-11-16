@@ -36,7 +36,8 @@ draft_answers: list[dict] = []
 
 
 class FakeInteractions:
-    def create(self, *, model, system_instruction, input, response_format, timeout):
+    # **_settings: thinking level, store=False (structured.call_structured).
+    def create(self, *, model, system_instruction, input, response_format, timeout, **_settings):
         gate.wait(10)
         if "photos" in response_format["schema"].get("properties", {}):
             import re

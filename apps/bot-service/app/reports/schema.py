@@ -69,6 +69,85 @@ class Witness(BaseModel):
     observation_time: Optional[str] = None
 
 
+# ------------------------------------------------ contract 9: evidence
+# A reason, a photo box and a 3D link for every finding (plans/2026-11-15-
+# evidence/contract9.md section 4.1). Written by code, never by the model:
+# none of these is in a schema Gemini sees, and the drafting schema shared
+# with the Telegram bot stays byte for byte as it was (the fields that
+# carry them below are SkipJsonSchema). Lenient on purpose -- defaults
+# everywhere, no validator that raises -- so a whole-draft save or a case
+# from before never fails on them; the data is cleaned where it is made
+# (app/ai/evidence.py).
+
+
+class Evidence(BaseModel):
+    """One photo's proof for one finding."""
+    # "@<photo id>" in a draft, "P07" once filed (api/intake relabels it).
+    photo: str
+    # [ymin, xmin, ymax, xmax], ints 0..1000, on the upright AI-input frame
+    # (the 1600 px preview). None: no box on this photo.
+    box: Optional[list[int]] = None
+    # "ai" | "sort" | None -- None exactly when box is None.
+    box_kind: Optional[str] = None
+    # Which read said so: "overall" | "zone:front|rear|left|right|close" |
+    # "sort" | "check" | "second_look".
+    by: str = "overall"
+    # That source's words, cleaned (evidence.clean_reason), at most 160
+    # characters.
+    reason: Optional[str] = None
+    # "High" | "Medium" | "Low", from that source.
+    confidence: Optional[str] = None
+    # The size of the image the box was drawn on: the UI hides a box drawn
+    # on another frame (no preview, a rotated photo).
+    img_w: Optional[int] = None
+    img_h: Optional[int] = None
+
+
+class SuggestionCheck(BaseModel):
+    """The re-check's answer on one suggestion (app/ai/check.py)."""
+    # "yes" | "no" | "unsure"
+    verdict: str
+    # The Decisions API's yes-probability, 0..1; None from the lite re-check.
+    p: Optional[float] = None
+    # "decision" | "lite"
+    by: str
+    model: Optional[str] = None
+    # The lite re-check's words only, cleaned, at most 160 characters.
+    reason: Optional[str] = None
+
+
+class SuggestionDecision(BaseModel):
+    """A person's add / dismiss / undo on one suggestion. Stamped by the
+    server's decide endpoint, never taken from a browser's draft."""
+    # The suggestion's key (prefill.item_key).
+    key: str
+    # Its canonical part: history and AI accuracy keep names only.
+    part: str
+    # "added" | "dismissed" | "undone"
+    action: str
+    by_id: Optional[str] = None
+    by_name: Optional[str] = None
+    # ISO 8601 UTC, the server's clock.
+    at: str
+    # The person opened the evidence viewer on it before deciding.
+    looked: bool = False
+    # "intake" | "case"
+    where: str = "intake"
+
+
+class CheckRun(BaseModel):
+    """What the re-check step did on this read."""
+    # "ok" | "skipped" | "failed"
+    status: str = "skipped"
+    # "decision" | "lite"
+    by: Optional[str] = None
+    model: Optional[str] = None
+    # Plain words, shown on the suggestions panel.
+    note: Optional[str] = None
+    seconds: Optional[float] = None
+    calls: int = 0
+
+
 class DamageSummaryItem(BaseModel):
     # Deliberately no example list here. The allowed values are supplied to
     # the model as a schema enum from taxonomy.CANONICAL_PARTS; examples in
@@ -127,12 +206,53 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="The model's own 'High', 'Medium', or 'Low' assessment of how clearly it can identify this specific damage from the photo. A qualitative self-assessment, not a fabricated-looking precise percentage.",
     )
+
+    @field_validator("bbox_2d", mode="before")
+    @classmethod
+    def _whole_box(cls, value):
+        # A model now and then writes 100.2: list[int] would refuse it and
+        # with it the whole draft (the chain then asks the next model). Round
+        # fractions; anything else stays for evidence.clean_box to judge.
+        # A validator, not a float type, so the schema Gemini sees is unchanged.
+        if isinstance(value, list):
+            return [round(v) if isinstance(v, float) else v for v in value]
+        return value
+
     human_verified: bool = False
     repair_required: bool = False
     oem_part_number: Optional[str] = Field(
         default=None,
         description="OEM replacement part number, e.g. '71501-T7A-A00' -- never invent this. Only set it if the reporter or surveyor actually supplied it; a human enters this during review, it is never looked up or guessed.",
     )
+    # Contract 8 D2 (the shared data contract): which reads saw this part,
+    # set by intake/zones.py when settings.intake_read_mode is "zones" and
+    # empty otherwise -- and on every case from before. Written by code,
+    # never by the model, so left out of the schema Gemini sees: the
+    # drafting schema, shared with the Telegram bot, must not change
+    # (extraction._NOT_MODEL_OUTPUT). seen_in: the photos the part was seen
+    # in across the reads, written as photo_reference is at the time
+    # ("@<photo id>" in a draft, "P07" once filed: api/intake relabels both).
+    # found_by: "overall" and/or "zone:front", "zone:rear", "zone:left",
+    # "zone:right", "zone:close". grid_cells: the cells (A1..C3) of
+    # photo_reference the damage covers, when a zone read had grid marks
+    # (settings.intake_grid_marks).
+    seen_in: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    found_by: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    grid_cells: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    # Contract 9 (section 4.1), code-set like the three above and left out
+    # of the drafting schema the same way. reason: the AI's own words for
+    # why this part is damaged, from the first evidence entry that has one
+    # (a zone read's tail field, the re-check), at most 160 characters.
+    # evidence: at most 4, one per photo, best first; [0] is
+    # photo_reference's. While bbox_2d is empty and evidence[0] is on
+    # photo_reference with a box, code fills bbox_2d from it, so today's
+    # UI keeps drawing it; a person changing the photo clears bbox_2d and
+    # leaves evidence alone (the AI's record). check: copied from the
+    # suggestion when a person adds it; added_from: "suggestion" then.
+    reason: SkipJsonSchema[Optional[str]] = None
+    evidence: SkipJsonSchema[list[Evidence]] = Field(default_factory=list)
+    check: SkipJsonSchema[Optional[SuggestionCheck]] = None
+    added_from: SkipJsonSchema[Optional[str]] = None
 
     @field_validator("other_part_name", mode="before")
     @classmethod
@@ -422,7 +542,12 @@ class AIAnalysisInfo(BaseModel):
 class SecondLookItem(BaseModel):
     """One part the second look (ai/second_look.py) suggests checking. Never a
     finding: it becomes a damage item only when a person ticks it on the
-    Review step."""
+    Review step. Contract 9: also the parts only a zone read found
+    (intake/zones.py, option B), source "zone"."""
+    # Its stable id, prefill.item_key: the same over re-reads, and what
+    # SecondLook.dismissed and the decisions hold. Filled by
+    # second_look._store; an old item without one goes by `part`.
+    key: str = ""
     part: str
     # The firm's wording for the part (prefill.row_name), for the list.
     name: Optional[str] = None
@@ -434,12 +559,33 @@ class SecondLookItem(BaseModel):
     damage_type: Optional[str] = None
     confidence: Optional[str] = None
     # "kit": past cases of the same make had it with a part found here;
-    # "nearby": next to a part found here.
+    # "nearby": next to a part found here; "zone": only a zone read found it
+    # (contract 9).
     source: Optional[str] = None
     # The damage-list names that mean this part is already listed (its own
     # name, and the "(side undetermined)" name of its family or the sided
     # ones): the Review step hides the suggestion once one of them is listed.
     covers: list[str] = Field(default_factory=list)
+    # Contract 9 (section 4.1), all code-set. reason / evidence as on a
+    # damage item (at most 160 characters; at most 4 entries); found_by:
+    # the reads that found it; seen_in: at most 12 photo refs; check: the
+    # re-check's answer; other_side_listed: the list's part of the same
+    # family on the other side ("Right Tail Lamp"); other_part_name,
+    # severity, remarks: as the zone read gave them, for the item a person
+    # adds and its Annex A line.
+    reason: Optional[str] = None
+    evidence: list[Evidence] = Field(default_factory=list)
+    found_by: list[str] = Field(default_factory=list)
+    seen_in: list[str] = Field(default_factory=list)
+    check: Optional[SuggestionCheck] = None
+    other_side_listed: Optional[str] = None
+    other_part_name: Optional[str] = None
+    severity: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+# SecondLook.decisions kept per case.
+MAX_DECISIONS = 200
 
 
 class SecondLook(BaseModel):
@@ -455,9 +601,25 @@ class SecondLook(BaseModel):
     photos_sent: int = 0
     candidates: int = 0
     items: list[SecondLookItem] = Field(default_factory=list)
-    # Parts a person dismissed: never suggested again on this draft, also
-    # after a re-read.
+    # The keys of suggestions a person marked Not damaged: never suggested
+    # again on this case, also after a re-read and after filing. An old
+    # draft's holds part names, which are the keys of canonical parts.
     dismissed: list[str] = Field(default_factory=list)
+    # Contract 9 (section 4.1). Status, model and note above still describe
+    # the second-look call itself; the UI shows the items whatever it says.
+    # reads: the reads that answered ("overall", "zone:rear", ...).
+    # decisions: who added, dismissed or undid which suggestion, when --
+    # server-stamped, at most MAX_DECISIONS, the oldest dropped. check: what
+    # the re-check step did this read.
+    reads: list[str] = Field(default_factory=list)
+    decisions: list[SuggestionDecision] = Field(default_factory=list)
+    check: Optional[CheckRun] = None
+
+    @field_validator("decisions")
+    @classmethod
+    def _latest_decisions(cls, value):
+        # Never refuses: a long-lived case keeps its newest decisions.
+        return value[-MAX_DECISIONS:]
 
 
 class SecurityIncidentDraft(BaseModel):

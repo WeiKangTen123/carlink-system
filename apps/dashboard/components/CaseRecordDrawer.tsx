@@ -118,6 +118,10 @@ const HISTORY_LABELS: Record<string, string> = {
   damage_item_edited: "Damaged part edited",
   damage_item_added: "Damaged part added",
   damage_item_removed: "Damaged part removed",
+  // The AI's suggestions (contract 9): detail is the part's name.
+  suggestion_added: "AI suggestion added",
+  suggestion_dismissed: "AI suggestion marked not damaged",
+  suggestion_undone: "AI suggestion decision undone",
   // The parts-catalogue look-up (app/api/catalogue.py). Detail: "3 part(s)"
   // asked about / "was running".
   catalogue_lookup_requested: "Catalogue look-up requested",

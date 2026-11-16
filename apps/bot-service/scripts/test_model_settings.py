@@ -41,6 +41,9 @@ os.environ["GEMINI_API_KEY"] = COMPANY_KEY
 os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "0"
 os.environ["GEMINI_MAX_REQUESTS_PER_MINUTE"] = "100000"
 os.environ["SECOND_LOOK_ENABLED"] = "true"
+# Today's requests exactly: contract 9's store=False (on by default) is
+# tested both ways in test_c9_base.py.
+os.environ["GEMINI_STORE_OFF"] = "false"
 for name in ("GEMINI_THINKING_LEVEL_READ", "GEMINI_THINKING_LEVEL_SORT", "GEMINI_THINKING_LEVEL_SECOND_LOOK",
              "GEMINI_IMAGE_RESOLUTION", "GEMINI_READ_TOOLS"):
     os.environ.pop(name, None)

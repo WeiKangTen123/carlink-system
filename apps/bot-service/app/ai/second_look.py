@@ -41,9 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from sqlalchemy import func
-
-from app.ai import allowance, runs
+from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured, image_part
 from app.config import settings
@@ -53,6 +51,7 @@ from app.reports.taxonomy import (
     UNDETERMINED_SUFFIX,
     damage_type_from_tokens,
     firm_condition,
+    split_side,
     unsided_part,
 )
 
@@ -73,9 +72,13 @@ MAX_PHOTOS = 16
 # with 400 (2ae2183); the sorter's 87-name enum works, this stays well under.
 MAX_CANDIDATES = 40
 # What the Review step lists: past this, more ticks to read than parts found.
-MAX_SUGGESTIONS = 10
+# Contract 9 (conflict #22): 16, the zone reads giving about 13 a case; the
+# re-check sorts the doubtful ones last.
+MAX_SUGGESTIONS = 16
 # Past wordings shown per kit candidate ("Tail gate hinge LH").
 MAX_HINTS = 3
+# The photos a suggestion says it was seen in (SecondLookItem.seen_in).
+MAX_SEEN_IN = 12
 CONFIDENCES = ["High", "Medium", "Low"]
 
 NOTE_OFF = "The second look is switched off."
@@ -187,6 +190,19 @@ def is_listed(part: str, listed: set[str]) -> bool:
     return bool(set(covers_of(part)) & listed)
 
 
+def other_side_listed(part: str, listed: set[str]) -> str | None:
+    """The listed part of the same family on the other side ("Right Tail
+    Lamp" for a suggested "Left Tail Lamp"), or None. A suggestion whose
+    twin is listed may be the same damage read on the wrong side: the
+    Review step says so beside it. A side-undetermined part has no other
+    side (its sided names list it: covers_of)."""
+    base, side = split_side(part)
+    if side not in ("Left", "Right"):
+        return None
+    other = f"{'Right' if side == 'Left' else 'Left'} {base}"
+    return other if other in CANONICAL_PARTS and other in listed else None
+
+
 # ------------------------------------------------------------ candidates
 
 
@@ -217,13 +233,15 @@ def _sided_names(family: str) -> list[str]:
 def _same_make_history(db, make: str | None) -> bool:
     """Whether the firm has done a case of this make before. history.suggest
     falls back to every imported case; a Toyota's kit is no guide to a
-    Honda's, so the kit candidates are same-make only."""
-    from app.reports.models import PastAnnexLine
+    Honda's, so the kit candidates are same-make only. Over the lines
+    suggest itself uses (history.past_lines): a learned case counts only
+    while it is signed off and learning is on."""
+    from app.parts.history import past_lines
 
     if not (make or "").strip():
         return False
     wanted = make.strip().lower()
-    return db.query(PastAnnexLine.id).filter(func.lower(func.trim(PastAnnexLine.make)) == wanted).first() is not None
+    return any((ln.make or "").strip().lower() == wanted for ln in past_lines(db))
 
 
 def candidates(db, *, make: str | None, model: str | None, listed: set[str], dismissed: set[str],
@@ -657,16 +675,92 @@ def _ask(report_id: str, actor: AiActor) -> dict | None:
 _RANK = {c: i for i, c in enumerate(CONFIDENCES)}
 
 
+def _listed_as(item: dict, listed: set[str], listed_keys: set) -> bool:
+    """Whether a suggestion is on the damage list already (or on `listed`):
+    a named "Other / Not Listed" by its name -- two unlisted parts are two
+    -- anything else by covers_of."""
+    if item["part"] == _NOT_A_PART:
+        return item.get("key") in listed_keys
+    return is_listed(item["part"], listed)
+
+
+def _own_evidence(item: dict) -> dict:
+    """A second-look find as the zone reads' are: its photo is its evidence
+    (by "second_look", no box: it isn't asked for one) and seen_in; its
+    note -- the model's few words on where and what -- its reason."""
+    ref = item.get("photo_reference")
+    if not item.get("reason"):
+        item["reason"] = evidence.clean_reason(item.get("note"))
+    if ref and not item.get("evidence"):
+        item["evidence"] = [evidence.entry(ref, "second_look", reason=item["reason"], confidence=item.get("confidence"))]
+    if ref and not item.get("seen_in"):
+        item["seen_in"] = [ref]
+    return item
+
+
+def _join_twin(kept: dict, other: dict) -> None:
+    """In place: `other` is the same part as `kept`, the surer of the two
+    (_store sorts surest first). kept keeps its details; the reads that
+    found other, its photos and its evidence join (one entry per photo,
+    kept's photo first); its reason fills in only where kept has none."""
+    kept["found_by"] = list(dict.fromkeys(list(kept.get("found_by") or []) + list(other.get("found_by") or [])))
+    kept["seen_in"] = list(dict.fromkeys(list(kept.get("seen_in") or []) + list(other.get("seen_in") or [])))[
+        :MAX_SEEN_IN]
+    evidence.join(kept, other.get("evidence") or [])
+    if not kept.get("reason") and other.get("reason"):
+        kept["reason"] = other["reason"]
+
+
+def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:
+    """(the suggestions still open, those a person settled): settled is
+    dismissed -- its key, or on an old draft its part, in
+    second_look.dismissed -- or on the damage list already (_listed_as).
+    The Review step lists the open ones; the settled ones stay in items
+    for "Show decided" and undo (_store), and the re-check never asks
+    about them (ai/check.py)."""
+    from app.parts.prefill import item_key
+
+    look = data.get("second_look") if isinstance(data.get("second_look"), dict) else {}
+    dismissed = set(look.get("dismissed") or [])
+    listed = listed_parts(data)
+    listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+    open_items, settled = [], []
+    for it in items:
+        key = str(it.get("key") or it.get("part") or "")
+        gone = key in dismissed or it.get("part") in dismissed or _listed_as(it, listed, listed_keys)
+        (settled if gone else open_items).append(it)
+    return open_items, settled
+
+
 def _store(report_id: str, result: dict) -> None:
-    """Writes the answer onto the draft as data["second_look"], against the
-    form as it is now: suggestions for parts listed (or dismissed) by then
-    are dropped, the rest named in the firm's words, surest first, at most
-    MAX_SUGGESTIONS. The dismissed list is kept (pipeline.merge_redraft
-    carries it over a re-read)."""
-    from app.parts.prefill import row_name
+    """Writes the suggestions onto the draft as data["second_look"], against
+    the form as it is now.
+
+    Contract 9 (conflict #13): rebuilt on every read from the parts only
+    the zone reads found (IntakeSession.ai_draft["zone_suggestions"],
+    pipeline's option B split) and this second look's own items -- so the
+    zone suggestions show whether the second look ran, failed or is
+    switched off. Each gets its key (prefill.item_key). Those listed or
+    dismissed by then are left out of the open ones, the rest named in the
+    firm's words, surest first, one per part (a sided name and its "(side
+    undetermined)" twin are one: the surer kept, the other's reads, photos
+    and evidence joined to it), at most MAX_SUGGESTIONS; other_side_listed
+    against the form. What a person decided -- dismissed, decisions -- is
+    kept (pipeline.merge_redraft carries second_look over a re-read), and
+    so are the suggestions they decided on, after the open ones (outside
+    MAX_SUGGESTIONS): a dismissed one, and one on the list by an add still
+    standing -- as the previous read stored it (what the person decided
+    on), else as this read found it; one per key, never joined to a twin.
+    The panel hides them from its list; "Show decided" and undo use them
+    -- on the case page too, where no read comes again. A part a person
+    listed by hand stays out. reads are this reading's
+    (ai_draft["zone_reads"]); the re-check's answer, about the open items
+    this replaces, goes."""
+    from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
     from app.reports.schema import SecondLook
+    from app.reports.suggestions import standing
 
     db = SessionLocal()
     try:
@@ -675,29 +769,56 @@ def _store(report_id: str, result: dict) -> None:
         if report is None or session is None or report.status != "intake":
             return
         data = dict(report.data or {})
-        dismissed = list(((data.get("second_look") or {}).get("dismissed")) or [])
+        previous = data.get("second_look") or {}
+        dismissed = list(previous.get("dismissed") or [])
+        decisions = list(previous.get("decisions") or [])
+        ai_draft = session.ai_draft or {}
+        zone_items = [dict(it) for it in ai_draft.get("zone_suggestions") or [] if isinstance(it, dict) and it.get("part")]
+        reads = [r for r in ai_draft.get("zone_reads") or [] if isinstance(r, str)]
         listed = listed_parts(data)
+        listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         vehicle = data.get("vehicle_info") or {}
-        items = [
-            it for it in result.get("items") or []
-            if it["part"] not in dismissed and not is_listed(it["part"], listed)
-        ]
+        added = {key for key, still in standing(decisions).items() if any(d.get("action") == "added" for d in still)}
+        items: list[dict] = []
+        decided: dict[str, dict] = {}
+        previous_items = [dict(it) for it in previous.get("items") or [] if isinstance(it, dict) and it.get("part")]
+        found = zone_items + [_own_evidence(dict(it)) for it in result.get("items") or []]
+        # The previous read's first: an open one of those is left for this
+        # read to suggest again (or not); a decided one is kept as the
+        # person saw it.
+        for n, it in enumerate(previous_items + found):
+            it["key"] = it.get("key") or item_key(it) or it["part"]
+            # An old dismissed list holds part names: the keys of canonical parts.
+            gone = it["key"] in dismissed or it["part"] in dismissed
+            if gone or _listed_as(it, listed, listed_keys):
+                if gone or it["key"] in added:
+                    decided.setdefault(it["key"], it)
+                continue
+            if n >= len(previous_items):
+                items.append(it)
         items.sort(key=lambda it: (_RANK.get(it.get("confidence"), len(CONFIDENCES)), it.get("source") != "kit"))
         kept: list[dict] = []
         for it in items:
             # "Left Tail Lamp" and "Tail Lamp (side undetermined)" both: one
-            # lamp seen twice, the surer kept -- ticking both would list it twice.
-            if is_listed(it["part"], {k["part"] for k in kept}):
+            # lamp seen twice, the surer kept -- ticking both would list it
+            # twice. A zone read and the second look naming the same part:
+            # the surer too. What the other saw joins it.
+            twin = next((k for k in kept if _listed_as(it, {k["part"]}, {k["key"]})), None)
+            if twin is not None:
+                _join_twin(twin, it)
                 continue
+            kept.append(it)
+        settled = list(decided.values())
+        for it in kept + settled:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
-            kept.append(it)
-        items = kept
+            it["other_side_listed"] = other_side_listed(it["part"], listed)
+        items = [evidence.settle(it) for it in kept[:MAX_SUGGESTIONS] + settled]
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),
             photos_sent=result.get("photos_sent") or 0, candidates=result.get("candidates") or 0,
-            items=items[:MAX_SUGGESTIONS], dismissed=dismissed,
+            items=items, dismissed=dismissed, reads=reads, decisions=decisions,
         )
         report.data = {**data, "second_look": stored.model_dump()}
         db.commit()

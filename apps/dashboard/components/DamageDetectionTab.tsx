@@ -1,13 +1,29 @@
 "use client";
 
-import React, { Component, useMemo, useState, useEffect, type ErrorInfo, type ReactNode } from "react";
-import dynamic from "next/dynamic";
-import { Box, AlertTriangle, RotateCcw, Wrench } from "lucide-react";
-import { damagePartLabel, type AnnexAPartItem, type DamageItemsResponse, type ReportDetail, type DamageSummaryItem } from "@/lib/api";
-import type { ZoneResolution } from "@/lib/vehicleZones";
-import { severityClass } from "@/lib/caseFields";
-import { CaseEvidenceTab } from "./CaseEvidenceTab";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  fileUrl,
+  type AnnexAPartItem,
+  type DamageItemsResponse,
+  type DamageSummaryItem,
+  type DecideAction,
+  type DecideResult,
+  type ReportData,
+  type ReportDetail,
+} from "@/lib/api";
+import { addDamageItemAction } from "@/app/reports/actions";
+import { buildFindings, type Finding, type PhotoInfo, type PhotoLookup } from "@/lib/findings";
+import { indexLabel, labelIndex } from "@/lib/damageLinks";
+import { useDamageSelection } from "@/lib/useDamageSelection";
+import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
+import { detectBodyType, partForZone, resolveZones } from "@/lib/vehicleZones";
+import { DamageMapPanel, revealDamageMap } from "./DamageMapPanel";
 import { DetectedPartsTable } from "./DetectedPartsTable";
+import { EvidenceViewer } from "./EvidenceViewer";
+import { SuggestionPanel } from "./SuggestionPanel";
+
+// Moved to DamageMapPanel with the 3D map it guards; kept importable from here.
+export { BlueprintErrorBoundary } from "./DamageMapPanel";
 
 /** "27 Feb, 10:16" in Singapore time, for the one-line status strip (the
  * Case record drawer has the full date). h23 for the same reason as
@@ -26,171 +42,148 @@ function formatSgtShort(iso: string): string {
   });
 }
 
-interface BlueprintErrorBoundaryProps {
-  children: ReactNode;
-}
-
-interface BlueprintErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
-}
-
-export class BlueprintErrorBoundary extends Component<BlueprintErrorBoundaryProps, BlueprintErrorBoundaryState> {
-  constructor(props: BlueprintErrorBoundaryProps) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error: Error): BlueprintErrorBoundaryState {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("BlueprintErrorBoundary caught a WebGL/Three.js render exception:", error, errorInfo);
-  }
-
-  handleRetry = () => {
-    this.setState({ hasError: false, error: null });
-  };
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div
-          className="blueprint-stage-3d"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "24px",
-            textAlign: "center",
-            gap: 12,
-            background: "var(--surface-elevated)",
-            border: "1px dashed rgba(239, 68, 68, 0.4)",
-          }}
-        >
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: "50%",
-              background: "rgba(239, 68, 68, 0.12)",
-              border: "1px solid rgba(239, 68, 68, 0.3)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#ef4444",
-            }}
-          >
-            <AlertTriangle style={{ width: 20, height: 20 }} />
-          </div>
-
-          <div style={{ maxWidth: 380 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>3D blueprint unavailable</div>
-            <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, margin: 0 }}>
-              The 3D model can&apos;t be drawn on this device. The detected parts are in the table below.
-            </p>
-          </div>
-
-          <button type="button" onClick={this.handleRetry} className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 14px", marginTop: 4 }}>
-            <RotateCcw style={{ width: 12, height: 12 }} /> Try again
-          </button>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-
-// Three.js/WebGL only exists client-side -- SSR-rendering the Canvas would
-// either crash on the server or produce a hydration mismatch, so this is
-// loaded only after mount.
-const VehicleBlueprint3D = dynamic(() => import("@/components/VehicleBlueprint3D").then((m) => m.VehicleBlueprint3D), {
-  ssr: false,
-  loading: () => <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint…</div>,
-});
-
 interface Props {
   report: ReportDetail;
+  /** The case as the page's store holds it now (fresh after every change). */
+  data: ReportData;
   isSignedOff: boolean;
   canEdit: boolean;
   /** The detected parts as the store holds them (fresh after every change). */
   damageEntries: DamageSummaryItem[];
-  /** The same parts, with an identity that only changes when a part, its
-   * severity or its photo changes: the 3D blueprint resets its camera and
-   * rebuilds its materials on a new array, which must not happen on every
-   * verified tick or Annex A save. */
-  blueprintEntries: DamageSummaryItem[];
-  zoneResolutions: (ZoneResolution | null)[];
   vehicleName: string;
   photos: string[];
   photoThumbs?: string[];
   photoPreviews?: string[];
-  activePhotoIndex: number;
-  highlightedDamageIndex: number | null;
-  selectedZone: string | null;
-  onSelectPhoto: (idx: number) => void;
-  onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
-  onSelectZone: (zoneId: string | null) => void;
   /** Annex A as saved, for the "n lines, m priced" cell per part. */
   annexAItems: AnnexAPartItem[];
   onDamageItemsApplied: (res: DamageItemsResponse) => void;
-  onPartRemoved?: (idx: number) => void;
   onGoToAnnexA: () => void;
-  /** This tab is the one on screen (it stays mounted behind the others). */
-  isActive: boolean;
 }
 
-/** Tab 1, Damage detection: the three views of a case's damage -- 3D
- * blueprint, photos, and the detected parts table -- are all views of the
- * SAME damage_summary, and reviewing a case means constantly
- * cross-referencing between them ("where is it -> what does it look like
- * -> is it on the list"), so they live on one screen and cross-highlight.
+/** The viewer's state: which findings it pages through, from where. */
+type ViewerState = { mode: "suggestions" | "listed" | "photo"; startKey: string | null; startPhoto: string | null };
+
+/** A key from a suggestion card is the suggestion's own key or its finding
+ * key; the viewer and the map take the finding key. */
+const asFindingKey = (key: string) => (key.startsWith("sug:") || key.startsWith("item:") ? key : `sug:${key}`);
+
+/** Tab 1, Damage detection: the 3D damage map (with its photo, chips and
+ * strip), the suggestions still to decide and the detected parts table --
+ * all views of the SAME findings, sharing one selection (useDamageSelection)
+ * so a part picked anywhere lights up everywhere, and one evidence viewer.
  * Owns damage_summary and the photo links; never shows a price. From
- * CaseInspectionTab.tsx, 2026-11-04. */
+ * CaseInspectionTab.tsx, 2026-11-04; the map replaced the blueprint |
+ * photos split in contract 9. */
 export function DamageDetectionTab({
   report,
+  data,
   isSignedOff,
   canEdit,
   damageEntries,
-  blueprintEntries,
-  zoneResolutions,
   vehicleName,
   photos,
   photoThumbs,
   photoPreviews,
-  activePhotoIndex,
-  highlightedDamageIndex,
-  selectedZone,
-  onSelectPhoto,
-  onHotspotClick,
-  onSelectZone,
   annexAItems,
   onDamageItemsApplied,
-  onPartRemoved,
   onGoToAnnexA,
-  isActive,
 }: Props) {
-  const d = report.data;
-
-  const nonExteriorItems = useMemo(() => {
-    const rx = /airbag|seat|dashboard|interior|radiator|condenser|exhaust|fuel\s*tank|suspension|steering|subframe|battery|engine|transmission|brake|catalytic/i;
-    return damageEntries.map((item, idx) => ({ item, idx })).filter(({ item, idx }) => zoneResolutions[idx] === null || rx.test(item.part));
-  }, [damageEntries, zoneResolutions]);
-
-  // Defer Three.js / WebGL canvas mount until after initial DOM paint and hydration.
-  // This guarantees opening the case transitions instantaneously while the
-  // heavy WebGL shader compilation and 3D asset parsing occur asynchronously.
-  const [shouldMount3D, setShouldMount3D] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setShouldMount3D(true);
-    }, 60);
-    return () => clearTimeout(timer);
+  const readOnly = isSignedOff || !canEdit;
+  const { selection, setSelection, hover, setHover, itemsRemoved } = useDamageSelection();
+  const [viewer, setViewer] = useState<ViewerState | null>(null);
+  // Suggestions the person has opened in the viewer: deciding one later,
+  // from a card or the map, still counts as "looked" (as on the wizard).
+  const lookedKeys = useRef(new Set<string>());
+  const openViewer = useCallback((v: ViewerState) => {
+    if (v.mode === "suggestions" && v.startKey) lookedKeys.current.add(suggestionKey(v.startKey));
+    setViewer(v);
   }, []);
+
+  // The suggestions are the server's (decisions are stamped there); a
+  // decision's answer replaces them here, and a refreshed case resets them.
+  const [secondLook, setSecondLook] = useState(report.data.second_look ?? null);
+  useEffect(() => setSecondLook(report.data.second_look ?? null), [report]);
+
+  // Same badge numbers as the 3D map's markers and the table's rows.
+  const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
+
+  // Every finding, dismissed suggestions too: the map's "Show dismissed"
+  // and the suggestion panel's decided list need them.
+  const findings = useMemo(
+    () => buildFindings({ ...data, damage_summary: damageEntries, second_look: secondLook }, { showDismissed: true }),
+    [data, damageEntries, secondLook],
+  );
+  const suggestions = useMemo(() => findings.filter((f) => f.kind === "suggestion"), [findings]);
+
+  // The case's photos by P-number: the 1600px preview to look at, the
+  // thumbnail for strips, the sorter's area from filing's photo index.
+  const photoIndex = data.photo_index;
+  const photoInfos = useMemo<PhotoInfo[]>(
+    () =>
+      photos.map((url, i) => ({
+        ref: indexLabel(i),
+        label: indexLabel(i),
+        src: fileUrl(photoPreviews?.[i] || url),
+        thumb: fileUrl(photoThumbs?.[i] || photoPreviews?.[i] || url),
+        area: photoIndex?.[i]?.area ?? null,
+      })),
+    [photos, photoThumbs, photoPreviews, photoIndex],
+  );
+  const lookup = useCallback<PhotoLookup>((ref) => photoInfos[labelIndex(ref)] ?? null, [photoInfos]);
+  const photoOrder = useMemo(() => photoInfos.map((p) => p.ref), [photoInfos]);
+  const photoAreas = useMemo(() => Object.fromEntries(photoInfos.map((p) => [p.ref, p.area ?? null])), [photoInfos]);
+
+  const { decide } = useSuggestionDecisions({
+    surface: "case",
+    reportId: report.id,
+    onSaved: (r: DecideResult, asked) => {
+      setSecondLook(r.second_look);
+      // /reports answers with the parts and Annex A too, as POST /damage-items does.
+      const withItems = r as DecideResult & Partial<DamageItemsResponse>;
+      if (Array.isArray(withItems.damage_summary)) onDamageItemsApplied(withItems as unknown as DamageItemsResponse);
+      // An undone add took its item off the server's list (the list now
+      // shown): a selection or hover of a row below it follows its row up.
+      if (asked?.action === "undo" && r.item && typeof r.item_index === "number") itemsRemoved([r.item_index]);
+    },
+  });
+  // The map sends a suggestion's own key, the cards and viewer "sug:<key>".
+  const decideLooked = useCallback(
+    (key: string, action: DecideAction, looked: boolean) => decide(key, action, looked || lookedKeys.current.has(suggestionKey(key))),
+    [decide],
+  );
+
+  // The table's highlighted row: the selected item, or the first listed
+  // part on a selected zone.
+  const selectedIndex = useMemo(() => {
+    if (selection?.kind === "finding") return selection.key.startsWith("item:") ? Number(selection.key.slice("item:".length)) : null;
+    if (selection?.kind === "zone") {
+      const idx = zoneResolutions.findIndex((r) => r?.keys.includes(selection.zoneKey));
+      return idx >= 0 ? idx : null;
+    }
+    return null;
+  }, [selection, zoneResolutions]);
+
+  const showOnMap = (key: string) => {
+    setViewer(null);
+    setSelection({ kind: "finding", key: asFindingKey(key) });
+    revealDamageMap();
+  };
+
+  const addFromMap = async (zoneKey: string) => {
+    const part = partForZone(zoneKey);
+    if (!part || readOnly) return;
+    if (!confirm(`Add "${part}" to the detected parts?`)) return;
+    const res = await addDamageItemAction(report.id, { part, other_part_name: null, condition: null, remarks: null, photo_reference: null });
+    if ("error" in res) alert(res.error);
+    else onDamageItemsApplied(res);
+  };
+
+  const viewerFindings: Finding[] = useMemo(() => {
+    if (!viewer) return [];
+    if (viewer.mode === "suggestions") return suggestions;
+    if (viewer.mode === "listed") return findings.filter((f) => f.kind === "item");
+    return findings.filter((f) => f.status !== "dismissed");
+  }, [viewer, suggestions, findings]);
 
   // The last AI read as the run log recorded it (round 3, B3): which photos
   // went and when. Null when the AI never read this case (filled in by
@@ -225,148 +218,78 @@ export function DamageDetectionTab({
             redetect status line. Not built in this PR. */}
       </div>
 
-      {/* Top row: the two visual views, side by side, always both visible */}
-      <div className="inspection-split">
-        <div className="card-glass">
-          <div className="card-header">
-            <div>
-              <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Box style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> Vehicle blueprint
-              </div>
-              <div className="card-subtitle">Click a marker to highlight it in the photos and the parts table below</div>
-            </div>
-            <span className={`chip-severity ${severityClass(d.severity_level)}`}>
-              {damageEntries.length} damaged {damageEntries.length === 1 ? "part" : "parts"}
-            </span>
-          </div>
+      <DamageMapPanel
+        surface="case"
+        findings={findings}
+        photos={lookup}
+        photoOrder={photoOrder}
+        photoAreas={photoAreas}
+        bodyType={detectBodyType(vehicleName, data.vehicle_info?.body_type)}
+        selection={selection}
+        onSelect={setSelection}
+        hover={hover}
+        onHover={setHover}
+        onOpenEvidence={(key, photo) =>
+          openViewer({ mode: key.startsWith("sug:") ? "suggestions" : key ? "listed" : "photo", startKey: key || null, startPhoto: photo ?? null })
+        }
+        onDecide={readOnly ? undefined : (key: string, action: DecideAction) => decideLooked(key, action, false)}
+        onAddDamage={readOnly ? undefined : (zoneKey) => void addFromMap(zoneKey)}
+        readOnly={readOnly}
+      />
 
-          <BlueprintErrorBoundary>
-            {shouldMount3D ? (
-              <VehicleBlueprint3D
-                damageEntries={blueprintEntries}
-                onHotspotClick={onHotspotClick}
-                highlightedDamageIndex={highlightedDamageIndex}
-                vehicleName={vehicleName}
-                bodyType={report.data.vehicle_info?.body_type}
-                selectedZone={selectedZone}
-                onZoneSelect={onSelectZone}
-              />
-            ) : (
-              <div className="blueprint-stage-3d blueprint-3d-loading">Loading 3D blueprint…</div>
-            )}
-          </BlueprintErrorBoundary>
-
-          {/* Parts the model has no panel for */}
-          {nonExteriorItems.length > 0 && (
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border-color)", display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", letterSpacing: "0.02em" }}>
-                  <Wrench style={{ width: 14, height: 14, color: "var(--accent-primary)" }} />
-                  <span>Not on the model</span>
-                </div>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: "var(--text-muted)",
-                    background: "var(--surface-elevated, rgba(255,255,255,0.05))",
-                    padding: "2px 8px",
-                    borderRadius: 12,
-                    border: "1px solid var(--border-color)",
-                  }}
-                >
-                  {nonExteriorItems.length} {nonExteriorItems.length === 1 ? "part" : "parts"}
-                </span>
-              </div>
-
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {nonExteriorItems.map(({ item, idx }) => {
-                  const isHighlighted = highlightedDamageIndex === idx;
-                  const sevClass = severityClass(item.severity);
-                  const res = zoneResolutions[idx];
-                  const badgeNumber = res?.badgeNumber ?? idx + 1;
-
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        onHotspotClick(idx, item);
-                        const rowEl = document.getElementById(`damage-row-${idx}`);
-                        rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }}
-                      title={`Click to highlight ${damagePartLabel(item)} in the parts table`}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        fontSize: 12,
-                        background: isHighlighted ? "var(--accent-glow, rgba(37, 99, 235, 0.15))" : "var(--surface-elevated, rgba(255, 255, 255, 0.04))",
-                        border: isHighlighted ? "1px solid var(--accent-primary)" : "1px solid var(--border-color)",
-                        color: "var(--text-primary)",
-                        cursor: "pointer",
-                        transition: "all 0.15s ease",
-                        boxShadow: isHighlighted ? "0 0 10px rgba(37, 99, 235, 0.25)" : "none",
-                      }}
-                    >
-                      <span
-                        className={`hotspot-beacon-3d ${sevClass === "severe" ? "severe-spot" : ""}`}
-                        style={{
-                          position: "static",
-                          width: 18,
-                          height: 18,
-                          fontSize: 9,
-                          flexShrink: 0,
-                          animation: "none",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        {String(badgeNumber).padStart(2, "0")}
-                      </span>
-                      <span style={{ fontWeight: 600 }}>{damagePartLabel(item)}</span>
-                      <span className={`chip-severity ${sevClass}`} style={{ fontSize: 9, padding: "1px 6px" }}>
-                        {item.severity || "—"}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <CaseEvidenceTab
-          photos={photos}
-          photoThumbs={photoThumbs}
-          photoPreviews={photoPreviews}
-          damageEntries={damageEntries}
-          activePhotoIndex={activePhotoIndex}
-          selectedZone={selectedZone}
-          onSelectPhoto={onSelectPhoto}
-          onSelectZone={onSelectZone}
-          keyboardActive={isActive}
+      {/* The suggestions stay on the case until sign-off, then read-only. */}
+      {secondLook && (
+        <SuggestionPanel
+          surface="case"
+          findings={suggestions}
+          decisions={secondLook.decisions ?? []}
+          check={secondLook.check ?? null}
+          photos={lookup}
+          readOnly={readOnly}
+          onDecide={decideLooked}
+          onLook={(key) => openViewer({ mode: "suggestions", startKey: asFindingKey(key), startPhoto: null })}
+          onShowOnMap={showOnMap}
         />
-      </div>
+      )}
 
       {/* Full width: the table needs the room for its columns */}
       <DetectedPartsTable
         reportId={report.id}
-        readOnly={isSignedOff || !canEdit}
+        readOnly={readOnly}
         damageEntries={damageEntries}
         zoneResolutions={zoneResolutions}
-        highlightedDamageIndex={highlightedDamageIndex}
-        onHotspotClick={onHotspotClick}
+        highlightedDamageIndex={selectedIndex}
+        onHotspotClick={(idx) => setSelection({ kind: "finding", key: `item:${idx}` })}
         photos={photos}
         photoThumbs={photoThumbs}
-        onSelectPhoto={onSelectPhoto}
+        onSelectPhoto={(idx) => {
+          setSelection({ kind: "photo", ref: indexLabel(idx) });
+          revealDamageMap();
+        }}
         annexAItems={annexAItems}
         onApplied={onDamageItemsApplied}
-        onRemoved={onPartRemoved}
+        // Indices shift when a row goes, so a selected row is dropped
+        // rather than left on the wrong part.
+        onRemoved={() => {
+          if (selection?.kind === "finding" && selection.key.startsWith("item:")) setSelection(null);
+        }}
         onGoToAnnexA={onGoToAnnexA}
         review={isSignedOff ? null : report.review}
+        onShowEvidence={(idx) => setViewer({ mode: "listed", startKey: `item:${idx}`, startPhoto: null })}
+        onShowOnMap={(idx) => showOnMap(`item:${idx}`)}
+      />
+
+      <EvidenceViewer
+        open={viewer !== null}
+        mode={viewer?.mode ?? "listed"}
+        findings={viewerFindings}
+        startKey={viewer?.startKey ?? null}
+        startPhoto={viewer?.startPhoto ?? null}
+        photos={lookup}
+        onDecide={readOnly ? undefined : decideLooked}
+        onShowOnMap={showOnMap}
+        onClose={() => setViewer(null)}
+        readOnly={readOnly}
       />
     </div>
   );

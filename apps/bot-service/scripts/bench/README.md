@@ -8,6 +8,10 @@ folder holds what runs it on the server and compares two runs:
 |---|---|
 | `run_bench.sh` | on the server, as user `weika`: runs the benchmark for one git ref inside the live `carlink_api` container, on a scratch database, and copies the result out |
 | `compare.py` | before/after table of two result files, with ranges and a noise verdict |
+| `replay_check.py` | contract 9: the re-check alone (`app/ai/check.py`) on a stored result's suggestions -- runs R4 (the Decisions API) and R5 (the lite re-check) -- and, offline, the sweep of its yes / no cut-offs (`--sweep`) |
+| `probe_boxes.py` | contract 9: N random evidence boxes of a result drawn on their photos, with an `index.csv` for a person to mark on / off target (run R3) |
+| `probe_crops.py` | contract 8 D1: only the sorter, with its damage box, on a few photos of one case; writes the boxes and the close-ups cut from them, to judge the light sorter's boxes before a `--read-crops` run (its docstring has the command) |
+| `gate.py` | the owner's gate: PASS or FAIL for each candidate result file against a baseline |
 | `../test_benchmark_scoring.py` | offline tests of the scoring (synthetic data, no Gemini) |
 
 ## Rules
@@ -188,6 +192,68 @@ from before `drafted_items` existed are scored from `drafted_parts`; their Other
 name, so they stay extras. A run whose strict score comes out different was scored with an
 older key: the console says how many.
 
+It also scores the found parts' detail again (sides, zones, and Replace / Repair with
+`--reports`: see below). Conditions and Annex A are kept as stored -- except Annex A when
+`--reports` comes with a scratch database: `--scratch DIR` (or `BENCHMARK_SCRATCH=1` with
+`DATABASE_URL` pointing at one). Then prefill builds Annex A again from each run's drafted
+items, the history being the other reports as in a run, and its lines and prices are scored
+as a run scores them -- still no Gemini call. Files from before the prices existed get them
+this way:
+
+```
+python scripts/benchmark_intake.py --rescore out/l3-lite.json --key key.json --reports reports/ \
+    --scratch /tmp/rescore-l3 --out l3-lite-rescored.json
+```
+
+## The found parts in detail (contract 8)
+
+Each run carries, beside the strict and fair scores:
+
+- **`part_sides`**: every key part with a side (Left / Right in its name) that the strict
+  score placed -- right (drafted on its side), undetermined (found by a "(side undetermined)"
+  name) or wrong (the strict `wrong_side`) -- and whether the drafted side was *inferred*:
+  placed by the pipeline from the sorter's photo areas (`side_inferred`), not read.
+- **`part_remarks`** (with `--reports`): Replace or Repair on every key part found, the
+  drafted `remarks` against the surveyor's: agree, disagree, or unsure (left null). The firm
+  writes a part it repairs rather than renews with the *condition* "Repair" (the line
+  disallowed at 100%); its Remarks column says "Replace" on those lines too, or is blank on a
+  whole report. So the surveyor's verdict is the condition of the part's first damage line
+  (`surveyor_condition`): Repair, else Replace. A key part may say `"remarks"` itself (key v2
+  doesn't); that comes first.
+- **`part_zones`**: found, wrong side and missed key parts by where each sits -- front,
+  rear, left, right, other, one zone a part so the zones add up to the score: a flank part
+  (door, fender, quarter panel, sill, mirror, wheel, tyre, arch) is its side's even at a
+  corner; any other part its end's (a headlamp front, a tail lamp rear); a part at both ends
+  or neither (a parking sensor, the roof, the underbody) other. Extras by where they would sit.
+- **`annex_a` prices** (with `--reports`): the W/shop Est and adjusted totals of the Annex A
+  built from the drafted parts against the surveyor's, for the whole sheet (a missed or an
+  extra line shows in them), and of the matched lines how many have a price and how many are
+  within 10% of the surveyor's W/shop Est -- the column prefill writes; the adjusted cost is
+  the surveyor's decision on it. Lines that share a wording (LH and RH) are added up.
+
+## The gate
+
+```
+python3 scripts/bench/gate.py ~/carlink-bench/out/BASE.json ~/carlink-bench/out/CAND.json [CAND2.json ...] [--key key.json]
+```
+
+A setting is turned on only when its candidate passes, against the baseline, on the
+summary's TOTAL (each run the sum over the cases, the mean over the complete runs):
+
+- parts found, mean, above the baseline's mean;
+- wrong sides, mean, at most the higher of the baseline's and 2.5;
+- extras, mean, at most the baseline's + 2.
+
+The measure is the **strict** parts score -- the one the numbers in contract 8 were taken
+with (rescored on key v2: light 14 [13-15] / 2.5 / 2, strong 25 / 0 / 5; the fair score would
+give the strong one 25.5 / 0 / 4). gate.py prints one table -- runs (complete/all), found,
+wrong sides, extras, calls, seconds and prompt tokens per case -- then for each candidate
+PASS or FAIL with its three checks and compare.py's noise verdict on each: a PASS whose found
+is "inside noise" has not shown a real gain. A measure missing on either side (no complete
+run) fails, and so do files scored on keys of a different size: `--key` scores every run's
+strict parts again on one key first. Exit status 0 when every candidate passes. It prints no
+case names.
+
 ## On a PC
 
 The same script runs on Windows. Nothing is shared with the server: the rate-limit window is
@@ -279,7 +345,15 @@ out when the output is to be pasted anywhere.
                         words_not_in_firm_reports, details [...]},
             annex_a {real_lines, rows, priced, unpriced, covered, coverage, extra,
                      canonical_rows, canonical_names, perfect_rows, perfect_covered,
-                     perfect_coverage} ],
+                     perfect_coverage, price_total, report_price_total, price_diff,
+                     adjusted_total, report_adjusted_total, adjusted_diff, matched_priced,
+                     within_10pct, matched_abs_diff, perfect_price_diff, perfect_within_10pct},
+            part_sides {sided_found, right, wrong, undetermined, right_inferred,
+                        wrong_inferred, details [{part, drafted_as, side, inferred}]},
+            part_remarks {scored, agree, disagree, unsure, surveyor_repair, repair_agree,
+                          details [{part, drafted_as, surveyor, drafted, verdict}]},
+            part_zones {front|rear|left|right|other: {expected, found, wrong_side, missed,
+                                                      extra, missed_parts}} ],
   "summary": {
     "cases_n", "reps", "complete_reps": [1, 2, 3],
     "cases": {"<case>": {"runs", "errors", "metrics": {metric: {mean, min, max, n}}}},
@@ -312,6 +386,15 @@ out when the output is to be pasted anywhere.
 | `annex_coverage` | the held-out report's Annex A lines covered by the Annex A that prefill (`prefill_annex_a`) builds from the drafted list, with the other reports as history (leave-one-out, matched as `eval_parts_kits._matched`) |
 | `annex_extra`, `annex_unpriced`, `annex_canonical` | row wordings that match no real line; rows without a price; rows named exactly like a taxonomy part, which the firm never writes (target 0) |
 | `annex_perfect_coverage` | the same with the report's own damaged parts as the damage list: the ceiling that history allows |
+| `annex_price_diff`, `annex_price_diff_rate`, `annex_adjusted_diff` | the Annex A's W/shop Est total less the surveyor's (and as a share of it), and the same of the adjusted totals: below 0 when lines are missed or unpriced |
+| `annex_matched_priced`, `annex_within_10`, `annex_within_10_rate`, `annex_price_abs_diff` | matched lines with a price; within 10% of the surveyor's W/shop Est (and the share of the matched lines); the sum of the matched lines' differences either way |
+| `annex_perfect_within_10` | matched lines within 10% with the report's own damaged parts as the damage list |
+| `sided_found`, `side_right`, `side_undetermined_found`, `side_right_rate` | found key parts with a side; drafted on the right side; found by a "(side undetermined)" name; right of those with a side (wrong ones: `wrong_side`) |
+| `side_right_inferred`, `side_wrong_inferred` | of those, the side placed from the sorter's areas, not read |
+| `remarks_scored`, `remarks_agree`, `remarks_disagree`, `remarks_unsure`, `remarks_agree_rate` | found key parts the surveyor's Replace / Repair is known for; the drafted remarks the same, the other, or null |
+| `remarks_repair`, `remarks_repair_agree` | of them, the surveyor's Repairs, and those drafted Repair |
+| `zone_<zone>_found`, `zone_<zone>_expected`, `zone_<zone>_extra`, `zone_<zone>_recall` | per zone (front, rear, left, right, other): key parts found, in the key, extras there, found of expected |
+| `tok_in`, `total_s` | prompt tokens of every kind of call; the case's seconds (sorting + reading + second look) |
 
 Totals add the cases up within each complete repetition (a repetition in which some case
 errored is left out of the totals and listed under `errors`); ratios are worked out from the
@@ -319,9 +402,76 @@ summed counts, not averaged over cases. With `--reports`, the history (past repo
 the scratch database is set to "every report but this case's own" before each case is read as
 well as before it is scored, so a reading step that consults past cases is leave-one-out too.
 
+## Contract 9: the evidence and the re-check
+
+The flags (each in the result's `ai_settings` only while it acts; every default sends today's
+requests):
+
+| flag | setting | what it does |
+|---|---|---|
+| `--zone-evidence reason\|reason_box` | `intake_zone_evidence` | the zone reads also give each find's reason (and box); needs `--read-mode zones` |
+| `--check decision\|lite\|decision_then_lite` | `intake_check_mode` | the re-check of the suggestions after the second look (`app/ai/check.py`) |
+| `--decision-model M` | `gemini_decision_model` | the Decisions API's model; needs `--check` |
+| `--check-models CHAIN` | `gemini_check_chain` | the lite re-check's chain; needs `--check` |
+| `--thinking-level-check L` | `gemini_thinking_level_check` | the lite re-check's thinking level; needs `--check` |
+| `--check-resolution R` | `intake_check_resolution` | the photos' resolution on the Decisions API; needs `--check` |
+| `--check-yes P`, `--check-no P` | `intake_check_yes` / `_no` | the p cut-offs (no under yes); need `--check` |
+
+Every run keeps its suggestions in detail (`suggestions`: part, reads, photos by case label,
+evidence boxes and reasons, the re-check's verdict and p, and `truth` -- `real`, `wrong_side`
+or `extra` against the key, as `score_second_look` counts them) and the re-check's step
+(`second_look.check`). New metrics:
+
+| metric | what |
+|---|---|
+| `sug_n`, `sug_real`, `sug_wrong` | suggestions; those that find a key part the list missed; the rest (wrong side or extra) |
+| `sug_box`, `sug_sort_box`, `sug_any_box`, `sug_box_fill`, `sug_any_box_fill` | suggestions with an AI box, a sorter's box, either; the AI's and either's share (R2: box fill >= 60%) |
+| `sug_reason`, `sug_reason_fill` | suggestions with a reason (theirs or an evidence entry's); the share (R2: >= 90%) |
+| `list_box_fill`, `list_reason_fill` | the same for the damage list's items (an item's `bbox_2d` counts as its AI box) |
+| `chk_<real\|wrong>_<yes\|unsure\|no\|none>` | the re-check's verdicts on the real and the wrong suggestions |
+| `chk_real_kept_rate`, `chk_wrong_no_rate`, `sug_checked_rate` | real ones kept (yes or unsure; R4/R5 >= 85%), wrong ones said no (>= 40%), suggestions answered |
+| `dec_calls`, `dec_s`, `check_calls`, `check_s`, `recheck_s` | the Decisions API's requests and seconds, the lite re-check's, the whole step's (in `total_s`, out of `read_s`) |
+| `n_503` | Google's "busy" tries, beside `n_429` (files from before it: absent) |
+
+The summary's `by_model` (and the console's last line) gives every kind of call's tries per
+model: answered, tries, 429s, 503s.
+
+### R4 / R5: the re-check alone (`replay_check.py`)
+
+```
+BENCH_SCRIPT=replay_check bash ~/carlink-bench/run_bench.sh c9-check-dec GIT_REF \
+    /tmp/bench/out/c9-zBev-35.json --check decision
+BENCH_SCRIPT=replay_check bash ~/carlink-bench/run_bench.sh c9-check-lite GIT_REF \
+    /tmp/bench/out/c9-zBev-35.json --check lite --thinking-level-check low --repeat 2
+python3 ~/carlink-bench/code/c9-check-dec/apps/bot-service/scripts/bench/replay_check.py --sweep ~/carlink-bench/out/c9-check-dec.json
+```
+
+The first option is the stored result's path in the container (`/tmp/bench/out/LABEL.json` of
+the benchmark run). Each stored run's case is loaded again (the photos and their previews),
+each photo takes that run's sort, its suggestions go on the draft, and `check.run_for_intake`
+asks as the app would. Options: `--only CASE`, `--rep N` (one stored repetition), `--repeat N`,
+and the re-check flags above. It prints the verdicts on the real and the wrong suggestions,
+the gate (no on >= 40% of the wrong, yes/unsure on >= 85% of the real, median <= 3 s a Decisions
+API request), the calls per model with 429s and 503s, and the sweep: per "no" cut-off the share
+of the wrong ones said no and of the real ones kept, per "yes" cut-off the real and wrong at or
+over it, and the best "no" cut-off that keeps 85% of the real ones.
+
+### R3: the box probe (`probe_boxes.py`)
+
+```
+docker exec -w /tmp/bench/code/c9-zBev-35/apps/bot-service carlink_api python scripts/bench/probe_boxes.py \
+    /tmp/bench/out/c9-zBev-35.json --cases /tmp/bench/cases --key /tmp/bench/key.json --n 20 --out-dir /tmp/bench/probe-r3
+docker cp carlink_api:/tmp/bench/probe-r3 ~/carlink-bench/probe-r3
+```
+
+Offline (no Gemini call): 20 random AI boxes of the suggestions and the list (`--from`,
+`--kind ai|sort|any`, `--seed`), each drawn in red on its upright photo under a caption, as
+`box01.jpg`...; mark `on_target` in `index.csv` -- R3 passes at 14 of 20.
+
 ## Offline
 
 ```
 python scripts/test_benchmark_scoring.py          # from apps/bot-service, any venv with the app's requirements
 python scripts/benchmark_intake.py --help
+python scripts/bench/gate.py --help
 ```

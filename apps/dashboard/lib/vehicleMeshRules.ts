@@ -69,9 +69,10 @@
  * numbering is not what you would guess).
  *
  * The zone KEYS are shared with lib/vehicleZones.ts (resolveZones) and must
- * not change. A mesh gets the FIRST zone in table order whose rules match any
- * of its three names, so order matters where one group holds two zones (the
- * hatchback tailgate's glass is claimed by rear_glass, listed before tailgate).
+ * not change (l_quarter / r_quarter were added in contract 9). A mesh gets
+ * the FIRST zone in table order whose rules match any of its three names,
+ * so order matters where one group holds two zones (the hatchback
+ * tailgate's glass is claimed by rear_glass, listed before tailgate).
  */
 
 export type MeshRule = { key: string; label: string; match: RegExp[] };
@@ -123,6 +124,11 @@ const EXCLUDE_TERMS: string[] = [
 ];
 
 export const CAR_EXCLUDE: RegExp = new RegExp(EXCLUDE_TERMS.join("|"), "i");
+
+/** Yaw (radians about +Y) that turns a model so its front faces +Z like the
+ * other four (measured from where each file keeps its front bumper /
+ * grille). Only the van is exported nose-along-+X. */
+export const MODEL_YAW: Record<string, number> = { van: -Math.PI / 2 };
 
 export const CAR_PARTS_REAL: MeshRule[] = [
   {
@@ -260,13 +266,27 @@ export const CAR_PARTS_REAL: MeshRule[] = [
     match: [
       /^fender-front-l_\d+$/i, // sedan
       /^wheel-fender-l_\d+$/i, // sedan front wheel-arch liner
-      /^fender-(?:front|rear)-(?:arch-)?left$/i, // suv fender-front-left, fender-front-arch-left, fender-rear-arch-left (rear quarter -> fender, as in vehicleZones)
+      /^fender-front-(?:arch-)?left$/i, // suv fender-front-left, fender-front-arch-left (the rear arch is l_quarter's)
     ],
   },
   {
     key: "r_fender",
     label: "Right Fender",
-    match: [/^fender-front-r_\d+$/i, /^wheel-fender-r_\d+$/i, /^fender-(?:front|rear)-(?:arch-)?right$/i],
+    match: [/^fender-front-r_\d+$/i, /^wheel-fender-r_\d+$/i, /^fender-front-(?:arch-)?right$/i],
+  },
+  // The rear quarter. Only the SUV has a mesh for it (its rear arch); the
+  // sedan's quarter is part of the one body shell (sedan-unibody, matched by
+  // roof), the hatchback's fender groups hold both sides in one mesh, and
+  // the MPV / van have no named panel -- all of those use the anchor.
+  {
+    key: "l_quarter",
+    label: "Left Rear Quarter",
+    match: [/^fender-rear-(?:arch-)?left$/i], // suv fender-rear-arch-left
+  },
+  {
+    key: "r_quarter",
+    label: "Right Rear Quarter",
+    match: [/^fender-rear-(?:arch-)?right$/i],
   },
   {
     key: "l_mirror",
@@ -355,6 +375,105 @@ export const CAR_PARTS_REAL: MeshRule[] = [
     match: [/^Name-WheelBkR_\d+$/i, /^wheel-rr$/i, /^tire-low-rr$/i, /^WR_2$/i, /^t01003$/i, /^hiace_wheelsmd003$/i],
   },
 ];
+
+/**
+ * Where a zone sits when no mesh rule matched it in a model (joined panels,
+ * the MPV's and van's generically named meshes), as fractions of the
+ * model's box: x and z from -1 to 1 (scaled by ANCHOR_SPREAD of the box,
+ * from its centre), y from 0 (ground) to 1 (top). Axes as in every model
+ * file: +Z = front, +X = the car's LEFT (LH) side, +Y = up. Every zone in
+ * CAR_PARTS_REAL has one (scripts/check-vehicle-mesh-rules.mjs checks it,
+ * and that every l_ anchor is at +X and every r_ anchor at -X).
+ */
+export const ZONE_ANCHORS: Record<string, [number, number, number]> = {
+  front_bumper: [0, 0.28, 0.98],
+  bonnet: [0, 0.65, 0.65],
+  windscreen: [0, 0.88, 0.35],
+  roof: [0, 0.98, -0.05],
+  rear_glass: [0, 0.88, -0.45],
+  tailgate: [0, 0.65, -0.95],
+  rear_bumper: [0, 0.28, -0.98],
+  l_door_front: [0.96, 0.55, 0.25],
+  r_door_front: [-0.96, 0.55, 0.25],
+  l_door_rear: [0.96, 0.55, -0.3],
+  r_door_rear: [-0.96, 0.55, -0.3],
+  underbody: [0, 0.1, 0],
+  front_grill: [0, 0.42, 0.98],
+  l_headlamp: [0.68, 0.52, 0.92],
+  r_headlamp: [-0.68, 0.52, 0.92],
+  l_taillamp: [0.68, 0.65, -0.92],
+  r_taillamp: [-0.68, 0.65, -0.92],
+  l_wheel_front: [0.95, 0.25, 0.65],
+  r_wheel_front: [-0.95, 0.25, 0.65],
+  l_wheel_rear: [0.95, 0.25, -0.65],
+  r_wheel_rear: [-0.95, 0.25, -0.65],
+  l_fender: [0.95, 0.55, 0.65],
+  r_fender: [-0.95, 0.55, 0.65],
+  l_quarter: [0.95, 0.58, -0.68],
+  r_quarter: [-0.95, 0.58, -0.68],
+  l_mirror: [1.02, 0.75, 0.4],
+  r_mirror: [-1.02, 0.75, 0.4],
+  l_door_glass_front: [0.95, 0.8, 0.25],
+  r_door_glass_front: [-0.95, 0.8, 0.25],
+  l_door_glass_rear: [0.95, 0.8, -0.3],
+  r_door_glass_rear: [-0.95, 0.8, -0.3],
+};
+
+/** How far from the box's centre an anchor of 1 sits, as a share of the
+ * box's width / length: a little inside the half (0.5), on the skin. */
+export const ANCHOR_SPREAD = 0.46;
+
+/** A box as plain numbers: [minX, minY, minZ] and [maxX, maxY, maxZ]. */
+export type PlainBox = { min: [number, number, number]; max: [number, number, number] };
+
+/** A zone's anchor in the model's own (normalised, metre) space. */
+export function anchorPosition(zoneKey: string, box: PlainBox): [number, number, number] {
+  const [ax, ay, az] = ZONE_ANCHORS[zoneKey] ?? [0, 0.5, 0];
+  const cx = (box.min[0] + box.max[0]) / 2;
+  const cz = (box.min[2] + box.max[2]) / 2;
+  return [
+    cx + ax * (box.max[0] - box.min[0]) * ANCHOR_SPREAD,
+    box.min[1] + ay * (box.max[1] - box.min[1]),
+    cz + az * (box.max[2] - box.min[2]) * ANCHOR_SPREAD,
+  ];
+}
+
+/** Clicks on a mesh with no rule (the MPV's and van's generic meshes, the
+ * sedan's body shell outside the roof band) go to the nearest anchor of a
+ * zone that has no mesh in that model, if one is this close (metres). */
+export const NEAREST_ANCHOR_M = 0.6;
+
+/** The nearest of `zones`' anchors to `point`, within `maxDist`, or null. */
+export function nearestAnchorZone(
+  point: [number, number, number],
+  box: PlainBox,
+  zones: string[],
+  maxDist: number = NEAREST_ANCHOR_M,
+): string | null {
+  let best: string | null = null;
+  let bestDist = maxDist;
+  for (const zone of zones) {
+    const [x, y, z] = anchorPosition(zone, box);
+    const d = Math.hypot(point[0] - x, point[1] - y, point[2] - z);
+    if (d <= bestDist) {
+      best = zone;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * The sedan's and the SUV's roof rule matches their whole body shell (the
+ * only mesh holding the roof), so a click anywhere on the shell -- a rear
+ * quarter, a pillar -- used to read "Roof". A click counts as the roof
+ * only in the top ROOF_CLICK_BAND of the car's height.
+ */
+export const ROOF_CLICK_BAND = 0.15;
+
+export function roofClickAllowed(hitY: number, minY: number, maxY: number): boolean {
+  return hitY >= maxY - ROOF_CLICK_BAND * (maxY - minY);
+}
 
 /** True when any pattern matches any of the (non-empty) names. */
 export function meshNamesMatch(names: string[], patterns: RegExp[]): boolean {

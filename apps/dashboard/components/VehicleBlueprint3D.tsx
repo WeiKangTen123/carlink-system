@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 // Filter out benign THREE.Clock deprecation notice triggered by @react-three/fiber v9 until upstream updates to THREE.Timer
@@ -14,14 +14,26 @@ if (typeof window !== "undefined") {
   };
 }
 
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { clone as cloneWithSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { ArrowLeft, RotateCcw } from "lucide-react";
-import type { DamageSummaryItem } from "@/lib/api";
-import { resolveZones, groupByZone, type ZoneResolution } from "@/lib/vehicleZones";
-import { CAR_PARTS_REAL, isExcludedMesh, meshNamesMatch } from "@/lib/vehicleMeshRules";
-import { severityClass } from "@/lib/caseFields";
+import { marksSignature, STATUS_GLYPHS, zoneMarks, type ZoneMark } from "@/lib/damageLinks";
+import { detectBodyType, zoneLabel, type VehicleArchetype } from "@/lib/vehicleZones";
+import {
+  CAR_PARTS_REAL,
+  MODEL_YAW,
+  anchorPosition,
+  isExcludedMesh,
+  nearestAnchorZone,
+  roofClickAllowed,
+  zoneForMeshNames,
+  type PlainBox,
+} from "@/lib/vehicleMeshRules";
+
+// The body type -> model choice moved to lib/vehicleZones.ts (pages pick a
+// model without loading three.js); re-exported for older importers.
+export { detectBodyType };
+export type { VehicleArchetype };
 
 /** Reads a CSS custom property off <html> and keeps it live across the
  * app's dark/white theme toggle (ThemeToggle.tsx flips data-theme with no
@@ -43,54 +55,15 @@ function useThemeColor(varName: string, fallback: string): string {
   return color;
 }
 
-const SEVERITY_COLOR: Record<string, string> = { severe: "#ef4444", moderate: "#f59e0b", minor: "#10b981" };
-function severityColor(severity?: string | null): string | null {
-  const cls = severityClass(severity);
-  return SEVERITY_COLOR[cls] ?? null;
-}
-const SEVERITY_RANK: Record<string, number> = { minor: 1, moderate: 2, severe: 3 };
-
-// Zone key -> real mesh names inside the five models (CAR_PARTS_REAL) and
-// the interior/mechanical clutter kept hidden (CAR_EXCLUDE) live in
+// Zone key -> real mesh names inside the five models (CAR_PARTS_REAL), the
+// interior/mechanical clutter kept hidden (CAR_EXCLUDE), the anchors for
+// zones no mesh rule matched and the click rules live in
 // lib/vehicleMeshRules.ts, shared with scripts/check-vehicle-mesh-rules.mjs,
 // which checks every rule against the real model files. The free-text
-// part -> zone-key mapping itself lives in lib/vehicleZones.ts.
-
-// Fallback normalized 3D anchors (-1 to 1) for zones no mesh rule matched
-// (joined panels, or the MPV's generically named meshes). Axes as measured
-// in every model file: +Z = front, -Z = rear, +X = the car's LEFT (LH)
-// side, +Y = up. X/Z are scaled by the model's box in markers below.
-const ZONE_ANCHORS_NORMALIZED: Record<string, [number, number, number]> = {
-  front_bumper: [0, 0.28, 0.98],
-  bonnet: [0, 0.65, 0.65],
-  windscreen: [0, 0.88, 0.35],
-  roof: [0, 0.98, -0.05],
-  rear_glass: [0, 0.88, -0.45],
-  tailgate: [0, 0.65, -0.95],
-  rear_bumper: [0, 0.28, -0.98],
-  l_door_front: [0.96, 0.55, 0.25],
-  r_door_front: [-0.96, 0.55, 0.25],
-  l_door_rear: [0.96, 0.55, -0.3],
-  r_door_rear: [-0.96, 0.55, -0.3],
-  underbody: [0, 0.1, 0],
-  front_grill: [0, 0.42, 0.98],
-  l_headlamp: [0.68, 0.52, 0.92],
-  r_headlamp: [-0.68, 0.52, 0.92],
-  l_taillamp: [0.68, 0.65, -0.92],
-  r_taillamp: [-0.68, 0.65, -0.92],
-  l_wheel_front: [0.95, 0.25, 0.65],
-  r_wheel_front: [-0.95, 0.25, 0.65],
-  l_wheel_rear: [0.95, 0.25, -0.65],
-  r_wheel_rear: [-0.95, 0.25, -0.65],
-  l_fender: [0.95, 0.55, 0.65],
-  r_fender: [-0.95, 0.55, 0.65],
-  l_mirror: [1.02, 0.75, 0.4],
-  r_mirror: [-1.02, 0.75, 0.4],
-  l_door_glass_front: [0.95, 0.8, 0.25],
-  r_door_glass_front: [-0.95, 0.8, 0.25],
-  l_door_glass_rear: [0.95, 0.8, -0.3],
-  r_door_glass_rear: [-0.95, 0.8, -0.3],
-};
+// part -> zone-key mapping lives in lib/vehicleZones.ts, and finding ->
+// zone in lib/damageLinks.ts. Axes in every model: +Z = front, +X = the
+// car's LEFT (LH) side, +Y = up -- so the front view shows the left side on
+// the screen's right.
 
 /** The three names a rule can match for one mesh: its own, its parent's
  * and its grandparent's. The models differ in where the descriptive name
@@ -100,21 +73,6 @@ const ZONE_ANCHORS_NORMALIZED: Record<string, [number, number, number]> = {
  * Empty strings where a level is missing. */
 function meshNames(obj: THREE.Object3D): string[] {
   return [obj.name || "", obj.parent?.name || "", obj.parent?.parent?.name || ""];
-}
-
-function isExcluded(obj: THREE.Object3D): boolean {
-  return isExcludedMesh(meshNames(obj));
-}
-
-function findCarMeshes(root: THREE.Object3D, patterns: RegExp[], includeHidden = false): THREE.Mesh[] {
-  const found: THREE.Mesh[] = [];
-  root.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    if (!mesh.visible && !includeHidden) return;
-    if (meshNamesMatch(meshNames(mesh), patterns)) found.push(mesh);
-  });
-  return found;
 }
 
 /** World-space box of one mesh, measured the way it is drawn.
@@ -155,8 +113,6 @@ function measureVisible(root: THREE.Object3D): THREE.Box3 {
   return boxOfMeshes(shown);
 }
 
-export type VehicleArchetype = "suv" | "sedan" | "van" | "mpv" | "hatchback";
-
 // Geometry-only, meshopt-compressed copies of the original models (about
 // 67MB -> 4.8MB for all five; see scripts/optimize-vehicle-models.mjs).
 // drei's useGLTF turns the meshopt decoder on by default. /assets/* is
@@ -184,62 +140,101 @@ const TARGET_LENGTH_M: Record<VehicleArchetype, number> = {
   van: 4.9,
 };
 
-// Yaw that turns a model so its front faces +Z like the other four
-// (measured from where each file keeps its front bumper / grille). Only
-// the van is exported nose-along-+X.
-const MODEL_YAW: Partial<Record<VehicleArchetype, number>> = { van: -Math.PI / 2 };
+// A mesh longer than this share of the car is a body shell (the sedan's
+// "sedan-unibody", the SUV's "chassis-sunroof"): the roof rule's only
+// mesh, but painting or outlining it would light the whole car. The roof
+// is then shown by its marker at the top instead.
+const SHELL_SHARE = 0.6;
 
-export function detectBodyType(vehicleText: string, statedBodyType?: string | null): VehicleArchetype {
-  const norm = (statedBodyType || "").trim().toLowerCase();
-  if (norm === "suv") return "suv";
-  if (norm === "mpv") return "mpv";
-  if (norm === "van" || norm === "commercial van") return "van";
-  if (norm === "hatchback") return "hatchback";
-  if (norm === "sedan") return "sedan";
+/** The pattern each status draws with (never colour alone: the markers
+ * carry the glyph). Colours sit on top of the pattern. */
+const STATUS_COLOR = {
+  confirmed: "#10b981",
+  ai: "#f59e0b",
+  check: "#f97316",
+  suggestion: "#a855f7",
+  dismissed: "#94a3b8",
+} as const;
 
-  const lower = (vehicleText || "").toLowerCase();
-  if (/\b(vezel|hr-v|hrv|cr-v|crv|rav4|harrier|forester|qashqai|yaris cross|tucson|cx-3|cx-5|cx-30|suv|crossover)\b/i.test(lower)) return "suv";
-  if (/\b(alphard|vellfire|sienta|noah|voxy|serena|stepwgn|odyssey|spade|roomy|carnival|mpv|minivan)\b/i.test(lower)) return "mpv";
-  if (/\b(hiace|nv200|nv350|urvan|starex|transporter|caravelle|kombi|van|lorry)\b/i.test(lower)) return "van";
-  if (/\b(jazz|fit|swift|golf|polo|march|note|yaris|hatchback)\b/i.test(lower)) return "hatchback";
-  return "sedan";
-}
+// =============================================================================
+// Camera
+
+export type BlueprintView = "home" | "front" | "rear" | "lh" | "rh" | "top";
+
+/** Where the camera goes. `n` changes for every request, so the same view
+ * or part asked for twice moves the camera back to it. Nothing else moves
+ * the camera: not a hover, not a new damage list. */
+export type CameraRequest = { kind: "view"; view: BlueprintView; n: number } | { kind: "zones"; zones: string[]; n: number };
 
 interface FocusState {
   position: THREE.Vector3;
   target: THREE.Vector3;
 }
 
-/** Smoothly lerps the camera/OrbitControls target toward `focus` (or back
- * to `home` when focus is null) instead of an abrupt cut -- reads as
- * "pushing in toward what you clicked". Pauses auto-rotate while focused. */
-function CameraRig({
-  focus,
-  home,
-  controlsRef,
-}: {
-  focus: FocusState | null;
-  home: FocusState;
-  controlsRef: React.RefObject<any>;
-}) {
-  const { camera } = useThree();
+const HOME: FocusState = { position: new THREE.Vector3(3.6, 2.4, 3.9), target: new THREE.Vector3(0, 0.55, 0) };
+const HOME_DIRECTION = new THREE.Vector3(3.6, 1.85, 3.9).normalize();
+
+const FOV = 40;
+
+/** How far back the camera stands to fit `across` (screen width) and `up`
+ * (screen height) with a margin, for the canvas's aspect. */
+function fitDistance(across: number, up: number, aspect: number): number {
+  const tan = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+  return 1.3 * Math.max(across / 2 / (tan * Math.max(aspect, 0.5)), up / 2 / tan);
+}
+
+/** A preset view for a model of this size. The front view looks down -Z at
+ * the front, so the car's left (+X) is on the screen's right; the top view
+ * has the front at the top of the screen. */
+function viewState(view: BlueprintView, box: THREE.Box3, aspect: number): FocusState {
+  const size = box.getSize(new THREE.Vector3());
+  const target = new THREE.Vector3(0, size.y * 0.45, 0);
+  const at = (x: number, y: number, z: number) => ({ position: new THREE.Vector3(x, y, z), target: target.clone() });
+  const lift = size.y * 0.35;
+  switch (view) {
+    case "front":
+    case "rear": {
+      const d = fitDistance(size.x, size.y, aspect) + size.z / 2;
+      return at(0, target.y + lift, view === "front" ? d : -d);
+    }
+    case "lh":
+    case "rh": {
+      const d = fitDistance(size.z, size.y, aspect) + size.x / 2;
+      return at(view === "lh" ? d : -d, target.y + lift, 0);
+    }
+    case "top": {
+      // A hair behind straight-down, so the screen's "up" is the car's front.
+      const d = fitDistance(size.x, size.z, aspect) + size.y;
+      return { position: new THREE.Vector3(0, d, -0.02), target: new THREE.Vector3(0, size.y * 0.3, 0) };
+    }
+    default: {
+      // Three-quarter from the front left, the whole car in frame.
+      const t = new THREE.Vector3(0, size.y * 0.4, 0);
+      const d = Math.max(fitDistance(Math.hypot(size.x, size.z) * 0.92, size.y * 1.9, aspect), 3);
+      return { position: t.clone().addScaledVector(HOME_DIRECTION, d), target: t };
+    }
+  }
+}
+
+/** Lerps the camera (and the orbit target) to `focus` -- reads as "pushing
+ * in toward what you clicked". Frames are drawn on demand, so it asks for
+ * one per step while it moves. */
+function CameraRig({ focus, controlsRef }: { focus: FocusState | null; controlsRef: React.RefObject<any> }) {
+  const { camera, invalidate } = useThree();
   const animRef = useRef<{ fromPos: THREE.Vector3; toPos: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; start: number } | null>(null);
-  const lastFocusRef = useRef<FocusState | null>(null);
+  const targetRef = useRef(HOME.target.clone());
 
   useEffect(() => {
-    if (focus === lastFocusRef.current) return;
-    lastFocusRef.current = focus;
-    const toState = focus ?? home;
+    if (!focus) return;
     animRef.current = {
       fromPos: camera.position.clone(),
-      toPos: toState.position.clone(),
-      fromTarget: controlsRef.current ? controlsRef.current.target.clone() : home.target.clone(),
-      toTarget: toState.target.clone(),
+      toPos: focus.position.clone(),
+      fromTarget: controlsRef.current ? controlsRef.current.target.clone() : targetRef.current.clone(),
+      toTarget: focus.target.clone(),
       start: performance.now(),
     };
-    if (controlsRef.current) controlsRef.current.autoRotate = !focus;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
+    invalidate();
+  }, [focus, camera, controlsRef, invalidate]);
 
   useFrame(() => {
     const anim = animRef.current;
@@ -247,37 +242,118 @@ function CameraRig({
     const t = Math.min(1, (performance.now() - anim.start) / 550);
     const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     camera.position.lerpVectors(anim.fromPos, anim.toPos, e);
-    if (controlsRef.current) controlsRef.current.target.lerpVectors(anim.fromTarget, anim.toTarget, e);
+    targetRef.current.lerpVectors(anim.fromTarget, anim.toTarget, e);
+    // Turned here, not on the controls' next update: that ran earlier in
+    // this frame, and on demand there may be no next frame to catch up.
+    camera.lookAt(targetRef.current);
+    if (controlsRef.current) {
+      controlsRef.current.target.copy(targetRef.current);
+      controlsRef.current.update();
+    }
     if (t >= 1) animRef.current = null;
+    else invalidate();
   });
 
   return null;
 }
 
+// =============================================================================
+// Materials: one shared set per model, never one per mesh.
+
+type Materials = {
+  base: THREE.MeshBasicMaterial;
+  confirmed: THREE.MeshBasicMaterial;
+  ai: THREE.MeshBasicMaterial;
+  check: THREE.MeshBasicMaterial;
+  suggestion: THREE.MeshBasicMaterial;
+  dismissed: THREE.MeshBasicMaterial;
+  select: THREE.MeshBasicMaterial;
+  hover: THREE.MeshBasicMaterial;
+  stripe: { value: number };
+};
+
+/** Suggestions are striped. The optimised models have no UVs, so the
+ * stripes are drawn in screen space (gl_FragCoord) on top of the usual
+ * flat colour: one extra shader program, shared by every striped mesh. */
+function stripedMaterial(color: string, stripe: { value: number }): THREE.MeshBasicMaterial {
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uStripe = stripe;
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform float uStripe;")
+      .replace(
+        "#include <dithering_fragment>",
+        "#include <dithering_fragment>\n\tif ( mod( gl_FragCoord.x + gl_FragCoord.y, uStripe ) < uStripe * 0.5 ) gl_FragColor.a *= 0.15;",
+      );
+  };
+  mat.customProgramCacheKey = () => "carlink-stripes";
+  return mat;
+}
+
+function makeMaterials(accent: string, ink: string): Materials {
+  const fill = (color: string, opacity: number) =>
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false });
+  const wire = (color: string, opacity: number, onTop: boolean) =>
+    new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity, depthTest: !onTop, depthWrite: false });
+  const stripe = { value: 10 * (typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1) };
+  return {
+    base: wire(accent, 0.85, false),
+    confirmed: fill(STATUS_COLOR.confirmed, 0.8),
+    ai: fill(STATUS_COLOR.ai, 0.38),
+    check: fill(STATUS_COLOR.check, 0.38),
+    suggestion: stripedMaterial(STATUS_COLOR.suggestion, stripe),
+    dismissed: wire(STATUS_COLOR.dismissed, 0.9, false),
+    select: wire(ink, 0.95, true),
+    hover: wire(accent, 0.7, true),
+    stripe,
+  };
+}
+
+// =============================================================================
+// The model
+
+type Placement = { center: THREE.Vector3; size: THREE.Vector3; fromMesh: boolean };
+
+/** Dev only: what the test page reads for the performance checks. */
+type DevHook = { gl?: THREE.WebGLRenderer; camera?: THREE.Camera; frames: number; lastFrameAt: number; overlays: number; paintMs: number; outlineMs: number; outlineAt?: number };
+const devHook = (): DevHook | null => {
+  if (process.env.NODE_ENV === "production" || typeof window === "undefined") return null;
+  const w = window as unknown as { __damageMap?: DevHook };
+  w.__damageMap ??= { frames: 0, lastFrameAt: 0, overlays: 0, paintMs: 0, outlineMs: 0 };
+  return w.__damageMap;
+};
+
+type ModelProps = {
+  modelUrl: string;
+  archetype: VehicleArchetype;
+  accent: string;
+  ink: string;
+  marks: ZoneMark[];
+  selectedZones: string[];
+  hoverZones: string[];
+  camera: CameraRequest | null;
+  showAnchors: boolean;
+  onZoneClick: (zone: string, approx: boolean) => void;
+  onZoneHover?: (zone: string | null) => void;
+  onFocusRequest: (state: FocusState) => void;
+};
+
 function VehicleModel({
   modelUrl,
   archetype,
-  color,
-  damageEntries,
-  zoneResolutions,
-  highlightedIdx,
-  selectedZone,
+  accent,
+  ink,
+  marks,
+  selectedZones,
+  hoverZones,
+  camera,
+  showAnchors,
   onZoneClick,
-  onZoneSelect,
+  onZoneHover,
   onFocusRequest,
-}: {
-  modelUrl: string;
-  archetype: VehicleArchetype;
-  color: string;
-  damageEntries: DamageSummaryItem[];
-  zoneResolutions: (ZoneResolution | null)[];
-  highlightedIdx: number | null;
-  selectedZone?: string | null;
-  onZoneClick: (idx: number) => void;
-  onZoneSelect?: (zoneKey: string | null) => void;
-  onFocusRequest: (center: THREE.Vector3, size: THREE.Vector3) => void;
-}) {
+}: ModelProps) {
   const gltf = useGLTF(modelUrl);
+  const { invalidate, size: viewport } = useThree();
 
   // One clone per mount, normalized from the loaded geometry itself (never
   // a hand-typed offset): hide interior clutter, turn the front to +Z, scale
@@ -285,15 +361,24 @@ function VehicleModel({
   // ground. cloneWithSkeleton() keeps the van's bones with its skinned
   // meshes; a plain clone() leaves them on the cached original, and a
   // skinned mesh draws where its bones are, so the van would ignore every
-  // transform applied here.
-  const { root, box } = useMemo(() => {
+  // transform applied here. Everything per mesh is worked out here once:
+  // which zone it is, whether it is a shell, which meshes each zone has.
+  const model = useMemo(() => {
     const clone = cloneWithSkeleton(gltf.scene);
+    const meshes: THREE.Mesh[] = [];
     clone.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
-      if (isExcluded(mesh)) mesh.visible = false;
+      meshes.push(mesh);
+      if (isExcludedMesh(meshNames(mesh))) mesh.visible = false;
       // A skinned mesh's culling sphere comes from bone state; never cull it.
       if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) mesh.frustumCulled = false;
+      // three.js raycasts hidden meshes too: a click went to the seat behind
+      // the door. Only what is drawn can be clicked.
+      const raycast = mesh.raycast;
+      mesh.raycast = function (raycaster, hits) {
+        if (this.visible) raycast.call(this, raycaster, hits);
+      };
     });
     clone.rotation.set(0, MODEL_YAW[archetype] ?? 0, 0);
     const raw = measureVisible(clone);
@@ -302,229 +387,277 @@ function VehicleModel({
     const scaled = measureVisible(clone);
     const center = scaled.getCenter(new THREE.Vector3());
     clone.position.set(-center.x, -scaled.min.y, -center.z);
-    return { root: clone, box: measureVisible(clone) };
+    const box = measureVisible(clone);
+    const length = box.max.z - box.min.z;
+
+    const hiddenByDefault = new Set(meshes.filter((m) => !m.visible));
+    const zoneOf = new Map<THREE.Mesh, string | null>();
+    const zoneMeshes = new Map<string, THREE.Mesh[]>();
+    const shells = new Set<THREE.Mesh>();
+    const tmp = new THREE.Box3();
+    for (const mesh of meshes) {
+      const zone = zoneForMeshNames(meshNames(mesh));
+      zoneOf.set(mesh, zone);
+      if (!zone) continue;
+      const b = meshWorldBox(mesh, tmp);
+      if (b.max.z - b.min.z > SHELL_SHARE * length) {
+        shells.add(mesh);
+        continue;
+      }
+      const list = zoneMeshes.get(zone);
+      if (list) list.push(mesh);
+      else zoneMeshes.set(zone, [mesh]);
+    }
+    const plainBox: PlainBox = { min: box.min.toArray() as [number, number, number], max: box.max.toArray() as [number, number, number] };
+    const noMeshZones = CAR_PARTS_REAL.map((r) => r.key).filter((k) => !zoneMeshes.has(k));
+    return { root: clone, meshes, box, plainBox, hiddenByDefault, zoneOf, zoneMeshes, shells, noMeshZones };
   }, [gltf, archetype]);
 
-  // Zone key -> worst severity among the real damage_summary items that
-  // resolved to it. The mesh itself can only be one colour, so a zone
-  // holding both a Severe and a Minor item paints the worse of the two.
-  const zoneSeverity = useMemo(() => {
-    const severity = new Map<string, string>();
-    damageEntries.forEach((item, idx) => {
-      const res = zoneResolutions[idx];
-      if (!res) return;
-      const sev = severityClass(item.severity);
-      const existing = severity.get(res.key);
-      if (!existing || (SEVERITY_RANK[sev] ?? 0) > (SEVERITY_RANK[existing] ?? 0)) severity.set(res.key, sev);
-    });
-    return severity;
-  }, [damageEntries, zoneResolutions]);
+  const { root, meshes, box, plainBox, hiddenByDefault, zoneOf, zoneMeshes, shells, noMeshZones } = model;
 
   // Where a zone sits on this model: the box of its real meshes, or -- for
-  // zones no rule maps here (most of the MPV's and the van's generically
-  // named meshes) -- the normalized anchor scaled into the model's box, so
-  // badges and zoom-to-part still land in roughly the right place. Same
-  // identity for the life of the clone: the zoom effects below list it.
-  const zonePlacement = useCallback(
-    (zoneKey: string): { center: THREE.Vector3; size: THREE.Vector3; fromMesh: boolean } | null => {
-      const zone = CAR_PARTS_REAL.find((z) => z.key === zoneKey);
-      if (!zone) return null;
-      const meshes = findCarMeshes(root, zone.match, true);
-      if (meshes.length) {
-        const partBox = boxOfMeshes(meshes);
-        const center = partBox.getCenter(new THREE.Vector3());
-        if (zoneKey === "roof") {
-          center.y = Math.max(center.y, partBox.max.y - 0.05);
-        }
-        return { center, size: partBox.getSize(new THREE.Vector3()), fromMesh: true };
+  // zones no rule maps here (the MPV's and the van's generically named
+  // meshes, the sedan's quarter inside its body shell) -- its anchor.
+  const placements = useMemo(() => {
+    const cache = new Map<string, Placement>();
+    return (zone: string): Placement => {
+      let p = cache.get(zone);
+      if (p) return p;
+      const own = zoneMeshes.get(zone);
+      if (own?.length) {
+        const b = boxOfMeshes(own);
+        p = { center: b.getCenter(new THREE.Vector3()), size: b.getSize(new THREE.Vector3()), fromMesh: true };
+      } else {
+        p = { center: new THREE.Vector3(...anchorPosition(zone, plainBox)), size: new THREE.Vector3(0.4, 0.3, 0.4), fromMesh: false };
       }
-      const normAnchor = ZONE_ANCHORS_NORMALIZED[zoneKey] || [0, 0.5, 0];
-      const bCenter = box.getCenter(new THREE.Vector3());
-      const bSize = box.getSize(new THREE.Vector3());
-      const center = new THREE.Vector3(
-        bCenter.x + normAnchor[0] * bSize.x * 0.46,
-        box.min.y + normAnchor[1] * bSize.y,
-        bCenter.z + normAnchor[2] * bSize.z * 0.46,
-      );
-      return { center, size: new THREE.Vector3(0.4, 0.3, 0.4), fromMesh: false };
-    },
-    [root, box],
-  );
-
-  // An anchored zone has no mesh box to frame; pull back to about a quarter
-  // of the car instead of a 1 m close-up of unnamed wireframe.
-  const focusOnZone = useCallback(
-    (zoneKey: string) => {
-      const placed = zonePlacement(zoneKey);
-      if (!placed) return;
-      onFocusRequest(placed.center, placed.fromMesh ? placed.size : new THREE.Vector3(1.1, 1.1, 1.1));
-    },
-    [zonePlacement, onFocusRequest],
-  );
-
-  const markers = useMemo(() => {
-    const byZone = groupByZone(zoneResolutions);
-    const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
-
-    byZone.forEach((itemIdxs, zoneKey) => {
-      const placed = zonePlacement(zoneKey);
-      if (!placed) return;
-      const { center, size } = placed;
-
-      const spread = Math.max(Math.min(size.x, size.z) * 0.32, 0.09);
-
-      itemIdxs.forEach((itemIdx, n) => {
-        const res = zoneResolutions[itemIdx]!;
-        const item = damageEntries[itemIdx];
-        const pos = center.clone();
-        if (itemIdxs.length > 1) {
-          const angle = (n * 137.5 * Math.PI) / 180; // golden angle
-          const r = spread * Math.sqrt(n / itemIdxs.length + 0.15);
-          pos.x += Math.cos(angle) * r;
-          pos.z += Math.sin(angle) * r;
-          pos.y += (n % 3) * 0.045; // slight stagger
-        }
-        out.push({
-          idx: itemIdx,
-          label: item.part,
-          badge: res.badgeNumber,
-          severity: severityClass(item.severity),
-          pos,
-        });
-      });
-    });
-    return out;
-  }, [damageEntries, zoneResolutions, zonePlacement]);
-
-  useEffect(() => {
-    // Re-assert the base hidden/visible state first. Without this, a zone
-    // revealed for a previous report would stay revealed after the damage
-    // list changes.
-    //
-    // CRITICAL GPU FIX: Reuse shared materials rather than instantiating 124+
-    // individual materials per render cycle. This prevents WebGL shader program
-    // explosion and memory exhaustion that crashed the browser tab.
-    const baseMat = new THREE.MeshBasicMaterial({
-      color,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.85,
-    });
-    const severityMats = new Map<string, THREE.MeshBasicMaterial>();
-
-    root.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.visible = !isExcluded(mesh);
-      if (mesh.visible) {
-        mesh.material = baseMat;
-      }
-    });
-
-    CAR_PARTS_REAL.forEach((zone) => {
-      const sev = zoneSeverity.get(zone.key);
-      if (!sev) return;
-      const hex = severityColor(sev);
-      if (!hex) return;
-
-      let zoneMat = severityMats.get(hex);
-      if (!zoneMat) {
-        zoneMat = new THREE.MeshBasicMaterial({
-          color: hex,
-          transparent: true,
-          opacity: 0.7,
-          side: THREE.DoubleSide,
-        });
-        severityMats.set(hex, zoneMat);
-      }
-
-      findCarMeshes(root, zone.match, true).forEach((m) => {
-        // Reveal a normally-hidden structural mesh when it's the damaged part.
-        m.visible = true;
-        m.material = zoneMat!;
-      });
-    });
-
-    return () => {
-      baseMat.dispose();
-      severityMats.forEach((mat) => mat.dispose());
+      cache.set(zone, p);
+      return p;
     };
-  }, [root, color, zoneSeverity]);
+  }, [zoneMeshes, plainBox]);
 
-  // Reacts to highlightedIdx regardless of WHERE the selection came from --
-  // clicking a part/badge here, or clicking a row in the Damage & Parts
-  // Checklist table (which sets the same prop one level up in
-  // StudioApp.tsx) -- both funnel through here, so the camera zooms in the
-  // same way either way instead of needing two separate code paths.
-  const lastHandledRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (highlightedIdx === null || highlightedIdx === lastHandledRef.current) return;
-    lastHandledRef.current = highlightedIdx;
-    const res = zoneResolutions[highlightedIdx];
-    if (!res) return;
-    focusOnZone(res.key);
-  }, [highlightedIdx, zoneResolutions, focusOnZone]);
+  // One shared set of materials for the life of this model.
+  const mats = useMemo(() => makeMaterials(accent, ink), [accent, ink]);
+  useEffect(() => () => Object.values(mats).forEach((m) => (m as THREE.Material).dispose?.()), [mats]);
 
-  // Synchronize 3D camera when an automotive zone is selected from the evidence strip.
-  // Guarded like highlightedIdx above: zoom once per new selection, not on
-  // every re-run of the effect (a re-run used to re-focus, which re-rendered,
-  // which re-ran it again).
-  const lastZoneRef = useRef<string | null>(null);
+  // Paint: every drawn mesh the base wireframe, each zone with a mark its
+  // status's material. Runs only when the marks' content changes (the
+  // caller keeps their identity), so a tick elsewhere doesn't repaint. A
+  // layout effect declared before the outlines' one, so it runs first: the
+  // outlines read which meshes the paint shows (a hidden structural mesh is
+  // shown when it is the damaged part), and would otherwise be a change
+  // behind.
+  useLayoutEffect(() => {
+    const t0 = performance.now();
+    for (const mesh of meshes) {
+      mesh.visible = !hiddenByDefault.has(mesh);
+      mesh.material = mats.base;
+    }
+    for (const m of marks) {
+      const mat = mats[m.lead];
+      for (const mesh of zoneMeshes.get(m.zone) ?? []) {
+        // A normally-hidden structural mesh is shown when it is the damaged part.
+        mesh.visible = true;
+        mesh.material = mat;
+      }
+    }
+    const hook = devHook();
+    if (hook) hook.paintMs = performance.now() - t0;
+    invalidate();
+  }, [meshes, hiddenByDefault, zoneMeshes, marks, mats, invalidate]);
+
+  // Outlines: a selected zone's meshes drawn again on top in a bright
+  // wireframe (a clone sharing the geometry, so nothing is built), a
+  // hovered one in a softer one; the rest of the car dims while something
+  // is selected. Only these few overlay objects change on a selection, in
+  // the same commit, so the next frame already shows them. After the paint
+  // (above), on the meshes as it left them.
+  const overlaysRef = useRef<THREE.Mesh[]>([]);
+  useLayoutEffect(() => {
+    const t0 = performance.now();
+    for (const o of overlaysRef.current) o.parent?.remove(o);
+    overlaysRef.current = [];
+    const add = (zone: string, mat: THREE.Material) => {
+      for (const mesh of zoneMeshes.get(zone) ?? []) {
+        if (!mesh.visible || !mesh.parent) continue;
+        const o = mesh.clone(false) as THREE.Mesh;
+        o.material = mat;
+        o.raycast = () => {};
+        o.renderOrder = 10;
+        mesh.parent.add(o);
+        overlaysRef.current.push(o);
+      }
+    };
+    const selected = new Set(selectedZones);
+    selectedZones.forEach((z) => add(z, mats.select));
+    hoverZones.filter((z) => !selected.has(z)).forEach((z) => add(z, mats.hover));
+    mats.base.opacity = selectedZones.length ? 0.3 : 0.85;
+    const hook = devHook();
+    if (hook) {
+      hook.outlineMs = performance.now() - t0;
+      hook.outlineAt = performance.now();
+      hook.overlays = overlaysRef.current.length;
+    }
+    invalidate();
+  }, [selectedZones, hoverZones, zoneMeshes, mats, marks, invalidate]);
+  useEffect(() => () => overlaysRef.current.forEach((o) => o.parent?.remove(o)), []);
+
+  // The camera moves only when asked (a view button, a selection), never
+  // on hover or on a new damage list. A fresh model with nothing asked yet
+  // frames itself for this canvas.
   useEffect(() => {
-    if (!selectedZone) {
-      lastZoneRef.current = null;
+    if (!camera) {
+      onFocusRequest(viewState("home", box, viewport.width / Math.max(viewport.height, 1)));
       return;
     }
-    if (selectedZone === lastZoneRef.current) return;
-    lastZoneRef.current = selectedZone;
-    let targetKey = selectedZone;
-    if (selectedZone === "skeleton") targetKey = "underbody";
-    if (selectedZone === "lighting") targetKey = "l_taillamp";
-    if (selectedZone === "boot_floor") targetKey = "tailgate";
-    const zone = CAR_PARTS_REAL.find((z) => z.key === targetKey || z.key.includes(targetKey));
-    if (!zone) return;
-    focusOnZone(zone.key);
-  }, [selectedZone, focusOnZone]);
+    if (camera.kind === "view") {
+      onFocusRequest(viewState(camera.view, box, viewport.width / Math.max(viewport.height, 1)));
+      return;
+    }
+    if (!camera.zones.length) return;
+    const union = new THREE.Box3();
+    for (const z of camera.zones) {
+      const p = placements(z);
+      const size = p.fromMesh ? p.size : new THREE.Vector3(1.1, 1.1, 1.1);
+      union.union(new THREE.Box3().setFromCenterAndSize(p.center, size));
+    }
+    const center = union.getCenter(new THREE.Vector3());
+    const size = union.getSize(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z, 0.25);
+    const dist = Math.max(radius * 2.6, 2);
+    // Approach from the side the part sits on relative to the car's centre
+    // (the model is centred on x=0, z=0), not from wherever the camera is:
+    // the right door is always approached from the right, the front bumper
+    // from the front. Both sides selected (an unknown side): from its end,
+    // or from above.
+    const outward = new THREE.Vector3(center.x, 0, center.z);
+    if (outward.lengthSq() < 0.04) outward.set(0, 0, 0);
+    const up = outward.lengthSq() < 0.0001 ? 1.4 : 0.45;
+    if (outward.lengthSq() < 0.0001) outward.set(0, 0, -0.02);
+    outward.normalize();
+    const dir = outward.multiplyScalar(0.82).add(new THREE.Vector3(0, up, 0)).normalize();
+    onFocusRequest({ position: center.clone().addScaledVector(dir, dist), target: center.clone() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new request moves the camera
+  }, [camera?.n, box]);
 
-  const zoneIdxLookup = useMemo(() => {
-    const map = new Map<string, number>();
-    zoneResolutions.forEach((res, idx) => {
-      if (res && !map.has(res.key)) map.set(res.key, idx);
-    });
-    return map;
-  }, [zoneResolutions]);
+  /** What a pointer is on: the first DRAWN mesh under it (hidden ones and
+   * outlines never count). A shell counts as the roof only in the top band;
+   * a mesh with no rule (or the rest of a shell) goes to the nearest anchor
+   * of a zone this model has no mesh for, as "(approx.)". */
+  const resolveHit = useCallback(
+    (e: ThreeEvent<PointerEvent | MouseEvent>): { zone: string; approx: boolean } | null => {
+      for (const hit of e.intersections) {
+        const mesh = hit.object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.visible || !zoneOf.has(mesh)) continue;
+        const zone = zoneOf.get(mesh) ?? null;
+        if (zone && !shells.has(mesh)) return { zone, approx: false };
+        if (zone === "roof" && roofClickAllowed(hit.point.y, box.min.y, box.max.y)) return { zone: "roof", approx: false };
+        const near = nearestAnchorZone([hit.point.x, hit.point.y, hit.point.z], plainBox, noMeshZones);
+        return near ? { zone: near, approx: true } : null;
+      }
+      return null;
+    },
+    [zoneOf, shells, box, plainBox, noMeshZones],
+  );
 
-  const handleClick = (e: any) => {
-    e.stopPropagation();
-    const names = meshNames(e.object);
-    const zone = CAR_PARTS_REAL.find((z) => meshNamesMatch(names, z.match));
-    if (!zone) return;
-    onZoneSelect?.(zone.key);
-    const idx = zoneIdxLookup.get(zone.key);
-    if (idx !== undefined) onZoneClick(idx);
+  const hoverRef = useRef<string | null>(null);
+  const setHover = (zone: string | null) => {
+    if (hoverRef.current === zone) return;
+    hoverRef.current = zone;
+    document.body.style.cursor = zone ? "pointer" : "";
+    onZoneHover?.(zone);
   };
+  useEffect(() => () => {
+    document.body.style.cursor = "";
+  }, []);
+
+  // Markers on the far side of the car fade (they still click): drawn
+  // through the body, the rear's markers crowded a front view. Set on the
+  // DOM each drawn frame, no re-render.
+  const markerEls = useRef(new Map<string, HTMLElement>());
+  const toCamera = useMemo(() => new THREE.Vector3(), []);
+  const outward = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera: cam }) => {
+    markerEls.current.forEach((el, zone) => {
+      const c = placements(zone).center;
+      outward.set(c.x, 0, c.z);
+      if (outward.lengthSq() < 0.04) outward.set(0, 1, 0);
+      else outward.normalize().multiplyScalar(0.9).add(new THREE.Vector3(0, 0.3, 0)).normalize();
+      toCamera.copy(cam.position).sub(c).normalize();
+      const far = outward.dot(toCamera) < -0.15;
+      if ((el.dataset.far === "1") !== far) el.dataset.far = far ? "1" : "";
+    });
+  });
+  const markerRef = (zone: string) => (el: HTMLElement | null) => {
+    if (el) markerEls.current.set(zone, el);
+    else markerEls.current.delete(zone);
+  };
+
+  const markByZone = useMemo(() => new Map(marks.map((m) => [m.zone, m])), [marks]);
+  const selected = useMemo(() => new Set(selectedZones), [selectedZones]);
+  const hovered = useMemo(() => new Set(hoverZones), [hoverZones]);
+  // Anchor spots: the zones this model has no mesh for and no finding on,
+  // so they can still be clicked ("Not detected" + Add as damage).
+  const anchorSpots = showAnchors ? noMeshZones.filter((z) => !markByZone.has(z)) : [];
+  const size = box.getSize(new THREE.Vector3());
 
   return (
     <>
-      <primitive object={root} onClick={handleClick} />
-      {markers.map((m) => (
-        <Html key={m.idx} position={[m.pos.x, m.pos.y + 0.12, m.pos.z]} center occlude={false} zIndexRange={[10, 0]}>
-          <button
-            type="button"
-            className={`hotspot-beacon-3d ${m.severity === "severe" ? "severe-spot" : ""} ${highlightedIdx === m.idx ? "active-spot" : ""}`}
-            title={m.label}
-            onClick={() => onZoneClick(m.idx)}
-          >
-            {String(m.badge).padStart(2, "0")}
-          </button>
-        </Html>
-      ))}
+      <primitive
+        object={root}
+        onClick={(e: ThreeEvent<MouseEvent>) => {
+          e.stopPropagation();
+          const hit = resolveHit(e);
+          if (hit) onZoneClick(hit.zone, hit.approx);
+        }}
+        onPointerMove={(e: ThreeEvent<PointerEvent>) => {
+          e.stopPropagation();
+          setHover(resolveHit(e)?.zone ?? null);
+        }}
+        onPointerOut={() => setHover(null)}
+      />
+      {marks.map((m) => {
+        const p = placements(m.zone);
+        return (
+          <Html key={m.zone} position={[p.center.x, p.center.y + 0.12, p.center.z]} center occlude={false} zIndexRange={[10, 0]}>
+            <ZoneMarker
+              ref={markerRef(m.zone)}
+              mark={m}
+              approx={!p.fromMesh}
+              selected={selected.has(m.zone)}
+              hovered={hovered.has(m.zone)}
+              onClick={() => onZoneClick(m.zone, !p.fromMesh)}
+              onHover={(on) => onZoneHover?.(on ? m.zone : null)}
+            />
+          </Html>
+        );
+      })}
+      {anchorSpots.map((zone) => {
+        const p = placements(zone);
+        return (
+          <Html key={`a-${zone}`} position={[p.center.x, p.center.y, p.center.z]} center occlude={false} zIndexRange={[9, 0]}>
+            <button
+              ref={markerRef(zone)}
+              type="button"
+              className={`dmap-anchor ${selected.has(zone) ? "is-selected" : ""}`}
+              aria-label={`${zoneLabel(zone)} (approx.)`}
+              title={`${zoneLabel(zone)} (approx.)`}
+              onClick={() => onZoneClick(zone, true)}
+            />
+          </Html>
+        );
+      })}
       {/* +Z is the front in every model (the front bumper sits at +Z after normalizing). */}
-      <Html position={[0, 0.05, box.getSize(new THREE.Vector3()).z / 2 + 0.35]} center distanceFactor={8} occlude={false}>
+      <Html position={[0, 0.05, size.z / 2 + 0.35]} center distanceFactor={8} occlude={false} zIndexRange={[5, 0]}>
         <span className="blueprint-3d-axis-label">FRONT</span>
       </Html>
-      <Html position={[0, 0.05, -box.getSize(new THREE.Vector3()).z / 2 - 0.35]} center distanceFactor={8} occlude={false}>
+      <Html position={[0, 0.05, -size.z / 2 - 0.35]} center distanceFactor={8} occlude={false} zIndexRange={[5, 0]}>
         <span className="blueprint-3d-axis-label">REAR</span>
+      </Html>
+      <Html position={[size.x / 2 + 0.35, 0.05, 0]} center distanceFactor={8} occlude={false} zIndexRange={[5, 0]}>
+        <span className="blueprint-3d-axis-label">LH</span>
+      </Html>
+      <Html position={[-size.x / 2 - 0.35, 0.05, 0]} center distanceFactor={8} occlude={false} zIndexRange={[5, 0]}>
+        <span className="blueprint-3d-axis-label">RH</span>
       </Html>
     </>
   );
@@ -533,270 +666,151 @@ function VehicleModel({
 // above fetches just that one. Preloading at module load downloaded all of
 // them on the first case page.
 
-// =============================================================================
-// Van (procedural) -- no free/realistic van model sourced yet, so this
-// keeps the extruded side-profile silhouette technique: a real car
-// outline (front bumper -> hood -> windshield -> roof -> rear glass ->
-// tailgate -> rear bumper) extruded across the width, still honestly a
-// schematic approximation rather than a real model like the car above.
-// =============================================================================
-const VAN_PROFILE: [number, number][] = [
-  [-1.85, 0.12], [-1.9, 0.3], [-1.85, 0.5], [-1.8, 1.05],
-  [-1.55, 1.55], [1.7, 1.58], [1.95, 1.15], [1.95, 0.5],
-  [1.85, 0.12],
-];
-const VAN_WIDTH = 1.9;
-
-const VAN_ZONE_ANCHORS: Record<string, [number, number, number]> = {
-  front_bumper: [0, 0.3, -1.9],
-  bonnet: [0, 0.7, -1.4],
-  windscreen: [0, 1.25, -1.0],
-  roof: [0, 1.62, 0.0],
-  rear_glass: [0, 1.35, 1.6],
-  tailgate: [0, 0.7, 1.9],
-  rear_bumper: [0, 0.3, 1.95],
-  l_door_front: [-0.96, 0.8, -0.6],
-  r_door_front: [0.96, 0.8, -0.6],
-  l_door_rear: [-0.96, 0.8, 0.6],
-  r_door_rear: [0.96, 0.8, 0.6],
-  underbody: [0, 0.15, 0.0],
-  front_grill: [0, 0.5, -1.9],
-  l_headlamp: [-0.75, 0.55, -1.85],
-  r_headlamp: [0.75, 0.55, -1.85],
-  l_taillamp: [-0.75, 0.75, 1.9],
-  r_taillamp: [0.75, 0.75, 1.9],
-  l_wheel_front: [-0.95, 0.4, -1.3],
-  r_wheel_front: [0.95, 0.4, -1.3],
-  l_wheel_rear: [-0.95, 0.4, 1.3],
-  r_wheel_rear: [0.95, 0.4, 1.3],
-  l_fender: [-0.96, 0.65, -1.3],
-  r_fender: [0.96, 0.65, -1.3],
-  l_mirror: [-1.05, 1.1, -0.9],
-  r_mirror: [1.05, 1.1, -0.9],
-  l_door_glass_front: [-0.96, 1.2, -0.6],
-  r_door_glass_front: [0.96, 1.2, -0.6],
-  l_door_glass_rear: [-0.96, 1.2, 0.6],
-  r_door_glass_rear: [0.96, 1.2, 0.6],
-};
-
-function VanModel({
-  color,
-  damageEntries,
-  zoneResolutions,
-  highlightedIdx,
-  selectedZone,
-  onZoneClick,
-  onZoneSelect,
-  onFocusRequest,
+/** One marker per zone: the status's glyph, the row number when one listed
+ * part is on it (else how many), "+n" for suggestions beside listed parts,
+ * "?" for a side not known and ◇ for a part inside / behind the panel. */
+function ZoneMarker({
+  ref,
+  mark,
+  approx,
+  selected,
+  hovered,
+  onClick,
+  onHover,
 }: {
-  color: string;
-  damageEntries: DamageSummaryItem[];
-  zoneResolutions: (ZoneResolution | null)[];
-  highlightedIdx: number | null;
-  selectedZone?: string | null;
-  onZoneClick: (idx: number) => void;
-  onZoneSelect?: (zoneKey: string | null) => void;
-  onFocusRequest?: (center: THREE.Vector3, size: THREE.Vector3) => void;
+  ref?: React.Ref<HTMLButtonElement>;
+  mark: ZoneMark;
+  approx: boolean;
+  selected: boolean;
+  hovered: boolean;
+  onClick: () => void;
+  onHover: (on: boolean) => void;
 }) {
-  const geo = useMemo(() => {
-    const shape = new THREE.Shape();
-    VAN_PROFILE.forEach(([z, y], i) => {
-      const x = -z;
-      if (i === 0) shape.moveTo(x, y);
-      else shape.lineTo(x, y);
-    });
-    shape.closePath();
-    const g = new THREE.ExtrudeGeometry(shape, { depth: VAN_WIDTH, bevelEnabled: false, curveSegments: 1 });
-    g.translate(0, 0, -VAN_WIDTH / 2);
-    g.rotateY(Math.PI / 2);
-    return g;
-  }, []);
-  const wheelZ = 1.3, wheelX = 0.95, wheelR = 0.4;
-  const wheelGeo = useMemo(() => new THREE.CylinderGeometry(wheelR, wheelR, 0.26, 12), []);
-
-  const markers = useMemo(() => {
-    const byZone = groupByZone(zoneResolutions);
-    const out: { idx: number; label: string; badge: number; severity: string; pos: THREE.Vector3 }[] = [];
-
-    byZone.forEach((itemIdxs, zoneKey) => {
-      const anchor = VAN_ZONE_ANCHORS[zoneKey] || (
-        zoneKey.includes("front") ? [0, 0.5, -1.5] :
-        zoneKey.includes("rear") ? [0, 0.5, 1.5] :
-        [0, 0.8, 0]
-      );
-      const center = new THREE.Vector3(...anchor);
-      const spread = 0.16;
-
-      itemIdxs.forEach((itemIdx, n) => {
-        const res = zoneResolutions[itemIdx]!;
-        const item = damageEntries[itemIdx];
-        const pos = center.clone();
-        if (itemIdxs.length > 1) {
-          const angle = (n * 137.5 * Math.PI) / 180;
-          const r = spread * Math.sqrt(n / itemIdxs.length + 0.15);
-          pos.x += Math.cos(angle) * r;
-          pos.z += Math.sin(angle) * r;
-          pos.y += (n % 3) * 0.045;
-        }
-        out.push({
-          idx: itemIdx,
-          label: item.part,
-          badge: res.badgeNumber,
-          severity: severityClass(item.severity),
-          pos,
-        });
-      });
-    });
-    return out;
-  }, [damageEntries, zoneResolutions]);
-
-  const lastHandledRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (highlightedIdx === null || highlightedIdx === lastHandledRef.current) return;
-    lastHandledRef.current = highlightedIdx;
-    const res = zoneResolutions[highlightedIdx];
-    if (!res || !onFocusRequest) return;
-    const anchor = VAN_ZONE_ANCHORS[res.key] || [0, 0.8, 0];
-    const center = new THREE.Vector3(...anchor);
-    onFocusRequest(center, new THREE.Vector3(0.6, 0.6, 0.6));
-  }, [highlightedIdx, zoneResolutions, onFocusRequest]);
-
-  useEffect(() => {
-    if (!selectedZone || !onFocusRequest) return;
-    let targetKey = selectedZone;
-    if (selectedZone === "skeleton") targetKey = "underbody";
-    if (selectedZone === "lighting") targetKey = "l_taillamp";
-    if (selectedZone === "boot_floor") targetKey = "tailgate";
-    const anchor = VAN_ZONE_ANCHORS[targetKey];
-    if (!anchor) return;
-    const center = new THREE.Vector3(...anchor);
-    onFocusRequest(center, new THREE.Vector3(0.6, 0.6, 0.6));
-  }, [selectedZone, onFocusRequest]);
-
+  const glyph = STATUS_GLYPHS[mark.lead];
+  let text: string;
+  if (mark.lead === "suggestion") text = mark.suggested > 1 ? String(mark.suggested) : "";
+  else if (mark.lead === "dismissed") text = mark.dismissed > 1 ? String(mark.dismissed) : "";
+  else text = mark.number !== null ? String(mark.number).padStart(2, "0") : String(mark.listed);
+  const label = `${mark.label}${mark.sideUnknown ? " (side not known)" : ""}${approx ? " (approx.)" : ""}`;
   return (
-    <group>
-      <lineSegments>
-        <edgesGeometry args={[geo, 1]} />
-        <lineBasicMaterial color={color} transparent opacity={0.9} />
-      </lineSegments>
-      <mesh geometry={geo}>
-        <meshBasicMaterial color={color} transparent opacity={0.05} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-      {[[-wheelX, -wheelZ], [wheelX, -wheelZ], [-wheelX, wheelZ], [wheelX, wheelZ]].map(([x, z], i) => (
-        <group key={i} position={[x, wheelR, z]} rotation={[0, 0, Math.PI / 2]}>
-          <lineSegments>
-            <edgesGeometry args={[wheelGeo]} />
-            <lineBasicMaterial color={color} transparent opacity={0.9} />
-          </lineSegments>
-          <mesh geometry={wheelGeo}>
-            <meshBasicMaterial color={color} transparent opacity={0.12} depthWrite={false} />
-          </mesh>
-        </group>
-      ))}
-      {markers.map((m) => (
-        <Html key={m.idx} position={[m.pos.x, m.pos.y + 0.12, m.pos.z]} center occlude={false} zIndexRange={[10, 0]}>
-          <button
-            type="button"
-            className={`hotspot-beacon-3d ${m.severity === "severe" ? "severe-spot" : ""} ${highlightedIdx === m.idx ? "active-spot" : ""}`}
-            title={m.label}
-            onClick={() => onZoneClick(m.idx)}
-          >
-            {String(m.badge).padStart(2, "0")}
-          </button>
-        </Html>
-      ))}
-      <Html position={[0, 0.06, -2.05]} center distanceFactor={8} occlude={false}>
-        <span className="blueprint-3d-axis-label">FRONT</span>
-      </Html>
-      <Html position={[0, 0.06, 2.05]} center distanceFactor={8} occlude={false}>
-        <span className="blueprint-3d-axis-label">REAR</span>
-      </Html>
-    </group>
+    <button
+      ref={ref}
+      type="button"
+      className={`dmap-marker is-${mark.lead} ${mark.number === null && mark.listed > 1 ? "is-count" : ""} ${selected ? "is-selected" : ""} ${hovered ? "is-hovered" : ""}`}
+      aria-label={label}
+      title={label}
+      aria-pressed={selected}
+      onClick={onClick}
+      onPointerEnter={() => onHover(true)}
+      onPointerLeave={() => onHover(false)}
+    >
+      {glyph && <span className="dmap-marker-glyph" aria-hidden="true">{glyph}</span>}
+      {text && <span aria-hidden="true">{text}</span>}
+      {mark.lead !== "suggestion" && mark.suggested > 0 && (
+        <span className="dmap-marker-plus" aria-hidden="true">
+          +{mark.suggested}
+        </span>
+      )}
+      {mark.sideUnknown && (
+        <span className="dmap-marker-q" aria-hidden="true">
+          ?
+        </span>
+      )}
+      {mark.standIn && (
+        <span className="dmap-marker-in" aria-hidden="true">
+          ◇
+        </span>
+      )}
+    </button>
   );
 }
 
-interface Props {
-  damageEntries: DamageSummaryItem[];
-  onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
-  highlightedDamageIndex: number | null;
-  vehicleName: string;
-  bodyType?: string | null;
-  selectedZone?: string | null;
-  onZoneSelect?: (zoneKey: string | null) => void;
+/** Dev only: counts drawn frames for the test page's timing. */
+function DevFrames() {
+  const { gl, camera } = useThree();
+  useEffect(() => {
+    const hook = devHook();
+    if (hook) {
+      hook.gl = gl;
+      hook.camera = camera;
+    }
+  }, [gl, camera]);
+  useFrame(() => {
+    const hook = devHook();
+    if (!hook) return;
+    hook.frames += 1;
+    hook.lastFrameAt = performance.now();
+  });
+  return null;
 }
 
-const CAR_HOME: FocusState = { position: new THREE.Vector3(3.6, 2.4, 3.9), target: new THREE.Vector3(0, 0.55, 0) };
-const VAN_HOME: FocusState = { position: new THREE.Vector3(4.2, 2.6, 4.6), target: new THREE.Vector3(0, 0.55, 0) };
+// =============================================================================
+// The 3D map
 
-export function VehicleBlueprint3D({
-  damageEntries,
-  onHotspotClick,
-  highlightedDamageIndex,
-  vehicleName,
-  bodyType: statedBodyType,
-  selectedZone,
-  onZoneSelect,
-}: Props) {
+export type DamageBlueprint3DProps = {
+  archetype: VehicleArchetype;
+  /** One per zone (lib/damageLinks zoneMarks). Keep the array's identity
+   * until its content changes (marksSignature): a new one repaints. */
+  marks: ZoneMark[];
+  /** Outlined, the rest dimmed. */
+  selectedZones: string[];
+  /** Outlined softly; never moves the camera. */
+  hoverZones: string[];
+  camera: CameraRequest | null;
+  onZoneClick: (zone: string, approx: boolean) => void;
+  onZoneHover?: (zone: string | null) => void;
+  /** Dots for the zones this model has no mesh for. Default true. */
+  showAnchors?: boolean;
+  /** Drag to rotate / pinch to zoom. Off on a phone until the person asks
+   * ([Rotate]), so a finger on the map still scrolls the page. Default true. */
+  interactive?: boolean;
+  className?: string;
+};
+
+/** The 3D damage map: one Canvas for the life of the page (a click, a new
+ * damage list or a hover never remounts it or resets the camera), frames
+ * drawn on demand and none while scrolled away. */
+export function DamageBlueprint3D({
+  archetype,
+  marks,
+  selectedZones,
+  hoverZones,
+  camera,
+  onZoneClick,
+  onZoneHover,
+  showAnchors = true,
+  interactive = true,
+  className,
+}: DamageBlueprint3DProps) {
   const accent = useThemeColor("--border-glow", "#38bdf8");
-  const archetype = detectBodyType(vehicleName, statedBodyType);
+  const ink = useThemeColor("--text-primary", "#f8fafc");
   const modelUrl = MODEL_PATHS[archetype] || MODEL_PATHS.sedan;
   const controlsRef = useRef<any>(null);
   const [focus, setFocus] = useState<FocusState | null>(null);
-  const home = CAR_HOME;
 
-  const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
+  // Stable identity (setFocus never changes): VehicleModel's camera effect
+  // must not re-run because a new function arrived.
+  const handleFocusRequest = useCallback((state: FocusState) => setFocus(state), []);
+  // The orbit's target is the rig's to move; the controls only take it when
+  // they mount (a target prop that changed with each focus would snap the
+  // view before the rig's move began).
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per mount of the controls
+  const controlsTarget = useMemo(() => (focus?.target ?? HOME.target).toArray(), [interactive]);
 
-  // Reset any camera focus whenever the report itself changes (new
-  // damageEntries identity), so switching reports never leaves a stale
-  // zoom-in from the previous one.
-  useEffect(() => setFocus(null), [damageEntries]);
-
-  const handleZoneClick = (idx: number) => {
-    onHotspotClick(idx, damageEntries[idx]);
-  };
-
-  // Stable identity (setFocus never changes): VehicleModel's zoom effects
-  // list this as a dependency, so a new function every render re-ran them.
-  const handleFocusRequest = useCallback((center: THREE.Vector3, size: THREE.Vector3) => {
-    const radius = Math.max(size.x, size.y, size.z, 0.25);
-    const dist = Math.max(radius * 2.6, 0.9);
-    // Approach from the direction the part actually sits relative to the
-    // car's center (the model is always normalized to sit at x=0,z=0),
-    // not from wherever the camera's *current* angle happens to be --
-    // auto-rotate keeps spinning the camera whenever nothing is focused,
-    // so "current angle" at the moment of a click is effectively random
-    // and could zoom in from the wrong side of the car entirely. This way
-    // the right door is always approached from the right, the front
-    // bumper always from the front, regardless of click timing.
-    const outward = new THREE.Vector3(center.x, 0, center.z);
-    if (outward.lengthSq() < 0.0001) outward.set(0.5, 0, 0.7);
-    outward.normalize();
-    const dir = outward.multiplyScalar(0.82).add(new THREE.Vector3(0, 0.45, 0)).normalize();
-    setFocus({ position: center.clone().addScaledVector(dir, dist), target: center.clone() });
-  }, []);
-
-  // Stop drawing frames (auto-rotate renders continuously) while the stage
-  // is scrolled out of view or hidden; resume just before it comes back.
+  // Stop drawing while the stage is scrolled out of view or hidden.
   const stageRef = useRef<HTMLDivElement>(null);
   const [onScreen, setOnScreen] = useState(true);
   useEffect(() => {
     const el = stageRef.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver(
-      (entries) => setOnScreen(entries[entries.length - 1].isIntersecting),
-      { rootMargin: "200px 0px" },
-    );
+    const observer = new IntersectionObserver((entries) => setOnScreen(entries[entries.length - 1].isIntersecting), { rootMargin: "200px 0px" });
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
   return (
-    <div className="blueprint-stage-3d" ref={stageRef}>
-      <Canvas
-        camera={{ position: home.position.toArray(), fov: 40 }}
-        dpr={[1, 2]}
-        frameloop={onScreen ? "always" : "never"}
-      >
+    <div className={`blueprint-stage-3d ${className ?? ""}`} ref={stageRef}>
+      <Canvas camera={{ position: HOME.position.toArray(), fov: FOV }} dpr={[1, 2]} frameloop={onScreen ? "demand" : "never"}>
         <React.Suspense
           fallback={
             <Html center>
@@ -810,13 +824,15 @@ export function VehicleBlueprint3D({
             key={archetype}
             archetype={archetype}
             modelUrl={modelUrl}
-            color={accent}
-            damageEntries={damageEntries}
-            zoneResolutions={zoneResolutions}
-            highlightedIdx={highlightedDamageIndex}
-            selectedZone={selectedZone}
-            onZoneClick={handleZoneClick}
-            onZoneSelect={onZoneSelect}
+            accent={accent}
+            ink={ink}
+            marks={marks}
+            selectedZones={selectedZones}
+            hoverZones={hoverZones}
+            camera={camera}
+            showAnchors={showAnchors}
+            onZoneClick={onZoneClick}
+            onZoneHover={onZoneHover}
             onFocusRequest={handleFocusRequest}
           />
 
@@ -835,34 +851,22 @@ export function VehicleBlueprint3D({
           />
         </React.Suspense>
 
-        <CameraRig focus={focus} home={home} controlsRef={controlsRef} />
-        <OrbitControls
-          ref={controlsRef}
-          makeDefault
-          enablePan={false}
-          minDistance={0.8}
-          maxDistance={9}
-          maxPolarAngle={Math.PI / 2 - 0.02}
-          autoRotate
-          autoRotateSpeed={0.6}
-          target={home.target.toArray()}
-        />
+        <CameraRig focus={focus} controlsRef={controlsRef} />
+        {interactive && (
+          <OrbitControls
+            ref={controlsRef}
+            makeDefault
+            enablePan={false}
+            minDistance={0.8}
+            maxDistance={11}
+            maxPolarAngle={Math.PI / 2 - 0.02}
+            target={controlsTarget}
+          />
+        )}
+        {process.env.NODE_ENV !== "production" && <DevFrames />}
       </Canvas>
 
-      {damageEntries.length === 0 && <div className="blueprint-3d-empty">No damaged parts recorded yet</div>}
-      {focus && (
-        <button
-          type="button"
-          className="blueprint-3d-back-btn"
-          onClick={() => setFocus(null)}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-        >
-          <ArrowLeft style={{ width: 12, height: 12 }} /> Back to full view
-        </button>
-      )}
-      <div className="blueprint-3d-hint" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-        <RotateCcw style={{ width: 11, height: 11 }} /> Drag to rotate • Scroll to zoom • Click a part to inspect
-      </div>
+      {marks.length === 0 && <div className="blueprint-3d-empty">No damaged parts recorded yet</div>}
     </div>
   );
 }

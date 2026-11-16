@@ -1682,6 +1682,699 @@ a:hover {
   z-index: 4;
 }
 
+/* ---- Contract 9 B: damage map ---- */
+/* DamageMapPanel and the 3D map's selection (contract9.md section 7; the
+   3D damage map agent's block). Its rules go between these two lines.
+   Status is a pattern plus a glyph, never colour alone: confirmed = solid
+   + check mark, AI = light fill, needs a check = light fill + "!",
+   suggestion = stripes + dashed edge + "+", not damaged = grey outline + x. */
+.dmap {
+  --dmap-confirmed: #10b981;
+  --dmap-ai: #f59e0b;
+  --dmap-check: #f97316;
+  --dmap-suggestion: #a855f7;
+  --dmap-dismissed: #94a3b8;
+  container-type: inline-size;
+  background: var(--surface-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px 16px 12px;
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+}
+.dmap-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.dmap-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dmap-collapse h2 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+.dmap-head-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.dmap-body {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.dmap-body select {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+}
+.dmap-body strong {
+  color: var(--text-primary);
+}
+
+/* Narrow (the wizard's right column on a laptop, a phone): one column. */
+.dmap-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "stage" "photo" "controls" "card" "strip" "legend";
+  gap: 10px;
+}
+@container (min-width: 620px) {
+  .dmap-grid {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-areas:
+      "stage photo"
+      "controls controls"
+      "card card"
+      "strip strip"
+      "legend legend";
+  }
+}
+.dmap-detail {
+  display: contents;
+}
+.dmap-stage {
+  grid-area: stage;
+  position: relative;
+  min-width: 0;
+  /* The 3D labels and markers (drei Html) carry their own z-index: kept
+     inside the stage, never over a menu, a dialog or the phone's sheet. */
+  isolation: isolate;
+}
+.dmap .blueprint-stage-3d {
+  height: 320px;
+}
+.dmap-intake .blueprint-stage-3d {
+  height: 280px;
+}
+.dmap-stage-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  text-align: center;
+  border-style: dashed;
+}
+.dmap-rotate {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+  color: var(--text-primary);
+}
+.dmap-rotate.is-on {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.dmap-photo {
+  grid-area: photo;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dmap-photo > img,
+.dmap-photo > div:first-child {
+  flex: 1;
+}
+.dmap-photo-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 320px;
+  min-height: 180px;
+  object-fit: contain;
+  background: #050811;
+  border-radius: 10px;
+}
+.dmap-photo-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  border-radius: 10px;
+  border: 1px dashed var(--border-color);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 12px;
+}
+.dmap-photo-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-height: 28px;
+}
+.dmap-photo-label {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.dmap-photo-note {
+  flex: 1;
+  color: var(--text-muted);
+}
+.dmap-small-btn {
+  font-size: 11px !important;
+  padding: 4px 9px !important;
+  gap: 4px !important;
+}
+
+.dmap-controls {
+  grid-area: controls;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dmap-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.dmap-chips-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  min-width: 38px;
+}
+.dmap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.dmap-chip:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+.dmap-chip.is-active {
+  border-color: var(--accent-primary);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-primary);
+}
+.dmap-chip.is-zero {
+  opacity: 0.6;
+}
+.dmap-chip b {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dmap-card {
+  grid-area: card;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.dmap-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.dmap-card-head h3 {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+}
+.dmap-approx {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.dmap-card-count {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.dmap-card-close {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+}
+.dmap-card-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.dmap-card-empty p {
+  margin: 0 0 6px;
+}
+.dmap-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.dmap-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--badge-red-text);
+}
+.dmap-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.dmap-row {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--surface-card);
+}
+.dmap-row.is-selected {
+  border-color: var(--accent-primary);
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+}
+.dmap-row.is-hovered {
+  border-color: var(--border-hover);
+}
+.dmap-row.is-dismissed {
+  opacity: 0.75;
+}
+.dmap-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+.dmap-row-name {
+  flex: 1;
+  font-weight: 600;
+  min-width: 0;
+}
+.dmap-row-status,
+.dmap-row-photos {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dmap-row-where {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 3px 0 0 34px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.dmap-row-reason {
+  margin: 3px 0 0 34px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.dmap-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px 34px;
+}
+
+/* The status badge on a card row and the legend swatch: one pattern each. */
+.dmap-badge,
+.dmap-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  border: 1.5px solid transparent;
+  flex-shrink: 0;
+}
+.dmap-swatch {
+  min-width: 20px;
+}
+.dmap-badge.is-confirmed,
+.dmap-swatch.is-confirmed {
+  background: var(--dmap-confirmed);
+  border-color: var(--dmap-confirmed);
+  color: #fff;
+}
+.dmap-badge.is-ai,
+.dmap-swatch.is-ai {
+  background: color-mix(in srgb, var(--dmap-ai) 22%, transparent);
+  border-color: var(--dmap-ai);
+  color: var(--text-primary);
+}
+.dmap-badge.is-check,
+.dmap-swatch.is-check {
+  background: color-mix(in srgb, var(--dmap-check) 22%, transparent);
+  border-color: var(--dmap-check);
+  color: var(--text-primary);
+}
+.dmap-badge.is-suggestion,
+.dmap-swatch.is-suggestion {
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--dmap-suggestion) 55%, transparent) 0 3px, transparent 3px 6px);
+  border: 1.5px dashed var(--dmap-suggestion);
+  color: var(--text-primary);
+}
+.dmap-badge.is-dismissed,
+.dmap-swatch.is-dismissed {
+  background: transparent;
+  border: 1.5px dashed var(--dmap-dismissed);
+  color: var(--text-muted);
+}
+.dmap-swatch.is-q,
+.dmap-swatch.is-in {
+  background: var(--surface-elevated);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.dmap-strip {
+  grid-area: strip;
+  min-width: 0;
+}
+.dmap-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.dmap-strip-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.dmap-strip-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.dmap-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 76px;
+  height: 58px;
+  padding: 0;
+  border-radius: 7px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  background: #050811;
+  cursor: pointer;
+}
+.dmap-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dmap-thumb.is-active {
+  border-color: var(--accent-primary);
+}
+.dmap-thumb.is-deleted {
+  border-style: dashed;
+  border-color: var(--border-color);
+}
+.dmap-thumb-gone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.dmap-thumb-label {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(5, 8, 17, 0.75);
+  border-top-right-radius: 5px;
+}
+.dmap-thumb-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  box-shadow: 0 0 0 1.5px #050811;
+}
+
+.dmap-legend {
+  grid-area: legend;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+.dmap-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.dmap-legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  cursor: pointer;
+}
+
+/* One marker per zone on the 3D model (drei Html). */
+.dmap-marker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+  color: #0f172a;
+}
+.dmap-marker:hover,
+.dmap-marker.is-hovered {
+  transform: scale(1.15);
+}
+.dmap-marker.is-selected {
+  transform: scale(1.25);
+  outline: 3px solid var(--text-primary);
+  outline-offset: 1px;
+}
+.dmap-marker.is-confirmed {
+  background: var(--dmap-confirmed);
+  color: #fff;
+}
+.dmap-marker.is-ai {
+  background: #fde68a;
+  border-color: var(--dmap-ai);
+}
+.dmap-marker.is-check {
+  background: #fed7aa;
+  border-color: var(--dmap-check);
+}
+.dmap-marker.is-suggestion {
+  background: repeating-linear-gradient(135deg, #e9d5ff 0 3px, #c084fc 3px 6px);
+  border: 2px dashed #7e22ce;
+}
+.dmap-marker.is-dismissed {
+  background: #f1f5f9;
+  border: 2px dashed var(--dmap-dismissed);
+  color: #475569;
+}
+.dmap-marker.is-count::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  opacity: 0.35;
+  pointer-events: none;
+}
+.dmap-marker-glyph {
+  font-size: 12px;
+}
+.dmap-marker-plus {
+  margin-left: 2px;
+  padding: 0 3px;
+  border-radius: 999px;
+  font-size: 9px;
+  background: #e9d5ff;
+  border: 1px dashed #7e22ce;
+  color: #3b0764;
+}
+.dmap-marker-q,
+.dmap-marker-in {
+  margin-left: 2px;
+  font-size: 11px;
+}
+.dmap-anchor {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  background: var(--surface-card-solid);
+  opacity: 0.55;
+  cursor: pointer;
+}
+/* On the far side of the car from the camera: faded, still clickable. */
+.dmap-marker[data-far="1"] {
+  opacity: 0.3;
+  box-shadow: none;
+}
+.dmap-anchor[data-far="1"] {
+  opacity: 0.15;
+}
+.dmap-anchor:hover,
+.dmap-anchor.is-selected {
+  opacity: 1;
+  border-color: var(--text-primary);
+  transform: scale(1.3);
+}
+
+/* The wizard's Photos by part group the map has selected. */
+.rv-part-group.dmap-on-map {
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+/* The wizard: the map stays in view beside the cover page. */
+@media (min-width: 1100px) {
+  .dmap-intake {
+    position: sticky;
+    top: 12px;
+    z-index: 5;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+}
+
+/* A phone: a 200px band of model, chips that scroll, and the photo with
+   the selection card as a bottom sheet once something is picked. */
+@media (max-width: 760px) {
+  .dmap {
+    padding: 10px 12px;
+  }
+  .dmap .blueprint-stage-3d,
+  .dmap-intake .blueprint-stage-3d {
+    height: 200px;
+  }
+  .dmap-detail {
+    display: none;
+  }
+  .dmap.has-selection .dmap-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    max-height: 62vh;
+    overflow-y: auto;
+    padding: 12px 14px 16px;
+    background: var(--surface-card-solid);
+    border-top: 1px solid var(--border-color);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.35);
+  }
+  .dmap.has-selection .dmap-photo-img {
+    max-height: 220px;
+  }
+  .dmap-row-where,
+  .dmap-row-reason,
+  .dmap-row-actions {
+    margin-left: 0;
+  }
+  .dmap-legend-toggle {
+    margin-left: 0;
+  }
+}
+/* ---- end Contract 9 B: damage map ---- */
+
 /* ==========================================================================
    3. PHOTO EVIDENCE INSPECTOR HUD
    ========================================================================== */
@@ -6311,6 +7004,868 @@ button.intake-tile:hover {
   }
 }
 /* ---- end P3: review step ---- */
+
+/* ---- Contract 9 E: evidence ---- */
+/* EvidenceViewer, PhotoBoxes and SuggestionPanel (contract9.md section 7;
+   the evidence UI agent's block, after DamagePhotoViewer's rules above,
+   which it replaces). Its rules go between these two lines. */
+/* PhotoBoxes: a photo with its boxes. The box colours sit on photographs,
+   not on the theme's surfaces, so they are fixed bright tones with a dark
+   halo; the line style (solid AI box, dashed sorter's box) and the tag's
+   glyph and words carry the meaning, never the colour alone. */
+.pb-root {
+  --pb-ai: #38bdf8;
+  --pb-confirmed: #22c55e;
+  --pb-check: #f59e0b;
+  --pb-suggestion: #e879f9;
+  --pb-dismissed: #94a3b8;
+  line-height: 0;
+}
+
+.pb-natural {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.pb-natural .pb-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.pb-natural .pb-img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+}
+
+/* Fills its parent's width (the damage table's photo cell). */
+.pb-fill.pb-natural,
+.pb-fill .pb-frame {
+  display: block;
+  width: 100%;
+}
+
+.pb-fill .pb-img {
+  width: 100%;
+  height: auto;
+}
+
+.pb-contain {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.pb-contain .pb-frame {
+  position: absolute;
+  inset: 0;
+}
+
+.pb-contain .pb-frame.is-placed {
+  inset: auto;
+}
+
+.pb-contain .pb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.pb-box {
+  --pb-c: var(--pb-ai);
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--pb-c);
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  font: inherit;
+  line-height: 1;
+}
+
+button.pb-box {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+button.pb-box:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.pb-kind-sort {
+  border-style: dashed;
+}
+
+.pb-status-confirmed {
+  --pb-c: var(--pb-confirmed);
+}
+
+.pb-status-check {
+  --pb-c: var(--pb-check);
+}
+
+.pb-status-suggestion {
+  --pb-c: var(--pb-suggestion);
+}
+
+.pb-status-dismissed {
+  --pb-c: var(--pb-dismissed);
+}
+
+.pb-box.is-selected {
+  border-width: 3px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 0 4px rgba(0, 0, 0, 0.45);
+}
+
+.pb-box.is-hover {
+  box-shadow: 0 0 0 2px var(--pb-c), 0 0 0 3px rgba(0, 0, 0, 0.5);
+}
+
+.pb-tag {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  max-width: max(100%, 160px);
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 4px 4px 4px 0;
+  background: var(--pb-c);
+  color: #0b1220;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pb-box.tag-inside .pb-tag {
+  top: 0;
+  bottom: auto;
+  left: 0;
+  border-radius: 0 0 4px 0;
+}
+
+.pb-glyph {
+  margin-right: 4px;
+  font-weight: 800;
+}
+
+.pb-note {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fde68a;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+/* Thumbnails: the box alone, thinner; no tag. */
+.pb-compact .pb-box {
+  border-width: 1.5px;
+  border-radius: 2px;
+}
+
+.pb-compact .pb-tag {
+  display: none;
+}
+
+.pb-compact .pb-note {
+  left: 2px;
+  bottom: 2px;
+  padding: 0 3px;
+  font-size: 9px;
+}
+
+/* Evidence viewer (components/EvidenceViewer.tsx). The overlay and the
+   arrows are DamagePhotoViewer's .rv-modal / .rv-viewer-nav above. */
+.ev-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  width: min(1280px, 100%);
+  height: min(880px, calc(100vh - 48px));
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.ev-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #000000;
+}
+
+.ev-stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.ev-stage {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+  display: flex;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* Fitted, nothing to scroll (and no scrollbar to shrink the fit). */
+.ev-stage:not(.is-zoomed) {
+  overflow: hidden;
+}
+
+.ev-stage.is-zoomed {
+  cursor: grab;
+}
+
+.ev-stage.is-zoomed:active {
+  cursor: grabbing;
+}
+
+/* margin: auto centres the photo while it is smaller than the stage and
+   lets it scroll from its edge once it is bigger. Fitted by CSS alone: the
+   stage is a size container, so the photo follows any resize at once. */
+.ev-canvas {
+  position: relative;
+  flex: none;
+  width: 100%;
+  height: 100%;
+  margin: auto;
+}
+
+.ev-canvas.is-sized {
+  width: calc(min(100cqw, 100cqh * var(--ev-ratio)) * var(--ev-zoom, 1));
+  height: auto;
+  aspect-ratio: var(--ev-ratio);
+}
+
+.ev-stage-empty,
+.ev-nophoto {
+  align-items: center;
+  justify-content: center;
+  margin: auto;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.ev-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+}
+
+.ev-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ev-tool:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.ev-tool[aria-pressed="true"] {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--surface-card-solid);
+}
+
+.ev-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ev-tool:focus-visible,
+.ev-chip:focus-visible,
+.sg-thumb:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.ev-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 16px 0;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ev-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ev-count {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.ev-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.ev-status {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ev-status-confirmed {
+  color: var(--badge-green-text);
+}
+
+.ev-status-check {
+  color: var(--badge-amber-text);
+}
+
+.ev-caption {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.ev-reason {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.ev-reason.is-code {
+  color: var(--text-secondary);
+}
+
+.ev-facts,
+.ev-boxline {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ev-check,
+.sg-check {
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.ev-check {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.ev-check-yes,
+.sg-check-yes {
+  border-color: var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+}
+
+.ev-check-unsure,
+.sg-check-unsure {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+
+.ev-note,
+.sg-note {
+  padding: 6px 10px;
+  border-left: 3px solid var(--badge-amber-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--badge-amber-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.ev-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ev-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ev-chip.is-active {
+  border-color: var(--accent-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-primary);
+}
+
+.ev-chip.is-gone {
+  cursor: default;
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.ev-chip-kind {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.ev-keys {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ev-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 0 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+}
+
+.ev-actions:empty {
+  display: none;
+}
+
+.ev-act {
+  min-height: 40px;
+}
+
+.ev-act kbd,
+.sg-panel kbd {
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.ev-done {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.ev-on-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ev-on-photo li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ev-on-photo-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.ev-glyph {
+  width: 14px;
+  flex-shrink: 0;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ev-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Suggestion cards (components/SuggestionPanel.tsx) */
+.sg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card-solid);
+}
+
+.sg-card.is-unlikely {
+  border-style: dashed;
+}
+
+.sg-card[aria-busy="true"] {
+  opacity: 0.6;
+}
+
+.sg-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sg-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sg-check {
+  margin-left: auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.sg-reason {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.sg-reason.is-code {
+  color: var(--text-secondary);
+}
+
+.sg-facts,
+.sg-run-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sg-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sg-thumbs {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.sg-thumb {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  cursor: zoom-in;
+}
+
+.sg-thumb .pb-img {
+  max-width: 112px;
+  max-height: 64px;
+  border-radius: 4px;
+}
+
+.sg-thumb.is-gone {
+  justify-content: center;
+  width: 86px;
+  height: 64px;
+  border-style: dashed;
+  cursor: default;
+}
+
+.sg-thumb-gone {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: line-through;
+}
+
+.sg-thumb-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.sg-more {
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sg-btn {
+  min-height: 34px;
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+.sg-map {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sg-group {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.sg-group-head {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.sg-group-head .intake-muted {
+  font-weight: 500;
+}
+
+.sg-decided {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.sg-decided-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sg-decided-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.sg-decided-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+}
+
+.sg-decided-mark {
+  width: 14px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.sg-decided-mark.is-added {
+  color: var(--badge-green-text);
+}
+
+.sg-decided-mark.is-dismissed {
+  color: var(--text-muted);
+}
+
+.sg-decided-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sg-decided-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sg-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--badge-red-border);
+  background: var(--badge-red-bg);
+  color: var(--badge-red-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Review step: the row picked on the map or hovered (lib/useDamageSelection) */
+.ev-row-picked {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
+.ev-row-picked > td,
+.ev-row-hover > td {
+  background: var(--surface-hover);
+}
+
+.ev-map-anchor {
+  height: 0;
+  scroll-margin-top: 72px;
+}
+
+/* Tablets and phones: the photo on top at full width, then the facts, with
+   the decisions in a bar along the bottom. */
+@media (max-width: 900px) {
+  .ev-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .ev-main {
+    height: 62vh;
+  }
+
+  .ev-side {
+    overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Full screen on a phone. */
+  .ev-body {
+    width: 100%;
+    border-radius: 0;
+  }
+
+  .ev-keys {
+    display: none;
+  }
+
+  .ev-tool {
+    min-height: 40px;
+  }
+
+  .ev-act {
+    flex: 1 1 40%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .ev-act kbd {
+    display: none;
+  }
+
+  .ev-act-later {
+    flex: 0 1 auto;
+  }
+
+  .sg-card-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sg-actions .sg-btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    justify-content: center;
+  }
+}
+/* The 3D damage map (DamageMapPanel, B) is sticky on the wizard's Review
+   step; the app's top bar is sticky too (~60px: 12px padding round the theme
+   switch and the user menu), so the map stops below it, not under it. */
+@media (min-width: 1100px) {
+  .dmap-intake {
+    top: 72px;
+  }
+}
+/* ---- end Contract 9 E: evidence ---- */
 
 /* ---- P3: upload, sort, viewer ---- */
 

@@ -903,6 +903,155 @@ export type DamageSummaryItem = {
   /** The AI could not see the side on this part's own photo and took it
    * from nearby photos. The API clears it once a person edits the part. */
   side_inferred?: boolean;
+  /** Contract 8 D2 (zone reading): the photos the part was seen in, as
+   * photo_reference is written ("@<photo id>" in a draft, "P07" once
+   * filed); the reads that found it ("overall", "zone:rear"...); the grid
+   * cells of photo_reference (grid marks, off). Empty on older cases. */
+  seen_in?: string[];
+  found_by?: string[];
+  grid_cells?: string[];
+  /** Contract 9 (bot-service reports/schema.py section 4.1), all code-set:
+   * the AI's own words for why the part is damaged; each photo's proof,
+   * at most 4, best first ([0] is photo_reference's); the re-check's
+   * answer, copied from a suggestion a person added; "suggestion" when it
+   * came from one. Absent on older cases (lib/findings.evidenceOf). */
+  reason?: string | null;
+  evidence?: Evidence[];
+  check?: SuggestionCheck | null;
+  added_from?: "suggestion" | null;
+};
+
+// ---- Contract 9: the evidence for every finding ------------------------------
+// Mirrors bot-service reports/schema.py (contract9.md section 4.8). Frozen:
+// change them only with the lead's OK.
+
+/** [ymin, xmin, ymax, xmax], each 0-1000, on the upright AI-input frame. */
+export type Box = [number, number, number, number];
+
+/** One photo's proof for one finding. box_kind is null exactly when box is. */
+export type Evidence = {
+  photo: string;
+  box: Box | null;
+  box_kind: "ai" | "sort" | null;
+  /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look" */
+  by: string;
+  reason: string | null;
+  confidence: "High" | "Medium" | "Low" | null;
+  /** The size of the image the box was drawn on (PhotoBoxes hides a box
+   * drawn on another frame). */
+  img_w: number | null;
+  img_h: number | null;
+};
+
+/** The re-check's answer on one suggestion. p: the Decisions API's
+ * yes-probability (never shown as a percentage). */
+export type SuggestionCheck = {
+  verdict: "yes" | "no" | "unsure";
+  p: number | null;
+  by: "decision" | "lite";
+  model: string | null;
+  reason: string | null;
+};
+
+/** A person's add / dismiss / undo on a suggestion, stamped by the server. */
+export type SuggestionDecision = {
+  key: string;
+  part: string;
+  action: "added" | "dismissed" | "undone";
+  by_id: string | null;
+  by_name: string | null;
+  at: string;
+  looked: boolean;
+  where: "intake" | "case";
+};
+
+/** One suggested part (bot-service reports/schema.SecondLookItem): never a
+ * finding until a person adds it. key: prefill.item_key, the same over
+ * re-reads (an old item without one goes by part). */
+export type SecondLookItem = {
+  key: string;
+  part: string;
+  /** The firm's wording for the part. */
+  name: string | null;
+  /** "@<photo id>" while a draft, "P07" once filed. */
+  photo_reference: string | null;
+  note: string | null;
+  condition_tokens: string[];
+  condition: string | null;
+  damage_type: string | null;
+  confidence: string | null;
+  /** "kit": past cases of the same make had it with a part found here;
+   * "nearby": next to a part found here; "zone": only a zone read found it. */
+  source: "kit" | "nearby" | "zone" | null;
+  /** Damage-list names that mean the part is listed already. */
+  covers: string[];
+  reason: string | null;
+  evidence: Evidence[];
+  found_by: string[];
+  seen_in: string[];
+  check: SuggestionCheck | null;
+  /** The list's part of the same family on the other side ("Right Tail Lamp"). */
+  other_side_listed: string | null;
+  other_part_name: string | null;
+  severity: string | null;
+  remarks: string | null;
+};
+
+/** What the re-check step did on this read. */
+export type CheckRun = {
+  status: "ok" | "skipped" | "failed";
+  by: "decision" | "lite" | null;
+  model: string | null;
+  note: string | null;
+  seconds: number | null;
+  calls: number;
+};
+
+/** data.second_look: the suggestions for a case and what people decided.
+ * Server-owned: the browser's copy is never saved. status / model / note
+ * describe the second-look call itself; the items show whatever it says. */
+export type SecondLook = {
+  status: string;
+  model: string | null;
+  note: string | null;
+  /** "past Honda Vezel cases" when the firm's history supplied candidates. */
+  scope: string | null;
+  seconds: number | null;
+  photos_sent: number;
+  candidates: number;
+  items: SecondLookItem[];
+  /** Keys a person marked Not damaged: never suggested again on this case. */
+  dismissed: string[];
+  /** The reads that answered ("overall", "zone:rear"...). */
+  reads: string[];
+  decisions: SuggestionDecision[];
+  check: CheckRun | null;
+};
+
+export type DecideAction = "add" | "dismiss" | "undo";
+/** POST /intake/{id}/suggestions and /reports/{id}/suggestions. */
+export type DecideResult = { second_look: SecondLook; item: DamageSummaryItem | null; item_index: number | null };
+
+// Added by the evidence UI (not part of the frozen mirror above):
+/** The decide endpoints' body: what was decided, and whether the person
+ * opened the evidence viewer on the suggestion first. */
+export type DecideRequest = { key: string; action: DecideAction; looked: boolean };
+/** POST /reports/{id}/suggestions also answers with what POST
+ * /reports/{id}/damage-items does (the parts as saved, the re-synced Annex
+ * A, the Annex C totals), so the case page updates without a reload. */
+export type CaseDecideResult = DecideResult & Partial<DamageItemsResponse>;
+
+/** One case photo as filing indexed it (bot-service reports/filing.
+ * photo_index_for), in P-number order: P07 is index 6. */
+export type PhotoIndexEntry = {
+  label: string;
+  kind: string | null;
+  area: string | null;
+  part: string | null;
+  shows_damage: boolean | null;
+  quality: string | null;
+  /** The AI's last reading was sent this photo. */
+  read?: boolean;
 };
 
 /** The part for anything outside the list (taxonomy.OTHER_PART); the item
@@ -1359,6 +1508,11 @@ export type ReportData = {
    * N/A, keyed by the field's dotted path ("vehicle_info.plate_number").
    * Absent on older reports. */
   checked?: Record<string, CheckedEntry> | null;
+  /** Contract 9: the suggestions and the decisions on them; absent when
+   * there were none (no panel). */
+  second_look?: SecondLook | null;
+  /** What each photo is, from filing (absent on a draft and on older cases). */
+  photo_index?: PhotoIndexEntry[] | null;
 };
 
 export type ReportDetail = {
@@ -1420,7 +1574,16 @@ export type AiReadInfo = {
 
 /** What the call was for. Kept open (string) so a kind a newer API adds
  * still shows, under its raw name. */
-export type AiRunKind = "sort" | "read" | "redraft" | "annex_suggest" | "redetect" | "lookup" | "second_look";
+export type AiRunKind =
+  | "sort"
+  | "read"
+  | "redraft"
+  | "annex_suggest"
+  | "redetect"
+  | "lookup"
+  | "second_look"
+  | "read_zones"
+  | "check";
 export type AiRunStatus = "running" | "ok" | "failed" | "refused" | "aborted";
 export type AiRunChannel = "dashboard" | "telegram" | "whatsapp" | "system";
 export type AiKeySource = "own" | "company" | "none";
@@ -1524,6 +1687,8 @@ const AI_RUN_KIND_LABELS: Record<string, string> = {
   redetect: "Re-run detection",
   lookup: "Price lookup",
   second_look: "Second look",
+  read_zones: "Zone reads",
+  check: "Suggestion re-check",
 };
 
 export function aiRunKindLabel(kind: string | null | undefined): string {
@@ -1552,6 +1717,134 @@ export function isAiUsageDays(value: unknown): value is AiUsageDays {
 export async function getAiUsage(days: AiUsageDays = 30): Promise<AiUsage> {
   const res = await apiFetch(`${API_BASE_URL}/ai-usage?days=${days}`, { cache: "no-store" }, { timeoutMs: 8000 });
   if (!res.ok) throw await apiError(res, "Failed to load AI usage");
+  return res.json();
+}
+
+/** Contract 8 L: what surveyors kept of the AI's drafts before signing off
+ * (bot-service app/reports/accuracy.py). Damage parts are the AI's list
+ * against the signed-off one: kept (side_changed / side_set among them),
+ * removed by people, added by people (missed). */
+export type AiAccuracyDamage = {
+  ai_found: number;
+  final: number;
+  kept: number;
+  removed: number;
+  added: number;
+  side_changed: number;
+  side_set: number;
+  remarks_changed: number;
+  remarks_filled: number;
+  condition_changed: number;
+  condition_filled: number;
+};
+
+/** Annex A lines the machine writes from the AI's damage list against the
+ * signed-off lines. The compared counts are null on a case they couldn't be
+ * worked out for; the final_* counts are always there. */
+export type AiAccuracyAnnex = {
+  cases_compared?: number;
+  machine: number | null;
+  kept: number | null;
+  removed: number | null;
+  added: number | null;
+  added_machine: number | null;
+  added_suggested: number | null;
+  added_typed: number | null;
+  priced_kept: number | null;
+  price_changed: number | null;
+  price_filled: number | null;
+  final: number;
+  final_machine: number;
+  final_typed: number;
+};
+
+/** Cover and parties fields the AI can fill. */
+export type AiAccuracyFields = { ai_filled: number; kept: number; changed: number; emptied: number; filled: number; template: number };
+
+/** Shares 0..1, null when there is nothing to divide by (the API's
+ * app/api/ai_accuracy.py says what each is "of"). */
+export type AiAccuracyRates = {
+  parts_kept: number | null;
+  parts_removed: number | null;
+  parts_added: number | null;
+  wrong_side: number | null;
+  remarks_changed: number | null;
+  condition_changed: number | null;
+  lines_kept: number | null;
+  lines_removed: number | null;
+  lines_added: number | null;
+  price_changed: number | null;
+  fields_kept: number | null;
+  fields_changed: number | null;
+  fields_emptied: number | null;
+};
+
+export type AiAccuracyTop = Array<{ part: string; cases: number }>;
+
+/** Contract 9 (accuracy VERSION 2): what became of the suggestions, by part
+ * name only. An outcome is "added" when the key is in the signed-off list,
+ * "dismissed" when a person marked it Not damaged, else "left". */
+export type AiAccuracySuggestionCounts = { shown: number; added: number; dismissed: number; left: number };
+export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
+  /** Added after opening the evidence viewer on it. */
+  looked_first: number;
+  by_source: Partial<Record<"zone" | "kit" | "nearby", AiAccuracySuggestionCounts>>;
+  /** By read: "zone:front", "zone:rear"... */
+  by_read: Record<string, AiAccuracySuggestionCounts>;
+  by_check: Partial<Record<"yes" | "no" | "unsure" | "none", AiAccuracySuggestionCounts>>;
+};
+
+export type AiAccuracySums = {
+  cases: number;
+  damage: AiAccuracyDamage;
+  annex_a: AiAccuracyAnnex;
+  fields: AiAccuracyFields;
+  rates: AiAccuracyRates;
+  most_missed?: AiAccuracyTop;
+  most_removed?: AiAccuracyTop;
+  /** Contract 9; absent from an API before it. */
+  suggestions?: AiAccuracySuggestions;
+};
+
+export type AiAccuracyCase = {
+  report_id: string;
+  /** Our Ref as the case has it; null until one is issued. Never a plate. */
+  our_ref: string | null;
+  vehicle: string | null;
+  signed_off_at: string;
+  /** "2026-11", Singapore time. */
+  month: string;
+  /** The models whose reading drafted the case, from the run log. */
+  models: string[];
+  version: number;
+  metrics: {
+    damage?: Partial<AiAccuracyDamage> & { removed_parts?: string[]; added_parts?: string[] };
+    annex_a?: Partial<AiAccuracyAnnex>;
+    fields?: Partial<AiAccuracyFields>;
+    suggestions?: Partial<AiAccuracySuggestions>;
+  };
+};
+
+/** GET /admin/ai-accuracy (admins): every signed-off case's record, summed
+ * in all and per month (newest first). */
+export type AiAccuracy = {
+  since: string | null;
+  totals: AiAccuracySums;
+  months: Array<AiAccuracySums & { month: string }>;
+  cases: AiAccuracyCase[];
+  most_missed: AiAccuracyTop;
+  most_removed: AiAccuracyTop;
+  lines_added_most: Array<{ line: string; cases: number }>;
+  lines_removed_most: Array<{ line: string; cases: number }>;
+  /** Whether signed-off cases teach the parts history, and how many have. */
+  learning: { on: boolean; cases: number };
+};
+
+/** Admin only, like AI usage. since: a Singapore date, YYYY-MM-DD. */
+export async function getAiAccuracy(since?: string): Promise<AiAccuracy> {
+  const query = since ? `?since=${encodeURIComponent(since)}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/admin/ai-accuracy${query}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  if (!res.ok) throw await apiError(res, "Failed to load AI accuracy");
   return res.json();
 }
 
@@ -1777,6 +2070,19 @@ export async function addDamageItem(reportId: string, body: NewDamageItem): Prom
 export async function removeDamageItem(reportId: string, itemIndex: number): Promise<DamageItemsResponse> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to remove the part");
+  return res.json();
+}
+
+/** POST /reports/{id}/suggestions: Add / Not damaged / Undo on a filed
+ * case's suggestion (contract9.md section 4.4). The server stamps who and
+ * when; a signed-off case answers 409 "signed_off". */
+export async function decideReportSuggestion(reportId: string, body: DecideRequest): Promise<CaseDecideResult> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/suggestions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to save the decision");
   return res.json();
 }
 

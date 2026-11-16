@@ -7,8 +7,9 @@ nothing listed or dismissed) and the photos sent; the call's small schema;
 one call per reading, suggestions stored and never added by the machine;
 parts already listed filtered out; a failure, a timeout, no allowance or the
 switch off leaving the intake as the reading made it; a tick through the
-wizard's own save path reaching Annex A at filing; a re-read running it
-again and keeping what a person added and dismissed; and a public report's
+wizard's own save path reaching Annex A at filing (the suggestions kept,
+relabelled -- contract 9); a re-read running it again and keeping what a
+person added and dismissed (through POST .../suggestions); and a public report's
 call going through the same key rule with nothing of the sender's in it.
 
     python scripts/test_second_look.py
@@ -88,7 +89,8 @@ def _look_answer(enum: list[str], labels: list[str]) -> dict:
 
 
 class FakeInteractions:
-    def create(self, *, model, system_instruction, input, response_format, timeout):
+    # **_settings: thinking level, store=False (structured.call_structured).
+    def create(self, *, model, system_instruction, input, response_format, timeout, **_settings):
         schema = response_format["schema"]
         props = schema.get("properties", {})
         labels = _labels(input)
@@ -390,14 +392,18 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
 
     print("\n  a tick adds the part, as a person's")
     data = tick(data, lock)
-    data["second_look"] = {**look, "dismissed": ["Boot Lid Hinge"]}
+    # Contract 9: second_look is the server's -- a dismissal goes through
+    # POST .../suggestions, and the autosave's copy is ignored.
+    data["second_look"] = {**look, "dismissed": ["Rear End Panel"]}
     r = client.put(f"/intake/{rid}/data", json={"data": data})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/intake/{rid}/suggestions", json={"key": "Boot Lid Hinge", "action": "dismiss"})
     assert r.status_code == 200, r.text
     saved = client.get(f"/intake/{rid}").json()["data"]
     assert saved["second_look"]["dismissed"] == ["Boot Lid Hinge"] and len(saved["second_look"]["items"]) == 3
     added = saved["damage_summary"][-1]
     assert added["part"] == "Boot Lid Lock" and added["human_verified"] is True and added["condition"] == "Bent"
-    ok("the wizard's autosave keeps the suggestions and the dismissed list; the ticked part is a checked damage item")
+    ok("the wizard's autosave keeps the suggestions (its own copy ignored); a dismissal is the decide endpoint's; the ticked part is a checked damage item")
 
     print("\n  a re-read runs it again and keeps what a person did")
     behaviour["look"] = "ok"
@@ -409,11 +415,15 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
     assert len(lock_items) == 1 and lock_items[0]["human_verified"], data["damage_summary"]
     look = data["second_look"]
     assert look["status"] == "ok" and look["dismissed"] == ["Boot Lid Hinge"], look
-    assert [it["part"] for it in look["items"]] == ["Rear End Panel"], look["items"]
+    # The dismissed one stays in items after the open ones ("Show decided",
+    # undo); the part ticked by hand doesn't.
+    open_items, settled = sl.split_settled(look["items"], data)
+    assert [it["part"] for it in open_items] == ["Rear End Panel"] and [it["part"] for it in settled] == ["Boot Lid Hinge"] \
+        and look["items"] == open_items + settled, look["items"]
     enum = looks[-1]["schema"]["properties"]["items"]["items"]["properties"]["part"]["enum"]
     assert "Boot Lid Lock" not in enum and "Boot Lid Hinge" not in enum
     assert [k for k, _ in run_rows(rid)][-2:] == ["redraft", "second_look"], run_rows(rid)
-    ok("one more call; the ticked part stays (checked); a dismissed part is neither asked about nor listed")
+    ok("one more call; the ticked part stays (checked); a dismissed part is neither asked about nor listed (kept as decided)")
 
     print("\n  filing: Annex A follows the tick")
     r = client.post(f"/intake/{rid}/finalize", json={"data": data})
@@ -424,8 +434,10 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
     assert "Boot Lid Lock" in sources, sorted(s for s in sources if s)
     assert "Rear End Panel" not in sources and "Boot Lid Hinge" not in sources
     ok("the ticked part has its Annex A rows; parts only suggested have none")
-    assert "second_look" not in detail["data"], "the filed case keeps no second-look suggestions"
-    ok("the filed case keeps no second-look suggestions (their photo links were the intake's)")
+    kept = detail["data"].get("second_look") or {}
+    assert kept.get("dismissed") == ["Boot Lid Hinge"] and kept.get("items"), kept
+    assert not any(str(it.get("photo_reference") or "").startswith("@") for it in kept["items"]), kept["items"]
+    ok("the filed case keeps the suggestions (contract 9), their photo links as the case's P-numbers")
 
 
 def test_failures(client: TestClient, files: list[Path]) -> None:
