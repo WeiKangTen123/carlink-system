@@ -1,17 +1,9 @@
 /** Helpers for the New Intake review step (components/intake/ReviewStep.tsx
- * and its Photos by part panel, photo picker and damage photo viewer). */
-import type { CSSProperties } from "react";
+ * and its Photos by part panel, photo picker and evidence viewer). The box
+ * helper (bboxStyle) is lib/evidence.ts's since contract 9. */
 import type { CoverPageInfo, DamageSummaryItem, InsuranceDetails, ReportData, TyreCondition, TyreItem, VehicleInfo } from "./api";
 import { parseDepth, type CoverForm, type CoverFormKey } from "./coverForm";
 import { DOCUMENT_KINDS, photoForReference, type IntakePhoto } from "./intake";
-
-/** bbox_2d is Gemini's [y_min, x_min, y_max, x_max] on a 0-1000 scale, so as
- * percentages it lines up with any box that is exactly the image's size. */
-export function bboxStyle(bbox: number[] | null | undefined): CSSProperties | null {
-  if (!bbox || bbox.length !== 4 || bbox.some((v) => typeof v !== "number" || Number.isNaN(v))) return null;
-  const [yMin, xMin, yMax, xMax] = bbox;
-  return { top: `${yMin / 10}%`, left: `${xMin / 10}%`, width: `${(xMax - xMin) / 10}%`, height: `${(yMax - yMin) / 10}%` };
-}
 
 /** True when a key press belongs to a form field, not to a viewer's shortcuts. */
 export function isTypingTarget(target: EventTarget | null): boolean {

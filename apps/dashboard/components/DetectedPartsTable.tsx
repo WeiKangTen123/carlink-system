@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ClipboardCheck, Image as ImageIcon, Link2Off, Plus, Trash2, X } from "lucide-react";
+import { Box as BoxIcon, ClipboardCheck, Eye, Image as ImageIcon, Link2Off, Plus, Trash2, X } from "lucide-react";
 import {
   DAMAGE_REMARKS,
   MAX_OTHER_NAME,
@@ -61,10 +61,10 @@ interface Props {
    * each row shows its state (AI / Check / You) with [✓], and an edit
    * counts as confirming the part, as in the wizard. */
   review?: Review | null;
-  /** Contract 9 (section 7.2): a row's [Evidence] opens the evidence viewer
-   * on it, its [Map] selects it on the 3D damage map. Signatures only until
-   * the evidence UI agent adds the buttons; a page that doesn't pass them
-   * shows neither. */
+  /** Contract 9 (section 7.3): a row's [Evidence] opens the evidence viewer
+   * on it (its photos, boxes and the AI's words), its [Map] selects it on the
+   * 3D damage map. A page that doesn't pass them shows neither. Both work on
+   * a locked case too: they only look. */
   onShowEvidence?: (index: number) => void;
   onShowOnMap?: (index: number) => void;
 }
@@ -107,6 +107,8 @@ export function DetectedPartsTable({
   onRemoved,
   onGoToAnnexA,
   review,
+  onShowEvidence,
+  onShowOnMap,
 }: Props) {
   const router = useRouter();
   const [savingIdx, setSavingIdx] = useState<number | "new" | null>(null);
@@ -505,6 +507,28 @@ export function DetectedPartsTable({
                             onClick={() => setPickerFor(pickerFor === idx ? null : idx)}
                           >
                             {hasPhoto ? "Change" : "Link"}
+                          </button>
+                        )}
+                        {onShowEvidence && (
+                          <button
+                            type="button"
+                            className="detected-link-btn"
+                            onClick={() => onShowEvidence(idx)}
+                            aria-label={`Evidence for part ${badgeNumber}: its photos, boxes and the AI's words`}
+                            title="Its photos, boxes and why the AI listed it"
+                          >
+                            <Eye style={{ width: 11, height: 11, verticalAlign: "-1px" }} /> Evidence
+                          </button>
+                        )}
+                        {onShowOnMap && (
+                          <button
+                            type="button"
+                            className="detected-link-btn"
+                            onClick={() => onShowOnMap(idx)}
+                            aria-label={`Show part ${badgeNumber} on the 3D map`}
+                            title="Select it on the 3D damage map"
+                          >
+                            <BoxIcon style={{ width: 11, height: 11, verticalAlign: "-1px" }} /> Map
                           </button>
                         )}
                       </div>

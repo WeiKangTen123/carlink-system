@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Bot, Check, Loader2, Lock, Save, Send, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bot, Check, Lightbulb, Loader2, Lock, Save, Send, X } from "lucide-react";
 import { aiOffMessage, isAiOffCode, ownerLabel, type AiOffCode, type ReportData, type Taxonomy } from "@/lib/api";
 import { AiFixLink } from "@/components/AiFixLink";
 import { CaseNotFound } from "@/components/CaseNotFound";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
+import { undecidedCount } from "@/lib/findings";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   FILING_INTERRUPTED_MESSAGE,
@@ -826,6 +827,10 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     [changedAt, readStartedAt]
   );
 
+  // Suggestions nobody decided (contract 9): a soft warning beside File
+  // case, never a block -- they stay on the case page until sign-off.
+  const undecided = useMemo(() => undecidedCount(data), [data]);
+
   if (toInbox) {
     return <div className="intake-shell"><div className="card intake-panel intake-muted">Opening it in the Public Inbox…</div></div>;
   }
@@ -1098,8 +1103,9 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
         />
       )}
 
-      {step === 3 && state && (
+      {step === 3 && state && draftId && (
         <ReviewStep
+          draftId={draftId}
           data={data}
           onChange={editData}
           photos={state.photos}
@@ -1113,6 +1119,19 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onBack={() => goTo(2)}
           onNext={() => goTo(4)}
         />
+      )}
+
+      {step === 4 && state && undecided > 0 && !filing && (
+        <div className="intake-alert info" role="status">
+          <Lightbulb style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            {undecided === 1 ? "1 suggestion not decided" : `${undecided} suggestions not decided`} — {undecided === 1 ? "it stays" : "they stay"} on the case
+            page. You can file the case now and decide there.
+          </div>
+          <button type="button" className="btn-secondary-modern" onClick={() => void goTo(3)} disabled={Boolean(busy)}>
+            Decide now
+          </button>
+        </div>
       )}
 
       {step === 4 && state && (

@@ -9,6 +9,7 @@ import {
   patchDamageItem,
   addDamageItem,
   removeDamageItem,
+  decideReportSuggestion,
   getTaxonomy,
   signOffReport,
   saveReportChecked,
@@ -49,6 +50,8 @@ import {
   type CoverPageResponse,
   type DamageItemPatch,
   type DamageItemsResponse,
+  type CaseDecideResult,
+  type DecideRequest,
   type NewDamageItem,
   type Taxonomy,
   type LabourSuggestions,
@@ -238,6 +241,30 @@ export async function removeDamageItemAction(reportId: string, itemIndex: number
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to remove the part" };
+  }
+}
+
+/** A refused decide call: the API's words, its code ("signed_off",
+ * "unknown_suggestion"...) and status, so the suggestion cards can say what
+ * to do. */
+export type DecideActionError = { error: string; code: string | null; status: number | null };
+
+/** Add / Not damaged / Undo on a filed case's suggestion (contract9.md
+ * section 4.4): POST /reports/{id}/suggestions. An add also re-syncs Annex A,
+ * which the answer carries like the damage-items calls. */
+export async function decideReportSuggestionAction(reportId: string, body: DecideRequest): Promise<CaseDecideResult | DecideActionError> {
+  try {
+    const result = await decideReportSuggestion(reportId, body);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath("/reports");
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return {
+      error: err instanceof Error ? err.message : "Failed to save the decision",
+      code: errorCode(err),
+      status: err instanceof ApiError ? err.status : null,
+    };
   }
 }
 
