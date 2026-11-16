@@ -6321,6 +6321,862 @@ button.intake-tile:hover {
 /* EvidenceViewer, PhotoBoxes and SuggestionPanel (contract9.md section 7;
    the evidence UI agent's block, after DamagePhotoViewer's rules above,
    which it replaces). Its rules go between these two lines. */
+/* PhotoBoxes: a photo with its boxes. The box colours sit on photographs,
+   not on the theme's surfaces, so they are fixed bright tones with a dark
+   halo; the line style (solid AI box, dashed sorter's box) and the tag's
+   glyph and words carry the meaning, never the colour alone. */
+.pb-root {
+  --pb-ai: #38bdf8;
+  --pb-confirmed: #22c55e;
+  --pb-check: #f59e0b;
+  --pb-suggestion: #e879f9;
+  --pb-dismissed: #94a3b8;
+  line-height: 0;
+}
+
+.pb-natural {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.pb-natural .pb-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.pb-natural .pb-img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+}
+
+/* Fills its parent's width (the damage table's photo cell). */
+.pb-fill.pb-natural,
+.pb-fill .pb-frame {
+  display: block;
+  width: 100%;
+}
+
+.pb-fill .pb-img {
+  width: 100%;
+  height: auto;
+}
+
+.pb-contain {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.pb-contain .pb-frame {
+  position: absolute;
+  inset: 0;
+}
+
+.pb-contain .pb-frame.is-placed {
+  inset: auto;
+}
+
+.pb-contain .pb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.pb-box {
+  --pb-c: var(--pb-ai);
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--pb-c);
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  font: inherit;
+  line-height: 1;
+}
+
+button.pb-box {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+button.pb-box:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.pb-kind-sort {
+  border-style: dashed;
+}
+
+.pb-status-confirmed {
+  --pb-c: var(--pb-confirmed);
+}
+
+.pb-status-check {
+  --pb-c: var(--pb-check);
+}
+
+.pb-status-suggestion {
+  --pb-c: var(--pb-suggestion);
+}
+
+.pb-status-dismissed {
+  --pb-c: var(--pb-dismissed);
+}
+
+.pb-box.is-selected {
+  border-width: 3px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 0 4px rgba(0, 0, 0, 0.45);
+}
+
+.pb-box.is-hover {
+  box-shadow: 0 0 0 2px var(--pb-c), 0 0 0 3px rgba(0, 0, 0, 0.5);
+}
+
+.pb-tag {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  max-width: max(100%, 160px);
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 4px 4px 4px 0;
+  background: var(--pb-c);
+  color: #0b1220;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pb-box.tag-inside .pb-tag {
+  top: 0;
+  bottom: auto;
+  left: 0;
+  border-radius: 0 0 4px 0;
+}
+
+.pb-glyph {
+  margin-right: 4px;
+  font-weight: 800;
+}
+
+.pb-note {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fde68a;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+/* Thumbnails: the box alone, thinner; no tag. */
+.pb-compact .pb-box {
+  border-width: 1.5px;
+  border-radius: 2px;
+}
+
+.pb-compact .pb-tag {
+  display: none;
+}
+
+.pb-compact .pb-note {
+  left: 2px;
+  bottom: 2px;
+  padding: 0 3px;
+  font-size: 9px;
+}
+
+/* Evidence viewer (components/EvidenceViewer.tsx). The overlay and the
+   arrows are DamagePhotoViewer's .rv-modal / .rv-viewer-nav above. */
+.ev-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  width: min(1280px, 100%);
+  height: min(880px, calc(100vh - 48px));
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.ev-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #000000;
+}
+
+.ev-stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.ev-stage {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+  display: flex;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* Fitted, nothing to scroll (and no scrollbar to shrink the fit). */
+.ev-stage:not(.is-zoomed) {
+  overflow: hidden;
+}
+
+.ev-stage.is-zoomed {
+  cursor: grab;
+}
+
+.ev-stage.is-zoomed:active {
+  cursor: grabbing;
+}
+
+/* margin: auto centres the photo while it is smaller than the stage and
+   lets it scroll from its edge once it is bigger. Fitted by CSS alone: the
+   stage is a size container, so the photo follows any resize at once. */
+.ev-canvas {
+  position: relative;
+  flex: none;
+  width: 100%;
+  height: 100%;
+  margin: auto;
+}
+
+.ev-canvas.is-sized {
+  width: calc(min(100cqw, 100cqh * var(--ev-ratio)) * var(--ev-zoom, 1));
+  height: auto;
+  aspect-ratio: var(--ev-ratio);
+}
+
+.ev-stage-empty,
+.ev-nophoto {
+  align-items: center;
+  justify-content: center;
+  margin: auto;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.ev-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+}
+
+.ev-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ev-tool:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.ev-tool[aria-pressed="true"] {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--surface-card-solid);
+}
+
+.ev-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ev-tool:focus-visible,
+.ev-chip:focus-visible,
+.sg-thumb:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.ev-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 16px 0;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ev-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ev-count {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.ev-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.ev-status {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ev-status-confirmed {
+  color: var(--badge-green-text);
+}
+
+.ev-status-check {
+  color: var(--badge-amber-text);
+}
+
+.ev-caption {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.ev-reason {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.ev-reason.is-code {
+  color: var(--text-secondary);
+}
+
+.ev-facts,
+.ev-boxline {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ev-check,
+.sg-check {
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.ev-check {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.ev-check-yes,
+.sg-check-yes {
+  border-color: var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+}
+
+.ev-check-unsure,
+.sg-check-unsure {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+
+.ev-note,
+.sg-note {
+  padding: 6px 10px;
+  border-left: 3px solid var(--badge-amber-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--badge-amber-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.ev-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ev-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ev-chip.is-active {
+  border-color: var(--accent-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-primary);
+}
+
+.ev-chip.is-gone {
+  cursor: default;
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.ev-chip-kind {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.ev-keys {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ev-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 0 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-card-solid);
+}
+
+.ev-actions:empty {
+  display: none;
+}
+
+.ev-act {
+  min-height: 40px;
+}
+
+.ev-act kbd,
+.sg-panel kbd {
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.ev-done {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.ev-on-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ev-on-photo li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ev-on-photo-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.ev-glyph {
+  width: 14px;
+  flex-shrink: 0;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ev-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Suggestion cards (components/SuggestionPanel.tsx) */
+.sg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-card-solid);
+}
+
+.sg-card.is-unlikely {
+  border-style: dashed;
+}
+
+.sg-card[aria-busy="true"] {
+  opacity: 0.6;
+}
+
+.sg-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sg-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sg-check {
+  margin-left: auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.sg-reason {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.sg-reason.is-code {
+  color: var(--text-secondary);
+}
+
+.sg-facts,
+.sg-run-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sg-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sg-thumbs {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.sg-thumb {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  cursor: zoom-in;
+}
+
+.sg-thumb .pb-img {
+  max-width: 112px;
+  max-height: 64px;
+  border-radius: 4px;
+}
+
+.sg-thumb.is-gone {
+  justify-content: center;
+  width: 86px;
+  height: 64px;
+  border-style: dashed;
+  cursor: default;
+}
+
+.sg-thumb-gone {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: line-through;
+}
+
+.sg-thumb-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.sg-more {
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sg-btn {
+  min-height: 34px;
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+.sg-map {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sg-group {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.sg-group-head {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.sg-group-head .intake-muted {
+  font-weight: 500;
+}
+
+.sg-decided {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.sg-decided-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sg-decided-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.sg-decided-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+}
+
+.sg-decided-mark {
+  width: 14px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.sg-decided-mark.is-added {
+  color: var(--badge-green-text);
+}
+
+.sg-decided-mark.is-dismissed {
+  color: var(--text-muted);
+}
+
+.sg-decided-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sg-decided-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sg-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--badge-red-border);
+  background: var(--badge-red-bg);
+  color: var(--badge-red-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Review step: the row picked on the map or hovered (lib/useDamageSelection) */
+.ev-row-picked {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
+.ev-row-picked > td,
+.ev-row-hover > td {
+  background: var(--surface-hover);
+}
+
+.ev-map-anchor {
+  height: 0;
+  scroll-margin-top: 72px;
+}
+
+/* Tablets and phones: the photo on top at full width, then the facts, with
+   the decisions in a bar along the bottom. */
+@media (max-width: 900px) {
+  .ev-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .ev-main {
+    height: 62vh;
+  }
+
+  .ev-side {
+    overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Full screen on a phone. */
+  .ev-body {
+    width: 100%;
+    border-radius: 0;
+  }
+
+  .ev-keys {
+    display: none;
+  }
+
+  .ev-tool {
+    min-height: 40px;
+  }
+
+  .ev-act {
+    flex: 1 1 40%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .ev-act kbd {
+    display: none;
+  }
+
+  .ev-act-later {
+    flex: 0 1 auto;
+  }
+
+  .sg-card-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sg-actions .sg-btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    justify-content: center;
+  }
+}
+/* The 3D damage map (DamageMapPanel, B) is sticky on the wizard's Review
+   step; the app's top bar is sticky too (~60px: 12px padding round the theme
+   switch and the user menu), so the map stops below it, not under it. */
+@media (min-width: 1100px) {
+  .dmap-intake {
+    top: 72px;
+  }
+}
 /* ---- end Contract 9 E: evidence ---- */
 
 /* ---- P3: upload, sort, viewer ---- */
