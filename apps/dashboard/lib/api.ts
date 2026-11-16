@@ -919,6 +919,16 @@ export type DamageSummaryItem = {
   evidence?: Evidence[];
   check?: SuggestionCheck | null;
   added_from?: "suggestion" | null;
+  /** Contract 10 (bot-service reports/schema.py, contract10.md section
+   * 4.1), code-set, copied from a linked-part suggestion a person added:
+   * the keys of the listed parts it hangs off; how it is linked; not seen
+   * in photos as usually taken; confirmed only once parts come off (a
+   * "Confirm at strip-down" chip until a person edits its condition).
+   * Absent while at their defaults: the server leaves them out. */
+  linked_from?: string[];
+  link_type?: LinkType | null;
+  hidden?: boolean;
+  needs_strip_down?: boolean;
 };
 
 // ---- Contract 9: the evidence for every finding ------------------------------
@@ -933,7 +943,9 @@ export type Evidence = {
   photo: string;
   box: Box | null;
   box_kind: "ai" | "sort" | null;
-  /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look" */
+  /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look";
+   * contract 10: "link" (the listed part's photo, no box) | "link_check" (the
+   * linked check's photo and box) */
   by: string;
   reason: string | null;
   confidence: "High" | "Medium" | "Low" | null;
@@ -981,8 +993,9 @@ export type SecondLookItem = {
   damage_type: string | null;
   confidence: string | null;
   /** "kit": past cases of the same make had it with a part found here;
-   * "nearby": next to a part found here; "zone": only a zone read found it. */
-  source: "kit" | "nearby" | "zone" | null;
+   * "nearby": next to a part found here; "zone": only a zone read found it;
+   * "link": tied to a listed part (contract 10, the fields at the end). */
+  source: "kit" | "nearby" | "zone" | "link" | null;
   /** Damage-list names that mean the part is listed already. */
   covers: string[];
   reason: string | null;
@@ -995,6 +1008,24 @@ export type SecondLookItem = {
   other_part_name: string | null;
   severity: string | null;
   remarks: string | null;
+  /** Contract 10, on a source "link" item; each absent while at its default.
+   * linked_from: the keys of the listed parts it hangs off; link_rule: the
+   * table's version and link id ("L1:rear-bumper>beam"); hit: how hard the
+   * listed part was hit; side_from: the listed part whose side it took
+   * (absent or null: it took none); intact_in: photos a zone read listed it
+   * intact on; oem: the catalogue's diagram names that put it with the
+   * listed part. */
+  linked_from?: string[];
+  link_type?: LinkType | null;
+  link_rule?: string | null;
+  hit?: HitLevel | null;
+  bucket?: LinkBucket | null;
+  hidden?: boolean;
+  needs_strip_down?: boolean;
+  side_from?: string | null;
+  intact_in?: string[];
+  link_check?: LinkCheck | null;
+  oem?: string[];
 };
 
 /** What the re-check step did on this read. */
@@ -1026,6 +1057,30 @@ export type SecondLook = {
   reads: string[];
   decisions: SuggestionDecision[];
   check: CheckRun | null;
+  /** Contract 10: what the linked check did this read; absent while it hasn't run. */
+  link_run?: CheckRun | null;
+};
+
+// ---- Contract 10: linked parts in detection ----------------------------------
+// Mirrors bot-service reports/schema.py (contract10.md section 4.2). Change
+// them only with the lead's OK.
+
+/** How a linked part hangs off the listed one (link_table.json "type"). */
+export type LinkType = "attached" | "behind" | "opens_with" | "crush";
+/** How hard the listed part was hit, lightest first. */
+export type HitLevel = "light" | "medium" | "heavy" | "crush";
+/** The Review step's buckets: Seen / Likely / Confirm at strip-down. */
+export type LinkBucket = "seen" | "likely" | "strip_down";
+export type LinkVerdict = "seen" | "likely" | "strip_down" | "no" | "cannot_tell";
+export type LinkCue = "crush" | "gap_misfit" | "displaced" | "cracked" | "none_seen" | "cannot_see";
+
+/** The linked check's answer on one linked part: the cue it looked for,
+ * then its verdict; reason cleaned, at most 160 characters. */
+export type LinkCheck = {
+  verdict: LinkVerdict;
+  cue: LinkCue | null;
+  model: string | null;
+  reason: string | null;
 };
 
 export type DecideAction = "add" | "dismiss" | "undo";

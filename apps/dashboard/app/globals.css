@@ -7867,6 +7867,13 @@ button.pb-box:focus-visible {
 }
 /* ---- end Contract 9 E: evidence ---- */
 
+/* ---- Contract 10 U: linked parts ---- */
+/* The linked parts on the suggestions panel -- grouped by the listed part
+   they hang off, in the Seen / Likely / Confirm at strip-down buckets --
+   and the 3D map's listed part -> linked parts outline (contract10.md;
+   the UI agent U's block). Its rules go between these two lines. */
+/* ---- end Contract 10 U ---- */
+
 /* ---- P3: upload, sort, viewer ---- */
 
 /* Sticky step footers and group list. A card's overflow: hidden makes it a

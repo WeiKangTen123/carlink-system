@@ -46,7 +46,9 @@ export type Finding = {
   confidence: string | null;
   check: SuggestionCheck | null;
   otherSideListed: string | null;
-  source: "list" | "zone" | "kit" | "nearby";
+  /** Contract 10 (Step 0): "link", a linked part (SecondLookItem.source); the
+   * UI agent U adds its own fields. */
+  source: "list" | "zone" | "kit" | "nearby" | "link";
   /** The Condition in the firm's words ("Cracked"), else the AI's damage
    * type; for the cards and the viewer. Optional: added by the evidence UI. */
   condition?: string | null;
