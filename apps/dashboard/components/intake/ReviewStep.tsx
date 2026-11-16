@@ -34,7 +34,7 @@ import { EvidenceViewer, type EvidenceViewerProps } from "@/components/EvidenceV
 import { PhotoBoxes } from "@/components/PhotoBoxes";
 import { SuggestionPanel } from "@/components/SuggestionPanel";
 import { boxChip, slidesOf } from "@/lib/evidence";
-import { applyDecision, buildFindings, type PhotoInfo, type PhotoLookup, type Selection } from "@/lib/findings";
+import { applyDecision, buildFindings, rowsTakenOff, type PhotoInfo, type PhotoLookup, type Selection } from "@/lib/findings";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
 import { detectBodyType, zoneKeyFor } from "@/lib/vehicleZones";
@@ -370,18 +370,26 @@ export function ReviewStep({
   const photoOrder = useMemo(() => mapPhotos.map((p) => `@${p.id}`), [mapPhotos]);
   const photoAreas = useMemo(() => Object.fromEntries(mapPhotos.map((p) => [`@${p.id}`, p.area])), [mapPhotos]);
 
-  const { selection, setSelection, hover, setHover } = useDamageSelection();
+  const { selection, setSelection, hover, setHover, itemsRemoved } = useDamageSelection();
   const [viewer, setViewer] = useState<ViewerState | null>(null);
   // Suggestions the person has opened in the viewer: deciding one later,
   // from a card or the map, still counts as "looked" (section 11).
   const lookedKeys = useRef(new Set<string>());
 
+  // The list as it is now, for a decision's answer that comes in later.
+  const damageNow = useRef(damage);
+  damageNow.current = damage;
   const { decide } = useSuggestionDecisions({
     surface: "intake",
     reportId: draftId,
     // The server appended (or took back) the item and owns second_look; the
-    // local draft follows at once and is saved with the next autosave.
-    applyToDraft: (r, asked) => onChange((d) => applyDecision(d, r, asked)),
+    // local draft follows at once and is saved with the next autosave. An
+    // undone add takes a row off: a selection or hover of a row below it
+    // follows its row up (its index would name the next part).
+    applyToDraft: (r, asked) => {
+      itemsRemoved(rowsTakenOff(damageNow.current, r, asked));
+      onChange((d) => applyDecision(d, r, asked));
+    },
   });
   // The map sends a suggestion's own key, the cards and viewer "sug:<key>".
   const decideLooked = useCallback(

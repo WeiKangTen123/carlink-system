@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box as BoxIcon, Check, Eye, Plus, Undo2, X } from "lucide-react";
-import type { CheckRun, DecideAction, SuggestionDecision } from "@/lib/api";
+import type { CheckRun, DecideAction, DecideResult, SuggestionDecision } from "@/lib/api";
 import { boxChip, slidesOf } from "@/lib/evidence";
 import {
   aiSays,
@@ -27,8 +27,10 @@ export type SuggestionPanelProps = {
   check: CheckRun | null;
   photos: PhotoLookup;
   readOnly?: boolean;
-  /** Keys are finding keys ("sug:<key>"); lib/useSuggestionDecisions takes them. */
-  onDecide: (key: string, action: DecideAction, looked: boolean) => Promise<void>;
+  /** Keys are finding keys ("sug:<key>"); lib/useSuggestionDecisions takes
+   * them. May resolve with the server's answer: an add answered with item
+   * null was on the list already, and the toast says so. */
+  onDecide: (key: string, action: DecideAction, looked: boolean) => Promise<DecideResult | void>;
   onLook: (key: string) => void;
   onShowOnMap?: (key: string) => void;
   /** second_look.reads, for "Found by 1 of 5 reads" (without it: "Found
@@ -41,10 +43,20 @@ export const DECISION_UNDO_MS = 6000;
 /** Photos shown on a card. */
 const CARD_PHOTOS = 3;
 
-export type DecisionToastState = { key: string; name: string; action: "add" | "dismiss"; version: number };
+/** "listed": an add the server answered with item null -- the part was on
+ * the list already, so nothing was added and there is nothing to undo. */
+export type DecisionToastState = { key: string; name: string; action: "add" | "dismiss" | "listed"; version: number };
+
+/** The toast for a decision the server answered: "listed" when an add found
+ * the part on the list already (item null). */
+export function toastFor(f: { key: string; name: string }, action: "add" | "dismiss", r: DecideResult | void): DecisionToastState {
+  const listed = action === "add" && typeof r === "object" && r !== null && !r.item;
+  return { key: f.key, name: f.name, action: listed ? "listed" : action, version: Date.now() };
+}
 
 /** "Added Boot Lid Lock · Undo" after a decision, on both the panel and the
- * viewer. Undo is also in the panel's Decided list, so missing it is no loss. */
+ * viewer. Undo is also in the panel's Decided list, so missing it is no loss.
+ * "Already on the list" has no Undo: nothing was done. */
 export function DecisionToast({
   toast,
   busy,
@@ -63,17 +75,22 @@ export function DecisionToast({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast.version]);
   const added = toast.action === "add";
+  const listed = toast.action === "listed";
   return (
     <div className="intake-toast ev-toast" role="status" aria-live="polite">
-      {added ? (
+      {added || listed ? (
         <Check style={{ width: 15, height: 15, flexShrink: 0, color: "var(--badge-green-text)" }} aria-hidden="true" />
       ) : (
         <X style={{ width: 15, height: 15, flexShrink: 0, color: "var(--text-muted)" }} aria-hidden="true" />
       )}
-      <span>{added ? `Added ${toast.name} to the damaged parts` : `${toast.name}: marked not damaged`}</span>
-      <button type="button" className="intake-toast-undo" onClick={onUndo} disabled={busy}>
-        <Undo2 style={{ width: 14, height: 14 }} /> Undo
-      </button>
+      <span>
+        {listed ? `Already on the list: ${toast.name}` : added ? `Added ${toast.name} to the damaged parts` : `${toast.name}: marked not damaged`}
+      </span>
+      {!listed && (
+        <button type="button" className="intake-toast-undo" onClick={onUndo} disabled={busy}>
+          <Undo2 style={{ width: 14, height: 14 }} /> Undo
+        </button>
+      )}
       <button type="button" className="intake-icon-btn intake-toast-close" onClick={onDismiss} aria-label="Close">
         <X style={{ width: 13, height: 13 }} />
       </button>
@@ -145,8 +162,8 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
     setBusy(f.key);
     setError(null);
     try {
-      await onDecide(f.key, action, looked.current.has(f.key));
-      setToast(action === "undo" ? null : { key: f.key, name: f.name, action, version: Date.now() });
+      const r = await onDecide(f.key, action, looked.current.has(f.key));
+      setToast(action === "undo" ? null : toastFor(f, action, r));
     } catch (e) {
       setError(errorText(e));
     } finally {

@@ -432,6 +432,22 @@ export function undecidedCount(data: ReportData): number {
   return buildFindings(data).filter((f) => f.kind === "suggestion" && f.status === "suggestion").length;
 }
 
+/** The rows of the wizard's list an answer takes off (applyDecision): an
+ * undone add's item, wherever it is now. The page moves a selection that
+ * named a row by its place (useDamageSelection itemsRemoved). */
+export function rowsTakenOff(
+  damage: DamageSummaryItem[] | null | undefined,
+  r: DecideResult,
+  asked?: { key: string; action: DecideAction },
+): number[] {
+  if (asked?.action !== "undo" || undoneAction(r.second_look?.decisions, asked.key) !== "added") return [];
+  const out: number[] = [];
+  (damage || []).forEach((it, i) => {
+    if (it.added_from === "suggestion" && itemKey(it) === asked.key) out.push(i);
+  });
+  return out;
+}
+
 /** The wizard's local draft after a decide call (section 4.4, conflict #10):
  * second_look is the server's; an added item goes on the end of the list,
  * as the server put it (once: a repeated answer adds nothing); an undone add
@@ -444,9 +460,9 @@ export function applyDecision(data: ReportData, r: DecideResult, asked?: { key: 
   if (action === "add" && r.item) {
     const key = itemKey(r.item);
     if (!damage.some((it) => itemKey(it) === key)) damage = [...damage, r.item];
-  } else if (action === "undo" && asked && undoneAction(r.second_look?.decisions, asked.key) === "added") {
-    const kept = damage.filter((it) => !(it.added_from === "suggestion" && itemKey(it) === asked.key));
-    if (kept.length !== damage.length) damage = kept;
+  } else {
+    const gone = new Set(rowsTakenOff(damage, r, asked));
+    if (gone.size) damage = damage.filter((_, i) => !gone.has(i));
   }
   const next: ReportData = { ...data, second_look: r.second_look ?? data.second_look ?? null };
   if (damage !== before) {

@@ -261,6 +261,19 @@ export function selectionMovesCamera(sel: Selection): boolean {
   return Boolean(sel && sel.kind !== "photo");
 }
 
+/** A selection (or hover) after damage-list rows went (an undone add takes
+ * its item off): an "item:<n>" names a row by its place, so one below them
+ * moves up, one on them is dropped, and anything else stays as it is (the
+ * same object, so nothing re-renders or moves the camera). */
+export function afterItemsRemoved(sel: Selection, removed: number[]): Selection {
+  if (sel?.kind !== "finding" || !sel.key.startsWith("item:") || !removed.length) return sel;
+  const at = Number(sel.key.slice("item:".length));
+  if (!Number.isInteger(at)) return sel;
+  if (removed.includes(at)) return null;
+  const shift = removed.filter((i) => i < at).length;
+  return shift ? { kind: "finding", key: `item:${at - shift}` } : sel;
+}
+
 // ---------------------------------------------------------------------------
 // The photo strip
 

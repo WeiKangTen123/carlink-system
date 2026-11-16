@@ -382,5 +382,38 @@ check("a re-read keeps the decisions: same suggestions hidden, same counts", () 
   assert.equal(F.undecidedCount(reread), F.undecidedCount(data));
 });
 
+check("decided suggestions kept in items (review L3): out of the list, the listed one never twice, Undo brings each back", () => {
+  // As the server keeps them after a re-read: the added suggestion (its part
+  // on the list) and the dismissed one stay in second_look.items.
+  const kept = clone(data);
+  const like = (key) => ({ ...clone(data.second_look.items[0]), key, part: key, name: null, covers: [key], evidence: [], seen_in: [], check: null });
+  kept.second_look.items.push(like("Left Rear Quarter Panel"), like("Rear Windscreen"));
+  const openKeys = (d) => F.buildFindings(d).filter((f) => f.kind === "suggestion").map((f) => f.partKey);
+  assert.deepEqual(openKeys(kept), openKeys(data), "the main list is the same");
+  assert.equal(F.undecidedCount(kept), F.undecidedCount(data));
+  const all = F.buildFindings(kept, { showDismissed: true });
+  assert.deepEqual(
+    all.filter((f) => f.partKey === "Left Rear Quarter Panel").map((f) => f.key),
+    ["item:4"],
+    "an added suggestion is its list row only"
+  );
+  assert.equal(all.find((f) => f.key === "sug:Rear Windscreen")?.status, "dismissed", "under Show dismissed / Decided");
+  // Undo of the dismissal: its card comes back.
+  const undismissed = clone(kept);
+  undismissed.second_look.dismissed = undismissed.second_look.dismissed.filter((k) => k !== "Rear Windscreen");
+  assert.equal(F.buildFindings(undismissed).find((f) => f.key === "sug:Rear Windscreen")?.status, "suggestion");
+  // Undo of the add: the row comes off the list, the card comes back, once.
+  const look = { ...clone(kept.second_look), decisions: [...kept.second_look.decisions, decision("Left Rear Quarter Panel", "undone")] };
+  const asked = { key: "Left Rear Quarter Panel", action: "undo" };
+  const r = { second_look: look, item: clone(data.damage_summary[4]), item_index: 4 };
+  assert.deepEqual(F.rowsTakenOff(kept.damage_summary, r, asked), [4], "the row a selection must follow");
+  assert.deepEqual(F.rowsTakenOff(kept.damage_summary, r, { ...asked, action: "add" }), []);
+  const back = F.applyDecision(kept, r, asked);
+  assert.deepEqual(
+    F.buildFindings(back).filter((f) => f.partKey === "Left Rear Quarter Panel").map((f) => f.key),
+    ["sug:Left Rear Quarter Panel"]
+  );
+});
+
 process.exitCode = failed ? 1 : 0;
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");

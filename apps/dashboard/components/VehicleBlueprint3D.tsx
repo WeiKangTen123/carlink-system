@@ -441,8 +441,12 @@ function VehicleModel({
 
   // Paint: every drawn mesh the base wireframe, each zone with a mark its
   // status's material. Runs only when the marks' content changes (the
-  // caller keeps their identity), so a tick elsewhere doesn't repaint.
-  useEffect(() => {
+  // caller keeps their identity), so a tick elsewhere doesn't repaint. A
+  // layout effect declared before the outlines' one, so it runs first: the
+  // outlines read which meshes the paint shows (a hidden structural mesh is
+  // shown when it is the damaged part), and would otherwise be a change
+  // behind.
+  useLayoutEffect(() => {
     const t0 = performance.now();
     for (const mesh of meshes) {
       mesh.visible = !hiddenByDefault.has(mesh);
@@ -465,7 +469,8 @@ function VehicleModel({
   // wireframe (a clone sharing the geometry, so nothing is built), a
   // hovered one in a softer one; the rest of the car dims while something
   // is selected. Only these few overlay objects change on a selection, in
-  // the same commit, so the next frame already shows them.
+  // the same commit, so the next frame already shows them. After the paint
+  // (above), on the meshes as it left them.
   const overlaysRef = useRef<THREE.Mesh[]>([]);
   useLayoutEffect(() => {
     const t0 = performance.now();
