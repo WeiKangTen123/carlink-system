@@ -26,6 +26,10 @@ The rates (null when there is nothing to divide by):
   fields_kept / fields_changed /            of the fields the AI filled
   fields_emptied
 
+Plus (contract 9) the suggestions' counts summed: shown, added, dismissed,
+left, looked_first, and the same by source, read and re-check verdict
+(accuracy.sum_suggestions) -- counts only, and 0 from rows before them.
+
 Admin only, like AI usage: it lists every case. Never a plate: Our Ref and
 the make and model as the case data has them.
 """
@@ -41,7 +45,7 @@ from app.auth.deps import require_admin
 from app.config import settings
 from app.parts.history import family_and_side, normalise_item
 from app.parts.learn import learned_cases
-from app.reports.accuracy import ANNEX_COUNTS, DAMAGE_COUNTS, FIELD_COUNTS
+from app.reports.accuracy import ANNEX_COUNTS, DAMAGE_COUNTS, FIELD_COUNTS, sum_suggestions
 from app.reports.db import SessionLocal
 from app.reports.models import AiAccuracy, Report, iso_utc
 from app.reports.taxonomy import OTHER_PART
@@ -111,6 +115,7 @@ def _summed(metrics: list[dict]) -> dict:
         "annex_a": {"cases_compared": compared, **{key: annex[key] for key in ANNEX_COUNTS + ("final", "final_machine", "final_typed")}},
         "fields": {key: fields[key] for key in FIELD_COUNTS},
         "rates": rates,
+        "suggestions": sum_suggestions(metrics),
     }
 
 

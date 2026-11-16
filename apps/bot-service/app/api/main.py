@@ -47,7 +47,15 @@ from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import price_book_for_case, router as parts_router
 from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
-from app.api.intake import MAX_PHOTOS_PER_CASE, delete_intake_files, router as intake_router
+from app.api.intake import (
+    MAX_PHOTOS_PER_CASE,
+    UNKNOWN_SUGGESTION,
+    SuggestionDecideRequest,
+    bad_action,
+    delete_intake_files,
+    hold_write_lock,
+    router as intake_router,
+)
 from app.auth import chat_links
 from app.auth.core import CurrentUser, audit, reopened_cases, report_history
 from app.auth.deps import (
@@ -79,7 +87,7 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
-from app.reports import accuracy, owners
+from app.reports import accuracy, owners, suggestions
 from app.parts import catalogue
 from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
@@ -1069,9 +1077,12 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         # it -- defaults filling every gap -- silently erased those.
         sent = body.draft.model_dump(exclude_unset=True)
         # The field review's marks change only through PUT .../checked, and
-        # template_fields is the server's (app/reports/review.py).
+        # template_fields is the server's (app/reports/review.py); the AI's
+        # suggestions and the decisions on them only through POST
+        # .../suggestions (contract 9).
         sent.pop("checked", None)
         sent.pop("template_fields", None)
+        sent.pop("second_look", None)
         if "report_id" in sent:
             sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
         data = _merge_into(dict(r.data or {}), sent)
@@ -1115,6 +1126,9 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             Path(temp_path).unlink(missing_ok=True)
 
         r.pdf_path = _render_after_change(user, r, "updated")
+        # A decision on a suggestion made while the PDF rendered (seconds)
+        # is kept: second_look as stored now, not as read at the start.
+        r.data = _with_stored_second_look(db, r)
 
         audit(db, user, "edited", r.id)
         if "annex_a" in sent:
@@ -1135,6 +1149,18 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url}
     finally:
         db.close()
+
+
+def _with_stored_second_look(db, r: Report) -> dict:
+    """r.data with data["second_look"] as the database holds it now (the
+    session has written nothing yet: it never autoflushes)."""
+    stored = db.query(Report.data).filter(Report.id == r.id).scalar()
+    data = dict(r.data or {})
+    if isinstance(stored, dict) and "second_look" in stored:
+        data["second_look"] = stored["second_look"]
+    else:
+        data.pop("second_look", None)
+    return data
 
 
 class DamageItemReviewRequest(BaseModel):
@@ -1404,6 +1430,57 @@ def remove_damage_item(report_id: str, item_index: int, user: CurrentUser = Depe
         data["dismissed_parts"] = dismissed
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_removed", item_source(removed))
         return {"item_index": item_index, "item": removed, **out}
+    finally:
+        db.close()
+
+
+@app.post("/reports/{report_id}/suggestions")
+def decide_case_suggestion(
+    report_id: str, body: SuggestionDecideRequest, user: CurrentUser = Depends(editable_case)
+) -> dict:
+    """Adds, dismisses or undoes one of the AI's suggestions on a filed case
+    (contract 9; app/reports/suggestions.py), as POST /intake/{id}/
+    suggestions does on a draft: server-stamped, PUT /reports never
+    changes data.second_look. An add goes the way POST /damage-items does
+    -- the part leaves dismissed_parts, Annex A follows the list, history
+    "damage_item_added" -- and so does the item an undo takes off
+    ("damage_item_removed"), except that it never goes into
+    dismissed_parts: taking back a suggestion isn't removing a part the AI
+    listed. A repeated click changes nothing (item null).
+
+    {second_look, item, item_index} with what POST /damage-items answers
+    (id, damage_summary, damaged_parts, annex_a, annex_c). 409 signed_off
+    (reopen it first), 404 unknown_suggestion, 400 bad_action."""
+    refused = bad_action(body.action)
+    if refused:
+        raise refused
+    db = SessionLocal()
+    try:
+        hold_write_lock(db, report_id)
+        r = db.get(Report, report_id)
+        if not r:
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+        _refuse_intake_draft(r)
+        if _is_signed_off(r):
+            raise ApiError(409, "Report is signed off and locked. Reopen it before editing.", "signed_off")
+        try:
+            done = suggestions.decide(r.data or {}, body.key, body.action, body.looked, user, where="case")
+        except suggestions.UnknownSuggestion:
+            raise ApiError(404, UNKNOWN_SUGGESTION, "unknown_suggestion")
+        data = done.data
+        if done.action:
+            audit(db, user, suggestions.HISTORY[done.action], r.id, detail=done.part)
+        if done.listed:
+            if done.listed == "added":
+                _undismiss(data, done.item)
+            out = _save_damage_items(db, user, r, data, data["damage_summary"],
+                                     f"damage_item_{done.listed}", item_source(done.item))
+        else:
+            if done.action:
+                r.data = data
+                db.commit()
+            out = {"id": r.id, **{key: data.get(key) for key in ("damage_summary", "damaged_parts", "annex_a", "annex_c")}}
+        return {**out, **done.answer()}
     finally:
         db.close()
 

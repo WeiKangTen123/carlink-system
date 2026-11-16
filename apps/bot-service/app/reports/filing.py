@@ -92,11 +92,11 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     names the case in the log only. `read_ids`: photo_index_for's.
     """
     data = dict(data)
-    # The intake's second-look suggestions (ai/second_look.py) end here: a
-    # ticked one is already a damage item, the rest were only suggestions,
-    # and their photo links ("@id") point at the intake's photos, which the
-    # case renumbers.
-    data.pop("second_look", None)
+    # data["second_look"] -- the AI's suggestions and what people decided
+    # about them -- is kept (contract 9, conflict #8): a surveyor may still
+    # decide on the case page until sign-off, and the AI-accuracy record
+    # counts them then. The wizard's caller has turned its photo links into
+    # P-numbers (api/intake._finalize_claimed); the bots have none.
     data["sign_off"] = SignOffInfo().model_dump()
     # Only the fields still empty, and none a person marked (data.checked).
     data = apply_template_defaults(data)

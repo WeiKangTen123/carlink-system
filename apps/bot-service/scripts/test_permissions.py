@@ -282,6 +282,8 @@ DECISIONS = {
     ("PATCH", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", "409 intake / signed off, as PUT /annex-a; Annex A follows"),
     ("POST", "/reports/{report_id}/damage-items"): ("case-edit", "as PATCH; tested in scripts/test_damage_items.py"),
     ("DELETE", "/reports/{report_id}/damage-items/{item_index}"): ("case-edit", "as PATCH; records the part in dismissed_parts"),
+    ("POST", "/reports/{report_id}/suggestions"): ("case-edit", "contract 9: add / dismiss / undo an AI suggestion; 409 intake / "
+                                                                "signed_off; tested in scripts/test_suggestion_decisions.py"),
     ("POST", "/reports/{report_id}/ai-enrich"): ("case-edit", "not a Gemini call"),
     ("PUT", "/reports/{report_id}/annex-a"): ("case-edit", ""),
     ("PUT", "/reports/{report_id}/cover-page"): ("case-edit", "Our Ref (report_id) staff only, as PUT /reports/{id}"),
@@ -297,6 +299,7 @@ DECISIONS = {
     ("PUT", "/intake/{report_id}/data"): ("case-edit", ""),
     ("PUT", "/intake/{report_id}/checked"): ("case-edit", "field review marks, as the autosave; tested in scripts/test_field_review.py"),
     ("POST", "/intake/{report_id}/finalize"): ("case-edit", "the owner stays whoever started the draft"),
+    ("POST", "/intake/{report_id}/suggestions"): ("case-edit", "contract 9: as on a case; 409 running while the AI reads"),
 
     ("DELETE", "/reports/{report_id}"): ("special", "case-view; a draft: owner or admin; a filed case: admin only"),
     ("POST", "/reports/{report_id}/reopen"): ("special", "case-view; the signer or an admin"),
