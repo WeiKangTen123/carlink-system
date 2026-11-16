@@ -56,6 +56,11 @@ KINDS = ("sort", "read", "redraft", "annex_suggest", "redetect", "lookup", "seco
 # read 14 of 41 photos" stays the overall reading's.
 ZONES_KIND = "read_zones"
 KINDS += (ZONES_KIND,)
+# Contract 9: the re-check of the suggestions after the second look
+# (ai/check.py) -- its Decisions API requests and the lite call it falls
+# back to, one row. Not a READ_KIND either.
+CHECK_KIND = "check"
+KINDS += (CHECK_KIND,)
 CHANNELS = ("dashboard", "telegram", "whatsapp", "system")
 STATUSES = ("running", "ok", "failed", "refused", "aborted")
 # What counts as a failure on GET /ai-usage and in the case's list.
@@ -112,6 +117,12 @@ class Attempts:
         with self._lock:
             self._input_bytes += size
             self._calls += 1
+
+    def snapshot(self) -> list[dict]:
+        """The attempts so far, left in place (the run log still writes
+        them): which model answered, while the run goes on (ai/check.py)."""
+        with self._lock:
+            return [dict(a) for a in self._items]
 
     def drain(self) -> tuple[list[dict], int | None]:
         """(the attempts so far, the bytes the calls sent or None when no

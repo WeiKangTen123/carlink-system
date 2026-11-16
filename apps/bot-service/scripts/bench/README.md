@@ -8,6 +8,8 @@ folder holds what runs it on the server and compares two runs:
 |---|---|
 | `run_bench.sh` | on the server, as user `weika`: runs the benchmark for one git ref inside the live `carlink_api` container, on a scratch database, and copies the result out |
 | `compare.py` | before/after table of two result files, with ranges and a noise verdict |
+| `replay_check.py` | contract 9: the re-check alone (`app/ai/check.py`) on a stored result's suggestions -- runs R4 (the Decisions API) and R5 (the lite re-check) -- and, offline, the sweep of its yes / no cut-offs (`--sweep`) |
+| `probe_boxes.py` | contract 9: N random evidence boxes of a result drawn on their photos, with an `index.csv` for a person to mark on / off target (run R3) |
 | `probe_crops.py` | contract 8 D1: only the sorter, with its damage box, on a few photos of one case; writes the boxes and the close-ups cut from them, to judge the light sorter's boxes before a `--read-crops` run (its docstring has the command) |
 | `gate.py` | the owner's gate: PASS or FAIL for each candidate result file against a baseline |
 | `../test_benchmark_scoring.py` | offline tests of the scoring (synthetic data, no Gemini) |
@@ -399,6 +401,72 @@ errored is left out of the totals and listed under `errors`); ratios are worked 
 summed counts, not averaged over cases. With `--reports`, the history (past report lines) in
 the scratch database is set to "every report but this case's own" before each case is read as
 well as before it is scored, so a reading step that consults past cases is leave-one-out too.
+
+## Contract 9: the evidence and the re-check
+
+The flags (each in the result's `ai_settings` only while it acts; every default sends today's
+requests):
+
+| flag | setting | what it does |
+|---|---|---|
+| `--zone-evidence reason\|reason_box` | `intake_zone_evidence` | the zone reads also give each find's reason (and box); needs `--read-mode zones` |
+| `--check decision\|lite\|decision_then_lite` | `intake_check_mode` | the re-check of the suggestions after the second look (`app/ai/check.py`) |
+| `--decision-model M` | `gemini_decision_model` | the Decisions API's model; needs `--check` |
+| `--check-models CHAIN` | `gemini_check_chain` | the lite re-check's chain; needs `--check` |
+| `--thinking-level-check L` | `gemini_thinking_level_check` | the lite re-check's thinking level; needs `--check` |
+| `--check-resolution R` | `intake_check_resolution` | the photos' resolution on the Decisions API; needs `--check` |
+| `--check-yes P`, `--check-no P` | `intake_check_yes` / `_no` | the p cut-offs (no under yes); need `--check` |
+
+Every run keeps its suggestions in detail (`suggestions`: part, reads, photos by case label,
+evidence boxes and reasons, the re-check's verdict and p, and `truth` -- `real`, `wrong_side`
+or `extra` against the key, as `score_second_look` counts them) and the re-check's step
+(`second_look.check`). New metrics:
+
+| metric | what |
+|---|---|
+| `sug_n`, `sug_real`, `sug_wrong` | suggestions; those that find a key part the list missed; the rest (wrong side or extra) |
+| `sug_box`, `sug_sort_box`, `sug_any_box`, `sug_box_fill`, `sug_any_box_fill` | suggestions with an AI box, a sorter's box, either; the AI's and either's share (R2: box fill >= 60%) |
+| `sug_reason`, `sug_reason_fill` | suggestions with a reason (theirs or an evidence entry's); the share (R2: >= 90%) |
+| `list_box_fill`, `list_reason_fill` | the same for the damage list's items (an item's `bbox_2d` counts as its AI box) |
+| `chk_<real\|wrong>_<yes\|unsure\|no\|none>` | the re-check's verdicts on the real and the wrong suggestions |
+| `chk_real_kept_rate`, `chk_wrong_no_rate`, `sug_checked_rate` | real ones kept (yes or unsure; R4/R5 >= 85%), wrong ones said no (>= 40%), suggestions answered |
+| `dec_calls`, `dec_s`, `check_calls`, `check_s`, `recheck_s` | the Decisions API's requests and seconds, the lite re-check's, the whole step's (in `total_s`, out of `read_s`) |
+| `n_503` | Google's "busy" tries, beside `n_429` (files from before it: absent) |
+
+The summary's `by_model` (and the console's last line) gives every kind of call's tries per
+model: answered, tries, 429s, 503s.
+
+### R4 / R5: the re-check alone (`replay_check.py`)
+
+```
+BENCH_SCRIPT=replay_check bash ~/carlink-bench/run_bench.sh c9-check-dec GIT_REF \
+    /tmp/bench/out/c9-zBev-35.json --check decision
+BENCH_SCRIPT=replay_check bash ~/carlink-bench/run_bench.sh c9-check-lite GIT_REF \
+    /tmp/bench/out/c9-zBev-35.json --check lite --thinking-level-check low --repeat 2
+python3 ~/carlink-bench/code/c9-check-dec/apps/bot-service/scripts/bench/replay_check.py --sweep ~/carlink-bench/out/c9-check-dec.json
+```
+
+The first option is the stored result's path in the container (`/tmp/bench/out/LABEL.json` of
+the benchmark run). Each stored run's case is loaded again (the photos and their previews),
+each photo takes that run's sort, its suggestions go on the draft, and `check.run_for_intake`
+asks as the app would. Options: `--only CASE`, `--rep N` (one stored repetition), `--repeat N`,
+and the re-check flags above. It prints the verdicts on the real and the wrong suggestions,
+the gate (no on >= 40% of the wrong, yes/unsure on >= 85% of the real, median <= 3 s a Decisions
+API request), the calls per model with 429s and 503s, and the sweep: per "no" cut-off the share
+of the wrong ones said no and of the real ones kept, per "yes" cut-off the real and wrong at or
+over it, and the best "no" cut-off that keeps 85% of the real ones.
+
+### R3: the box probe (`probe_boxes.py`)
+
+```
+docker exec -w /tmp/bench/code/c9-zBev-35/apps/bot-service carlink_api python scripts/bench/probe_boxes.py \
+    /tmp/bench/out/c9-zBev-35.json --cases /tmp/bench/cases --key /tmp/bench/key.json --n 20 --out-dir /tmp/bench/probe-r3
+docker cp carlink_api:/tmp/bench/probe-r3 ~/carlink-bench/probe-r3
+```
+
+Offline (no Gemini call): 20 random AI boxes of the suggestions and the list (`--from`,
+`--kind ai|sort|any`, `--seed`), each drawn in red on its upright photo under a caption, as
+`box01.jpg`...; mark `on_target` in `index.csv` -- R3 passes at 14 of 20.
 
 ## Offline
 

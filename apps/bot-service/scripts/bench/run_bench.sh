@@ -24,6 +24,11 @@
 # PII (photos, key.json, reports, results, logs) stays in ~/carlink-bench
 # (0700) and the container's /tmp/bench (0700); none of it goes into git.
 # See scripts/bench/README.md.
+#
+# Contract 9: BENCH_SCRIPT=replay_check runs scripts/bench/replay_check.py
+# instead -- the re-check alone on a stored result's suggestions (runs R4,
+# R5) -- the first option being that result's path in the container:
+#   BENCH_SCRIPT=replay_check bash run_bench.sh c9-check-dec GIT_REF /tmp/bench/out/c9-zBev-35.json --check decision
 set -euo pipefail
 
 usage() {
@@ -45,6 +50,12 @@ REPO=${BENCH_REPO:-/opt/carlink-system}
 CONTAINER=${BENCH_CONTAINER:-carlink_api}
 HOME_DIR=${BENCH_HOME:-$HOME/carlink-bench}
 HARNESS_REF=${BENCH_HARNESS_REF:-}
+SCRIPT=${BENCH_SCRIPT:-benchmark_intake}
+case "$SCRIPT" in
+    benchmark_intake) SCRIPT_PATH=scripts/benchmark_intake.py ;;
+    replay_check) SCRIPT_PATH=scripts/bench/replay_check.py ;;
+    *) die "BENCH_SCRIPT: benchmark_intake (the default) or replay_check" ;;
+esac
 # The app refuses uploads below 3 GB free (settings.min_free_disk_gb); a
 # run copies every case's photos into the container's /tmp.
 MIN_FREE_GB=${BENCH_MIN_FREE_GB:-5}
@@ -129,6 +140,7 @@ if [ -n "$HARNESS_REF" ]; then
     REF_NOTE="$REF_NOTE (harness $HARNESS_REF@$HSHA)"
 fi
 [ -f "$CODE/apps/bot-service/scripts/benchmark_intake.py" ] || die "$GIT_REF has no scripts/benchmark_intake.py"
+[ -f "$CODE/apps/bot-service/$SCRIPT_PATH" ] || die "$GIT_REF has no $SCRIPT_PATH"
 grep -q -- '--sort-cache' "$CODE/apps/bot-service/scripts/benchmark_intake.py" ||
     die "$GIT_REF's benchmark_intake.py predates this harness; set BENCH_HARNESS_REF=feat/bench-harness (or the branch that has it)"
 
@@ -150,7 +162,13 @@ stop_bench() {
 trap 'stop_bench; exit 130' INT TERM
 
 LOG="$HOME_DIR/$LABEL.log"
-echo "run_bench: $LABEL = $REF_NOTE; log $LOG"
+echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT); log $LOG"
+# The replay reads no reports and sorts nothing: only the photos and the key.
+if [ "$SCRIPT" = benchmark_intake ]; then
+    INPUT_ARGS=(--cases "$B/cases" --key "$B/key.json" --reports "$B/reports" ${SORT_CACHE_ARGS[@]+"${SORT_CACHE_ARGS[@]}"})
+else
+    INPUT_ARGS=(--cases "$B/cases" --key "$B/key.json")
+fi
 set +e
 docker exec \
     -e BENCHMARK_SCRATCH=1 \
@@ -160,8 +178,8 @@ docker exec \
     -e PYTHONDONTWRITEBYTECODE=1 \
     -w "$B/code/$LABEL/apps/bot-service" \
     "$CONTAINER" sh -c 'echo "$$" > "$0/bench.pid" && exec "$@"' "$B/$LABEL" \
-    python "$B/code/$LABEL/apps/bot-service/scripts/benchmark_intake.py" \
-    --cases "$B/cases" --key "$B/key.json" --reports "$B/reports" ${SORT_CACHE_ARGS[@]+"${SORT_CACHE_ARGS[@]}"} \
+    python "$B/code/$LABEL/apps/bot-service/$SCRIPT_PATH" \
+    "${INPUT_ARGS[@]}" \
     --out "$B/out/$LABEL.json" --label "$LABEL" --ref "$REF_NOTE" "$@" 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
 set -e
@@ -173,7 +191,11 @@ if docker exec "$CONTAINER" test -f "$B/out/$LABEL.json"; then
     docker cp "$CONTAINER:$B/out/$LABEL.json" "$HOME_DIR/out/$LABEL.json"
     chmod 600 "$HOME_DIR/out/$LABEL.json"
     echo "run_bench: result $HOME_DIR/out/$LABEL.json (benchmark exit $status)"
-    echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BEFORE.json $HOME_DIR/out/$LABEL.json"
+    if [ "$SCRIPT" = benchmark_intake ]; then
+        echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BEFORE.json $HOME_DIR/out/$LABEL.json"
+    else
+        echo "sweep:     python3 $CODE/apps/bot-service/scripts/bench/replay_check.py --sweep $HOME_DIR/out/$LABEL.json"
+    fi
 else
     echo "run_bench: no result file was written (benchmark exit $status)" >&2
 fi

@@ -40,6 +40,10 @@ KEY_METRICS = (
     "annex_priced", "annex_price_diff", "annex_price_diff_rate", "annex_adjusted_diff", "annex_matched_priced",
     "annex_within_10",
     "annex_within_10_rate", "annex_price_abs_diff", "annex_perfect_within_10",
+    # Contract 9: the suggestions' evidence and the re-check.
+    "sug_n", "sug_real", "sug_wrong", "sug_box_fill", "sug_any_box_fill", "sug_reason_fill", "list_box_fill", "list_reason_fill",
+    "sug_checked_rate", "chk_real_kept_rate", "chk_wrong_no_rate", "dec_calls", "dec_s", "check_calls", "recheck_s",
+    "n_503",
 )
 HIGHER_IS_BETTER = {
     "found", "visible_found", "facts_ok", "visible_recall", "checklist_found", "checklist_visible_found",
@@ -50,6 +54,8 @@ HIGHER_IS_BETTER = {
     "side_right", "side_right_rate", "remarks_agree", "remarks_agree_rate", "remarks_repair_agree",
     "annex_matched_priced", "annex_within_10", "annex_within_10_rate", "annex_perfect_within_10",
     *(f"zone_{zone}_found" for zone in bench.ZONES), *(f"zone_{zone}_recall" for zone in bench.ZONES),
+    "sug_real", "sug_box_fill", "sug_any_box_fill", "sug_reason_fill", "list_box_fill", "list_reason_fill", "sug_checked_rate",
+    "chk_real_kept_rate", "chk_wrong_no_rate",
 }
 LOWER_IS_BETTER = {
     "extra", "wrong_side", "side_undetermined", "checklist_extra", "sort_s", "read_s", "calls", "attempts",
@@ -57,6 +63,7 @@ LOWER_IS_BETTER = {
     "look_extra", "look_wrong_side", "look_calls", "look_s", "fair_extra", "contradicted",
     "side_wrong_inferred", "remarks_disagree", "annex_price_abs_diff", "tok_in", "total_s",
     *(f"zone_{zone}_extra" for zone in bench.ZONES),
+    "sug_wrong", "dec_s", "recheck_s", "n_503",
 }
 # In neither: annex_price_diff, annex_price_diff_rate and annex_adjusted_diff
 # are signed, and closer to 0 is better whichever way they move.
