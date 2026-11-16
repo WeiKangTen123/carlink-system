@@ -29,12 +29,20 @@ intake/zones.py plans the zones, makes the calls (purpose "draft_zone": the
 light models' own chain, settings.gemini_zone_chain, with the reading's
 thinking level per model and never its tools -- structured.CALL_KINDS)
 and merges the answers.
+
+Contract 9 (settings.intake_zone_evidence): each damage item may also say
+why -- `reason` -- and where -- `box_2d`, Gemini's own box convention --
+as two optional fields after ai_confidence and one prompt sentence. They
+become the item's reports/schema.Evidence entry (ai/evidence.py), never
+fields of the drafting schema. "off" (the default) asks for neither: the
+request is as before, byte for byte.
 """
 import json
 import logging
 import re
 from dataclasses import dataclass, field
 
+from app.ai import evidence
 from app.ai.extraction import _firm_condition, _sanitize_damage_summary
 from app.ai.grid import CELLS, grid_path
 from app.ai.keys import AiActor
@@ -153,11 +161,33 @@ GRID_SENTENCE = (
     "Each photo has a light 3x3 grid on it, cells A1 to C3 (rows A to C from the top, columns 1 to 3 from the left): "
     "for each damaged part first set grid_cells to the cells the damage covers, then name the panel in those cells.\n"
 )
+# The one sentence the evidence tail fields add (settings.
+# intake_zone_evidence): words the Review step shows as "AI says", and a box
+# on the photo it cites. No numbers: a reason that quotes the plate is
+# shown to people (evidence.clean_reason drops one all the same).
+EVIDENCE_OFF = "off"
+EVIDENCE_SENTENCE = {
+    "reason": (
+        "For each damage item also give reason: what you can see that shows this part is damaged, at most 15 words, "
+        "no plate or other numbers.\n"
+    ),
+    "reason_box": (
+        "For each damage item also give reason: what you can see that shows this part is damaged, at most 15 words, "
+        "no plate or other numbers; and box_2d: [y_min, x_min, y_max, x_max] on 0-1000 round the damage in its "
+        "photo_reference photo -- leave box_2d out if you can't place it.\n"
+    ),
+}
 
 
-def system_prompt(zone: str, grid: bool = False) -> str:
+def _evidence_mode(value) -> str:
+    return value if value in EVIDENCE_SENTENCE else EVIDENCE_OFF
+
+
+def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_OFF) -> str:
     """Short on purpose: the light models this is for follow a short prompt
-    better than the overall reading's long one."""
+    better than the overall reading's long one. evidence_mode
+    (settings.intake_zone_evidence): "reason" / "reason_box" add the one
+    sentence asking for the tail fields; "off" adds nothing."""
     return (
         "You check one area of a damaged car for a Singapore motor insurance loss adjuster, from the photos below "
         "only. Each photo is labelled, e.g. P07.\n"
@@ -170,6 +200,7 @@ def system_prompt(zone: str, grid: bool = False) -> str:
         "name in other_part_name); condition_tokens, 1 to 3 of the allowed words; severity and remarks (Replace or "
         "Repair) when you can tell; ai_confidence, Low when the damage is slight or you are unsure.\n"
         + (GRID_SENTENCE if grid else "")
+        + EVIDENCE_SENTENCE.get(_evidence_mode(evidence_mode), "")
         + "In 'checked_intact' list the allowed parts you can see clearly in these photos with no damage.\n"
         "Left and right are the car's own sides as its driver sees them, never the photo's: work out first which way "
         "the car's front points -- front toward the camera, the car's right is on the photo's left; tail lamps toward "
@@ -179,11 +210,14 @@ def system_prompt(zone: str, grid: bool = False) -> str:
     )
 
 
-def response_schema(zone: str, labels: list[str], grid: bool = False) -> dict:
+def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_mode: str = EVIDENCE_OFF) -> dict:
     """The small schema: zone_side_seen first (fields are filled in schema
     order, so the model settles what it is looking at before it lists
     parts), photo_reference before part (where, then what), grid_cells
-    between them when grid marks are on. Field names are DamageSummaryItem's.
+    between them when grid marks are on. Field names are DamageSummaryItem's
+    -- but for the evidence tail fields (evidence_mode): reason, and in
+    "reason_box" box_2d, last (once the part is settled and its confidence
+    said), not required. They go into an Evidence entry (parse_answer).
     No minItems/maxItems: each adds states Gemini counts against a schema's
     limit (extraction._response_schema)."""
     names = checklist(zone)
@@ -198,6 +232,11 @@ def response_schema(zone: str, labels: list[str], grid: bool = False) -> dict:
         "remarks": {"anyOf": [{"type": "string", "enum": list(FIRM_REMARKS)}, {"type": "null"}]},
         "ai_confidence": {"type": "string", "enum": CONFIDENCES},
     })
+    mode = _evidence_mode(evidence_mode)
+    if mode != EVIDENCE_OFF:
+        item["reason"] = {"type": "string"}
+    if mode == "reason_box":
+        item["box_2d"] = {"type": "array", "items": {"type": "integer"}}
     required = ["photo_reference"] + (["grid_cells"] if grid else []) + ["part", "ai_confidence"]
     return {
         "type": "object",
@@ -240,6 +279,9 @@ class ZoneAnswer:
     side_seen: str
     # DamageSummaryItem dumps: canonical parts, photo_reference a label of
     # this call's photos (or None), grid_cells set when grid marks were on.
+    # Each with its evidence entry on photo_reference (by "zone:<zone>", the
+    # photo given as its label), and with intake_zone_evidence its reason
+    # and box (evidence.clean_reason, clean_box).
     items: list[dict] = field(default_factory=list)
     # Canonical parts the model saw undamaged: for the run log only.
     intact: list[str] = field(default_factory=list)
@@ -265,13 +307,20 @@ def _cells(value) -> list[str]:
 _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "ai_confidence")
 
 
-def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False) -> ZoneAnswer:
+def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
+                 evidence_mode: str = EVIDENCE_OFF) -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
     Listed" with no name (nothing a person could check), are left out; a
     photo label that wasn't sent becomes None. Then the overall reading's
-    own clean-up (extraction._sanitize_damage_summary, _firm_condition)."""
+    own clean-up (extraction._sanitize_damage_summary, _firm_condition).
+
+    Each item with a photo gets its evidence entry there, by "zone:<zone>".
+    The tail fields are read only as asked (evidence_mode): the reason
+    cleaned (evidence.clean_reason; the item's reason too), the box cleaned
+    (evidence.clean_box) and only with a photo to be on -- a bad one is no
+    box, never a failed answer."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
@@ -282,7 +331,8 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False) -> 
     if zone in END_ZONES and seen in END_ZONES and seen != zone:
         answer.note = f"the photos show the {seen}, not the {zone}: its finds were dropped"
         return answer
-    kept: list[tuple[DamageSummaryItem, list[str]]] = []
+    mode = _evidence_mode(evidence_mode)
+    kept: list[tuple[DamageSummaryItem, list[str], dict]] = []
     for raw_item in data.get("damage") or []:
         if not isinstance(raw_item, dict):
             continue
@@ -295,14 +345,19 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False) -> 
         )
         if part == OTHER_PART and not item.other_part_name:
             continue
-        kept.append((item, _cells(raw_item.get("grid_cells")) if grid else []))
+        kept.append((item, _cells(raw_item.get("grid_cells")) if grid else [], raw_item))
     # The overall reading's clean-up, on a draft holding only these items.
-    draft = SecurityIncidentDraft(description="", damage_summary=[item for item, _ in kept])
+    draft = SecurityIncidentDraft(description="", damage_summary=[item for item, _, _ in kept])
     draft = _firm_condition(_sanitize_damage_summary(draft))
-    for item, (_, cells) in zip(draft.damage_summary, kept):
+    for item, (_, cells, raw_item) in zip(draft.damage_summary, kept):
         dumped = item.model_dump()
         # Cells of a photo: none without one.
         dumped["grid_cells"] = cells if item.photo_reference else []
+        reason = evidence.clean_reason(raw_item.get("reason")) if mode != EVIDENCE_OFF else None
+        box = raw_item.get("box_2d") if mode == "reason_box" else None
+        dumped["reason"] = reason
+        dumped["evidence"] = [evidence.entry(item.photo_reference, f"zone:{zone}", box=box, reason=reason,
+                                             confidence=item.ai_confidence)] if item.photo_reference else []
         answer.items.append(dumped)
     for name in data.get("checked_intact") or []:
         part = canonical(zone, name, seen)
@@ -318,20 +373,22 @@ def read_zone(
     actor: AiActor,
     models: list[str],
     grid: bool = False,
+    evidence_mode: str = EVIDENCE_OFF,
     timeout: float = ZONE_TIMEOUT,
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
     the reading. judge_key=False, as the second look: an extra call failing
     says nothing new about the person's own key -- the reading that just
-    answered used it -- and must not switch it off for every AI call."""
+    answered used it -- and must not switch it off for every AI call.
+    evidence_mode: settings.intake_zone_evidence."""
     labels = [label for label, _, _ in photos]
     return call_structured(
         purpose=PURPOSE,
-        system_instruction=system_prompt(zone, grid),
+        system_instruction=system_prompt(zone, grid, evidence_mode),
         input_parts=build_input(photos, grid),
-        schema=response_schema(zone, labels, grid),
-        parse=lambda raw: parse_answer(zone, raw, labels, grid),
+        schema=response_schema(zone, labels, grid, evidence_mode),
+        parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode),
         models=models,
         actor=actor,
         timeout=timeout,

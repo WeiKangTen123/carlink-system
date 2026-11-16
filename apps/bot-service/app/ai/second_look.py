@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from app.ai import allowance, runs
+from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.structured import call_structured, image_part
 from app.config import settings
@@ -51,6 +51,7 @@ from app.reports.taxonomy import (
     UNDETERMINED_SUFFIX,
     damage_type_from_tokens,
     firm_condition,
+    split_side,
     unsided_part,
 )
 
@@ -76,6 +77,8 @@ MAX_CANDIDATES = 40
 MAX_SUGGESTIONS = 16
 # Past wordings shown per kit candidate ("Tail gate hinge LH").
 MAX_HINTS = 3
+# The photos a suggestion says it was seen in (SecondLookItem.seen_in).
+MAX_SEEN_IN = 12
 CONFIDENCES = ["High", "Medium", "Low"]
 
 NOTE_OFF = "The second look is switched off."
@@ -185,6 +188,19 @@ def listed_parts(data: dict) -> set[str]:
 
 def is_listed(part: str, listed: set[str]) -> bool:
     return bool(set(covers_of(part)) & listed)
+
+
+def other_side_listed(part: str, listed: set[str]) -> str | None:
+    """The listed part of the same family on the other side ("Right Tail
+    Lamp" for a suggested "Left Tail Lamp"), or None. A suggestion whose
+    twin is listed may be the same damage read on the wrong side: the
+    Review step says so beside it. A side-undetermined part has no other
+    side (its sided names list it: covers_of)."""
+    base, side = split_side(part)
+    if side not in ("Left", "Right"):
+        return None
+    other = f"{'Right' if side == 'Left' else 'Left'} {base}"
+    return other if other in CANONICAL_PARTS and other in listed else None
 
 
 # ------------------------------------------------------------ candidates
@@ -668,6 +684,33 @@ def _listed_as(item: dict, listed: set[str], listed_keys: set) -> bool:
     return is_listed(item["part"], listed)
 
 
+def _own_evidence(item: dict) -> dict:
+    """A second-look find as the zone reads' are: its photo is its evidence
+    (by "second_look", no box: it isn't asked for one) and seen_in; its
+    note -- the model's few words on where and what -- its reason."""
+    ref = item.get("photo_reference")
+    if not item.get("reason"):
+        item["reason"] = evidence.clean_reason(item.get("note"))
+    if ref and not item.get("evidence"):
+        item["evidence"] = [evidence.entry(ref, "second_look", reason=item["reason"], confidence=item.get("confidence"))]
+    if ref and not item.get("seen_in"):
+        item["seen_in"] = [ref]
+    return item
+
+
+def _join_twin(kept: dict, other: dict) -> None:
+    """In place: `other` is the same part as `kept`, the surer of the two
+    (_store sorts surest first). kept keeps its details; the reads that
+    found other, its photos and its evidence join (one entry per photo,
+    kept's photo first); its reason fills in only where kept has none."""
+    kept["found_by"] = list(dict.fromkeys(list(kept.get("found_by") or []) + list(other.get("found_by") or [])))
+    kept["seen_in"] = list(dict.fromkeys(list(kept.get("seen_in") or []) + list(other.get("seen_in") or [])))[
+        :MAX_SEEN_IN]
+    evidence.join(kept, other.get("evidence") or [])
+    if not kept.get("reason") and other.get("reason"):
+        kept["reason"] = other["reason"]
+
+
 def _store(report_id: str, result: dict) -> None:
     """Writes the suggestions onto the draft as data["second_look"], against
     the form as it is now.
@@ -679,11 +722,12 @@ def _store(report_id: str, result: dict) -> None:
     switched off. Each gets its key (prefill.item_key). Those listed or
     dismissed by then are dropped, the rest named in the firm's words,
     surest first, one per part (a sided name and its "(side undetermined)"
-    twin are one), at most MAX_SUGGESTIONS. What a person decided --
-    dismissed, decisions -- is kept (pipeline.merge_redraft carries
-    second_look over a re-read); reads are this reading's
-    (ai_draft["zone_reads"]); the re-check's answer, about the items this
-    replaces, goes."""
+    twin are one: the surer kept, the other's reads, photos and evidence
+    joined to it), at most MAX_SUGGESTIONS; other_side_listed against the
+    form. What a person decided -- dismissed, decisions -- is kept
+    (pipeline.merge_redraft carries second_look over a re-read); reads are
+    this reading's (ai_draft["zone_reads"]); the re-check's answer, about
+    the items this replaces, goes."""
     from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
@@ -706,7 +750,7 @@ def _store(report_id: str, result: dict) -> None:
         listed_keys = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         vehicle = data.get("vehicle_info") or {}
         items = []
-        for it in zone_items + [dict(it) for it in result.get("items") or []]:
+        for it in zone_items + [_own_evidence(dict(it)) for it in result.get("items") or []]:
             it["key"] = it.get("key") or item_key(it) or it["part"]
             # An old dismissed list holds part names: the keys of canonical parts.
             if it["key"] in dismissed or it["part"] in dismissed or _listed_as(it, listed, listed_keys):
@@ -718,13 +762,16 @@ def _store(report_id: str, result: dict) -> None:
             # "Left Tail Lamp" and "Tail Lamp (side undetermined)" both: one
             # lamp seen twice, the surer kept -- ticking both would list it
             # twice. A zone read and the second look naming the same part:
-            # the surer too.
-            if _listed_as(it, {k["part"] for k in kept}, {k["key"] for k in kept}):
+            # the surer too. What the other saw joins it.
+            twin = next((k for k in kept if _listed_as(it, {k["part"]}, {k["key"]})), None)
+            if twin is not None:
+                _join_twin(twin, it)
                 continue
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
+            it["other_side_listed"] = other_side_listed(it["part"], listed)
             kept.append(it)
-        items = kept
+        items = [evidence.settle(it) for it in kept]
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),

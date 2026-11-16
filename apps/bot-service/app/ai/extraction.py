@@ -20,6 +20,7 @@ import json
 import logging
 import re
 
+from app.ai.evidence import clean_box
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import settings
@@ -478,6 +479,11 @@ def _sanitize_damage_summary(draft: SecurityIncidentDraft) -> SecurityIncidentDr
             item.severity = None
         if item.ai_confidence not in _VALID_CONFIDENCE:
             item.ai_confidence = None
+        # Contract 9 (decision 24): the box as it may be drawn, or none --
+        # an inverted one drew with a negative size, one round the whole
+        # photo marks nothing (ai/evidence.clean_box). What was stored
+        # only: the request and the schema are as before.
+        item.bbox_2d = clean_box(item.bbox_2d)
         # A real part name is a short label ("Rear Bumper"), not a
         # sentence -- same shape check as _looks_like_fabricated_name.
         if item.part and (any(ch in item.part for ch in "\n") or len(item.part) > 80):
