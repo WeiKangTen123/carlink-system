@@ -47,7 +47,7 @@ from pathlib import Path
 
 from app.ai import decisions, runs
 from app.ai.keys import AiActor, AiUnavailable
-from app.ai.second_look import _ChainUntil, _within
+from app.ai.second_look import _ChainUntil, _within, split_settled
 from app.ai.structured import call_structured, image_part
 from app.config import chain, settings
 from app.reports.taxonomy import UNDETERMINED_SUFFIX
@@ -574,8 +574,10 @@ def with_check_box(evidence: list[dict], entry: dict) -> list[dict]:
 
 
 def _plan(report_id: str) -> Plan | None:
-    """What to ask, from the draft as the second look left it. None when
-    there is nothing to say: the draft is gone, or has no suggestions."""
+    """What to ask, from the draft as the second look left it: its open
+    suggestions -- one a person dismissed or put on the list stays in
+    items (second_look._store) but is never asked about. None when there
+    is nothing to say: the draft is gone, or has no open suggestions."""
     from app.intake.photos import ordered_photos
     from app.reports.db import SessionLocal
     from app.reports.models import Report
@@ -585,8 +587,10 @@ def _plan(report_id: str) -> Plan | None:
         report = db.get(Report, report_id)
         if report is None or report.status != "intake":
             return None
-        look = (report.data or {}).get("second_look")
-        items = [it for it in (look or {}).get("items") or [] if isinstance(it, dict) and it.get("part")]
+        data = report.data or {}
+        look = data.get("second_look")
+        items, _ = split_settled(
+            [it for it in (look or {}).get("items") or [] if isinstance(it, dict) and it.get("part")], data)
         if not items:
             return None
         return plan_asks(items, ordered_photos(db, report_id))
@@ -628,7 +632,13 @@ def _ask(report_id: str, actor: AiActor, mode: str, plan: Plan) -> tuple[dict, d
                     lite_checks, labels = {}, []
                 checks.update(lite_checks)
                 sent += labels
-            run.photos_sent = sorted(set(sent), key=_label_number)
+            # As "@<photo id>", in camera order, as the zone rows keep
+            # theirs: the labels shift when a photo is deleted before
+            # filing, which turns these into the case's P-numbers
+            # (runs.relabel_check_runs).
+            id_of = {p.label: photo_id for photo_id, p in plan.photos.items()}
+            run.photos_sent = [f"@{id_of[label]}" if label in id_of else label
+                               for label in sorted(set(sent), key=_label_number)]
             run.parts_found = sum(1 for c in checks.values() if c["verdict"] == "yes")
             if not checks and why is not None:
                 raise decisions.DecisionFailed(why)
@@ -650,9 +660,11 @@ def _ask(report_id: str, actor: AiActor, mode: str, plan: Plan) -> tuple[dict, d
 
 
 def _store(report_id: str, outcome: dict, checks: dict[str, dict], boxes: dict[str, dict]) -> None:
-    """Writes the answers onto the suggestions as they are now (by key), in
-    the new order, and the step's CheckRun. The same suggestions, never one
-    more or less; the damage list is not touched."""
+    """Writes the answers onto the suggestions as they are now (by key), the
+    open ones in the new order and the settled ones after them, as
+    second_look._store left them (split_settled), and the step's CheckRun.
+    The same suggestions, never one more or less; the damage list is not
+    touched."""
     from app.reports.db import SessionLocal
     from app.reports.models import Report
     from app.reports.schema import SecondLook
@@ -684,7 +696,9 @@ def _store(report_id: str, outcome: dict, checks: dict[str, dict], boxes: dict[s
             items.append(it)
         # Sorted only on an answer: a failed re-check leaves the order as it
         # was (the second look's, surest first).
-        stored = SecondLook.model_validate({**look, "items": sort_items(items) if checks else items, "check": outcome})
+        open_items, settled = split_settled(items, data)
+        items = (sort_items(open_items) if checks else open_items) + settled
+        stored = SecondLook.model_validate({**look, "items": items, "check": outcome})
         report.data = {**data, "second_look": stored.model_dump()}
         db.commit()
     finally:

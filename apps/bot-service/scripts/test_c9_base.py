@@ -453,8 +453,11 @@ def store_rebuild() -> None:
     make_case("c9-store", CASE, data=data, ai_draft=ai_draft)
     REQUESTS.clear()
     second_look.run_for_intake("c9-store", AiActor.cli())
-    look = saved("c9-store")["data"]["second_look"]
-    items = look["items"]
+    stored_data = saved("c9-store")["data"]
+    look = stored_data["second_look"]
+    # The dismissed ones stay in items after the open ones (split_settled:
+    # "Show decided", undo); the open ones are what is suggested.
+    items, settled = second_look.split_settled(look["items"], stored_data)
     keys_ = [it["key"] for it in items]
     check(not REQUESTS and look["status"] == "skipped" and look["note"] == second_look.NOTE_OFF,
           "the second look off: no call, its status says so")
@@ -463,6 +466,9 @@ def store_rebuild() -> None:
     check(len(items) == second_look.MAX_SUGGESTIONS == 16, "at most 16 (conflict #22)", len(items))
     check(items[0]["part"] == names[-1], "surest first")
     check("Boot Lid Hinge" not in keys_ and "Rear Windscreen" not in keys_, "dismissed keys stay out")
+    check([it["key"] for it in settled] == ["Rear Windscreen", "Boot Lid Hinge"] and look["items"] == items + settled,
+          "...of the open ones: kept after them, outside the 16 -- the previous read's first, as the person saw it",
+          [it["key"] for it in look["items"]])
     check(look["dismissed"] == ["Boot Lid Hinge", "Rear Windscreen"] and look["decisions"] == [decision],
           "dismissed and the decisions are kept")
     check(look["reads"] == ["overall", "zone:rear", "zone:left"], "reads: the reads that answered (ai_draft)")
@@ -481,7 +487,7 @@ def store_rebuild() -> None:
         {"part": "Boot Lid Lock", "photo_reference": "@y", "confidence": "High", "source": "kit"},
         {"part": "Rear Bumper Beam", "photo_reference": "@y", "confidence": "High", "source": "nearby"}]})
     look = saved("c9-store-old")["data"]["second_look"]
-    check([(it["part"], it["key"]) for it in look["items"]] == [("Rear Bumper Beam", "Rear Bumper Beam")]
+    check([(it["part"], it["key"]) for it in look["items"]] == [("Rear Bumper Beam", "Rear Bumper Beam"), ("Boot Lid Lock", "Boot Lid Lock")]
           and look["reads"] == [] and look["dismissed"] == ["Boot Lid Lock"],
           "an old draft: the second look's own items, keyed; an old dismissed (part names) respected",
           look["items"])
@@ -646,9 +652,11 @@ def option_b() -> None:
     with Settings(intake_read_mode="zones"):
         pipeline._read("c9-b", AiActor.cli(), kind="redraft")
     data = saved("c9-b")["data"]
-    keys_ = {it["key"] for it in data["second_look"]["items"]}
-    check(keys_ == ZONE_ONLY_PARTS - {"Boot Lid Lock"} and data["second_look"]["dismissed"] == ["Boot Lid Lock"],
-          "a dismissed suggestion stays out after a re-read; dismissed is kept", sorted(keys_))
+    open_items, settled = second_look.split_settled(data["second_look"]["items"], data)
+    keys_ = {it["key"] for it in open_items}
+    check(keys_ == ZONE_ONLY_PARTS - {"Boot Lid Lock"} and data["second_look"]["dismissed"] == ["Boot Lid Lock"]
+          and [it["key"] for it in settled] == ["Boot Lid Lock"],
+          "a dismissed suggestion isn't suggested again after a re-read (kept as decided); dismissed is kept", sorted(keys_))
     check([it["part"] for it in data["damage_summary"]] == ["Rear Bumper", "Boot Lid"], "and the list is still the list")
 
     # "list": contract 8's runs -- every find in the list.

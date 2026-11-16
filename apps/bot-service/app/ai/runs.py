@@ -581,3 +581,19 @@ def relabel_zone_reads(db, report_id: str, label_of: dict[str, str]) -> None:
             zones.append(zone)
         # A new object, so the JSON column is seen to change.
         row.photos_sent = {**detail, "zones": zones}
+
+
+def relabel_check_runs(db, report_id: str, label_of: dict[str, str]) -> None:
+    """Contract 9, at filing beside relabel_zone_reads (no commit here): the
+    re-check rows' photos (ai/check.py), kept as "@<photo id>", under the
+    case's final P-numbers; a photo deleted since drops out. A label from
+    a row written before the "@id"s is left as it is."""
+    rows = db.query(AiRun).filter(AiRun.report_id == report_id, AiRun.kind == CHECK_KIND).all()
+    for row in rows:
+        if not isinstance(row.photos_sent, list):
+            continue
+        row.photos_sent = [
+            label_of.get(str(ref)[1:]) if str(ref).startswith("@") else ref
+            for ref in row.photos_sent
+            if not str(ref).startswith("@") or str(ref)[1:] in label_of
+        ]

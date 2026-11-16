@@ -415,11 +415,15 @@ def test_flow(client: TestClient, files: list[Path]) -> None:
     assert len(lock_items) == 1 and lock_items[0]["human_verified"], data["damage_summary"]
     look = data["second_look"]
     assert look["status"] == "ok" and look["dismissed"] == ["Boot Lid Hinge"], look
-    assert [it["part"] for it in look["items"]] == ["Rear End Panel"], look["items"]
+    # The dismissed one stays in items after the open ones ("Show decided",
+    # undo); the part ticked by hand doesn't.
+    open_items, settled = sl.split_settled(look["items"], data)
+    assert [it["part"] for it in open_items] == ["Rear End Panel"] and [it["part"] for it in settled] == ["Boot Lid Hinge"] \
+        and look["items"] == open_items + settled, look["items"]
     enum = looks[-1]["schema"]["properties"]["items"]["items"]["properties"]["part"]["enum"]
     assert "Boot Lid Lock" not in enum and "Boot Lid Hinge" not in enum
     assert [k for k, _ in run_rows(rid)][-2:] == ["redraft", "second_look"], run_rows(rid)
-    ok("one more call; the ticked part stays (checked); a dismissed part is neither asked about nor listed")
+    ok("one more call; the ticked part stays (checked); a dismissed part is neither asked about nor listed (kept as decided)")
 
     print("\n  filing: Annex A follows the tick")
     r = client.post(f"/intake/{rid}/finalize", json={"data": data})

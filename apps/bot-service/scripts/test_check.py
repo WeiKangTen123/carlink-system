@@ -405,9 +405,12 @@ def decision_request() -> None:
         rows = db.query(AiRun).filter(AiRun.report_id == rid).all()
     finally:
         db.close()
-    check(len(rows) == 1 and rows[0].kind == "check" and rows[0].status == "ok" and rows[0].photos_sent == ["P03", "P04", "P05"]
+    # P03-P05 as "@<photo id>", as the zone rows: filing turns them into
+    # the case's P-numbers (runs.relabel_check_runs).
+    check(len(rows) == 1 and rows[0].kind == "check" and rows[0].status == "ok"
+          and rows[0].photos_sent == [f"@{rid}-2", f"@{rid}-3", f"@{rid}-4"]
           and rows[0].parts_found == 1 and rows[0].model_used == "gemini-decision-1",
-          "the run log: one row, kind check, the photos by label, the yes count, the model",
+          "the run log: one row, kind check, the photos (by id, in camera order), the yes count, the model",
           [(r.kind, r.status, r.photos_sent, r.parts_found, r.model_used) for r in rows])
     attempt = rows[0].attempts[0]
     check(attempt["outcome"] == "ok" and attempt["http_status"] == 200 and attempt["key_last4"] == last4(COMPANY_KEY)
