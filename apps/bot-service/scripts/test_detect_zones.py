@@ -726,13 +726,21 @@ def grid_marks() -> None:
         originals = {p: p.read_bytes() for p in paths}
         pipeline._read("zt-grid", AiActor.cli())
         made = sorted(folder.glob("*.jpg"))
-        stamps = {p: p.stat().st_mtime_ns for p in made}
+        contents = {p: p.read_bytes() for p in made}
         first = len(zone_requests())
-        pipeline._read("zt-grid", AiActor.cli(), kind="redraft")
+        # Counted, not told by the files' times: a copy used again is
+        # touched (grid._reused), so the age sweep keeps it.
+        drawn = []
+        real_draw = grid.draw_grid
+        grid.draw_grid = lambda data: drawn.append(1) or real_draw(data)
+        try:
+            pipeline._read("zt-grid", AiActor.cli(), kind="redraft")
+        finally:
+            grid.draw_grid = real_draw
     check(made and len(made) == 11 - 1, "a derived copy per zone photo (the wide shot in two zones made once)",
           len(made))
-    check(sorted(folder.glob("*.jpg")) == made and all(p.stat().st_mtime_ns == stamps[p] for p in made),
-          "a re-read reuses them: none drawn again")
+    check(sorted(folder.glob("*.jpg")) == made and not drawn and all(p.read_bytes() == contents[p] for p in made),
+          "a re-read reuses them: none drawn again", len(drawn))
     check(all(p.read_bytes() == data for p, data in originals.items()), "the stored photos are untouched")
     check(folder == Path(settings.storage_dir) / "ai_derived" / "grid"
           and all(re.fullmatch(r"[0-9a-f]{64}\.jpg", p.name) for p in made),

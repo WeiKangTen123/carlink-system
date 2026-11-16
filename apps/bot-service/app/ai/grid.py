@@ -41,19 +41,33 @@ def grid_dir() -> Path:
     return Path(settings.storage_dir) / "ai_derived" / "grid"
 
 
+def _reused(out: Path) -> bool:
+    """Whether a copy drawn before is there to send again. Touched first:
+    cleanup._sweep_ai_derived removes ai_derived files last changed over a
+    week ago, and must not take one between here and the zone call that
+    sends it."""
+    try:
+        if out.exists() and out.stat().st_size > 0:
+            os.utime(out)
+            return True
+    except OSError:
+        pass  # gone meanwhile (swept): drawn again
+    return False
+
+
 def grid_path(source: str) -> str:
     """The copy of `source` with grid marks, made when it isn't there yet.
     Raises when the image can't be read (the caller sends the plain photo)."""
     data = Path(source).read_bytes()
     digest = hashlib.sha256(data + b"\0" + DRAWING.encode("utf-8")).hexdigest()
     out = grid_dir() / f"{digest}.jpg"
-    if out.exists() and out.stat().st_size > 0:
+    if _reused(out):
         return str(out)
     # Two zone calls running at once can want the same overview: one draws
     # it, the other then finds it. Written aside and moved into place, so
     # no one reads a half-written copy.
     with _lock:
-        if not (out.exists() and out.stat().st_size > 0):
+        if not _reused(out):
             out.parent.mkdir(parents=True, exist_ok=True)
             tmp = out.with_name(f"{out.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
             draw_grid(data).save(tmp, "JPEG", quality=JPEG_QUALITY)
