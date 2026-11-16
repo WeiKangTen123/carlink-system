@@ -60,6 +60,23 @@ list: the damage list, as m5/m6), and --store-on sends the requests without
 store=False, as before contract 9 -- for an A/B only. Each is in
 ai_settings while it acts.
 
+Contract 9, the evidence and the re-check: --zone-evidence reason|reason_box
+asks the zone reads for each find's reason and box (settings.
+intake_zone_evidence; needs --read-mode zones), and --check decision|lite|
+decision_then_lite re-checks the suggestions after the second look
+(settings.intake_check_mode, app/ai/check.py), tuned by --decision-model,
+--check-models, --thinking-level-check, --check-resolution and the cut-offs
+--check-yes / --check-no (each needs --check). Every run keeps its
+suggestions in detail ("suggestions": part, reads, photos by case label,
+evidence boxes and reasons, the re-check's verdict and p, and "truth": real,
+wrong_side or extra against the key) and the re-check's step
+(second_look.check); the metrics add the box and reason fill of the
+suggestions and of the list, the suggestions real and wrong, the re-check's
+verdicts on each, its calls and seconds, the 503s beside the 429s, and the
+summary the calls per model. scripts/bench/replay_check.py runs the
+re-check alone on a stored result's suggestions; scripts/bench/
+probe_boxes.py draws its evidence boxes for a person to judge.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -226,6 +243,94 @@ def score_second_look(expected: list[dict], parts: dict, drafted: list[str], sug
         "extra_parts": gain["extra"],
         "wrong_side": len(gain["wrong_side"]),
     }
+
+
+def classify_suggestions(expected: list[dict], parts: dict, suggested: list[str]) -> list[str]:
+    """Each suggestion against the key, in order (contract 9): "real" -- it
+    finds a key part the list missed (score_second_look's added) --,
+    "wrong_side" -- that part's family on the other side --, or "extra":
+    the names score_second_look counts."""
+    missed = [e for e in expected if e["part"] in parts["missed"]]
+    gain = score_parts(missed, [p for p in suggested if p])
+    real = Counter(gain["matched"].values())
+    wrong = Counter(part for part, _ in gain["wrong_side"])
+    out = []
+    for part in suggested:
+        if part and real[part] > 0:
+            real[part] -= 1
+            out.append("real")
+        elif part and wrong[part] > 0:
+            wrong[part] -= 1
+            out.append("wrong_side")
+        else:
+            out.append("extra")
+    return out
+
+
+def mark_truth(rows: list[dict], expected: list[dict], parts: dict) -> None:
+    """Sets each suggestion row's "truth" (classify_suggestions), in place."""
+    for row, truth in zip(rows, classify_suggestions(expected, parts, [r.get("part") for r in rows])):
+        row["truth"] = truth
+
+
+def has_ai_box(entry: dict) -> bool:
+    """An item or a suggestion the AI boxed: an evidence entry with an AI
+    box, or (a list item) its bbox_2d. A sorter's box doesn't count."""
+    if any(isinstance(e, dict) and e.get("box") and e.get("box_kind") in ("ai", None)
+           for e in entry.get("evidence") or []):
+        return True
+    return bool(entry.get("bbox_2d"))
+
+
+def has_box(entry: dict, kind: str | None = None) -> bool:
+    """An evidence box of that kind ("ai", "sort"), or of any kind."""
+    return any(isinstance(e, dict) and e.get("box") and (kind is None or (e.get("box_kind") or "ai") == kind)
+               for e in entry.get("evidence") or [])
+
+
+def has_reason(entry: dict) -> bool:
+    return bool(entry.get("reason")) or any(isinstance(e, dict) and e.get("reason") for e in entry.get("evidence") or [])
+
+
+VERDICTS = ("yes", "unsure", "no", "none")
+
+
+def evidence_metrics(run: dict) -> dict:
+    """Contract 9: the suggestions' evidence, against the key, and the
+    re-check's verdicts on the real and the wrong ones; the list's box and
+    reason fill. Nothing from a file written before them."""
+    m: dict = {}
+    sugg = run.get("suggestions")
+    if sugg is not None:
+        # Box fill split by who drew the box (the AI's, the sorter's), and
+        # either: R2's gate reads them.
+        m.update(sug_n=len(sugg), sug_box=sum(1 for s in sugg if has_ai_box(s)),
+                 sug_sort_box=sum(1 for s in sugg if has_box(s, "sort")),
+                 sug_any_box=sum(1 for s in sugg if has_box(s)),
+                 sug_reason=sum(1 for s in sugg if has_reason(s)))
+        verdicts = [((s.get("check") or {}).get("verdict") or "none") for s in sugg]
+        checked = any(v != "none" for v in verdicts) or bool((run.get("second_look") or {}).get("check"))
+        if checked:
+            m["sug_checked"] = sum(1 for v in verdicts if v != "none")
+        if all(s.get("truth") for s in sugg):
+            m.update(sug_real=sum(1 for s in sugg if s["truth"] == "real"),
+                     sug_wrong=sum(1 for s in sugg if s["truth"] != "real"))
+            if checked:
+                for group in ("real", "wrong"):
+                    for v in VERDICTS:
+                        m[f"chk_{group}_{v}"] = 0
+                for s, v in zip(sugg, verdicts):
+                    m[f"chk_{'real' if s['truth'] == 'real' else 'wrong'}_{v}"] += 1
+                m["chk_real_kept"] = m["chk_real_yes"] + m["chk_real_unsure"]
+    items = run.get("drafted_items") or []
+    if any("evidence" in i or "bbox_2d" in i for i in items):
+        m.update(list_n=len(items), list_box=sum(1 for i in items if has_ai_box(i)),
+                 list_reason=sum(1 for i in items if has_reason(i)))
+    look = run.get("second_look") or {}
+    check = look.get("check")
+    if isinstance(check, dict) and isinstance(check.get("seconds"), (int, float)):
+        m["recheck_s"] = check["seconds"]
+    return m
 
 
 # ---------------------------------------------------------------- the fair score
@@ -758,6 +863,19 @@ RATIOS = (
     # Signed: -0.8 is an Annex A priced at a fifth of the surveyor's.
     ("annex_price_diff_rate", "annex_price_diff", "annex_report_price_total"),
 ) + tuple((f"zone_{zone}_recall", f"zone_{zone}_found", f"zone_{zone}_expected") for zone in ZONES)
+# Contract 9: the evidence's fill, and the re-check: the real suggestions
+# it kept (yes or unsure), the wrong ones it called "no", and how many it
+# answered at all.
+RATIOS += (
+    ("sug_box_fill", "sug_box", "sug_n"),
+    ("sug_any_box_fill", "sug_any_box", "sug_n"),
+    ("sug_reason_fill", "sug_reason", "sug_n"),
+    ("list_box_fill", "list_box", "list_n"),
+    ("list_reason_fill", "list_reason", "list_n"),
+    ("chk_real_kept_rate", "chk_real_kept", "sug_real"),
+    ("chk_wrong_no_rate", "chk_wrong_no", "sug_wrong"),
+    ("sug_checked_rate", "sug_checked", "sug_n"),
+)
 _RATIO_NAMES = {name for name, _, _ in RATIOS}
 
 
@@ -816,6 +934,10 @@ def run_metrics(run: dict) -> dict:
             wait_429_s=round(sum(s.get("wait_429_s", 0.0) for s in accounting.values()), 1),
             slot_wait_s=round(sum(s.get("slot_wait_s", 0.0) for s in accounting.values()), 1),
         )
+        # Contract 9: Google's "busy" (503) apart from the other errors, in
+        # the files that count them.
+        if any("n_503" in s for s in accounting.values()):
+            m["n_503"] = sum(s.get("n_503", 0) for s in accounting.values())
         # Tokens per kind of call, when the SDK reported them.
         for purpose, short in _SHORT_PURPOSES.items():
             stage = accounting.get(purpose) or {}
@@ -834,6 +956,13 @@ def run_metrics(run: dict) -> dict:
     if zone_stage:
         m.update(zone_calls=zone_stage.get("calls"), zone_failed=zone_stage.get("failed_calls"),
                  zone_s=zone_stage.get("seconds"))
+    # Contract 9: the re-check's Decisions API requests and its lite call.
+    for purpose, short in (("decision", "dec"), ("check", "check")):
+        stage = (accounting or {}).get(purpose)
+        if stage:
+            m.update({f"{short}_calls": stage.get("calls"), f"{short}_failed": stage.get("failed_calls"),
+                      f"{short}_s": stage.get("seconds")})
+    m.update(evidence_metrics(run))
     zones = (run.get("zones") or {}).get("zones")
     if zones is not None:
         m["zone_side_flips"] = sum(1 for z in zones if z.get("zone") in ("left", "right")
@@ -891,8 +1020,9 @@ def run_metrics(run: dict) -> dict:
             m.update({f"zone_{zone}_expected": z.get("expected"), f"zone_{zone}_found": z.get("found"),
                       f"zone_{zone}_extra": z.get("extra")})
     if m.get("read_s") is not None:
-        # The case's wall-clock seconds: read_s leaves the second look out.
-        m["total_s"] = round(sum(m.get(k) or 0 for k in ("sort_s", "read_s", "look_s")), 1)
+        # The case's wall-clock seconds: read_s leaves the second look and
+        # the re-check out.
+        m["total_s"] = round(sum(m.get(k) or 0 for k in ("sort_s", "read_s", "look_s", "recheck_s")), 1)
     m = {k: v for k, v in m.items() if v is not None}
     return with_ratios(m)
 
@@ -950,6 +1080,8 @@ def summarize(runs: list[dict]) -> dict:
         "total": _stats_table(totals),
         "errors": [{"case": r.get("case"), "rep": int(r.get("rep") or 1), "error": r.get("error")} for r in runs if not run_ok(r)],
         "accounting": merge_accounting([r["accounting"] for r in runs if r.get("accounting")]),
+        # Contract 9: every kind of call together, per model.
+        "by_model": model_calls(merge_accounting([r["accounting"] for r in runs if r.get("accounting")])),
         "sort_cache": {
             "hits": sum((r.get("sort_cache") or {}).get("hits", 0) for r in runs),
             "misses": sum((r.get("sort_cache") or {}).get("misses", 0) for r in runs),
@@ -967,6 +1099,9 @@ TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens", "tool_calls"
 _SHORT_PURPOSES = {"draft": "read", "photo sort": "sort", "second look": "look"}
 # Contract 8 D2: the zone calls (ai/zone_read.PURPOSE), "zone_tok_in"...
 _SHORT_PURPOSES["draft_zone"] = "zone"
+# Contract 9: the re-check -- the Decisions API's requests (ai/decisions.
+# PURPOSE) and the lite call ("dec_tok_in", "check_tok_in"...).
+_SHORT_PURPOSES.update({"decision": "dec", "check": "check"})
 _TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
                   ("tool_calls", "code_runs"), ("tool_tokens", "tok_tool"))
 # The label of a close-up's part (extraction._build_input, contract 8 D1):
@@ -983,7 +1118,7 @@ def _add_tokens(into: dict, source: dict) -> None:
 
 def _empty_stage() -> dict:
     return {"calls": 0, "failed_calls": 0, "seconds": 0.0, "attempts": 0, "outcomes": {},
-            "slot_wait_s": 0.0, "n_429": 0, "wait_429_s": 0.0, "by_model": {}}
+            "slot_wait_s": 0.0, "n_429": 0, "wait_429_s": 0.0, "n_503": 0, "by_model": {}}
 
 
 def _empty_model() -> dict:
@@ -1008,9 +1143,12 @@ def accounting_summary(calls: list[dict], attempts: list[dict]) -> dict:
         s["slot_wait_s"] += a["slot_wait_s"]
         s["wait_429_s"] += a["wait_429_s"]
         s["n_429"] += 1 if a["outcome"] == "429" else 0
+        s["n_503"] += 1 if a.get("busy") else 0
         m = s["by_model"].setdefault(a["model"], _empty_model())
         m["attempts"] += 1
         m["answered"] += 1 if a["outcome"] == "ok" else 0
+        if a.get("busy"):
+            m["n_503"] = m.get("n_503", 0) + 1
         m["seconds"] += a["seconds"]
         m["outcomes"][a["outcome"]] = m["outcomes"].get(a["outcome"], 0) + 1
         _add_tokens(s, a)
@@ -1023,7 +1161,7 @@ def merge_accounting(summaries: list[dict]) -> dict:
     for summary in summaries:
         for purpose, s in summary.items():
             t = out.setdefault(purpose, _empty_stage())
-            for k in ("calls", "failed_calls", "attempts", "n_429"):
+            for k in ("calls", "failed_calls", "attempts", "n_429", "n_503"):
                 t[k] += s.get(k, 0)
             for k in ("seconds", "slot_wait_s", "wait_429_s"):
                 t[k] = round(t[k] + s.get(k, 0.0), 1)
@@ -1037,7 +1175,23 @@ def merge_accounting(summaries: list[dict]) -> dict:
                 tm["seconds"] = round(tm["seconds"] + ms.get("seconds", 0.0), 1)
                 for outcome, n in (ms.get("outcomes") or {}).items():
                     tm["outcomes"][outcome] = tm["outcomes"].get(outcome, 0) + n
+                if ms.get("n_503"):
+                    tm["n_503"] = tm.get("n_503", 0) + ms["n_503"]
                 _add_tokens(tm, ms)
+    return out
+
+
+def model_calls(accounting: dict) -> dict:
+    """Contract 9: every kind of call's tries per model -- answered, tries,
+    429s, 503s: what each free bucket was asked for."""
+    out: dict = {}
+    for stage in accounting.values():
+        for model, ms in (stage.get("by_model") or {}).items():
+            t = out.setdefault(model, {"answered": 0, "attempts": 0, "n_429": 0, "n_503": 0})
+            t["answered"] += ms.get("answered", 0)
+            t["attempts"] += ms.get("attempts", 0)
+            t["n_429"] += (ms.get("outcomes") or {}).get("429", 0)
+            t["n_503"] += ms.get("n_503", 0)
     return out
 
 
@@ -1153,6 +1307,8 @@ def _note(attempt: dict) -> None:
             "slot_wait_s": 0.0 if after_429 else waited,
             "wait_429_s": waited if after_429 else 0.0,
         }
+        if attempt.get("busy"):
+            kept["busy"] = True
         _add_tokens(kept, attempt)
         ACCOUNTING.add_attempt(kept)
         call = getattr(_tls, "call", None)
@@ -1206,9 +1362,16 @@ def _app() -> SimpleNamespace:
 
     import app.ai.zone_read as zone_read
 
-    for module in (triage, extraction, second_look, zone_read):  # imported before the wrap (not today)
+    # Contract 9: the re-check's lite call, and its Decisions API requests
+    # (not call_structured: ai/decisions.decide, counted the same way).
+    import app.ai.check as check
+    import app.ai.decisions as decisions
+
+    for module in (triage, extraction, second_look, zone_read, check):  # imported before the wrap (not today)
         if not getattr(module.call_structured, "_bench_wrapped", False):
             module.call_structured = structured.call_structured
+    if not getattr(decisions.decide, "_bench_wrapped", False):
+        decisions.decide = _counting(decisions.decide)
 
     from app.ai.keys import AiActor
     from app.config import settings
@@ -1538,6 +1701,33 @@ _ITEM_FIELDS = ("part", "other_part_name", "damage_type", "condition", "conditio
                 "ai_confidence", "side_inferred")
 # Contract 8 D2: which reads found the part, in which photos, which cells.
 _ITEM_FIELDS += ("found_by", "seen_in", "grid_cells")
+# Contract 9: its photo and box, the AI's reason and its evidence (photos by
+# case label: relabel_refs).
+_ITEM_FIELDS += ("photo_reference", "bbox_2d", "reason", "evidence")
+# A suggestion as a run keeps it (second_look.items; contract 9).
+_SUGGESTION_FIELDS = ("key", "part", "name", "other_part_name", "source", "confidence", "found_by", "photo_reference",
+                      "seen_in", "reason", "evidence", "check")
+
+
+def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
+    """A copy with its photos ("@<photo id>" in a draft) by case label, as
+    the run's sorted_photos number them: photo_reference, seen_in, each
+    evidence entry's photo. A photo gone since keeps its "@id"."""
+    out = dict(entry)
+    if isinstance(out.get("photo_reference"), str):
+        out["photo_reference"] = label_of.get(out["photo_reference"], out["photo_reference"])
+    if isinstance(out.get("seen_in"), list):
+        out["seen_in"] = [label_of.get(r, r) for r in out["seen_in"]]
+    if isinstance(out.get("evidence"), list):
+        out["evidence"] = [dict(e, photo=label_of.get(e.get("photo"), e.get("photo"))) if isinstance(e, dict) else e
+                           for e in out["evidence"]]
+    return out
+
+
+def suggestion_rows(look: dict, label_of: dict[str, str]) -> list[dict]:
+    """The second look's items (zone finds and its own) as a run keeps them."""
+    return [relabel_refs({k: it.get(k) for k in _SUGGESTION_FIELDS if k in it}, label_of)
+            for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
 
 
 def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, reports: ReportSet | None = None,
@@ -1597,8 +1787,10 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         ]
         items = [item for item in data.get("damage_summary") or [] if isinstance(item, dict)]
         drafted = [item.get("part") for item in items]
+        label_of = {f"@{p.id}": f"P{i + 1:02d}" for i, p in enumerate(photos)}
         out["drafted_parts"] = drafted
-        out["drafted_items"] = [{k: item.get(k) for k in _ITEM_FIELDS if k in item} for item in items]
+        out["drafted_items"] = [relabel_refs({k: item.get(k) for k in _ITEM_FIELDS if k in item}, label_of)
+                                for item in items]
         out["parts"] = score_parts(case["parts"], drafted)
         # What a "parts to check" list would add: every part the sorter named
         # on a photo of the insured vehicle, damage visible or not -- surveyors
@@ -1616,10 +1808,18 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                 "calls": out["calls"].get("second look", 0),
             }
             out["parts_with_second_look"] = score_second_look(case["parts"], out["parts"], drafted, suggested)
-            # _read runs the second look after the reading: read_seconds stays
-            # the reading's own, comparable with runs from before it.
-            if isinstance(look.get("seconds"), (int, float)) and "read_seconds" in out:
-                out["read_seconds"] = round(max(0.0, out["read_seconds"] - look["seconds"]), 1)
+            # Contract 9: each suggestion in detail, real or wrong by the key,
+            # and what the re-check did.
+            out["suggestions"] = suggestion_rows(look, label_of)
+            mark_truth(out["suggestions"], case["parts"], out["parts"])
+            out["second_look"]["check"] = look.get("check")
+            # _read runs the second look and the re-check after the reading:
+            # read_seconds stays the reading's own, comparable with runs from
+            # before them.
+            after = [look.get("seconds"), (look.get("check") or {}).get("seconds")]
+            after = sum(x for x in after if isinstance(x, (int, float)) and not isinstance(x, bool))
+            if after and "read_seconds" in out:
+                out["read_seconds"] = round(max(0.0, out["read_seconds"] - after), 1)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
         # Contract 8 D2: what each zone call sent and saw, from the run log's
@@ -1628,7 +1828,6 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         zone_row = (db.query(AiRun).filter(AiRun.report_id == rid, AiRun.kind == A.runs.ZONES_KIND)
                     .order_by(AiRun.started_at.desc()).first())
         if zone_row is not None:
-            label_of = {f"@{p.id}": f"P{i + 1:02d}" for i, p in enumerate(photos)}
             detail = copy.deepcopy(zone_row.photos_sent) if isinstance(zone_row.photos_sent, dict) else {}
             for zone in detail.get("zones") or []:
                 zone["photos"] = [label_of.get(ref, ref) for ref in zone.get("photos") or []]
@@ -1694,6 +1893,7 @@ def detail_lines(r: dict) -> list[str]:
         lines.append(f"   if every suggestion were ticked: parts {ls['found']}/{r['parts']['expected']} "
                      f"(visible {ls['visible_found']}/{r['parts']['visible_expected']}), added {ls['added']} "
                      f"{ls['added_parts']}, extra {ls['extra']} {ls['extra_parts']}, wrong side {ls['wrong_side']}")
+    lines += evidence_lines(r)
     s = r["sorter"]
     cache = r.get("sort_cache")
     lines.append(f"   sorter: labels in key {s['tagged_in_key']}/{s['tagged_photos']} ({_pct(s['label_precision'])}), "
@@ -1745,6 +1945,32 @@ def detail_lines(r: dict) -> list[str]:
                          f"against {a['report_adjusted_total']:.0f} ({a['adjusted_diff']:+.0f}); matched lines priced "
                          f"{a['matched_priced']}/{a['covered']}, within 10% {a['within_10pct']} "
                          f"(perfect detection {a['perfect_within_10pct']})")
+    return lines
+
+
+def evidence_lines(r: dict) -> list[str]:
+    """Contract 9: the suggestions' and the list's boxes and reasons, and the
+    re-check's verdicts on the real and the wrong suggestions."""
+    m = evidence_metrics(r)
+    lines = []
+    if "sug_n" in m:
+        said = f"   suggestions: {m['sug_n']}"
+        if "sug_real" in m:
+            said += f" (real {m['sug_real']}, wrong {m['sug_wrong']})"
+        said += (f"; AI box {m['sug_box']}/{m['sug_n']} (any box {m['sug_any_box']}), "
+                 f"reason {m['sug_reason']}/{m['sug_n']}")
+        if "list_n" in m:
+            said += f" | list: AI box {m['list_box']}/{m['list_n']}, reason {m['list_reason']}/{m['list_n']}"
+        lines.append(said)
+    check = (r.get("second_look") or {}).get("check")
+    if isinstance(check, dict):
+        said = (f"   re-check: {check.get('status')}" + (f" by {check['by']}" if check.get("by") else "")
+                + (f" on {check['model']}" if check.get("model") else "") + f" in {check.get('seconds')}s, "
+                f"{check.get('calls', 0)} call(s)" + (f" ({check['note']})" if check.get("note") else ""))
+        if "chk_real_yes" in m:
+            said += "; " + "; ".join(f"{group} " + " ".join(f"{v} {m[f'chk_{group}_{v}']}" for v in VERDICTS)
+                                     for group in ("real", "wrong"))
+        lines.append(said)
     return lines
 
 
@@ -1844,6 +2070,28 @@ TABLES += (
 )
 
 
+# Contract 9: the suggestions' evidence, and the re-check.
+TABLES += (
+    (("sugg", "sug_n"), ("real", "sug_real"), ("wrong", "sug_wrong"), ("AI box", "sug_box"), ("box fill", "sug_box_fill"),
+     ("sorter box", "sug_sort_box"), ("any box fill", "sug_any_box_fill"), ("reason", "sug_reason"), ("reason fill", "sug_reason_fill"), ("list box fill", "list_box_fill"),
+     ("list reason fill", "list_reason_fill")),
+    (("checked", "sug_checked"), ("real yes", "chk_real_yes"), ("real unsure", "chk_real_unsure"),
+     ("real no", "chk_real_no"), ("wrong yes", "chk_wrong_yes"), ("wrong unsure", "chk_wrong_unsure"),
+     ("wrong no", "chk_wrong_no"), ("real kept", "chk_real_kept_rate"), ("no on wrong", "chk_wrong_no_rate"),
+     ("dec calls", "dec_calls"), ("dec s", "dec_s"), ("lite check calls", "check_calls"),
+     ("re-check s", "recheck_s"), ("429", "n_429"), ("503", "n_503")),
+)
+
+
+def model_lines(by_model: dict) -> list[str]:
+    """Contract 9: the calls per model, every kind of call together."""
+    if not by_model:
+        return []
+    return ["", "calls per model (answered/tries, 429s, 503s): " + "; ".join(
+        f"{model} {t['answered']}/{t['attempts']}" + (f" 429 x{t['n_429']}" if t["n_429"] else "")
+        + (f" 503 x{t['n_503']}" if t["n_503"] else "") for model, t in by_model.items())]
+
+
 def summary_table(summary: dict) -> list[str]:
     out = [f"SUMMARY: {summary['reps']} run(s) of {summary['cases_n']} case(s), mean [min-max]; "
            f"TOTAL over the {len(summary['complete_reps'])} complete run(s)"]
@@ -1857,6 +2105,7 @@ def summary_table(summary: dict) -> list[str]:
         widths = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
         out.append("")
         out += ["  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in cells]
+    out += model_lines(summary.get("by_model") or {})
     if summary["errors"]:
         out.append(f"\nERRORS ({len(summary['errors'])}, left out of the numbers above):")
         out += [f"  {e['case']} run {e['rep']}: {e['error']}" for e in summary["errors"]]
@@ -2002,6 +2251,27 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--store-on", action="store_true",
                     help="A/B only: the requests without store=False, as before contract 9 "
                          "(settings.gemini_store_off off)")
+    ap.add_argument("--zone-evidence", metavar="MODE",
+                    help="the zone reads' tail fields: 'reason', 'reason_box' or 'off' "
+                         "(settings.intake_zone_evidence); needs --read-mode zones")
+    ap.add_argument("--check", metavar="MODE",
+                    help="re-check the suggestions: 'decision' (the Decisions API), 'lite', 'decision_then_lite' "
+                         "or 'off' (settings.intake_check_mode; app/ai/check.py)")
+    ap.add_argument("--decision-model", metavar="MODEL",
+                    help="the Decisions API's model (settings.gemini_decision_model); needs --check")
+    ap.add_argument("--check-models", type=_chain, metavar="CHAIN",
+                    help="the lite re-check's chain (settings.gemini_check_chain); needs --check")
+    ap.add_argument("--thinking-level-check", metavar="LEVEL",
+                    help="the lite re-check's thinking level, written as --thinking-level-read "
+                         "(settings.gemini_thinking_level_check); needs --check")
+    ap.add_argument("--check-resolution", metavar="RES",
+                    help="the photos' resolution on the Decisions API: low, medium, high or ultra_high "
+                         "(settings.intake_check_resolution); needs --check")
+    ap.add_argument("--check-yes", type=float, metavar="P",
+                    help="p at or over which the Decisions API's answer is 'yes' (settings.intake_check_yes); "
+                         "needs --check")
+    ap.add_argument("--check-no", type=float, metavar="P",
+                    help="p at or under which it is 'no' (settings.intake_check_no); needs --check")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2092,6 +2362,63 @@ def model_settings(args: argparse.Namespace) -> dict:
         out["intake_zone_only"] = config.normal_zone_only(args.zone_only)
     if getattr(args, "store_on", False):
         out["gemini_store_off"] = False
+    out.update(check_settings(args, config, zones_on))
+    return out
+
+
+# Contract 9: the re-check's tuning flags -> (Settings field, config's
+# normaliser). Each needs --check: alone it would change nothing.
+CHECK_FLAGS = (
+    ("decision_model", "gemini_decision_model", None),
+    ("check_models", "gemini_check_chain", "normal_chain"),
+    ("thinking_level_check", "gemini_thinking_level_check", "normal_thinking_levels"),
+    ("check_resolution", "intake_check_resolution", "normal_check_resolution"),
+)
+
+
+def check_settings(args: argparse.Namespace, config, zones_on: bool) -> dict:
+    """Contract 9's --zone-evidence, --check and the re-check's tuning, as
+    {Settings field: value}. Exits on a value config refuses, or a flag
+    that would change nothing (a benchmark spent measuring the baseline
+    under another name)."""
+    out: dict = {}
+    if getattr(args, "zone_evidence", None) is not None:
+        if not zones_on:
+            sys.exit("--zone-evidence: the zone reads' reasons and boxes; give --read-mode zones too")
+        try:
+            out["intake_zone_evidence"] = config.normal_zone_evidence(args.zone_evidence)
+        except ValueError as exc:
+            sys.exit(f"--zone-evidence: {exc}")
+    mode = config.settings.intake_check_mode
+    if getattr(args, "check", None) is not None:
+        try:
+            mode = out["intake_check_mode"] = config.normal_check_mode(args.check)
+        except ValueError as exc:
+            sys.exit(f"--check: {exc}")
+    for flag, field, normaliser in CHECK_FLAGS + (("check_yes", "intake_check_yes", None),
+                                                  ("check_no", "intake_check_no", None)):
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        if mode == "off":
+            sys.exit(f"--{flag.replace('_', '-')}: tunes the re-check; give --check too")
+        if flag == "decision_model":
+            value = str(value).strip()
+            if not value:
+                sys.exit("--decision-model: a model name")
+        elif flag in ("check_yes", "check_no"):
+            if not 0.0 <= value <= 1.0:
+                sys.exit(f"--{flag.replace('_', '-')}: a probability, 0 to 1")
+        else:
+            try:
+                value = getattr(config, normaliser)(value)
+            except ValueError as exc:
+                sys.exit(f"--{flag.replace('_', '-')}: {exc}")
+        out[field] = value
+    yes = out.get("intake_check_yes", config.settings.intake_check_yes)
+    no = out.get("intake_check_no", config.settings.intake_check_no)
+    if no >= yes:
+        sys.exit(f"--check-no {no} must be under --check-yes {yes}")
     return out
 
 
@@ -2112,6 +2439,23 @@ def ai_settings(settings) -> dict:
         out["intake_zone_only"] = getattr(settings, "intake_zone_only", "suggest")
     if not getattr(settings, "gemini_store_off", True):
         out["store_off"] = False
+    # Contract 9 (G): the zone reads' evidence in zone mode when asked for,
+    # and the re-check's settings while it runs -- the Decisions API's for
+    # its modes, the lite chain's for its.
+    evidence = getattr(settings, "intake_zone_evidence", "off")
+    if getattr(settings, "intake_read_mode", "single") == "zones" and evidence != "off":
+        out["intake_zone_evidence"] = evidence
+    mode = getattr(settings, "intake_check_mode", "off")
+    if mode != "off":
+        out["intake_check_mode"] = mode
+        if mode in ("decision", "decision_then_lite"):
+            out["decision_model"] = getattr(settings, "gemini_decision_model", None)
+            out["intake_check_resolution"] = getattr(settings, "intake_check_resolution", None)
+            out["intake_check_yes"] = getattr(settings, "intake_check_yes", None)
+            out["intake_check_no"] = getattr(settings, "intake_check_no", None)
+        if mode in ("lite", "decision_then_lite"):
+            out["check_chain"] = getattr(settings, "gemini_check_chain", None)
+            out["thinking_level_check"] = getattr(settings, "gemini_thinking_level_check", None)
     return out
 
 
@@ -2236,6 +2580,12 @@ def total_lines(runs: list[dict]) -> list[str]:
                 if r.get("parts_with_checklist"):
                     totals["checklist_runs"] += 1
                     totals["checklist_extra"] += len(r["parts_with_checklist"]["extra"])
+                em = evidence_metrics(r)
+                if "sug_real" in em:
+                    totals["sug_runs"] += 1
+                    for k in ("sug_n", "sug_real", "sug_wrong", "sug_box", "sug_reason", "chk_real_kept", "chk_wrong_no"):
+                        totals[k] += em.get(k, 0)
+                    totals["chk_runs"] += 1 if "chk_real_yes" in em else 0
                 ls = r.get("parts_with_second_look")
                 if ls:
                     totals["look_runs"] += 1
@@ -2262,6 +2612,11 @@ def total_lines(runs: list[dict]) -> list[str]:
                        f"visible {totals['look_visible_found']}/{totals['visible_expected']}: added {totals['look_added']} "
                        f"from {totals['look_suggested']} suggestions, extra {totals['look_extra']}, "
                        f"wrong side {totals['look_wrong_side']}")
+        if totals["sug_runs"]:
+            out.append(f"{head}SUGGESTIONS {totals['sug_n']}: real {totals['sug_real']}, wrong {totals['sug_wrong']}; "
+                       f"AI box {totals['sug_box']}, reason {totals['sug_reason']}"
+                       + (f"; RE-CHECK kept {totals['chk_real_kept']} of the real, said no to {totals['chk_wrong_no']} "
+                          f"of the wrong" if totals["chk_runs"] else ""))
         if totals["fair_runs"]:
             out.append(f"{head}FAIR parts {totals['fair_found']:g}/{totals['expected']}, visible "
                        f"{totals['fair_visible_found']:g}/{totals['visible_expected']} ({totals['neighbour']} neighbours "
@@ -2323,6 +2678,8 @@ def rescore(args: argparse.Namespace) -> int:
             contradicted = contradicted_parts(drafted, held[1].lines, history.family_of, history.side_of,
                                               history.family_and_side)
         run["parts_fair"] = score_fair(case["parts"], items, strict, contradicted)
+        if isinstance(run.get("suggestions"), list):
+            mark_truth(run["suggestions"], case["parts"], strict)
         score_details(run, case, held[1].lines if held is not None else None,
                       history.normalise_item if history else None, history.side_of if history else None)
         if annex and held is not None:

@@ -130,6 +130,10 @@ CALL_KINDS = {"draft": "read", "photo sort": "sort", "second look": "second_look
 # -- but never the reading's tools: zoom measured no gain, and a zone call
 # isn't asked to use them.
 CALL_KINDS["draft_zone"] = "zone"
+# Contract 9: the lite re-check of the suggestions (ai/check.py), on its
+# own chain (settings.gemini_check_chain) with its own thinking level
+# (settings.gemini_thinking_level_check, unset: none sent).
+CALL_KINDS["check"] = "check"
 # A kind of call that takes another kind's thinking level setting.
 THINKING_OF = {"zone": "read"}
 
@@ -356,7 +360,8 @@ def call_structured(
                     if said in DAY_VERDICTS:
                         spent_until = allowance.mark_spent(key.fingerprint, model_id, allowance.limit_from(exc))
                     _note_attempt(
-                        key, model_id, _outcome(exc, interaction), waited, started, interaction, spent_until=spent_until
+                        key, model_id, _outcome(exc, interaction), waited, started, interaction, spent_until=spent_until,
+                        busy=interaction is None and is_overloaded(exc),
                     )
                     # What it says about the key itself is kept for an own
                     # key only; a company key's row is left as before P4.
@@ -574,13 +579,17 @@ def _tool_tokens(interaction) -> int | None:
     return _count(getattr(usage, "total_tool_use_tokens", None)) if usage is not None else None
 
 
-def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None) -> None:
+def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None,
+                  busy: bool = False) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
     before the try was sent (a rate-limit slot, or the delay a 429 asked
     for). spent_until: when the model's free day on this key comes back,
     on a try skipped for it (day_spent) or a 429 that said it was used up
-    -- what the review step's "Read by the backup model" notice is told."""
+    -- what the review step's "Read by the backup model" notice is told.
+    busy: Google said "busy, try again" (503, is_overloaded) -- kept on the
+    try (contract 9), so the run log and the benchmark can count 503s apart
+    from the other errors."""
     try:
         attempt = {
             "model": model_id,
@@ -592,6 +601,8 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
         }
         if spent_until is not None:
             attempt["spent_until"] = allowance.iso(spent_until)
+        if busy:
+            attempt["busy"] = True
         prompt_tokens, output_tokens = _tokens(interaction) if interaction is not None else (None, None)
         if prompt_tokens is not None:
             attempt["prompt_tokens"] = prompt_tokens

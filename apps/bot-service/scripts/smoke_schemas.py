@@ -16,6 +16,8 @@ each.
         [--thinking-level-read L] [--thinking-level-sort L] [--thinking-level-second-look L]
         [--read-tools code_execution] [--resolution R]
         [--read-tools-timeout S] [--zoom-hint] [--sort-damage-box]
+        [--zones] [--zone-evidence reason|reason_box] [--check] [--check-models c,d]
+        [--thinking-level-check L] [--decision]
 
 The model settings (app/config.py) are sent as the app would send them
 (structured.request_settings): the configured ones, or these flags in their
@@ -50,10 +52,23 @@ Contract 8 D2: --zones adds the zone calls' schemas (ai/zone_read.py, purpose
 and "zone_close_grid", the largest (every outside part, grid cells) --
 2 x (models) calls more.
 
+Contract 9: --zone-evidence reason|reason_box smokes the zone schemas with
+the tail fields (settings.intake_zone_evidence; the zone schemas as
+ai/zone_read builds them with it on -- implies --zones), and says whether
+the schema carries them. --check adds the lite re-check's schema at its
+largest (ai/check.lite_schema: 16 questions, 12 photos; purpose "check",
+settings.gemini_thinking_level_check or --thinking-level-check) on the
+check chain only (settings.gemini_check_chain or --check-models): it never
+runs on another. --decision makes one Decisions API request (ai/decisions:
+one question about the grey square, at settings.intake_check_resolution or
+--resolution) and says the probability and the seconds, or why not: a 400
+(Google's "safety" among them) counts as a rejection.
+
 Exit status: 0 when no model answered 400; 1 when any did; 2 when it could
 not run (no --live, no key).
 """
 import argparse
+import inspect
 import json
 import sys
 import tempfile
@@ -72,9 +87,17 @@ from app.ai.structured import (  # noqa: E402
     _tool_calls,
     image_part,
     request_settings,
+    store_setting,
     tools_try,
 )
-from app.config import IMAGE_RESOLUTIONS, normal_read_tools, normal_thinking_levels, settings  # noqa: E402
+from app.config import (  # noqa: E402
+    IMAGE_RESOLUTIONS,
+    chain,
+    normal_chain,
+    normal_read_tools,
+    normal_thinking_levels,
+    settings,
+)
 from app.reports.taxonomy import CANONICAL_PARTS  # noqa: E402
 
 # Each schema's call_structured purpose: the one its model settings follow.
@@ -143,15 +166,65 @@ def _zone_schemas(image: str) -> dict[str, dict]:
     from app.ai import zone_read
 
     out = {}
+    # Contract 9: the tail fields as settings.intake_zone_evidence asks for
+    # them (--zone-evidence), through zone_read's evidence_mode where it has
+    # one (the evidence-data branch).
+    mode = getattr(settings, "intake_zone_evidence", "off")
+
+    def evidence(fn) -> dict:
+        return {"evidence_mode": mode} if mode != "off" and "evidence_mode" in inspect.signature(fn).parameters else {}
+
     for name, zone, grid in (("zone_rear", "rear", False), ("zone_close_grid", "close", True)):
         PURPOSES[name] = zone_read.PURPOSE
         out[name] = {
-            "system": zone_read.system_prompt(zone, grid),
+            "system": zone_read.system_prompt(zone, grid, **evidence(zone_read.system_prompt)),
             "input": zone_read.build_input([("P01", image, "damage")], grid),
-            "schema": zone_read.response_schema(zone, ["P01"], grid),
-            "parse": lambda raw, zone=zone, grid=grid: zone_read.parse_answer(zone, raw, ["P01"], grid),
+            "schema": zone_read.response_schema(zone, ["P01"], grid, **evidence(zone_read.response_schema)),
+            "parse": lambda raw, zone=zone, grid=grid: zone_read.parse_answer(
+                zone, raw, ["P01"], grid, **evidence(zone_read.parse_answer)),
         }
     return out
+
+
+def _check_schemas(image: str) -> dict[str, dict]:
+    """Contract 9: the lite re-check's request at its largest -- MAX_QUESTIONS
+    parts over MAX_PHOTOS photos (the grey square each time) -- on the check
+    chain alone."""
+    from app.ai import check
+
+    photos = {f"s{i}": check.Photo(f"s{i}", f"P{i:02d}", image, False) for i in range(1, check.MAX_PHOTOS + 1)}
+    request = [check.Ask(key=f"k{n}", words="rear bumper", photos=[f"s{(n - 1) % check.MAX_PHOTOS + 1}"], ref=f"F{n}")
+               for n in range(1, check.MAX_QUESTIONS + 1)]
+    refs = [ask.ref for ask in request]
+    labels = [photo.label for photo in check.sent_photos(request, photos)]
+    PURPOSES["check"] = "check"
+    return {"check": {
+        "system": check.LITE_PROMPT,
+        "input": check.lite_input(request, photos),
+        "schema": check.lite_schema(refs, labels),
+        "parse": lambda raw: check.parse_lite(raw, refs, labels),
+        "models": chain(settings.gemini_check_chain),
+    }}
+
+
+def smoke_decision(image: str, resolution: str | None) -> tuple[str, str]:
+    """Contract 9: one Decisions API request, as ai/check asks one (the
+    company key, a rate-limit slot, the run log's tries): (verdict, detail).
+    A 400 -- Google's "safety" among them -- is "400"."""
+    from app.ai import decisions
+    from app.ai.keys import AiActor
+
+    part = image_part(image)
+    part["resolution"] = resolution or settings.intake_check_resolution
+    questions = {"F1": {"type": "noul", "instructions": "In photo P01, is the grey square's dark block cracked, "
+                                                        "broken, dented, scratched or missing?"}}
+    try:
+        got = decisions.decide(input_parts=[{"type": "text", "text": "Photo P01:"}, part], questions=questions,
+                               actor=AiActor.cli())
+    except decisions.DecisionFailed as exc:
+        return ("400" if exc.status == 400 else f"no answer ({exc.why})"), str(exc)
+    p = got["answers"].get("F1")
+    return f"pass (p {p:.2f}, {got['seconds']}s)", ""
 
 
 def request(name: str, spec: dict, model: str, resolution: str | None = None) -> dict:
@@ -171,6 +244,8 @@ def request(name: str, spec: dict, model: str, resolution: str | None = None) ->
         response_format={"type": "text", "mime_type": "application/json", "schema": spec["schema"]},
         timeout=timeout,
         **extra,
+        # As every call of the app's sends it (contract 9: store=False).
+        **store_setting(),
     )
 
 
@@ -208,6 +283,15 @@ def main() -> int:
                         help="settings.intake_sort_damage_box on: the sort schema and prompt with the damage box")
     # Contract 8 D2: the zone calls' schemas too.
     parser.add_argument("--zones", action="store_true", help="also the zone calls' schemas (ai/zone_read.py)")
+    # Contract 9.
+    parser.add_argument("--zone-evidence", choices=("reason", "reason_box"),
+                        help="the zone schemas with the tail fields (settings.intake_zone_evidence); implies --zones")
+    parser.add_argument("--check", action="store_true",
+                        help="also the lite re-check's schema (ai/check.py), on the check chain only")
+    parser.add_argument("--check-models", help="the check chain to try instead of settings.gemini_check_chain")
+    parser.add_argument("--thinking-level-check", help="instead of settings.gemini_thinking_level_check")
+    parser.add_argument("--decision", action="store_true",
+                        help="also one Decisions API request (ai/decisions.py, settings.gemini_decision_model)")
     args = parser.parse_args()
     if not args.live:
         print("Refusing to run without --live: every line is a real Gemini call on the company key.")
@@ -216,12 +300,17 @@ def main() -> int:
         for flag, field, normal in (("thinking_level_read", "gemini_thinking_level_read", normal_thinking_levels),
                                     ("thinking_level_sort", "gemini_thinking_level_sort", normal_thinking_levels),
                                     ("thinking_level_second_look", "gemini_thinking_level_second_look", normal_thinking_levels),
-                                    ("read_tools", "gemini_read_tools", normal_read_tools)):
+                                    ("read_tools", "gemini_read_tools", normal_read_tools),
+                                    ("thinking_level_check", "gemini_thinking_level_check", normal_thinking_levels),
+                                    ("check_models", "gemini_check_chain", normal_chain)):
             if getattr(args, flag) is not None:
                 setattr(settings, field, normal(getattr(args, flag)))
     except ValueError as exc:
         print(f"Bad setting: {exc}")
         return 2
+    if args.zone_evidence:
+        settings.intake_zone_evidence = args.zone_evidence
+        args.zones = True
     if args.read_tools_timeout is not None:
         if args.read_tools_timeout <= 0:
             print("Bad setting: --read-tools-timeout must be more than 0")
@@ -257,9 +346,15 @@ def main() -> int:
         schemas = _schemas(_tiny_image(Path(folder)))
         if args.zones:
             schemas.update(_zone_schemas(_tiny_image(Path(folder))))
+            if args.zone_evidence:
+                carried = [f for f in ("reason", "box_2d") if f in json.dumps(schemas["zone_rear"]["schema"])]
+                print(f"Zone schemas with intake_zone_evidence={args.zone_evidence}: tail fields "
+                      f"{', '.join(carried) if carried else 'NONE (this branch has no zone evidence yet)'}")
+        if args.check:
+            schemas.update(_check_schemas(_tiny_image(Path(folder))))
         for name, spec in schemas.items():
             print(f"\n{name} schema: {len(json.dumps(spec['schema']))} characters")
-            for model in models:
+            for model in spec.get("models") or models:
                 acquire(key.rate_limit_id)
                 sent = request(name, spec, model, args.resolution)
                 try:
@@ -280,6 +375,12 @@ def main() -> int:
                     verdict, detail = _verdict(exc, key.value)
                 results.append((name, model, verdict, detail))
                 print(f"  {model:<28} {verdict}{f'  -- {detail}' if detail else ''}")
+
+        if args.decision:
+            print(f"\ndecision request ({settings.gemini_decision_model})")
+            verdict, detail = smoke_decision(_tiny_image(Path(folder)), args.resolution)
+            results.append(("decision", settings.gemini_decision_model, verdict, detail))
+            print(f"  {settings.gemini_decision_model:<28} {verdict}{f'  -- {detail}' if detail else ''}")
 
     rejected = [(n, m) for n, m, v, _ in results if v == "400"]
     no_verdict = [(n, m) for n, m, v, _ in results if not v.startswith("pass") and v != "400"]
