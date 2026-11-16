@@ -708,6 +708,8 @@ def worker_and_server_agree() -> None:
     check(not wrong, f"the server takes exactly the links the worker keeps ({len(fixture['links'])} shared cases)", str(wrong))
     check(catalogue.ALLOWED_HOSTS == set(fixture["hosts"]) == {"bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"},
           "the server's sites are the worker's: the three Microfiches sites", str(sorted(catalogue.ALLOWED_HOSTS)))
+    check(list(catalogue.ERROR_CODES) == fixture["error_codes"] and "need_year" in catalogue.ERROR_CODES,
+          "the server takes the worker's error codes, need_year among them", repr(catalogue.ERROR_CODES))
     caps = fixture["caps"]
     check((catalogue.MAX_PARTS, catalogue.MAX_DIAGRAMS, catalogue.MAX_ROWS, catalogue.MAX_CANDIDATES,
            catalogue.MAX_FAILURES, catalogue.MAX_PART_FAILURES, catalogue.MAX_TEXT)
@@ -1288,6 +1290,27 @@ def lookup_quota() -> None:
             db.close()
         r = _lookups(f, other)
         check(r.status_code == 202, "a day later: 202 again", brief(r))
+        # A case with no year: the look-up after detection ends need_year with cars to pick
+        # from. It was nobody's; picking a car is hers and counts like any look-up.
+        data = case_data()
+        data["vehicle_info"].update({"year": "", "date_of_registration": ""})
+        no_year = new_case(fay, data)
+        auto = catalogue.maybe_auto_lookup(no_year)
+        job = _claim(auto) if auto else {}
+        cars = [{**VEHICLE, "key": "microfiches:30608"}, {**VEHICLE, "key": "microfiches:21201"}]
+        r = W.w.post(f"/catalogue-worker/jobs/{auto}/result",
+                     json={"status": "failed", "error_code": "need_year", "error_text": "No year on the case.",
+                           "candidates": cars})
+        check(job.get("year") is None and r.status_code == 200, "no year: the automatic look-up ends need_year (200)", brief(r))
+        r = f.post(f"/reports/{no_year}/catalogue/lookup", json={"vehicle_key": cars[0]["key"]})
+        check(r.status_code == 202, "picking a car after need_year: 202 (her 2nd of 3 today)", brief(r))
+        f.post(f"/reports/{no_year}/catalogue/cancel")
+        check(_lookups(f, no_year).status_code == 202, "her 3rd: 202", "")
+        f.post(f"/reports/{no_year}/catalogue/cancel")
+        r = f.post(f"/reports/{no_year}/catalogue/lookup", json={"vehicle_key": cars[1]["key"]})
+        detail = r.json().get("detail", "")
+        check(r.status_code == 429 and code_of(r) == "lookup_limit" and "3 catalogue look-ups in the last 24 hours" in detail,
+              "picking another car past the cap: the same plain 429 lookup_limit", brief(r))
 
         sam = new_user("Sam", sees_all_cases=True)
         s = signed_in(sam)

@@ -139,3 +139,45 @@ def test_post_cached_by_body(make_fetcher):
     assert len(t.requests) == 2
     assert t.requests[0]["data"] == b"vin=A"
     assert t.requests[0]["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+
+
+# --- live-page budget (the catalogue worker's no-year step) ------------------------------------
+
+
+def test_live_budget_counts_live_pages_only_and_stops_before_sending(make_fetcher):
+    from parts_mcp.core.errors import BudgetSpent
+    from parts_mcp.core.fetch import live_budget, live_pages_left
+
+    url3 = "https://www.shop.example/en/catalog/z"
+    t = FakeTransport({URL: resp(), URL2: resp(), url3: resp()})
+    f = make_fetcher(t)
+    f.get(URL)  # cached before the budget
+    assert live_pages_left() is None  # no budget: nothing capped
+    with live_budget(1) as budget:
+        assert live_pages_left() == 1
+        assert f.get(URL).from_cache and budget.used == 0  # a cache hit is free
+        assert not f.get(URL2).from_cache and budget.used == 1 and live_pages_left() == 0
+        with pytest.raises(BudgetSpent) as spent:
+            f.get(url3)
+        assert spent.value.code == "budget_spent" and spent.value.url == url3
+        assert f.get(URL2).from_cache  # still free
+    assert t.urls() == [URL, URL2] and live_pages_left() is None
+    assert not f.get(url3).from_cache  # outside the block: no cap
+
+
+def test_live_budget_at_most_narrows_for_a_block_only(make_fetcher):
+    from parts_mcp.core.errors import BudgetSpent
+    from parts_mcp.core.fetch import live_budget, live_pages_left
+
+    t = FakeTransport({URL: resp(), URL2: resp()})
+    f = make_fetcher(t)
+    with live_budget(3) as budget:
+        with budget.at_most(0):
+            assert live_pages_left() == 0
+            with pytest.raises(BudgetSpent):
+                f.get(URL)
+        with budget.at_most(10):  # never more than are left
+            assert live_pages_left() == 3
+        f.get(URL)
+        assert budget.left() == 2 and budget.used == 1
+    assert t.urls() == [URL]

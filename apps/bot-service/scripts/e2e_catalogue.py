@@ -4,7 +4,9 @@
 through the API -- start a look-up, see the rows, hide one and undo it, put
 one on an existing Annex A line and one on a new line (catalogue_ref), see
 them accepted, the estimates untouched, nothing of it in the Excel workbook
-or the PDF's HTML, then take the new line off again.
+or the PDF's HTML, then take the new line off again. Last, a case with no
+year: the look-up ends need_year with cars to pick from, and one picked is
+looked up.
 
     cd apps/bot-service
     python scripts/e2e_catalogue.py                 # with the live worker
@@ -150,12 +152,14 @@ def _row(name, **kw):
     return out
 
 
-def _case(db, owner_id, Draft, synthesize, Report) -> str:
+def _case(db, owner_id, Draft, synthesize, Report, *, with_year: bool = True) -> str:
     data = Draft(description="Made-up end-to-end test case: rear-end collision.",
                  category=["Vehicle Collision or Damage"]).model_dump()
     data["report_id"] = OUR_REF
     data["vehicle_info"].update({"plate_number": PLATE, "make": "Honda", "model": "Vezel", "year": "2016", "vin": VIN,
                                  "engine_number": ENGINE, "driver_name": DRIVER, "date_of_registration": "1 Mar 2016"})
+    if not with_year:  # neither a year nor a date of registration: the look-up can't name a car
+        data["vehicle_info"].update({"year": "", "date_of_registration": ""})
     data["damage_summary"] = [{"part": p, "damage_type": "Dent", "severity": "Moderate", "human_verified": True} for p in DAMAGE]
     data["damaged_parts"] = list(DAMAGE)
     data["annex_a"] = {"items": [
@@ -311,6 +315,21 @@ def canned_result(job: dict) -> dict:
                "url": "https://www.parts-honda.uk/honda-cars/HRV/2016/ELEGANCE/30585", "twin_of": "Vezel"}
     return {"status": "done", "error_code": None, "error_text": None, "vehicle": vehicle, "candidates": [vehicle],
             "failures": [], "parts": [{**p, "diagrams": found.get(p["source_part"], []), "failures": []} for p in job["parts"]]}
+
+
+def canned_need_year(job: dict) -> dict:
+    """--skip-live: the worker's answer to a job with no year -- need_year and
+    cars to pick from, newest first (made up, shaped like parts-honda.uk's)."""
+    def car(type_id, year, trim, gearbox):
+        return {"key": f"microfiches:{type_id}", "source": "microfiches", "brand": "Honda", "model": "HRV",
+                "name": f"{trim} 5 Doors {gearbox}", "market": "Germany, France", "year_from": year, "year_to": year,
+                "url": f"https://www.parts-honda.uk/honda-cars/HRV/{year}/{trim}", "twin_of": "Vezel"}
+
+    cars = [car(30608, 2019, "COMFORT", "6 speed manual"), car(30609, 2019, "COMFORT", "full automatic"),
+            car(21201, 2005, "4WD", "5 speed manual")]
+    return {"status": "failed", "error_code": "need_year", "vehicle": None, "candidates": cars, "parts": [], "failures": [],
+            "error_text": "No year on the case; the catalogue lists Honda HRV (twin of Vezel) for 1999-2005, 2016-2019. "
+                          "Pick one of the 3 cars offered (newest first), or add the Date of registration and look up again."}
 
 
 # ------------------------------------------------------------------ helpers
@@ -588,6 +607,62 @@ def run(args) -> int:
         statuses = status_by_id(api.get(f"/reports/{case}/catalogue").json())
         expect(r.status_code == 200 and statuses[added[2]["id"]] == "suggested", "its row is a suggestion again")
         expect(statuses[attach[2]["id"]] == "accepted", "the row on 'Rear bumper' stays accepted")
+
+        step("10. A case with no year: need_year, cars to pick from, then one picked")
+        from app.reports.models import Report
+        from app.reports.schema import SecurityIncidentDraft
+        from app.reports.synthesize_annexes import synthesize_annexes_for_report
+
+        db = SessionLocal()
+        try:
+            no_year = _case(db, login["user_id"], SecurityIncidentDraft, synthesize_annexes_for_report, Report, with_year=False)
+            db.commit()
+        finally:
+            db.close()
+        r = api.post(f"/reports/{no_year}/catalogue/lookup", json={"vehicle_key": None})
+        expect(r.status_code == 202, f"case {no_year} (no year, no Date of registration): POST lookup 202",
+               f"{r.status_code} {r.text[:200]}")
+        ny_job = r.json()["job"]["id"]
+        if args.skip_live:
+            job = w.post("/catalogue-worker/claim", json={"worker": "e2e-local-pc", "version": "0.1"}).json()["job"] or {}
+            expect(job.get("job_id") == ny_job and job.get("year") is None, "the job's year is null")
+            r = w.post(f"/catalogue-worker/jobs/{ny_job}/result", json=canned_need_year(job))
+            expect(r.status_code == 200, "canned need_year result accepted", r.text[:200])
+        else:
+            out = run_worker(args, base, token)
+            expect(out["exit"] == 0 and not out["watchdog"], f"the worker ran once (live: {out['live'] or 'none, all cached'})")
+        view = api.get(f"/reports/{no_year}/catalogue").json()
+        job = view.get("job") or {}
+        cars = view.get("candidates") or []
+        expect(job.get("status") == "failed" and job.get("error_code") == "need_year", "the look-up: failed, need_year",
+               f"{job.get('status')} {job.get('error_code')} {job.get('error_text')}")
+        expect(view.get("vehicle") is None and len(cars) > 0, f"no car yet; {len(cars)} car(s) to pick from")
+        for c in cars:
+            note(f"offered: {c['key']} {c['model']} {c['name']} {c.get('year_from')} ({(c.get('market') or '')[:30]})")
+        years = [c.get("year_from") or 0 for c in cars]
+        expect(years == sorted(years, reverse=True), "newest first", str(years))
+        if cars:
+            picked = cars[0]["key"]
+            r = api.post(f"/reports/{no_year}/catalogue/lookup", json={"vehicle_key": picked})
+            expect(r.status_code == 202 and r.json()["job"]["vehicle_key"] == picked, f"[Pick a car] {picked}: 202")
+            picked_job = r.json()["job"]["id"]
+            if args.skip_live:
+                job = w.post("/catalogue-worker/claim", json={"worker": "e2e-local-pc", "version": "0.1"}).json()["job"] or {}
+                expect(job.get("job_id") == picked_job and job.get("vehicle_key") == picked, "the worker gets the picked car's key")
+                done = canned_result(job)
+                done.update(vehicle=cars[0], candidates=cars)
+                r = w.post(f"/catalogue-worker/jobs/{picked_job}/result", json=done)
+                expect(r.status_code == 200, "its result accepted", r.text[:200])
+            else:
+                out = run_worker(args, base, token)
+                expect(out["exit"] == 0 and not out["watchdog"], f"the worker ran once (live: {out['live'] or 'none, all cached'})")
+            view = api.get(f"/reports/{no_year}/catalogue").json()
+            expect((view.get("job") or {}).get("status") == "done" and (view.get("vehicle") or {}).get("key") == picked,
+                   "done, with the picked car", str((view.get("job") or {}).get("status")))
+            n = sum(1 for _ in rows_of(view))
+            expect(n > 0, f"{n} row(s) for the picked car; {len(view.get('candidates') or [])} car(s) still offered")
+            for part in view["parts"]:
+                note(f"{part['source_part']}: " + "; ".join(f"{d['diagram_name']} {len(d['rows'])} row(s)" for d in part["diagrams"]))
 
         if args.hold:
             hold(tmp, args, api, base, login, view)

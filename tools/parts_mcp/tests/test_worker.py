@@ -16,8 +16,9 @@ from typing import Any
 import pytest
 
 from parts_mcp import worker as w
-from parts_mcp.core.errors import (ChallengeBlocked, ChooseTrim, DailyCapReached, NeedsHuman, NotSupported,
+from parts_mcp.core.errors import (ChallengeBlocked, ChooseTrim, DailyCapReached, NeedsHuman, NeedYear, NotSupported,
                                    SiteBlocked)
+from parts_mcp.core.fetch import live_pages_left
 from parts_mcp.core.models import Vehicle
 from parts_mcp.core.store import open_store
 from parts_mcp.service import CatalogueService, DiagramMatch, DiagramSearch
@@ -333,6 +334,174 @@ def test_pinned_twin_keeps_twin_of(clock):
     assert (pinned["vehicle"]["key"], pinned["vehicle"]["twin_of"]) == ("fake:30584", "Vezel")
 
 
+# --- no year on the case (need_year) -----------------------------------------------------------------
+
+
+class YearsSource(FakeSource):
+    """Names its cars by year, as Microfiches does. No year: NeedYear with the years listed.
+    A year: its cars, or its trims' -- ChooseTrim when the model text names no trim and
+    there are more than 3, or more not "cached" than the live-page budget has left. A
+    table value that is an exception is raised. Groups, diagrams and rows: FakeSource."""
+
+    def __init__(self, years: dict[int, Any], cached: dict[int, list[str]] | None = None, **kw: Any) -> None:
+        super().__init__(brands=("HONDA",), **kw)
+        self.years = years  # year -> [car id, ...] or {trim: [car id, ...]} or an exception
+        self.cached = cached or {}  # year -> trims whose page is "in the cache" (the year's page too)
+
+    def asked(self) -> list[tuple[str, Any]]:
+        return [(args[1], args[2]) for method, args in self.calls if method == "find_vehicles"]
+
+    def find_vehicles(self, brand, model=None, year=None):
+        at = self._enter("find_vehicles", (brand, model, year))
+        words = (model or "").upper().replace("-", "").split()
+        if not words or words[0] != "HRV":
+            return []
+        if year is None:
+            raise NeedYear("HONDA HRV: give a year", source=self.name, brand="HONDA", series="HRV",
+                           years=list(self.years), cached=[y for y in self.years if y in self.cached])
+        listed = self.years.get(year)
+        if isinstance(listed, BaseException):
+            raise listed
+        if isinstance(listed, dict):
+            named = " ".join(words[1:])
+            if named in listed:
+                return [self._car(at, i, year, named) for i in listed[named]]
+            cached = [t for t in listed if t in self.cached.get(year, [])]
+            left = live_pages_left()
+            if len(listed) > 3 or (left is not None and len(listed) - len(cached) > left):
+                raise ChooseTrim(f"HONDA HRV {year} has {len(listed)} trims", source=self.name, brand="HONDA",
+                                 series="HRV", year=year, trims=list(listed), cached=cached)
+            return [self._car(at, i, year, t) for t, ids in listed.items() for i in ids]
+        return [self._car(at, i, year, None) for i in listed or []]
+
+    def _car(self, at, id, year, trim):
+        return Vehicle(source=self.name, url=f"https://www.parts-honda.uk/honda-cars/HRV/{year}/{id}", fetched_at=at,
+                       id=id, brand="HONDA", model="HRV", name=f"{trim or ''} 5 Doors".strip(), market="Germany, France")
+
+
+def hrv_years(over: dict[int, Any] | None = None) -> dict[int, Any]:
+    """Two generations: 2001-2003 and 2016-2019 (made-up cars)."""
+    years: dict[int, Any] = {
+        2001: ["A01"], 2002: ["A02"], 2003: {"1.6": ["G03a"], "1.6 4WD": ["G03b"]},
+        2016: ["N16"], 2017: ["N17"], 2018: ["N18"],
+        2019: {"COMFORT": ["C19m", "C19a"], "ELEGANCE": ["E19"], "SPORT": ["S19"], "EXECUTIVE": ["X19"]},
+    }
+    years.update(over or {})
+    return years
+
+
+def no_year_job(**kw: Any) -> dict[str, Any]:
+    return honda_job("Vezel", "Vezel", year=None, **kw)
+
+
+def test_no_year_is_need_year_with_cars_to_pick_newest_generation_first(clock):
+    src = YearsSource(hrv_years(), now=clock.now)
+    progress: list[str] = []
+    result = processor(make_service(clock, src)).process(no_year_job(), lambda d, t, m: progress.append(m) and False)
+    assert set(result) == RESULT_KEYS
+    assert (result["status"], result["error_code"], result["vehicle"], result["parts"]) == ("failed", "need_year", None, [])
+    keys = [c["key"] for c in result["candidates"]]
+    # 2019 first (its first trim, then the others), the 2003 generation kept a place; no 2016-2018, 2001-2002.
+    assert keys == ["fake:C19m", "fake:C19a", "fake:E19", "fake:S19", "fake:X19", "fake:G03a", "fake:G03b"]
+    assert all(set(c) == VEHICLE_KEYS for c in result["candidates"])
+    first, old = result["candidates"][0], result["candidates"][-1]
+    assert (first["year_from"], first["year_to"], first["twin_of"], first["brand"]) == (2019, 2019, "Vezel", "Honda")
+    assert (old["year_from"], old["year_to"]) == (2003, 2003)
+    assert "Honda HRV (twin of Vezel) for 2001-2003, 2016-2019" in result["error_text"]
+    assert "Pick one of the 7 cars offered" in result["error_text"] and "Date of registration" in result["error_text"]
+    assert result["failures"] == []
+    assert progress == ["No year on the case: listing catalogue cars to pick from"]
+    asked_years = [y for _, y in src.asked() if y is not None]
+    assert set(asked_years) == {2019, 2003}  # only the newest year of each generation; never a year not listed
+
+
+def test_the_first_pass_gives_each_generation_one_new_trim_page(clock):
+    src = YearsSource(hrv_years(), cached={2019: ["SPORT"]}, now=clock.now)
+    proc = processor(make_service(clock, src), need_year_pages=4)
+    result = proc.process(no_year_job())
+    trims_asked = [m for m, y in src.asked() if y is not None and m != "HR-V"]
+    # 2019: the cached SPORT page gives a car, so no new trim page in the first pass; 2003:
+    # one new trim; then the other 2019 trims, in the catalogue's order.
+    assert trims_asked[:2] == ["HRV SPORT", "HRV 1.6"]
+    assert trims_asked[2:] == ["HRV COMFORT", "HRV ELEGANCE", "HRV EXECUTIVE", "HRV 1.6 4WD"]
+    assert [c["key"] for c in result["candidates"]][0] == "fake:S19"
+
+
+def test_a_picked_candidate_is_the_car_of_the_next_look_up(clock):
+    src = YearsSource(hrv_years(), now=clock.now)
+    proc = processor(make_service(clock, src))
+    offered = proc.process(no_year_job())["candidates"]
+    src.cached = {2019: ["COMFORT", "ELEGANCE", "SPORT", "EXECUTIVE"], 2003: ["1.6", "1.6 4WD"]}  # what the first opened
+    picked = offered[2]["key"]
+    result = proc.process(no_year_job(vehicle_key=picked))
+    assert (result["status"], result["error_code"]) == ("done", None)
+    assert (result["vehicle"]["key"], result["vehicle"]["twin_of"], result["vehicle"]["year_from"]) == (picked, "Vezel", 2019)
+    assert result["parts"][0]["diagrams"][0]["diagram_key"] == f"{picked}:51_0010"  # the bumper of the picked car
+    assert [c["key"] for c in result["candidates"]] == [picked] + [c["key"] for c in offered if c["key"] != picked]
+
+
+def test_no_year_keeps_the_model_texts_other_words(clock):
+    src = YearsSource(hrv_years(), now=clock.now)
+    result = processor(make_service(clock, src)).process(honda_job("Vezel Comfort", "Vezel", year=None))
+    # The twin's names are tried longest first; the year look-ups use the one naming the trim.
+    assert ("HR-V Comfort", 2019) in src.asked() and ("HR-V", 2019) not in src.asked()
+    assert [c["key"] for c in result["candidates"]][:2] == ["fake:C19m", "fake:C19a"]
+
+
+def test_a_year_on_the_case_is_unchanged(clock):
+    src = YearsSource(hrv_years(), now=clock.now)
+    progress: list[str] = []
+    result = processor(make_service(clock, src)).process(honda_job("Vezel", "Vezel", year=2016),
+                                                         lambda d, t, m: progress.append(m) and False)
+    assert result["status"] == "done" and result["vehicle"]["key"] == "fake:N16"
+    assert (result["vehicle"]["year_from"], result["vehicle"]["year_to"]) == (None, None)  # as before: no span shown
+    assert [y for _, y in src.asked()] == [2016, 2016]  # "Vezel" (none), then "HR-V" 2016: no other year looked at
+    assert not any("No year" in m for m in progress)
+
+
+def test_a_site_block_stops_the_no_year_step(clock):
+    src = YearsSource(hrv_years({2019: NeedsHuman("Cloudflare asked for a person", source="fake")}), now=clock.now)
+    result = processor(make_service(clock, src)).process(no_year_job())
+    assert (result["status"], result["error_code"], result["candidates"]) == ("failed", "need_year", [])
+    assert [f["code"] for f in result["failures"]] == ["needs_human"]
+    assert "No car could be offered" in result["error_text"]
+    assert [y for _, y in src.asked() if y is not None] == [2019]  # not asked again in this job
+
+
+def test_no_year_listed_at_all_is_not_need_year(clock):
+    result = processor(make_service(clock, YearsSource({}, now=clock.now))).process(no_year_job())
+    assert result["status"] == "failed" and result["error_code"] != "need_year" and result["candidates"] == []
+
+
+def test_generations_and_year_spans():
+    hrv = list(range(1999, 2006)) + list(range(2016, 2020))
+    assert w.generations(hrv) == [[2019, 2018, 2017, 2016], [2005, 2004, 2003, 2002, 2001, 2000, 1999]]
+    assert w.generations([2012, 2010, 2010]) == [[2012, 2010]]  # one year missing: the same generation
+    assert w.generations([2009, 2012]) == [[2012], [2009]] and w.generations([]) == []
+    assert w.year_spans(hrv) == "1999-2005, 2016-2019" and w.year_spans([2019, 2016, 2017]) == "2016-2017, 2019"
+
+
+def test_pick_offers_keeps_places_for_every_generation(clock):
+    def offer(i, year, generation, market=None):
+        v = Vehicle(source="fake", url="https://www.parts-honda.uk/x", fetched_at=clock.now(), id=f"{year}-{i}",
+                    brand="HONDA", market=market)
+        return w.Offer(v, None, {year}, generation, i)
+
+    new = [offer(i, 2019 - i % 2, 0) for i in range(12)]
+    old = [offer(20 + i, 2005, 1) for i in range(2)]
+    picked = w.pick_offers(new + old)
+    assert len(picked) == 10 and {o.vehicle.id for o in old} <= {o.vehicle.id for o in picked}
+    assert [max(o.years) for o in picked] == sorted((max(o.years) for o in picked), reverse=True)
+    sg = offer(30, 2018, 0, market="Singapore")
+    assert [o.vehicle.id for o in w.pick_offers([offer(31, 2018, 0), sg])] == ["2018-30", "2018-31"]
+    # An old trim page with a near-identical car per market keeps 2 places, never crowding out the newest.
+    many_old = [offer(40 + i, 2005, 1, market="Singapore" if i == 5 else None) for i in range(8)]
+    picked = w.pick_offers(new[:2] + many_old)
+    assert [o.vehicle.id for o in picked] == ["2019-0", "2018-1", "2005-45", "2005-40"]
+    assert [o.vehicle.id for o in w.pick_offers(many_old)] == ["2005-45"] + [f"2005-{40 + i}" for i in range(8) if i != 5][:9]
+    assert w.pick_offers([]) == []
+
+
 # --- cancel, errors, caps ---------------------------------------------------------------------------
 
 
@@ -443,6 +612,7 @@ def test_links_null_exactly_what_the_server_refuses(case):
 
 def test_caps_match_the_servers():
     caps = LINKS["caps"]
+    assert list(w.ERROR_CODES) == LINKS["error_codes"]  # what the server takes in error_code
     assert (w.MAX_PARTS, w.MAX_DIAGRAMS, w.MAX_ROWS, w.MAX_CANDIDATES) == (
         caps["parts"], caps["diagrams"], caps["rows"], caps["candidates"])
     assert (w.MAX_FAILURES, w.MAX_PART_FAILURES, w.MAX_STR) == (caps["failures"], caps["part_failures"], caps["text"])

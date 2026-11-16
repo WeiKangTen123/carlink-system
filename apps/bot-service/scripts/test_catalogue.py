@@ -14,8 +14,10 @@ into a part's name; who may start one and why not (no make or model, an
 intake draft, signed off, read-only); claim -> progress -> result, and the
 page's view of it grouped by part with not_found; one open job per case;
 cancel (the worker hears "cancelled", its result 409); a job gone quiet for
-45 minutes is claimed again; the result's caps and its https links on the
-four parts sites only (a refused result fails the job); a re-run keeps
+45 minutes is claimed again; a case with no year (need_year: the failed
+look-up's cars offered, one picked is the next look-up's car, a Date of
+registration added later reaches the next job); the result's caps and its
+https links on the four parts sites only (a refused result fails the job); a re-run keeps
 accepted and rejected rows and adds no duplicate; reject / undo; the match
 hint finds the Annex A line by part number and by its words, never across
 sides or front/rear; deleting a case takes its look-ups along; no Gemini,
@@ -718,6 +720,66 @@ def stale_and_open_rule() -> None:
     W.o.post(f"/reports/{rid}/catalogue/cancel")
 
 
+def need_year() -> None:
+    """Phase 4: a case with no year (no vehicle_info.year, no date of
+    registration). The worker can't name a catalogue car and answers
+    need_year with cars to pick from; the page offers them, and one picked
+    is the next look-up's vehicle_key."""
+    turn_on()
+    data = case_data()
+    data["vehicle_info"].update({"year": "", "date_of_registration": ""})
+    rid = new_case(W.owner, data)
+    r = W.o.post(f"/reports/{rid}/catalogue/lookup", json={})
+    job_id = r.json()["job"]["id"]
+    job = W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"}).json()["job"] or {}
+    check(job.get("job_id") == job_id and job.get("year") is None and job.get("vehicle_key") is None,
+          "no year on the case: the job's year is null", repr({k: job.get(k) for k in ("job_id", "year", "vehicle_key")}))
+    cars = [{**VEHICLE, "key": f"microfiches:3060{i}", "name": f"HRV COMFORT {i}", "year_from": 2019, "year_to": 2019}
+            for i in range(8, 10)] + [{**VEHICLE, "key": "microfiches:21201", "name": "HRV 4WD", "year_from": 2005,
+                                       "year_to": 2005, "market": "Thailand, Singapore"}]
+    said = ("No year on the case; the catalogue lists Honda HRV (twin of Vezel) for 1999-2005, 2016-2019. Pick one of "
+            "the 3 cars offered (newest first), or add the Date of registration and look up again.")
+    r = W.w.post(f"/catalogue-worker/jobs/{job_id}/result",
+                 json=result([], status="failed", error_code="need_year", error_text=said, vehicle=None,
+                             candidates=cars, failures=[]))
+    check(r.status_code == 200 and r.json() == {"ok": True, "suggestions": 0}, "a need_year result -> 200, nothing stored",
+          brief(r))
+    j = job_row(job_id)
+    check((j.status, j.error_code, j.error_text) == ("failed", "need_year", said), "the job: failed, need_year, the worker's words",
+          repr((j.status, j.error_code, j.error_text)))
+    view = W.o.get(f"/reports/{rid}/catalogue").json()
+    check(view["job"]["status"] == "failed" and view["job"]["error_code"] == "need_year",
+          "GET: the failed look-up with its code", repr(view["job"]))
+    check(view.get("vehicle") is None and view.get("candidates") == cars and view.get("failures") == [],
+          "GET: no car yet, the cars to pick from as sent (newest first)", repr((view.get("vehicle"), view.get("candidates"))))
+    check(view.get("can_request") is True and view.get("vehicle_hint", {}).get("year") is None,
+          "...and a look-up may start again (the case still has no year)", repr((view.get("can_request"), view.get("vehicle_hint"))))
+    # [Pick a car]: the second car.
+    picked = cars[1]["key"]
+    r = W.o.post(f"/reports/{rid}/catalogue/lookup", json={"vehicle_key": picked})
+    check(r.status_code == 202 and r.json()["job"]["vehicle_key"] == picked, "picking a car: 202, the job carries its key", brief(r))
+    second = r.json()["job"]["id"]
+    job = W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"}).json()["job"] or {}
+    check(job.get("job_id") == second and job.get("vehicle_key") == picked and job.get("year") is None,
+          "the worker gets the picked car's key (and still no year)", repr(job))
+    done = first_result()
+    done.update(vehicle=cars[1], candidates=[cars[1], cars[0], cars[2]], failures=[])
+    r = W.w.post(f"/catalogue-worker/jobs/{second}/result", json=done)
+    check(r.status_code == 200 and r.json()["suggestions"] == 4, "its result: done, rows stored", brief(r))
+    view = W.o.get(f"/reports/{rid}/catalogue").json()
+    check(view["job"]["status"] == "done" and (view.get("vehicle") or {}).get("key") == picked
+          and [c["key"] for c in view["candidates"]] == [picked, cars[0]["key"], cars[2]["key"]],
+          "GET: the picked car in use, the others still offered", repr((view["job"]["status"], view.get("vehicle"))))
+    # A year added on the Cover page afterwards goes to the next look-up.
+    set_data(rid, vehicle_info={**data["vehicle_info"], "date_of_registration": "3 Feb 2019"})
+    r = W.o.post(f"/reports/{rid}/catalogue/lookup", json={})
+    third = r.json()["job"]["id"]
+    job = W.w.post("/catalogue-worker/claim", json={"worker": "test-pc"}).json()["job"] or {}
+    check(job.get("job_id") == third and job.get("year") == 2019, "the Date of registration added: the next job's year is 2019",
+          repr(job.get("year")))
+    W.o.post(f"/reports/{rid}/catalogue/cancel")
+
+
 def validation() -> None:
     turn_on()
     rid = new_case(W.owner)
@@ -942,6 +1004,7 @@ def main_() -> int:
         ("claim -> progress -> result, and the page's view", happy_path),
         ("cancelling", cancelling),
         ("a job gone quiet, and one open job per case", stale_and_open_rule),
+        ("no year on the case: need_year, then a car picked", need_year),
         ("the result's checks", validation),
         ("a re-run keeps accepted and rejected rows", rerun),
         ("reject and undo", reject_undo),

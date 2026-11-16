@@ -184,7 +184,8 @@ const CODE_TEXT = {
   site_blocked: "The parts site asked for a human check; try again later.",
   daily_cap_reached: "Today's catalogue look-ups are used up; it carries on tomorrow.",
   challenge_blocked: "The parts site asked for a human check; try again later.",
-  not_supported: "The parts catalogues don't cover this make.",
+  not_supported: "The parts catalogue has no match for this model.",
+  need_year: "No year on this case. Pick the car below, or add the Date of registration on the Cover page and look up again.",
   no_vehicle: "No car in the catalogues matches this make, model and year. Check them on the Cover page, or pick a car with Change car.",
   internal: "Something went wrong in the catalogue look-up. Try again; if it keeps failing, tell an admin.",
 };
@@ -195,6 +196,43 @@ for (const [code, text] of Object.entries(CODE_TEXT)) {
     assert.equal(v.text, text);
   });
 }
+check("not_supported: never 'the make isn't covered' for a covered make; the worker's words as detail", () => {
+  const covered = ["Honda", "BMW", "MINI"];
+  assert.equal(c.errorCodeText("not_supported", { make: "Honda", covered }), "The parts catalogue has no match for this model.");
+  assert.equal(c.errorCodeText("not_supported", { make: " mini ", covered }), "The parts catalogue has no match for this model.");
+  assert.equal(c.errorCodeText("not_supported", { make: "Toyota", covered }), "No parts catalogue for Toyota yet (Honda, BMW and MINI are covered).");
+  assert.equal(c.errorCodeText("not_supported"), "The parts catalogue has no match for this model.");
+  const v = c.jobStatusView(job({ status: "failed", error_code: "not_supported", error_text: "HONDA CIVIC 2008 lists 11 trims and the case names none" }), online, NOW, { make: "Honda", covered });
+  assert.equal(v.text, "The parts catalogue has no match for this model.");
+  assert.equal(v.detail, "HONDA CIVIC 2008 lists 11 trims and the case names none");
+  assert.equal(c.jobStatusView(job({ status: "failed", error_code: "no_vehicle", error_text: "raw" }), online, NOW).detail, null);
+  assert.ok(c.makeCovered("bmw", covered) && !c.makeCovered("", covered) && !c.makeCovered("Proton", covered));
+});
+check("need_year: pick a car, or add the Date of registration; no cars: the date only", () => {
+  const v = c.jobStatusView(job({ status: "failed", error_code: "need_year", error_text: "No year on the case; ..." }), online, NOW, { cars: 3 });
+  assert.equal(v.tone, "fail");
+  assert.equal(v.text, CODE_TEXT.need_year);
+  assert.equal(v.detail, null); // the worker's words stay in the tooltip; the panel adds [Open Cover page]
+  assert.equal(c.errorCodeText("need_year", { cars: 0 }), "No year on this case. Add the Date of registration on the Cover page and look up again.");
+});
+const NEED_YEAR_CARS = [
+  { key: "microfiches:30608", source: "microfiches", brand: "Honda", model: "HRV", name: "COMFORT 5 Doors 6 speed manual", market: "Germany, France", year_from: 2019, year_to: 2019, url: "https://www.parts-honda.uk/honda-cars/HRV/2019/COMFORT", twin_of: "Vezel" },
+  { key: "microfiches:21201", source: "microfiches", brand: "Honda", model: "HRV", name: "4WD 5 Doors 5 speed manual", market: null, year_from: 2005, year_to: 2005, url: null, twin_of: "Vezel" },
+];
+check("need_year: the failed look-up's cars are listed at once, and only then", () => {
+  const failedNoYear = c.normalizeCatalogue({ enabled: true, job: job({ status: "failed", error_code: "need_year" }), vehicle: null, candidates: NEED_YEAR_CARS, parts: [], failures: [] });
+  assert.equal(c.needsCarPick(failedNoYear), true);
+  assert.equal(c.hasCatalogueContent(failedNoYear), true); // the panel opens
+  assert.deepEqual(c.failureContext(failedNoYear).cars, 2);
+  assert.deepEqual(c.failureLines(failedNoYear), []);
+  assert.equal(c.needsCarPick({ ...failedNoYear, candidates: [] }), false);
+  assert.equal(c.needsCarPick({ ...failedNoYear, job: job({ status: "failed", error_code: "no_vehicle" }) }), false);
+  assert.equal(c.needsCarPick({ ...failedNoYear, job: job({ status: "running" }) }), false);
+  assert.equal(c.needsCarPick({ ...failedNoYear, vehicle: NEED_YEAR_CARS[0] }), false); // an earlier car: "Change car" as usual
+  // Each car says its year: what the list shows.
+  assert.equal(c.carLine(NEED_YEAR_CARS[0], null, NOW), "Honda HRV COMFORT 5 Doors 6 speed manual · 2019 · Germany, France · parts-honda.uk");
+  assert.equal(c.carLine(NEED_YEAR_CARS[1], null, NOW), "Honda HRV 4WD 5 Doors 5 speed manual · 2005 · BMW/MINI/Honda catalogues");
+});
 check("failed job with an unknown or no code", () => {
   assert.equal(c.errorCodeText("something_new"), "The look-up failed. Try again.");
   assert.equal(c.errorCodeText(null), "The look-up failed. Try again.");

@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from parts_mcp import synonyms
-from parts_mcp.core.errors import ChooseTrim, NotSupported
+from parts_mcp.core.errors import ChooseTrim, NeedYear, NotSupported
+from parts_mcp.core.fetch import live_budget
 from parts_mcp.core.models import Diagram, Vehicle
 from parts_mcp.core.store import open_store
 from parts_mcp.service import CatalogueService
@@ -127,6 +128,40 @@ def test_honda_needs_a_trim_then_returns_type_cards(source):
     assert (v.body, v.transmission, v.chassis, v.engine) == ("4 Doors", "5 speed automatic", None, None)
     assert "Singapore" in v.market and "Thailand" in v.market
     assert v.attributes["steering"] == "RHD" and v.attributes["options"] == "ABS"
+
+
+def test_no_year_lists_the_years_and_which_pages_are_cached(source):
+    with pytest.raises(NeedYear, match=r"BMW X1: give a year \(listed: 2008-2019\)") as first:
+        source.find_vehicles("BMW", "X1", None)
+    need = first.value
+    assert isinstance(need, NotSupported) and need.code == "not_supported"  # MCP callers see no change
+    assert (need.brand, need.series, need.years, need.cached) == ("BMW", "X1", [2008, 2014, 2019], [])
+    source.find_vehicles("BMW", "X1", 2014)
+    with pytest.raises(NeedYear) as again:
+        source.find_vehicles("BMW", "x1", None)
+    assert again.value.cached == [2014]  # that year's page is in the page cache now
+    with pytest.raises(NeedYear) as honda:
+        source.find_vehicles("HONDA", "Civic", None)
+    assert (honda.value.series, honda.value.years) == ("CIVIC", [1982, 2008, 2019])
+
+
+def test_trims_beyond_the_live_page_budget_are_asked_for(source, transport):
+    # 2.0 TYPE R, TYPE R PLUS and TYPE R RACE: three trims, which the source opens itself
+    # -- unless the caller's live-page budget (the worker's no-year step) has fewer left.
+    with pytest.raises(ChooseTrim):  # 11 trims: the model list, CIVIC and 2008 pages are cached now
+        source.find_vehicles("HONDA", "Civic", 2008)
+    with live_budget(2):
+        with pytest.raises(ChooseTrim) as asked:
+            source.find_vehicles("HONDA", "Civic Type R", 2008)
+    assert asked.value.trims == ["2.0 TYPE R", "2.0 TYPE R PLUS", "2.0 TYPE R RACE"] and asked.value.cached == []
+    assert not any("TYPE-R" in url for url in transport.urls())  # no trim page was fetched
+    with live_budget(1):  # one trim, not cached: it fits
+        assert [v.id for v in source.find_vehicles("HONDA", "Civic 1.8 EXi automatic Singapore", 2008)] == [
+            "14488", "14487"]
+    before = len(transport.requests)
+    with live_budget(0):  # now cached: free
+        assert source.find_vehicles("HONDA", "Civic 1.8 EXi", 2008)
+    assert len(transport.requests) == before
 
 
 def test_match_trims():

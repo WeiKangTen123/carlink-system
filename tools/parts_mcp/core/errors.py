@@ -77,6 +77,29 @@ class ChooseTrim(NotSupported):
         self.cached = list(cached or [])  # labels whose page is in the page cache (free to open)
 
 
+class NeedYear(NotSupported):
+    """The source lists the model but names its cars by year, and no year was
+    given. Same code and message as NotSupported ("give a year (listed:
+    ...)"), plus the years the source lists, so a caller can look some of
+    them up itself (the catalogue worker offers their cars to pick from)."""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        brand: str,
+        series: str,
+        years: list[int],
+        cached: list[int] | None = None,
+        **kw: Any,
+    ) -> None:
+        super().__init__(message, **kw)
+        self.brand = brand
+        self.series = series  # the model as the source names it, e.g. "HRV"
+        self.years = sorted(set(years))  # every year listed, ascending
+        self.cached = sorted(set(cached or []))  # years whose page is in the page cache (free to open)
+
+
 class NotFound(SourceError):
     """The thing asked for does not exist (in this source or in the store)."""
 
@@ -140,6 +163,13 @@ class DailyCapReached(FetchError):
     """The per-host daily request cap is used up."""
 
     code = "daily_cap_reached"
+
+
+class BudgetSpent(FetchError):
+    """The caller allowed only so many live pages for this piece of work
+    (fetch.live_budget) and they are used; nothing was sent."""
+
+    code = "budget_spent"
 
 
 class RobotsDisallowed(FetchError):

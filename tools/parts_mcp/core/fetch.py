@@ -22,16 +22,19 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha1
 from pathlib import Path
-from typing import Any, Callable, Collection, Literal, Mapping, Protocol
+from typing import Any, Callable, Collection, Iterator, Literal, Mapping, Protocol
 from urllib.parse import urlencode, urlsplit
 from urllib.robotparser import RobotFileParser
 
 from .errors import (
+    BudgetSpent,
     ChallengeBlocked,
     DailyCapReached,
     FetchError,
@@ -465,6 +468,60 @@ class PageCache:
             self._conn.close()
 
 
+# --- a cap on live pages for one piece of work ---------------------------------------
+
+
+class LiveBudget:
+    """How many pages a piece of work may still fetch live (see `live_budget`)."""
+
+    def __init__(self, pages: int) -> None:
+        self.limit = max(0, int(pages))
+        self.used = 0
+
+    def left(self) -> int:
+        return max(0, self.limit - self.used)
+
+    def take(self) -> bool:
+        """Count one live page; False (nothing counted) when none is left."""
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+    @contextmanager
+    def at_most(self, pages: int) -> Iterator[LiveBudget]:
+        """Within the block, at most `pages` more (and never more than are left)."""
+        saved = self.limit
+        self.limit = min(saved, self.used + max(0, int(pages)))
+        try:
+            yield self
+        finally:
+            self.limit = saved
+
+
+_LIVE_BUDGET: ContextVar[LiveBudget | None] = ContextVar("parts_mcp_live_budget", default=None)
+
+
+@contextmanager
+def live_budget(pages: int) -> Iterator[LiveBudget]:
+    """Within the block (this thread only), PoliteFetcher fetches at most `pages`
+    pages live; the next one raises BudgetSpent before anything is sent. Cache
+    hits are free; robots.txt and retries of a page are not counted. Without
+    such a block nothing is capped (the daily cap still holds)."""
+    budget = LiveBudget(pages)
+    token = _LIVE_BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _LIVE_BUDGET.reset(token)
+
+
+def live_pages_left() -> int | None:
+    """Pages the current `live_budget` still allows; None when none is set."""
+    budget = _LIVE_BUDGET.get()
+    return None if budget is None else budget.left()
+
+
 # --- the fetcher ------------------------------------------------------------------
 
 
@@ -627,6 +684,14 @@ class PoliteFetcher:
             hit = self._from_cache(key, ttl)  # another thread may have fetched it meanwhile
             if hit is not None:
                 return hit
+            budget = _LIVE_BUDGET.get()
+            if budget is not None and not budget.take():
+                raise BudgetSpent(
+                    f"the live-page budget ({budget.limit}) is used up; {url} not fetched",
+                    source=self.policy.name,
+                    host=host,
+                    url=url,
+                )
             if self.policy.ua_mode == "honest" and self.policy.respect_robots:
                 self._check_robots(state, parts.scheme, host, url)
 
