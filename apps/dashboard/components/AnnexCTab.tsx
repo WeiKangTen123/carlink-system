@@ -12,6 +12,7 @@ import { isBadAmount, sumRows } from "@/lib/annexRows";
 import { LockedNote, Missing, SavedNote, UnsavedNote, Var, fieldInputStyle } from "./SaveNotes";
 import { ReviewBadge } from "./ReviewBadge";
 import { ANNEX_C_KEYS, annexCFieldState, openItemsLabel, openSections, openTotal, type OpenSection, type OpenTarget } from "@/lib/reviewRows";
+import { undecidedCount } from "@/lib/findings";
 
 const DEFAULT_TITLE = "Automotive Engineer Assessor";
 
@@ -244,6 +245,9 @@ export function AnnexCTab({
   useEffect(() => setRefusedOpen(null), [report.review]);
   const openN = refusedOpen ?? localOpen;
   const needAck = (Boolean(review) && openN > 0) || refusedOpen !== null;
+  // AI suggestions nobody decided: a warning only (owner decision 3) -- they
+  // never print, and the AI-accuracy page counts them as "left".
+  const undecided = isSignedOff ? 0 : undecidedCount(d);
   const [ackOpen, setAckOpen] = useState(false);
   // The tick is for a number of open items: a new number asks again.
   useEffect(() => setAckOpen(false), [openN]);
@@ -591,6 +595,16 @@ export function AnnexCTab({
         </div>
 
         {review && <OpenItemsList reportId={report.id} sections={openList} total={localOpen} onOpenTab={onOpenTab} onOpenRecord={onOpenRecord} />}
+
+        {undecided > 0 && !signOffLocked && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--badge-amber-text)", marginBottom: 6 }}>
+            <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden="true" />
+            <span>
+              {undecided === 1 ? "1 AI suggestion is" : `${undecided} AI suggestions are`} not decided. They don&apos;t print; decide them on the
+              Damage detection tab, or sign off as it is.
+            </span>
+          </div>
+        )}
 
         <label className="compliance-check-item">
           <input type="checkbox" checked={declared} disabled={signOffLocked} onChange={(e) => setDeclared(e.target.checked)} />

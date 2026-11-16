@@ -516,9 +516,10 @@ _RANK = {c: i for i, c in enumerate(CONFIDENCES)}
 
 
 def _order(item: dict) -> tuple:
-    """"yes" (p high to low), then "unsure" and the unchecked, then "no" (p
-    low to high); a verdict without p after those with one; ties by
-    confidence, then as stored (the sort is stable)."""
+    """"yes", then "unsure" and the unchecked, then "no" -- within "yes" and
+    "no", p high to low, so the whole list runs from most to least likely
+    damaged; a verdict without p after those with one; ties by confidence,
+    then as stored (the sort is stable)."""
     check = item.get("check") if isinstance(item.get("check"), dict) else {}
     found, p = check.get("verdict"), check.get("p")
     confidence = _RANK.get(item.get("confidence"), len(CONFIDENCES))
@@ -526,7 +527,7 @@ def _order(item: dict) -> tuple:
     if found == "yes":
         return (0, 0 if has_p else 1, -p if has_p else 0.0, confidence)
     if found == "no":
-        return (2, 0 if has_p else 1, p if has_p else 0.0, confidence)
+        return (2, 0 if has_p else 1, -p if has_p else 0.0, confidence)
     return (1, 0, 0.0, confidence)
 
 

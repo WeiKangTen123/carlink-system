@@ -206,6 +206,18 @@ class DamageSummaryItem(BaseModel):
         default=None,
         description="The model's own 'High', 'Medium', or 'Low' assessment of how clearly it can identify this specific damage from the photo. A qualitative self-assessment, not a fabricated-looking precise percentage.",
     )
+
+    @field_validator("bbox_2d", mode="before")
+    @classmethod
+    def _whole_box(cls, value):
+        # A model now and then writes 100.2: list[int] would refuse it and
+        # with it the whole draft (the chain then asks the next model). Round
+        # fractions; anything else stays for evidence.clean_box to judge.
+        # A validator, not a float type, so the schema Gemini sees is unchanged.
+        if isinstance(value, list):
+            return [round(v) if isinstance(v, float) else v for v in value]
+        return value
+
     human_verified: bool = False
     repair_required: bool = False
     oem_part_number: Optional[str] = Field(

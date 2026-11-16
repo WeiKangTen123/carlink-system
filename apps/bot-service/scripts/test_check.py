@@ -751,8 +751,8 @@ def order() -> None:
              it("unsure-high", "unsure", 0.5, "High"), it("no-.05", "no", 0.05), it("yes-.95", "yes", 0.95),
              it("yes-lite", "yes"), it("none-high", confidence="High"), it("no-lite", "no")]
     got = [x["key"] for x in recheck.sort_items(items)]
-    check(got == ["yes-.95", "yes-.8", "yes-lite", "unsure-high", "none-high", "none-low", "no-.05", "no-.25", "no-lite"],
-          "yes (p high to low), then unsure / unchecked by confidence, then no (p low to high); no p after p", got)
+    check(got == ["yes-.95", "yes-.8", "yes-lite", "unsure-high", "none-high", "none-low", "no-.25", "no-.05", "no-lite"],
+          "yes, then unsure / unchecked by confidence, then no -- p high to low throughout; no p after p", got)
 
 
 # ---------------------------------------------------------------- the whole intake
