@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -14,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import update
 from sqlalchemy.orm import defer
 from starlette.concurrency import run_in_threadpool
 
@@ -964,6 +966,11 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = body.draft.model_dump()
     data["sign_off"] = blank_sign_off()
+    # The AI's suggestions and the decisions on them are the server's
+    # (contract 9; PUT /reports drops them too): a case typed in by hand
+    # has none, whatever the body says -- made-up ones would show on the
+    # case page and count in the AI-accuracy record.
+    data["second_look"] = None
     data["report_id"] = limits.checked_our_ref(user, data.get("report_id"), None)
     limits.require_disk_space()
     report_id = gen_id()
@@ -1066,6 +1073,9 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
                 detail="Report is signed off and locked. Reopen it before editing.",
             )
         _too_many_photos(len(r.photo_paths or []), len([p for p in temp_paths if Path(p).exists()]))
+        # The case as read, to tell after the render what others committed
+        # meanwhile (_onto_stored_row).
+        read = copy.deepcopy(r.data or {})
 
         if body.draft.vehicle_info:
             v = body.draft.vehicle_info
@@ -1122,13 +1132,20 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
                     {"label": photo_label(len(existing_photos) + i), **{key: None for key in PHOTO_INDEX_KEYS}}
                     for i in range(len(new_photos))
                 ]}
-        for temp_path in temp_paths:
-            Path(temp_path).unlink(missing_ok=True)
 
         r.pdf_path = _render_after_change(user, r, "updated")
-        # A decision on a suggestion made while the PDF rendered (seconds)
-        # is kept: second_look as stored now, not as read at the start.
-        r.data = _with_stored_second_look(db, r)
+        # The render held no write lock (seconds): what was committed
+        # meanwhile -- a decision on a suggestion, and the item it put on
+        # the list or took off -- is kept, or this save refused (409).
+        try:
+            taken = _onto_stored_row(db, r, read, set(sent) | ({"photo_index"} if new_photos else set()))
+        except HTTPException:
+            _forget_render(db, r.id)
+            raise
+        if taken - {"second_look"}:
+            # The PDF just rendered shows the case without them (the PDF
+            # prints no suggestions): the next download renders it again.
+            r.pdf_path = None
 
         audit(db, user, "edited", r.id)
         if "annex_a" in sent:
@@ -1145,22 +1162,77 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             r.data = {**r.data, "annex_a": {**(r.data.get("annex_a") or {}), "items": items}}
             catalogue.sync_accepted(db, r.id, items, user)
         db.commit()
+        # Only now: a save refused after the render (409) leaves the
+        # uploads where they were, for the same form to send again.
+        for temp_path in temp_paths:
+            Path(temp_path).unlink(missing_ok=True)
         pdf_url = to_public_url(r.pdf_path) if r.pdf_path and Path(r.pdf_path).exists() else None
         return {"id": r.id, "status": r.status, "pdf_url": pdf_url}
     finally:
         db.close()
 
 
-def _with_stored_second_look(db, r: Report) -> dict:
-    """r.data with data["second_look"] as the database holds it now (the
-    session has written nothing yet: it never autoflushes)."""
-    stored = db.query(Report.data).filter(Report.id == r.id).scalar()
+# What a decision on a suggestion changes on a case besides second_look
+# (decide_case_suggestion: the item on the list, Annex A and its totals
+# following it, dismissed_parts).
+_DECIDED_WITH_LIST = frozenset({"damage_summary", "damaged_parts", "dismissed_parts", "annex_a", "annex_c"})
+CHANGED_MEANWHILE = ("This case changed while it was being saved (someone else saved it or decided on a suggestion). "
+                     "Reload it and try again.")
+
+
+def _stored_row(db, report_id: str):
+    """(data, status) of the case as the database holds it now, under
+    SQLite's write lock taken here and held to the commit (the session
+    has written nothing yet: it never autoflushes). 404 when it was
+    deleted meanwhile."""
+    hold_write_lock(db, report_id)
+    row = db.query(Report.data, Report.status).filter(Report.id == report_id).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
+    return (row[0] if isinstance(row[0], dict) else {}), row[1]
+
+
+def _onto_stored_row(db, r: Report, read: dict, sent: set[str]) -> set[str]:
+    """PUT /reports after its render, which held no write lock: r.data put
+    onto the case as stored now, so nothing committed during the render is
+    lost. A key someone changed meanwhile that this save didn't send is
+    taken as stored -- second_look always (a save never sends it): a
+    decision on a suggestion, a damage item ticked. One both changed keeps
+    this save's (as before), except the list and Annex A, which a decision
+    changes together with second_look: keeping either side's would leave a
+    decision whose item isn't on the list (or is still on it), so 409
+    changed_meanwhile. 409 signed_off when signed off meanwhile. Returns
+    the keys taken from the stored row."""
+    stored, status = _stored_row(db, r.id)
+    if status == "Signed Off" or (stored.get("sign_off") or {}).get("status") == "Signed Off":
+        raise ApiError(409, "Report was signed off meanwhile. Reopen it before editing.", "signed_off")
     data = dict(r.data or {})
-    if isinstance(stored, dict) and "second_look" in stored:
-        data["second_look"] = stored["second_look"]
-    else:
-        data.pop("second_look", None)
-    return data
+    taken: set[str] = set()
+    for key in set(stored) | set(read):
+        if stored.get(key) == read.get(key):
+            continue
+        if key in sent:
+            if key in _DECIDED_WITH_LIST:
+                raise ApiError(409, CHANGED_MEANWHILE, "changed_meanwhile")
+            continue
+        taken.add(key)
+        if key in stored:
+            data[key] = stored[key]
+        else:
+            data.pop(key, None)
+    r.data = data
+    return taken
+
+
+def _forget_render(db, report_id: str) -> None:
+    """A save refused after its render: the PDF was rendered over in place
+    (r.pdf_path) with what wasn't saved -- a signature, an edit -- so the
+    case's next download renders it again. Nothing else of the save is
+    kept."""
+    db.rollback()
+    db.execute(update(Report).where(Report.id == report_id).values(pdf_path=None)
+               .execution_options(synchronize_session=False))
+    db.commit()
 
 
 class DamageItemReviewRequest(BaseModel):
@@ -1264,7 +1336,14 @@ def _damage_item_fields(sent: dict, r: Report) -> dict:
 def _damage_case(db, report_id: str) -> Report:
     """The case a damage item is edited on: as PUT /annex-a, an unfinished
     intake (409: the wizard owns its damage list) and a signed-off case
-    (409: reopen it first) are refused."""
+    (409: reopen it first) are refused.
+
+    SQLite's write lock is taken first, before the case is read, and held
+    to the route's commit: each route writes all of Report.data back, so
+    a decision on a suggestion (POST .../suggestions) committing between
+    its read and its write would otherwise be lost -- the item an add put
+    on the list with it."""
+    hold_write_lock(db, report_id)
     r = db.get(Report, report_id)
     if not r:
         raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
@@ -1623,6 +1702,8 @@ async def sign_off_report(
             raise not_allowed("Only an admin, or an account an admin has allowed to sign off, can sign off a report.")
         if _is_signed_off(r):
             raise HTTPException(status_code=409, detail="This report is already signed off.")
+        # What is signed: checked again after the render (below).
+        read, read_status = copy.deepcopy(r.data or {}), r.status
 
         try:
             body_data = await request.json()
@@ -1717,6 +1798,21 @@ async def sign_off_report(
         # itself), and Playwright's sync API refuses to run on the event
         # loop -- the signed PDF used to keep the unsigned copy.
         r.pdf_path = await asyncio.to_thread(_render_after_change, user, r, "signed off")
+        # The render held no write lock (seconds). A signature is given to
+        # the case as it was read -- the signed PDF and the review above
+        # are of that -- so a change committed meanwhile (a decision on a
+        # suggestion, a damage item ticked, another sign-off) is never
+        # signed over nor overwritten: 409 changed_meanwhile, nothing
+        # signed, and the person signs the case as it is now. Held from
+        # here to the commit, so nothing can land after this check.
+        try:
+            stored, status = _stored_row(db, r.id)
+            if stored != read or status != read_status:
+                raise ApiError(409, "This case changed while it was being signed off (someone saved it or decided on "
+                                    "a suggestion). Reload it, check it and sign again.", "changed_meanwhile")
+        except HTTPException:
+            _forget_render(db, r.id)
+            raise
 
         # The account's email too: the name on a profile can be edited. And
         # what the field review still had open ("no items open", or "3 items
@@ -1930,6 +2026,9 @@ def ai_enrich_report(report_id: str, user: CurrentUser = Depends(editable_case))
     """Fill derived fields on one report (see _enrich_single_report_data)."""
     db = SessionLocal()
     try:
+        # Before the read: all of Report.data is written back (as
+        # _damage_case).
+        hold_write_lock(db, report_id)
         r = db.get(Report, report_id)
         if not r:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
