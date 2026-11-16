@@ -14,9 +14,10 @@ triage chain, prompt version) and the reading settings. Per run of the case:
     fingerprints read the same photos with the same captions;
   - the photos the sorter tagged with the part's family (either side), and
     whether each was read;
-  - who answered (a 503 falls back down the chain: draft 3.5-lite ->
-    nothing; zone calls 3.5-lite -> 3.1-lite) and the drafting call's
-    prompt tokens (the same number = the same request size);
+  - who answered (a busy model falls back down its chain -- the zone
+    calls' 3.5-lite to 3.1-lite; a reading chain of one model fails the
+    run instead) and the drafting call's prompt tokens (the same number =
+    the same request size);
   - the list's items of the part's family: name, found_by, seen_in, photo,
     side_inferred, confidence -- and whether the overall reading had it
     (zone mode: "overall" in found_by; single mode: every list item is the
@@ -25,8 +26,10 @@ triage chain, prompt version) and the reading settings. Per run of the case:
   - each zone read: status, side seen, finds, and whether it listed the
     family INTACT (which sides);
   - the suggestions of the family (option B's zone-only finds);
-  - a verdict: FOUND, WRONG SIDE, UNDETERMINED, SUGGESTED, NOT READ (the
-    overall reading listed no part of the family), or RUN FAILED.
+  - a verdict: FOUND, WRONG SIDE, UNDETERMINED, LISTED OTHERWISE, SUGGESTED
+    ONLY, NOT READ (the overall reading listed no part of the family), or
+    RUN FAILED -- and the likeliest cause (H2-H7 as in the plan's P0;
+    H7: side_from_sorter gave the item its photo's tagged side).
 
 --rates: instead, per file, how often each of the case's key parts was on
 the list (exact / wrong side / as "(side undetermined)") -- to see whether one part's
@@ -44,7 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.reports.taxonomy import UNDETERMINED_SUFFIX, split_side, unsided_part  # noqa: E402
+from app.reports.taxonomy import UNDETERMINED_SUFFIX, unsided_part  # noqa: E402
 
 OVERALL = "overall"
 
@@ -146,12 +149,22 @@ def cause(run: dict, part: str, zone_mode: bool) -> str:
         return "on the list"
     listed = [it for it in run.get("drafted_items") or [] if same_family(str(it.get("part") or ""), part)]
     if v == "WRONG SIDE":
-        it = next((i for i in listed if split_side(str(i.get("part") or ""))[1]), listed[0] if listed else {})
+        drafted = next(pair[0] for pair in (run.get("parts") or {}).get("wrong_side") or [] if pair[-1] == part)
+        it = next((i for i in listed if i.get("part") == drafted), {})
         by = it.get("found_by") or []
         if it.get("side_inferred"):
             return "H5: the side resolver placed it from the sorter's areas"
         if zone_mode and len(by) > 1:
             return f"H4: a zone read's side taken ({by})"
+        # side_from_sorter (both modes, before the merge) gives an item the
+        # side the sorter tagged its photo with, and leaves no trace.
+        ref = str(it.get("photo_reference") or "")
+        tag = next((ph.get("part") for ph in run.get("sorted_photos") or [] if f"P{ph.get('n', 0):02d}" == ref), None)
+        if tag == drafted:
+            return (f"H2 or H7: the overall reading named {drafted}, or the other side and side_from_sorter took "
+                    f"the sorter's tag on {ref}; the file can't tell")
+        if "photo_reference" not in it:
+            return "H2: the overall reading named the other side (H7 not ruled out: this file keeps no photo)"
         return "H2: the overall reading itself named the other side"
     if v == "UNDETERMINED":
         it = next((i for i in listed if str(i.get("part") or "").endswith(UNDETERMINED_SUFFIX)), {})

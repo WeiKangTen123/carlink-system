@@ -18,6 +18,8 @@ evidence.finish -> resolve_sides -> apply_agreement):
   - the side resolver after a zone read gave an item its photo;
   - split_suggestions after a dispute;
   - side_from_sorter, before the merge, in both modes;
+  - known, pinned as today: a same-photo contradiction caught or not by
+    the order the zone reads are merged in;
   - contract 10 (4.1): the zone reads' intact lists kept in
     ai_draft["zone_intact"], and an old draft without them still working.
 
@@ -326,6 +328,33 @@ def sorter_side_first() -> None:
           "the sorter's side on its own photo wins in both modes, with no trace on the item", names(listed))
 
 
+def zone_order() -> None:
+    # KNOWN, pinned as it is today (not P0's cause; the report says why it
+    # isn't changed here): merge_reads takes the zone reads one after the
+    # other, so a contradiction on one photo is caught or not depending on
+    # which zone came first (zones are read most-damage-photos first).
+    # (1) A zone's find that matches a zone-only item of its own side is
+    # credited to it before the opposite side on its photo is looked at.
+    overall = [item("Right Rear Quarter Panel", "@a")]
+    rear = ("zone:rear", [item("Left Rear Quarter Panel", "@c")])
+    left = ("zone:left", [item("Left Rear Quarter Panel", "@a")])
+    first_rear, sugg_rear, _ = zone_chain(overall, [rear, left])
+    first_left, sugg_left, _ = zone_chain(overall, [left, rear])
+    check(names(first_rear) == ["Right Rear Quarter Panel"] and sugg_rear[0]["seen_in"] == ["@c", "@a"]
+          and names(first_left) == ["Quarter Panel (side undetermined)"] and sugg_left[0]["seen_in"] == ["@c"],
+          "today: overall Right vs a zone's Left on @a is a dispute only when that zone is merged first",
+          (names(first_rear), names(first_left)))
+    # (2) Two reads agreeing outvote a third only when they come first.
+    lamp = [item("Left Tail Lamp", "@l")]
+    agree_first, _, _ = zone_chain(lamp, [("zone:rear", [item("Left Tail Lamp", "@l")]),
+                                          ("zone:close", [item("Right Tail Lamp", "@l")])])
+    agree_last, _, _ = zone_chain(lamp, [("zone:close", [item("Right Tail Lamp", "@l")]),
+                                         ("zone:rear", [item("Left Tail Lamp", "@l")])])
+    check(names(agree_first) == ["Left Tail Lamp"] and names(agree_last) == ["Tail Lamp (side undetermined)"],
+          "today: 2 Left against 1 Right on one photo keeps Left, or turns undetermined, by the order",
+          (names(agree_first), names(agree_last)))
+
+
 # ---------------------------------------------------------------- zone_intact (contract 10, 4.1)
 
 
@@ -452,6 +481,7 @@ def main() -> int:
         ("the side resolver after a zone gave an item its photo", resolver_after_credit),
         ("split_suggestions after a dispute", suggestions_after_dispute),
         ("side_from_sorter, before the merge", sorter_side_first),
+        ("known: the merge depends on the zones' order", zone_order),
         ("ai_draft[\"zone_intact\"] (contract 10)", zone_intact),
     ):
         run_section(name, fn)
