@@ -37,7 +37,7 @@ import { boxChip, slidesOf } from "@/lib/evidence";
 import { applyDecision, buildFindings, type PhotoInfo, type PhotoLookup, type Selection } from "@/lib/findings";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
-import { zoneKeyFor } from "@/lib/vehicleZones";
+import { detectBodyType, zoneKeyFor } from "@/lib/vehicleZones";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
 import { ReadByNotice } from "./ReadByNotice";
@@ -413,6 +413,18 @@ export function ReviewStep({
     },
     [setSelection]
   );
+  // PhotosByPart's [Map] hands over a whole selection (a part's zone or a
+  // finding), not just a finding key.
+  const showSelectionOnMap = useCallback(
+    (s: Selection) => {
+      if (s?.kind === "finding") return showOnMap(s.key);
+      setViewer(null);
+      setSelection(s);
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      mapAnchor.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    },
+    [setSelection, showOnMap]
+  );
 
   // A list item picked on the map: its row comes into view and flashes.
   const revealLatest = useRef<(index: number) => void>(() => {});
@@ -514,7 +526,7 @@ export function ReviewStep({
           photos={photoLookup}
           photoOrder={photoOrder}
           photoAreas={photoAreas}
-          bodyType={v.body_type ?? null}
+          bodyType={detectBodyType(vehicleName, v.body_type)}
           onBodyTypeChange={onBodyTypeChange}
           selection={selection}
           onSelect={selectFromMap}
@@ -790,6 +802,9 @@ export function ReviewStep({
           onAddDamage={addFromPhotos}
           onAttachPhoto={attachFromPhotos}
           onOpenPhoto={(group, id) => setViewer({ mode: "photo", startKey: null, startPhoto: `@${id}`, photoOrder: group.photos.map((p) => `@${p.id}`) })}
+          findings={findings}
+          selection={selection}
+          onShowOnMap={showSelectionOnMap}
         />
 
       </div>

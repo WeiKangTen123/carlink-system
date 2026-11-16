@@ -17,9 +17,7 @@ if (typeof window !== "undefined") {
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { clone as cloneWithSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import type { DamageSummaryItem, ReportData } from "@/lib/api";
-import { buildFindings } from "@/lib/findings";
-import { buildLinks, marksSignature, selectionZones, STATUS_GLYPHS, zoneMarks, type ZoneMark } from "@/lib/damageLinks";
+import { marksSignature, STATUS_GLYPHS, zoneMarks, type ZoneMark } from "@/lib/damageLinks";
 import { detectBodyType, zoneLabel, type VehicleArchetype } from "@/lib/vehicleZones";
 import {
   CAR_PARTS_REAL,
@@ -867,68 +865,3 @@ export function DamageBlueprint3D({
     </div>
   );
 }
-
-// =============================================================================
-// The old props, for a page that still passes the damage list itself (the
-// wizard's review step until it mounts DamageMapPanel). The same map, with
-// the list's items as findings.
-
-interface Props {
-  damageEntries: DamageSummaryItem[];
-  onHotspotClick: (idx: number, item: DamageSummaryItem) => void;
-  highlightedDamageIndex: number | null;
-  vehicleName: string;
-  bodyType?: string | null;
-  selectedZone?: string | null;
-  onZoneSelect?: (zoneKey: string | null) => void;
-}
-
-export function VehicleBlueprint3D({
-  damageEntries,
-  onHotspotClick,
-  highlightedDamageIndex,
-  vehicleName,
-  bodyType: statedBodyType,
-  selectedZone,
-  onZoneSelect,
-}: Props) {
-  const findings = useMemo(() => buildFindings({ damage_summary: damageEntries } as unknown as ReportData), [damageEntries]);
-  const links = useMemo(() => buildLinks(findings), [findings]);
-  const fresh = useMemo(() => zoneMarks(findings, links), [findings, links]);
-  const signature = marksSignature(fresh);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the content on purpose
-  const marks = useMemo(() => fresh, [signature]);
-  const selection =
-    highlightedDamageIndex !== null
-      ? ({ kind: "finding", key: `item:${highlightedDamageIndex}` } as const)
-      : selectedZone
-        ? ({ kind: "zone", zoneKey: selectedZone } as const)
-        : null;
-  const zonesKey = selectionZones(selection, links).join(",");
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the content on purpose
-  const selectedZones = useMemo(() => (zonesKey ? zonesKey.split(",") : []), [zonesKey]);
-  const [camera, setCamera] = useState<CameraRequest | null>(null);
-  useEffect(() => {
-    if (selectedZones.length) setCamera((c) => ({ kind: "zones", zones: selectedZones, n: (c?.n ?? 0) + 1 }));
-  }, [selectedZones]);
-
-  return (
-    <DamageBlueprint3D
-      archetype={detectBodyType(vehicleName, statedBodyType)}
-      marks={marks}
-      selectedZones={selectedZones}
-      hoverZones={NO_ZONES}
-      camera={camera}
-      onZoneClick={(zone) => {
-        onZoneSelect?.(zone);
-        const key = links.byZone.get(zone)?.find((k) => k.startsWith("item:"));
-        if (key) {
-          const idx = Number(key.slice("item:".length));
-          onHotspotClick(idx, damageEntries[idx]);
-        }
-      }}
-    />
-  );
-}
-
-const NO_ZONES: string[] = [];
