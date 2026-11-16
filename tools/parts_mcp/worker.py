@@ -52,8 +52,8 @@ except ImportError:  # the mcp 2.x SDK ships the client under this name
     import httpx2 as httpx  # type: ignore[no-redef]
 
 from .config import Settings, load_settings
-from .core.errors import ChooseTrim, NotFound, NotSupported, PartsError
-from .core.fetch import PageCache
+from .core.errors import BudgetSpent, ChooseTrim, NeedYear, NotFound, NotSupported, PartsError
+from .core.fetch import LiveBudget, PageCache, live_budget
 from .core.models import PartRow, Vehicle, normalize_brand, utcnow
 from .core.store import open_store
 from .service import CatalogueService
@@ -85,8 +85,10 @@ MIN_SCORE = 0.5  # find_diagrams: 0.5 or more is a real match
 _SITES = ("bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk")
 ALLOWED_HOSTS = frozenset(h for site in _SITES for h in (site, f"www.{site}"))
 
-# Codes the server accepts in error_code (and that failures use).
-ERROR_CODES = ("not_supported", "no_vehicle", "needs_human", "challenge_blocked", "site_blocked",
+# Codes the server accepts in error_code (and that failures use). need_year: the case
+# has no year and the catalogue names its cars by year; the job's candidates are the
+# cars to pick from instead (CONTRACT.md "Phase 4").
+ERROR_CODES = ("not_supported", "no_vehicle", "need_year", "needs_human", "challenge_blocked", "site_blocked",
                "daily_cap_reached", "internal")
 # After one of these a source is not asked again in the same job.
 STOP_CODES = frozenset({"needs_human", "challenge_blocked", "site_blocked", "daily_cap_reached"})
@@ -120,6 +122,18 @@ MODEL_ALIASES: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
 # one live request). Cached pages are opened first, and opening stops at the first
 # Singapore-market car.
 MAX_TRIM_PAGES = 8
+
+# A job with no year for a catalogue that names its cars by year (NeedYear): the cars
+# offered to pick from instead come from at most this many live pages (each a polite
+# 5-8 s request; pages in the cache are free). A look-up with one of them picked
+# fetches no new page for the list.
+NEED_YEAR_PAGES = 4
+# Listed years this far apart or more start a new generation (parts-honda.uk lists the
+# HR-V for 1999-2005 and 2016-2019): the newest year of each is offered first.
+GENERATION_GAP = 3
+# Places in that list for each generation older than the newest one found: enough to
+# show it is there (an old trim page can list a near-identical car per market).
+OLDER_PLACES = 2
 
 
 # --- small helpers --------------------------------------------------------------------
@@ -278,6 +292,30 @@ def rank_vehicles(vehicles: Sequence[Vehicle]) -> list[Vehicle]:
     return [v for _, v in order]
 
 
+def generations(years: Sequence[int]) -> list[list[int]]:
+    """Listed years in runs, newest first, each run newest first; a gap of
+    GENERATION_GAP years or more starts a new run: 1999-2005 and 2016-2019 ->
+    [[2019, 2018, 2017, 2016], [2005, 2004, ..., 1999]]."""
+    runs: list[list[int]] = []
+    for y in sorted(set(years), reverse=True):
+        if runs and runs[-1][-1] - y < GENERATION_GAP:
+            runs[-1].append(y)
+        else:
+            runs.append([y])
+    return runs
+
+
+def year_spans(years: Sequence[int]) -> str:
+    """'1999-2005, 2016-2019': consecutive years joined, oldest first."""
+    spans: list[list[int]] = []
+    for y in sorted(set(years)):
+        if spans and y == spans[-1][1] + 1:
+            spans[-1][1] = y
+        else:
+            spans.append([y, y])
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in spans)
+
+
 def _opposite(wanted: str | None, row_side: str | None) -> bool:
     return wanted in ("left", "right") and row_side in ("left", "right") and wanted != row_side
 
@@ -287,6 +325,14 @@ def _opposite(wanted: str | None, row_side: str | None) -> bool:
 
 class Cancelled(Exception):
     """The server said the job was cancelled (or is gone)."""
+
+
+class _Stopped(Exception):
+    """The site blocked us or the day's cap is reached: stop asking it in this job."""
+
+    def __init__(self, failure: dict[str, Any]) -> None:
+        super().__init__(failure.get("message"))
+        self.failure = failure
 
 
 @dataclass
@@ -307,11 +353,37 @@ def part_spec(raw: Mapping[str, Any]) -> PartSpec:
 
 
 @dataclass
+class YearAsk:
+    """A source knows the model but names its cars by year, and the job has none."""
+
+    source: str
+    text: str  # the model text the source was asked with
+    twin_of: str | None  # the case's model, when `text` is its market twin's name
+    need: NeedYear
+
+
+@dataclass
+class Offer:
+    """A car offered to pick from when the job has no year (YearAsk)."""
+
+    vehicle: Vehicle
+    twin_of: str | None
+    years: set[int]  # the listed years it was found under
+    generation: int  # 0 = the newest (generations())
+    order: int  # found n-th
+
+    def sort_key(self) -> tuple[int, int, int, int]:
+        """Newest year first, then Singapore market and right-hand drive, then as found."""
+        return -max(self.years), market_rank(self.vehicle), steering_rank(self.vehicle), self.order
+
+
+@dataclass
 class Search:
     found: list[tuple[Vehicle, str | None]] = field(default_factory=list)  # (vehicle, twin_of), best first
     failures: list[dict[str, Any]] = field(default_factory=list)
     code: str | None = None  # why nothing was found
     text: str | None = None
+    year_ask: YearAsk | None = None  # nothing found because the job has no year
 
 
 ProgressFn = Callable[[int, int, str], bool]  # (done, total, message) -> True when cancelled
@@ -328,12 +400,14 @@ class JobProcessor:
         default_route: Sequence[str] = DEFAULT_ROUTE,
         aliases: Mapping[str, Mapping[str, Mapping[str, Sequence[str]]]] | None = None,
         max_trim_pages: int = MAX_TRIM_PAGES,
+        need_year_pages: int = NEED_YEAR_PAGES,
     ) -> None:
         self.service = service
         self.routes = {normalize_brand(b): tuple(s) for b, s in (ROUTES if routes is None else routes).items()}
         self.default_route = tuple(default_route)
         self.aliases = MODEL_ALIASES if aliases is None else aliases
         self.max_trim_pages = max_trim_pages
+        self.need_year_pages = need_year_pages
 
     # entry point ------------------------------------------------------------------
 
@@ -359,14 +433,26 @@ class JobProcessor:
             return failed("not_supported", "the case has no vehicle make and model")
 
         search = self._search(brand, model, model_key, year)
+        offers: list[Offer] = []
+        if search.year_ask is not None and not search.found:
+            # No year on the case: cars to pick from instead. With one picked, the list
+            # comes from the pages its own look-up opened (no new page).
+            if not pinned and progress(0, len(specs), "No year on the case: listing catalogue cars to pick from"):
+                raise Cancelled
+            offers, notes = self._year_offers(search.year_ask, 0 if pinned else self.need_year_pages)
+            search.failures += notes
+        listed = {o.vehicle.key: o.years for o in offers}
         if pinned:
-            chosen = self._pinned(pinned, search, model_key)
+            chosen = self._pinned(pinned, search, model_key, offers)
             if chosen is None:
                 return failed("no_vehicle", f"the chosen catalogue car {pinned} is not known to the catalogue worker; "
                               "look up again without choosing a car", search.failures)
-            found = [chosen] + [c for c in search.found if c[0].key != chosen[0].key]
+            others = search.found or [(o.vehicle, o.twin_of) for o in offers]
+            found = [chosen] + [c for c in others if c[0].key != chosen[0].key]
         elif search.found:
             found = search.found
+        elif search.year_ask is not None:
+            return self._need_year(brand, search.year_ask, offers, search.failures)
         else:
             return failed(search.code or "no_vehicle", search.text or "no catalogue car found", search.failures)
         vehicle, twin_of = found[0]
@@ -398,8 +484,8 @@ class JobProcessor:
             "status": "done",
             "error_code": None,
             "error_text": None,
-            "vehicle": vehicle_out(vehicle, twin_of, brand_shown),
-            "candidates": [vehicle_out(v, t, brand_shown) for v, t in found[:MAX_CANDIDATES]],
+            "vehicle": vehicle_out(vehicle, twin_of, brand_shown, listed.get(vehicle.key)),
+            "candidates": [vehicle_out(v, t, brand_shown, listed.get(v.key)) for v, t in found[:MAX_CANDIDATES]],
             "parts": parts,
             "failures": search.failures,
         }
@@ -430,7 +516,7 @@ class JobProcessor:
         errors: list[tuple[str, str]] = []
         for name in names:
             try:
-                found, twin_of, notes = self._find_on(name, brand, model, model_key, year)
+                found, twin_of, notes, ask = self._find_on(name, brand, model, model_key, year)
             except Exception as exc:  # fetch / block / parse errors: next source, if any
                 if not isinstance(exc, PartsError):
                     log.exception("vehicle search crashed on %s", name)
@@ -441,7 +527,12 @@ class JobProcessor:
             if found:
                 out.found = [(v, twin_of) for v in rank_vehicles(found)]
                 return out
+            out.year_ask = out.year_ask or ask
             errors.extend((f["code"], f["message"] or "") for f in notes)
+        if out.year_ask is not None:  # a catalogue knows the model; only the year is missing
+            need = out.year_ask.need
+            out.code, out.text = "need_year", f"{need.brand} {need.series} needs a year (listed: {year_spans(need.years)})"
+            return out
         asked = f"{brand} {model or model_key} {year if year is not None else '(no year)'}"
         for code in ("needs_human", "site_blocked", "challenge_blocked", "daily_cap_reached", "internal",
                      "not_supported"):
@@ -452,26 +543,32 @@ class JobProcessor:
         out.code, out.text = "no_vehicle", f"no catalogue car found for {asked} (searched: {', '.join(names)})"
         return out
 
-    def _find_on(self, source: str, brand: str, model: str, model_key: str,
-                 year: int | None) -> tuple[list[Vehicle], str | None, list[dict[str, Any]]]:
+    def _find_on(self, source: str, brand: str, model: str, model_key: str, year: int | None
+                 ) -> tuple[list[Vehicle], str | None, list[dict[str, Any]], YearAsk | None]:
         """Vehicles on one source: the case's own model name first (model_key, then the
-        full model text), then the source's twin names. Returns (vehicles, twin_of, notes)."""
-        found, notes = self._try_names(source, brand, [model_key, model], year)
+        full model text), then the source's twin names. Returns (vehicles, twin_of, notes,
+        and a YearAsk when the source knows the model but wants a year the job lacks)."""
+        found, notes, need = self._try_names(source, brand, [model_key, model], year)
         if found:
-            return found, None, notes
+            return found, None, notes, None
+        if need is not None:
+            return [], None, notes, YearAsk(source, need[0], None, need[1])
         rest = model.split(" ", 1)[1] if model.lower().startswith(model_key.lower() + " ") else ""
         for alias in self._aliases(source, brand, model_key):
-            twin, twin_notes = self._try_names(source, brand, [f"{alias} {rest}".strip(), alias], year)
+            twin, twin_notes, need = self._try_names(source, brand, [f"{alias} {rest}".strip(), alias], year)
             if twin:
                 log.info("%s has no %s; using its market twin %s", source, model_key, alias)
-                return twin, model_key, twin_notes
+                return twin, model_key, twin_notes, None
             notes += twin_notes
-        return [], None, notes
+            if need is not None:
+                return [], None, notes, YearAsk(source, need[0], model_key, need[1])
+        return [], None, notes, None
 
-    def _try_names(self, source: str, brand: str, texts: Sequence[str],
-                   year: int | None) -> tuple[list[Vehicle], list[dict[str, Any]]]:
+    def _try_names(self, source: str, brand: str, texts: Sequence[str], year: int | None
+                   ) -> tuple[list[Vehicle], list[dict[str, Any]], tuple[str, NeedYear] | None]:
         notes: list[dict[str, Any]] = []
         trims: ChooseTrim | None = None
+        need: tuple[str, NeedYear] | None = None
         seen: set[str] = set()
         for text in texts:
             if not text or _norm(text) in seen:
@@ -482,21 +579,27 @@ class JobProcessor:
             except ChooseTrim as exc:
                 trims = exc  # the later (longer) text may name the trim itself: try it first
                 continue
+            except NeedYear as exc:
+                if not exc.years:  # no year listed at all: a year would not help either
+                    notes.append(failure_from_exc(source, exc))
+                elif need is None or len(text.split()) > len(need[0].split()):
+                    need = (text, exc)  # the text with the most words: its other words pick among the trims
+                continue
             except NotSupported as exc:
                 notes.append(failure_from_exc(source, exc))
                 continue
             notes += [failure_from_dict(f, source) for f in answer.failures]
             hits = [v for v in answer.value if covers_year(v, year)]
             if hits:
-                return hits, notes
+                return hits, notes, None
         if trims is not None:
             found, note = self._open_trims(source, trims, year)
             if note:
                 notes.append(note)
             if found:
-                return found, notes
+                return found, notes, None
             notes.append(failure_from_exc(source, trims))
-        return [], notes
+        return [], notes, need
 
     def _open_trims(self, source: str, exc: ChooseTrim, year: int | None) -> tuple[list[Vehicle], dict[str, Any] | None]:
         """The model has many trims and the case does not say which: open some (cached pages
@@ -527,20 +630,160 @@ class JobProcessor:
                            "text to reach the others.")
         return list(found.values()), note
 
-    def _pinned(self, key: str, search: Search, model_key: str) -> tuple[Vehicle, str | None] | None:
+    def _pinned(self, key: str, search: Search, model_key: str,
+                offers: Sequence[Offer] = ()) -> tuple[Vehicle, str | None] | None:
         """The car the surveyor chose ("Change car"), from the store or this search."""
+        seen = list(search.found) + [(o.vehicle, o.twin_of) for o in offers]
         try:
             vehicle = self.service.vehicle(key)
         except NotFound:
-            vehicle = next((v for v, _ in search.found if v.key == key), None)
+            vehicle = next((v for v, _ in seen if v.key == key), None)
         if vehicle is None:
             return None
-        twin = next((t for v, t in search.found if v.key == key), None)
+        twin = next((t for v, t in seen if v.key == key), None)
         if twin is None and _norm(vehicle.model) != _norm(model_key):
             names = self._aliases(vehicle.source, vehicle.brand, model_key)
             if any(_norm(vehicle.model).startswith(_norm(a)) for a in names):
                 twin = model_key
         return vehicle, twin
+
+    # no year on the case -----------------------------------------------------------------
+
+    def _year_offers(self, ask: YearAsk, budget: int) -> tuple[list[Offer], list[dict[str, Any]]]:
+        """Cars to pick from when the job has no year and the source names its cars by
+        year (ask.need lists the years). Only years the source lists; none is guessed.
+
+        1. The newest listed year of each generation (generations()), newest first: its
+           cars -- or, when the year has trims not in the page cache, the cached ones and
+           at most one new trim page -- so each generation has a car before any has two.
+        2. While pages are left and more cars would be offered (_enough): the other trims
+           of those years, newest year first, in the catalogue's order.
+        3. Only if that found nothing: the other years, cached pages first, newest first.
+
+        At most `budget` pages are fetched live (fetch.live_budget; 0: the cache only).
+        Returns (the offers picked by pick_offers, failures that stopped it early: a site
+        block or the day's cap)."""
+        need = ask.need
+        runs = generations(need.years)
+        generation = {y: i for i, run in enumerate(runs) for y in run}
+        offers: dict[str, Offer] = {}
+        later: list[tuple[int, ChooseTrim, list[str]]] = []  # (year, its trims, trims not opened yet)
+        notes: list[dict[str, Any]] = []
+
+        def add(vehicles: Sequence[Vehicle], year: int) -> None:
+            for v in rank_vehicles(vehicles):
+                if v.key in offers:
+                    offers[v.key].years.add(year)
+                else:
+                    offers[v.key] = Offer(v, ask.twin_of, {year}, generation[year], len(offers))
+
+        with live_budget(budget) as live:
+            try:
+                for run in runs:
+                    self._offer_year(ask, run[0], live, add, later, first=True)
+                for year, trims, labels in later:
+                    for label in labels:
+                        if not live.left() or self._enough(list(offers.values()), generation[year]):
+                            break
+                        self._offer_trim(ask, trims, label, year, add)
+                if not offers:
+                    rest = sorted((y for run in runs for y in run[1:]), key=lambda y: (y not in need.cached, -y))
+                    for year in rest:
+                        if offers or (year not in need.cached and not live.left()):
+                            break
+                        self._offer_year(ask, year, live, add, [], first=False)
+            except _Stopped as stop:
+                notes.append(stop.failure)
+            used = live.used
+        picked = pick_offers(list(offers.values()))
+        log.info("no year: %s %s listed %s; %d car(s) offered from %s (%d new page(s), budget %d)%s", need.brand,
+                 need.series, year_spans(need.years), len(picked),
+                 sorted({max(o.years) for o in picked}, reverse=True) or "none", used, budget,
+                 f"; stopped: {notes[0]['code']}" if notes else "")
+        return picked, notes
+
+    @staticmethod
+    def _enough(offers: Sequence[Offer], generation: int) -> bool:
+        """No more cars of this generation would be offered: the list is full, or it is
+        older than the newest generation found and has its OLDER_PLACES."""
+        if len(pick_offers(offers)) >= MAX_CANDIDATES:
+            return True
+        newest = min((o.generation for o in offers), default=generation)
+        return generation > newest and sum(o.generation == generation for o in offers) >= OLDER_PLACES
+
+    def _offer_year(self, ask: YearAsk, year: int, live: LiveBudget, add: Callable[[Sequence[Vehicle], int], None],
+                    later: list[tuple[int, ChooseTrim, list[str]]], *, first: bool) -> None:
+        """The cars of one listed year. first (step 1): the source may fetch the year
+        page itself but no trim page; trims are opened here, the cached ones, then one
+        new one if they gave no car, and the rest go to `later`. Otherwise new trims
+        are opened until one gives a car or no page is left."""
+        need = ask.need
+        try:
+            with live.at_most((0 if year in need.cached else 1) if first else live.left()):
+                answer = self.service.find_vehicles(need.brand, ask.text, year, sources=[ask.source])
+        except ChooseTrim as trims:
+            fresh = [t for t in trims.trims if t not in trims.cached]
+            got = sum([self._offer_trim(ask, trims, t, year, add) for t in trims.trims if t in trims.cached])
+            while fresh and not got and live.left():
+                got = self._offer_trim(ask, trims, fresh.pop(0), year, add)
+                if first:
+                    break
+            if fresh:
+                later.append((year, trims, fresh))
+            return
+        except Exception as exc:
+            self._skip_or_stop(ask, exc, f"{need.series} {year}")
+            return
+        add([v for v in answer.value if covers_year(v, year)], year)
+
+    def _offer_trim(self, ask: YearAsk, trims: ChooseTrim, label: str, year: int,
+                    add: Callable[[Sequence[Vehicle], int], None]) -> int:
+        """The cars of one trim of one year (its page, unless cached); how many."""
+        try:
+            answer = self.service.find_vehicles(trims.brand, f"{trims.series} {label}", year, sources=[ask.source])
+        except Exception as exc:
+            self._skip_or_stop(ask, exc, f"{trims.series} {year} {label}")
+            return 0
+        found = [v for v in answer.value if covers_year(v, year)]
+        add(found, year)
+        return len(found)
+
+    @staticmethod
+    def _skip_or_stop(ask: YearAsk, exc: BaseException, what: str) -> None:
+        """A year or trim that could not be opened: skipped -- no live page left for it,
+        or a page the source could not read -- unless the site blocked us or the day's
+        cap is reached: then the whole step stops (_Stopped)."""
+        if isinstance(exc, (BudgetSpent, NotSupported)):  # NotSupported: ChooseTrim with no page left, and the like
+            log.info("no year: %s not opened (%s)", what, exc.code)
+            return
+        f = failure_from_exc(ask.source, exc)
+        if f["code"] in STOP_CODES:
+            raise _Stopped(f)
+        if not isinstance(exc, PartsError):
+            log.error("no year: %s crashed: %s", what, short_text(exc))
+        else:
+            log.info("no year: %s skipped (%s)", what, f["message"])
+
+    def _need_year(self, brand: str, ask: YearAsk, offers: Sequence[Offer],
+                   failures: list[dict[str, Any]]) -> dict[str, Any]:
+        """The failed result for a job with no year: error_code need_year, and the cars
+        offered as candidates (a key of one is the vehicle_key of the next look-up)."""
+        need = ask.need
+        shown = brand if normalize_brand(brand) == need.brand else need.brand
+        car = f"{shown} {need.series}" + (f" (twin of {ask.twin_of})" if ask.twin_of else "")
+        text = f"No year on the case; the catalogue lists {car} for {year_spans(need.years)}. "
+        if offers:
+            text += (f"Pick one of the {len(offers)} car{'s' if len(offers) != 1 else ''} offered (newest first), "
+                     "or add the Date of registration and look up again.")
+        else:
+            text += "No car could be offered to pick from; add the Date of registration and look up again."
+        result = failed("need_year", text, failures)
+        result["candidates"] = [
+            vehicle_out(o.vehicle, o.twin_of, brand if normalize_brand(brand) == o.vehicle.brand else o.vehicle.brand,
+                        o.years)
+            for o in offers
+        ]
+        return result
 
     # the parts ------------------------------------------------------------------------
 
@@ -599,10 +842,33 @@ class JobProcessor:
         return out, stop
 
 
+def pick_offers(offers: Sequence[Offer], cap: int = MAX_CANDIDATES, older: int = OLDER_PLACES) -> list[Offer]:
+    """The cars to offer, at most `cap`, newest year first: the best of every generation
+    found (newest generation first), the next best of the older ones up to `older`
+    each, then the rest of the newest. An older generation keeps its places however
+    many cars the newest has, and never crowds it out."""
+    queues: dict[int, list[Offer]] = {}
+    for o in sorted(offers, key=Offer.sort_key):
+        queues.setdefault(o.generation, []).append(o)
+    if not queues:
+        return []
+    gens = sorted(queues)
+    order = [queues[g][0] for g in gens]
+    order += [o for g in gens[1:] for o in queues[g][1:older]]
+    order += queues[gens[0]][1:]
+    return sorted(order[:cap], key=Offer.sort_key)
+
+
 # --- result shapes ------------------------------------------------------------------------
 
 
-def vehicle_out(v: Vehicle, twin_of: str | None, brand: str | None = None) -> dict[str, Any]:
+def vehicle_out(v: Vehicle, twin_of: str | None, brand: str | None = None,
+                listed: set[int] | None = None) -> dict[str, Any]:
+    """`listed`: the catalogue years the car was found under (a car offered when the
+    job had no year), shown as its years when the catalogue gives no span."""
+    year_from, year_to = v.year_from, v.year_to
+    if listed and year_from is None and year_to is None:
+        year_from, year_to = min(listed), max(listed)
     return {
         "key": v.key,
         "source": v.source,
@@ -610,8 +876,8 @@ def vehicle_out(v: Vehicle, twin_of: str | None, brand: str | None = None) -> di
         "model": v.model,
         "name": v.name,
         "market": v.market,
-        "year_from": in_range(v.year_from, *YEAR_RANGE),
-        "year_to": in_range(v.year_to, *YEAR_RANGE),
+        "year_from": in_range(year_from, *YEAR_RANGE),
+        "year_to": in_range(year_to, *YEAR_RANGE),
         "url": v.url,
         "twin_of": twin_of,
     }

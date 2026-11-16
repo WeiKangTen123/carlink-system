@@ -39,8 +39,8 @@ from urllib.parse import quote, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
-from ..core.errors import ChooseTrim, NotFound, NotSupported, ParseError
-from ..core.fetch import TTL_CATALOGUE, TTL_PRICE, FetchResult, PoliteFetcher
+from ..core.errors import ChooseTrim, NeedYear, NotFound, NotSupported, ParseError
+from ..core.fetch import TTL_CATALOGUE, TTL_PRICE, FetchResult, PoliteFetcher, live_pages_left
 from ..core.models import (
     Diagram,
     Group,
@@ -646,7 +646,14 @@ class MicrofichesSource(Source):
         years = parse_years(soup, site.prefix, series_seg)
         if year is None:
             listed = f"{years[0][0]}-{years[-1][0]}" if years else "none"
-            raise NotSupported(f"{site.brand} {series_label}: give a year (listed: {listed})", source=self.name)
+            raise NeedYear(
+                f"{site.brand} {series_label}: give a year (listed: {listed})",
+                source=self.name,
+                brand=site.brand,
+                series=series_label,
+                years=[y for y, _ in years],
+                cached=[y for y, path in years if self.fetcher.cached(site.url(path)) is not None],
+            )
         year_path = dict(years).get(int(year))
         if year_path is None:
             return []
@@ -658,7 +665,11 @@ class MicrofichesSource(Source):
                 raise ParseError(f"no types or trims on {page.url}", source=self.name, url=page.url)
             chosen, words = match_trims(trims, words)
             candidates = chosen or trims
-            if len(candidates) > MAX_TRIM_PAGES:  # each trim costs a request: ask instead
+            cached = [label for label, path in candidates if self.fetcher.cached(site.url(path)) is not None]
+            # Each trim not in the page cache costs a request: ask instead when there are
+            # many, or more than the caller's live-page budget (fetch.live_budget) allows.
+            left = live_pages_left()
+            if len(candidates) > MAX_TRIM_PAGES or (left is not None and len(candidates) - len(cached) > left):
                 names = ", ".join(label for label, _ in candidates)
                 raise ChooseTrim(
                     f"{site.brand} {series_label} {year} has {len(candidates)} matching trims; add one to the "
@@ -668,7 +679,7 @@ class MicrofichesSource(Source):
                     series=series_label,
                     year=int(year),
                     trims=[label for label, _ in candidates],
-                    cached=[label for label, path in candidates if self.fetcher.cached(site.url(path)) is not None],
+                    cached=cached,
                 )
             for label, path in candidates:
                 trim_page, trim_soup = self._get(site, path)

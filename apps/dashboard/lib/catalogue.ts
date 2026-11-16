@@ -20,10 +20,13 @@
 
 export type CatalogueJobStatus = "pending" | "running" | "done" | "failed" | "cancelled";
 
-/** Why a job, or one site within it, failed. */
+/** Why a job, or one site within it, failed. need_year: the case has no
+ * year (nor a Date of registration) and the catalogue names its cars by
+ * year; the failed job's candidates are the cars to pick from instead. */
 export type CatalogueErrorCode =
   | "not_supported"
   | "no_vehicle"
+  | "need_year"
   | "needs_human"
   | "challenge_blocked"
   | "site_blocked"
@@ -476,14 +479,46 @@ export function shouldPoll(state: CatalogueState | null | undefined): boolean {
 const SITE_CHECK_CODES = ["needs_human", "site_blocked", "challenge_blocked"];
 const SITE_CHECK_TEXT = "The parts site asked for a human check; try again later.";
 
+/** A failed look-up with no year on the case (need_year): the words when
+ * there are cars to pick from, and when there are none. */
+export const NEED_YEAR_TEXT = "No year on this case. Pick the car below, or add the Date of registration on the Cover page and look up again.";
+export const NEED_YEAR_NO_CARS_TEXT = "No year on this case. Add the Date of registration on the Cover page and look up again.";
+
+/** not_supported for a make the catalogues do cover: the make is fine, the
+ * model (or how it is written) found nothing. */
+export const NO_MODEL_MATCH_TEXT = "The parts catalogue has no match for this model.";
+
+/** What a failure's words need beyond its code: the case's make and the
+ * makes covered (not_supported), and how many cars there are to pick from
+ * (need_year). */
+export type FailureContext = BlockedContext & { cars?: number | null };
+
+/** The context for errorCodeText / jobStatusView from the panel's state. */
+export function failureContext(state: CatalogueInfo): FailureContext {
+  return { ...blockedContext(state), cars: state.candidates.length };
+}
+
+/** The make is one of `covered`, whatever its case or spacing ("Mini" and
+ * "MINI", " honda ") -- as the API's make_covered. */
+export function makeCovered(make: string | null | undefined, covered: string[] = DEFAULT_COVERED_MAKES): boolean {
+  const key = (make || "").trim().replace(/\s+/g, " ").toLowerCase();
+  return Boolean(key) && covered.some((m) => m.trim().replace(/\s+/g, " ").toLowerCase() === key);
+}
+
 /** Why a job (or one site in it) failed, in plain words. */
-export function errorCodeText(code: string | null | undefined): string {
+export function errorCodeText(code: string | null | undefined, ctx: FailureContext = {}): string {
   if (code && SITE_CHECK_CODES.includes(code)) return SITE_CHECK_TEXT;
   switch (code) {
     case "daily_cap_reached":
       return "Today's catalogue look-ups are used up; it carries on tomorrow.";
-    case "not_supported":
-      return "The parts catalogues don't cover this make.";
+    case "not_supported": {
+      // Only a make the catalogues really don't cover is said to be one; a
+      // covered make (or none known) is the model finding no match.
+      const covered = ctx.covered?.length ? ctx.covered : DEFAULT_COVERED_MAKES;
+      return ctx.make && !makeCovered(ctx.make, covered) ? notCoveredText(ctx.make, covered) : NO_MODEL_MATCH_TEXT;
+    }
+    case "need_year":
+      return ctx.cars === 0 ? NEED_YEAR_NO_CARS_TEXT : NEED_YEAR_TEXT;
     case "no_vehicle":
       return "No car in the catalogues matches this make, model and year. Check them on the Cover page, or pick a car with Change car.";
     case "internal":
@@ -495,8 +530,8 @@ export function errorCodeText(code: string | null | undefined): string {
 
 /** One site's failure: errorCodeText, with the site in front (a site check
  * reads the same whichever site asked). */
-export function failureText(f: CatalogueFailure): string {
-  const text = errorCodeText(f.code);
+export function failureText(f: CatalogueFailure, ctx: FailureContext = {}): string {
+  const text = errorCodeText(f.code, ctx);
   if (SITE_CHECK_CODES.includes(f.code) || !f.source) return text;
   return `${siteLabel(f.source)}: ${text}`;
 }
@@ -505,11 +540,12 @@ export function failureText(f: CatalogueFailure): string {
  * once, and not the one the job's own status line already says. */
 export function failureLines(state: CatalogueInfo): string[] {
   const all = [...state.failures, ...state.parts.flatMap((p) => p.failures ?? [])];
+  const ctx = failureContext(state);
   const said = new Set<string>();
-  if (state.job?.status === "failed") said.add(errorCodeText(state.job.error_code));
+  if (state.job?.status === "failed") said.add(errorCodeText(state.job.error_code, ctx));
   const out: string[] = [];
   for (const f of all) {
-    const text = failureText(f);
+    const text = failureText(f, ctx);
     if (said.has(text)) continue;
     said.add(text);
     out.push(text);
@@ -586,8 +622,15 @@ export function lookupRefusalText(
 export type JobStatusView = { tone: "wait" | "busy" | "fail" | "info"; text: string; detail: string | null };
 
 /** The job's line at the top of the panel; null for none or a done job
- * (the results say when they were looked up). */
-export function jobStatusView(job: CatalogueJob | null | undefined, worker: CatalogueWorker | null | undefined, now: number): JobStatusView | null {
+ * (the results say when they were looked up). `ctx` (failureContext): the
+ * make and the cars to pick from, for a failed one's words; a failed
+ * not_supported one shows the worker's own words as its detail. */
+export function jobStatusView(
+  job: CatalogueJob | null | undefined,
+  worker: CatalogueWorker | null | undefined,
+  now: number,
+  ctx: FailureContext = {},
+): JobStatusView | null {
   if (!job) return null;
   switch (job.status) {
     case "pending": {
@@ -608,7 +651,11 @@ export function jobStatusView(job: CatalogueJob | null | undefined, worker: Cata
       return { tone: "busy", text, detail: job.progress?.message || null };
     }
     case "failed":
-      return { tone: "fail", text: errorCodeText(job.error_code), detail: null };
+      return {
+        tone: "fail",
+        text: errorCodeText(job.error_code, ctx),
+        detail: job.error_code === "not_supported" ? (job.error_text || "").trim() || null : null,
+      };
     case "cancelled":
       return { tone: "info", text: `Look-up cancelled${job.finished_at ? ` ${dayTime(job.finished_at, now)}` : ""}.`, detail: null };
     default:
@@ -745,6 +792,12 @@ export function hiddenCount(state: CatalogueInfo): number {
  * own); the rest are in not_found. */
 export function partsShown(state: CatalogueInfo): CataloguePart[] {
   return state.parts.filter((p) => p.diagrams.length > 0 || (p.failures?.length ?? 0) > 0);
+}
+
+/** The latest look-up failed for want of a year and left cars to pick
+ * from: the panel lists them at once ("Pick the car below"). */
+export function needsCarPick(state: CatalogueInfo): boolean {
+  return state.job?.status === "failed" && state.job.error_code === "need_year" && !state.vehicle && state.candidates.length > 0;
 }
 
 /** Anything looked up, or being looked up, on this case. */

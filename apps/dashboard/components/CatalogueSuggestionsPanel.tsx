@@ -15,6 +15,7 @@ import {
   dayTime,
   carDetails,
   carLabel,
+  failureContext,
   failureLines,
   foldVariants,
   hasCatalogueContent,
@@ -24,6 +25,7 @@ import {
   jobStatusView,
   lookupRefusalText,
   matchHintText,
+  needsCarPick,
   pageRows,
   partsShown,
   priceLabel,
@@ -213,7 +215,8 @@ export function CatalogueSuggestionsPanel({
   tableNames: string[];
   /** Annex A is saving or filling prices: no new look-up meanwhile. */
   locked: boolean;
-  /** Opens the Cover page tab (to confirm the make and model). */
+  /** Opens the Cover page tab (to confirm the make and model, or add the
+   * Date of registration after a look-up that had no year). */
   onOpenCover?: () => void;
   /** The control that puts a row on an Annex A line (catalogue_ref):
    * AnnexATab's tick box and line picker. Without it the rows are a list
@@ -230,8 +233,13 @@ export function CatalogueSuggestionsPanel({
   // Null until the surveyor opens or closes it: then open only when there
   // is something to see.
   const [openChoice, setOpenChoice] = useState<boolean | null>(null);
-  const [carsOpen, setCarsOpen] = useState(false);
+  // The cars to look up with: null until the surveyor opens or closes the
+  // list; then open by itself only after a look-up that had no year
+  // (need_year: "Pick the car below"). Asked again for every new look-up.
+  const [carsChoice, setCarsChoice] = useState<boolean | null>(null);
   const carsId = useId();
+  const jobId = state?.enabled ? state.job?.id : undefined;
+  useEffect(() => setCarsChoice(null), [jobId]);
 
   // The clock for "seen 1 min ago": set on every answer, and every 30 s
   // while the panel is open.
@@ -255,7 +263,9 @@ export function CatalogueSuggestionsPanel({
 
   const mayChange = canDecide(info);
   const mayLookUp = info.can_request && !jobOpen && !catalogue.busy && !locked;
-  const status = jobStatusView(info.job, info.worker, now);
+  const status = jobStatusView(info.job, info.worker, now, failureContext(info));
+  const noYear = info.job?.status === "failed" && info.job.error_code === "need_year";
+  const carsOpen = carsChoice ?? needsCarPick(info);
   const online = workerOnline(info.worker, now);
   const parts = partsShown(info);
   const failures = failureLines(info);
@@ -272,7 +282,7 @@ export function CatalogueSuggestionsPanel({
   };
 
   const pickCar = (key: string) => {
-    setCarsOpen(false);
+    setCarsChoice(false);
     void catalogue.lookup(key);
   };
 
@@ -303,6 +313,11 @@ export function CatalogueSuggestionsPanel({
                 {status.text}
                 {status.detail && <span style={{ color: "var(--text-muted)" }}> {status.detail}</span>}
               </span>
+              {noYear && onOpenCover && (
+                <button type="button" className="annex-stale-btn" onClick={onOpenCover}>
+                  Open Cover page
+                </button>
+              )}
               {jobOpen && mayChange && (
                 <button
                   type="button"
@@ -374,7 +389,9 @@ export function CatalogueSuggestionsPanel({
                     ))}
                   </>
                 ) : (
-                  <span style={{ color: "var(--text-muted)" }}>No catalogue car picked for this case.</span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {noYear ? "No catalogue car picked yet." : "No catalogue car picked for this case."}
+                  </span>
                 )}
               </div>
               {mayChange && info.candidates.length > 0 && (
@@ -386,7 +403,7 @@ export function CatalogueSuggestionsPanel({
                   aria-controls={carsId}
                   disabled={!mayLookUp}
                   title={!info.can_request ? blockedReasonText(info.blocked_reason, blockedContext(info)) : "Look up again with another catalogue car"}
-                  onClick={() => setCarsOpen((o) => !o)}
+                  onClick={() => setCarsChoice(!carsOpen)}
                 >
                   {info.vehicle ? "Change car" : "Pick a car"} <ChevronDown style={{ width: 12, height: 12 }} />
                 </button>

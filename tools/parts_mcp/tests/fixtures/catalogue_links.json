@@ -1,6 +1,8 @@
 {
-  "about": "What the server takes in a worker result (apps/bot-service app/reports/schema.catalogue_link, app/parts/catalogue.py caps) and what the worker sends (parts_mcp/worker.py safe_url, apply_caps). Both sides test against this one file: tools/parts_mcp/tests/test_worker.py and apps/bot-service/scripts/test_catalogue_accept.py. pad_to: the url with letters a added up to that many characters. ok: the server accepts the link as sent; false: the worker nulls it, so a real result is never refused (422) for one link. hosts: the only sites a link may be on, with or without www. -- the worker's ALLOWED_HOSTS and the server's CATALOGUE_HOSTS are both exactly these.",
+  "about": "What the server takes in a worker result (apps/bot-service app/reports/schema.catalogue_link, app/parts/catalogue.py caps) and what the worker sends (parts_mcp/worker.py safe_url, apply_caps). Both sides test against this one file: tools/parts_mcp/tests/test_worker.py and apps/bot-service/scripts/test_catalogue_accept.py. pad_to: the url with letters a added up to that many characters. ok: the server accepts the link as sent; false: the worker nulls it, so a real result is never refused (422) for one link. hosts: the only sites a link may be on, with or without www. -- the worker's ALLOWED_HOSTS and the server's CATALOGUE_HOSTS are both exactly these. error_codes: what a failed result's error_code may be (worker ERROR_CODES, server catalogue.ERROR_CODES).",
   "hosts": ["bmw-spare-parts.com", "mini-spare-parts.com", "parts-honda.uk"],
+  "error_codes": ["not_supported", "no_vehicle", "need_year", "needs_human", "challenge_blocked", "site_blocked",
+                  "daily_cap_reached", "internal"],
   "caps": {
     "parts": 40,
     "diagrams": 3,

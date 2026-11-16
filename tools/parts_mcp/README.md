@@ -225,13 +225,22 @@ their rows, and posts the result back. Shapes and endpoints are in the plan's
   `--max-trim-pages` (8) trim pages, cached ones first, and stops at the first
   Singapore-market car; a note in `failures` says to put the trim in the model
   text to reach the others.
+- **No year on the case**: Microfiches names its cars by year, so without one
+  no car is picked. The job fails with `need_year` and its `candidates` are
+  cars to pick from ("Pick a car"), newest first: the newest listed year of
+  each generation first (a gap of 3+ years starts one: the HR-V is listed for
+  1999-2005 and 2016-2019), cached pages first and one new trim page per
+  generation, then more trims of those years; other years only if that found
+  nothing. At most 4 new pages (`NEED_YEAR_PAGES`, held by
+  `core.fetch.live_budget`). A look-up with one of them as `vehicle_key` uses
+  that car and lists the others again from the cache (no new page).
 - **Parts**: `find_diagrams` (3 new groups at most, 5 matches), keeps scores of
   0.5 or more, best 3, and `get_diagram` for each. Rows for the other side are
   dropped. `ref_amount` / `ref_currency` / `ref_tax_note` are the price printed
   on the diagram page (EUR, "Unit Price Excl Tax"); no price page is fetched.
   Progress goes to the api after each part, and the worker stops when the api
   says the job was cancelled.
-- **Errors**: `not_supported`, `no_vehicle`, `needs_human`,
+- **Errors**: `not_supported`, `no_vehicle`, `need_year`, `needs_human`,
   `challenge_blocked`, `site_blocked`, `daily_cap_reached`, anything else
   `internal` (one short line, never a stack trace). A failure on one part goes
   in that part's `failures`; after a block or a cap the source is not asked
