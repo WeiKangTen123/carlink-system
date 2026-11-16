@@ -33,17 +33,19 @@ export const suggestionKey = (key: string) => (key.startsWith("sug:") ? key.slic
  *   also told what was asked, so an undone add comes off its list too
  *   (lib/findings.ts applyDecision).
  * - The case page takes the saved answer (onSaved), which also carries the
- *   parts and the re-synced Annex A (CaseDecideResult).
+ *   parts and the re-synced Annex A (CaseDecideResult), and what was asked.
  *
  * Decisions go one at a time, in the order made, so "Add" then a quick
- * "Undo" reach the server in that order. decide() rejects when the server
- * refuses (and `error` says why), so the caller can stay where it is. */
+ * "Undo" reach the server in that order. decide() resolves with the
+ * server's answer (an add answered with item null was on the list already:
+ * nothing was added), and rejects when the server refuses (and `error`
+ * says why), so the caller can stay where it is. */
 export function useSuggestionDecisions(
   o:
     | { surface: "intake"; reportId: string; applyToDraft: (r: DecideResult, asked?: { key: string; action: DecideAction }) => void }
-    | { surface: "case"; reportId: string; onSaved: (r: CaseDecideResult) => void },
+    | { surface: "case"; reportId: string; onSaved: (r: CaseDecideResult, asked?: { key: string; action: DecideAction }) => void },
 ): {
-  decide: (key: string, action: DecideAction, looked: boolean) => Promise<void>;
+  decide: (key: string, action: DecideAction, looked: boolean) => Promise<DecideResult>;
   busyKey: string | null;
   error: string | null;
 } {
@@ -57,8 +59,8 @@ export function useSuggestionDecisions(
   });
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
-  const decide = useCallback((key: string, action: DecideAction, looked: boolean): Promise<void> => {
-    const run = async () => {
+  const decide = useCallback((key: string, action: DecideAction, looked: boolean): Promise<DecideResult> => {
+    const run = async (): Promise<DecideResult> => {
       const opts = latest.current;
       const sKey = suggestionKey(key);
       setBusyKey(sKey);
@@ -73,11 +75,12 @@ export function useSuggestionDecisions(
             throw new Error(e instanceof IntakeRequestError ? decideMessage(e.code, e.message) : decideMessage(null, null));
           }
           opts.applyToDraft(r, { key: sKey, action });
-        } else {
-          const r = await decideReportSuggestionAction(opts.reportId, body);
-          if ("error" in r) throw new Error(decideMessage(r.code, r.error));
-          opts.onSaved(r);
+          return r;
         }
+        const r = await decideReportSuggestionAction(opts.reportId, body);
+        if ("error" in r) throw new Error(decideMessage(r.code, r.error));
+        opts.onSaved(r, { key: sKey, action });
+        return r;
       } catch (e) {
         const message = e instanceof Error ? e.message : decideMessage(null, null);
         setError(message);

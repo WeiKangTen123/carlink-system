@@ -289,6 +289,19 @@ check("selections compare by value; labels normalise", () => {
   assert.equal(links.indexLabel(6), "P07");
 });
 
+check("an undone add takes a row off: an item selection follows its row up; the rest stay as they are", () => {
+  assert.deepEqual(links.afterItemsRemoved({ kind: "finding", key: "item:5" }, [4]), { kind: "finding", key: "item:4" });
+  assert.equal(links.afterItemsRemoved({ kind: "finding", key: "item:4" }, [4]), null, "the row itself is gone");
+  assert.deepEqual(links.afterItemsRemoved({ kind: "finding", key: "item:6" }, [2, 4]), { kind: "finding", key: "item:4" });
+  // Untouched selections are the same object, so the map doesn't fly again.
+  for (const sel of [{ kind: "finding", key: "item:3" }, { kind: "finding", key: "sug:Boot Lid Lock" }, { kind: "zone", zoneKey: "roof" }, { kind: "photo", ref: "P01" }]) {
+    assert.equal(links.afterItemsRemoved(sel, [4]), sel);
+  }
+  assert.equal(links.afterItemsRemoved(null, [4]), null);
+  const sel = { kind: "finding", key: "item:5" };
+  assert.equal(links.afterItemsRemoved(sel, []), sel);
+});
+
 // ---------------------------------------------------------------------------
 console.log("-- clicks on the model");
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fileUrl,
   type AnnexAPartItem,
@@ -15,7 +15,7 @@ import { addDamageItemAction } from "@/app/reports/actions";
 import { buildFindings, type Finding, type PhotoInfo, type PhotoLookup } from "@/lib/findings";
 import { indexLabel, labelIndex } from "@/lib/damageLinks";
 import { useDamageSelection } from "@/lib/useDamageSelection";
-import { useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
+import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
 import { detectBodyType, partForZone, resolveZones } from "@/lib/vehicleZones";
 import { DamageMapPanel, revealDamageMap } from "./DamageMapPanel";
 import { DetectedPartsTable } from "./DetectedPartsTable";
@@ -89,8 +89,15 @@ export function DamageDetectionTab({
   onGoToAnnexA,
 }: Props) {
   const readOnly = isSignedOff || !canEdit;
-  const { selection, setSelection, hover, setHover } = useDamageSelection();
+  const { selection, setSelection, hover, setHover, itemsRemoved } = useDamageSelection();
   const [viewer, setViewer] = useState<ViewerState | null>(null);
+  // Suggestions the person has opened in the viewer: deciding one later,
+  // from a card or the map, still counts as "looked" (as on the wizard).
+  const lookedKeys = useRef(new Set<string>());
+  const openViewer = useCallback((v: ViewerState) => {
+    if (v.mode === "suggestions" && v.startKey) lookedKeys.current.add(suggestionKey(v.startKey));
+    setViewer(v);
+  }, []);
 
   // The suggestions are the server's (decisions are stamped there); a
   // decision's answer replaces them here, and a refreshed case resets them.
@@ -129,13 +136,21 @@ export function DamageDetectionTab({
   const { decide } = useSuggestionDecisions({
     surface: "case",
     reportId: report.id,
-    onSaved: (r: DecideResult) => {
+    onSaved: (r: DecideResult, asked) => {
       setSecondLook(r.second_look);
       // /reports answers with the parts and Annex A too, as POST /damage-items does.
       const withItems = r as DecideResult & Partial<DamageItemsResponse>;
       if (Array.isArray(withItems.damage_summary)) onDamageItemsApplied(withItems as unknown as DamageItemsResponse);
+      // An undone add took its item off the server's list (the list now
+      // shown): a selection or hover of a row below it follows its row up.
+      if (asked?.action === "undo" && r.item && typeof r.item_index === "number") itemsRemoved([r.item_index]);
     },
   });
+  // The map sends a suggestion's own key, the cards and viewer "sug:<key>".
+  const decideLooked = useCallback(
+    (key: string, action: DecideAction, looked: boolean) => decide(key, action, looked || lookedKeys.current.has(suggestionKey(key))),
+    [decide],
+  );
 
   // The table's highlighted row: the selected item, or the first listed
   // part on a selected zone.
@@ -215,9 +230,9 @@ export function DamageDetectionTab({
         hover={hover}
         onHover={setHover}
         onOpenEvidence={(key, photo) =>
-          setViewer({ mode: key.startsWith("sug:") ? "suggestions" : key ? "listed" : "photo", startKey: key || null, startPhoto: photo ?? null })
+          openViewer({ mode: key.startsWith("sug:") ? "suggestions" : key ? "listed" : "photo", startKey: key || null, startPhoto: photo ?? null })
         }
-        onDecide={readOnly ? undefined : (key: string, action: DecideAction) => decide(key, action, false)}
+        onDecide={readOnly ? undefined : (key: string, action: DecideAction) => decideLooked(key, action, false)}
         onAddDamage={readOnly ? undefined : (zoneKey) => void addFromMap(zoneKey)}
         readOnly={readOnly}
       />
@@ -231,8 +246,8 @@ export function DamageDetectionTab({
           check={secondLook.check ?? null}
           photos={lookup}
           readOnly={readOnly}
-          onDecide={decide}
-          onLook={(key) => setViewer({ mode: "suggestions", startKey: asFindingKey(key), startPhoto: null })}
+          onDecide={decideLooked}
+          onLook={(key) => openViewer({ mode: "suggestions", startKey: asFindingKey(key), startPhoto: null })}
           onShowOnMap={showOnMap}
         />
       )}
@@ -271,7 +286,7 @@ export function DamageDetectionTab({
         startKey={viewer?.startKey ?? null}
         startPhoto={viewer?.startPhoto ?? null}
         photos={lookup}
-        onDecide={readOnly ? undefined : decide}
+        onDecide={readOnly ? undefined : decideLooked}
         onShowOnMap={showOnMap}
         onClose={() => setViewer(null)}
         readOnly={readOnly}

@@ -15,7 +15,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Box as BoxIcon, Check, ChevronLeft, ChevronRight, Clock, ExternalLink, Undo2, X } from "lucide-react";
-import type { DecideAction } from "@/lib/api";
+import type { DecideAction, DecideResult } from "@/lib/api";
 import {
   BOX_WORDS,
   NO_BOX_TEXT,
@@ -43,7 +43,7 @@ import {
 } from "@/lib/findings";
 import { isTypingTarget } from "@/lib/intakeReview";
 import { PhotoBoxes, type BoxMark } from "./PhotoBoxes";
-import { DecisionToast, type DecisionToastState } from "./SuggestionPanel";
+import { DecisionToast, toastFor, type DecisionToastState } from "./SuggestionPanel";
 
 export type EvidenceViewerProps = {
   open: boolean;
@@ -52,8 +52,10 @@ export type EvidenceViewerProps = {
   startKey?: string | null;
   startPhoto?: string | null;
   photos: PhotoLookup;
-  /** Keys are finding keys ("sug:<key>"); lib/useSuggestionDecisions takes them. */
-  onDecide?: (key: string, action: DecideAction, looked: boolean) => Promise<void>;
+  /** Keys are finding keys ("sug:<key>"); lib/useSuggestionDecisions takes
+   * them. May resolve with the server's answer (an add with item null was
+   * on the list already). */
+  onDecide?: (key: string, action: DecideAction, looked: boolean) => Promise<DecideResult | void>;
   onShowOnMap?: (key: string) => void;
   onClose: () => void;
   readOnly?: boolean;
@@ -352,12 +354,15 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     setBusy(true);
     setError(null);
     try {
-      await onDecide(f.key, action, true);
-      setToast({ key: f.key, name: f.name, action, version: Date.now() });
+      const r = await onDecide(f.key, action, true);
+      const shown = toastFor(f, action, r);
+      setToast(shown);
       setPinned(null);
       if (next) setCur({ key: next.key, photo: null, index: next.index });
       else setEnded(true);
-      setAnnounce(action === "add" ? `Added ${f.name}.` : `${f.name} marked not damaged.`);
+      setAnnounce(
+        shown.action === "listed" ? `${f.name} is already on the list.` : action === "add" ? `Added ${f.name}.` : `${f.name} marked not damaged.`
+      );
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "Couldn't save the decision. Try again.");
     } finally {
@@ -417,8 +422,19 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeRef.current?.focus();
-    return () => opener?.focus();
+    // No scroll: [Show on 3D] closes the viewer having just scrolled the
+    // map into view, and a scrolling focus would jump back to the card.
+    return () => opener?.focus({ preventScroll: true });
   }, []);
+
+  // The toast's Undo can hold the focus; when the toast goes (undone, timed
+  // out) the focus would drop to the page and Tab would leave the dialog.
+  const focusInToast = useRef(false);
+  useEffect(() => {
+    if (toast || !focusInToast.current) return;
+    focusInToast.current = false;
+    if (!dialogRef.current?.contains(document.activeElement)) closeRef.current?.focus({ preventScroll: true });
+  }, [toast]);
 
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
   keys.current = (e: KeyboardEvent) => {
@@ -429,6 +445,12 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     }
     if (e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    // A held A / N / L repeats: after the first decision the cursor is on
+    // the next card, and the repeat would decide that one unseen.
+    if (e.repeat && (k === "a" || k === "n" || k === "l")) {
+      e.preventDefault();
+      return;
+    }
     const actions: Record<string, (() => void) | null> = {
       ArrowLeft: () => stepPhoto(-1),
       ArrowRight: () => stepPhoto(1),
@@ -714,6 +736,9 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={trapFocus}
+        onFocus={(e) => {
+          focusInToast.current = Boolean((e.target as HTMLElement).closest?.(".ev-toast"));
+        }}
       >
         <div className="ev-main">
           {stagePart}
@@ -746,12 +771,10 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
         <div className="ev-sr-only" aria-live="polite" role="status">
           {announce}
         </div>
+        {/* Inside the dialog, so Tab reaches its Undo (the focus trap goes
+            round the dialog only); it is fixed to the screen all the same. */}
+        {toast && <DecisionToast toast={toast} busy={busy} onUndo={() => void undo(toast.key, toast.name)} onDismiss={() => setToast(null)} />}
       </div>
-      {toast && (
-        <div onClick={(e) => e.stopPropagation()}>
-          <DecisionToast toast={toast} busy={busy} onUndo={() => void undo(toast.key, toast.name)} onDismiss={() => setToast(null)} />
-        </div>
-      )}
     </div>,
     document.body
   );

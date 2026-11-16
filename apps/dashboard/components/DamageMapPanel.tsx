@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, Maximize2, Move3d, Plus, RotateCcw, X } from "lucide-react";
-import type { DecideAction } from "@/lib/api";
+import type { DecideAction, DecideResult } from "@/lib/api";
 import { codeReason, type Finding, type FindingStatus, type PhotoLookup, type Selection } from "@/lib/findings";
 import { PhotoBoxes, type BoxMark } from "@/components/PhotoBoxes";
 import {
@@ -65,7 +65,7 @@ export type DamageMapPanelProps = {
   /** [Tick to add] / [Dismiss] / [Undo] on the mesh's selection card. key:
    * the suggestion's own key (Finding.partKey) -- what the decide endpoint
    * takes, so useSuggestionDecisions' decide can be passed straight on. */
-  onDecide?: (key: string, action: DecideAction) => Promise<void>;
+  onDecide?: (key: string, action: DecideAction) => Promise<DecideResult | void>;
   onAddDamage?: (zoneKey: string) => void;
   readOnly?: boolean;
 };
@@ -243,6 +243,10 @@ export function DamageMapPanel({
   const selectedZones = useMemo(() => (selZonesKey ? selZonesKey.split(",") : []), [selZonesKey]);
   const hoverZones = useMemo(() => (hoverZonesKey ? hoverZonesKey.split(",") : []), [hoverZonesKey]);
 
+  // A box clicked on the photo shown: the finding it selects keeps that
+  // photo (its own best photo may be another one).
+  const keepPhoto = useRef<{ key: string; photo: string } | null>(null);
+
   // A new selection (any source, even the same part again) moves the
   // camera to it; a photo only outlines. Keyed on the selection object, so
   // a re-render with the same selection never moves anything.
@@ -250,7 +254,9 @@ export function DamageMapPanel({
   useEffect(() => {
     if (selection === lastSelection.current) return;
     lastSelection.current = selection;
-    setActivePhoto(null);
+    const kept = keepPhoto.current;
+    keepPhoto.current = null;
+    setActivePhoto(kept && selection?.kind === "finding" && selection.key === kept.key ? kept.photo : null);
     if (selection && selection.kind !== "zone") setApproxZone(null);
     if (!selectionMovesCamera(selection)) return;
     const zones = selectionZones(selection, links, canon);
@@ -421,7 +427,10 @@ export function DamageMapPanel({
                   marks={photoMarks}
                   selectedKey={selectedKey}
                   hoverKey={hoverKey}
-                  onSelectMark={(key) => onSelect({ kind: "finding", key })}
+                  onSelectMark={(key) => {
+                    keepPhoto.current = { key, photo: photoRef };
+                    onSelect({ kind: "finding", key });
+                  }}
                   onHoverMark={(key) => onHover(key ? { kind: "finding", key } : null)}
                   fit="contain"
                   className="dmap-photo-img"
