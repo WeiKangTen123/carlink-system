@@ -1,13 +1,16 @@
 /** Free-text damage_summary.part -> zone key mapping, shared between the
- * Damage & Parts Checklist table (StudioApp.tsx) and the 3D model
- * (VehicleBlueprint3D.tsx) so both always agree on which badge number
- * belongs to which part -- computed once here rather than duplicated in
- * two places that could drift apart.
+ * Damage & Parts Checklist table, the 3D damage map (DamageMapPanel,
+ * VehicleBlueprint3D.tsx, lib/damageLinks.ts) and the cover page's impact
+ * sketch, so all of them agree on which panel a part sits on -- computed
+ * once here rather than duplicated in places that could drift apart.
  *
  * Same keyword-regex philosophy as the app's older zone matchers: checked
  * in order, most specific first, never an exact-string lookup since real
  * part text ("Rear bumper fascia", "Tail gate lock striker") never matches
  * a fixed vocabulary.
+ *
+ * Pure data and functions with a type-only import, so Node (built-in type
+ * stripping) can load it: scripts/check-damage-links.mjs.
  */
 import type { DamageSummaryItem } from "./api";
 
@@ -50,7 +53,11 @@ const CATEGORY_RULES: CategoryRule[] = [
   // but a bare "wheel"/"rim"/"tyre" is the wheel itself, and the fender
   // rule's own /wheel\s*arch/ would otherwise swallow both.
   { test: /\btyre\b|\btire\b|\brim\b|\bwheel\b(?!\s*arch)/i, base: "wheel", paired: true, depthVar: true },
-  { test: /fender|wheel\s*arch|wing|quarter\s*panel/i, base: "fender", paired: true },
+  // The rear quarter is its own zone: "Rear fender wheel arch garnish LH"
+  // (real assessor wording) is the rear quarter, and the sedan's front
+  // fender mesh is a different panel at the other end of the car.
+  { test: /quarter\s*panel|rear.*(fender|wheel\s*arch|wing)|(fender|wheel\s*arch|wing).*\brear\b/i, base: "quarter", paired: true },
+  { test: /fender|wheel\s*arch|wing/i, base: "fender", paired: true },
   { test: /\bdoor\b/i, base: "door", paired: true, depthVar: true },
 ];
 
@@ -67,13 +74,19 @@ const CATEGORY_RULES: CategoryRule[] = [
  *
  * Gemini is now constrained to these exact names (see taxonomy.py, fed to
  * the model as a schema enum), so for anything extracted from here on this
- * is a direct lookup rather than pattern-matching. The regex rules below
+ * is a direct lookup rather than pattern-matching. The regex rules above
  * remain as the fallback for the six reports already on file, which hold
  * free text like "Rear bumper fascia" and "Undercarriage".
  *
- * `null` means the part is real but the sedan model has no mesh for it --
- * an honest gap. Those items still appear in the damage checklist, just
- * without a marker, rather than being silently attached to the wrong panel.
+ * `null` means the part is real but the models have no mesh for it -- an
+ * honest gap. Those items still appear in the damage checklist and in the
+ * map's "Not on model" list, rather than being silently attached to the
+ * wrong panel. An `any_*` value names a part whose side (and for doors and
+ * wheels, whose end) is unknown: EITHER_SIDE lists the zones it may be, and
+ * the map marks all of them with "?" instead of guessing the left one.
+ *
+ * Keep the declaration and the plain "zone" / null values as they are:
+ * bot-service scripts/check_taxonomy_sync.py reads this block.
  */
 const CANONICAL_ZONES: Record<string, string | null> = {
   "Front Bumper": "front_bumper",
@@ -115,9 +128,9 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Rear Windscreen": "rear_glass",
   "Left Tail Lamp": "l_taillamp",
   "Right Tail Lamp": "r_taillamp",
-  // The sedan's rear arch is part of the same fender mesh group.
-  "Left Rear Quarter Panel": "l_fender",
-  "Right Rear Quarter Panel": "r_fender",
+  // Its own zone: on the sedan it used to light the FRONT fender's mesh.
+  "Left Rear Quarter Panel": "l_quarter",
+  "Right Rear Quarter Panel": "r_quarter",
   "Rear Number Plate": "rear_bumper",
   "Rear Bumper Beam": "rear_bumper",
   "Left Rear Bumper Reflector": "rear_bumper",
@@ -134,10 +147,11 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Boot Floor Board": "underbody",
   "Left Boot Side Trim": null,
   "Right Boot Side Trim": null,
-  "Left Rear Wheel Arch Liner": "l_fender",
-  "Right Rear Wheel Arch Liner": "r_fender",
-  "Left Rear Wheel Arch Trim": "l_fender",
-  "Right Rear Wheel Arch Trim": "r_fender",
+  // The rear arch is part of the rear quarter.
+  "Left Rear Wheel Arch Liner": "l_quarter",
+  "Right Rear Wheel Arch Liner": "r_quarter",
+  "Left Rear Wheel Arch Trim": "l_quarter",
+  "Right Rear Wheel Arch Trim": "r_quarter",
 
   "Left Front Wheel": "l_wheel_front",
   "Right Front Wheel": "r_wheel_front",
@@ -173,27 +187,78 @@ const CANONICAL_ZONES: Record<string, string | null> = {
   "Seat": null,
   "Dashboard": null,
 
-  // Side-agnostic variants: mapped to visible zone anchors so damage items
-  // always get a visible 3D hotspot marker instead of disappearing or mapping to the frame.
-  "Quarter Panel (side undetermined)": "l_fender",
-  "Front Fender (side undetermined)": "l_fender",
-  "Door (side undetermined)": "l_door_front",
-  "Door Glass (side undetermined)": "l_door_glass_front",
-  "Headlamp (side undetermined)": "l_headlamp",
-  "Tail Lamp (side undetermined)": "l_taillamp",
-  "Wing Mirror (side undetermined)": "l_mirror",
-  "Wheel (side undetermined)": "l_wheel_front",
+  // Side unknown: every zone it may be (EITHER_SIDE), never the left one alone.
+  "Quarter Panel (side undetermined)": "any_quarter",
+  "Front Fender (side undetermined)": "any_fender",
+  "Door (side undetermined)": "any_door",
+  "Door Glass (side undetermined)": "any_door_glass",
+  "Headlamp (side undetermined)": "any_headlamp",
+  "Tail Lamp (side undetermined)": "any_taillamp",
+  "Wing Mirror (side undetermined)": "any_mirror",
+  "Wheel (side undetermined)": "any_wheel",
   "Sill / Rocker Panel (side undetermined)": "underbody",
   "Fog Lamp (side undetermined)": "front_bumper",
   "Rear Bumper Reflector (side undetermined)": "rear_bumper",
   "Boot Lid Lamp (side undetermined)": "tailgate",
-  "Wheel Arch Liner (side undetermined)": "l_fender",
+  "Wheel Arch Liner (side undetermined)": "any_arch",
   "Boot Side Trim (side undetermined)": null,
-  "Wheel Arch Trim (side undetermined)": "l_fender",
-  "Window Regulator (side undetermined)": "l_door_front",
-  "Tyre (side undetermined)": "l_wheel_front",
+  "Wheel Arch Trim (side undetermined)": "any_arch",
+  "Window Regulator (side undetermined)": "any_door",
+  "Tyre (side undetermined)": "any_wheel",
 
   "Other / Not Listed": null,
+};
+
+/** A part whose side (and for doors and wheels, whose end) is unknown: the
+ * zones it may be on. The table says "Door (side undetermined)" and the
+ * door's place isn't known either (taxonomy _NOT_PLACED / _NEEDS_END). */
+const EITHER_SIDE: Record<string, string[]> = {
+  any_quarter: ["l_quarter", "r_quarter"],
+  any_fender: ["l_fender", "r_fender"],
+  any_door: ["l_door_front", "r_door_front", "l_door_rear", "r_door_rear"],
+  any_door_glass: ["l_door_glass_front", "r_door_glass_front", "l_door_glass_rear", "r_door_glass_rear"],
+  any_headlamp: ["l_headlamp", "r_headlamp"],
+  any_taillamp: ["l_taillamp", "r_taillamp"],
+  any_mirror: ["l_mirror", "r_mirror"],
+  any_wheel: ["l_wheel_front", "r_wheel_front", "l_wheel_rear", "r_wheel_rear"],
+  any_arch: ["l_fender", "r_fender", "l_quarter", "r_quarter"],
+};
+
+/** Parts drawn on a panel that isn't the part itself: where they really
+ * are, so the map can say "inside the door" rather than imply the door
+ * skin is damaged. Keyed by canonical part. */
+const STAND_INS: Record<string, string> = {
+  "Left Front Window Regulator": "inside the door",
+  "Right Front Window Regulator": "inside the door",
+  "Left Rear Window Regulator": "inside the door",
+  "Right Rear Window Regulator": "inside the door",
+  "Window Regulator (side undetermined)": "inside a door",
+  "Left Front Wheel Arch Liner": "inside the wheel arch",
+  "Right Front Wheel Arch Liner": "inside the wheel arch",
+  "Left Rear Wheel Arch Liner": "inside the wheel arch",
+  "Right Rear Wheel Arch Liner": "inside the wheel arch",
+  "Wheel Arch Liner (side undetermined)": "inside a wheel arch",
+  "Front Bumper Beam": "behind the bumper",
+  "Rear Bumper Beam": "behind the bumper",
+  "Rear End Panel": "behind the bumper",
+  "Radiator": "behind the grille",
+  "Air Conditioning Condenser": "behind the grille",
+  "Left Fog Lamp": "in the bumper",
+  "Right Fog Lamp": "in the bumper",
+  "Fog Lamp (side undetermined)": "in the bumper",
+  "Left Rear Bumper Reflector": "in the bumper",
+  "Right Rear Bumper Reflector": "in the bumper",
+  "Rear Bumper Reflector (side undetermined)": "in the bumper",
+  "Parking Sensor": "in the bumper",
+  "Reversing Camera": "near the bumper",
+  "Boot Floor Board": "inside the boot",
+  "Left Sill / Rocker Panel": "below the doors",
+  "Right Sill / Rocker Panel": "below the doors",
+  "Sill / Rocker Panel (side undetermined)": "below the doors",
+  "Rear Floor Panel": "under the car",
+  "Front Subframe": "under the car",
+  "Rear Subframe": "under the car",
+  "Engine Undercover": "under the car",
 };
 
 /** True when a part names a panel but leaves the side open. The UI can then
@@ -209,52 +274,93 @@ export function isKnownUnmappedPart(part: string): boolean {
   return part in CANONICAL_ZONES && CANONICAL_ZONES[part] === null;
 }
 
+/** Where a part really is when the map marks a nearby panel for it
+ * ("inside the door"), else null. */
+export function standInFor(part: string): string | null {
+  return STAND_INS[part.trim()] ?? null;
+}
+
 const SIDE_LEFT = /\bleft\b|\bl\s*[/.]?\s*h\b|\blh\b/i;
 const SIDE_RIGHT = /\bright\b|\br\s*[/.]?\s*h\b|\brh\b/i;
 const DEPTH_REAR = /rear|\bback\b/i;
 
+/** The zones one part may be on. `keys` has one zone when the place is
+ * known, more when the side (or the end) is not -- then `sideUnknown`. */
+export type ZoneMatch = { keys: string[]; sideUnknown: boolean };
+
+const one = (key: string): ZoneMatch => ({ keys: [key], sideUnknown: false });
+
 /** `sideHint` is only ever used when the part's own text doesn't say
  * left/right -- see resolveZones() below for where that hint comes from
  * and why it's safe (only applied when the rest of the same report is
- * unambiguous about which side). */
-export function zoneKeyFor(part: string, sideHint?: "l" | "r"): string | null {
+ * unambiguous about which side). Without either, a paired part is on both
+ * sides ("?"): it is never put on the left by default. */
+export function zoneKeysFor(part: string, sideHint?: "l" | "r"): ZoneMatch | null {
   // Exact canonical match first -- for anything extracted since the
   // vocabulary was introduced this is unambiguous, and it can't be
   // mis-claimed by a broad regex the way "rear subframe" could be caught
   // by the bumper rule.
   const canonical = CANONICAL_ZONES[part.trim()];
-  if (canonical !== undefined) return canonical;
+  if (canonical !== undefined) {
+    if (canonical === null) return null;
+    const either = EITHER_SIDE[canonical];
+    return either ? { keys: either, sideUnknown: true } : one(canonical);
+  }
 
   const rule = CATEGORY_RULES.find((r) => r.test.test(part));
   if (!rule) return null;
-  if (rule.zoneKey) return rule.zoneKey;
+  if (rule.zoneKey) return one(rule.zoneKey);
 
-  let side: "l" | "r" | null = null;
+  let sides: ("l" | "r")[] = [];
   if (rule.paired) {
-    if (SIDE_LEFT.test(part)) side = "l";
-    else if (SIDE_RIGHT.test(part)) side = "r";
-    else if (sideHint) side = sideHint;
-    else side = "l"; // safe default so paired part without side always gets a visible marker on the 3D model
+    if (SIDE_LEFT.test(part)) sides = ["l"];
+    else if (SIDE_RIGHT.test(part)) sides = ["r"];
+    else if (sideHint) sides = [sideHint];
+    else sides = ["l", "r"];
   }
   const depth = rule.depthVar ? (DEPTH_REAR.test(part) ? "rear" : "front") : null;
 
-  if (side && depth) return `${side}_${rule.base}_${depth}`; // l_door_front
-  if (side) return `${side}_${rule.base}`; // l_headlamp
-  if (depth) return `${depth}_${rule.base}`; // front_bumper
-  return rule.base!;
+  if (!sides.length) return one(depth ? `${depth}_${rule.base}` : rule.base!); // front_bumper
+  const keys = sides.map((side) => (depth ? `${side}_${rule.base}_${depth}` : `${side}_${rule.base}`)); // l_door_front, l_headlamp
+  return { keys, sideUnknown: keys.length > 1 };
+}
+
+/** One name for where a part goes: its zone, or for a part whose side is
+ * unknown, its possible zones joined ("l_door_front / r_door_front"), which
+ * no mesh rule matches -- so a caller that can draw one zone only (the
+ * impact sketch) lists the part instead of guessing a side. */
+export function zoneKeyFor(part: string, sideHint?: "l" | "r"): string | null {
+  const match = zoneKeysFor(part, sideHint);
+  return match ? match.keys.join(" / ") : null;
 }
 
 export interface ZoneResolution {
   /** Which 3D zone (and therefore which real mesh) this item belongs to.
    * Several items commonly share one key -- a real 18-line rear-collision
-   * report puts 9 separate items on `rear_bumper` alone. */
+   * report puts 9 separate items on `rear_bumper` alone. For a part whose
+   * side is unknown it is zoneKeyFor's joined name: see `keys`. */
   key: string;
+  /** Every zone the item may be on: one, or both sides when `sideUnknown`. */
+  keys: string[];
+  sideUnknown: boolean;
   /** 1-based, and deliberately the item's own row number rather than its
    * zone's: badges used to be numbered per-zone, which meant all 9 of
    * those rear-bumper rows showed an identical "01" in the checklist and
    * only one marker ever appeared on the model. Numbering per item makes
    * checklist row N and blueprint marker N the same thing. */
   badgeNumber: number;
+}
+
+/** The side most of a report's parts state, when they agree: "l", "r" or
+ * undefined for a mix (or none). */
+export function dominantSide(parts: string[]): "l" | "r" | undefined {
+  let leftCount = 0;
+  let rightCount = 0;
+  parts.forEach((part) => {
+    if (SIDE_LEFT.test(part)) leftCount++;
+    else if (SIDE_RIGHT.test(part)) rightCount++;
+  });
+  return leftCount === rightCount ? undefined : leftCount > rightCount ? "l" : "r";
 }
 
 /** Resolves every damage item to a zone + a shared badge number in one
@@ -264,243 +370,146 @@ export interface ZoneResolution {
  * (e.g. a plain "Fender" on a report whose other items say "Right Door")
  * only gets assigned the report's dominant side when that side is
  * unambiguous among the OTHER items that did state one explicitly. A
- * report with a genuine mix (some left, some right) leaves ambiguous
- * items unresolved (null) rather than guessing -- still shown in the
- * table, just without a 3D marker, an honest gap rather than a
- * potentially wrong claim about which specific panel is damaged. */
+ * report with a genuine mix (some left, some right) leaves such items on
+ * both sides ("?") rather than guessing. */
 export function resolveZones(damageEntries: DamageSummaryItem[]): (ZoneResolution | null)[] {
-  let leftCount = 0;
-  let rightCount = 0;
-  damageEntries.forEach((item) => {
-    if (SIDE_LEFT.test(item.part)) leftCount++;
-    else if (SIDE_RIGHT.test(item.part)) rightCount++;
-  });
-  const dominantSide: "l" | "r" | undefined = leftCount === rightCount ? undefined : leftCount > rightCount ? "l" : "r";
-
+  const hint = dominantSide(damageEntries.map((item) => item.part));
   return damageEntries.map((item, idx) => {
-    const key = zoneKeyFor(item.part, dominantSide);
-    if (!key) return null;
-    return { key, badgeNumber: idx + 1 };
+    const match = zoneKeysFor(item.part, hint);
+    if (!match) return null;
+    return { key: match.keys.join(" / "), keys: match.keys, sideUnknown: match.sideUnknown, badgeNumber: idx + 1 };
   });
 }
 
-/** Groups resolved items by zone, preserving each item's own index.
- * The 3D view needs this to fan a marker per real damage item around its
- * shared zone, instead of collapsing a nine-item bumper into one dot. */
-export function groupByZone(resolutions: (ZoneResolution | null)[]): Map<string, number[]> {
-  const byZone = new Map<string, number[]>();
-  resolutions.forEach((res, idx) => {
-    if (!res) return;
-    const list = byZone.get(res.key);
-    if (list) list.push(idx);
-    else byZone.set(res.key, [idx]);
-  });
-  return byZone;
+// ---------------------------------------------------------------------------
+// Zones in words, and the areas of the car the map groups them by.
+
+/** Every zone the map knows, in words. */
+export const ZONE_LABELS: Record<string, string> = {
+  front_bumper: "Front Bumper",
+  front_grill: "Front Grille",
+  bonnet: "Bonnet",
+  windscreen: "Front Windscreen",
+  l_headlamp: "Left Headlamp",
+  r_headlamp: "Right Headlamp",
+  l_fender: "Left Front Fender",
+  r_fender: "Right Front Fender",
+  l_mirror: "Left Wing Mirror",
+  r_mirror: "Right Wing Mirror",
+  l_door_front: "Left Front Door",
+  r_door_front: "Right Front Door",
+  l_door_rear: "Left Rear Door",
+  r_door_rear: "Right Rear Door",
+  l_door_glass_front: "Left Front Door Glass",
+  r_door_glass_front: "Right Front Door Glass",
+  l_door_glass_rear: "Left Rear Door Glass",
+  r_door_glass_rear: "Right Rear Door Glass",
+  l_quarter: "Left Rear Quarter Panel",
+  r_quarter: "Right Rear Quarter Panel",
+  l_wheel_front: "Left Front Wheel",
+  r_wheel_front: "Right Front Wheel",
+  l_wheel_rear: "Left Rear Wheel",
+  r_wheel_rear: "Right Rear Wheel",
+  rear_bumper: "Rear Bumper",
+  tailgate: "Boot Lid / Tailgate",
+  rear_glass: "Rear Windscreen",
+  l_taillamp: "Left Tail Lamp",
+  r_taillamp: "Right Tail Lamp",
+  roof: "Roof",
+  underbody: "Underbody / Chassis",
+};
+
+/** The canonical part a person adds when they mark a zone as damaged
+ * ("+ Add as damage" on the map's card). */
+const ZONE_PARTS: Record<string, string> = {
+  ...ZONE_LABELS,
+  tailgate: "Boot Lid",
+};
+
+export function zoneLabel(zoneKey: string): string {
+  return ZONE_LABELS[zoneKey] ?? zoneKey;
 }
 
-// =============================================================================
-// STUDIO 3.0: 7-ZONE AUTOMOTIVE TAXONOMY & PHOTO SEGMENTATION ENGINE
-// Matches real Singapore loss adjuster practice (Presentation1.pptx & SLK 3063 Z)
-// =============================================================================
-
-export interface VehicleZoneGroup {
-  id: string;
-  label: string;
-  shortLabel: string;
-  iconName?: string;
-  keywords: RegExp[];
-  cameraAngle: {
-    position: [number, number, number];
-    target: [number, number, number];
-  };
+/** The canonical part for a zone, or null for a zone no part names. */
+export function partForZone(zoneKey: string): string | null {
+  return ZONE_PARTS[zoneKey] ?? null;
 }
 
-export const VEHICLE_ZONE_GROUPS: VehicleZoneGroup[] = [
-  {
-    id: "survey",
-    label: "Survey & Identification",
-    shortLabel: "Survey & VIN",
-    keywords: [/\b(vin|chassis|plate|speedo|odometer|tyre|tire|wheel|overview|static|baseline|survey)\b/i],
-    cameraAngle: {
-      position: [3.6, 2.4, 3.9],
-      target: [0, 0.55, 0],
-    },
-  },
-  {
-    id: "rear_bumper",
-    label: "Rear Bumper & Sensors",
-    shortLabel: "Rear Bumper",
-    keywords: [/\b(rear\s*bumper|bumper\s*fascia|bumper\s*side|bumper\s*beam|bumper\s*clip|reverse\s*sensor|bumper\s*retainer|diffuser)\b/i],
-    cameraAngle: {
-      position: [0, 1.25, 4.2],
-      target: [0, 0.6, 1.8],
-    },
-  },
-  {
-    id: "tailgate",
-    label: "Tailgate & Rear Glass",
-    shortLabel: "Tailgate & Glass",
-    keywords: [/\b(tail\s*gate|boot\s*lid|trunk|rear\s*windscreen|rear\s*glass|lock\s*striker|tail\s*gate\s*lock|hinge|weatherstripe|weatherstrip|vezel|emblem)\b/i],
-    cameraAngle: {
-      position: [0, 2.1, 3.7],
-      target: [0, 1.1, 1.6],
-    },
-  },
-  {
-    id: "lighting",
-    label: "Lighting & Lens",
-    shortLabel: "Tail Lamps",
-    keywords: [/\b(tail\s*lamp|tail\s*light|reflector|lamp\s*clip|sealant|headlamp|fog\s*lamp)\b/i],
-    cameraAngle: {
-      position: [-1.8, 1.3, 3.6],
-      target: [-0.7, 0.8, 1.7],
-    },
-  },
-  {
-    id: "quarter_panel",
-    label: "Quarter Panel & Wheel Arch",
-    shortLabel: "Quarter Panel",
-    keywords: [/\b(quarter\s*panel|wheel\s*arch|garnish|fender|splash\s*guard|inner\s*trim)\b/i],
-    cameraAngle: {
-      position: [-3.8, 1.4, 1.2],
-      target: [-0.5, 0.7, 0.5],
-    },
-  },
-  {
-    id: "boot_floor",
-    label: "Boot Interior & Floor Pan",
-    shortLabel: "Boot Floor",
-    keywords: [/\b(floor\s*panel|floor\s*board|insulator\s*cloth|tool\s*tray|sponge|spare\s*wheel|spare\s*tyre|boot\s*interior|luggage|scuff\s*plate)\b/i],
-    cameraAngle: {
-      position: [0, 3.0, 2.2],
-      target: [0, 0.5, 1.2],
-    },
-  },
-  {
-    id: "skeleton",
-    label: "Structural Skeleton & Undercarriage",
-    shortLabel: "Skeleton & Frame",
-    keywords: [/\b(rear\s*end\s*panel|chassis|underbody|undercarriage|frame\s*member|car\s*o\s*liner|subframe|crossmember|straighten)\b/i],
-    cameraAngle: {
-      position: [0, 0.35, 3.6],
-      target: [0, 0.3, 1.4],
-    },
-  },
-];
+/** The map's areas: the camera views and the area chips. "none" holds the
+ * parts the model has no place for ("Not on model"). */
+export type MapArea = "front" | "rear" | "lh" | "rh" | "top" | "none";
+export const MAP_AREAS: MapArea[] = ["front", "rear", "lh", "rh", "top", "none"];
+export const AREA_LABELS: Record<MapArea, string> = {
+  front: "Front",
+  rear: "Rear",
+  lh: "LH",
+  rh: "RH",
+  top: "Top / under",
+  none: "Not on model",
+};
 
-export interface ClassifiedPhoto {
-  index: number;
-  photoRef: string; // "P01", "P02", ...
-  url: string;
-  thumbUrl?: string;
-  previewUrl?: string;
-  zoneId: string;
-  zoneLabel: string;
-  damageItems: DamageSummaryItem[];
+const FRONT_ZONES = new Set(["front_bumper", "front_grill", "bonnet", "windscreen", "l_headlamp", "r_headlamp"]);
+const REAR_ZONES = new Set(["rear_bumper", "tailgate", "rear_glass", "l_taillamp", "r_taillamp"]);
+const TOP_ZONES = new Set(["roof", "underbody"]);
+
+/** The area a zone is counted under: lamps and bumpers by their end, the
+ * side panels (fenders, doors, quarters, wheels, mirrors) by their side. */
+export function zoneArea(zoneKey: string): MapArea {
+  if (FRONT_ZONES.has(zoneKey)) return "front";
+  if (REAR_ZONES.has(zoneKey)) return "rear";
+  if (TOP_ZONES.has(zoneKey)) return "top";
+  if (zoneKey.startsWith("l_")) return "lh";
+  if (zoneKey.startsWith("r_")) return "rh";
+  return "none";
 }
 
-/** Zone for a photo no damage item links to. Not one of the 7 groups on
- * purpose: claiming a zone needs a linked damage item. */
-export const UNCLASSIFIED_ZONE_ID = "unclassified";
-export const UNCLASSIFIED_ZONE_LABEL = "Unclassified";
+/** The sorter's photo areas (bot-service ai/triage.AREAS) -> the map's
+ * areas. A corner counts for its end and its side; "interior" for none. */
+const PHOTO_AREA_MAP: Record<string, MapArea[]> = {
+  front: ["front"],
+  rear: ["rear"],
+  left: ["lh"],
+  right: ["rh"],
+  "front-left": ["front", "lh"],
+  "front-right": ["front", "rh"],
+  "rear-left": ["rear", "lh"],
+  "rear-right": ["rear", "rh"],
+  roof: ["top"],
+  underbody: ["top"],
+};
 
-/** Classifies photos into the 7 primary functional automotive zones.
- * Only from damage_summary.photo_reference bindings: a photo no damage item
- * links to is UNCLASSIFIED_ZONE_ID. It used to inherit a neighbouring
- * photo's zone or one picked from its position in the gallery (bands fitted
- * to the SLK 3063 Z survey), so other cases' VIN or odometer shots read as
- * "Zone: Rear Bumper & Sensors".
- */
-export function classifyPhotos(
-  photos: string[],
-  photoThumbs?: string[],
-  damageEntries: DamageSummaryItem[] = [],
-  photoPreviews?: string[]
-): ClassifiedPhoto[] {
-  if (!photos || photos.length === 0) return [];
-
-  // Build photoRef -> damage items lookup
-  const damageByPhoto = new Map<string, DamageSummaryItem[]>();
-  damageEntries.forEach((item) => {
-    if (item.photo_reference) {
-      const ref = item.photo_reference.trim().toUpperCase();
-      const list = damageByPhoto.get(ref) || [];
-      list.push(item);
-      damageByPhoto.set(ref, list);
-    }
-  });
-
-  // Helper to test part against zone groups
-  const matchZoneId = (partText: string): string | null => {
-    for (const group of VEHICLE_ZONE_GROUPS) {
-      if (group.keywords.some((rx) => rx.test(partText))) {
-        return group.id;
-      }
-    }
-    return null;
-  };
-
-  // Direct zone match from linked damage items -- the only evidence of
-  // what a photo shows.
-  const directZones: (string | null)[] = photos.map((_, idx) => {
-    const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
-    const linked = damageByPhoto.get(photoRef);
-    if (linked && linked.length > 0) {
-      for (const item of linked) {
-        const matched = matchZoneId(item.part);
-        if (matched) return matched;
-      }
-    }
-    return null;
-  });
-
-  return photos.map((url, idx) => {
-    const photoRef = `P${String(idx + 1).padStart(2, "0")}`;
-    const zoneId = directZones[idx] || UNCLASSIFIED_ZONE_ID;
-    const group = VEHICLE_ZONE_GROUPS.find((g) => g.id === zoneId);
-    return {
-      index: idx,
-      photoRef,
-      url,
-      thumbUrl: photoThumbs?.[idx] || url,
-      previewUrl: photoPreviews?.[idx] || photoThumbs?.[idx] || url,
-      zoneId,
-      zoneLabel: group ? group.label : UNCLASSIFIED_ZONE_LABEL,
-      damageItems: damageByPhoto.get(photoRef) || [],
-    };
-  });
+export function photoAreas(area: string | null | undefined): MapArea[] {
+  return PHOTO_AREA_MAP[(area || "").trim().toLowerCase()] ?? [];
 }
 
-/** Chunks photos into 4-quadrant slides matching Presentation1.pptx:
- * Q1: Top-Left, Q2: Top-Right, Q3: Bottom-Left, Q4: Bottom-Right.
- */
-export interface PresentationSlide {
-  slideNumber: number; // 1-based
-  quadrants: {
-    q1: ClassifiedPhoto | null; // Top-Left
-    q2: ClassifiedPhoto | null; // Top-Right
-    q3: ClassifiedPhoto | null; // Bottom-Left
-    q4: ClassifiedPhoto | null; // Bottom-Right
-  };
-}
+// ---------------------------------------------------------------------------
+// Which of the five 3D models a vehicle is drawn with.
 
-export function buildPresentationSlides(photos: ClassifiedPhoto[]): PresentationSlide[] {
-  if (!photos || photos.length === 0) return [];
-  const slides: PresentationSlide[] = [];
-  const totalSlides = Math.ceil(photos.length / 4);
+export type VehicleArchetype = "suv" | "sedan" | "van" | "mpv" | "hatchback";
+export const ARCHETYPES: VehicleArchetype[] = ["sedan", "hatchback", "suv", "mpv", "van"];
+export const ARCHETYPE_LABELS: Record<VehicleArchetype, string> = {
+  sedan: "Sedan",
+  hatchback: "Hatchback",
+  suv: "SUV",
+  mpv: "MPV",
+  van: "Van",
+};
 
-  for (let s = 0; s < totalSlides; s++) {
-    const base = s * 4;
-    slides.push({
-      slideNumber: s + 1,
-      quadrants: {
-        q1: photos[base] || null,
-        q2: photos[base + 1] || null,
-        q3: photos[base + 2] || null,
-        q4: photos[base + 3] || null,
-      },
-    });
-  }
+/** The model for a vehicle: its stated body type (taxonomy BODY_TYPES, or
+ * one of the archetypes), else a guess from the make/model text, else the
+ * sedan. */
+export function detectBodyType(vehicleText: string, statedBodyType?: string | null): VehicleArchetype {
+  const norm = (statedBodyType || "").trim().toLowerCase();
+  if (norm === "suv") return "suv";
+  if (norm === "mpv") return "mpv";
+  if (norm === "van" || norm === "commercial van") return "van";
+  if (norm === "hatchback") return "hatchback";
+  if (norm === "sedan") return "sedan";
 
-  return slides;
+  const lower = (vehicleText || "").toLowerCase();
+  if (/\b(vezel|hr-v|hrv|cr-v|crv|rav4|harrier|forester|qashqai|yaris cross|tucson|cx-3|cx-5|cx-30|suv|crossover)\b/i.test(lower)) return "suv";
+  if (/\b(alphard|vellfire|sienta|noah|voxy|serena|stepwgn|odyssey|spade|roomy|carnival|mpv|minivan)\b/i.test(lower)) return "mpv";
+  if (/\b(hiace|nv200|nv350|urvan|starex|transporter|caravelle|kombi|van|lorry)\b/i.test(lower)) return "van";
+  if (/\b(jazz|fit|swift|golf|polo|march|note|yaris|hatchback)\b/i.test(lower)) return "hatchback";
+  return "sedan";
 }

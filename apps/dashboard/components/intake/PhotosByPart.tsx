@@ -1,10 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, ImagePlus, Plus } from "lucide-react";
+import { Box, ChevronDown, ChevronRight, ImagePlus, Plus } from "lucide-react";
 import { fileUrl, type DamageSummaryItem } from "@/lib/api";
+import type { Finding, Selection } from "@/lib/findings";
 import type { IntakePhoto } from "@/lib/intake";
-import { groupPhotosByPart, isEvidencePhoto, type PhotoGroup } from "@/lib/intakeReview";
+import { groupPhotosByPart, isEvidencePhoto, samePart, type PhotoGroup } from "@/lib/intakeReview";
+import { zoneKeysFor } from "@/lib/vehicleZones";
 
 /** Thumbnails shown per group before the "+N" tile. */
 const MAX_THUMBS = 6;
@@ -19,11 +21,41 @@ type Props = {
   /** Links `photoId` to the listed item at `itemIndex`, which has no photo. */
   onAttachPhoto: (itemIndex: number, photoId: string) => void;
   onOpenPhoto: (group: PhotoGroup, photoId: string) => void;
+  /** Contract 9: the page's findings and damage-map selection. With
+   * onShowOnMap, each group gets a [Map] button that selects its part on
+   * the 3D map (the listed part or suggestion, else the part's zone, else
+   * the group's best photo), and the group the map has selected is marked. */
+  findings?: Finding[];
+  selection?: Selection;
+  onShowOnMap?: (s: Selection) => void;
 };
+
+/** What a group's [Map] selects: the finding for its part, else the part's
+ * zone when it has one place, else its best photo (the map then outlines
+ * what that photo shows). */
+function groupSelection(g: PhotoGroup, findings: Finding[]): Selection {
+  if (g.part) {
+    const f = findings.find((x) => x.kind === "item" && samePart(x.part, g.part)) ?? findings.find((x) => x.status === "suggestion" && samePart(x.part, g.part));
+    if (f) return { kind: "finding", key: f.key };
+    const zones = zoneKeysFor(g.part)?.keys ?? [];
+    if (zones.length === 1) return { kind: "zone", zoneKey: zones[0] };
+  }
+  return { kind: "photo", ref: `@${g.best.id}` };
+}
+
+/** True when the map's selection is about this group's part or photos. */
+function isOnMap(g: PhotoGroup, sel: Selection | undefined, findings: Finding[]): boolean {
+  if (!sel) return false;
+  if (sel.kind === "photo") return g.photos.some((p) => `@${p.id}` === sel.ref);
+  if (!g.part) return false;
+  if (sel.kind === "zone") return (zoneKeysFor(g.part)?.keys ?? []).includes(sel.zoneKey);
+  const f = findings.find((x) => x.key === sel.key);
+  return Boolean(f && samePart(f.part, g.part));
+}
 
 /** Cross-checks the damage list against the photo sort: every part the
  * sorter saw in the photos, and whether the list has it. */
-export function PhotosByPart({ photos, damage, readPhotoIds, onAddDamage, onAttachPhoto, onOpenPhoto }: Props) {
+export function PhotosByPart({ photos, damage, readPhotoIds, onAddDamage, onAttachPhoto, onOpenPhoto, findings = NO_FINDINGS, selection, onShowOnMap }: Props) {
   const groups = useMemo(() => groupPhotosByPart(photos, damage), [photos, damage]);
   const readIds = useMemo(() => new Set(readPhotoIds), [readPhotoIds]);
   const toCheck = groups.filter((g) => !g.listed && g.damageCount > 0).length;
@@ -69,7 +101,7 @@ export function PhotosByPart({ photos, damage, readPhotoIds, onAddDamage, onAtta
                 const hidden = g.photos.length - shown.length;
                 const attention = !g.listed && g.damageCount > 0;
                 return (
-                  <div key={g.id} className={`rv-part-group ${attention ? "attention" : ""}`}>
+                  <div key={g.id} className={`rv-part-group ${attention ? "attention" : ""} ${isOnMap(g, selection, findings) ? "dmap-on-map" : ""}`}>
                     <div className="rv-part-group-head">
                       <span className="rv-part-name">{g.title}</span>
                       <span className={`intake-chip ${g.listed ? "ok" : attention ? "warn" : ""}`}>{g.listed ? "Listed" : "Not listed"}</span>
@@ -86,6 +118,16 @@ export function PhotosByPart({ photos, damage, readPhotoIds, onAddDamage, onAtta
                             title={g.part ? `Add ${g.part} to the damage list, with ${g.best.label}` : `Add a damage item with ${g.best.label} — then choose the part`}
                           >
                             <Plus style={{ width: 13, height: 13 }} /> Add as damage
+                          </button>
+                        )}
+                        {onShowOnMap && (
+                          <button
+                            type="button"
+                            className="btn-secondary-modern rv-small-btn"
+                            onClick={() => onShowOnMap(groupSelection(g, findings))}
+                            title={`Show ${g.part ?? g.best.label} on the 3D damage map`}
+                          >
+                            <Box style={{ width: 13, height: 13 }} /> Map
                           </button>
                         )}
                         {g.listed && g.itemWithoutPhoto !== null && (
@@ -139,3 +181,5 @@ export function PhotosByPart({ photos, damage, readPhotoIds, onAddDamage, onAtta
     </section>
   );
 }
+
+const NO_FINDINGS: Finding[] = [];
