@@ -653,13 +653,18 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         total = 1 + len(zone_jobs)
         if zone_jobs:
             _set_stage(report_id, "reading", 1, total)
+        intact: dict[str, list[str]] = {}
         data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
             report_id, actor, data.get("damage_summary") or [], zone_jobs,
             progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
+            intact=intact,
         )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
         zone_draft["zone_reads"] = zone_reads
+        # Contract 10: what each zone read saw undamaged, for the linked
+        # parts (before, in the run log only). Never applied to the list.
+        zone_draft["zone_intact"] = intact
         if zones.suggest_zone_only():
             # Option B: the list is what the overall reading found; the rest
             # are suggestions. resolve_sides and the agreement rule below

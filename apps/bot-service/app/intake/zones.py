@@ -44,7 +44,11 @@ that fails -- busy, quota, timeout, an answer that doesn't parse, the
 person's allowance gone -- is skipped and noted in the run log; the
 reading never fails for it. All the zone calls are one run of the log
 (runs.ZONES_KIND), whose photos_sent says per zone what was sent and what
-came back, the parts seen intact included (they go nowhere else).
+came back, the parts seen intact included. Contract 10: those intact lists
+are also kept beside the AI draft, ai_draft["zone_intact"] = {"zone:rear":
+[part, ...]} (read_and_merge's `intact`, intact_of), for the linked parts
+to weigh; they never change the list -- a zone that calls a part intact
+can be wrong about it.
 
 Contract 9, option B (settings.intake_zone_only "suggest", the default; it
 acts only in zone mode): the damage list keeps the parts the overall
@@ -473,6 +477,7 @@ def read_and_merge(
     items: list[dict],
     jobs: list[ZoneJob],
     progress: Callable[[int], None] | None = None,
+    intact: dict[str, list[str]] | None = None,
 ) -> tuple[list[dict], set[str], list[str]]:
     """The zone stage, for pipeline._read_into once the overall reading has
     answered: one call per job, then merge_reads. items: the overall
@@ -480,12 +485,19 @@ def read_and_merge(
     each zone call ends, n of len(jobs). Returns (items, disputed names,
     the reads that answered: "overall" and each zone read's name, for
     SecondLook.reads). Never raises: whatever goes wrong, the overall
-    reading's items stand (with found_by "overall")."""
+    reading's items stand (with found_by "overall").
+
+    intact, when given, is filled with what each zone read that answered
+    saw undamaged, {"zone:rear": [canonical part, ...]} (contract 10,
+    ai_draft["zone_intact"]); left empty when no zone read answered."""
+    seen_intact: dict[str, list[str]] = {}
     try:
-        reads = _read_zones(report_id, actor, jobs, progress) if jobs else []
+        reads = _read_zones(report_id, actor, jobs, progress, seen_intact) if jobs else []
     except Exception:
         logger.exception("Zone reading for %s failed; the overall reading stands", report_id)
-        reads = []
+        reads, seen_intact = [], {}
+    if intact is not None:
+        intact.update(seen_intact)
     answered = [OVERALL] + [name for name, _ in reads]
     try:
         merged, disputed = merge_reads(items, reads)
@@ -496,7 +508,8 @@ def read_and_merge(
 
 
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
-                progress: Callable[[int], None] | None) -> list[tuple[str, list[dict]]]:
+                progress: Callable[[int], None] | None,
+                intact: dict[str, list[str]] | None = None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
     grid = grid_on()
     asked = evidence_mode()
@@ -592,4 +605,17 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                                 for e in item.get("evidence") or [] if label_to_id.get(e.get("photo") or "")]
             found.append(item)
         reads.append((f"zone:{job.zone}", found))
+        if intact is not None:
+            intact[f"zone:{job.zone}"] = list(answer.intact)
     return reads
+
+
+def intact_of(ai_draft) -> dict[str, list[str]]:
+    """ai_draft["zone_intact"] as a zone-mode reading kept it (contract 10):
+    {zone read: [canonical part, ...]}. {} for a draft from before it, a
+    single-mode reading, or anything that isn't that shape."""
+    raw = ai_draft.get("zone_intact") if isinstance(ai_draft, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(read): [part for part in parts if isinstance(part, str)]
+            for read, parts in raw.items() if isinstance(parts, list)}
