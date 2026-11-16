@@ -53,6 +53,13 @@ a photo); a part ONLY zone reads found becomes a suggestion for a person to
 add (split_suggestions), never a list item -- measured offline on m6, the
 list then has fewer wrong sides and extras. "list": every find in the list
 (contract 8's m5/m6 behaviour).
+
+Contract 9, evidence (ai/evidence.py): every read's photo of a part is kept
+as an Evidence entry -- the overall reading's with its bbox_2d, a zone
+read's with its reason and box (settings.intake_zone_evidence) -- one per
+photo, best first, the item's photo_reference first. The merge joins them
+(_credit), a suggestion carries them, and pipeline._read_into settles them
+against the photos (evidence.finish: frames, the sorter's boxes).
 """
 import logging
 import threading
@@ -62,13 +69,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from app.ai import allowance, runs
+from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
-from app.ai.second_look import ZONES, covers_of
+from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_of, other_side_listed
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import chain, settings
 from app.intake.photos import ai_input_path
-from app.parts.prefill import item_key
+from app.parts.prefill import item_key, row_name
 from app.reports.schema import SecondLookItem
 from app.reports.taxonomy import CANONICAL_PARTS, OTHER_PART, UNDETERMINED_SUFFIX, split_side, unsided_part
 
@@ -109,6 +116,12 @@ def zone_chain() -> list[str]:
 
 def grid_on() -> bool:
     return bool(getattr(settings, "intake_grid_marks", False))
+
+
+def evidence_mode() -> str:
+    """What the zone calls ask for besides the part (settings.
+    intake_zone_evidence): "off", "reason" or "reason_box"."""
+    return getattr(settings, "intake_zone_evidence", "off") or "off"
 
 
 def suggest_zone_only() -> bool:
@@ -259,7 +272,11 @@ def _sharing(candidates: list[dict], ref: str | None) -> dict | None:
 def _credit(item: dict, found: dict, read: str) -> None:
     """`found` (one read's item) is the same part as `item`: the read and
     its photo are added; item keeps its own details. A photo is filled in
-    only where item had none, and grid cells only for item's own photo."""
+    only where item had none, and grid cells only for item's own photo.
+    Contract 9: found's evidence joins item's (one entry per photo, the
+    better kept, item's photo first), and its reason when item has none
+    yet; a photo filled in takes its box from that photo's entry (before,
+    the box was dropped with it, and the zone's place for the part lost)."""
     if read not in item["found_by"]:
         item["found_by"].append(read)
     ref = found.get("photo_reference") or None
@@ -270,6 +287,10 @@ def _credit(item: dict, found: dict, read: str) -> None:
         item["bbox_2d"] = None
     if ref and not item.get("grid_cells") and found.get("grid_cells") and item.get("photo_reference") == ref:
         item["grid_cells"] = list(found["grid_cells"])
+    evidence.join(item, evidence.entries_of(found, read))
+    if not item.get("reason") and found.get("reason"):
+        item["reason"] = found["reason"]
+    evidence.settle(item, fill_box=True)
 
 
 def _merge_one(out: list[dict], found: dict, read: str, disputed: set[int], disputed_names: set[str]) -> None:
@@ -334,7 +355,8 @@ def _merge_one(out: list[dict], found: dict, read: str, disputed: set[int], disp
 
     found["found_by"] = [read]
     found["seen_in"] = [ref] if ref else []
-    out.append(found)
+    found["evidence"] = evidence.entries_of(found, read)
+    out.append(evidence.settle(found, fill_box=True))
 
 
 def merge_reads(overall: list[dict], reads: list[tuple[str, list[dict]]]) -> tuple[list[dict], set[str]]:
@@ -350,6 +372,9 @@ def merge_reads(overall: list[dict], reads: list[tuple[str, list[dict]]]) -> tup
       - Sides (_merge_one): an undetermined name meets a sided one -> the
         sided one, credited; the same family on opposite sides on the same
         photo -> undetermined, Low, unless two reads agreed on one side.
+      - Evidence (contract 9): each item's entries from every read that
+        found it, one per photo (_credit); an overall item's own is its
+        photo and bbox_2d, by "overall".
 
     Returns (items, the disputed "(side undetermined)" names, which the
     caller keeps out of resolve_sides)."""
@@ -360,13 +385,16 @@ def merge_reads(overall: list[dict], reads: list[tuple[str, list[dict]]]) -> tup
         item["found_by"] = [OVERALL]
         item["seen_in"] = [ref] if ref else []
         item["grid_cells"] = list(item.get("grid_cells") or [])
-        out.append(item)
+        # Copies: the inputs' entries are never changed.
+        item["evidence"] = evidence.entries_of(item, OVERALL)
+        out.append(evidence.settle(item, fill_box=True))
     disputed: set[int] = set()
     disputed_names: set[str] = set()
     for read, items in reads:
         for found in items:
             found = dict(found)
             found["grid_cells"] = list(found.get("grid_cells") or [])
+            found["evidence"] = [dict(e) for e in found.get("evidence") or [] if isinstance(e, dict)]
             _merge_one(out, found, read, disputed, disputed_names)
     return out, disputed_names
 
@@ -374,14 +402,19 @@ def merge_reads(overall: list[dict], reads: list[tuple[str, list[dict]]]) -> tup
 def as_suggestion(item: dict) -> dict:
     """A merged item only zone reads found, as a SecondLookItem dict
     (source "zone"): the model's own confidence and side, untouched by
-    resolve_sides and the agreement rule, which are for the list. Its name
-    in the firm's words are second_look._store's."""
+    resolve_sides and the agreement rule, which are for the list; its
+    reason and evidence as the reads gave them. Its name in the firm's
+    words and other_side_listed are set against the list once it is final
+    (name_suggestions; second_look._store again against the form)."""
     part = str(item.get("part") or "")
     return SecondLookItem(
         key=item_key(item) or part, part=part, photo_reference=item.get("photo_reference") or None,
         condition_tokens=list(item.get("condition_tokens") or []), condition=item.get("condition"),
         damage_type=item.get("damage_type"), confidence=item.get("ai_confidence"), source="zone",
-        covers=covers_of(part), found_by=list(item.get("found_by") or []), seen_in=list(item.get("seen_in") or []),
+        covers=covers_of(part), found_by=list(item.get("found_by") or []),
+        seen_in=list(item.get("seen_in") or [])[:MAX_SEEN_IN],
+        reason=evidence.clean_reason(item.get("reason")),
+        evidence=evidence.order_evidence(item.get("evidence"), item.get("photo_reference") or None),
         other_part_name=item.get("other_part_name"), severity=item.get("severity"), remarks=item.get("remarks"),
     ).model_dump()
 
@@ -398,6 +431,19 @@ def split_suggestions(items: list[dict]) -> tuple[list[dict], list[dict]]:
         elif item.get("part"):
             suggested.append(as_suggestion(item))
     return listed, suggested
+
+
+def name_suggestions(suggestions: list[dict], listed: list[dict], db, vehicle: dict) -> list[dict]:
+    """In place, once the list is final (pipeline._read_into, after the side
+    resolver): each suggestion's name in the firm's words (prefill.row_name)
+    and other_side_listed -- the list's part of the same family on the
+    other side ("Right Tail Lamp" beside a suggested "Left Tail Lamp"), so a
+    person sees the side may be the question, not the part."""
+    parts = {str(it.get("part") or "") for it in listed if isinstance(it, dict)}
+    for suggestion in suggestions:
+        suggestion["name"] = row_name(db, suggestion["part"], vehicle or {})
+        suggestion["other_side_listed"] = other_side_listed(suggestion["part"], parts)
+    return suggestions
 
 
 def apply_agreement(items: list[dict]) -> list[dict]:
@@ -453,6 +499,7 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 progress: Callable[[int], None] | None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
     grid = grid_on()
+    asked = evidence_mode()
     started = time.monotonic()
     answers: dict[int, ZoneAnswer] = {}
     entries: list[dict] = [{"zone": job.zone, "photos": [f"@{pid}" for _, pid, _, _ in job.photos]} for job in jobs]
@@ -476,7 +523,7 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 # error code, then added to the stage's one run.
                 with runs.collecting(attempts):
                     answer = read_zone(job.zone, [(label, path, kind) for label, _, path, kind in job.photos],
-                                       actor=actor, models=models, grid=grid)
+                                       actor=actor, models=models, grid=grid, evidence_mode=asked)
             except Exception as exc:
                 error = exc
                 # The person's AI going away, or the day's allowance used up
@@ -540,6 +587,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             item["photo_reference"] = f"@{photo_id}" if photo_id else None
             if not photo_id:
                 item["grid_cells"] = []
+            # Its evidence by photo id too; an entry on a label not sent goes.
+            item["evidence"] = [{**e, "photo": f"@{label_to_id[e['photo']]}"}
+                                for e in item.get("evidence") or [] if label_to_id.get(e.get("photo") or "")]
             found.append(item)
         reads.append((f"zone:{job.zone}", found))
     return reads

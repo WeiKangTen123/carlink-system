@@ -30,6 +30,9 @@ Contract 9, option B (settings.intake_zone_only "suggest"): the parts only
 the zone calls found are kept apart, in IntakeSession.ai_draft
 ["zone_suggestions"], and shown as suggestions (second_look._store) --
 never in the damage list until a person adds one.
+Contract 9, evidence: each finding -- list item or suggestion -- keeps
+which photos show it, where, and in the AI's words (ai/evidence.py),
+settled against the case's photos once the reads are in (_read_into).
 """
 import logging
 import re
@@ -40,7 +43,7 @@ from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import allowance, check, runs, second_look
+from app.ai import allowance, check, evidence, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
@@ -534,6 +537,16 @@ def read_crops(candidates: list[tuple[str, list[str], list[int]]], limit: int) -
     return out
 
 
+def photo_facts(photo: IntakePhoto) -> evidence.PhotoFacts:
+    """What a photo's findings' evidence needs (contract 9): the image the
+    AI was sent -- the original when there is no preview, whose frame its
+    EXIF may turn, so a box on it is dropped (evidence.clean_box) -- and the
+    sorter's box with the part it named (settings.intake_sort_damage_box)."""
+    ai_path = ai_input_path(photo.path)
+    return evidence.PhotoFacts(ai_path=ai_path, raw=ai_path == photo.path,
+                               sort_box=evidence.clean_box(photo.damage_box), sort_part=photo.part)
+
+
 def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
     """The reading stage, as one run of the log (ai/runs.py): kind "read",
     or "redraft" for a re-read -- then the second look at the damage it
@@ -571,6 +584,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # read or not: resolve_sides places side-undetermined findings by it.
         photo_areas = voting_areas(photos)
         sorter_parts = {p.id: p.part for p in photos if p.part}
+        facts = {p.id: photo_facts(p) for p in photos}
         if zone_mode:
             # The areas to read one at a time, from every photo of the case.
             zone_jobs = zones.jobs_for(photos, labels)
@@ -593,9 +607,11 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # /intake/{id}'s progress; the wizard shows reading without counts).
         _set_stage(report_id, "reading", 0, 1 + len(zone_jobs))
     extra: dict = {}
+    closeups: set[str] = set()
     if with_crops:
         made = read_crops(candidates, settings.intake_read_crops_max)
         extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
+        closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
     draft = draft_report(
         notes,
@@ -615,8 +631,16 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         match = _LABEL_RE.match((item.get("photo_reference") or "").strip().upper())
         photo_id = label_to_id.get(photo_label(int(match.group(1)) - 1)) if match else None
         item["photo_reference"] = f"@{photo_id}" if photo_id else None
-        if not photo_id:
+        # Contract 9 (decision 25): "P07" names both a photo and its
+        # close-up, so a box with it may be on either -- none is kept.
+        if not photo_id or photo_id in closeups:
             item["bbox_2d"] = None
+        # The overall reading's own evidence: its photo and box. Its schema
+        # asks for no reason (the drafting schema is unchanged): its items'
+        # reasons are the zone reads' or none.
+        item["reason"] = None
+        own = evidence.own_entry(item, zones.OVERALL)
+        item["evidence"] = [own] if own else []
 
     if settings.intake_side_from_sorter:
         side_from_sorter(data.get("damage_summary") or [], sorter_parts)
@@ -641,6 +665,13 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # are suggestions. resolve_sides and the agreement rule below
             # then see the list only.
             data["damage_summary"], zone_draft["zone_suggestions"] = zones.split_suggestions(data["damage_summary"])
+    try:
+        # Each finding's evidence against the photos: frames, boxes on raw
+        # originals dropped, the sorter's boxes, best first. Code only; the
+        # reading is never lost for it.
+        evidence.finish(data.get("damage_summary") or [], zone_draft.get("zone_suggestions") or [], facts)
+    except Exception:
+        logger.exception("Reading %s: couldn't settle the evidence; the reading stands", report_id)
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -668,6 +699,15 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                 zones.apply_agreement(data["damage_summary"])
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
+        if zone_draft.get("zone_suggestions"):
+            # Against the list as the side resolver left it: the firm's
+            # names and the other side's twin (zones.name_suggestions).
+            # Wording only: never the reason a reading is lost.
+            try:
+                zones.name_suggestions(zone_draft["zone_suggestions"], data.get("damage_summary") or [], db,
+                                       data.get("vehicle_info") or {})
+            except Exception:
+                logger.exception("Reading %s: couldn't name the suggestions", report_id)
         # Merged against the form as it is NOW (re-read inside this
         # transaction), not as it was when the run started.
         report.data = merge_redraft(current, session.ai_draft, data)
