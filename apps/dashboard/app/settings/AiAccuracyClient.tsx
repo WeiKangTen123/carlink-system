@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ExternalLink, Gauge, Loader2 } from "lucide-react";
-import type { AiAccuracy, AiAccuracySums, AiAccuracyTop } from "@/lib/api";
+import type { AiAccuracy, AiAccuracySuggestionCounts, AiAccuracySuggestions, AiAccuracySums, AiAccuracyTop } from "@/lib/api";
 import { formatSgtDate } from "@/lib/caseFields";
 import { getAiAccuracyAction } from "./ai-accuracy/actions";
 
@@ -65,6 +65,121 @@ function TopList({ label, top }: { label: string; top: AiAccuracyTop | undefined
         <span style={{ color: "var(--text-muted)" }}>none</span>
       )}
     </div>
+  );
+}
+
+// Contract 9: the suggestions' groups, in the words the suggestion cards
+// use ("read" = the main read or a zone read; "re-check" = the check step).
+const SOURCE_NAMES: Record<string, string> = {
+  zone: "Found only by a zone read",
+  kit: "Often damaged with a part found (past cases)",
+  nearby: "Next to a part found",
+};
+const CHECK_NAMES: Record<string, string> = {
+  yes: "AI re-check: probably damaged",
+  unsure: "AI re-check: unsure",
+  no: "AI re-check: probably not damaged",
+  none: "Not re-checked",
+};
+const READ_NAMES: Record<string, string> = {
+  overall: "Main read",
+  "zone:front": "Front read",
+  "zone:rear": "Rear read",
+  "zone:left": "Left side read",
+  "zone:right": "Right side read",
+  "zone:close": "Close-up read",
+};
+
+function readName(read: string): string {
+  return READ_NAMES[read] ?? `${read.replace(/^zone:/, "")} read`;
+}
+
+/** The groups of one breakdown in `order` -- the same rows in the same
+ * place every month -- and any other after them, biggest first. */
+function groupRows(
+  groups: Partial<Record<string, AiAccuracySuggestionCounts>> | undefined,
+  name: (key: string) => string,
+  order: string[],
+): Array<{ key: string; label: string; c: AiAccuracySuggestionCounts }> {
+  const rank = (k: string) => (order.includes(k) ? order.indexOf(k) : order.length);
+  return Object.entries(groups ?? {})
+    .filter((e): e is [string, AiAccuracySuggestionCounts] => !!e[1] && e[1].shown > 0)
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || b[1].shown - a[1].shown || a[0].localeCompare(b[0]))
+    .map(([key, c]) => ({ key, label: name(key), c }));
+}
+
+/** What became of the parts the AI suggested but didn't list (accuracy
+ * VERSION 2): counts only, never a percentage, a reason or a photo. An
+ * added one is on the signed-off list; "not damaged" a person dismissed;
+ * "left" nobody decided before sign-off. */
+function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; title: string }) {
+  if (!s || !s.shown) {
+    return (
+      <Section title={title}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          No suggestions on these cases. They are the parts the AI thought may be damaged but didn&apos;t list; cases signed off
+          before they were counted show none.
+        </div>
+      </Section>
+    );
+  }
+  const groups: Array<{ head: string; rows: ReturnType<typeof groupRows> }> = [
+    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby"]) },
+    { head: "AI re-check", rows: groupRows(s.by_check, (k) => CHECK_NAMES[k] ?? k, ["yes", "unsure", "no", "none"]) },
+    { head: "Read that found it", rows: groupRows(s.by_read, readName, Object.keys(READ_NAMES)) },
+  ].filter((g) => g.rows.length > 0);
+  const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
+  return (
+    <Section title={title}>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 10 }}>
+        <span title="Parts the AI suggested but didn't put on its list">{num(s.shown)} suggested</span>
+        {" · "}
+        <span title="On the signed-off list">{num(s.added)} added</span>
+        {s.added > 0 && (
+          <span style={{ color: "var(--text-muted)" }} title="Added after opening the photo viewer on it">
+            {" "}
+            ({num(s.looked_first)} after a look at the photos)
+          </span>
+        )}
+        {" · "}
+        <span title="Marked Not damaged">{num(s.dismissed)} not damaged</span>
+        {" · "}
+        <span title="Nobody decided before sign-off">{num(s.left)} left undecided</span>
+      </div>
+      {groups.length > 0 && (
+        <div className="ai-usage-table-wrap">
+          <table className="users-table">
+            <thead>
+              <tr>
+                <th />
+                <th style={{ textAlign: "right" }}>Suggested</th>
+                <th style={{ textAlign: "right" }}>Added</th>
+                <th style={{ textAlign: "right" }}>Not damaged</th>
+                <th style={{ textAlign: "right" }}>Left</th>
+              </tr>
+            </thead>
+            {groups.map((g) => (
+              <tbody key={g.head}>
+                <tr>
+                  <td colSpan={5} style={{ fontWeight: 700, fontSize: 12, color: "var(--text-muted)" }}>
+                    {g.head}
+                  </td>
+                </tr>
+                {g.rows.map((row) => (
+                  <tr key={row.key}>
+                    <td>{row.label}</td>
+                    <td style={cell}>{num(row.c.shown)}</td>
+                    <td style={cell}>{num(row.c.added)}</td>
+                    <td style={cell}>{num(row.c.dismissed)}</td>
+                    <td style={cell}>{num(row.c.left)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            ))}
+          </table>
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -232,6 +347,8 @@ export function AiAccuracyClient({ initial, initialError }: { initial: AiAccurac
 
       {accuracy && !empty && (
         <>
+          <SuggestionsBlock s={sums?.suggestions} title={`Suggestions${month === ALL ? "" : ` – ${monthName(month)}`}`} />
+
           <Section title={`Cases${month === ALL ? "" : ` – ${monthName(month)}`} (${cases.length})`}>
             <div className="ai-usage-table-wrap">
               <table className="users-table">

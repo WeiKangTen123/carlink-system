@@ -29,6 +29,14 @@ surveyor kept, removed, added or changed before signing:
            by the AI and kept, changed or emptied; filled by people where the
            AI left them blank -- the firm's usual static-check wording, which
            filing puts in, counted apart as "template".
+  suggestions  (contract 9, VERSION 2) the parts the AI suggested but did
+           not list (data.second_look, kept since filing): shown, and of
+           those added (on the signed-off list), dismissed (marked Not
+           damaged) or left undecided -- in all, by where the suggestion
+           came from, by the read that found it and by the re-check's
+           verdict; and how many added ones were looked at first. Counts
+           only: never a part's reason, photo or box. A part added from a
+           suggestion still counts under damage as added by people.
 
 compare() is pure: no database, no AI. Old cases and missing keys count as
 empty. The answer holds counts, canonical part names, Annex A wordings and
@@ -47,12 +55,14 @@ from app.parts.learn import case_ref, signed_off_as
 from app.parts.prefill import item_key, line_key, origin_of, sync_annex_a
 from app.reports.models import AiAccuracy, AiRun, AuditEntry, Report, User
 from app.reports.review import FIELD_RULES, TEMPLATE_DEFAULTS, is_blank, same_value, value_at
+from app.reports.suggestions import key_of, standing
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
 from app.reports.taxonomy import OTHER_PART, UNDETERMINED_SUFFIX, annex_condition, other_part_name, unsided_part
 
 # Bump when a definition below changes, so rows made under the old ones can
-# be told apart (and made again: scripts/backfill_ai_accuracy.py).
-VERSION = 1
+# be told apart (and made again: scripts/backfill_ai_accuracy.py). 2: the
+# suggestions section (contract 9).
+VERSION = 2
 
 # The fields the AI can write: the cover page's own section is the
 # surveyor's (schema.CoverPageInfo is left out of the AI's schema) and Our
@@ -72,6 +82,12 @@ DAMAGE_COUNTS = ("ai_found", "final", "kept", "removed", "added", "side_changed"
 ANNEX_COUNTS = ("machine", "kept", "removed", "added", "added_machine", "added_suggested", "added_typed",
                 "priced_kept", "price_changed", "price_filled")
 FIELD_COUNTS = ("ai_filled", "kept", "changed", "emptied", "filled", "template")
+SUGGESTION_COUNTS = ("shown", "added", "dismissed", "left")
+SUGGESTION_GROUPS = ("by_source", "by_read", "by_check")
+# Where a suggestion came from (SecondLookItem.source) and the re-check's
+# verdicts (SuggestionCheck.verdict); "none": not re-checked.
+SUGGESTION_SOURCES = ("zone", "kit", "nearby")
+CHECK_VERDICTS = ("yes", "no", "unsure")
 
 
 def _num(value) -> float:
@@ -317,6 +333,94 @@ def _fields(ai_draft: dict, final_data: dict) -> dict:
     return out
 
 
+# -------------------------------------------------------- suggestions
+
+
+def _dicts(value) -> list[dict]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def _suggestion_counts() -> dict:
+    return {key: 0 for key in SUGGESTION_COUNTS}
+
+
+def _suggestions(ai_draft: dict, final_data: dict) -> dict:
+    """What became of the AI's suggestions (data.second_look, server-owned
+    since contract 9). Shown: the keys of its items, of the decisions on
+    them and of the dismissed list -- a key re-read away from the items
+    (second_look._store drops listed and dismissed ones) is still one a
+    person saw. Each is "added" when the key is on the signed-off damage
+    list (whoever put it there), else "dismissed" when it is in dismissed,
+    else "left". What a suggestion was -- its source, the reads that found
+    it, the re-check's verdict -- from the case's items, else the AI's
+    frozen zone suggestions (Report.ai_draft, filing), else the item added
+    from it."""
+    look = final_data.get("second_look") if isinstance(final_data.get("second_look"), dict) else {}
+    items = [it for it in _dicts(look.get("items")) if key_of(it)]
+    decisions = [d for d in _dicts(look.get("decisions")) if d.get("key")]
+    dismissed = {str(k) for k in look.get("dismissed") or [] if isinstance(k, str) and k}
+    final_keys = {item_key(it) for it in damage_items(final_data)}
+    added_items = {item_key(it): it for it in damage_items(final_data) if it.get("added_from") == "suggestion"}
+    facts: dict[str, dict] = {}
+    for it in items:
+        facts.setdefault(key_of(it), it)
+    for it in _dicts(ai_draft.get("zone_suggestions")):
+        if key_of(it):
+            facts.setdefault(key_of(it), {**it, "source": it.get("source") or "zone"})
+    shown: list[str] = []
+    for key in [key_of(it) for it in items] + [str(d["key"]) for d in decisions if d.get("action") != "undone"] + sorted(dismissed):
+        if key not in shown:
+            shown.append(key)
+    still = standing(decisions)
+
+    out: dict = {**_suggestion_counts(), "looked_first": 0, **{group: {} for group in SUGGESTION_GROUPS}}
+    for key in shown:
+        outcome = "added" if key in final_keys else "dismissed" if key in dismissed else "left"
+        fact = facts.get(key) or added_items.get(key) or {}
+        source = fact.get("source") if fact.get("source") in SUGGESTION_SOURCES else None
+        reads = [str(r)[:40] for r in fact.get("found_by") or [] if isinstance(r, str) and r]
+        check = fact.get("check") if isinstance(fact.get("check"), dict) else {}
+        verdict = check.get("verdict") if check.get("verdict") in CHECK_VERDICTS else "none"
+        tallies = [out, out["by_check"].setdefault(verdict, _suggestion_counts())]
+        if source:
+            tallies.append(out["by_source"].setdefault(source, _suggestion_counts()))
+        tallies += [out["by_read"].setdefault(read, _suggestion_counts()) for read in dict.fromkeys(reads)]
+        for tally in tallies:
+            tally["shown"] += 1
+            tally[outcome] += 1
+        if outcome == "added" and any(d.get("action") == "added" and d.get("looked") for d in still.get(key) or []):
+            out["looked_first"] += 1
+    return out
+
+
+def sum_suggestions(metrics: list[dict]) -> dict:
+    """The suggestions sections of many cases' metrics added up (GET
+    /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0."""
+    out: dict = {**_suggestion_counts(), "looked_first": 0, **{group: {} for group in SUGGESTION_GROUPS}}
+
+    def add(into: dict, counts) -> None:
+        for key in SUGGESTION_COUNTS:
+            try:
+                into[key] += int((counts or {}).get(key) or 0)
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+    for m in metrics:
+        s = m.get("suggestions") if isinstance(m, dict) and isinstance(m.get("suggestions"), dict) else None
+        if s is None:
+            continue
+        add(out, s)
+        try:
+            out["looked_first"] += int(s.get("looked_first") or 0)
+        except (TypeError, ValueError):
+            pass
+        for group in SUGGESTION_GROUPS:
+            for name, counts in (s.get(group) or {}).items() if isinstance(s.get(group), dict) else ():
+                if isinstance(counts, dict):
+                    add(out[group].setdefault(str(name)[:40], _suggestion_counts()), counts)
+    return out
+
+
 def compare(ai_draft: dict | None, final_data: dict | None, machine_annex: list | None = None) -> dict:
     """The AI's draft against the case as signed off (see the module's
     docstring). machine_annex: the Annex A rows the machine writes from the
@@ -329,6 +433,7 @@ def compare(ai_draft: dict | None, final_data: dict | None, machine_annex: list 
         "damage": _damage(ai, final),
         "annex_a": _annex(final, machine_annex),
         "fields": _fields(ai, final),
+        "suggestions": _suggestions(ai, final),
     }
 
 
