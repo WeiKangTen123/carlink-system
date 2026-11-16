@@ -18,7 +18,6 @@ import { useCurrentUser } from "@/components/CurrentUser";
 import { ReviewProgress, ReviewTabCount, type ReviewSection } from "@/components/ReviewProgress";
 import { useCaseReview } from "@/lib/fieldReview";
 import { useCaseState, type CaseSection } from "@/lib/caseState";
-import { resolveZones, zoneKeyFor } from "@/lib/vehicleZones";
 import { formatSgtDateTime } from "@/lib/caseFields";
 
 export { severityClass } from "@/lib/caseFields";
@@ -41,9 +40,6 @@ const TABS: { id: CaseTab; no: number; label: string; section?: CaseSection; rev
 function asCaseTab(value: string | null | undefined): CaseTab | null {
   return TABS.find((t) => t.id === value)?.id ?? null;
 }
-
-/** The fields of a detected part the 3D blueprint draws from. */
-const blueprintKey = (entries: DamageSummaryItem[]) => JSON.stringify(entries.map((e) => [e.part, e.severity ?? null]));
 
 export function StudioApp({ report, initialTab }: { report: ReportDetail; initialTab?: string }) {
   const router = useRouter();
@@ -91,10 +87,6 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
     setOpened((o) => (o[tab] ? o : { ...o, [tab]: true }));
   };
 
-  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
-  const [highlightedDamageIndex, setHighlightedDamageIndex] = useState<number | null>(null);
-  const [selectedZone, setSelectedZone] = useState<string | null>(null);
-
   // Same fallback the original detail page used: real damage_summary items
   // when they exist, otherwise the plain damaged_parts list with everything
   // else honestly left unknown -- never invented from the description text.
@@ -111,20 +103,6 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
     [damageSummary, damagedParts, severityLevel]
   );
 
-  // The 3D blueprint resets its camera and rebuilds its materials whenever
-  // it gets a new damageEntries array, so it gets one whose identity only
-  // changes when a part or its severity changes -- not on a verified tick,
-  // a photo link or an Annex A save (design 5.4).
-  const blueprintContent = blueprintKey(damageEntries);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the content string on purpose
-  const blueprintEntries = useMemo(() => damageEntries, [blueprintContent]);
-
-  // Same resolution the 3D blueprint uses for its numbered markers -- one
-  // shared function so a badge number always means the same part in both
-  // places, never two independently-computed numbering schemes drifting
-  // apart.
-  const zoneResolutions = useMemo(() => resolveZones(damageEntries), [damageEntries]);
-
   const photos = report.photo_urls || [];
   const photoThumbs = report.photo_thumb_urls;
 
@@ -138,36 +116,6 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
   // fallback) -- never an id fragment.
   const previewCode = [ourRef, plate].filter(Boolean).join(" ");
   const signOff = d.sign_off;
-
-  // Selecting a damage item from anywhere -- a blueprint marker, a table
-  // row -- highlights it everywhere at once and synchronizes with the 3D
-  // camera and the photo strip. The CURRENT entry is read by index: the 3D
-  // blueprint holds an older copy of the parts (it only gets a new array
-  // when a part or severity changes), so a photo re-linked since would not
-  // open from its copy.
-  const handleHotspotClick = (idx: number, clicked: DamageSummaryItem) => {
-    const item = damageEntries[idx] ?? clicked;
-    setHighlightedDamageIndex(idx);
-    const zKey = zoneKeyFor(item.part);
-    if (zKey) setSelectedZone(zKey);
-    if (item.photo_reference) {
-      const photoIdx = parseInt(item.photo_reference.replace(/\D/g, ""), 10) - 1;
-      if (photoIdx >= 0 && photoIdx < photos.length) setActivePhotoIndex(photoIdx);
-    }
-  };
-
-  const handleSelectZone = (zoneId: string | null) => {
-    setSelectedZone(zoneId);
-    if (zoneId) {
-      const matchingIdx = damageEntries.findIndex((item) => {
-        const z = zoneKeyFor(item.part);
-        return z === zoneId || (zoneId === "skeleton" && z === "underbody");
-      });
-      if (matchingIdx >= 0) {
-        setHighlightedDamageIndex(matchingIdx);
-      }
-    }
-  };
 
   // The Report menu closes on a click anywhere else.
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -341,30 +289,21 @@ export function StudioApp({ report, initialTab }: { report: ReportDetail; initia
 
       {opened.detection && (
         <div style={tabPanelStyle("detection")}>
+          {/* The selection the map, the suggestions and the parts table
+              share lives in the tab (useDamageSelection). */}
           <DamageDetectionTab
             report={report}
+            data={d}
             isSignedOff={isSignedOff}
             canEdit={perms.edit}
             damageEntries={damageEntries}
-            blueprintEntries={blueprintEntries}
-            zoneResolutions={zoneResolutions}
             vehicleName={vehicleName}
             photos={photos}
             photoThumbs={photoThumbs}
             photoPreviews={report.photo_preview_urls}
-            activePhotoIndex={activePhotoIndex}
-            highlightedDamageIndex={highlightedDamageIndex}
-            selectedZone={selectedZone}
-            onSelectPhoto={setActivePhotoIndex}
-            onHotspotClick={handleHotspotClick}
-            onSelectZone={handleSelectZone}
             annexAItems={store.annexABaseline}
             onDamageItemsApplied={store.applyDamageItems}
-            // Indices shift when a row goes, so the highlight is dropped
-            // rather than left on the wrong part.
-            onPartRemoved={() => setHighlightedDamageIndex(null)}
             onGoToAnnexA={() => showTab("annexA")}
-            isActive={activeTab === "detection"}
           />
         </div>
       )}
