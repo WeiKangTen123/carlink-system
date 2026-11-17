@@ -10,9 +10,9 @@ Covers:
     SecondLook.link_run; old data loading; a field at its default left
     out of a dump, so the second look and the damage list save byte for
     byte what feat/c9-integration saved (golden hashes taken there);
-  - the stubs: intake/links.py (the table's loading, build / for_parent /
-    hit_of finding nothing yet) and ai/link_check.py (no call, no write
-    while off);
+  - the stubs: intake/links.py (the table's loading; build / for_parent /
+    hit_of, filled by agent R1, on an empty table) and ai/link_check.py
+    (no call, no write while off);
   - the dashboard's linked-parts fixture loading through the draft model.
 
     python scripts/test_c10_base.py
@@ -338,10 +338,15 @@ def links_stub() -> None:
           "options(source): from anything with the settings' names (the benchmark's replay)")
     parent = {"part": "Rear Bumper", "condition_tokens": ["Crumpled"], "severity": "Severe", "remarks": "Replace"}
     table = links.load_table(good)
-    check(links.build([parent], [], [], {}, table, opts) == [] and links.build([], [], [], {}, None, opts) == [],
-          "build: nothing yet (agent R)")
-    check(links.for_parent(parent, {"damage_summary": [parent]}, [], table, opts) == [], "for_parent: nothing yet")
-    check(links.hit_of(parent) is None, "hit_of: None yet")
+    # Agent R1 filled the stubs (scripts/test_links.py covers them): an
+    # empty table or none links nothing; the words say how hard.
+    check(links.build([parent], [], [], {}, table, opts) == [] and links.build([parent], [], [], {}, None, opts) == [],
+          "build: nothing from an empty table or none")
+    check(links.for_parent(parent, {"damage_summary": [parent]}, [], table, opts) == []
+          and links.for_parent(parent, {"damage_summary": [parent]}, [], None, opts) == [],
+          "for_parent: nothing from an empty table or none")
+    check(links.hit_of(parent) == "crush" and links.hit_of({"part": "Rear Bumper"}) is None,
+          "hit_of: Crumpled is the crush path; no words, None")
     check(links.BUCKETS == ("seen", "likely", "strip_down") and links.LINK_SIDES == ("same", "impact", "none")
           and links.HIT_LEVELS == config.HIT_LEVELS, "the names: buckets, sides, hit levels")
 

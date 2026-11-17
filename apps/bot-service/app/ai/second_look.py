@@ -709,6 +709,33 @@ def _join_twin(kept: dict, other: dict) -> None:
     evidence.join(kept, other.get("evidence") or [])
     if not kept.get("reason") and other.get("reason"):
         kept["reason"] = other["reason"]
+    if other.get("linked_from"):
+        # Contract 10: the listed parts a linked twin hangs off.
+        kept["linked_from"] = list(dict.fromkeys(list(kept.get("linked_from") or []) + list(other["linked_from"])))
+        for name in ("link_type", "link_rule", "hit"):
+            kept[name] = kept.get(name) or other.get(name)
+
+
+def _links_mode() -> str:
+    """settings.intake_links, "off" when the link table didn't load."""
+    from app.intake import links
+
+    mode = getattr(settings, "intake_links", "off")
+    return mode if mode in ("shadow", "on") and links.TABLE is not None else "off"
+
+
+def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str]
+                ) -> tuple[list[dict], dict[str, dict]]:
+    """Contract 10: the linked parts of this read (intake/links.build_all)
+    against the list as it is now, beside the open suggestions `kept` --
+    a part one of them is joins it instead (the joins, by key)."""
+    from app.intake import links, zones
+    from app.intake.photos import ordered_photos
+
+    vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+    listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+    return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
+                           links.options(), dismissed=dismissed, impact=vehicle.get("point_of_impact"))
 
 
 def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:
@@ -755,11 +782,19 @@ def _store(report_id: str, result: dict) -> None:
     -- on the case page too, where no read comes again. A part a person
     listed by hand stays out. reads are this reading's
     (ai_draft["zone_reads"]); the re-check's answer, about the open items
-    this replaces, goes."""
+    this replaces, goes.
+
+    Contract 10 (settings.intake_links): "off" changes nothing here, byte
+    for byte. "shadow": the linked parts go on the AI draft only
+    (ai_draft["link_suggestions"], counted at sign-off), second_look as
+    when off. "on": they follow the open suggestions in items (their own
+    cap, intake_links_max, outside MAX_SUGGESTIONS), skipped when listed or
+    dismissed like any; one that a zone read (or the second look) found
+    too is that suggestion, with the listed part it hangs off joined."""
     from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
-    from app.reports.schema import SecondLook
+    from app.reports.schema import SecondLook, SecondLookItem
     from app.reports.suggestions import standing
 
     db = SessionLocal()
@@ -809,11 +844,32 @@ def _store(report_id: str, result: dict) -> None:
                 continue
             kept.append(it)
         settled = list(decided.values())
-        for it in kept + settled:
+        kept = kept[:MAX_SUGGESTIONS]
+        linked: list[dict] = []
+        mode = _links_mode()
+        if mode != "off":
+            # Never the reason the suggestions are lost: on any failure the
+            # read's other suggestions are stored as they are.
+            try:
+                linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed)
+            except Exception:
+                logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
+                linked, joins = [], {}
+            if mode == "shadow":
+                session.ai_draft = {**ai_draft, "link_suggestions": [
+                    SecondLookItem.model_validate(it).model_dump() for it in linked]}
+                linked = []
+            else:
+                for it in kept:
+                    if it["key"] in joins:
+                        _join_twin(it, joins[it["key"]])
+                linked = [it for it in linked if not _listed_as(it, listed, listed_keys)
+                          and it["key"] not in dismissed and it["part"] not in dismissed]
+        for it in kept + linked + settled:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
             it["other_side_listed"] = other_side_listed(it["part"], listed)
-        items = [evidence.settle(it) for it in kept[:MAX_SUGGESTIONS] + settled]
+        items = [evidence.settle(it) for it in kept + linked + settled]
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),

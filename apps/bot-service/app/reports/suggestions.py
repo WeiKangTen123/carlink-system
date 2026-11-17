@@ -32,14 +32,21 @@ Also here: the "@<photo id>" -> "P07" relabel at filing (relabel_item,
 relabel_second_look) and the decisions still standing (standing), which the
 AI-accuracy record reads at sign-off (reports/accuracy.py).
 
+Contract 10 (linked parts, settings.intake_links "on"): an added part's own
+linked parts join the suggestions (intake/links.for_parent: an added Rear
+End Panel hit hard brings what sits on and behind it), and an undo of that
+add takes back those still undecided; a linked part added keeps where it
+hangs off and, hidden, needs_strip_down ("Confirm at strip-down").
+
 Pure: no database, no request; the endpoints hold the transaction.
 """
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.intake.photos import photo_label
-from app.parts.prefill import item_key, item_source
-from app.reports.schema import MAX_DECISIONS, DamageSummaryItem, SecondLook, SuggestionDecision
+from app.parts.prefill import item_key, item_source, row_name
+from app.reports.schema import MAX_DECISIONS, DamageSummaryItem, SecondLook, SecondLookItem, SuggestionDecision
 from app.reports.taxonomy import OTHER_PART, damage_type_from_tokens, firm_condition
 
 ACTIONS = ("add", "dismiss", "undo")
@@ -47,6 +54,8 @@ ACTIONS = ("add", "dismiss", "undo")
 HISTORY = {"added": "suggestion_added", "dismissed": "suggestion_dismissed", "undone": "suggestion_undone"}
 # A key is a part name (prefill.item_key); anything longer is no key of ours.
 MAX_KEY = 200
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownSuggestion(Exception):
@@ -122,14 +131,58 @@ def item_from_suggestion(sug: dict) -> dict:
         tokens, condition = firm_condition(tokens, damage_type)
     if not damage_type and tokens:
         damage_type = damage_type_from_tokens(tokens)
+    # Contract 10: a linked part keeps where it hangs off; one no photo
+    # shows (hidden) is to be confirmed at strip-down until a person edits
+    # its condition.
+    hidden = bool(sug.get("hidden"))
+    links = {"linked_from": [str(k) for k in sug.get("linked_from") or [] if k], "link_type": sug.get("link_type"),
+             "hidden": hidden, "needs_strip_down": bool(sug.get("needs_strip_down")) or hidden}
     return DamageSummaryItem(
         part=str(sug.get("part") or ""), other_part_name=sug.get("other_part_name"),
         damage_type=damage_type, condition_tokens=tokens, condition=condition,
         severity=sug.get("severity"), remarks=sug.get("remarks"),
         photo_reference=photo, bbox_2d=box, ai_confidence=sug.get("confidence"), human_verified=True,
         seen_in=list(sug.get("seen_in") or []), found_by=list(sug.get("found_by") or []),
-        reason=sug.get("reason"), evidence=evidence, check=sug.get("check"), added_from="suggestion",
+        reason=sug.get("reason"), evidence=evidence, check=sug.get("check"), added_from="suggestion", **links,
     ).model_dump()
+
+
+def relinked(item: dict, data: dict, look: dict) -> list[dict]:
+    """Contract 10: the new linked suggestions of a part just put on the
+    list (links.for_parent), named as second_look._store names them --
+    only while settings.intake_links is "on" and the table loaded; [] on
+    any failure (an add never fails for them)."""
+    from app.intake import links
+
+    try:
+        opts = links.options()
+        if opts.mode != "on" or links.TABLE is None:
+            return []
+        from app.ai.second_look import other_side_listed
+
+        found = links.for_parent(item, {**data, "second_look": look}, [], links.TABLE, opts)
+        vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+        listed = {str(it.get("part")) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+        out = []
+        for it in found:
+            it["name"] = row_name(None, it["part"], vehicle)
+            it["other_side_listed"] = other_side_listed(it["part"], listed)
+            out.append(SecondLookItem.model_validate(it).model_dump())
+        return out
+    except Exception:
+        logger.exception("Linked parts of an added %s: none this time", item.get("part"))
+        return []
+
+
+def without_orphans(items: list, data: dict, look: dict) -> list:
+    """The suggestions without the linked parts nobody decided on that hang
+    off no listed part any more (contract 10: an undone add takes back the
+    links it brought)."""
+    listed = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+    decided = set(look.get("dismissed") or []) | {k for k, still in standing(look.get("decisions") or []).items() if still}
+    return [it for it in items if not (
+        isinstance(it, dict) and it.get("source") == "link" and it.get("linked_from")
+        and key_of(it) not in decided and not set(it["linked_from"]) & listed)]
 
 
 @dataclass
@@ -193,6 +246,7 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
         damage_summary.append(item)
         done.item, done.item_index, done.listed = item, len(damage_summary) - 1, "added"
         done.action = "added"
+        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look)
     elif action == "dismiss":
         if key in dismissed:
             return done
@@ -225,6 +279,8 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
     ).model_dump()
     look["dismissed"] = dismissed
     look["decisions"] = (list(look["decisions"]) + [decision])[-MAX_DECISIONS:]
+    if done.listed == "removed":
+        look["items"] = without_orphans(look["items"], _with_list(data, damage_summary), look)
     done.second_look = look
     done.data = {**(_with_list(data, damage_summary) if done.listed else data), "second_look": look}
     return done
@@ -266,6 +322,9 @@ def relabel_item(item: dict, index_of: dict) -> dict:
             out["bbox_2d"] = None
     if out.get("seen_in"):
         out["seen_in"] = final_refs(out["seen_in"], index_of)
+    if out.get("intact_in"):
+        # Contract 10: a zone read's name ("zone:rear") stays as it is.
+        out["intact_in"] = final_refs(out["intact_in"], index_of)
     if out.get("evidence"):
         evidence = []
         for entry in out["evidence"]:
