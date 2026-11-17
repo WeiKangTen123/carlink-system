@@ -30,9 +30,38 @@ scores every run's strict parts again from its drafted parts first, as
 Prints one table, then the verdict and its three checks per candidate.
 Exit status 0 when every candidate passes, 1 when any fails. Offline:
 reads JSON files, imports no app code; prints no case names (plates).
+
+Contract 10, the linked parts' gate (plans/2026-11-17-linked-parts/plan.md
+8.1, G1-G6), on a replay (scripts/bench/replay_links.py --out) or a live
+result run with --links (each file gated on its own: the B group's, the
+lite1 group's):
+
+    python scripts/bench/gate.py --suggestions FILE [FILE ...] [--baseline BASE.json] [--key KEY]
+        [--variant NAME] [--names] [--limit G1=5 ...]
+
+  G1  real parts added by links per 4-case run, mean           >= 5
+  G2  wrong (extra + wrong side) per real, every case-run        <= 1.5;
+      in any one case                                           <= 2.5
+      (a case with no real link: wrong per run                  <= 4)
+  G3  wrong sides from links per 4-case run, mean               <= 0.5
+  G4  links shown per case-run                                  <= 12; median <= 10
+  G5  the damage list unchanged: a replay's own assertion; a live result
+      passes the list gate above against --baseline (the same-sort run
+      without links; --key scores both lists again first)
+  G6  the strip-down flood: wrong ones in the strip-down bucket per
+      case-run                                                  <= 6
+
+The owner sets the numbers (--limit NAME=VALUE; the names in
+SUGGESTION_LIMITS). The linked parts are taken as the file scored them (a
+live result on an older key: benchmark_intake.py --rescore it first). A
+replay's variants other than "default" are pre-registered sensitivity runs:
+--variant gates one, labelled so. Prints a per-case table ("case 1".. in
+the file's order; --names prints the case names, which are plates) and
+each check; exit status 0 when every file passes, 1 otherwise.
 """
 import argparse
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -167,7 +196,236 @@ def report(base: dict, cands: list[dict]) -> tuple[list[str], list[dict]]:
     return out, verdicts
 
 
+# ---------------------------------------------------------------- contract 10: the suggestions gate
+
+# plan.md 8.1's defaults; the owner sets the numbers (--limit NAME=VALUE).
+SUGGESTION_LIMITS = {
+    "G1": 5.0,               # real parts added by links per 4-case run, mean: at least
+    "G2": 1.5,               # wrong (extra + wrong side) per real, every case-run together: at most
+    "G2_case": 2.5,          # the same in any one case: at most
+    "G2_case_no_real": 4.0,  # a case with no real link: wrong per run, at most
+    "G3": 0.5,               # wrong sides from links per 4-case run, mean: at most
+    "G4_max": 12.0,          # links shown in any case-run: at most
+    "G4_median": 10.0,       # links shown per case-run, median: at most
+    "G6": 6.0,               # wrong ones in the strip-down bucket in any case-run: at most
+}
+
+
+def _limit(text: str) -> tuple[str, float]:
+    name, sep, value = text.partition("=")
+    name = name.strip()
+    if not sep or name not in SUGGESTION_LIMITS:
+        raise argparse.ArgumentTypeError(f"NAME=VALUE, NAME one of {', '.join(SUGGESTION_LIMITS)}")
+    try:
+        return name, float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{name}: a number") from None
+
+
+def linked_runs(doc: dict, variant: str | None = None) -> tuple[list[dict], list[dict]]:
+    """(every case-run of the file, or of a replay's variant; those that
+    scored with linked parts: a "links" block). A replay's top-level runs
+    are its frozen defaults ("default")."""
+    if doc.get("kind") == "replay_links" and variant not in (None, "default"):
+        runs = ((doc.get("variants") or {}).get(variant) or {}).get("runs")
+        if runs is None:
+            raise SystemExit(f"--variant {variant}: not in this replay (run replay_links.py with --variant {variant})")
+    elif variant not in (None, "default"):
+        raise SystemExit("--variant: only a replay (replay_links.py --out) has variants")
+    else:
+        runs = doc.get("runs") or []
+    runs = [r for r in runs if isinstance(r, dict)]
+    scored = [r for r in runs if bench.run_ok(r) and isinstance(r.get("links"), dict) and "shown" in r["links"]]
+    return runs, scored
+
+
+def _rep(run: dict) -> int:
+    return int(run.get("rep") or 1)
+
+
+def complete_runs(runs: list[dict], scored: list[dict]) -> dict[int, list[dict]]:
+    """The 4-case runs (a repetition) in which every case of the file
+    scored with linked parts: {rep: its case-runs}."""
+    names = {r.get("case") for r in runs}
+    out = {}
+    for rep in sorted({_rep(r) for r in runs}):
+        mine = [r for r in scored if _rep(r) == rep]
+        if {r.get("case") for r in mine} == names and len(mine) == len([r for r in runs if _rep(r) == rep]):
+            out[rep] = mine
+    return out
+
+
+def _mean(values: list) -> float | None:
+    return round(statistics.fmean(values), 3) if values else None
+
+
+def case_rows(scored: list[dict], names: bool) -> list[dict]:
+    """Per case, in the file's order: its case-runs' linked parts summed (and
+    the recall averaged)."""
+    order = list(dict.fromkeys(r.get("case") for r in scored))
+    rows = []
+    for n, case in enumerate(order, 1):
+        mine = [r["links"] for r in scored if r.get("case") == case]
+        rows.append({
+            "case": str(case) if names else f"case {n}", "runs": len(mine), "shown": [b["shown"] for b in mine],
+            "real": sum(b["real"] for b in mine), "wrong": sum(b["wrong"] for b in mine),
+            "wrong_side": sum(b["wrong_side"] for b in mine), "extra": sum(b["extra"] for b in mine),
+            "strip_wrong_max": max(b["strip_down_wrong"] for b in mine),
+            "lz": _mean([b["lz_found"] for b in mine]), "lzl": _mean([b["lzl_found"] for b in mine]),
+            "expected": mine[0]["expected"], "lz_inside": _mean([b["lz_inside_found"] for b in mine]),
+            "lzl_inside": _mean([b["lzl_inside_found"] for b in mine]), "inside": mine[0]["inside_expected"],
+        })
+    return rows
+
+
+def suggestion_checks(runs: list[dict], scored: list[dict], g5: tuple[bool, str], limits: dict,
+                      cases: list[dict]) -> list[dict]:
+    """G1-G6 as {gate, ok, says}, in order. A number that can't be had (no
+    complete 4-case run, no case-run with links) fails its gate."""
+    lim = limits
+    full = complete_runs(runs, scored)
+    out = []
+
+    def add(gate: str, ok: bool, says: str) -> None:
+        out.append({"gate": gate, "ok": bool(ok), "says": says})
+
+    g1 = _mean([sum(r["links"]["real"] for r in mine) for mine in full.values()])
+    add("G1", g1 is not None and g1 >= lim["G1"],
+        f"real parts added by links per 4-case run {_num(g1)} (>= {lim['G1']:g}; {len(full)} complete 4-case run(s))")
+    real, wrong = sum(r["links"]["real"] for r in scored), sum(r["links"]["wrong"] for r in scored)
+    overall = round(wrong / real, 3) if real else None
+    over = []
+    for c in cases:
+        if c["real"] and c["wrong"] / c["real"] > lim["G2_case"]:
+            over.append(f"{c['case']} {c['wrong'] / c['real']:.3g} per real")
+        elif not c["real"] and c["wrong"] / c["runs"] > lim["G2_case_no_real"]:
+            over.append(f"{c['case']} {c['wrong'] / c['runs']:.3g} wrong a run with no real")
+    within = overall <= lim["G2"] if overall is not None else wrong == 0
+    add("G2", bool(scored) and within and not over,
+        f"wrong per real {_num(overall)} ({wrong} wrong, {real} real; <= {lim['G2']:g}); any one case <= "
+        f"{lim['G2_case']:g} (no real: <= {lim['G2_case_no_real']:g} wrong a run)"
+        + (f" -- over: {'; '.join(over)}" if over else ""))
+    g3 = _mean([sum(r["links"]["wrong_side"] for r in mine) for mine in full.values()])
+    add("G3", g3 is not None and g3 <= lim["G3"],
+        f"wrong sides from links per 4-case run {_num(g3)} (<= {lim['G3']:g})")
+    shown = [r["links"]["shown"] for r in scored]
+    most, median = (max(shown), statistics.median(shown)) if shown else (None, None)
+    add("G4", bool(shown) and most <= lim["G4_max"] and median <= lim["G4_median"],
+        f"links shown per case-run: max {_num(most)} (<= {lim['G4_max']:g}), median {_num(median)} "
+        f"(<= {lim['G4_median']:g})")
+    add("G5", g5[0], g5[1])
+    flood = max((r["links"]["strip_down_wrong"] for r in scored), default=None)
+    add("G6", flood is not None and flood <= lim["G6"],
+        f"wrong in the strip-down bucket per case-run: max {_num(flood)} (<= {lim['G6']:g})")
+    return out
+
+
+def _g5(doc: dict, scored: list[dict], baseline: dict | None, path: Path, key: dict | None) -> tuple[bool, str]:
+    """G5: a replay asserted the list unchanged on every case-run; a live
+    result passes the contract 8 list gate (judge) against --baseline."""
+    if doc.get("kind") == "replay_links":
+        same = bool(scored) and bool(doc.get("damage_list_identical")) and all(
+            r["links"].get("damage_list_identical") for r in scored)
+        return same, f"the damage list {'identical' if same else 'CHANGED (or nothing replayed)'} in every replayed case-run"
+    if baseline is None:
+        return False, "the damage list: a live result needs --baseline (the same-sort run without links)"
+    verdict = judge(baseline, load(path, key))
+    return verdict["pass"], ("the list gate against the baseline " + ("PASS" if verdict["pass"] else "FAIL") + ": "
+                             + "; ".join(c["says"] for c in verdict["checks"]) + "".join(f"; {p}" for p in verdict["problems"]))
+
+
+def _num(value) -> str:
+    return "-" if value is None else f"{value:g}"
+
+
+def case_table(cases: list[dict], full: dict) -> list[str]:
+    """Per case: mean per case-run (links shown with its range), wrong per
+    real over its runs, the strip-down flood's worst run, and the recall
+    as if all were ticked; then per 4-case run (the complete ones)."""
+    cells = [["case", "runs", "links shown", "real", "wrong side", "extra", "wrong/real", "strip-down wrong max",
+              "list+sugg -> +links", "inside -> +links"]]
+    for c in cases:
+        shown, runs = c["shown"], c["runs"]
+        cells.append([c["case"], str(runs), f"{_mean(shown):g} [{min(shown)}-{max(shown)}]",
+                      _num(round(c["real"] / runs, 3)), _num(round(c["wrong_side"] / runs, 3)),
+                      _num(round(c["extra"] / runs, 3)),
+                      _num(round(c["wrong"] / c["real"], 3)) if c["real"] else "- (no real)", str(c["strip_wrong_max"]),
+                      f"{_num(c['lz'])} -> {_num(c['lzl'])} of {c['expected']}",
+                      f"{_num(c['lz_inside'])} -> {_num(c['lzl_inside'])} of {c['inside']}"])
+    if full:
+        per = [[r["links"] for r in mine] for mine in full.values()]
+
+        def each(k: str) -> list:
+            return [sum(b[k] for b in bs) for bs in per]
+
+        real, wrong = sum(each("real")), sum(each("wrong"))
+        cells.append([f"per 4-case run ({len(full)})", "", _num(_mean(each("shown"))), _num(_mean(each("real"))),
+                      _num(_mean(each("wrong_side"))), _num(_mean(each("extra"))),
+                      _num(round(wrong / real, 3)) if real else "-", "",
+                      f"{_num(_mean(each('lz_found')))} -> {_num(_mean(each('lzl_found')))}",
+                      f"{_num(_mean(each('lz_inside_found')))} -> {_num(_mean(each('lzl_inside_found')))}"])
+    widths = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
+    return ["  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in cells]
+
+
+def suggestions_report(path: Path, doc: dict, *, variant: str | None, limits: dict, names: bool,
+                       baseline: dict | None, key: dict | None) -> tuple[list[str], bool]:
+    """One file's G1-G6: the lines to print and whether it passes."""
+    runs, scored = linked_runs(doc, variant)
+    cases = case_rows(scored, names)
+    found = suggestion_checks(runs, scored, _g5(doc, scored, baseline, path, key), limits, cases)
+    passed = bool(scored) and all(c["ok"] for c in found)
+    if doc.get("kind") == "replay_links":
+        what = (f"replay, table {(doc.get('table') or {}).get('version')} "
+                f"({'frozen' if doc.get('frozen') else 'NOT FROZEN'}), variant {variant or 'default'}"
+                + ("" if variant in (None, "default") else " (pre-registered, sensitivity only)"))
+    else:
+        s = doc.get("ai_settings") or {}
+        what = (f"live result, links {s.get('intake_links', 'off')}, table {s.get('link_table_version')} "
+                f"sha256 {str(s.get('link_table_sha256'))[:12]}")
+    out = [f"gate --suggestions (contract 10, plan.md 8.1): {doc.get('label') or path.stem} -- {what}; "
+           f"{len(scored)} of {len(runs)} case-run(s) with linked parts", ""]
+    out += case_table(cases, complete_runs(runs, scored)) if cases else ["   no case-run with linked parts "
+                                                                          "(a file run without --links?)"]
+    out.append("")
+    out += [f"   {'ok  ' if c['ok'] else 'FAIL'} {c['gate']}: {c['says']}" for c in found]
+    out.append(f"{doc.get('label') or path.stem}: {'PASS' if passed else 'FAIL'}")
+    return out, passed
+
+
+def suggestions_main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="gate.py --suggestions",
+                                 description="Contract 10's gate on the linked parts (plan.md 8.1, G1-G6).")
+    ap.add_argument("files", type=Path, nargs="+", help="replay_links.py outputs, or live results run with --links")
+    ap.add_argument("--baseline", type=Path, help="a live result's G5: the same-sort run without links")
+    ap.add_argument("--key", type=Path, help="answer key: G5's two lists scored again on it first")
+    ap.add_argument("--variant", help="a replay's pre-registered variant instead of its frozen defaults")
+    ap.add_argument("--names", action="store_true", help="print the case names (plates) instead of case 1..")
+    ap.add_argument("--limit", type=_limit, action="append", default=[], metavar="NAME=VALUE",
+                    help=f"the owner's number for a check ({', '.join(SUGGESTION_LIMITS)})")
+    args = ap.parse_args(argv)
+    limits = dict(SUGGESTION_LIMITS, **dict(args.limit))
+    key = None
+    if args.key is not None:
+        key = {c["name"]: c for c in json.loads(args.key.read_text(encoding="utf-8"))["cases"]}
+    baseline = load(args.baseline, key) if args.baseline else None
+    print("limits: " + ", ".join(f"{k} {v:g}" for k, v in limits.items())
+          + (" (set with --limit)" if limits != SUGGESTION_LIMITS else " (plan.md 8.1 defaults)"))
+    passed = []
+    for path in args.files:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        lines, ok = suggestions_report(path, doc, variant=args.variant, limits=limits, names=args.names,
+                                       baseline=baseline, key=key)
+        print()
+        print("\n".join(lines))
+        passed.append(ok)
+    return 0 if all(passed) else 1
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--suggestions" in argv:
+        return suggestions_main([a for a in argv if a != "--suggestions"])
     ap = argparse.ArgumentParser(description="The owner's gate: does each candidate result file pass against the baseline?")
     ap.add_argument("base", type=Path, help="the baseline's result file (benchmark_intake.py --out)")
     ap.add_argument("candidates", type=Path, nargs="+", help="one or more candidates' result files")

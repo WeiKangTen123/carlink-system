@@ -29,6 +29,14 @@
 # instead -- the re-check alone on a stored result's suggestions (runs R4,
 # R5) -- the first option being that result's path in the container:
 #   BENCH_SCRIPT=replay_check bash run_bench.sh c9-check-dec GIT_REF /tmp/bench/out/c9-zBev-35.json --check decision
+#
+# Contract 10: BENCH_SCRIPT=replay_links runs scripts/bench/replay_links.py
+# -- the linked parts replayed on stored results, OFFLINE (0 Gemini calls:
+# it refuses to import the client) -- the options being the results' paths
+# in the container (a group of files is one replay):
+#   BENCH_SCRIPT=replay_links bash run_bench.sh c10-replay-lite1 GIT_REF /tmp/bench/out/c9-base-35.json /tmp/bench/out/l3-lite.json --variant all
+# It needs no container (any venv with the app's requirements runs it);
+# here it runs on the server's copies of the result files.
 set -euo pipefail
 
 usage() {
@@ -54,7 +62,8 @@ SCRIPT=${BENCH_SCRIPT:-benchmark_intake}
 case "$SCRIPT" in
     benchmark_intake) SCRIPT_PATH=scripts/benchmark_intake.py ;;
     replay_check) SCRIPT_PATH=scripts/bench/replay_check.py ;;
-    *) die "BENCH_SCRIPT: benchmark_intake (the default) or replay_check" ;;
+    replay_links) SCRIPT_PATH=scripts/bench/replay_links.py ;;
+    *) die "BENCH_SCRIPT: benchmark_intake (the default), replay_check or replay_links" ;;
 esac
 # The app refuses uploads below 3 GB free (settings.min_free_disk_gb); a
 # run copies every case's photos into the container's /tmp.
@@ -164,8 +173,11 @@ trap 'stop_bench; exit 130' INT TERM
 LOG="$HOME_DIR/$LABEL.log"
 echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT); log $LOG"
 # The replay reads no reports and sorts nothing: only the photos and the key.
+# The linked parts' replay not even the photos.
 if [ "$SCRIPT" = benchmark_intake ]; then
     INPUT_ARGS=(--cases "$B/cases" --key "$B/key.json" --reports "$B/reports" ${SORT_CACHE_ARGS[@]+"${SORT_CACHE_ARGS[@]}"})
+elif [ "$SCRIPT" = replay_links ]; then
+    INPUT_ARGS=(--key "$B/key.json")
 else
     INPUT_ARGS=(--cases "$B/cases" --key "$B/key.json")
 fi
@@ -193,6 +205,8 @@ if docker exec "$CONTAINER" test -f "$B/out/$LABEL.json"; then
     echo "run_bench: result $HOME_DIR/out/$LABEL.json (benchmark exit $status)"
     if [ "$SCRIPT" = benchmark_intake ]; then
         echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BEFORE.json $HOME_DIR/out/$LABEL.json"
+    elif [ "$SCRIPT" = replay_links ]; then
+        echo "gate:      python3 $CODE/apps/bot-service/scripts/bench/gate.py --suggestions $HOME_DIR/out/$LABEL.json"
     else
         echo "sweep:     python3 $CODE/apps/bot-service/scripts/bench/replay_check.py --sweep $HOME_DIR/out/$LABEL.json"
     fi

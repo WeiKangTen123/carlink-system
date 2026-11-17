@@ -12,6 +12,12 @@ judge noise by: the verdict says so instead of calling the change real.
 Both files are summarised again here with benchmark_intake.summarize, so a
 file from before --repeat (the 2026-11-05 baseline: {"results", "totals"})
 compares like a new one. Offline: reads two JSON files, imports no app code.
+
+Contract 10: the linked parts' numbers (link_*, lz_* / lzl_* recall) when
+either file has them -- a result run with --links, or a replay
+(scripts/bench/replay_links.py --out, its frozen defaults);
+--before-variant / --after-variant take a replay's pre-registered variant
+instead (the same file on both sides: a variant against the defaults).
 """
 import argparse
 import json
@@ -44,6 +50,10 @@ KEY_METRICS = (
     "sug_n", "sug_real", "sug_wrong", "sug_box_fill", "sug_any_box_fill", "sug_reason_fill", "list_box_fill", "list_reason_fill",
     "sug_checked_rate", "chk_real_kept_rate", "chk_wrong_no_rate", "dec_calls", "dec_s", "check_calls", "recheck_s",
     "n_503",
+    # Contract 10: the linked parts, the recall they add, the linked check.
+    "link_shown", "link_real", "link_wrong_side", "link_extra", "link_wrong", "link_wrong_per_real", "link_strip_wrong",
+    "link_hidden_shown", "lz_found", "lzl_found", "lz_recall", "lzl_recall", "lz_inside_found", "lzl_inside_found",
+    "lz_inside_recall", "lzl_inside_recall", "lzl_hidden_recall", "lchk_calls", "lchk_s",
 )
 HIGHER_IS_BETTER = {
     "found", "visible_found", "facts_ok", "visible_recall", "checklist_found", "checklist_visible_found",
@@ -56,6 +66,8 @@ HIGHER_IS_BETTER = {
     *(f"zone_{zone}_found" for zone in bench.ZONES), *(f"zone_{zone}_recall" for zone in bench.ZONES),
     "sug_real", "sug_box_fill", "sug_any_box_fill", "sug_reason_fill", "list_box_fill", "list_reason_fill", "sug_checked_rate",
     "chk_real_kept_rate", "chk_wrong_no_rate",
+    "link_real", "lz_found", "lzl_found", "lz_recall", "lzl_recall", "lz_inside_found", "lzl_inside_found",
+    "lz_inside_recall", "lzl_inside_recall", "lzl_hidden_recall",
 }
 LOWER_IS_BETTER = {
     "extra", "wrong_side", "side_undetermined", "checklist_extra", "sort_s", "read_s", "calls", "attempts",
@@ -64,18 +76,24 @@ LOWER_IS_BETTER = {
     "side_wrong_inferred", "remarks_disagree", "annex_price_abs_diff", "tok_in", "total_s",
     *(f"zone_{zone}_extra" for zone in bench.ZONES),
     "sug_wrong", "dec_s", "recheck_s", "n_503",
+    "link_wrong_side", "link_extra", "link_wrong", "link_wrong_per_real", "link_strip_wrong", "lchk_calls", "lchk_s",
 }
 # In neither: annex_price_diff, annex_price_diff_rate and annex_adjusted_diff
 # are signed, and closer to 0 is better whichever way they move.
 
 
-def load(path: Path) -> dict:
+def load(path: Path, variant: str | None = None) -> dict:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     runs = data.get("runs")
     if runs is None:
         runs = data.get("results") or []  # before --repeat: one run per case
+    if variant not in (None, "default"):
+        # Contract 10: a replay's pre-registered variant (replay_links.py).
+        runs = ((data.get("variants") or {}).get(variant) or {}).get("runs")
+        if runs is None:
+            sys.exit(f"{path}: no variant {variant!r} (a replay_links.py output run with --variant {variant})")
     return {
-        "label": data.get("label") or Path(path).stem,
+        "label": (data.get("label") or Path(path).stem) + (f" [{variant}]" if variant not in (None, "default") else ""),
         "git_ref": data.get("git_ref"),
         "ai_settings": {k: v for k, v in (data.get("ai_settings") or {}).items() if v},
         "summary": bench.summarize(runs),
@@ -145,8 +163,10 @@ def main(argv=None) -> int:
     ap.add_argument("after", type=Path)
     ap.add_argument("--all", action="store_true", help="every metric, not only the main ones")
     ap.add_argument("--total-only", action="store_true", help="the TOTAL table only, no per-case tables")
+    ap.add_argument("--before-variant", metavar="NAME", help="a replay_links.py output's variant on the before side")
+    ap.add_argument("--after-variant", metavar="NAME", help="the same on the after side")
     args = ap.parse_args(argv)
-    a, b = load(args.before), load(args.after)
+    a, b = load(args.before, args.before_variant), load(args.after, args.after_variant)
     print(_side("before", a))
     print(_side("after ", b))
     print("ranges are [min-max] over runs; TOTAL sums the cases within each complete run")

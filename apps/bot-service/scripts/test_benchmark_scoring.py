@@ -7,7 +7,11 @@ found parts' sides, Replace / Repair and zones, the Annex A prices, and
 the owner's gate (scripts/bench/gate.py); contract 9: the suggestions'
 evidence and the re-check in the metrics, its flags, a run's suggestions in
 detail, scripts/bench/replay_check.py (the Decisions API on a mock
-transport) and its cut-off sweep, and scripts/bench/probe_boxes.py.
+transport) and its cut-off sweep, and scripts/bench/probe_boxes.py;
+contract 10: the linked parts scored apart (score_links) in the metrics,
+--links / --link-check / --links-catalogue, a run with them on, shadow and
+off (as before), --keep-reads and --rescore of them
+(scripts/test_replay_links.py tests the offline replay and its gate).
 
     python scripts/test_benchmark_scoring.py
 
@@ -802,6 +806,9 @@ def test_benchmark_run() -> None:
     assert doc["models"] == {"model_chain": "test-strong", "triage_model_chain": "test-lite-a,test-lite-b",
                              "second_look_chain": "test-look"}, doc["models"]
     assert doc["sort_cache"]["triage_model_chain"] == "test-lite-a,test-lite-b"
+    # Contract 10's flags, not given: not in args either (the file as before them).
+    assert not set(bi.C10_ARGS) & set(doc["args"]) and "no_second_look" in doc["args"], doc["args"]
+    assert not [k for r in doc["runs"] for k in r if k in ("links", "link_suggestions", "reads")]
     ok("result file: label, git_ref, args, models (overrides applied), sort cache, runs, summary")
     assert doc["ai_settings"] == {"thinking_level_read": "low,test-strong=high", "thinking_level_sort": "minimal",
                                   "thinking_level_second_look": None, "image_resolution": "damage=ultra_high,*=medium",
@@ -1743,6 +1750,316 @@ def test_probe_boxes() -> None:
     ok("a box drawn on another frame's shape is flagged (the app hides it)")
 
 
+# ---------------------------------------------------------------- contract 10: the linked parts
+
+
+LINK_PREFIXES = ("link_", "lz_", "lzl_", "lt_", "lb_", "lh_", "lchk_")
+
+
+def test_c10_scoring() -> None:
+    print("contract 10: the linked parts scored (score_links), in the metrics, the summary, the log and the totals")
+    from app import config
+    from app.intake import links
+
+    assert (bi.LINK_TYPES, bi.HIT_LEVELS, bi.LINK_BUCKETS) == (config.LINK_TYPES, config.HIT_LEVELS, links.BUCKETS)
+    ok("the kinds, hit levels and buckets repeated here are the app's")
+    table = {"links": [{"child": "{side} Tail Lamp", "hidden": False}, {"child": "Rear Bumper Beam", "hidden": True},
+                       {"child": "{side} Front Window Regulator", "hidden": True}, "junk"]}
+    assert bi.hidden_children(table) == {"Rear Bumper Beam", "Left Front Window Regulator", "Right Front Window Regulator"}
+    assert bi.hidden_children(None) == set() and bi.hidden_children({"links": None}) == set()
+    assert bi.inside_parts(KEY_PARTS, {"Boot Lid Lock"}) == ["Boot Lid Lock", "Rear Bumper Beam"]
+    ok("inside parts: the key's hidden ones and the table's hidden children ({side} both ways), in key order")
+    rows = [{"part": "Boot Lid Lock", "link_type": "opens_with", "bucket": "likely", "hit": "heavy"},
+            {"part": "Right Tail Lamp", "link_type": "attached", "bucket": "seen", "hit": "medium"},
+            {"part": "Rear End Panel", "link_type": "crush", "bucket": "strip_down", "hit": "crush", "hidden": True},
+            {"part": "Rear Bumper Beam", "link_type": "behind", "bucket": "strip_down", "hit": "crush", "hidden": True}]
+    b = bi.score_links(KEY_PARTS, ["Rear Bumper", "Boot Lid"], ["Left Rear Bumper Reflector", "Bonnet"], rows,
+                       inside={"Boot Lid Lock"})
+    assert [r["truth"] for r in rows] == ["real", "wrong_side", "extra", "real"], rows
+    want = {"shown": 4, "real": 2, "wrong_side": 1, "extra": 1, "wrong": 2, "wrong_per_real": 1.0,
+            "real_parts": ["Boot Lid Lock", "Rear Bumper Beam"], "wrong_side_parts": ["Right Tail Lamp"],
+            "extra_parts": ["Rear End Panel"], "strip_down_wrong": 1, "hidden_shown": 2, "expected": 8, "list_found": 2,
+            "lz_found": 3, "lzl_found": 5, "inside_expected": 2, "list_inside_found": 0, "lz_inside_found": 0,
+            "lzl_inside_found": 2, "key_hidden_expected": 1, "lz_hidden_found": 0, "lzl_hidden_found": 1,
+            "inside_parts": ["Boot Lid Lock", "Rear Bumper Beam"]}
+    assert {k: b[k] for k in want} == want, {k: b[k] for k in want}
+    assert b["by_link_type"]["behind"] == {"shown": 1, "real": 1, "wrong_side": 0, "extra": 0}, b["by_link_type"]
+    assert b["by_bucket"]["strip_down"] == {"shown": 2, "real": 1, "wrong_side": 0, "extra": 1}, b["by_bucket"]
+    assert b["by_hit"]["crush"] == {"shown": 2, "real": 1, "wrong_side": 0, "extra": 1}, b["by_hit"]
+    assert b["by_hit"]["light"] == {"shown": 0, "real": 0, "wrong_side": 0, "extra": 0}
+    ok("real only against the parts the list AND the other suggestions missed (the reflector a zone found is not a "
+       "link's); wrong side; extra; the recall each adds, of all, inside and hidden parts; by kind, bucket and hit")
+    m = bi.link_metrics(b)
+    assert (m["link_shown"], m["link_real"], m["link_wrong"], m["link_strip_wrong"], m["lz_found"], m["lzl_found"],
+            m["lt_behind_real"], m["lb_strip_down_extra"], m["lh_crush_shown"], m["lt_crush_extra"]) == (
+        4, 2, 2, 1, 3, 5, 1, 1, 2, 1), m
+    assert len(m) == 16 + 4 * (4 + 3 + 4) and bi.link_metrics(None) == {} and bi.link_metrics({}) == {}
+    ok("link_metrics: flat numbers, a prefix per group (lt_ kind, lb_ bucket, lh_ hit: 'crush' is both)")
+    parts = bi.score_parts(KEY_PARTS, ["Rear Bumper", "Boot Lid"])
+    plain = bi.run_metrics({"parts": parts, "vehicle": {}})
+    assert not [k for k in plain if k.startswith(LINK_PREFIXES)], plain
+    run = {"parts": parts, "vehicle": {}, "links": dict(b, mode="on"), "drafted_parts": ["Rear Bumper", "Boot Lid"]}
+    m = bi.run_metrics(run)
+    assert (m["link_real"], m["link_wrong_per_real"], m["lz_recall"], m["lzl_recall"], m["lz_inside_recall"],
+            m["lzl_inside_recall"], m["lzl_hidden_recall"]) == (2, 1.0, 0.375, 0.625, 0.0, 1.0, 1.0), m
+    ok("run_metrics: none of them without linked parts; with them, wrong per real and the recall ratios")
+    runs = [dict(run, case="CASE A", rep=1), dict(run, case="CASE A", rep=2)]
+    s = bi.summarize(runs)
+    assert s["total"]["link_real"]["mean"] == 2 and s["total"]["link_wrong_per_real"]["mean"] == 1.0
+    table = "\n".join(bi.summary_table(s))
+    assert "strip-down wrong" in table and "inside +links" in table, table
+    detail = "\n".join(bi.link_lines(dict(run, second_look={"link_run": {"status": "ok", "model": "lite-x", "seconds": 2.0,
+                                                                          "calls": 1}})))
+    assert ("linked parts (on): 4 shown; real 2 ['Boot Lid Lock', 'Rear Bumper Beam'], wrong side 1 ['Right Tail Lamp'], "
+            "extra 1 ['Rear End Panel']; strip-down wrong 1") in detail, detail
+    assert "if all ticked: list 2, + suggestions 3, + links 5 of 8; inside parts 0 -> 2 of 2" in detail, detail
+    assert "linked check: ok on lite-x in 2.0s, 1 call(s)" in detail and bi.link_lines({"parts": parts}) == []
+    totals = "\n".join(bi.total_lines([dict(run, case="CASE A", rep=1)]))
+    assert "LINKED PARTS 4: real 2, wrong side 1, extra 1 (strip-down wrong 1); if all ticked parts 3 -> 5/8, inside " \
+           "0 -> 2/2" in totals, totals
+    assert "LINKED" not in "\n".join(bi.total_lines([{"case": "CASE A", "rep": 1, "parts": parts}]))
+    ok("the summary table, the run's log lines and the console totals (none of it without linked parts)")
+    path = Path(_tmp, "c10-metrics.json")
+    path.write_text(json.dumps({"label": "c10", "runs": runs}), encoding="utf-8")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        compare.main([str(path), str(path), "--total-only"])
+    assert "link_wrong_per_real" in buf.getvalue() and "lzl_inside_recall" in buf.getvalue(), buf.getvalue()
+    ok("compare.py compares them")
+
+
+def test_c10_flags() -> None:
+    print("contract 10: --links, --link-check, --links-catalogue; ai_settings records the table")
+    A = bi._app()
+    got = bi.model_settings(bi.parse_args(["--links", " ON ", "--link-check", "Lite", "--links-catalogue"]))
+    assert got == {"intake_links": "on", "intake_link_check": "lite", "intake_links_catalogue": True}, got
+    assert bi.model_settings(bi.parse_args(["--links", "shadow"])) == {"intake_links": "shadow"}
+    assert bi.model_settings(bi.parse_args(["--links", "off", "--link-check", "off"])) == {
+        "intake_links": "off", "intake_link_check": "off"}
+    assert bi.model_settings(bi.parse_args([])) == {}
+    ok("each flag to its setting, written the one way (config's parsers); none given, none set")
+    for bad, says in ((["--links", "maybe"], "--links"), (["--link-check", "lite"], "give --links on or shadow too"),
+                      (["--links", "off", "--link-check", "lite"], "give --links on or shadow too"),
+                      (["--links-catalogue"], "give --links on or shadow too"),
+                      (["--links", "on", "--link-check", "full"], "--link-check")):
+        try:
+            bi.model_settings(bi.parse_args(bad))
+            raise AssertionError(f"{bad} should stop the run")
+        except SystemExit as exc:
+            assert says in str(exc.code), (bad, exc.code)
+    ok("a value config refuses, or a flag that would change nothing with the linked parts off, stops the run")
+    args = vars(bi.parse_args([]))
+    assert {k: args[k] for k in bi.C10_ARGS} == bi.C10_ARGS
+    ok("the new flags' defaults are the ones a result file's args leave out")
+    plain = bi.ai_settings(A.settings)
+    assert not [k for k in plain if "link" in k], plain
+    names = ("intake_links", "intake_link_check", "intake_links_catalogue", "gemini_thinking_level_link")
+    saved = {n: getattr(A.settings, n) for n in names}
+    try:
+        A.settings.intake_links = "on"
+        shown = bi.ai_settings(A.settings)
+        frozen = "06bbebfaf5bcb0b2561ba3b3fcec2f2f7c79d2f66b8a2ce7b22cd4003fe767f3"
+        assert {k: shown[k] for k in ("intake_links", "intake_links_max", "intake_links_types", "intake_links_side",
+                                      "intake_links_unknown_hit", "intake_links_intact", "link_table_version",
+                                      "link_table_sha256")} == {
+            "intake_links": "on", "intake_links_max": 12, "intake_links_types": "attached,opens_with,behind,crush",
+            "intake_links_side": "firm", "intake_links_unknown_hit": "medium", "intake_links_intact": "demote",
+            "link_table_version": "L1", "link_table_sha256": frozen}, shown
+        assert len(shown["link_skills_sha256"]) == 64 and "intake_link_check" not in shown
+        assert "intake_links_catalogue" not in shown
+        ok("ai_settings with the linked parts on: their knobs, the table's version and its sha256 as frozen (L1), the "
+           "skill files' sha256")
+        A.settings.intake_link_check, A.settings.intake_links_catalogue = "lite", True
+        A.settings.gemini_thinking_level_link = "low"
+        shown = bi.ai_settings(A.settings)
+        assert (shown["intake_link_check"], shown["link_chain"], shown["intake_link_check_max_calls"],
+                shown["thinking_level_link"], shown["intake_links_catalogue"]) == (
+            "lite", "gemini-3.5-flash-lite,gemini-3.1-flash-lite", 2, "low", True), shown
+        ok("and the linked check's settings while it runs, the catalogue while on")
+    finally:
+        for field, value in saved.items():
+            setattr(A.settings, field, value)
+
+
+def _c10_case(base: str) -> tuple[dict, Path]:
+    folder = Path(_tmp, base, "case_d")
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, colour in enumerate(("red", "green", "blue")):
+        Image.new("RGB", (48, 32), colour).save(folder / f"p{i + 1}.jpg", "JPEG")
+    case = {"name": "TEST CASE D", "folder": "case_d", "vehicle": C9_VEHICLE, "parts": [
+        {"part": "Rear Bumper"}, {"part": "Boot Lid Lock"}, {"part": "Left Tail Lamp"},
+        {"part": "Rear Bumper Beam", "hidden": True}]}
+    return case, folder.parent
+
+
+def test_c10_run() -> None:
+    print("contract 10: a run keeps its linked parts apart and scores them; without --links, as before")
+    A = bi._app()
+    A.init_db()
+    case, cases_dir = _c10_case("c10-run")
+    seen_mode: list[str] = []
+
+    def fake_sort(rid, actor):
+        db = A.SessionLocal()
+        try:
+            for p in A.ordered_photos(db, rid):
+                p.kind, p.area, p.quality, p.shows_damage = "damage", "rear", "good", True
+            db.commit()
+        finally:
+            db.close()
+
+    def link_item(part, bucket, link_type, ids, **more):
+        return {"key": part, "part": part, "source": "link", "linked_from": ["Rear Bumper"], "link_type": link_type,
+                "link_rule": f"L1:test>{part.lower().replace(' ', '-')}", "hit": "crush", "bucket": bucket,
+                "hidden": bucket == "strip_down", "needs_strip_down": bucket == "strip_down", "side_from": None,
+                "intact_in": [], "reason": "Made up.", "covers": [part],
+                "evidence": [{"photo": f"@{ids[0]}", "box": None, "by": "link"}], **more}
+
+    def fake_read(rid, actor, shadow=False):
+        seen_mode.append(A.settings.intake_links)
+        db = A.SessionLocal()
+        try:
+            report, session = db.get(A.Report, rid), db.get(A.IntakeSession, rid)
+            ids = [p.id for p in A.ordered_photos(db, rid)]
+            zone = {"key": "Boot Lid Lock", "part": "Boot Lid Lock", "source": "zone", "photo_reference": f"@{ids[1]}",
+                    "found_by": ["zone:rear"], "evidence": [], "severity": "Moderate", "condition_tokens": ["Shifted"],
+                    "linked_from": ["Rear Bumper"], "link_type": "attached", "link_rule": "L1:test>lock", "hit": "crush"}
+            linked = [link_item("Rear Bumper Beam", "strip_down", "behind", ids,
+                                link_check={"verdict": "strip_down", "cue": "crush", "model": "lite-x", "reason": None}),
+                      link_item("Right Tail Lamp", "seen", "attached", ids)]
+            look = {"status": "skipped", "seconds": 0.0, "items": [zone] + ([] if shadow else linked)}
+            if not shadow:
+                look["link_run"] = {"status": "ok", "by": "lite", "model": "lite-x", "seconds": 2.0, "calls": 1}
+            report.data = dict(report.data, damage_summary=[{"part": "Rear Bumper", "condition_tokens": ["Crumpled"]}],
+                               vehicle_info={"point_of_impact": "Rear"}, second_look=look)
+            if shadow:
+                session.ai_draft = {"link_suggestions": linked,
+                                    "link_run": {"status": "ok", "by": "lite", "model": "lite-y", "calls": 1}}
+            db.commit()
+        finally:
+            db.close()
+
+    saved = (A.pipeline._sort, A.pipeline._read, A.settings.intake_links)
+    A.pipeline._sort = fake_sort
+    try:
+        A.pipeline._read = fake_read
+        default = bi.run_case(case, cases_dir)
+        A.settings.intake_links = "on"
+        on = bi.run_case(case, cases_dir)
+        A.settings.intake_links = "shadow"
+        A.pipeline._read = lambda rid, actor: fake_read(rid, actor, shadow=True)
+        shadow = bi.run_case(case, cases_dir)
+    finally:
+        A.pipeline._sort, A.pipeline._read, A.settings.intake_links = saved
+    assert seen_mode == ["off", "on", "shadow"], seen_mode
+    for out in (default, on, shadow):
+        assert "error" not in out, out.get("error")
+    assert "links" not in default and "link_suggestions" not in default and "link_run" not in default["second_look"]
+    assert [s["part"] for s in default["suggestions"]] == ["Boot Lid Lock", "Rear Bumper Beam", "Right Tail Lamp"]
+    assert all(set(s) <= set(bi._SUGGESTION_FIELDS) | {"truth"} for s in default["suggestions"]), default["suggestions"]
+    assert not [k for k in bi.run_metrics(default) if k.startswith(LINK_PREFIXES)]
+    ok("linked parts off (no flag): the run is as before -- every item a suggestion, contract 9's fields only, "
+       "no link metrics")
+    assert on["second_look"]["suggested"] == ["Boot Lid Lock"] and [s["part"] for s in on["suggestions"]] == ["Boot Lid Lock"]
+    lock = on["suggestions"][0]
+    assert (lock["truth"], lock["linked_from"], lock["link_type"], lock["severity"], lock["condition_tokens"]) == (
+        "real", ["Rear Bumper"], "attached", "Moderate", ["Shifted"]), lock
+    beam, lamp = on["link_suggestions"]
+    assert (beam["part"], beam["truth"], beam["bucket"], beam["hit"], beam["hidden"], beam["needs_strip_down"],
+            beam["link_rule"], beam["link_check"]["verdict"], beam["evidence"][0]["photo"]) == (
+        "Rear Bumper Beam", "real", "strip_down", "crush", True, True, "L1:test>rear-bumper-beam", "strip_down", "P01"), beam
+    assert lamp["truth"] == "wrong_side" and "covers" not in beam and "reason" in beam
+    b = on["links"]
+    assert (b["mode"], b["shown"], b["real"], b["wrong_side"], b["extra"], b["list_found"], b["lz_found"], b["lzl_found"],
+            b["zone_joined"], b["impact"], b["inside_expected"]) == ("on", 2, 1, 1, 0, 1, 2, 3, 1, "Rear", 2), b
+    assert on["second_look"]["link_run"]["model"] == "lite-x"
+    m = bi.run_metrics(on)
+    assert (m["link_real"], m["link_wrong_side"], m["sug_n"], m["sug_real"]) == (1, 1, 1, 1), m
+    ok("--links on: the linked parts apart (link_suggestions, photos by case label, their fields and the linked "
+       "check's answer), scored against what the list and the other suggestions missed; the other suggestions keep "
+       "contract 9's numbers")
+    assert [s["part"] for s in shadow["suggestions"]] == ["Boot Lid Lock"]
+    assert [s["part"] for s in shadow["link_suggestions"]] == ["Rear Bumper Beam", "Right Tail Lamp"]
+    assert (shadow["links"]["mode"], shadow["links"]["real"], shadow["second_look"]["link_run"]["model"]) == (
+        "shadow", 1, "lite-y"), shadow["links"]
+    ok("--links shadow: the linked parts from the AI draft, scored the same way")
+
+
+def test_c10_keep_reads() -> None:
+    print("contract 10: --keep-reads keeps the raw reads by wrapping the app's functions in the harness")
+    import app.intake.zones as zones
+
+    A = bi._app()
+    A.init_db()
+    case, cases_dir = _c10_case("c10-reads")
+    originals = (A.pipeline.draft_report, A.pipeline.side_from_sorter, zones.merge_reads, A.pipeline._sort,
+                 A.pipeline._read)
+
+    def fake_draft(*args, **kwargs):
+        return SimpleNamespace(model_dump=lambda: {"damage_summary": [
+            {"part": "Left Tail Lamp", "photo_reference": "P02", "ai_confidence": "High", "note": "not kept"}]})
+
+    def fake_read(rid, actor):
+        db = A.SessionLocal()
+        try:
+            ids = [p.id for p in A.ordered_photos(db, rid)]
+        finally:
+            db.close()
+        A.pipeline.draft_report("notes", [])
+        items = [{"part": "Left Tail Lamp", "photo_reference": f"@{ids[1]}", "ai_confidence": "High"}]
+        A.pipeline.side_from_sorter(items, {ids[1]: "Right Tail Lamp"})
+        zones.merge_reads(items, [("zone:rear", [{"part": "Boot Lid Lock", "photo_reference": f"@{ids[2]}",
+                                                  "ai_confidence": "Medium", "evidence": []}])])
+
+    A.pipeline.draft_report = fake_draft
+    try:
+        bi.keep_reads_on(A)
+        bi.keep_reads_on(A)  # wraps once: one entry per call below, not two
+        A.pipeline._sort, A.pipeline._read = (lambda rid, actor: None), fake_read
+        first = bi.run_case(case, cases_dir, keep_reads=True)
+        out = bi.run_case(case, cases_dir, keep_reads=True)
+        plain = bi.run_case(case, cases_dir)
+    finally:
+        (A.pipeline.draft_report, A.pipeline.side_from_sorter, zones.merge_reads, A.pipeline._sort,
+         A.pipeline._read) = originals
+    assert "error" not in out, out.get("error")
+    reads = out["reads"]
+    assert reads == first["reads"], (reads, first["reads"])
+    assert reads["overall"] == [[{"part": "Left Tail Lamp", "photo_reference": "P02", "ai_confidence": "High"}]], reads
+    assert reads["side_from_sorter"] == [[{"from": "Left Tail Lamp", "to": "Right Tail Lamp", "photo_reference": "P02"}]]
+    merge = reads["merge"][0]
+    assert [i["part"] for i in merge["overall"]] == ["Right Tail Lamp"] and merge["zones"][0]["read"] == "zone:rear"
+    assert merge["zones"][0]["items"][0]["photo_reference"] == "P03" and merge["disputed"] == []
+    assert [(i["part"], i["found_by"]) for i in merge["merged"]] == [("Right Tail Lamp", ["overall"]),
+                                                                     ("Boot Lid Lock", ["zone:rear"])], merge
+    ok("the overall reading's raw items, side_from_sorter's change, each zone read's items and the merged list, "
+       "photos by case label; each run starts empty")
+    assert "reads" not in plain
+    assert A.pipeline.draft_report is originals[0] and zones.merge_reads is originals[2]
+    ok("without --keep-reads a run keeps none")
+
+
+def test_c10_rescore() -> None:
+    print("contract 10: --rescore scores the linked parts again on the key")
+    case = {"name": "TEST CASE D", "folder": "case_d", "vehicle": C9_VEHICLE,
+            "parts": [{"part": "Rear Bumper"}, {"part": "Rear Bumper Beam", "hidden": True}]}
+    rows = [{"part": "Rear Bumper Beam", "link_type": "behind", "bucket": "strip_down", "hit": "crush", "truth": "extra"}]
+    run = {"case": "TEST CASE D", "rep": 1, "drafted_parts": ["Rear Bumper"], "drafted_items": [{"part": "Rear Bumper"}],
+           "parts": bi.score_parts([{"part": "Rear Bumper"}], ["Rear Bumper"]), "vehicle": {}, "suggestions": [],
+           "link_suggestions": rows, "links": {"mode": "on", "shown": 1, "real": 0, "zone_joined": 0, "impact": None}}
+    stored = Path(_tmp, "c10-rescore.json")
+    stored.write_text(json.dumps({"label": "c10", "runs": [run]}), encoding="utf-8")
+    key_path = Path(_tmp, "c10-rescore-key.json")
+    key_path.write_text(json.dumps({"cases": [case]}), encoding="utf-8")
+    out = Path(_tmp, "c10-rescored.json")
+    with contextlib.redirect_stdout(io.StringIO()):
+        bi.main(["--rescore", str(stored), "--key", str(key_path), "--out", str(out)])
+    again = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
+    assert again["link_suggestions"][0]["truth"] == "real" and again["links"]["real"] == 1, again["links"]
+    assert again["links"]["mode"] == "on" and again["links"]["inside_parts"] == ["Rear Bumper Beam"], again["links"]
+    ok("the linked parts' truth and numbers again on the key, the run's mode kept")
+
+
 def main() -> int:
     test_cli()
     test_score_parts()
@@ -1774,6 +2091,12 @@ def main() -> int:
     test_c9_run()
     test_replay_check()
     test_probe_boxes()
+    # Contract 10 (M).
+    test_c10_scoring()
+    test_c10_flags()
+    test_c10_run()
+    test_c10_keep_reads()
+    test_c10_rescore()
     print("all benchmark scoring tests passed")
     return 0
 
