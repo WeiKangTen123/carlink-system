@@ -61,6 +61,12 @@ KINDS += (ZONES_KIND,)
 # back to, one row. Not a READ_KIND either.
 CHECK_KIND = "check"
 KINDS += (CHECK_KIND,)
+# Contract 10: the linked check of the linked parts after the second look
+# (ai/link_check.py) -- its calls, one per area of the car, one row. Not
+# a READ_KIND either; its photos are relabelled at filing with the
+# re-check's (relabel_check_runs).
+LINK_CHECK_KIND = "link_check"
+KINDS += (LINK_CHECK_KIND,)
 CHANNELS = ("dashboard", "telegram", "whatsapp", "system")
 STATUSES = ("running", "ok", "failed", "refused", "aborted")
 # What counts as a failure on GET /ai-usage and in the case's list.
@@ -585,10 +591,11 @@ def relabel_zone_reads(db, report_id: str, label_of: dict[str, str]) -> None:
 
 def relabel_check_runs(db, report_id: str, label_of: dict[str, str]) -> None:
     """Contract 9, at filing beside relabel_zone_reads (no commit here): the
-    re-check rows' photos (ai/check.py), kept as "@<photo id>", under the
+    re-check rows' photos (ai/check.py) -- contract 10: and the linked
+    check's (ai/link_check.py) -- kept as "@<photo id>", under the
     case's final P-numbers; a photo deleted since drops out. A label from
     a row written before the "@id"s is left as it is."""
-    rows = db.query(AiRun).filter(AiRun.report_id == report_id, AiRun.kind == CHECK_KIND).all()
+    rows = db.query(AiRun).filter(AiRun.report_id == report_id, AiRun.kind.in_((CHECK_KIND, LINK_CHECK_KIND))).all()
     for row in rows:
         if not isinstance(row.photos_sent, list):
             continue

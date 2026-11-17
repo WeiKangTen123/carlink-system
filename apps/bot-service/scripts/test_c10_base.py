@@ -370,10 +370,12 @@ def link_check_stub() -> None:
     before = saved()
     check(settings.intake_link_check == "off", "intake_link_check: \"off\" by default")
     CLIENTS.clear()
+    # R2 built the call (test_link_check.py): with the linked parts off
+    # (intake_links "off", the default) "lite" has nothing to check either.
     for mode in ("off", "lite"):
         with Settings(intake_link_check=mode):
             check(link_check.run_for_intake(rid, AiActor.cli()) is None and not CLIENTS and saved() == before,
-                  f"mode {mode}: no call, nothing written (Step 0's stub)")
+                  f"mode {mode}, the linked parts off: no call, nothing written")
     check(link_check.VERDICTS == ("seen", "likely", "strip_down", "no", "cannot_tell") and "none_seen" in link_check.CUES,
           "the verdicts and cues of schema.LinkCheck")
 
