@@ -4,7 +4,17 @@ import dynamic from "next/dynamic";
 import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, Maximize2, Move3d, Plus, RotateCcw, X } from "lucide-react";
 import type { DecideAction, DecideResult } from "@/lib/api";
-import { codeReason, type Finding, type FindingStatus, type PhotoLookup, type Selection } from "@/lib/findings";
+import {
+  BUCKET_LABELS,
+  STRIP_DOWN_TEXT,
+  codeReason,
+  linkBucket,
+  linkPhotoCaption,
+  type Finding,
+  type FindingStatus,
+  type PhotoLookup,
+  type Selection,
+} from "@/lib/findings";
 import { PhotoBoxes, type BoxMark } from "@/components/PhotoBoxes";
 import {
   AREA_LABELS,
@@ -22,6 +32,7 @@ import {
   areaCounts,
   buildLinks,
   findingNumber,
+  linkedZones,
   marksSignature,
   photoForSelection,
   selectionFindings,
@@ -194,7 +205,13 @@ function useCoarsePointer(): boolean {
  * and the table / cards / viewer follow -- and the other way round. A click
  * moves the camera; a hover only outlines. Status is a pattern plus a glyph
  * everywhere (solid ✓, light, light !, striped +, grey ×), never colour
- * alone. */
+ * alone.
+ *
+ * Contract 10: selecting a listed part also outlines its linked parts
+ * (softly, as a hover does: the camera stays on the listed part), with the
+ * hidden ones' markers ringed dashed at their stand-in places; the card lists
+ * them under "Linked parts to check", and a linked part's card says what it
+ * is linked to. Parts with no place on the model stay under "Not on model". */
 export function DamageMapPanel({
   surface,
   findings,
@@ -241,7 +258,13 @@ export function DamageMapPanel({
   const selZonesKey = selectionZones(selection, links, canon).join(",");
   const hoverZonesKey = selectionZones(hover, links, canon).join(",");
   const selectedZones = useMemo(() => (selZonesKey ? selZonesKey.split(",") : []), [selZonesKey]);
-  const hoverZones = useMemo(() => (hoverZonesKey ? hoverZonesKey.split(",") : []), [hoverZonesKey]);
+  // Contract 10: what the selection is linked to is outlined like a hover,
+  // so it never moves the camera (that follows the selection's own zones).
+  const shownKeysForLinks = useMemo(() => new Set(shown.map((f) => f.key)), [shown]);
+  const linkedZonesKey = linkedZones(selection, links, shownKeysForLinks).join(",");
+  const outlineKey = [...new Set([...hoverZonesKey.split(","), ...linkedZonesKey.split(",")].filter(Boolean))].join(",");
+  const hoverZones = useMemo(() => (outlineKey ? outlineKey.split(",") : []), [outlineKey]);
+  const linking = selection?.kind === "finding" && (links.childrenOf.get(selection.key) ?? []).some((k) => shownKeysForLinks.has(k));
 
   // A box clicked on the photo shown: the finding it selects keeps that
   // photo (its own best photo may be another one).
@@ -273,7 +296,7 @@ export function DamageMapPanel({
   const photo = photoRef ? photos(photoRef) : null;
   const selectedKey = selection?.kind === "finding" ? selection.key : null;
   const hoverKey = hover?.kind === "finding" ? hover.key : null;
-  const shownKeys = useMemo(() => new Set(shown.map((f) => f.key)), [shown]);
+  const shownKeys = shownKeysForLinks;
   const photoMarks: BoxMark[] = useMemo(() => {
     if (!photoRef) return [];
     return (links.marksOn.get(photoRef) ?? [])
@@ -291,24 +314,34 @@ export function DamageMapPanel({
     if (selection?.kind === "finding") {
       const f = byKey.get(selection.key);
       if (!f) return null;
+      // A listed part's linked parts go in their own list, not among the
+      // other findings on its zones.
+      const linked = (links.childrenOf.get(f.key) ?? []).filter((k) => shownKeys.has(k));
       const others = new Set<string>();
-      for (const z of links.places.get(f.key)?.zones ?? []) for (const k of links.byZone.get(z) ?? []) if (k !== f.key && shownKeys.has(k)) others.add(k);
-      return { title: f.name, approx: false, zone: null as string | null, keys: [f.key, ...others], empty: false };
+      for (const z of links.places.get(f.key)?.zones ?? [])
+        for (const k of links.byZone.get(z) ?? []) if (k !== f.key && shownKeys.has(k) && !linked.includes(k)) others.add(k);
+      return { title: f.name, approx: false, zone: null as string | null, keys: [f.key, ...others], empty: false, linked };
     }
     if (selection?.kind === "zone") {
       const keys = (links.byZone.get(selection.zoneKey) ?? []).filter((k) => shownKeys.has(k));
-      return { title: zoneLabel(selection.zoneKey), approx: approxZone === selection.zoneKey, zone: selection.zoneKey, keys, empty: keys.length === 0 };
+      return { title: zoneLabel(selection.zoneKey), approx: approxZone === selection.zoneKey, zone: selection.zoneKey, keys, empty: keys.length === 0, linked: [] as string[] };
     }
     if (selection?.kind === "photo") {
       const keys = selectionFindings(selection, links, canon).filter((k) => shownKeys.has(k));
-      return { title: `Photo ${photos(selection.ref)?.label ?? selection.ref}`, approx: false, zone: null, keys, empty: keys.length === 0 };
+      return { title: `Photo ${photos(selection.ref)?.label ?? selection.ref}`, approx: false, zone: null, keys, empty: keys.length === 0, linked: [] as string[] };
     }
     if (area) {
       const keys = (links.byArea.get(area) ?? []).filter((k) => shownKeys.has(k));
-      return { title: AREA_LABELS[area], approx: false, zone: null, keys, empty: keys.length === 0 };
+      return { title: AREA_LABELS[area], approx: false, zone: null, keys, empty: keys.length === 0, linked: [] as string[] };
     }
     return null;
   }, [selection, area, byKey, links, shownKeys, approxZone, canon, photos]);
+
+  // A linked part shown on its listed part's photo (no box: it isn't on it).
+  const selectedFinding = selectedKey ? byKey.get(selectedKey) : undefined;
+  const onListedPhoto =
+    selectedFinding && photoRef && !photoMarks.some((m) => m.key === selectedKey) && selectedFinding.evidence.some((e) => e.by === "link" && canon(e.photo) === photoRef);
+  const hiddenShown = shown.some((f) => f.hidden && f.status === "suggestion");
 
   const listedCount = findings.filter((f) => f.kind === "item").length;
   const suggestionCount = findings.filter((f) => f.status === "suggestion").length;
@@ -354,7 +387,7 @@ export function DamageMapPanel({
 
   return (
     <section
-      className={`dmap dmap-${surface} ${hasSelection ? "has-selection" : ""} ${collapsed ? "is-collapsed" : ""}`}
+      className={`dmap dmap-${surface} ${hasSelection ? "has-selection" : ""} ${collapsed ? "is-collapsed" : ""} ${linking ? "is-linking" : ""}`}
       data-damage-map
       aria-label="Damage map"
       onKeyDown={(e) => {
@@ -449,7 +482,9 @@ export function DamageMapPanel({
               <div className="dmap-photo-bar">
                 <span className="dmap-photo-label">{photo ? `Photo ${photo.label}` : ""}</span>
                 <span className="dmap-photo-note">
-                  {unboxedSelected
+                  {onListedPhoto && selectedFinding
+                    ? linkPhotoCaption(selectedFinding)
+                    : unboxedSelected
                     ? "No box: the AI named the part but didn't mark where"
                     : photoMarks.length
                       ? plural(photoMarks.length, "finding")
@@ -524,6 +559,7 @@ export function DamageMapPanel({
                           busy={busyKey === key}
                           canDecide={Boolean(onDecide) && !readOnly}
                           onSelect={() => onSelect({ kind: "finding", key })}
+                          onSelectKey={(k) => onSelect({ kind: "finding", key: k })}
                           onHover={(on) => onHover(on ? { kind: "finding", key } : null)}
                           onLook={() => onOpenEvidence(key, links.photosOf.get(key)?.[0])}
                           onDecide={(a) => void decide(f, a)}
@@ -531,6 +567,33 @@ export function DamageMapPanel({
                       );
                     })}
                   </ul>
+                )}
+                {card.linked.length > 0 && (
+                  <div className="lk-map-linked">
+                    <h4 className="lk-map-head">Linked parts to check ({card.linked.length})</h4>
+                    <ul className="dmap-rows">
+                      {card.linked.map((key) => {
+                        const f = byKey.get(key);
+                        if (!f) return null;
+                        return (
+                          <FindingRow
+                            key={key}
+                            f={f}
+                            links={links}
+                            selected={false}
+                            hovered={hoverKey === key}
+                            busy={busyKey === key}
+                            canDecide={Boolean(onDecide) && !readOnly}
+                            asChild
+                            onSelect={() => onSelect({ kind: "finding", key })}
+                            onHover={(on) => onHover(on ? { kind: "finding", key } : null)}
+                            onLook={() => onOpenEvidence(key, links.photosOf.get(key)?.[0])}
+                            onDecide={(a) => void decide(f, a)}
+                          />
+                        );
+                      })}
+                    </ul>
+                  </div>
                 )}
                 {decideError && <p className="dmap-error">{decideError}</p>}
               </div>
@@ -636,6 +699,14 @@ export function DamageMapPanel({
               </span>
               Inside / behind the panel
             </span>
+            {hiddenShown && (
+              <span className="dmap-legend-item">
+                <span className="dmap-swatch lk-swatch-hidden" aria-hidden="true">
+                  +
+                </span>
+                Hidden linked part: confirm at strip-down (dashed when its listed part is selected)
+              </span>
+            )}
             {dismissedCount > 0 && (
               <label className="dmap-legend-toggle">
                 <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} /> Show dismissed ({dismissedCount})
@@ -664,7 +735,9 @@ function FindingRow({
   hovered,
   busy,
   canDecide,
+  asChild,
   onSelect,
+  onSelectKey,
   onHover,
   onLook,
   onDecide,
@@ -675,7 +748,11 @@ function FindingRow({
   hovered: boolean;
   busy: boolean;
   canDecide: boolean;
+  /** Listed under the selected part's "Linked parts to check". */
+  asChild?: boolean;
   onSelect: () => void;
+  /** Selects another finding (a linked part's listed part). */
+  onSelectKey?: (key: string) => void;
   onHover: (on: boolean) => void;
   onLook: () => void;
   onDecide: (a: DecideAction) => void;
@@ -689,13 +766,16 @@ function FindingRow({
       : null
     : "not on the model";
   return (
-    <li className={`dmap-row is-${f.status} ${selected ? "is-selected" : ""} ${hovered ? "is-hovered" : ""}`}>
+    <li className={`dmap-row is-${f.status} ${selected ? "is-selected" : ""} ${hovered ? "is-hovered" : ""} ${f.hidden ? "is-hidden-link" : ""}`}>
       <button type="button" className="dmap-row-main" onClick={onSelect} onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} aria-pressed={selected}>
         <span className={`dmap-badge is-${f.status}`} aria-hidden="true">
           {STATUS_GLYPHS[f.status]}
           {no}
         </span>
-        <span className="dmap-row-name">{f.name}</span>
+        <span className="dmap-row-name">
+          {f.source === "link" && <span className={`lk-bucket lk-bucket-${linkBucket(f)}`}>{BUCKET_LABELS[linkBucket(f)]}</span>} {f.name}
+          {f.hidden && <span className="intake-chip lk-hidden">Hidden</span>}
+        </span>
         <span className="dmap-row-status">{STATUS_LABELS[f.status]}</span>
         <span className="dmap-row-photos">{photoCount ? plural(photoCount, "photo") : "no photo"}</span>
       </button>
@@ -706,6 +786,26 @@ function FindingRow({
           {where && <span>{where}</span>}
         </p>
       )}
+      {!asChild && f.parents && f.parents.length > 0 && (
+        <p className="dmap-row-where lk-map-parent">
+          <span>
+            Linked to:{" "}
+            {f.parents.map((p, i) => (
+              <span key={p.key}>
+                {i > 0 ? ", " : ""}
+                {p.findingKey && onSelectKey ? (
+                  <button type="button" className="dmap-link" onClick={() => onSelectKey(p.findingKey!)}>
+                    {p.name}
+                  </button>
+                ) : (
+                  p.name
+                )}
+              </span>
+            ))}
+          </span>
+        </p>
+      )}
+      {f.hidden && f.kind === "suggestion" && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
       <p className="dmap-row-reason">{f.reason ? `AI says: “${f.reason}”` : codeReason(f)}</p>
       <div className="dmap-row-actions">
         <button type="button" className="btn-secondary-modern dmap-small-btn" onClick={onLook} disabled={!photoCount}>

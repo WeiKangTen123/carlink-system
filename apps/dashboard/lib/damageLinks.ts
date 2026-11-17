@@ -45,8 +45,13 @@ export type DamageLinks = {
   /** finding key -> its photos: the evidence's (best first), then the other
    * seen_in photos, each once. */
   photosOf: Map<string, string[]>;
-  /** photo -> the findings that name it, one mark each (box or not). */
+  /** photo -> the findings that name it, one mark each (box or not). A
+   * linked part is not marked on its listed part's photo (by "link"). */
   marksOn: Map<string, PhotoMark[]>;
+  /** Contract 10: listed part's finding key -> its linked parts' keys, and
+   * a linked part's key -> its listed parts' keys (both in findings order). */
+  childrenOf: Map<string, string[]>;
+  parentsOf: Map<string, string[]>;
 };
 
 /** The same photo whether a finding says "@<id>" or "P07": the page's
@@ -91,6 +96,12 @@ export function buildLinks(findings: Finding[], canon: CanonRef = sameRef): Dama
   const byArea = new Map<MapArea, string[]>();
   const photosOf = new Map<string, string[]>();
   const marksOn = new Map<string, PhotoMark[]>();
+  const childrenOf = new Map<string, string[]>();
+  const parentsOf = new Map<string, string[]>();
+  // The listed part a linked part names in linked_from is the first list
+  // item with that key (lib/findings parentsOf).
+  const listedByKey = new Map<string, string>();
+  for (const f of findings) if (f.kind === "item" && !listedByKey.has(f.partKey)) listedByKey.set(f.partKey, f.key);
 
   for (const f of findings) {
     const match = zoneKeysFor(f.part, f.kind === "item" ? hint : undefined);
@@ -107,11 +118,21 @@ export function buildLinks(findings: Finding[], canon: CanonRef = sameRef): Dama
     for (const zone of zones) push(byZone, zone, f.key);
     for (const area of areas) push(byArea, area, f.key);
 
+    for (const parentKey of f.linkedFrom ?? []) {
+      const parent = listedByKey.get(parentKey);
+      if (!parent || parent === f.key) continue;
+      push(childrenOf, parent, f.key);
+      push(parentsOf, f.key, parent);
+    }
+
     const refs: string[] = [];
     for (const e of f.evidence) {
       const ref = canon(e.photo);
       if (refs.includes(ref)) continue;
       refs.push(ref);
+      // The listed part's photo, shown for context: the linked part isn't on
+      // it, so it is in the part's photos but not marked on the photo.
+      if (e.by === "link") continue;
       push(marksOn, ref, {
         key: f.key,
         box: e.box,
@@ -127,7 +148,27 @@ export function buildLinks(findings: Finding[], canon: CanonRef = sameRef): Dama
     }
     photosOf.set(f.key, refs);
   }
-  return { places, byZone, byArea, photosOf, marksOn };
+  return { places, byZone, byArea, photosOf, marksOn, childrenOf, parentsOf };
+}
+
+/** Contract 10: what a selected finding is linked to on the map -- a listed
+ * part's linked parts, or a linked part's listed parts -- among the findings
+ * shown. The map outlines their zones (never moving the camera). */
+export function linkedKeys(sel: Selection, links: DamageLinks, shown?: Set<string>): string[] {
+  if (sel?.kind !== "finding") return [];
+  const keys = [...(links.childrenOf.get(sel.key) ?? []), ...(links.parentsOf.get(sel.key) ?? [])];
+  return shown ? keys.filter((k) => shown.has(k)) : keys;
+}
+
+/** The zones to outline for a selection's linked findings, without the
+ * selection's own zones (those are outlined already). */
+export function linkedZones(sel: Selection, links: DamageLinks, shown?: Set<string>): string[] {
+  const own = new Set(selectionZones(sel, links));
+  const out: string[] = [];
+  for (const key of linkedKeys(sel, links, shown)) {
+    for (const z of links.places.get(key)?.zones ?? []) if (!own.has(z) && !out.includes(z)) out.push(z);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,9 +192,18 @@ export type ZoneMark = {
   sideUnknown: boolean;
   /** Every finding on it is a part inside / behind it (◇). */
   standIn: boolean;
+  /** Contract 10: hidden linked parts (suggestions) on it, to confirm at
+   * strip-down; the label says so ("1 hidden part to confirm at strip-down")
+   * and the map draws the marker's ring dashed while a listed part with
+   * linked parts is selected (globals.css, Contract 10 U). */
+  hidden: number;
   /** For a screen reader and a tooltip: "Left Front Door: 1 confirmed, 1 suggestion". */
   label: string;
 };
+
+/** The words a zone's label ends with when hidden linked parts are on it
+ * (the CSS finds the marker by them: the marker isn't this file's). */
+export const HIDDEN_LABEL = "to confirm at strip-down";
 
 const STATUS_ORDER: FindingStatus[] = ["confirmed", "check", "ai", "suggestion", "dismissed"];
 
@@ -204,6 +254,7 @@ export function zoneMarks(findings: Finding[], links: DamageLinks): ZoneMark[] {
       return `${n} ${STATUS_WORDS[s][n === 1 ? 0 : 1]}`;
     });
     const places = shown.map((f) => links.places.get(f.key)!);
+    const hidden = suggested.filter((f) => f.hidden).length;
     out.push({
       zone,
       keys: shown.map((f) => f.key),
@@ -214,7 +265,8 @@ export function zoneMarks(findings: Finding[], links: DamageLinks): ZoneMark[] {
       number: listed.length === 1 ? links.places.get(listed[0].key)?.number ?? null : null,
       sideUnknown: places.every((p) => p.sideUnknown),
       standIn: places.every((p) => Boolean(p.standIn)),
-      label: `${zoneLabel(zone)}: ${words.join(", ")}`,
+      hidden,
+      label: `${zoneLabel(zone)}: ${words.join(", ")}${hidden ? `; ${hidden} hidden part${hidden === 1 ? "" : "s"} ${HIDDEN_LABEL}` : ""}`,
     });
   }
   return out;
@@ -223,7 +275,7 @@ export function zoneMarks(findings: Finding[], links: DamageLinks): ZoneMark[] {
 /** A content key for zone marks: the 3D model repaints only when it changes,
  * not on every new findings array (a verified tick elsewhere, an autosave). */
 export function marksSignature(marks: ZoneMark[]): string {
-  return marks.map((m) => `${m.zone}:${m.lead}:${m.listed}:${m.suggested}:${m.dismissed}:${m.number ?? ""}:${m.sideUnknown ? 1 : 0}`).join("|");
+  return marks.map((m) => `${m.zone}:${m.lead}:${m.listed}:${m.suggested}:${m.dismissed}:${m.number ?? ""}:${m.sideUnknown ? 1 : 0}:${m.hidden}`).join("|");
 }
 
 // ---------------------------------------------------------------------------

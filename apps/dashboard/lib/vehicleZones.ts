@@ -259,6 +259,12 @@ const STAND_INS: Record<string, string> = {
   "Front Subframe": "under the car",
   "Rear Subframe": "under the car",
   "Engine Undercover": "under the car",
+  // Contract 10: hidden linked parts drawn on the boot lid's mesh (the map
+  // draws them dashed there when their listed part is selected).
+  "Boot Lid Lock": "in the boot lid",
+  "Boot Lid Hinge": "under the boot lid",
+  "Boot Lid Weatherstrip": "round the boot opening",
+  "Boot Lid Inner Trim": "inside the boot lid",
 };
 
 /** True when a part names a panel but leaves the side open. The UI can then

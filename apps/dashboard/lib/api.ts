@@ -1843,11 +1843,28 @@ export type AiAccuracySuggestionCounts = { shown: number; added: number; dismiss
 export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   /** Added after opening the evidence viewer on it. */
   looked_first: number;
-  by_source: Partial<Record<"zone" | "kit" | "nearby", AiAccuracySuggestionCounts>>;
+  by_source: Partial<Record<"zone" | "kit" | "nearby" | "link", AiAccuracySuggestionCounts>>;
   /** By read: "zone:front", "zone:rear"... */
   by_read: Record<string, AiAccuracySuggestionCounts>;
   by_check: Partial<Record<"yes" | "no" | "unsure" | "none", AiAccuracySuggestionCounts>>;
+  // Contract 10 (accuracy VERSION 3, contract10.md 4.7): the linked parts,
+  // by part name only. Absent on a VERSION 2 record.
+  by_link_type?: Partial<Record<LinkType, AiAccuracySuggestionCounts>>;
+  by_bucket?: Partial<Record<LinkBucket, AiAccuracySuggestionCounts>>;
+  by_hit?: Partial<Record<HitLevel, AiAccuracySuggestionCounts>>;
+  /** By link rule ("L1:rear-bumper>beam"). */
+  by_rule?: Record<string, AiAccuracySuggestionCounts>;
+  /** The link table's version ("L1"); a sum of cases may list several. */
+  links_table?: string | string[] | null;
+  /** By the linked check's verdict ("none": not checked). */
+  link_check?: Partial<Record<LinkVerdict | "none", AiAccuracySuggestionCounts>>;
+  /** Shadow mode: linked parts worked out but not shown, against the
+   * signed-off list. */
+  shadow?: AiAccuracyLinkShadow | null;
 };
+
+export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };
+export type AiAccuracyLinkShadow = AiAccuracyShadowCounts & { by_rule?: Record<string, AiAccuracyShadowCounts> };
 
 export type AiAccuracySums = {
   cases: number;
