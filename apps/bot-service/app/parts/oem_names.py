@@ -108,6 +108,9 @@ def _family(head: str, words: list[str], diagram: str) -> str | None:
         return None
 
     # Exhaust: the silencer of the exhaust diagram, not a lid's sound pad.
+    # A "MUFFLER" is only ever the exhaust's.
+    if re.match(r"muffler( comp| assy| sub-assy)*$", head):
+        return "Exhaust System"
     if re.match(r"silencer comp\b", head) or (head.startswith("pipe") and "ex" in w):
         return "Exhaust System" if "ex" in w else None
 

@@ -79,6 +79,8 @@ def traps() -> None:
     ):
         check(to_part(name, diagram) != "Exhaust System", f"{name!r} on {diagram!r} is not the Exhaust System")
     check(to_part("SILENCER COMP., EX.", "EXHAUST PIPE / SILENCER") == "Exhaust System", "the exhaust silencer is")
+    check(to_part("MUFFLER COMP., EXH.", "EXHAUST PIPE") == "Exhaust System", "a muffler is the Exhaust System")
+    check(to_part("BRACKET, MUFFLER", "EXHAUST PIPE") is None, "a muffler bracket is no part of ours")
     for name in ("GRILLE, R. SPEAKER", "GRILLE, L. SPEAKER", "GRILLE, FR. SPEAKER", "GRILLE, SPEAKER"):
         check(to_part(name, "REAR TRAY / TRUNK LINING") is None, f"{name!r} (speaker grille) is no Front Grille")
         check(to_part(name, "FRONT GRILLE") is None, f"{name!r} is none even on a grille diagram")
