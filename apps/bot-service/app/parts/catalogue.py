@@ -47,6 +47,7 @@ from app.auth.core import as_utc, audit, display_name, utc_now
 from app.auth.permissions import can_edit_case, is_draft, is_signed_off
 from app.config import settings
 from app.parts.history import _without_side, side_of
+from app.parts.oem_names import end_of, part_name, to_family
 from app.parts.prefill import _matching_line, item_source, side_unconfirmed
 from app.reports.db import SessionLocal
 from app.reports.models import CatalogueJob, CatalogueSuggestion, CatalogueWorker, Report, iso_utc
@@ -1328,3 +1329,135 @@ def maybe_auto_lookup(report_id: str) -> int | None:
     except Exception:
         log.exception("Catalogue: the look-up after detection failed for %s (detection is unaffected)", report_id)
         return None
+
+
+# ------------------------------------------------ neighbours from the cache
+
+# Detection's catalogue input (contract 10): for each damaged part, the other
+# parts the maker's own diagrams draw with it. Cache only -- it reads what an
+# earlier look-up already stored and never asks the worker or a site.
+NEIGHBOURS_PER_PART = 8
+NEIGHBOUR_JOBS = 40  # done jobs of one catalogue car that are read
+
+
+def _alnum(text) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+def _nb_job_matches(job: CatalogueJob, make: str, model: str, year: int | None) -> bool:
+    """A done job of this make and model (and, given a year, of a catalogue
+    car whose years cover it). The model is compared as the first word the
+    way model_key takes it, ignoring dashes: the case's "HR-V" is the
+    catalogue's "HRV"."""
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    vehicle = job.vehicle if isinstance(job.vehicle, dict) else {}
+    makes = {_alnum(payload.get("brand")), _alnum(vehicle.get("brand"))} - {""}
+    models = {_alnum(payload.get("model_key")), _alnum(model_key(vehicle.get("model")))} - {""}
+    if _alnum(make) not in makes or _alnum(model_key(model)) not in models:
+        return False
+    if year is None:
+        return True
+    low, high = vehicle.get("year_from"), vehicle.get("year_to")
+    if isinstance(low, int) or isinstance(high, int):
+        return (not isinstance(low, int) or low <= year) and (not isinstance(high, int) or year <= high)
+    return payload.get("year") == year
+
+
+def _nb_diagrams(db: Session, jobs: list[CatalogueJob]) -> list[dict]:
+    """The diagrams the jobs' rows sit on, newest job first, each with the
+    parts it holds as {(family, side): (oem name, source)}, first appearance
+    first. A part is on a diagram when a row maps to it (oem_names) or the
+    diagram was found for it (source_part): looking up "Rear Bumper" found
+    that diagram because it holds one."""
+    rank = {job.id: i for i, job in enumerate(jobs)}
+    rows = db.query(CatalogueSuggestion).filter(CatalogueSuggestion.job_id.in_(list(rank))).all()
+    rows.sort(key=lambda r: (rank[r.job_id], r.diagram_rank or 0, r.row_rank or 0, r.id))
+    diagrams: dict[tuple, dict] = {}
+    for row in rows:
+        entry = diagrams.setdefault(
+            (row.job_id, row.diagram_key), {"name": row.diagram_name or "", "parts": {}},
+        )
+        found = to_family(row.name or "", row.diagram_name, row.side or row.part_side)
+        if found:
+            entry["parts"].setdefault(found, (row.name or "", row.source or "catalogue"))
+        if row.source_part in CANONICAL_PARTS:
+            family, side = split_side(row.source_part)
+            entry["parts"].setdefault((family, side), (row.source_part, row.source or "catalogue"))
+    return list(diagrams.values())
+
+
+def _nb_same_family(a: str, b: str) -> bool:
+    """"Front Door" is a "Door"; a row that names no end ("Wheel") is either
+    end's. Not "Boot Lid" and "Boot Lid Lock": those are two parts."""
+    return a == b or a.endswith(" " + b) or b.endswith(" " + a)
+
+
+def _nb_for_part(part: str, diagrams: list[dict]) -> list[dict]:
+    family, side = split_side(part)
+    end = end_of(part)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for diagram in diagrams:
+        held = diagram["parts"]
+        if not any(_nb_same_family(f, family) and (s is None or side is None or s == side) for f, s in held):
+            continue
+        for (f, s), (oem_name, source) in held.items():
+            if _nb_same_family(f, family):
+                continue
+            far = end_of(f)
+            if end and far and far != end:
+                continue  # a rear part is not linked to a front one just because a diagram holds both
+            if side and s and s != side:
+                continue
+            name = part_name(f, s if side and s == side else None)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append({"part": name, "oem_name": oem_name, "diagram": diagram["name"], "source": source})
+            if len(out) >= NEIGHBOURS_PER_PART:
+                return out
+    return out
+
+
+def diagram_neighbours(make: str | None, model: str | None, year: int | None, parts: list[str]) -> dict[str, list[dict]]:
+    """For each listed part (canonical names), the other canonical parts the
+    cached catalogue puts on the same diagram: {"Rear Bumper": [{"part":
+    "Rear Bumper Beam", "oem_name": "BEAM COMP., RR. BUMPER UPPER", "diagram":
+    "BUMPERS ('08)", "source": "microfiches"}, ...]}. Only parts that have
+    neighbours are keys; each list holds a part once, in the order of its
+    first appearance, at most NEIGHBOURS_PER_PART long.
+
+    The catalogue car is the done look-ups' of this make and model whose
+    years cover `year`; with no year, the newest look-up's car. Side: a
+    sided listed part keeps its own side's neighbours ("Left Tail Lamp" gets
+    a "Left Boot Lid Lamp", never the right one) and a listed part with no
+    side gets "(side undetermined)" ones. End: no rear neighbour for a front
+    part and the reverse (a Civic's bumper diagram holds both ends).
+
+    CACHE ONLY: no web request, no queued job (maybe_auto_lookup queues the
+    case's own look-up after detection). NEVER raises: any error is logged
+    and the answer is {} -- detection goes on without the catalogue."""
+    try:
+        listed = [p for p in dict.fromkeys(parts or []) if isinstance(p, str) and p in CANONICAL_PARTS]
+        if not make or not model or not listed:
+            return {}
+        year = year if isinstance(year, int) else None
+        db = SessionLocal()
+        try:
+            done = db.query(CatalogueJob).filter(CatalogueJob.status == "done").order_by(CatalogueJob.id.desc()).limit(500)
+            matching = [j for j in done if _nb_job_matches(j, make, model, year)]
+            if not matching:
+                return {}
+            # One catalogue car: the newest match's, so a different car of the
+            # same model (another body) does not mix in.
+            first = matching[0].vehicle if isinstance(matching[0].vehicle, dict) else {}
+            key = first.get("key")
+            jobs = [j for j in matching if key is None or (j.vehicle or {}).get("key") == key][:NEIGHBOUR_JOBS]
+            diagrams = _nb_diagrams(db, jobs)
+        finally:
+            db.close()
+        found = {part: _nb_for_part(part, diagrams) for part in listed}
+        return {part: near for part, near in found.items() if near}
+    except Exception:
+        log.exception("Catalogue: diagram neighbours failed (detection goes on without them)")
+        return {}
