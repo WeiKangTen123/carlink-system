@@ -459,3 +459,87 @@ def summarize(draft: SecurityIncidentDraft) -> str:
 def combined_description(session) -> str:
     parts = [session.description or "", *session.pending_edits]
     return "\n".join(p for p in parts if p)
+
+
+# ----------------------------------------- full detection (contract 10, T)
+#
+# settings.telegram_full_detection: a staff report goes to the website's
+# intake pipeline (intake/telegram_bridge.py) instead of build_draft. What
+# the reporter typed becomes the draft's facts and notes, and the reading
+# comes back to the chat as summarize_detection's lines.
+
+# The damage list's lines in the chat, at most: the rest are on the website.
+MAX_DETECTION_PARTS = 25
+# Suggestions named in the chat, at most (the website lists them all).
+MAX_SUGGESTION_NAMES = 5
+
+
+def detection_facts(session) -> dict:
+    """The template's printed facts (TEMPLATE_PROMPT), for the draft's form:
+    as on the bot's first draft, they win over what the AI reads
+    (telegram_bridge.initial_data)."""
+    return {
+        "vehicle_plate": session.vehicle_plate,
+        "requested_by": getattr(session, "requested_by", None),
+        "claim_type": getattr(session, "claim_type", None),
+        "insurer_name": getattr(session, "insurer_name", None),
+        "workshop_name": getattr(session, "workshop_name", None),
+        "location": session.location,
+        "incident_datetime": session.incident_datetime,
+        "vehicle_body_type": getattr(session, "vehicle_body_type", None),
+    }
+
+
+def detection_notes(session) -> str:
+    """The draft's reporter notes, which the reading is given as the
+    reporter's words (pipeline._read_into): everything they wrote, and the
+    side they stated at the car -- the one fact a photo can't be trusted
+    for, which the reading's prompt takes from the reporter ("If the
+    reporter stated the side, use it"), as build_draft's known facts did."""
+    lines = [combined_description(session)]
+    if getattr(session, "damaged_side", None):
+        lines.append(f"Damaged side (stated by the reporter at the car): {session.damaged_side}")
+    return "\n".join(line for line in lines if line)
+
+
+def _detected_line(item: dict) -> str:
+    """One damage-list item as _damage_lines words a draft's: the
+    severity's dot, the part, then the firm's condition and the AI's damage
+    type when it says something else."""
+    words = dict.fromkeys(v for v in (item.get("condition"), item.get("damage_type")) if v)
+    return f"{_severity_dot(item.get('severity'))} {item_source(item)}" + "".join(f" · {v}" for v in words)
+
+
+def summarize_detection(outcome) -> str:
+    """The reading's answer for the chat (telegram_bridge.Outcome): the car,
+    the parts on the damage list, and the suggestions waiting for a person
+    on the website -- the zone reads', the second look's and the linked
+    parts (contract 10), never ticked. Plain text: part names carry
+    brackets and slashes that Markdown would trip over."""
+    lines: list[str] = []
+    vehicle = outcome.vehicle or {}
+    name = " ".join(b for b in (vehicle.get("make"), vehicle.get("model")) if b)
+    head = " · ".join(b for b in (vehicle.get("plate_number"), name) if b)
+    if head:
+        lines.append(f"🚗 {head}")
+
+    parts = list(outcome.parts or [])
+    count = len(parts)
+    lines.append(f"🔧 {count} damaged part{'' if count == 1 else 's'} found" if count
+                 else "🔧 No damaged parts on the list yet")
+    lines += [_detected_line(item) for item in parts[:MAX_DETECTION_PARTS]]
+    if count > MAX_DETECTION_PARTS:
+        lines.append(f"… and {count - MAX_DETECTION_PARTS} more on the website")
+
+    suggestions = list(outcome.suggestions or [])
+    if suggestions:
+        linked = sum(1 for it in suggestions if it.get("source") == "link")
+        names = [str(it.get("name") or it.get("part")) for it in suggestions[:MAX_SUGGESTION_NAMES]]
+        more = len(suggestions) - len(names)
+        lines += [
+            "",
+            f"💡 {len(suggestions)} suggestion{'' if len(suggestions) == 1 else 's'} to decide on the website"
+            + (f" ({linked} linked to parts on the list)" if linked else ""),
+            ", ".join(names) + (f" +{more} more" if more else ""),
+        ]
+    return "\n".join(lines)
