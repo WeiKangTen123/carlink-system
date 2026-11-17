@@ -21,9 +21,10 @@ How a listed part (the parent) becomes linked suggestions (build):
      trigger_tokens is in the parent's words; and its type is allowed.
   3. side: "same" takes the parent's side only when that side is firm
      (_firm); "impact" a clear majority of the firm sided parts at the
-     parent's end, else the case's point of impact; otherwise -- and always
-     under a "(side undetermined)" parent -- the child's own "(side
-     undetermined)" name. Never two children for one link.
+     parent's end; otherwise -- and always under a "(side undetermined)"
+     parent -- the child's own "(side undetermined)" name. Never from
+     vehicle_info.point_of_impact: that is the AI's own draft, not a firm
+     side. Never two children for one link.
   4. skip what is listed (or covered: its undetermined twin), dismissed,
      or already a suggestion (a zone read's or the second look's: joined
      to that one instead, build_all's joins); two parents naming the same
@@ -77,7 +78,8 @@ logger = logging.getLogger(__name__)
 TABLE_PATH = Path(__file__).resolve().parent / "link_table.json"
 # A link's "side" in the table: "same" -- the listed part's side; "impact"
 # -- an unsided listed part, a sided linked part: the side the car was hit
-# on; "none" -- a part with no side.
+# on, as the firm sided parts listed at that end say it; "none" -- a part
+# with no side.
 LINK_SIDES = ("same", "impact", "none")
 # The area a link belongs to: its skill file (ai/skills/<area>.md; left and
 # right share side.md) and the linked check's end of the car.
@@ -167,10 +169,6 @@ STRUCTURAL = {
 }
 # Parts listed at one end that make a heavy hit there a crush.
 END_CROWD = 3
-_LEFT_WORDS = {"left", "lh", "lhs", "l/h"}
-_RIGHT_WORDS = {"right", "rh", "rhs", "r/h"}
-_FRONT_WORDS = {"front", "fr"}
-_REAR_WORDS = {"rear", "back", "rr"}
 
 
 @dataclass(frozen=True)
@@ -213,7 +211,9 @@ def validate_table(table) -> list[str]:
     Other); ids and parent/child pairs are unique; the side field matches
     where {side} is; types, sides, levels, areas and trigger words are the
     known ones; hidden / strip_down are true or false; a reason is at most
-    MAX_REASON characters with no number of three or more digits."""
+    MAX_REASON characters with no number of three or more digits. Total:
+    a value of any JSON type anywhere is a line here, never an exception
+    (load_table runs at import, and second_look._store must not fail)."""
     if not isinstance(table, dict):
         return ["not a JSON object"]
     errors: list[str] = []
@@ -235,10 +235,12 @@ def validate_table(table) -> list[str]:
             errors.append(f"{where}: missing {', '.join(missing)}")
             continue
         if not (isinstance(link["id"], str) and link["id"].strip()):
+            # A list or an object as the id can't go in a set: no id.
             errors.append(f"{where}: no id")
         elif link["id"] in ids:
             errors.append(f"{where}: the id is used twice")
-        ids.add(link["id"])
+        else:
+            ids.add(link["id"])
         names_ok = True
         for field in ("parent", "child"):
             value = link[field]
@@ -273,7 +275,8 @@ def validate_table(table) -> list[str]:
             if not isinstance(link[flag], bool):
                 errors.append(f"{where}: {flag} is not true or false")
         triggers = link.get("trigger_tokens", [])
-        if not isinstance(triggers, list) or any(t not in FIRM_CONDITION_TOKENS for t in triggers):
+        if not isinstance(triggers, list) or any(not isinstance(t, str) or t not in FIRM_CONDITION_TOKENS
+                                                 for t in triggers):
             errors.append(f"{where}: trigger_tokens are not all firm condition words")
         reason = link["reason"]
         if not (isinstance(reason, str) and reason.strip()):
@@ -289,7 +292,8 @@ def load_table(path: Path | str | None = None) -> dict | None:
     """The link table at `path` (TABLE_PATH by default), or None -- and a
     log line -- when the file is missing, can't be read or fails
     validate_table: the linked parts are then off whatever
-    settings.intake_links says."""
+    settings.intake_links says. Never raises: it runs when this module is
+    imported, and an exception there would fail every caller's import."""
     path = Path(path) if path else TABLE_PATH
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
@@ -303,7 +307,12 @@ def load_table(path: Path | str | None = None) -> dict | None:
     if not (isinstance(version, str) and version.strip() and isinstance(table.get("links"), list)):
         logger.warning("Linked parts: %s is not a link table (a version and a list of links); they stay off", path)
         return None
-    errors = validate_table(table)
+    try:
+        errors = validate_table(table)
+    except Exception as exc:  # validate_table is total; this is in case it ever isn't
+        logger.warning("Linked parts: the link table at %s couldn't be checked (%s); they stay off", path,
+                       type(exc).__name__)
+        return None
     if errors:
         logger.warning("Linked parts: the link table at %s has %d problem(s), the first: %s; they stay off",
                        path, len(errors), errors[0])
@@ -405,17 +414,6 @@ def _firm(item: dict, strict: bool) -> bool:
     return True
 
 
-def impact_words(text) -> tuple[str | None, str | None]:
-    """(side, end) a point of impact names ("Rear LH corner" -> ("Left",
-    "rear")); None for what it doesn't say, or says both ways."""
-    words = set(re.findall(r"[a-z/]+", str(text or "").lower()))
-    left, right = bool(words & _LEFT_WORDS), bool(words & _RIGHT_WORDS)
-    front, rear = bool(words & _FRONT_WORDS), bool(words & _REAR_WORDS)
-    side = "Left" if left and not right else "Right" if right and not left else None
-    end = "front" if front and not rear else "rear" if rear and not front else None
-    return side, end
-
-
 # ------------------------------------------------------------ photos
 
 
@@ -454,7 +452,6 @@ class _Ctx:
     others: list[dict]
     photos: list
     intact: dict
-    impact: str | None
     neighbours: dict | None
 
 
@@ -478,27 +475,20 @@ def _end_crush(listed: list[dict], levels: list[str], photos: list) -> set[str]:
 def _impact_side(end: str | None, ctx: _Ctx) -> tuple[str | None, str | None]:
     """(side, side_from) for an "impact" link at `end`: a clear majority (at
     least two to one) of the firm sided listed parts at that end, naming
-    the first of them; else the point of impact when it names a side and
-    no other end ("point of impact"); (None, None) when neither says, or
-    they disagree."""
+    the first of them; else (None, None) -- the child's "(side
+    undetermined)" name. Never vehicle_info.point_of_impact: the AI drafts
+    it ("Rear LH corner") and nothing checks it as _firm checks a part, so
+    a side taken from it would be the AI's guess presented as the list's
+    (contract 10 review H1); once added, the part would pass it on to its
+    own linked parts as a firm side."""
     firm: dict[str, list[str]] = {"Left": [], "Right": []}
     for it in ctx.listed:
         part = str(it.get("part") or "")
         if end and end_of(part) == end and _firm(it, ctx.opts.side == "strict"):
             firm[split_side(part)[1]].append(item_key(it) or part)
-    by_list = None
     for side, other in (("Left", "Right"), ("Right", "Left")):
         if firm[side] and len(firm[side]) >= 2 * len(firm[other]):
-            by_list = side
-    said, said_end = impact_words(ctx.impact)
-    if said and said_end and end and said_end != end:
-        said = None
-    if by_list and said and by_list != said:
-        return None, None
-    if by_list:
-        return by_list, firm[by_list][0]
-    if said:
-        return said, "point of impact"
+            return side, firm[side][0]
     return None, None
 
 
@@ -724,7 +714,7 @@ def _build(parents: list[int], ctx: _Ctx, table: dict) -> tuple[list[dict], dict
     return shown, joins
 
 
-def _context(listed, others, photos, zone_intact, table, opts, dismissed, impact, neighbours) -> _Ctx:
+def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighbours) -> _Ctx:
     listed = [it for it in listed or [] if isinstance(it, dict) and it.get("part")]
     photos = list(photos or [])
     levels = [hit_of(it) or opts.unknown_hit for it in listed]
@@ -734,13 +724,12 @@ def _context(listed, others, photos, zone_intact, table, opts, dismissed, impact
     return _Ctx(opts=opts, version=str(table.get("version") or ""), listed=listed, levels=levels,
                 listed_names={str(it["part"]) for it in listed}, skip={str(k) for k in dismissed or () if k},
                 others=[o for o in others or [] if isinstance(o, dict) and o.get("part")], photos=photos,
-                intact=zone_intact if isinstance(zone_intact, dict) else {}, impact=impact,
+                intact=zone_intact if isinstance(zone_intact, dict) else {},
                 neighbours=neighbours if isinstance(neighbours, dict) else None)
 
 
 def build_all(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-              opts: Options, *, dismissed=(), impact: str | None = None,
-              neighbours: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
+              opts: Options, *, dismissed=(), neighbours: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
     """(the linked-part suggestions, the joins). The suggestions are what
     build returns. The joins are the links whose part another suggestion
     is already (zone_suggestions: a zone read's, the second look's), by
@@ -748,21 +737,21 @@ def build_all(listed: list[dict], zone_suggestions: list[dict], photos: list, zo
     "hit"} for the caller to put on it, so the part shows once."""
     if not table or not isinstance(table.get("links"), list):
         return [], {}
-    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, impact, neighbours)
+    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours)
     return _build(list(range(len(ctx.listed))), ctx, table)
 
 
 def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-          opts: Options, *, dismissed=(), impact: str | None = None, neighbours: dict | None = None) -> list[dict]:
+          opts: Options, *, dismissed=(), neighbours: dict | None = None) -> list[dict]:
     """The linked-part suggestions for one reading, as SecondLookItem dicts
     (source "link"), at most opts.max_items, in the order shown (see the
     module's docstring). listed: the damage list's items; zone_suggestions:
     the other suggestions (a part one of them is gets no item of its own);
     photos: the case's photos (IntakePhoto rows, or a stored run's dicts);
     zone_intact: ai_draft["zone_intact"]; dismissed: the keys a person
-    marked Not damaged; impact: vehicle_info.point_of_impact; neighbours:
-    catalogue.diagram_neighbours' answer, used when opts.catalogue."""
-    return build_all(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed=dismissed, impact=impact,
+    marked Not damaged; neighbours: catalogue.diagram_neighbours' answer,
+    used when opts.catalogue."""
+    return build_all(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed=dismissed,
                      neighbours=neighbours)[0]
 
 
@@ -783,9 +772,7 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
     look = data.get("second_look") if isinstance(data.get("second_look"), dict) else {}
     existing = [it for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
     dismissed = {k for k in look.get("dismissed") or [] if isinstance(k, str)}
-    vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
-    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, vehicle.get("point_of_impact"),
-                   neighbours)
+    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, neighbours)
     mine = next(n for n, it in enumerate(ctx.listed) if it is item or item_key(it) == key)
     items, _ = _build([mine], ctx, table)
     open_links = [it for it in existing if it.get("source") == "link"

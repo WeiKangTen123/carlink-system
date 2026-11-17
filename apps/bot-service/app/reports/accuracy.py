@@ -488,7 +488,10 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str]) -> dict | None:
 
 def sum_suggestions(metrics: list[dict]) -> dict:
     """The suggestions sections of many cases' metrics added up (GET
-    /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0."""
+    /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0.
+    links_table: the link table versions behind these counts, a sorted
+    list (["L1"]) -- the key the AI-accuracy page reads, as one case's
+    (a version or None); a row from before VERSION 3 adds none."""
     out: dict = {**_suggestion_counts(), "looked_first": 0, **{group: {} for group in SUGGESTION_GROUPS}}
 
     def add(into: dict, counts) -> None:
@@ -499,8 +502,7 @@ def sum_suggestions(metrics: list[dict]) -> dict:
                 pass
 
     _link_groups(out)
-    out.pop("links_table")
-    out["links_tables"] = {}
+    tables: set[str] = set()
     out["shadow"] = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
 
     def add_shadow(into: dict, counts) -> None:
@@ -528,9 +530,10 @@ def sum_suggestions(metrics: list[dict]) -> dict:
             for name, counts in (s.get(group) or {}).items() if isinstance(s.get(group), dict) else ():
                 if isinstance(counts, dict):
                     add(out[group].setdefault(str(name)[:MAX_RULE], _suggestion_counts()), counts)
-        if isinstance(s.get("links_table"), str) and s["links_table"]:
-            name = s["links_table"][:20]
-            out["links_tables"][name] = out["links_tables"].get(name, 0) + 1
+        # One case's is a version or None; a list is taken too.
+        found = s.get("links_table")
+        tables.update(name[:20] for name in (found if isinstance(found, list) else [found])
+                      if isinstance(name, str) and name)
         shadow = s.get("shadow") if isinstance(s.get("shadow"), dict) else None
         if shadow is not None:
             add_shadow(out["shadow"], shadow)
@@ -539,6 +542,7 @@ def sum_suggestions(metrics: list[dict]) -> dict:
                 if isinstance(counts, dict):
                     add_shadow(out["shadow"]["by_rule"].setdefault(
                         str(name)[:MAX_RULE], {"predicted": 0, "on_final_list": 0}), counts)
+    out["links_table"] = sorted(tables)
     return out
 
 

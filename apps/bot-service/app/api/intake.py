@@ -518,7 +518,15 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
-        return {"ok": True} if relinked is None else {"ok": True, "second_look": relinked}
+        if relinked is None:
+            return {"ok": True}
+        # second_look is as stored at this commit (read under the write
+        # lock), but a decision committed after it is not in it, and this
+        # answer can land after that decision's: "linked" -- the new linked
+        # parts only, no decision -- is what the wizard adds to its own
+        # copy (review L7). second_look stays for an older wizard.
+        return {"ok": True, "second_look": relinked,
+                "linked": suggestions.relinks_of(stored.get("second_look"), relinked)}
     finally:
         db.close()
 
