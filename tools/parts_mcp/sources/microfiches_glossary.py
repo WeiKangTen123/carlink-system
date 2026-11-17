@@ -286,6 +286,8 @@ _RIGHT = {"DX", "DES", "DS", "DESTRA", "DESTRO", "DESTRE", "DESTRI", "RIGHT", "R
 # an end (FR/RR) does. Never a trailing "L" cut from "LINING" ("... DOOR L").
 _HONDA_L = re.compile(r"(?<![A-Z0-9.])L(?:\.|(?=,|\s+(?:FR|RR)\b))|\(L\)")
 _HONDA_R = re.compile(r"(?<![A-Z0-9.])R(?:\.|(?=,|\s+(?:FR|RR)\b))|\(R\)")
+# A pair ("COVER, L,R", "R,L", "L/R") names both sides, so no single one.
+_HONDA_PAIR = re.compile(r"(?<![A-Z0-9.])([LR])\.?\s*[,/&]\s*(?!\1)[LR](?![A-Z0-9])")
 
 
 def side_of(name: str | None) -> Side | None:
@@ -294,6 +296,8 @@ def side_of(name: str | None) -> Side | None:
         return None
     upper = name.upper()
     words = {_word(t) for t in _tokens(upper) if not _is_code(t)}
+    if _HONDA_PAIR.search(upper):
+        return None
     left = bool(words & _LEFT) or bool(_HONDA_L.search(upper))
     right = bool(words & _RIGHT) or bool(_HONDA_R.search(upper))
     if left and not right:
