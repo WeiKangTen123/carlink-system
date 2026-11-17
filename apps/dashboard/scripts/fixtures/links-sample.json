@@ -1,5 +1,5 @@
 {
- "_about": "Synthetic contract 10 fixture (contract10.md section 4): generated photos, made-up make and model, generic link reasons only. Read-only after Step 0 (S0). A draft: photo refs are '@<photo id>'; each photo also has its P-label. Linked-part fields at their defaults are left out, as the server sends them.",
+ "_about": "Synthetic contract 10 fixture (contract10.md section 4): generated photos, made-up make and model, generic link reasons only. Read-only after Step 0 (S0). A draft: photo refs are '@<photo id>'; each photo also has its P-label. Linked-part fields at their defaults are left out, as the server sends them. intact_in holds zone read names ('zone:left', as links.intact_in writes them); the Rear Floor Panel keeps an older draft's photo ref ('@ph09') so both shapes are covered.",
  "photos": [
   {
    "ref": "@ph01",
@@ -658,7 +658,7 @@
      "bucket": "likely",
      "side_from": "Left Rear Door",
      "intact_in": [
-      "@ph09"
+      "zone:left"
      ]
     },
     {
@@ -702,6 +702,9 @@
      "link_rule": "L1:rear-end>floor",
      "hit": "crush",
      "bucket": "likely",
+     "intact_in": [
+      "@ph09"
+     ],
      "oem": [
       "REAR FLOOR PAN"
      ]

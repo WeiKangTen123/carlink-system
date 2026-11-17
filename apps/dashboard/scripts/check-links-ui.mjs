@@ -81,7 +81,8 @@ check("link fields copied only when the server sent them; a zone suggestion has 
   assert.deepEqual(beam.oem, ["REAR BUMPER", "REAR BUMPER REINFORCEMENT"]);
   const glass = sug("Left Rear Door Glass");
   assert.equal(glass.sideFrom, "Left Rear Door");
-  assert.deepEqual(glass.intactIn, ["@ph09"]);
+  assert.deepEqual(glass.intactIn, ["zone:left"], "a zone read's name, as links.intact_in writes it");
+  assert.deepEqual(sug("Rear Floor Panel").intactIn, ["@ph09"], "an older draft's photo ref");
   assert.equal("hidden" in glass, false, "hidden=false is left out, as the server does");
   const lock = sug("Boot Lid Lock");
   for (const k of ["linkedFrom", "linkType", "bucket", "hidden", "linkReason", "parents"]) assert.equal(k in lock, false, k);
@@ -189,12 +190,62 @@ check("'same side as <listed part>' when the side came from it; none for an unde
   assert.equal(F.sideFromText(sug("Rear Bumper Reflector (side undetermined)")), null);
 });
 
-check("the linked check's words: 'AI check: seen — “...”' (the AI's own, quoted)", () => {
-  const line = say(F.linkCheckLine(sug("Rear Bumper Reflector (side undetermined)").linkCheck));
-  assert.equal(line, "AI check: seen — “Reflector lens cracked at the bumper corner”");
+check("the linked check's words: 'AI check: seen — AI says: “...”' (the AI's own, as contract 9's)", () => {
+  // Not in `texts`: these are the AI's words, and they say so.
+  const line = F.linkCheckLine(sug("Rear Bumper Reflector (side undetermined)").linkCheck);
+  assert.equal(line, "AI check: seen — AI says: “Reflector lens cracked at the bumper corner”");
+  assert.match(line.split(" — ")[1], /^AI says: “/, "the reason part starts with 'AI says:'");
   assert.equal(F.linkCheckLine(null), null);
+  const bare = { verdict: "likely", cue: "gap_misfit", model: null, reason: null };
+  assert.equal(say(F.linkCheckLine(bare)), "AI check: likely", "no reason: the verdict alone, no empty quote");
   assert.equal(F.linkCheckWords({ verdict: "no", cue: "none_seen", model: null, reason: null }), "AI check: probably not");
   assert.equal(F.linkCheckWords({ verdict: "cannot_tell", cue: null, model: null, reason: null }), "AI check: can't tell");
+  // The link table's reasons stay the code's, plain.
+  for (const f of all.filter((x) => x.source === "link")) assert.doesNotMatch(F.codeReason(f), /AI says|AI check/, f.part);
+});
+
+check("M1: 'A zone read (left side) listed it as not damaged' from a read name; an old photo ref by its label", () => {
+  const lookup = (ref) => fixture.photos.find((p) => p.ref === ref || p.label === ref) ?? null;
+  assert.equal(
+    say(F.intactText(sug("Left Rear Door Glass").intactIn, lookup)),
+    "A zone read (left side) listed it as not damaged. Check it on the car.",
+  );
+  assert.equal(say(F.intactText(["zone:rear"], lookup)), "A zone read (rear) listed it as not damaged. Check it on the car.");
+  assert.equal(
+    say(F.intactText(["zone:rear", "zone:left", "zone:rear"], lookup)),
+    "Zone reads (rear and left side) listed it as not damaged. Check it on the car.",
+  );
+  // Before the fix the note looked read names up as photos and never showed.
+  assert.equal(lookup("zone:left"), null);
+  assert.equal(
+    say(F.intactText(sug("Rear Floor Panel").intactIn, lookup)),
+    "A zone read listed it as not damaged in P09. Check it on the car.",
+    "an older draft's '@<id>'",
+  );
+  assert.equal(F.intactText(["P09"], lookup), "A zone read listed it as not damaged in P09. Check it on the car.", "a filed case's P-number");
+  assert.equal(F.intactText(["@gone"], lookup), null, "a deleted photo names nothing");
+  assert.equal(F.intactText(["zone:rear"]), "A zone read (rear) listed it as not damaged. Check it on the car.", "no lookup needed for a read");
+  assert.equal(F.intactText([], lookup), null);
+  assert.equal(F.intactText(undefined, lookup), null);
+  assert.equal(F.intactText(["", "  "], lookup), null);
+});
+
+check("L3: the linked check's outcome note (link_run), as the re-check's", () => {
+  assert.equal(F.linkRunNote(data.second_look.link_run), null, "ran fine, nothing to say: no note");
+  assert.equal(F.linkRunNote(null), null);
+  assert.equal(F.linkRunNote(undefined), null);
+  const run = (status, note) => ({ status, by: status === "ok" ? "lite" : null, model: null, note, seconds: 1.2, calls: 1 });
+  assert.equal(say(F.linkRunNote(run("ok", "Checked 1 of 3 areas."))), "AI check: Checked 1 of 3 areas.");
+  assert.equal(
+    say(F.linkRunNote(run("failed", "The AI was busy; the linked parts are as the table placed them."))),
+    "AI check didn't run. The AI was busy; the linked parts are as the table placed them.",
+  );
+  assert.equal(
+    say(F.linkRunNote(run("skipped", "No photos of the linked parts' areas to check."))),
+    "AI check didn't run. No photos of the linked parts' areas to check.",
+  );
+  assert.equal(say(F.linkRunNote(run("failed", null))), "AI check didn't run. The linked parts are as the link table placed them.");
+  assert.equal(F.linkRunNote(run("ok", "  ")), null);
 });
 
 check("'no' (linked check or re-check) goes last in its group, still there to add", () => {
@@ -216,6 +267,68 @@ check("'no' (linked check or re-check) goes last in its group, still there to ad
     "Left Rear Quarter Panel",
     "Left Rear Door Glass",
   ]);
+});
+
+check("L2: an item added from a linked part isn't 'seen in' its listed part's photo", () => {
+  const d = clone(data);
+  const hinge = d.damage_summary.find((x) => x.part === "Boot Lid Hinge");
+  hinge.seen_in = [];
+  hinge.photo_reference = "@ph02";
+  hinge.evidence = [{ photo: "@ph02", box: null, box_kind: null, by: "link", reason: null, confidence: null, img_w: null, img_h: null }];
+  const f = F.buildFindings(d).find((x) => x.kind === "item" && x.part === "Boot Lid Hinge");
+  assert.deepEqual(f.seenIn, []);
+  assert.equal(F.seenCount(f), null);
+  assert.equal(f.evidence[0].by, "link", "kept as evidence (the viewer captions it)");
+  hinge.evidence.push({ photo: "@ph05", box: [1, 2, 3, 4], box_kind: "ai", by: "link_check", reason: null, confidence: null, img_w: null, img_h: null });
+  assert.deepEqual(F.buildFindings(d).find((x) => x.kind === "item" && x.part === "Boot Lid Hinge").seenIn, ["@ph05"]);
+});
+
+check("L7: an autosave's older second_look never rolls back a newer decision", () => {
+  const look = data.second_look;
+  const decision = (key, action, at) => ({ key, part: key, action, by_id: "u1", by_name: "A", at, looked: true, where: "intake" });
+  const newer = { ...look, decisions: [...look.decisions, decision("Rear Floor Panel", "dismissed", "2026-11-17T09:00:05+00:00")] };
+  assert.equal(F.isOlderLook(look, newer), true, "saved before the decision: fewer decisions, kept out");
+  assert.equal(F.isOlderLook(newer, look), false, "a newer one is taken");
+  const relinked = { ...newer, items: [...newer.items, { ...newer.items[0], key: "X", part: "X" }] };
+  assert.equal(F.isOlderLook(relinked, newer), false, "saved after the decision (same decisions, new links): taken");
+  assert.equal(F.isOlderLook(null, look), true);
+  assert.equal(F.isOlderLook(look, null), false);
+  assert.equal(F.isOlderLook({ ...look, decisions: undefined }, { ...look, decisions: [] }), false, "an old shape with no decisions");
+  // At the server's cap (200, the oldest dropped) the counts tie: line up on our latest decision.
+  const stamp = (i) => `2026-11-17T08:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}+00:00`;
+  const many = Array.from({ length: 200 }, (_, i) => decision(`K${i}`, "dismissed", stamp(i)));
+  const mine = { ...look, decisions: [...many.slice(1), decision("Z", "added", "2026-11-17T09:30:00+00:00")] };
+  assert.equal(F.isOlderLook({ ...look, decisions: many }, mine), true, "capped, without our latest: older");
+  assert.equal(F.isOlderLook({ ...look, decisions: mine.decisions }, mine), false, "capped, with it: taken");
+});
+
+check("L7: a save's answer -- 'linked' (new api) is added to ours; a whole second_look (old api) only when not older", () => {
+  const look = data.second_look;
+  const decision = { key: "Rear Floor Panel", part: "Rear Floor Panel", action: "dismissed", by_id: "u1", by_name: "A", at: "2026-11-17T09:00:05+00:00", looked: true, where: "intake" };
+  // Ours: a dismissal answered after the save started.
+  const ours = { ...look, dismissed: [...look.dismissed, "Rear Floor Panel"], decisions: [...look.decisions, decision] };
+  const liner = { ...clone(look.items[1]), key: "Left Rear Wheel Arch Liner", part: "Left Rear Wheel Arch Liner", covers: ["Left Rear Wheel Arch Liner"] };
+  // The save's look: stored before that dismissal, with the new linked part.
+  const saved = { ...look, items: [...look.items, liner] };
+
+  const merged = F.withSavedLook(ours, { second_look: saved, linked: [liner] });
+  assert.deepEqual(merged.items.map((i) => i.key), [...ours.items.map((i) => i.key), "Left Rear Wheel Arch Liner"], "the new one on the end");
+  assert.equal(merged.decisions, ours.decisions, "our decisions stay");
+  assert.ok(merged.dismissed.includes("Rear Floor Panel"), "the dismissed card stays dismissed");
+  const card = (l) => F.buildFindings({ ...data, second_look: l }).find((f) => f.part === "Rear Floor Panel");
+  assert.equal(card(merged), undefined, "not back among the open suggestions");
+  assert.equal(F.withSavedLook(merged, { second_look: saved, linked: [liner] }), merged, "twice: once only (ours returned as is)");
+  assert.equal(F.withSavedLook(ours, { linked: [] }), ours, "nothing new: ours as is");
+
+  // An older api: the whole second_look, refused while it is older than ours...
+  assert.equal(F.withSavedLook(ours, { second_look: saved }), ours);
+  assert.ok(card(saved), "(which would have put the dismissed card back)");
+  // ...and taken when it isn't (saved after the decision).
+  const later = { ...ours, items: [...ours.items, liner] };
+  assert.equal(F.withSavedLook(ours, { second_look: later }), later);
+  assert.equal(F.withSavedLook(null, { second_look: later }), later, "no look of ours yet");
+  assert.equal(F.withSavedLook(null, { second_look: later, linked: [liner] }), later, "no look of ours yet (new api)");
+  assert.equal(F.withSavedLook(ours, {}), ours);
 });
 
 check("the viewer walks the panel's order (A / N move to the card below)", () => {

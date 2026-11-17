@@ -9,6 +9,7 @@
  */
 import type {
   Box,
+  CheckRun,
   DamageSummaryItem,
   DecideAction,
   DecideResult,
@@ -18,6 +19,7 @@ import type {
   LinkCheck,
   LinkType,
   ReportData,
+  SecondLook,
   SecondLookItem,
   SuggestionCheck,
   SuggestionDecision,
@@ -74,7 +76,8 @@ export type Finding = {
   needsStripDown?: boolean;
   /** The listed part whose side it took; absent when it took none. */
   sideFrom?: string | null;
-  /** Photos a zone read listed it intact on. */
+  /** The zone reads that listed it intact ("zone:rear"); an older draft's
+   * may be photo refs. Shown with intactText. */
   intactIn?: string[];
   /** The linked check's answer (the AI's own words in its reason). */
   linkCheck?: LinkCheck | null;
@@ -260,7 +263,8 @@ function itemFinding(item: DamageSummaryItem, index: number): Finding {
     status: itemStatus(item),
     reason: codeWords ? null : (item.reason ?? null),
     evidence,
-    seenIn: item.seen_in?.length ? item.seen_in : evidence.map((e) => e.photo),
+    // The listed part's photo (by "link") is not one this part was seen in.
+    seenIn: item.seen_in?.length ? item.seen_in : evidence.filter((e) => e.by !== "link").map((e) => e.photo),
     foundBy: item.found_by ?? [],
     confidence: item.ai_confidence ?? null,
     check: item.check ?? null,
@@ -525,12 +529,56 @@ export function linkCheckWords(check: LinkCheck | null | undefined): string | nu
   return word ? `AI check: ${word}` : null;
 }
 
-/** "AI check: likely — “lens cracked at the corner”": the verdict and the
- * AI's own words, quoted as the AI's. */
+/** "AI check: likely — AI says: “lens cracked at the corner”": the verdict
+ * and the AI's own words, which (contract 9's UI words) always start with
+ * "AI says:". The link table's reasons are the code's and stay plain. */
 export function linkCheckLine(check: LinkCheck | null | undefined): string | null {
   const words = linkCheckWords(check);
   if (!words) return null;
-  return check?.reason ? `${words} — “${check.reason}”` : words;
+  return check?.reason ? `${words} — ${aiSays(check.reason)}` : words;
+}
+
+/** What the linked check did (second_look.link_run), beside "Linked parts
+ * to check" as the re-check's note is beside the suggestions: "AI check:
+ * Checked 1 of 3 areas." / "AI check didn't run. The AI was busy; ...".
+ * The notes are the server's own sentences (link_check.NOTE_*). Null when
+ * it ran with nothing to say, or never ran. */
+export function linkRunNote(run: CheckRun | null | undefined): string | null {
+  if (!run || typeof run !== "object") return null;
+  const note = typeof run.note === "string" && run.note.trim() ? run.note.trim() : null;
+  if (run.status === "failed" || run.status === "skipped")
+    return `AI check didn't run. ${note ?? "The linked parts are as the link table placed them."}`;
+  return note ? `AI check: ${note}` : null;
+}
+
+const isPhotoRef = (ref: string) => ref.startsWith("@") || isLabel(ref);
+
+/** "A zone read (rear) listed it as not damaged. Check it on the car."
+ * intact_in holds the zone reads that listed the part intact ("zone:rear":
+ * ai_draft.zone_intact keeps no photo per part); a draft from before may
+ * hold photo refs ("@<id>" / "P07"), named by their labels. Null when it
+ * names nothing still there (a deleted photo). */
+export function intactText(intactIn: string[] | null | undefined, photos?: PhotoLookup | null): string | null {
+  const reads = new Set<string>();
+  const shots = new Set<string>();
+  for (const ref of intactIn ?? []) {
+    if (typeof ref !== "string" || !ref.trim()) continue;
+    if (!isPhotoRef(ref)) {
+      reads.add(readName(ref));
+      continue;
+    }
+    const label = photos?.(ref)?.label;
+    if (label) shots.add(label);
+  }
+  if (!reads.size && !shots.size) return null;
+  const names = [...reads];
+  const who = !names.length
+    ? "A zone read"
+    : names.length === 1
+      ? `A zone read (${names[0]})`
+      : `Zone reads (${joined(names)})`;
+  const where = shots.size ? ` in ${[...shots].join(", ")}` : "";
+  return `${who} listed it as not damaged${where}. Check it on the car.`;
 }
 
 /** The bucket a linked part shows in: the server's, else a hidden part is
@@ -760,6 +808,62 @@ export function rowsTakenOff(
     if (it.added_from === "suggestion" && itemKey(it) === asked.key) out.push(i);
   });
   return out;
+}
+
+// reports/schema.MAX_DECISIONS: the server keeps the latest 200 decisions.
+const MAX_DECISIONS = 200;
+
+const sameDecision = (a: SuggestionDecision | undefined, b: SuggestionDecision | undefined) =>
+  Boolean(a && b) && a!.key === b!.key && a!.action === b!.action && a!.at === b!.at && (a!.by_id ?? null) === (b!.by_id ?? null);
+
+/** Contract 10 (review L7): is `incoming`, the second_look an autosave
+ * answered with, older than the wizard's own? The server takes the save and
+ * the decisions in turn, but the answers can land out of turn: a save's look
+ * landing after a later decision's would put a just-dismissed card back.
+ *
+ * The server only ever appends a decision (add, dismiss and undo alike; past
+ * MAX_DECISIONS the oldest go), so a look with fewer decisions than ours --
+ * or, at the cap, without our latest one -- was stored before ours. */
+export function isOlderLook(incoming: SecondLook | null | undefined, local: SecondLook | null | undefined): boolean {
+  if (!incoming) return true;
+  if (!local) return false;
+  const mine = Array.isArray(local.decisions) ? local.decisions : [];
+  const theirs = Array.isArray(incoming.decisions) ? incoming.decisions : [];
+  if (mine.length < MAX_DECISIONS && theirs.length < MAX_DECISIONS) return theirs.length < mine.length;
+  const last = mine[mine.length - 1];
+  return Boolean(last) && !theirs.some((d) => sameDecision(d, last));
+}
+
+/** The page's second_look after a save answered with suggestions (the
+ * wizard's autosave, the case page's added part; review L7).
+ *
+ * - Since the review the api answers `linked`: only the suggestions that
+ *   save joined. They go on the end of ours (as the server appends them),
+ *   once each, and ours keeps its own decisions -- nothing to roll back.
+ * - An older api answers only the whole second_look: taken unless it is
+ *   older than ours (isOlderLook).
+ *
+ * Returns `local` itself when nothing changes. */
+export function withSavedLook(
+  local: SecondLook | null | undefined,
+  answer: { second_look?: SecondLook | null; linked?: SecondLookItem[] | null },
+): SecondLook | null {
+  const mine = local ?? null;
+  if (Array.isArray(answer.linked) && mine) {
+    const items = Array.isArray(mine.items) ? mine.items : [];
+    const have = new Set(items.map((it) => it.key || it.part));
+    const fresh: SecondLookItem[] = [];
+    for (const it of answer.linked) {
+      const key = it && (it.key || it.part);
+      if (!key || have.has(key)) continue;
+      have.add(key);
+      fresh.push(it);
+    }
+    return fresh.length ? { ...mine, items: [...items, ...fresh] } : mine;
+  }
+  const look = answer.second_look ?? null;
+  if (!look) return mine;
+  return isOlderLook(look, mine) ? mine : look;
 }
 
 /** The wizard's local draft after a decide call (section 4.4, conflict #10):

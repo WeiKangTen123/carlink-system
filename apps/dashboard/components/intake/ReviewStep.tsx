@@ -824,6 +824,7 @@ export function ReviewStep({
           findings={suggestionFindings}
           decisions={secondLook?.decisions ?? []}
           check={secondLook?.check ?? null}
+          linkRun={secondLook?.link_run ?? null}
           photos={photoLookup}
           reads={secondLook?.reads}
           onDecide={decideLooked}
