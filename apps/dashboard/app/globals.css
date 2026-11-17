@@ -7872,6 +7872,223 @@ button.pb-box:focus-visible {
    they hang off, in the Seen / Likely / Confirm at strip-down buckets --
    and the 3D map's listed part -> linked parts outline (contract10.md;
    the UI agent U's block). Its rules go between these two lines. */
+
+/* Sections of the suggestions panel ("Seen in photos", "Linked parts to check"). */
+.lk-section-head {
+  margin: 6px 0 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.lk-section-head .intake-muted {
+  margin-left: 6px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* One "Linked to: <listed part>" group. */
+.lk-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 0 12px;
+  border-left: 3px solid var(--dmap-suggestion, #a855f7);
+}
+
+.lk-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lk-more {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+/* The crush path: collapsed behind one line. */
+.lk-crush {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lk-crush-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.lk-not {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.lk-not-head {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.lk-not-head .intake-muted {
+  font-weight: 500;
+}
+
+/* Bucket tags: a word and a pattern, never colour alone. */
+.lk-bucket {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+  white-space: nowrap;
+}
+
+.lk-bucket-seen {
+  border-color: var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+}
+
+.lk-bucket-likely {
+  border-color: var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+
+.lk-bucket-strip_down {
+  border-style: dashed;
+  border-color: var(--text-secondary);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.intake-chip.lk-hidden {
+  border-style: dashed;
+}
+
+.sg-card.lk-card.is-hidden {
+  border-style: dashed;
+}
+
+/* "possible – confirm at strip-down" */
+.lk-strip {
+  margin: 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.sg-reason.lk-check {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.lk-check-seen,
+.lk-check-likely {
+  color: var(--badge-green-text);
+}
+
+/* The viewer's head for a linked part. */
+.lk-ev-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lk-ev-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ev-check.lk-check-no {
+  border-style: dashed;
+}
+
+/* The map's card: a listed part's linked parts, hidden ones dashed. */
+.lk-map-linked {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.lk-map-head {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.dmap-row.is-hidden-link {
+  border-style: dashed;
+}
+
+.dmap-row .lk-bucket {
+  margin-right: 4px;
+  padding: 1px 6px;
+}
+
+.dmap-row .lk-hidden {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 10px;
+}
+
+.dmap-row .lk-strip {
+  margin: 2px 0 0;
+}
+
+.dmap-swatch.lk-swatch-hidden {
+  background: transparent;
+  border: 1.5px dashed var(--text-primary);
+  color: var(--text-primary);
+}
+
+/* A zone holding a hidden linked part (its label ends "to confirm at
+   strip-down": lib/damageLinks HIDDEN_LABEL; the marker itself is drawn by
+   VehicleBlueprint3D) gets a dashed ring while a listed part with linked
+   parts is selected. */
+.dmap.is-linking .dmap-marker[title*="to confirm at strip-down"]:is(.is-hovered, .is-selected)::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border: 2px dashed var(--text-primary);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .lk-group {
+    padding-left: 8px;
+  }
+}
 /* ---- end Contract 10 U ---- */
 
 /* ---- P3: upload, sort, viewer ---- */
