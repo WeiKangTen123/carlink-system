@@ -486,9 +486,16 @@ def links_on() -> None:
 
             # -- filing relabels the zone and linked suggestions (6)
             state = client.get(f"/intake/{rid}").json()
-            r = client.post(f"/intake/{rid}/finalize", json={"data": state["data"]})
+            # Filed from a tab whose copy still has the flag: the server's stands.
+            stale = copy.deepcopy(state["data"])
+            for it in stale["damage_summary"]:
+                if it["part"] == "Boot Floor Board":
+                    it["needs_strip_down"] = True
+            r = client.post(f"/intake/{rid}/finalize", json={"data": stale})
             check(r.status_code == 200, "File case", r.text)
             filed = db_row(Report, rid)
+            check("needs_strip_down" not in by_part(filed.data["damage_summary"], "Boot Floor Board"),
+                  "File case from a stale copy doesn't bring the flag back")
             index_of = {pid: i for i, pid in enumerate(ids)}
             label = lambda pid: f"P{index_of[pid] + 1:02d}"  # noqa: E731
             zone_sugs = (filed.ai_draft or {}).get("zone_suggestions") or []
@@ -517,6 +524,13 @@ def links_on() -> None:
             check(r.status_code == 200 and "needs_strip_down" not in r.json()["item"]
                   and "needs_strip_down" not in db_row(Report, rid).data["damage_summary"][at],
                   "a condition edit ends it", r.json().get("item"))
+            case = client.get(f"/reports/{rid}").json()["data"]
+            stale = copy.deepcopy(case["damage_summary"])
+            stale[at]["needs_strip_down"] = True
+            r = client.put(f"/reports/{rid}", json={"draft": {"description": case["description"],
+                                                              "damage_summary": stale}})
+            check(r.status_code == 200 and "needs_strip_down" not in db_row(Report, rid).data["damage_summary"][at],
+                  "the edit form's whole-list save from a stale copy doesn't bring it back", r.text[:200])
 
             # -- a part added by hand on the case page re-links (5)
             r = client.post(f"/reports/{rid}/damage-items", json={"part": "Left Front Fender", "condition": "Dented"})

@@ -821,6 +821,9 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
         v = draft.vehicle_info
         v.body_type = body_type_for(v.make, v.model, v.body_type)
     data = draft.model_dump()
+    # Contract 10: "Confirm at strip-down" as stored (the server's), against
+    # the browser's copy, as on autosave.
+    suggestions.kept_strip_down(data["damage_summary"], (report.data or {}).get("damage_summary"))
     # "@<photo id>" -> its final P-number, now that the order is fixed:
     # photo_reference (a deleted photo's box goes with it), seen_in and
     # the evidence (suggestions.relabel_item).
