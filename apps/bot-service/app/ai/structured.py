@@ -134,6 +134,10 @@ CALL_KINDS["draft_zone"] = "zone"
 # own chain (settings.gemini_check_chain) with its own thinking level
 # (settings.gemini_thinking_level_check, unset: none sent).
 CALL_KINDS["check"] = "check"
+# Contract 10: the linked check of the linked parts (ai/link_check.py), on
+# its own light chain (settings.gemini_link_chain) with its own thinking
+# level (settings.gemini_thinking_level_link, unset: none sent).
+CALL_KINDS["link"] = "link"
 # A kind of call that takes another kind's thinking level setting.
 THINKING_OF = {"zone": "read"}
 
