@@ -1410,7 +1410,9 @@ DETECTION_HEARTBEAT_SECONDS = 30.0
 DETECTION_NUDGE_SECONDS = 5 * 60
 DETECTION_WAIT_SECONDS = 20 * 60
 # What a reading takes, as told before it starts: two minutes, one more for
-# a big case (more than two waves of sorting) and one for the zone reads.
+# a big case (more than two waves of sorting), one for the zone reads and
+# one for the linked check (contract 10: up to two calls of at most
+# link_check.TIME_BOX each, when it runs).
 DETECTION_BIG_CASE_PHOTOS = 24
 
 STILL_READING = (
@@ -1438,9 +1440,10 @@ def _case_link(report_id: str) -> str:
 
 
 def _detection_minutes(photos: int) -> int:
+    from app.ai import link_check
     from app.intake import zones
 
-    return 2 + (photos > DETECTION_BIG_CASE_PHOTOS) + bool(zones.zones_on())
+    return 2 + (photos > DETECTION_BIG_CASE_PHOTOS) + bool(zones.zones_on()) + (link_check.active_mode() is not None)
 
 
 async def _send_quietly(target, text: str, **kw) -> None:

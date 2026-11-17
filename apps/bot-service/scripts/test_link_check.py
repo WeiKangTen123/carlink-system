@@ -19,8 +19,9 @@ Covers:
     photo and box: evidence by "link_check", the box cleaned, on the
     preview's frame; the reason cut and scrubbed; never an item more or
     less; link_run and the run log;
-  - a 503: one short retry answers; busy throughout: unchanged and a note,
-    the next area not asked; a timeout and bad JSON the same; one area
+  - a 503: one short retry answers; busy throughout: two requests in all,
+    unchanged and a note, the next area not asked; a timeout and bad JSON
+    the same; one area
     answered and the next busy: the first kept;
   - a person's dismissal or add made during the call stands;
   - shadow: the answer in the AI draft only.
@@ -540,8 +541,8 @@ def failures() -> None:
     check(look["items"] == before["items"] and look["link_run"]["status"] == "failed"
           and look["link_run"]["note"] == lc.NOTE_BUSY and look["link_run"]["calls"] == 1,
           "busy throughout: the linked parts as they were, a note, failed", look["link_run"])
-    check(len(REQUESTS) == 8 and all("skill: rear" in r["system_instruction"] for r in REQUESTS),
-          "each model asked twice, the chain once more -- then the step ends: the left area never asked",
+    check(len(REQUESTS) == lc.MAX_TRIES == 2 and all("skill: rear" in r["system_instruction"] for r in REQUESTS),
+          "one try and one retry in all (review M3) -- then the step ends: the left area never asked",
           [r["model"] for r in REQUESTS])
     db = SessionLocal()
     try:

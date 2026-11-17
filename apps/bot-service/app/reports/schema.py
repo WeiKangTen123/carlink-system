@@ -652,8 +652,10 @@ class SecondLookItem(BaseModel):
     # listed part was hit, "light" | "medium" | "heavy" | "crush"; bucket:
     # "seen" | "likely" | "strip_down"; hidden / needs_strip_down: as on a
     # damage item; side_from: the listed part whose side it took, None when
-    # it took none; intact_in: the photos a zone read listed it intact on
-    # (shown lower, with a note); link_check: the linked check's answer;
+    # it took none; intact_in: the zone reads ("zone:rear") that listed it
+    # intact -- read names, not photos: ai_draft["zone_intact"] keeps no
+    # photo per part -- (shown lower, with a note); link_check: the linked
+    # check's answer;
     # oem: the catalogue's diagram names that put it with the listed part
     # (at most 3).
     linked_from: list[str] = Field(default_factory=list)

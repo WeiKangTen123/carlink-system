@@ -36,7 +36,8 @@ Contract 10 (linked parts, settings.intake_links "on"): an added part's own
 linked parts join the suggestions (intake/links.for_parent: an added Rear
 End Panel hit hard brings what sits on and behind it), and an undo of that
 add takes back those still undecided; a linked part added keeps where it
-hangs off and, hidden, needs_strip_down ("Confirm at strip-down").
+hangs off and, when the table flags a strip-down or it is in that bucket,
+needs_strip_down ("Confirm at strip-down").
 
 Pure: no database, no request; the endpoints hold the transaction.
 """
@@ -114,13 +115,21 @@ def item_from_suggestion(sug: dict) -> dict:
     drew the suggestion -- and the AI's confidence. Checked by the person
     who added it (human_verified), and marked as come from a suggestion
     (added_from).
-    One builder for both pages (conflict #10)."""
+    One builder for both pages (conflict #10).
+
+    Contract 10: a linked part's evidence by "link" is its listed part's
+    photo -- why it is suggested, not a photo of it -- so it is never the
+    item's own photo (review L2): its photo is its best other evidence (a
+    sorter's tag, the linked check's box), else none; the "link" entry
+    stays in its evidence as the reason."""
     evidence = [e for e in sug.get("evidence") or [] if isinstance(e, dict) and e.get("photo")]
-    photo = evidence[0]["photo"] if evidence else (sug.get("photo_reference") or None)
+    own = [e for e in evidence if e.get("by") != "link"]
+    best = own[0] if own else None
+    photo = best["photo"] if best else (sug.get("photo_reference") or None)
     # bbox_2d is the AI's box (the table and the evidence viewer label it
     # "AI box"): a sorter's box stays on its evidence entry, as "Sorter's
     # box", and the item gets none.
-    box = (evidence[0].get("box") or None) if evidence and evidence[0].get("box_kind") == "ai" else None
+    box = (best.get("box") or None) if best and best.get("box_kind") == "ai" else None
     tokens = list(sug.get("condition_tokens") or [])
     condition = sug.get("condition") or None
     damage_type = sug.get("damage_type") or None
@@ -131,12 +140,14 @@ def item_from_suggestion(sug: dict) -> dict:
         tokens, condition = firm_condition(tokens, damage_type)
     if not damage_type and tokens:
         damage_type = damage_type_from_tokens(tokens)
-    # Contract 10: a linked part keeps where it hangs off; one no photo
-    # shows (hidden) is to be confirmed at strip-down until a person edits
-    # its condition.
-    hidden = bool(sug.get("hidden"))
+    # Contract 10: a linked part keeps where it hangs off. One the table
+    # flags for a strip-down, or in the "Confirm at strip-down" bucket, is
+    # to be confirmed at strip-down until a person edits its condition.
+    # Hidden alone is not that (review L1): a boot lid's lock or hinge is
+    # seen once the lid is opened, a door's trim from inside.
+    strip_down = bool(sug.get("needs_strip_down")) or sug.get("bucket") == "strip_down"
     links = {"linked_from": [str(k) for k in sug.get("linked_from") or [] if k], "link_type": sug.get("link_type"),
-             "hidden": hidden, "needs_strip_down": bool(sug.get("needs_strip_down")) or hidden}
+             "hidden": bool(sug.get("hidden")), "needs_strip_down": strip_down}
     return DamageSummaryItem(
         part=str(sug.get("part") or ""), other_part_name=sug.get("other_part_name"),
         damage_type=damage_type, condition_tokens=tokens, condition=condition,
@@ -207,6 +218,17 @@ def with_relinks(data: dict, new_items: list) -> dict | None:
             look["items"] = list(look.get("items") or []) + found
             joined = True
     return look if joined else None
+
+
+def relinks_of(before: dict | None, after: dict) -> list[dict]:
+    """The suggestions with_relinks joined: those of `after` (its answer)
+    whose key `before` (the second_look it was given) hasn't got. An
+    autosave answers these as "linked" -- new items only, no decision -- so
+    the wizard can add them to its own copy: an autosave answer landing
+    after a decision's would otherwise put the older decisions back
+    (contract 10 review L7)."""
+    had = {key_of(it) for it in (before or {}).get("items") or [] if isinstance(it, dict)}
+    return [it for it in after.get("items") or [] if isinstance(it, dict) and key_of(it) not in had]
 
 
 def by_hand(before: list, after: list) -> list[dict]:

@@ -1483,13 +1483,17 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
         _undismiss(data, item)
         # Contract 10 (intake_links "on"): the part's own linked parts join
         # the suggestions, as an add from a suggestion's do; answered with
-        # second_look then, so the page shows them at once.
+        # second_look then, so the page shows them at once -- and "linked",
+        # those new ones alone, as the wizard's autosave answers them
+        # (review L7: no decision in it to put back).
+        before_look = data.get("second_look")
         relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item])
         if relinked is not None:
             data["second_look"] = relinked
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item_source(item))
         return {"item_index": len(damage_summary) - 1, "item": item, **out,
-                **({"second_look": relinked} if relinked is not None else {})}
+                **({"second_look": relinked, "linked": suggestions.relinks_of(before_look, relinked)}
+                   if relinked is not None else {})}
     finally:
         db.close()
 

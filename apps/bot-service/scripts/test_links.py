@@ -13,7 +13,8 @@ Covers plan.md P2's done-when list on the engine:
   - sides: a firm parent's side; not firm (Low, inferred, strict) -> the
     "(side undetermined)" name; an undetermined parent through the
     taxonomy (only children every sided name has); "impact" by a clear
-    majority or the point of impact; never two children for one link;
+    majority of the firm sided parts at that end, never the point of
+    impact; never two children for one link;
   - skip / join: listed (and covered), dismissed, a zone suggestion's twin
     (joined to it), two parents of one child;
   - intact: demote (last, with the read), drop, ignore;
@@ -292,16 +293,21 @@ def sides() -> None:
     check("Rear Bumper Reflector (side undetermined)" in tie, "impact: one left, one right -> undetermined", tie)
     door_side = parts(build([item("Rear Bumper", "Dented"), item("Left Rear Door", "Dented")]))
     check("Rear Bumper Reflector (side undetermined)" in door_side, "impact: a door isn't at the rear end", door_side)
-    poi = by_part(build([item("Rear Bumper", "Dented")], impact="Rear LH corner"))
-    check(poi.get("Left Rear Bumper Reflector", {}).get("side_from") == "point of impact",
-          "impact: the point of impact \"Rear LH corner\" -> Left", sorted(poi))
-    other_end = parts(build([item("Rear Bumper", "Dented")], impact="Front left"))
-    check("Rear Bumper Reflector (side undetermined)" in other_end, "a point of impact at the other end: no side")
-    disagree = parts(build([item("Rear Bumper", "Dented"), item("Left Rear Quarter Panel", "Dented")],
-                           impact="rear right"))
-    check("Rear Bumper Reflector (side undetermined)" in disagree, "the list and the point of impact disagree: none")
-    check(links.impact_words("REAR RH") == ("Right", "rear") and links.impact_words("left and right")[0] is None,
-          "impact_words")
+    # Never the point of impact (review H1): the AI drafts it; for_parent
+    # (which reads the case's vehicle_info) gives what build gives.
+    for said in ("Rear LH corner", "Rear RH corner", "rear right"):
+        case = {"damage_summary": [item("Rear Bumper", "Dented")], "vehicle_info": {"point_of_impact": said}}
+        poi = parts(links.for_parent(case["damage_summary"][0], case, [], TABLE, ON))
+        check("Rear Bumper Reflector (side undetermined)" in poi and not any(p.startswith(("Left ", "Right "))
+                                                                            for p in poi),
+              f"impact: the point of impact {said!r} gives no side", poi)
+    firm_left = {"damage_summary": [item("Rear Bumper", "Dented"), item("Left Rear Quarter Panel", "Dented")],
+                 "vehicle_info": {"point_of_impact": "rear right"}}
+    major_poi = by_part(links.for_parent(firm_left["damage_summary"][0], firm_left, [], TABLE, ON))
+    check(major_poi.get("Left Rear Bumper Reflector", {}).get("side_from") == "Left Rear Quarter Panel",
+          "a firm Left part at the rear decides, whatever the point of impact says", sorted(major_poi))
+    check(not hasattr(links, "impact_words") and "impact" not in links.build.__kwdefaults__,
+          "build takes no point of impact")
     many = build([item("Left Front Door", "Buckled"), item("Right Front Door", "Buckled"), item("Rear Bumper", "Deformed")])
     rules = [it["link_rule"] for it in many if len(it["linked_from"]) == 1]
     per_parent = [(it["linked_from"][0], it["link_rule"]) for it in many]

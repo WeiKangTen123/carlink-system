@@ -358,14 +358,21 @@ def decisions() -> None:
           "add a hidden linked part: linked_from, link_type, hidden, needs_strip_down copied", beam)
     check(beam.get("condition") is None and beam.get("remarks") is None and not beam.get("condition_tokens")
           and beam.get("bbox_2d") is None, "no condition, remarks or AI box made up (the report is unchanged)", beam)
-    check(beam["photo_reference"] == "@d1", "its photo: the parent's, as its evidence says")
+    check(beam.get("photo_reference") is None and not beam.get("seen_in")
+          and [(e["photo"], e["by"]) for e in beam["evidence"]] == [("@d1", "link")],
+          "no photo of its own (review L2): the parent's stays as evidence by link only", beam)
     with Settings(intake_links="on"):
         sensor = suggestions.decide(done.data, "Parking Sensor", "add", False, USER, "intake").item
     check(sensor["link_type"] == "attached" and "hidden" not in sensor and "needs_strip_down" not in sensor,
           "a visible linked part: no strip-down (defaults left out of the dump)", sensor)
     lid = {"key": "Boot Lid Lock", "part": "Boot Lid Lock", "source": "link", "hidden": True, "linked_from": ["Boot Lid"],
            "link_type": "opens_with"}
-    check(suggestions.item_from_suggestion(lid)["needs_strip_down"], "hidden alone means needs_strip_down")
+    check("needs_strip_down" not in suggestions.item_from_suggestion(lid)
+          and suggestions.item_from_suggestion(lid)["hidden"],
+          "hidden alone is no strip-down (review L1): a boot lid's lock is seen once the lid opens")
+    check(suggestions.item_from_suggestion({**lid, "bucket": "strip_down"})["needs_strip_down"]
+          and suggestions.item_from_suggestion({**lid, "needs_strip_down": True})["needs_strip_down"],
+          "the strip-down bucket, or the table's flag: needs_strip_down")
     plain = suggestions.item_from_suggestion({"key": "Left Tail Lamp", "part": "Left Tail Lamp", "source": "zone"})
     check(not any(k in plain for k in ("linked_from", "link_type", "hidden", "needs_strip_down")),
           "a zone suggestion added: no link field (dumps as before)")
@@ -485,12 +492,12 @@ def accuracy_v3() -> None:
     summed = accuracy.sum_suggestions([v2_row, {"suggestions": s}, {"suggestions": sh}, {"damage": {}}])
     check(summed["shown"] == 3 + s["shown"] and summed["by_source"]["zone"]["shown"] == 4
           and summed["by_source"]["link"]["shown"] == n and summed["by_link_type"]["behind"]["added"] == 1
-          and summed["links_tables"] == {"L1": 2} and summed["shadow"]["predicted"] == n
+          and summed["links_table"] == ["L1"] and "links_tables" not in summed and summed["shadow"]["predicted"] == n
           and summed["link_check"]["seen"]["shown"] == 1,
           "sum: a VERSION 2 row adds its counts and nothing else; v3 rows their link groups", summed)
     empty = accuracy.sum_suggestions([v2_row])
-    check(empty["by_link_type"] == {} and empty["shadow"] == {"predicted": 0, "on_final_list": 0, "by_rule": {}},
-          "only VERSION 2 rows: the link groups empty, zero")
+    check(empty["by_link_type"] == {} and empty["shadow"] == {"predicted": 0, "on_final_list": 0, "by_rule": {}}
+          and empty["links_table"] == [], "only VERSION 2 rows: the link groups empty, zero, no table")
 
 
 def main() -> int:

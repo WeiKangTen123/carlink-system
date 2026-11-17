@@ -219,6 +219,8 @@ def call_structured(
     timeout: float = 45.0,
     judge_key: bool = True,
     tools_note: str | None = None,
+    max_tries: int | None = None,
+    deadline: float | None = None,
     _busy_round: int = 0,
 ) -> T:
     """Returns parse(raw JSON text) from the first key/model that produces
@@ -251,6 +253,17 @@ def call_structured(
     tools_note: words added to the system prompt on a try whose request
     carries tools (tools_try), e.g. the reading's ZOOM_NOTE; never on any
     other try.
+
+    max_tries: at most this many requests in all -- every key, model and
+    retry -- and no second round when every model was busy; a retry's wait
+    is skipped when no try is left for it. The linked check's "one retry,
+    then unchanged" (contract 10). None (every other call): no cap.
+
+    deadline: a time.monotonic() past which no request starts, and no wait
+    begins that would end past it; each request's timeout is cut to the
+    time left. A caller's time box that gives up on the call (its thread
+    can't be killed) then knows nothing more is sent in the background.
+    None (every other call): none.
     """
     # Two nested fallbacks. Inner: each model in the chain, since they have
     # independent per-model quotas. Outer: each key, since every model
@@ -271,6 +284,16 @@ def call_structured(
     all_busy = None
     # The AiUnavailable code of each own key that failed for its own reasons.
     refused: list[str] = []
+    # The requests sent so far (max_tries), and whether max_tries or the
+    # deadline has ended the call: nothing more is sent, and a key whose
+    # chain wasn't all tried is not judged on the part that was.
+    tries = 0
+    stopped = False
+
+    def no_more(wait: float = 0.0) -> bool:
+        return ((max_tries is not None and tries >= max_tries)
+                or (deadline is not None and time.monotonic() + wait >= deadline))
+
     # The run log (ai/runs.py) gets the request's size once, and each try
     # below as it ends, through the calling thread's collector.
     if not _busy_round:
@@ -301,11 +324,18 @@ def call_structured(
                 verdicts.append("no_allowance" if allowance.limit(key.fingerprint, model_id) == 0 else "quota")
                 last_error = allowance.DaySpent(model_id)
                 continue
+            if no_more():
+                stopped = True
+                break
             # Every attempt takes a slot, not just the first. Previously the
             # gate ran once before these loops, so a draft that fell through
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
             waited = acquire(key.rate_limit_id)
+            if no_more():
+                # The wait for a slot ran past the deadline.
+                stopped = True
+                break
             verdict = None
             # Per model: a thinking level or a tool may be set for one model
             # of the chain only.
@@ -318,9 +348,11 @@ def call_structured(
             for attempt in (1, 2):
                 started = time.monotonic()
                 interaction = None
+                tries += 1
+                this_timeout = try_timeout if deadline is None else max(1.0, min(try_timeout, deadline - started))
                 try:
                     interaction = _create_within(
-                        try_timeout + DEADLINE_MARGIN,
+                        this_timeout + DEADLINE_MARGIN,
                         client.interactions.create,
                         model=model_id,
                         system_instruction=system,
@@ -335,7 +367,7 @@ def call_structured(
                         # one call sat for 100+s with no response and no
                         # error), tying up a worker for no benefit since the
                         # point of the chain is to keep trying other models.
-                        timeout=try_timeout,
+                        timeout=this_timeout,
                         # A model that refuses a setting (a thinking level
                         # it hasn't got) answers 400: that try fails like
                         # any other error and the chain moves on.
@@ -380,7 +412,10 @@ def call_structured(
                     # beats ending a run whose last models are both busy.
                     if delay is None and said is None and is_overloaded(exc):
                         delay = OVERLOADED_RETRY_SECONDS
-                    if delay is not None and attempt == 1:
+                    # No try left for the retry, or it would start past the
+                    # deadline (no_more): not waited for -- on to the next
+                    # model, if a try is left for it.
+                    if delay is not None and attempt == 1 and not no_more(delay):
                         logger.warning(
                             "Gemini model %r rate-limited or busy on %s; waiting %.1fs before asking again",
                             model_id, key.label, delay,
@@ -400,6 +435,8 @@ def call_structured(
             verdicts.append(verdict)
             if verdict == "invalid":
                 break  # Google refused the key itself: no other model will take it
+        if stopped:
+            break  # this key's chain not all tried: nothing to say of the key; no other key
         outcome = _key_outcome(verdicts) if own else None
         if outcome:
             # Every model skipped and the key already marked quota (being
@@ -414,7 +451,7 @@ def call_structured(
         # than "the AI failed". (Not chained: the SDK's error stays in the
         # log lines above, scrubbed.)
         raise AiUnavailable(refused[-1]) from None
-    if all_busy and not _busy_round:
+    if all_busy and not _busy_round and max_tries is None and not no_more(CHAIN_BUSY_RETRY_SECONDS):
         # Every model of the chain said "busy" (each already asked twice):
         # a short pause and one more round, rather than failing a run when
         # the light models -- what most reads run on -- are all busy at once.
@@ -423,7 +460,7 @@ def call_structured(
         return call_structured(
             purpose=purpose, system_instruction=system_instruction, input_parts=input_parts, schema=schema,
             parse=parse, models=models, actor=actor, timeout=timeout, judge_key=judge_key, tools_note=tools_note,
-            _busy_round=1,
+            deadline=deadline, _busy_round=1,
         )
     raise (allowance.DayUsedUp if all_day and last_error is not None else RuntimeError)(
         f"All Gemini fallback models ({', '.join(models)}) failed "

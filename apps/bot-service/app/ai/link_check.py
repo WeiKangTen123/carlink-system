@@ -34,10 +34,11 @@ IntakeSession.ai_draft["link_suggestions"]; the answer and the CheckRun go
 there too, ai_draft["link_run"], never into the case's data). Anything else
 -- "off", the default -- is no call and no write.
 
-Failures never fail the reading: a 503 gets call_structured's busy
-handling (one short retry per model, then the chain once more), all inside
-TIME_BOX; a timeout, an answer that doesn't parse, or no key or allowance
-leaves the linked parts as they were, with a note. A failed call ends the
+Failures never fail the reading: a call makes at most MAX_TRIES requests
+in all (a 503: one short wait and one retry), each through the shared rate
+limiter, none started after TIME_BOX; then a timeout, a busy model, an
+answer that doesn't parse, or no key or allowance leaves the linked parts
+as they were, with a note. A failed call ends the
 step: the next area would most likely fail the same way. The answers are
 written under SQLite's write lock onto the items as they are then, so a
 person's add or dismissal made during the call stands -- an item a person
@@ -79,9 +80,16 @@ MAX_REASON_WORDS = 25
 # call_structured's purpose: structured.CALL_KINDS["link"] gives it
 # settings.gemini_thinking_level_link.
 PURPOSE = "link"
-# One model try, and one call however many tries it makes (P7b: 60 s).
-TIMEOUT = 45.0
-TIME_BOX = 60.0
+# One area's call, however many tries it makes, and its tries in all:
+# contract10.md 6's "503 -> one retry, then unchanged" (review M3). Every
+# try takes a slot of the rate limiter every live user's reads share, and
+# the case stays "reading" meanwhile, so a busy model costs at most two
+# requests and one short wait (structured.OVERLOADED_RETRY_SECONDS), never
+# call_structured's usual two a model and a second round. A try's own
+# timeout is cut to what is left of the box (call_structured's deadline).
+TIME_BOX = 30.0
+MAX_TRIES = 2
+TIMEOUT = TIME_BOX
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 # A group's area -> its skill file. "side": a side part whose side neither
@@ -482,11 +490,13 @@ def _answered_by(attempts: runs.Attempts, models: list[str]) -> str | None:
 
 def ask(group: Group, actor: AiActor, attempts: runs.Attempts) -> dict[str, dict]:
     """One area's call: {item key: {"link_check": LinkCheck dict, "entry":
-    its Evidence by "link_check" or None}}. Raises as call_structured does,
-    or TimeoutError after TIME_BOX."""
+    its Evidence by "link_check" or None}}. At most MAX_TRIES requests, none
+    started after TIME_BOX. Raises as call_structured does, or TimeoutError
+    after TIME_BOX."""
     refs = [c.ref for c in group.candidates]
     labels = [p.label for p in group.photos]
     models = chain(settings.gemini_link_chain)
+    deadline = time.monotonic() + TIME_BOX
 
     def work(stop: threading.Event) -> dict[str, dict]:
         return call_structured(
@@ -495,7 +505,7 @@ def ask(group: Group, actor: AiActor, attempts: runs.Attempts) -> dict[str, dict
             models=_ChainUntil(models, stop), actor=actor, timeout=TIMEOUT,
             # Its own chain running out must not switch the person's key off
             # for the reading (structured.call_structured).
-            judge_key=False,
+            judge_key=False, max_tries=MAX_TRIES, deadline=deadline,
         )
 
     got = _within(TIME_BOX, work, attempts)

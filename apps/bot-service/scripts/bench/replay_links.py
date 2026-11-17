@@ -18,8 +18,9 @@ are rebuilt as second_look._store hands them to links.build_all:
     bucket);
   - what each zone read that answered called intact: zones[].intact, as
     ai_draft["zone_intact"] = {"zone:rear": [...]};
-  - no point of impact (a run doesn't store it): an "impact" link takes its
-    side from the listed parts at that end, else "(side undetermined)";
+  - an "impact" link takes its side from the firm sided parts listed at
+    that end, else "(side undetermined)" -- never from the point of impact
+    (the AI's own draft), as _store builds it;
 
 then links.build_all with the frozen L1 table and the knobs frozen with it
 (L1-freeze.md), exactly as _store calls it, and the same filter after it
@@ -268,7 +269,7 @@ def replay_run(run: dict, case: dict, table: dict, opts: links.Options, inside: 
     intact = zone_intact_of(run)
     before = json.dumps([listed, others, photos, intact], sort_keys=True)
     stored = json.dumps(run.get("drafted_items"), sort_keys=True)
-    items, joins = links.build_all(listed, others, photos, intact, table, opts, dismissed=(), impact=None)
+    items, joins = links.build_all(listed, others, photos, intact, table, opts, dismissed=())
     # second_look._store ("on"): a link on the list, or dismissed, goes.
     names = {str(i.get("part")) for i in listed}
     items = [it for it in items if not set(links.covers(it["part"])) & names]
