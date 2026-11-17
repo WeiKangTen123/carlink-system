@@ -15,9 +15,12 @@ which couldn't take a real case: the four sample cases are 41-78 photos and
     POST   /intake/{id}/suggestions         add / dismiss / undo one AI suggestion (contract 9)
     POST   /intake/{id}/finalize            turn the draft into a case
 
-The Telegram/WhatsApp bots and the edit form keep using draft_report directly.
+The edit form and the WhatsApp bot keep using draft_report directly; so does
+the Telegram bot unless settings.telegram_full_detection is on (contract 10):
+then a staff report becomes one of these drafts and this pipeline reads it in
+the bot's process (intake/telegram_bridge.py), its run kept alive across the
+two processes by a heartbeat (pipeline.is_live).
 """
-import copy
 import hashlib
 import logging
 from datetime import datetime, timezone
@@ -49,7 +52,7 @@ from app.intake.photos import (
 from app.parts import catalogue
 from app.reports import owners, suggestions
 from app.reports.db import SessionLocal
-from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data
+from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data, relabel_ai_draft
 from app.reports import review
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
@@ -98,7 +101,9 @@ def _load_draft(db, report_id: str, *, mutating: bool = False, block_while_runni
     # can be worked on and filed again rather than staying locked for good.
     if mutating and session.stage == "finalizing" and not pipeline.filing_interrupted(session):
         raise HTTPException(status_code=409, detail="This intake is being turned into a case.")
-    if block_while_running and session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
+    # is_live: a run here, or one in the Telegram bot's process that keeps
+    # beating (contract 10).
+    if block_while_running and session.stage in pipeline.RUNNING_STAGES and pipeline.is_live(session):
         raise HTTPException(status_code=409, detail="Wait for the AI to finish reading this case.")
     return report, session
 
@@ -117,7 +122,9 @@ def _claim_stage(db, report_id: str, new_stage: str, seen_owner: str | None) -> 
     (pipeline.filing_interrupted) may be claimed again. stage_started_at is
     set on every claim: it is what tells a live filing from a stale one, and
     the moment a claimed run's stage began (the pipeline's own _set_stage
-    only stamps a change of stage)."""
+    only stamps a change of stage). A claim also ends any heartbeat another
+    process's run left (contract 10, pipeline.is_live): the stage is this
+    claim's now."""
     owner_is = Report.owner_id.is_(None) if seen_owner is None else Report.owner_id == seen_owner
     started = func.coalesce(IntakeSession.stage_started_at, IntakeSession.updated_at)
     result = db.execute(
@@ -128,7 +135,7 @@ def _claim_stage(db, report_id: str, new_stage: str, seen_owner: str | None) -> 
             exists().where(Report.id == report_id, owner_is, public.not_untaken_clause()),
         )
         .values(stage=new_stage, progress_done=0, progress_total=0, error=None, error_code=None, error_by=None,
-                stage_started_at=datetime.now(timezone.utc))
+                stage_started_at=datetime.now(timezone.utc), run_heartbeat_at=None)
     )
     db.commit()
     return result.rowcount == 1
@@ -249,6 +256,17 @@ def _shared_open_drafts(db) -> int:
         .filter(or_(User.id.is_(None), ~staff), public.not_untaken_clause())
         .scalar()
     )
+
+
+def check_can_start(db, user) -> None:
+    """The open-draft caps a new draft must pass: the person's own
+    (limits.check_open_drafts) and, for all but admins and ticked staff,
+    MAX_OPEN_DRAFTS shared. Raises the 409 to show. Here and for a Telegram
+    report handed over as a draft (contract 10, intake/telegram_bridge.py)."""
+    limits.check_open_drafts(db, user)
+    if limits.counts_toward_shared_drafts(user) and _shared_open_drafts(db) >= MAX_OPEN_DRAFTS:
+        raise ApiError(409, f"There are already {MAX_OPEN_DRAFTS} unfinished intakes. Finish or delete some first.",
+                       "draft_limit")
 
 
 @router.post("")
@@ -483,14 +501,24 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         # Contract 9: the suggestions and the decisions on them are the
         # server's (decide_intake_suggestion), like template_fields: always
         # as stored, whatever the browser's copy says.
-        data["second_look"] = (report.data or {}).get("second_look")
+        stored = report.data or {}
+        data["second_look"] = stored.get("second_look")
+        # Contract 10: "Confirm at strip-down" is the server's flag, kept
+        # until a person edits the item's condition; and a part put on the
+        # list by hand brings its own linked parts (intake_links "on"),
+        # answered so the wizard shows them at once.
+        before = [it for it in stored.get("damage_summary") or [] if isinstance(it, dict)]
+        suggestions.kept_strip_down(data.get("damage_summary"), before)
+        relinked = suggestions.with_relinks(data, suggestions.by_hand(before, data.get("damage_summary")))
+        if relinked is not None:
+            data["second_look"] = relinked
         # Only a ref to one of this draft's own catalogue rows stays on a
         # line (as the stored row has it); a draft save never fails over one.
         report.data = catalogue.without_bad_refs(db, report_id, data)
         if body.reporter_notes is not None:
             session.reporter_notes = body.reporter_notes
         db.commit()
-        return {"ok": True}
+        return {"ok": True} if relinked is None else {"ok": True, "second_look": relinked}
     finally:
         db.close()
 
@@ -604,7 +632,9 @@ def process_intake(report_id: str, body: ProcessRequest, user: CurrentUser = Dep
         # sees a stage with no run behind it), and the stage committed
         # before the thread starts (whose own progress writes would
         # otherwise be overwritten with these zeros).
-        if not pipeline.reserve(report_id):
+        # A run in the Telegram bot's process (contract 10) is refused as one
+        # here is: the bot reads it now, and a second run would race it.
+        if pipeline.running_elsewhere(session) or not pipeline.reserve(report_id):
             raise HTTPException(status_code=409, detail="AI processing is already running for this draft.")
         claimed = False
         try:
@@ -670,7 +700,7 @@ def decide_intake_suggestion(
     try:
         hold_write_lock(db, report_id)
         report, session = _load_draft(db, report_id, mutating=True)
-        if session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(report_id):
+        if session.stage in pipeline.RUNNING_STAGES and pipeline.is_live(session):
             raise ApiError(409, "Wait for the AI to finish reading this case.", "running")
         try:
             done = suggestions.decide(report.data or {}, body.key, body.action, body.looked, user, where="intake")
@@ -707,7 +737,7 @@ def finalize_intake(report_id: str, body: FinalizeRequest, user: CurrentUser = D
     db = SessionLocal()
     try:
         report, session = _load_draft(db, report_id, mutating=True)
-        if pipeline.is_running(report_id):
+        if pipeline.is_live(session):
             raise HTTPException(status_code=409, detail="Wait for AI processing to finish first.")
         body.data.report_id = limits.checked_our_ref(user, body.data.report_id, (report.data or {}).get("report_id"))
         limits.check_new_cases_today(db, user)
@@ -768,18 +798,15 @@ def _with_final_labels(ai_draft: dict | None, index_of: dict) -> dict | None:
     """The AI's draft with its "@<photo id>" references (pipeline.py keeps
     them so until the order is fixed) turned into the case's P-numbers,
     with the same map the data gets -- the IntakePhoto rows are deleted at
-    filing, so "@id" would point at nothing."""
-    if not ai_draft:
-        return ai_draft
-    out = copy.deepcopy(ai_draft)
-    # The damage list (photo_reference, contract 8's seen_in, contract 9's
-    # evidence), and the parts only zone reads found (contract 9), frozen
-    # here as "what the AI suggested": suggestions.relabel_item, a deleted
-    # photo's references dropped.
-    for key in ("damage_summary", "zone_suggestions"):
-        if isinstance(out.get(key), list):
-            out[key] = [suggestions.relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
-    return out
+    filing, so "@id" would point at nothing.
+
+    The damage list (photo_reference, contract 8's seen_in, contract 9's
+    evidence), the parts only zone reads found (contract 9) and, in shadow
+    mode, the linked parts (contract 10: ai_draft["link_suggestions"], their
+    linked check's photos too), frozen here as "what the AI suggested":
+    filing.relabel_ai_draft (suggestions.relabel_item on each of
+    filing.AI_DRAFT_PHOTO_LISTS), a deleted photo's references dropped."""
+    return relabel_ai_draft(ai_draft, index_of)
 
 
 def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: CurrentUser) -> None:

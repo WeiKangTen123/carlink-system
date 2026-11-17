@@ -89,7 +89,9 @@ def draft_deletes_at(
     # run a restart cut off: the stage still says "sorting"/"reading" but
     # no thread here runs it (the wizard already shows it as failed,
     # pipeline.is_running); left out it was skipped forever, the same leak.
-    busy = (session.stage in pipeline.RUNNING_STAGES and pipeline.is_running(session.report_id)) or (
+    # A run in the Telegram bot's process that keeps beating is alive too
+    # (contract 10, pipeline.is_live).
+    busy = (session.stage in pipeline.RUNNING_STAGES and pipeline.is_live(session, now)) or (
         session.stage == "finalizing" and not pipeline.filing_interrupted(session, now)
     )
     if busy:

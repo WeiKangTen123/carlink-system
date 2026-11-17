@@ -185,6 +185,71 @@ def without_orphans(items: list, data: dict, look: dict) -> list:
         and key_of(it) not in decided and not set(it["linked_from"]) & listed)]
 
 
+def with_relinks(data: dict, new_items: list) -> dict | None:
+    """Contract 10: data["second_look"] with the linked parts of new_items --
+    parts a person just put on the list by hand (the wizard's autosave, the
+    case page's POST /damage-items) -- joined to the suggestions, each by
+    relinked() against the list as it is now, in turn. None when nothing
+    joined: intake_links not "on", no second look yet (the next read links
+    the whole list), nothing new. A copy; data is left as it is."""
+    from app.config import settings
+
+    look = data.get("second_look") if isinstance(data, dict) else None
+    items = [it for it in new_items or [] if isinstance(it, dict) and it.get("part")]
+    # Off and shadow: not even the table is loaded for it.
+    if getattr(settings, "intake_links", "off") != "on" or not isinstance(look, dict) or not items:
+        return None
+    look = dict(look)
+    joined = False
+    for item in items:
+        found = relinked(item, data, look)
+        if found:
+            look["items"] = list(look.get("items") or []) + found
+            joined = True
+    return look if joined else None
+
+
+def by_hand(before: list, after: list) -> list[dict]:
+    """The items of `after` a person put on the list by hand since `before`
+    (the wizard's autosave): a key `before` doesn't have -- a part added or
+    renamed -- and not from a suggestion (decide() lists those and links
+    their parts itself)."""
+    had = {item_key(it) for it in before or [] if isinstance(it, dict)}
+    return [it for it in after or [] if isinstance(it, dict) and it.get("part")
+            and it.get("added_from") != "suggestion" and item_key(it) not in had]
+
+
+def _same_condition(a: dict, b: dict) -> bool:
+    return (a.get("condition") or None) == (b.get("condition") or None) and \
+        list(a.get("condition_tokens") or []) == list(b.get("condition_tokens") or [])
+
+
+def clear_strip_down(item: dict, before: dict | None) -> None:
+    """In place, contract 10 (owner default 2): an item added from a hidden
+    linked part keeps needs_strip_down ("Confirm at strip-down") until a
+    person edits its condition. Cleared when it differs from `before` (the
+    item as stored), and when there is no stored item of its key: the flag
+    is the server's alone (item_from_suggestion), never the browser's. Left
+    out rather than false, as the model dumps it (schema LINK_ITEM_DEFAULTS),
+    so a list that never had one is unchanged byte for byte."""
+    if not item.get("needs_strip_down"):
+        return
+    if before is None or not before.get("needs_strip_down") or not _same_condition(item, before):
+        item.pop("needs_strip_down", None)
+
+
+def kept_strip_down(items: list, stored: list) -> None:
+    """clear_strip_down on each item of a whole-list save (the wizard's
+    autosave) against the stored list, matched by key."""
+    by_key: dict[str, dict] = {}
+    for it in stored or []:
+        if isinstance(it, dict):
+            by_key.setdefault(item_key(it), it)
+    for it in items or []:
+        if isinstance(it, dict):
+            clear_strip_down(it, by_key.get(item_key(it)))
+
+
 @dataclass
 class Decided:
     """What decide() did. data: the case data with second_look (and the

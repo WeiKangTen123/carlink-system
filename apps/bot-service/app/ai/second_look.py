@@ -734,8 +734,28 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
 
     vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
     listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+    opts = links.options()
+    neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
     return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
-                           links.options(), dismissed=dismissed, impact=vehicle.get("point_of_impact"))
+                           opts, dismissed=dismissed, impact=vehicle.get("point_of_impact"), neighbours=neighbours)
+
+
+def _catalogue_neighbours(report_id: str, vehicle: dict, listed: list[dict]) -> dict | None:
+    """settings.intake_links_catalogue: the parts catalogue's diagram
+    neighbours of the listed parts (parts/catalogue.diagram_neighbours), for
+    the read's make, model and year. Cache only -- the stored catalogue
+    rows, never a web request -- so it neither slows nor fails the reading:
+    a cold cache answers {}, and any error is logged and leaves the linked
+    parts to the table alone (None). Imported only when on."""
+    try:
+        from app.parts import catalogue
+
+        parts = [str(it.get("part")) for it in listed if it.get("part")]
+        return catalogue.diagram_neighbours(vehicle.get("make"), vehicle.get("model"), catalogue.case_year(vehicle),
+                                            parts)
+    except Exception:
+        logger.exception("Second look for %s: no catalogue neighbours this time", report_id)
+        return None
 
 
 def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:

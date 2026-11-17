@@ -12,10 +12,11 @@ detection as one uploaded on the website. The person then finishes it on
 the website: checks the list, decides the suggestions, files the case.
 
 The run is in the bot's own process (pipeline.reserve / start_reserved,
-whose in-memory "running" set is per process): while it runs, heartbeat()
-keeps the draft's updated_at fresh, which is how the api process can tell
-a live run in the bot from one a restart cut off (a hook in pipeline.py,
-T-report.md H1).
+whose in-memory "running" set is per process): while it runs, the run's own
+beat (pipeline.keep_beating, every 30 s, from start()) keeps the draft's
+run_heartbeat_at fresh, which is how the api process tells a live run in
+the bot from one a restart cut off (pipeline.is_live: the wizard shows it
+reading, Retry / autosave / decisions / File case wait, the sweep leaves it).
 
 Database and file work only, each call in its own session; run them off
 the event loop. The chat side -- replies, the chat lock, who the person
@@ -32,9 +33,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, update
 
 from app.ai.keys import AiActor
-from app.api import limits
 from app.auth.core import audit
-from app.auth.deps import ApiError
 from app.intake import pipeline
 from app.intake.photos import intake_dir, is_readable_image, remove_intake_dir
 from app.reports import review
@@ -161,15 +160,12 @@ def store_photos(report_id: str, photo_paths) -> tuple[list[dict], int]:
 
 
 def _check_can_start(db, owner: User) -> None:
-    """The website's checks for a new draft (api/intake.create_intake): the
-    person's open drafts, and the drafts everyone but admins and ticked
+    """The website's checks for a new draft (api/intake.check_can_start):
+    the person's open drafts, and the drafts everyone but admins and ticked
     staff share. ApiError / HTTPException with the words to show."""
-    from app.api.intake import MAX_OPEN_DRAFTS, _shared_open_drafts
+    from app.api.intake import check_can_start
 
-    limits.check_open_drafts(db, owner)
-    if limits.counts_toward_shared_drafts(owner) and _shared_open_drafts(db) >= MAX_OPEN_DRAFTS:
-        raise ApiError(409, f"There are already {MAX_OPEN_DRAFTS} unfinished intakes. Finish or delete some first.",
-                       "draft_limit")
+    check_can_start(db, owner)
 
 
 def create_draft(*, external_id: str, photo_paths, facts: dict, notes: str,
@@ -230,6 +226,9 @@ def create_draft(*, external_id: str, photo_paths, facts: dict, notes: str,
             # "uploading", whose Start button would offer a second run.
             stage="sorting",
             stage_started_at=now,
+            # Alive from the start for the api (pipeline.is_live), before
+            # start()'s first beat.
+            run_heartbeat_at=now,
             reporter_notes=notes or "",
         ))
         for position, photo in enumerate(photos):
@@ -272,6 +271,10 @@ def start(report_id: str, actor: AiActor, on_done: Callable[[], None] | None = N
         pipeline.release(report_id)
         _mark_not_started(report_id)
         raise
+    # The api's process can't see this process's run (pipeline._running):
+    # it beats for as long as the run lives here, however long the chat
+    # waits for it.
+    pipeline.keep_beating(report_id)
     return True
 
 
@@ -297,24 +300,11 @@ def running(report_id: str) -> bool:
 
 
 def heartbeat(report_id: str) -> None:
-    """While the bot's run goes on: the draft's updated_at, now -- only
-    while its stage is a running one. What the api can read to tell a live
-    run in this process from one a restart cut off (T-report.md H1). Never
-    raises: a busy database skips one beat."""
-    db = SessionLocal()
-    try:
-        db.execute(
-            update(IntakeSession)
-            .where(IntakeSession.report_id == report_id, IntakeSession.stage.in_(pipeline.RUNNING_STAGES))
-            .values(updated_at=datetime.now(timezone.utc))
-            .execution_options(synchronize_session=False)
-        )
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.debug("Telegram draft %s: heartbeat skipped (%s)", report_id, type(exc).__name__)
-    finally:
-        db.close()
+    """While the bot's run goes on: one beat of the draft's heartbeat
+    (pipeline.beat: run_heartbeat_at, and so updated_at, now) -- only while
+    its stage is a running one. start()'s pipeline.keep_beating beats
+    already; the chat's watcher beating too costs one write. Never raises."""
+    pipeline.beat(report_id)
 
 
 def outcome(report_id: str) -> Outcome:

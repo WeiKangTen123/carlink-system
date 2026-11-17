@@ -76,6 +76,9 @@ _ADDED_COLUMNS = [
     # Where the sorter saw a photo's damage (models.IntakePhoto.damage_box,
     # contract 8 D1).
     ("intake_photos", "damage_box", "JSON"),
+    # The heartbeat of an AI run in the Telegram bot's process
+    # (models.IntakeSession.run_heartbeat_at, contract 10).
+    ("intake_sessions", "run_heartbeat_at", "DATETIME"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing
