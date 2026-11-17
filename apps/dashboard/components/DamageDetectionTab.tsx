@@ -12,7 +12,7 @@ import {
   type ReportDetail,
 } from "@/lib/api";
 import { addDamageItemAction } from "@/app/reports/actions";
-import { buildFindings, type Finding, type PhotoInfo, type PhotoLookup } from "@/lib/findings";
+import { buildFindings, withSavedLook, type Finding, type PhotoInfo, type PhotoLookup } from "@/lib/findings";
 import { indexLabel, labelIndex } from "@/lib/damageLinks";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
@@ -104,10 +104,12 @@ export function DamageDetectionTab({
   const [secondLook, setSecondLook] = useState(report.data.second_look ?? null);
   useEffect(() => setSecondLook(report.data.second_look ?? null), [report]);
   // A damage-items answer: the parts and Annex A, and -- contract 10, a
-  // part added by hand that brought its own linked parts -- the suggestions.
+  // part added by hand that brought its own linked parts -- the new ones
+  // added to ours, never rolling back a decision answered meanwhile
+  // (review L7, as the wizard's autosave).
   const applyDamageItems = useCallback(
     (res: DamageItemsResponse) => {
-      if (res.second_look) setSecondLook(res.second_look);
+      if (res.second_look || res.linked) setSecondLook((cur) => withSavedLook(cur, res));
       onDamageItemsApplied(res);
     },
     [onDamageItemsApplied],
@@ -253,6 +255,7 @@ export function DamageDetectionTab({
           findings={suggestions}
           decisions={secondLook.decisions ?? []}
           check={secondLook.check ?? null}
+          linkRun={secondLook.link_run ?? null}
           photos={lookup}
           readOnly={readOnly}
           onDecide={decideLooked}

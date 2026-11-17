@@ -16,9 +16,11 @@ import {
   confirmAtStripDown,
   decisionStates,
   foundByText,
+  intactText,
   linkBucket,
   linkCheckLine,
   linkGroupTitle,
+  linkRunNote,
   parentName,
   seenCount,
   sideFromText,
@@ -36,6 +38,9 @@ export type SuggestionPanelProps = {
   findings: Finding[];
   decisions: SuggestionDecision[];
   check: CheckRun | null;
+  /** Contract 10: second_look.link_run, what the linked check did; its note
+   * goes under "Linked parts to check". Optional: added by the review fix. */
+  linkRun?: CheckRun | null;
   photos: PhotoLookup;
   readOnly?: boolean;
   /** Keys are finding keys ("sug:<key>"); lib/useSuggestionDecisions takes
@@ -136,8 +141,10 @@ const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message :
  *   the listed part they hang off ("Linked to: Rear Bumper (...)"), each
  *   tagged Seen / Likely / Strip-down, at most 4 a group before "Show more",
  *   the crush path collapsed and the checks' "probably not" ones last.
- *   Their reason is the link table's, never "AI says"; nothing is ticked. */
-export function SuggestionPanel({ surface, findings, decisions, check, photos, readOnly, onDecide, onLook, onShowOnMap, reads }: SuggestionPanelProps) {
+ *   Their reason is the link table's, never "AI says" (the linked check's
+ *   own words are: "AI check: likely — AI says: ..."); nothing is ticked.
+ *   The linked check's outcome note sits under their heading. */
+export function SuggestionPanel({ surface, findings, decisions, check, linkRun, photos, readOnly, onDecide, onLook, onShowOnMap, reads }: SuggestionPanelProps) {
   const [showDecided, setShowDecided] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +216,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
     const isBusy = busy === f.key;
     const bucket = isLink ? linkBucket(f) : null;
     const strip = confirmAtStripDown(f);
-    const intact = (f.intactIn ?? []).map((r) => photos(r)?.label).filter(Boolean);
+    const intact = intactText(f.intactIn, photos);
     const also = alsoLinkedText(f);
     const lc = linkCheckLine(f.linkCheck);
     const unlikelyCard = f.check?.verdict === "no" || f.linkCheck?.verdict === "no";
@@ -232,9 +239,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
         {f.check?.reason && <p className="sg-reason">Re-check: {aiSays(f.check.reason)}</p>}
         {facts && <div className="sg-facts">{facts}</div>}
         {also && <div className="sg-facts">{also}</div>}
-        {intact.length > 0 && (
-          <div className="sg-note">A zone read listed it as not damaged in {intact.join(", ")}. Check it on the car.</div>
-        )}
+        {intact && <div className="sg-note lk-intact">{intact}</div>}
         {f.otherSideListed && (
           <div className="sg-note">
             The list already has {f.otherSideListed}. Check this isn&apos;t the same damage on the other side.
@@ -364,6 +369,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
   };
 
   const linkedCount = sections.groups.reduce((n, g) => n + g.rows.length + g.crush.length + g.probablyNot.length, 0);
+  const linkNote = linkRunNote(linkRun);
 
   return (
     <section className="card intake-panel sg-panel" aria-labelledby={`sg-title-${surface}`}>
@@ -411,6 +417,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
           <h3 className="lk-section-head">
             Linked parts to check ({linkedCount})<span className="intake-muted"> tied to parts on the list; check each one on the car</span>
           </h3>
+          {linkNote && <div className="intake-muted sg-run-note lk-run-note">{linkNote}</div>}
           {sections.groups.map(group)}
         </>
       )}

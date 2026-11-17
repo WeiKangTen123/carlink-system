@@ -108,10 +108,18 @@ const LINK_CHECK_NAMES: Record<string, string> = {
 // Rules listed before the rest go under "more"; counts only.
 const RULES_SHOWN = 12;
 
-/** "L1" or "L1, L2": the link table versions behind these counts. */
-function tableNames(t: AiAccuracySuggestions["links_table"]): string | null {
-  if (!t) return null;
-  const list = (Array.isArray(t) ? t : [t]).filter((x) => typeof x === "string" && x);
+/** "L1" or "L1, L2": the link table versions behind these counts. One case
+ * has links_table; a sum has links_table (a list), or links_tables (cases
+ * per version) from an api before the review fix -- either is read. */
+function tableNames(s: Pick<AiAccuracySuggestions, "links_table" | "links_tables"> | null | undefined): string | null {
+  if (!s) return null;
+  const one = s.links_table;
+  const many = s.links_tables;
+  const names = [
+    ...(Array.isArray(one) ? one : one ? [one] : []),
+    ...(Array.isArray(many) ? many : many && typeof many === "object" ? Object.keys(many) : []),
+  ].filter((x): x is string => typeof x === "string" && x.trim() !== "");
+  const list = [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   return list.length ? list.join(", ") : null;
 }
 const CHECK_NAMES: Record<string, string> = {
@@ -159,7 +167,7 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
           No suggestions on these cases. They are the parts the AI thought may be damaged but didn&apos;t list; cases signed off
           before they were counted show none.
         </div>
-        {s?.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={tableNames(s.links_table)} />}
+        {s?.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={tableNames(s)} />}
       </Section>
     );
   }
@@ -175,7 +183,7 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
     { head: "Linked parts: AI linked check", rows: groupRows(s.link_check, (k) => LINK_CHECK_NAMES[k] ?? k, Object.keys(LINK_CHECK_NAMES)) },
     { head: "Linked parts: link rule (most suggested)", rows: rules.slice(0, RULES_SHOWN) },
   ].filter((g) => g.rows.length > 0);
-  const table = tableNames(s.links_table);
+  const table = tableNames(s);
   const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
   return (
     <Section title={title}>

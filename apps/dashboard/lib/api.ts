@@ -1012,9 +1012,10 @@ export type SecondLookItem = {
    * linked_from: the keys of the listed parts it hangs off; link_rule: the
    * table's version and link id ("L1:rear-bumper>beam"); hit: how hard the
    * listed part was hit; side_from: the listed part whose side it took
-   * (absent or null: it took none); intact_in: photos a zone read listed it
-   * intact on; oem: the catalogue's diagram names that put it with the
-   * listed part. */
+   * (absent or null: it took none); intact_in: the zone reads that listed
+   * it intact ("zone:rear" -- read names, not photos; an older draft may
+   * hold photo refs, lib/findings intactText reads both); oem: the
+   * catalogue's diagram names that put it with the listed part. */
   linked_from?: string[];
   link_type?: LinkType | null;
   link_rule?: string | null;
@@ -1858,6 +1859,9 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   by_rule?: Record<string, AiAccuracySuggestionCounts>;
   /** The link table's version ("L1"); a sum of cases may list several. */
   links_table?: string | string[] | null;
+  /** A sum of cases from before the review fix: cases per table version
+   * ({"L1": 3}). Read beside links_table. */
+  links_tables?: Record<string, number> | string[] | null;
   /** By the linked check's verdict ("none": not checked). */
   link_check?: Partial<Record<LinkVerdict | "none", AiAccuracySuggestionCounts>>;
   /** Shadow mode: linked parts worked out but not shown, against the
@@ -2119,6 +2123,11 @@ export type DamageItemsResponse = {
    * parts (POST /damage-items with intake_links "on"): the suggestions as
    * stored now. */
   second_look?: SecondLook | null;
+  /** With second_look (since the contract 10 review, L7): only the
+   * suggestions this add joined, for the page to add to its own copy --
+   * the whole second_look can be older than a decision answered meanwhile.
+   * Absent from an older api (lib/findings withSavedLook takes either). */
+  linked?: SecondLookItem[] | null;
 };
 
 export async function patchDamageItem(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse> {
