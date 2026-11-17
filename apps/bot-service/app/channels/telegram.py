@@ -40,7 +40,9 @@ through the same checks, in this order:
      photo budget for unvetted accounts; and only then the download.
   7. Drafting on this person's AI (Linked.actor), one request at a time
      for unvetted accounts, as on the dashboard; the summary starts
-     "Filing as Name".
+     "Filing as Name". With settings.telegram_full_detection (contract
+     10), the report becomes a website intake draft instead and the
+     website's pipeline reads it (_detect_and_reply); it is filed there.
   8. Confirm, under the lock with the finalizing flag: the case row takes
      SQLite's write lock, then the link and the daily case cap are checked
      again in that transaction, and the case is saved as theirs. The chat
@@ -66,7 +68,7 @@ from pathlib import Path
 from sqlalchemy.exc import OperationalError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.helpers import escape_markdown
 
@@ -115,7 +117,15 @@ from app.auth.chat_links import (
 from app.auth.core import audit
 from app.auth.deps import ApiError
 from app.auth.permissions import is_staff
-from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
+from app.conversation.flow import (
+    build_draft,
+    build_template_prompt,
+    combined_description,
+    detection_facts,
+    detection_notes,
+    parse_template_reply,
+    summarize_detection,
+)
 from app.conversation.state import Stage, find_session, get_session, reset_session
 from app.intake.photos import photo_label
 from app.reports.db import SessionLocal, init_db
@@ -1250,6 +1260,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not session.photo_paths:
+        if settings.telegram_full_detection and chat_id in _detecting:
+            # Words meant for the report being read: it's on the website now.
+            await update.message.reply_text(STILL_READING, link_preview_options=NO_PREVIEW)
+            return
         await update.message.reply_text(
             "Please send at least one incident photo or document first, then describe what happened."
         )
@@ -1306,7 +1320,13 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
     """Step 7: drafts on this person's AI (user.actor: their own key, or the
     company's if they may use it). An unvetted account gets one AI request
     at a time, as on the dashboard (api/limits.ai_running, this process's
-    own record: the chat lock already keeps one Telegram to one at a time)."""
+    own record: the chat lock already keeps one Telegram to one at a time).
+
+    With settings.telegram_full_detection (contract 10), the report goes to
+    the website's intake pipeline instead (_detect_and_reply)."""
+    if settings.telegram_full_detection:
+        await _detect_and_reply(update, session, user=user)
+        return
     notice = "Redrafting with your changes..." if redrafting else "Drafting your report..."
     msg_target = _reply_target(update)
     actor = user.actor
@@ -1365,6 +1385,246 @@ async def draft_and_reply(update: Update, session, description: str, redrafting:
         except BadRequest:
             logger.warning("Draft summary failed to parse as Markdown; sending unformatted")
             await msg_target.reply_text(f"👤 Filing as {filing_as}{warning}\n\n{result.summary_text}", reply_markup=keyboard)
+
+
+# ------------------------------------------ full detection (contract 10, T)
+#
+# settings.telegram_full_detection: instead of one drafting call, the chat's
+# photos and words become an intake draft -- the New Intake wizard's rows --
+# and the website's pipeline reads it (intake/telegram_bridge.py): sort,
+# main read, zone reads, the second look with the linked parts, re-check.
+# The chat lock is held only while the draft is saved; the reading runs in
+# its own thread, and _watch_detection sends the summary and the link when
+# it ends. The person finishes the case on the website (the suggestions
+# are decided there), so there is no Confirm in the chat. A failure keeps
+# the photos: before the draft is saved they stay in the chat's session;
+# after, they are the draft's, and the website's Retry reads them again.
+
+# How often the watcher looks whether the run has ended, and how often it
+# tells the api's process the run is alive (telegram_bridge.heartbeat).
+DETECTION_POLL_SECONDS = 2.0
+DETECTION_HEARTBEAT_SECONDS = 30.0
+# One "still reading" note if it takes this long (free-tier models answer
+# "busy" and the chain waits), and the watcher gives up after the last: the
+# draft is on the website either way.
+DETECTION_NUDGE_SECONDS = 5 * 60
+DETECTION_WAIT_SECONDS = 20 * 60
+# What a reading takes, as told before it starts: two minutes, one more for
+# a big case (more than two waves of sorting) and one for the zone reads.
+DETECTION_BIG_CASE_PHOTOS = 24
+
+STILL_READING = (
+    "⏳ I'm still reading your last report and will message you here when it's done. "
+    "Changes to it go on the website; to start another report, send its photos."
+)
+STILL_READING_NUDGE = "⏳ Still reading – the AI is busy right now. I'll message you here when it's done."
+EARLIER_STILL_READING = (
+    "Your earlier report is still being read. When I message you that it's done, send this report's "
+    "description again and I'll read it. Its photos are kept."
+)
+DRAFT_NOT_SAVED = (
+    "Sorry, I couldn't save this report as a draft just now. Your photos are kept here: "
+    "send the description again to try again."
+)
+
+# Chat id -> the draft its last report became, while that reading runs.
+_detecting: dict[str, str] = {}
+# The running watchers, kept so none is garbage-collected mid-wait.
+_watchers: set = set()
+
+
+def _case_link(report_id: str) -> str:
+    return f"{_base_url()}/reports/{report_id}"
+
+
+def _detection_minutes(photos: int) -> int:
+    from app.intake import zones
+
+    return 2 + (photos > DETECTION_BIG_CASE_PHOTOS) + bool(zones.zones_on())
+
+
+async def _send_quietly(target, text: str, **kw) -> None:
+    """A message sent outside the handler that was asked (the watcher), so
+    a failure is logged, never raised: one more try after a network error,
+    then given up -- the draft is on the website whatever happens here.
+    Only the error's type is logged: never the request, which names the
+    bot's token."""
+    if target is None:
+        return
+    for attempt in range(2):
+        try:
+            await target.reply_text(text, **kw)
+            return
+        except NetworkError as exc:
+            if attempt:
+                logger.warning("A message about a Telegram reading wasn't sent (%s)", type(exc).__name__)
+                return
+            await asyncio.sleep(3)
+        except Exception as exc:
+            logger.warning("A message about a Telegram reading wasn't sent (%s)", type(exc).__name__)
+            return
+
+
+async def _detect_and_reply(update: Update, session, *, user: Linked) -> None:
+    """Hands the chat's report over to the website's intake pipeline (under
+    the chat lock): one reading at a time for each person, as on the
+    website (api/limits.ai_turn: the run holds it to its end); AI on for
+    them; the draft saved as theirs (telegram_bridge.create_draft, with step
+    8's check under its write lock and the website's draft caps); then the
+    chat starts afresh, the run starts on their AI (Linked.actor: own key,
+    else the company's), and _watch_detection reports back. Anything that
+    stops it before the draft is saved leaves the session -- photos and
+    words -- as it was, for another try."""
+    from app.intake import telegram_bridge as bridge
+
+    msg_target = _reply_target(update)
+    chat_id = str(update.effective_chat.id)
+    external_id = str(update.effective_user.id)
+
+    async def say(text: str, **kw) -> None:
+        if msg_target:
+            await msg_target.reply_text(text, **kw)
+
+    if not session.photo_paths:
+        await say("Please send at least one incident photo or document first, then describe what happened.")
+        return
+    # As at Confirm: _keep_temp_files keeps a live draft's photos from the
+    # api's day-old cleanup, but if some are gone anyway, read what's left.
+    present = [p for p in session.photo_paths if Path(p).exists()]
+    if not present:
+        session.photo_paths = []
+        await say("The photos for this report are no longer on the server. Please send them again.")
+        return
+    if not limits.ai_running.claim(user.id):
+        await say(EARLIER_STILL_READING)
+        return
+    started = False
+    try:
+        try:
+            await asyncio.to_thread(ensure_ai_ready, user.actor)
+        except AiUnavailable as exc:
+            await say(_ai_off_text(exc), link_preview_options=NO_PREVIEW)
+            return
+        try:
+            created = await asyncio.to_thread(
+                bridge.create_draft,
+                external_id=external_id,
+                photo_paths=present,
+                facts=detection_facts(session),
+                notes=detection_notes(session),
+                who=lambda db: _may_file(db, external_id, user.id),
+            )
+        except Exception:
+            logger.exception("A Telegram report couldn't be saved as a draft")
+            await say(DRAFT_NOT_SAVED)
+            return
+        if created.problem:
+            if not created.linked:
+                _drop(chat_id)  # the photos were for an account this Telegram no longer files as
+            await say(created.problem)
+            return
+        report_id = created.report_id
+        # The photos are the draft's now (copied): the chat starts afresh.
+        _discard_temp_files(session)
+        reset_session(chat_id)
+        _detecting[chat_id] = report_id
+        try:
+            started = await asyncio.to_thread(
+                bridge.start, report_id, user.actor, lambda: limits.ai_running.release(user.id)
+            )
+        except Exception:
+            logger.exception("Telegram draft %s: the reading didn't start", report_id)
+        if not started:
+            _detecting.pop(chat_id, None)
+            one = created.photos == 1
+            await say(
+                f"Your {created.photos} photo{' is' if one else 's are'} saved in Carlink as a draft, but I couldn't "
+                f"start reading {'it' if one else 'them'}. Open the draft and press Retry:\n{_case_link(report_id)}",
+                link_preview_options=NO_PREVIEW,
+            )
+            return
+    finally:
+        if not started:
+            limits.ai_running.release(user.id)
+
+    warning = f"\n{UNVETTED_WARNING}" if user.unvetted else ""
+    skipped = (f"\n{created.skipped} photo{'' if created.skipped == 1 else 's'} couldn't be read and "
+               f"{'was' if created.skipped == 1 else 'were'} left out.") if created.skipped else ""
+    await _send_quietly(
+        msg_target,
+        f"📸 Reading {created.photos} photo{'' if created.photos == 1 else 's'}… "
+        f"(about {_detection_minutes(created.photos)} min)\n"
+        f"👤 Draft for {user.filing_label or user.label}{warning}{skipped}\n"
+        "I'll message you here when it's done.",
+    )
+    task = asyncio.create_task(_watch_detection(chat_id, report_id, msg_target, user))
+    _watchers.add(task)
+    task.add_done_callback(_watchers.discard)
+
+
+async def _watch_detection(chat_id: str, report_id: str, target, user: Linked) -> None:
+    """Waits for the draft's run to end, keeping its heartbeat, then sends
+    the summary and the link (_detection_text). Gives up after
+    DETECTION_WAIT_SECONDS with the link alone."""
+    from app.intake import telegram_bridge as bridge
+
+    link = _case_link(report_id)
+    begun = last_beat = time.monotonic()
+    nudged = False
+    try:
+        while bridge.running(report_id):
+            await asyncio.sleep(DETECTION_POLL_SECONDS)
+            now = time.monotonic()
+            if now - last_beat >= DETECTION_HEARTBEAT_SECONDS:
+                last_beat = now
+                await asyncio.to_thread(bridge.heartbeat, report_id)
+            if not nudged and now - begun >= DETECTION_NUDGE_SECONDS and bridge.running(report_id):
+                nudged = True
+                await _send_quietly(target, STILL_READING_NUDGE)
+            if now - begun >= DETECTION_WAIT_SECONDS and bridge.running(report_id):
+                await _send_quietly(
+                    target, f"⏳ The reading is taking longer than usual. It will be on the website when it's done:\n{link}",
+                    link_preview_options=NO_PREVIEW,
+                )
+                return
+        result = await asyncio.to_thread(bridge.outcome, report_id)
+        await _send_quietly(target, _detection_text(result, link, user), link_preview_options=NO_PREVIEW)
+    except Exception:
+        logger.exception("Telegram draft %s: couldn't report the reading", report_id)
+        await _send_quietly(
+            target, f"Something went wrong while I waited for the reading. Your photos are saved in Carlink:\n{link}",
+            link_preview_options=NO_PREVIEW,
+        )
+    finally:
+        if _detecting.get(chat_id) == report_id:
+            del _detecting[chat_id]
+
+
+def _detection_text(result, link: str, user: Linked) -> str:
+    """The chat's answer once the run has ended (telegram_bridge.Outcome)."""
+    if result.state == "ready":
+        return (
+            f"✅ Finished reading your {result.photos} photo{'' if result.photos == 1 else 's'}.\n"
+            f"👤 Draft for {user.filing_label or user.label}\n\n"
+            f"{summarize_detection(result)}\n\n"
+            f"Open the draft to check it, decide the suggestions and file the case:\n{link}"
+        )
+    if result.state == "filed":
+        return f"This report was filed in Carlink before the reading finished:\n{link}"
+    if result.state == "gone":
+        return "The draft for this report was deleted in Carlink before the reading finished."
+    if result.state == "running":
+        return f"⏳ The reading is taking longer than usual. It will be on the website when it's done:\n{link}"
+    # The pipeline's own words say what went wrong and what to do (the
+    # wizard shows the same); the photos are the draft's whatever it was.
+    text = (
+        f"⚠️ I couldn't finish reading the photos.\n{result.error}\n\n"
+        f"Your {result.photos} photo{' is' if result.photos == 1 else 's are'} in the draft, with Retry on its page:\n{link}"
+    )
+    if result.error_code:
+        # The person's AI isn't available (ai/keys.AiUnavailable): where to fix it.
+        text += f"\n\nYour AI settings: {_settings_url('my-ai-key')}"
+    return text
 
 
 # ------------------------------------------------------- buttons and Confirm
