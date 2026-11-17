@@ -406,7 +406,8 @@ def fixture() -> None:
           and any(p["h"] > p["w"] for p in doc["photos"]), "10 photos as \"@phNN\", one portrait")
     used = [it.photo_reference for it in list(draft.damage_summary) + list(look.items)]
     used += [e.photo for it in list(draft.damage_summary) + list(look.items) for e in it.evidence]
-    used += [r for it in look.items for r in it.seen_in + it.intact_in]
+    # intact_in holds zone read names ("zone:left"); only an old-style "@id" there is a photo.
+    used += [r for it in look.items for r in it.seen_in + [x for x in it.intact_in if x.startswith("@")]]
     check(set(used) <= refs, "every photo it names is one of them")
 
     listed = {it.part for it in draft.damage_summary}
