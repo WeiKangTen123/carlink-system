@@ -9,7 +9,8 @@ The table:
   - the side field matches where {side} is ("same": both sided; "impact":
     only the child; "none": the child unsided), so {side} links are symmetric;
   - fields and enums as the brief has them; trigger tokens are firm condition
-    words; reasons <= 160 characters with no number of 3+ digits.
+    words; reasons <= 160 characters with no number of 3+ digits; sources
+    "C x.y" or "oem: DIAGRAM", with no make or model name.
 The skill files (one per area):
   - the header line, the five sections in order, about 1,200 words at most;
   - the Never rules (candidate list, side, outside this area, "near");
@@ -45,7 +46,11 @@ NEVER_RULES = {
     "near": r"\"near\"",
 }
 MAX_WORDS = 1300  # the brief's "<= ~1,200"
-SOURCE_RE = re.compile(r"^(C \d+(\.\d+)?|oem)$")
+# "C 4.1" (a C-collision-knowledge section) or "oem: TRUNK LID" (a diagram-pairs
+# diagram; "A > B (next diagram)" for neighbouring diagrams).
+SOURCE_RE = re.compile(r"^(C \d+(\.\d+)?|oem(: [A-Z0-9 /().>'-]+( \(next diagram\))?)?)$")
+# The catalogue cars diagram-pairs read: their names must not leak into the data.
+MAKE_WORDS = re.compile(r"\b(honda|civic|hr-v|bmw|x1)\b", re.I)
 SIDE = "{side}"
 
 
@@ -126,6 +131,8 @@ def check_table(data: dict, taxonomy, errors: list[str]) -> list[dict]:
         sources = link["sources"]
         if not isinstance(sources, list) or not sources or any(not SOURCE_RE.match(str(s)) for s in sources):
             errors.append(f"{where}: sources {sources!r}")
+        elif MAKE_WORDS.search(" ".join(sources) + " " + str(reason)):
+            errors.append(f"{where}: a make or model name in reason or sources")
     return links
 
 
