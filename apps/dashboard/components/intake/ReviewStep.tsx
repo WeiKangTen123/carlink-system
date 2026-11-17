@@ -34,7 +34,16 @@ import { EvidenceViewer, type EvidenceViewerProps } from "@/components/EvidenceV
 import { PhotoBoxes } from "@/components/PhotoBoxes";
 import { SuggestionPanel } from "@/components/SuggestionPanel";
 import { boxChip, slidesOf } from "@/lib/evidence";
-import { applyDecision, buildFindings, rowsTakenOff, type PhotoInfo, type PhotoLookup, type Selection } from "@/lib/findings";
+import {
+  STRIP_DOWN_CHIP,
+  applyDecision,
+  buildFindings,
+  needsStripDownChip,
+  rowsTakenOff,
+  type PhotoInfo,
+  type PhotoLookup,
+  type Selection,
+} from "@/lib/findings";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
 import { detectBodyType, zoneKeyFor } from "@/lib/vehicleZones";
@@ -278,9 +287,15 @@ export function ReviewStep({
     }));
   /** A person's Condition. condition_tokens follow it, so the draft never
    * holds words that say something else; a whole value has none. The AI's
-   * damage_type is left as it is. */
+   * damage_type is left as it is. Contract 10: it ends "Confirm at
+   * strip-down" on a part added from a hidden linked part (the server
+   * clears its own copy on the save too). */
   const setCondition = (index: number, condition: string) =>
-    setItem(index, { condition, condition_tokens: conditionWordsIn(condition, words.tokens) });
+    setItem(index, {
+      condition,
+      condition_tokens: conditionWordsIn(condition, words.tokens),
+      ...(damage[index]?.needs_strip_down ? { needs_strip_down: false } : {}),
+    });
   const removeItem = (index: number) => {
     // Rows below move up a place: an "item:<index>" selection would point
     // at the next part.
@@ -644,6 +659,18 @@ export function ReviewStep({
                           {!review && item.side_inferred && !item.human_verified && (
                             <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }} title="The AI guessed the side from nearby photos; check it">
                               side inferred
+                            </span>
+                          )}
+                          {/* Contract 10, as the case page's table: added from
+                              a hidden linked part; the chip goes once a person
+                              gives it a condition. */}
+                          {needsStripDownChip(item) && (
+                            <span
+                              className="intake-chip warn lk-strip-chip"
+                              style={{ marginTop: 4, fontSize: 10 }}
+                              title="Added from a hidden linked part: check it once the parts come off, then set its condition"
+                            >
+                              {STRIP_DOWN_CHIP}
                             </span>
                           )}
                         </td>

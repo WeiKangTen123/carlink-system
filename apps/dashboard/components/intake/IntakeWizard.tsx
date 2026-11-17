@@ -576,7 +576,12 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     const version = editVersionRef.current;
     if (!opts.quiet) setBusy("saving");
     try {
-      await saveIntakeData(id, dataRef.current, notesRef.current);
+      const saved = await saveIntakeData(id, dataRef.current, notesRef.current);
+      // Contract 10: a part put on the list by hand brought its own linked
+      // parts. second_look is the server's (never sent back), so taking it
+      // in is no edit of the form's.
+      const look = saved.second_look;
+      if (look) setData((d) => ({ ...d, second_look: look }));
       setSavedAt(new Date());
       setSaveFailed(false);
       if (editVersionRef.current === version) setDirty(false);

@@ -2115,6 +2115,10 @@ export type DamageItemsResponse = {
   damaged_parts?: string[];
   annex_a: AnnexAInfo;
   annex_c: AnnexCInfo;
+  /** Contract 10: only when a part added by hand brought its own linked
+   * parts (POST /damage-items with intake_links "on"): the suggestions as
+   * stored now. */
+  second_look?: SecondLook | null;
 };
 
 export async function patchDamageItem(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse> {
