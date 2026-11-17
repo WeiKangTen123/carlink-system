@@ -1744,6 +1744,8 @@ const AI_RUN_KIND_LABELS: Record<string, string> = {
   second_look: "Second look",
   read_zones: "Zone reads",
   check: "Suggestion re-check",
+  // Contract 10: the linked-parts check (bot-service app/ai/runs.py LINK_CHECK_KIND).
+  link_check: "Linked-parts check",
 };
 
 export function aiRunKindLabel(kind: string | null | undefined): string {

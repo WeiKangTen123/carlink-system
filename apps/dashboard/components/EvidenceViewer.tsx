@@ -35,6 +35,7 @@ import {
   checkWords,
   codeReason,
   confidenceText,
+  confirmAtStripDown,
   foundByNames,
   foundByText,
   hiddenNoPhotoText,
@@ -691,7 +692,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
               {bucket && <span className={`lk-bucket lk-bucket-${bucket}`}>{BUCKET_LABELS[bucket]}</span>}
               {finding.hidden && <span className="intake-chip lk-hidden">Hidden</span>}
             </div>
-            {(finding.hidden || bucket === "strip_down") && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
+            {confirmAtStripDown(finding) && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
           </div>
         )}
         {finding.kind === "item" && <div className="ev-caption">{finding.linkedFrom?.length ? "Why it was suggested" : "Why the AI listed it"}</div>}

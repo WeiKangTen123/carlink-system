@@ -13,6 +13,7 @@ import {
   checkWords,
   codeReason,
   confidenceText,
+  confirmAtStripDown,
   decisionStates,
   foundByText,
   linkBucket,
@@ -207,7 +208,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, photos, r
     const verdict = checkWords(f.check);
     const isBusy = busy === f.key;
     const bucket = isLink ? linkBucket(f) : null;
-    const strip = isLink && (f.hidden || bucket === "strip_down");
+    const strip = confirmAtStripDown(f);
     const intact = (f.intactIn ?? []).map((r) => photos(r)?.label).filter(Boolean);
     const also = alsoLinkedText(f);
     const lc = linkCheckLine(f.linkCheck);

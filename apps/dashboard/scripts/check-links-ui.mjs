@@ -157,6 +157,17 @@ check("the hidden part: Hidden + 'possible – confirm at strip-down'", () => {
   assert.equal(sections.groups.flatMap((g) => [...g.rows, ...g.crush]).filter((f) => f.hidden).length, 1, "only the beam is hidden");
 });
 
+check("'confirm at strip-down' only when the parts must come off; hidden alone is just the chip", () => {
+  assert.equal(F.confirmAtStripDown(sug("Rear Bumper Beam")), true);
+  assert.equal(F.confirmAtStripDown(sug("Left Rear Door Glass")), false);
+  // A hidden part checked without strip-down (open the lid): Hidden, not strip-down.
+  const hinge = { ...sug("Rear Number Plate"), hidden: true, linkType: "opens_with", bucket: "likely" };
+  assert.equal(F.confirmAtStripDown(hinge), false);
+  assert.equal(say(F.hiddenNoPhotoText({ ...hinge, parents: [{ key: "Boot Lid", name: "Boot Lid" }] })), "Hidden under the Boot Lid – check it on the car");
+  assert.equal(F.confirmAtStripDown({ ...hinge, needsStripDown: true }), true);
+  assert.equal(F.confirmAtStripDown(sug("Boot Lid Lock")), false, "a zone suggestion never");
+});
+
 check("nothing is pre-ticked: every linked part waits for a person", () => {
   const states = F.decisionStates(data.second_look.decisions);
   const listed = new Set(data.damage_summary.map((d) => d.part));

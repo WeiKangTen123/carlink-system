@@ -581,12 +581,20 @@ export function linkPhotoCaption(f: Pick<Finding, "parents" | "linkedFrom" | "li
   return `Photo of the ${parent} (this part ${place ?? "is linked to it"})`;
 }
 
+/** "possible – confirm at strip-down" goes under a linked part the server
+ * says needs the parts off (or put in the strip-down bucket). A hidden part
+ * that doesn't (a boot lid hinge: open the lid) only gets the Hidden chip. */
+export function confirmAtStripDown(f: Pick<Finding, "source" | "bucket" | "hidden" | "needsStripDown">): boolean {
+  return f.source === "link" && (Boolean(f.needsStripDown) || linkBucket(f) === "strip_down");
+}
+
 /** The viewer's words when a hidden linked part has no photo to show. */
-export function hiddenNoPhotoText(f: Pick<Finding, "parents" | "linkedFrom" | "linkType">): string {
+export function hiddenNoPhotoText(f: Pick<Finding, "parents" | "linkedFrom" | "linkType" | "needsStripDown">): string {
   const parent = parentName(f);
-  if (!parent) return `Hidden – confirm at strip-down`;
+  const then = f.needsStripDown ? "confirm at strip-down" : "check it on the car";
+  if (!parent) return `Hidden – ${then}`;
   const where = f.linkType === "opens_with" ? "under" : f.linkType === "attached" ? "on" : "behind";
-  return `Hidden ${where} the ${parent} – confirm at strip-down`;
+  return `Hidden ${where} the ${parent} – ${then}`;
 }
 
 /** An item added from a hidden linked part keeps its "Confirm at strip-down"

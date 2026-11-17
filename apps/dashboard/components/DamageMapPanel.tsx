@@ -8,6 +8,7 @@ import {
   BUCKET_LABELS,
   STRIP_DOWN_TEXT,
   codeReason,
+  confirmAtStripDown,
   linkBucket,
   linkPhotoCaption,
   type Finding,
@@ -805,7 +806,7 @@ function FindingRow({
           </span>
         </p>
       )}
-      {f.hidden && f.kind === "suggestion" && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
+      {f.kind === "suggestion" && confirmAtStripDown(f) && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
       <p className="dmap-row-reason">{f.reason ? `AI says: “${f.reason}”` : codeReason(f)}</p>
       <div className="dmap-row-actions">
         <button type="button" className="btn-secondary-modern dmap-small-btn" onClick={onLook} disabled={!photoCount}>

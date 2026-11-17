@@ -7896,7 +7896,7 @@ button.pb-box:focus-visible {
   flex-direction: column;
   gap: 8px;
   padding: 10px 0 0 12px;
-  border-left: 3px solid var(--dmap-suggestion);
+  border-left: 3px solid var(--dmap-suggestion, #a855f7);
 }
 
 .lk-group-head {
