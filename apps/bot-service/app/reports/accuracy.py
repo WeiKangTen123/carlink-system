@@ -37,6 +37,13 @@ surveyor kept, removed, added or changed before signing:
            verdict; and how many added ones were looked at first. Counts
            only: never a part's reason, photo or box. A part added from a
            suggestion still counts under damage as added by people.
+           VERSION 3 (contract 10): source "link" too, and -- on a case
+           that had linked parts -- the same counts by link type, bucket,
+           hit level and table rule (link_rule), by the linked check's
+           verdict (link_check), the table version (links_table), and in
+           shadow mode what the linked parts kept on the AI draft
+           (ai_draft["link_suggestions"]) predicted against the signed-off
+           list (shadow). A case without any has none of these keys.
 
 compare() is pure: no database, no AI. Old cases and missing keys count as
 empty. The answer holds counts, canonical part names, Annex A wordings and
@@ -61,8 +68,8 @@ from app.reports.taxonomy import OTHER_PART, UNDETERMINED_SUFFIX, annex_conditio
 
 # Bump when a definition below changes, so rows made under the old ones can
 # be told apart (and made again: scripts/backfill_ai_accuracy.py). 2: the
-# suggestions section (contract 9).
-VERSION = 2
+# suggestions section (contract 9). 3: its linked parts (contract 10).
+VERSION = 3
 
 # The fields the AI can write: the cover page's own section is the
 # surveyor's (schema.CoverPageInfo is left out of the AI's schema) and Our
@@ -86,8 +93,20 @@ SUGGESTION_COUNTS = ("shown", "added", "dismissed", "left")
 SUGGESTION_GROUPS = ("by_source", "by_read", "by_check")
 # Where a suggestion came from (SecondLookItem.source) and the re-check's
 # verdicts (SuggestionCheck.verdict); "none": not re-checked.
-SUGGESTION_SOURCES = ("zone", "kit", "nearby")
+SUGGESTION_SOURCES = ("zone", "kit", "nearby", "link")
 CHECK_VERDICTS = ("yes", "no", "unsure")
+# Contract 10: a linked part's groups -- (group, its field, the values
+# counted; None: any, cut to MAX_RULE) -- and the linked check's verdicts.
+LINK_GROUPS = (
+    ("by_link_type", "link_type", ("attached", "opens_with", "behind", "crush")),
+    ("by_bucket", "bucket", ("seen", "likely", "strip_down")),
+    ("by_hit", "hit", ("light", "medium", "heavy", "crush")),
+    ("by_rule", "link_rule", None),
+)
+LINK_CHECK_VERDICTS = ("seen", "likely", "strip_down", "no", "cannot_tell")
+# A link_rule as counted ("L1:rear-quarter-panel>rear-wheel-arch-liner" is
+# 43 characters; two rules must not run into one).
+MAX_RULE = 60
 
 
 def _num(value) -> float:
@@ -374,6 +393,7 @@ def _suggestions(ai_draft: dict, final_data: dict) -> dict:
     still = standing(decisions)
 
     out: dict = {**_suggestion_counts(), "looked_first": 0, **{group: {} for group in SUGGESTION_GROUPS}}
+    tables: list[str] = []
     for key in shown:
         outcome = "added" if key in final_keys else "dismissed" if key in dismissed else "left"
         fact = facts.get(key) or added_items.get(key) or {}
@@ -385,21 +405,108 @@ def _suggestions(ai_draft: dict, final_data: dict) -> dict:
         if source:
             tallies.append(out["by_source"].setdefault(source, _suggestion_counts()))
         tallies += [out["by_read"].setdefault(read, _suggestion_counts()) for read in dict.fromkeys(reads)]
+        if source == "link":
+            tallies += _link_tallies(out, fact, tables)
         for tally in tallies:
             tally["shown"] += 1
             tally[outcome] += 1
         if outcome == "added" and any(d.get("action") == "added" and d.get("looked") for d in still.get(key) or []):
             out["looked_first"] += 1
+    shadow = _shadow(ai_draft, final_data, tables)
+    if shadow is not None:
+        _link_groups(out)["shadow"] = shadow
+    if "links_table" in out:
+        out["links_table"] = tables[0] if tables else None
+    return out
+
+
+def _table_of(rule) -> str | None:
+    """The table version a link_rule names ("L1" of "L1:rear-bumper>beam")."""
+    return rule.split(":", 1)[0][:20] or None if isinstance(rule, str) and ":" in rule else None
+
+
+def _link_groups(out: dict) -> dict:
+    """In place: the contract 10 groups on a suggestions section, made when
+    a case first has a linked part."""
+    for group, _, _ in LINK_GROUPS:
+        out.setdefault(group, {})
+    out.setdefault("link_check", {})
+    out.setdefault("links_table", None)
+    return out
+
+
+def _link_tallies(out: dict, fact: dict, tables: list[str]) -> list[dict]:
+    """The link groups' tallies one linked part counts in: its type,
+    bucket, hit, rule and the linked check's verdict -- names only."""
+    _link_groups(out)
+    tallies = []
+    for group, field, values in LINK_GROUPS:
+        value = fact.get(field)
+        if not isinstance(value, str) or not value or (values is not None and value not in values):
+            continue
+        tallies.append(out[group].setdefault(value[:MAX_RULE], _suggestion_counts()))
+    table = _table_of(fact.get("link_rule"))
+    if table and table not in tables:
+        tables.append(table)
+    found = fact.get("link_check") if isinstance(fact.get("link_check"), dict) else {}
+    if found.get("verdict") in LINK_CHECK_VERDICTS:
+        tallies.append(out["link_check"].setdefault(found["verdict"], _suggestion_counts()))
+    return tallies
+
+
+def _shadow(ai_draft: dict, final_data: dict, tables: list[str]) -> dict | None:
+    """Shadow mode's outcome (contract 10): the linked parts the AI draft
+    kept but nobody saw (ai_draft["link_suggestions"]), one per key, and
+    how many of them are on the signed-off list (by name, or by a name
+    that stands for them: "Tail Lamp (side undetermined)" for a "Left Tail
+    Lamp") -- in all and by rule. None when the draft has no such list."""
+    if not isinstance(ai_draft.get("link_suggestions"), list):
+        return None
+    final = damage_items(final_data)
+    final_keys = {item_key(it) for it in final}
+    final_parts = {str(it.get("part")) for it in final}
+    out: dict = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
+    seen: set[str] = set()
+    for it in _dicts(ai_draft.get("link_suggestions")):
+        key = key_of(it)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        covers = [c for c in it.get("covers") or [] if isinstance(c, str)] or [str(it.get("part") or "")]
+        on_list = key in final_keys or bool(set(covers) & final_parts)
+        rule = it.get("link_rule") if isinstance(it.get("link_rule"), str) and it.get("link_rule") else None
+        tallies = [out] + ([out["by_rule"].setdefault(rule[:MAX_RULE], {"predicted": 0, "on_final_list": 0})]
+                           if rule else [])
+        for tally in tallies:
+            tally["predicted"] += 1
+            tally["on_final_list"] += int(on_list)
+        table = _table_of(rule)
+        if table and table not in tables:
+            tables.append(table)
     return out
 
 
 def sum_suggestions(metrics: list[dict]) -> dict:
     """The suggestions sections of many cases' metrics added up (GET
-    /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0."""
+    /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0.
+    links_table: the link table versions behind these counts, a sorted
+    list (["L1"]) -- the key the AI-accuracy page reads, as one case's
+    (a version or None); a row from before VERSION 3 adds none."""
     out: dict = {**_suggestion_counts(), "looked_first": 0, **{group: {} for group in SUGGESTION_GROUPS}}
 
     def add(into: dict, counts) -> None:
         for key in SUGGESTION_COUNTS:
+            try:
+                into[key] += int((counts or {}).get(key) or 0)
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+    _link_groups(out)
+    tables: set[str] = set()
+    out["shadow"] = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
+
+    def add_shadow(into: dict, counts) -> None:
+        for key in ("predicted", "on_final_list"):
             try:
                 into[key] += int((counts or {}).get(key) or 0)
             except (TypeError, ValueError, AttributeError):
@@ -418,6 +525,24 @@ def sum_suggestions(metrics: list[dict]) -> dict:
             for name, counts in (s.get(group) or {}).items() if isinstance(s.get(group), dict) else ():
                 if isinstance(counts, dict):
                     add(out[group].setdefault(str(name)[:40], _suggestion_counts()), counts)
+        # Contract 10 (VERSION 3); a row from before has none of these.
+        for group in [g for g, _, _ in LINK_GROUPS] + ["link_check"]:
+            for name, counts in (s.get(group) or {}).items() if isinstance(s.get(group), dict) else ():
+                if isinstance(counts, dict):
+                    add(out[group].setdefault(str(name)[:MAX_RULE], _suggestion_counts()), counts)
+        # One case's is a version or None; a list is taken too.
+        found = s.get("links_table")
+        tables.update(name[:20] for name in (found if isinstance(found, list) else [found])
+                      if isinstance(name, str) and name)
+        shadow = s.get("shadow") if isinstance(s.get("shadow"), dict) else None
+        if shadow is not None:
+            add_shadow(out["shadow"], shadow)
+            rules = shadow.get("by_rule") if isinstance(shadow.get("by_rule"), dict) else {}
+            for name, counts in rules.items():
+                if isinstance(counts, dict):
+                    add_shadow(out["shadow"]["by_rule"].setdefault(
+                        str(name)[:MAX_RULE], {"predicted": 0, "on_final_list": 0}), counts)
+    out["links_table"] = sorted(tables)
     return out
 
 

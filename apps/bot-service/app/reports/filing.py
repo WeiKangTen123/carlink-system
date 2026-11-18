@@ -21,8 +21,11 @@ the tail they all run, so every filed case starts the same way:
     so the case shows them as "check" until a person confirms them.
 
 The AI's own draft (Report.ai_draft) is the caller's to store: the bot has
-no Report row yet when this runs (it files before the PDF renders).
+no Report row yet when this runs (it files before the PDF renders). The
+wizard's caller turns its photo links into P-numbers first
+(relabel_ai_draft).
 """
+import copy
 import logging
 
 from app.auth.permissions import can_view_all_cases
@@ -38,6 +41,27 @@ logger = logging.getLogger(__name__)
 # Per photo, from the sort step (models.IntakePhoto); every one None when
 # the photo was never sorted.
 PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
+# The AI draft's lists whose items name photos: the damage list (contract
+# 8's seen_in, contract 9's evidence), the parts only zone reads found
+# (contract 9) and the linked parts kept in shadow mode (contract 10).
+AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions")
+
+
+def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
+    """The AI's draft as filed: its "@<photo id>" references (the pipeline
+    keeps them so until the order is fixed) as the case's P-numbers, by the
+    map the data gets (suggestions.relabel_item; a deleted photo's
+    references dropped) -- in each of AI_DRAFT_PHOTO_LISTS, frozen there as
+    "what the AI said". A copy; None or {} as it is."""
+    from app.reports.suggestions import relabel_item
+
+    if not ai_draft:
+        return ai_draft
+    out = copy.deepcopy(ai_draft)
+    for key in AI_DRAFT_PHOTO_LISTS:
+        if isinstance(out.get(key), list):
+            out[key] = [relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
+    return out
 
 
 def photo_index_for(photo_kinds: list[dict] | None, ai_draft: dict | None, read_ids=None) -> list[dict]:

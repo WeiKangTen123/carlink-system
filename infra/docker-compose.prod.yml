@@ -65,6 +65,18 @@ x-bot-service: &bot-service
     - INTAKE_ZONE_ONLY=${INTAKE_ZONE_ONLY:-suggest}
     - INTAKE_ZONE_EVIDENCE=${INTAKE_ZONE_EVIDENCE:-off}
     - INTAKE_CHECK_MODE=${INTAKE_CHECK_MODE:-off}
+    # Contract 10: linked parts in detection, the linked check, the parts
+    # catalogue's diagram neighbours as candidates, and staff Telegram photos
+    # on the same full detection. Defaults are config.py's (all off; the
+    # frozen L1 cap of 12); live values go in infra/.env, like contract 9's.
+    # Both containers need the same values: with TELEGRAM_FULL_DETECTION on,
+    # the bot's own process runs the pipeline (app/intake/telegram_bridge.py)
+    # with the bot's settings.
+    - TELEGRAM_FULL_DETECTION=${TELEGRAM_FULL_DETECTION:-false}
+    - INTAKE_LINKS=${INTAKE_LINKS:-off}
+    - INTAKE_LINK_CHECK=${INTAKE_LINK_CHECK:-off}
+    - INTAKE_LINKS_CATALOGUE=${INTAKE_LINKS_CATALOGUE:-false}
+    - INTAKE_LINKS_MAX=${INTAKE_LINKS_MAX:-12}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

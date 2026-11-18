@@ -3,7 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ExternalLink, Gauge, Loader2 } from "lucide-react";
-import type { AiAccuracy, AiAccuracySuggestionCounts, AiAccuracySuggestions, AiAccuracySums, AiAccuracyTop } from "@/lib/api";
+import type {
+  AiAccuracy,
+  AiAccuracyLinkShadow,
+  AiAccuracySuggestionCounts,
+  AiAccuracySuggestions,
+  AiAccuracySums,
+  AiAccuracyTop,
+} from "@/lib/api";
 import { formatSgtDate } from "@/lib/caseFields";
 import { getAiAccuracyAction } from "./ai-accuracy/actions";
 
@@ -74,7 +81,47 @@ const SOURCE_NAMES: Record<string, string> = {
   zone: "Found only by a zone read",
   kit: "Often damaged with a part found (past cases)",
   nearby: "Next to a part found",
+  link: "Linked to a listed part",
 };
+// Contract 10 (accuracy VERSION 3): the linked parts, in the cards' words.
+const LINK_TYPE_NAMES: Record<string, string> = {
+  attached: "Fixed to the listed part",
+  opens_with: "Opens with the listed part",
+  behind: "Behind the listed part",
+  crush: "Along the crush path",
+};
+const BUCKET_NAMES: Record<string, string> = { seen: "Seen", likely: "Likely", strip_down: "Confirm at strip-down" };
+const HIT_NAMES: Record<string, string> = {
+  light: "Listed part: light hit",
+  medium: "Listed part: medium hit",
+  heavy: "Listed part: heavy hit",
+  crush: "Listed part: crushed",
+};
+const LINK_CHECK_NAMES: Record<string, string> = {
+  seen: "AI check: seen",
+  likely: "AI check: likely",
+  strip_down: "AI check: confirm at strip-down",
+  no: "AI check: probably not",
+  cannot_tell: "AI check: can't tell",
+  none: "Not checked",
+};
+// Rules listed before the rest go under "more"; counts only.
+const RULES_SHOWN = 12;
+
+/** "L1" or "L1, L2": the link table versions behind these counts. One case
+ * has links_table; a sum has links_table (a list), or links_tables (cases
+ * per version) from an api before the review fix -- either is read. */
+function tableNames(s: Pick<AiAccuracySuggestions, "links_table" | "links_tables"> | null | undefined): string | null {
+  if (!s) return null;
+  const one = s.links_table;
+  const many = s.links_tables;
+  const names = [
+    ...(Array.isArray(one) ? one : one ? [one] : []),
+    ...(Array.isArray(many) ? many : many && typeof many === "object" ? Object.keys(many) : []),
+  ].filter((x): x is string => typeof x === "string" && x.trim() !== "");
+  const list = [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return list.length ? list.join(", ") : null;
+}
 const CHECK_NAMES: Record<string, string> = {
   yes: "AI re-check: probably damaged",
   unsure: "AI re-check: unsure",
@@ -120,14 +167,23 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
           No suggestions on these cases. They are the parts the AI thought may be damaged but didn&apos;t list; cases signed off
           before they were counted show none.
         </div>
+        {s?.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={tableNames(s)} />}
       </Section>
     );
   }
+  const rules = groupRows(s.by_rule, (k) => k, []);
   const groups: Array<{ head: string; rows: ReturnType<typeof groupRows> }> = [
-    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby"]) },
+    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby", "link"]) },
     { head: "AI re-check", rows: groupRows(s.by_check, (k) => CHECK_NAMES[k] ?? k, ["yes", "unsure", "no", "none"]) },
     { head: "Read that found it", rows: groupRows(s.by_read, readName, Object.keys(READ_NAMES)) },
+    // Contract 10: absent on a VERSION 2 record, so those cases show none.
+    { head: "Linked parts: how they are linked", rows: groupRows(s.by_link_type, (k) => LINK_TYPE_NAMES[k] ?? k, Object.keys(LINK_TYPE_NAMES)) },
+    { head: "Linked parts: bucket", rows: groupRows(s.by_bucket, (k) => BUCKET_NAMES[k] ?? k, Object.keys(BUCKET_NAMES)) },
+    { head: "Linked parts: how hard the listed part was hit", rows: groupRows(s.by_hit, (k) => HIT_NAMES[k] ?? k, Object.keys(HIT_NAMES)) },
+    { head: "Linked parts: AI linked check", rows: groupRows(s.link_check, (k) => LINK_CHECK_NAMES[k] ?? k, Object.keys(LINK_CHECK_NAMES)) },
+    { head: "Linked parts: link rule (most suggested)", rows: rules.slice(0, RULES_SHOWN) },
   ].filter((g) => g.rows.length > 0);
+  const table = tableNames(s);
   const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
   return (
     <Section title={title}>
@@ -145,6 +201,12 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
         <span title="Marked Not damaged">{num(s.dismissed)} not damaged</span>
         {" · "}
         <span title="Nobody decided before sign-off">{num(s.left)} left undecided</span>
+        {table && (
+          <span style={{ color: "var(--text-muted)" }} title="The link table version the linked parts came from">
+            {" "}
+            · link table {table}
+          </span>
+        )}
       </div>
       {groups.length > 0 && (
         <div className="ai-usage-table-wrap">
@@ -177,9 +239,56 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
               </tbody>
             ))}
           </table>
+          {rules.length > RULES_SHOWN && (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+              {num(rules.length - RULES_SHOWN)} more link rule{rules.length - RULES_SHOWN === 1 ? "" : "s"} not shown.
+            </div>
+          )}
         </div>
       )}
+      {s.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={table} />}
     </Section>
+  );
+}
+
+/** Contract 10, shadow mode: the linked parts worked out but not shown to
+ * anyone, against the signed-off list (counts only, never a percentage). */
+function ShadowBlock({ shadow, table }: { shadow: AiAccuracyLinkShadow; table: string | null }) {
+  const rules = Object.entries(shadow.by_rule ?? {})
+    .filter(([, c]) => c && c.predicted > 0)
+    .sort((a, b) => b[1].predicted - a[1].predicted || a[0].localeCompare(b[0]))
+    .slice(0, RULES_SHOWN);
+  const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-secondary)" }}>Linked parts in shadow mode (not shown to people)</div>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 8px" }}>
+        {num(shadow.predicted)} worked out · {num(shadow.on_final_list)} on the signed-off list
+        {table ? <span style={{ color: "var(--text-muted)" }}> · link table {table}</span> : null}
+      </div>
+      {rules.length > 0 && (
+        <div className="ai-usage-table-wrap">
+          <table className="users-table">
+            <thead>
+              <tr>
+                <th>Link rule</th>
+                <th style={{ textAlign: "right" }}>Worked out</th>
+                <th style={{ textAlign: "right" }}>On the signed-off list</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map(([rule, c]) => (
+                <tr key={rule}>
+                  <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{rule}</td>
+                  <td style={cell}>{num(c.predicted)}</td>
+                  <td style={cell}>{num(c.on_final_list)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -32,14 +32,22 @@ Also here: the "@<photo id>" -> "P07" relabel at filing (relabel_item,
 relabel_second_look) and the decisions still standing (standing), which the
 AI-accuracy record reads at sign-off (reports/accuracy.py).
 
+Contract 10 (linked parts, settings.intake_links "on"): an added part's own
+linked parts join the suggestions (intake/links.for_parent: an added Rear
+End Panel hit hard brings what sits on and behind it), and an undo of that
+add takes back those still undecided; a linked part added keeps where it
+hangs off and, when the table flags a strip-down or it is in that bucket,
+needs_strip_down ("Confirm at strip-down").
+
 Pure: no database, no request; the endpoints hold the transaction.
 """
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.intake.photos import photo_label
-from app.parts.prefill import item_key, item_source
-from app.reports.schema import MAX_DECISIONS, DamageSummaryItem, SecondLook, SuggestionDecision
+from app.parts.prefill import item_key, item_source, row_name
+from app.reports.schema import MAX_DECISIONS, DamageSummaryItem, SecondLook, SecondLookItem, SuggestionDecision
 from app.reports.taxonomy import OTHER_PART, damage_type_from_tokens, firm_condition
 
 ACTIONS = ("add", "dismiss", "undo")
@@ -47,6 +55,8 @@ ACTIONS = ("add", "dismiss", "undo")
 HISTORY = {"added": "suggestion_added", "dismissed": "suggestion_dismissed", "undone": "suggestion_undone"}
 # A key is a part name (prefill.item_key); anything longer is no key of ours.
 MAX_KEY = 200
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownSuggestion(Exception):
@@ -105,13 +115,21 @@ def item_from_suggestion(sug: dict) -> dict:
     drew the suggestion -- and the AI's confidence. Checked by the person
     who added it (human_verified), and marked as come from a suggestion
     (added_from).
-    One builder for both pages (conflict #10)."""
+    One builder for both pages (conflict #10).
+
+    Contract 10: a linked part's evidence by "link" is its listed part's
+    photo -- why it is suggested, not a photo of it -- so it is never the
+    item's own photo (review L2): its photo is its best other evidence (a
+    sorter's tag, the linked check's box), else none; the "link" entry
+    stays in its evidence as the reason."""
     evidence = [e for e in sug.get("evidence") or [] if isinstance(e, dict) and e.get("photo")]
-    photo = evidence[0]["photo"] if evidence else (sug.get("photo_reference") or None)
+    own = [e for e in evidence if e.get("by") != "link"]
+    best = own[0] if own else None
+    photo = best["photo"] if best else (sug.get("photo_reference") or None)
     # bbox_2d is the AI's box (the table and the evidence viewer label it
     # "AI box"): a sorter's box stays on its evidence entry, as "Sorter's
     # box", and the item gets none.
-    box = (evidence[0].get("box") or None) if evidence and evidence[0].get("box_kind") == "ai" else None
+    box = (best.get("box") or None) if best and best.get("box_kind") == "ai" else None
     tokens = list(sug.get("condition_tokens") or [])
     condition = sug.get("condition") or None
     damage_type = sug.get("damage_type") or None
@@ -122,14 +140,136 @@ def item_from_suggestion(sug: dict) -> dict:
         tokens, condition = firm_condition(tokens, damage_type)
     if not damage_type and tokens:
         damage_type = damage_type_from_tokens(tokens)
+    # Contract 10: a linked part keeps where it hangs off. One the table
+    # flags for a strip-down, or in the "Confirm at strip-down" bucket, is
+    # to be confirmed at strip-down until a person edits its condition.
+    # Hidden alone is not that (review L1): a boot lid's lock or hinge is
+    # seen once the lid is opened, a door's trim from inside.
+    strip_down = bool(sug.get("needs_strip_down")) or sug.get("bucket") == "strip_down"
+    links = {"linked_from": [str(k) for k in sug.get("linked_from") or [] if k], "link_type": sug.get("link_type"),
+             "hidden": bool(sug.get("hidden")), "needs_strip_down": strip_down}
     return DamageSummaryItem(
         part=str(sug.get("part") or ""), other_part_name=sug.get("other_part_name"),
         damage_type=damage_type, condition_tokens=tokens, condition=condition,
         severity=sug.get("severity"), remarks=sug.get("remarks"),
         photo_reference=photo, bbox_2d=box, ai_confidence=sug.get("confidence"), human_verified=True,
         seen_in=list(sug.get("seen_in") or []), found_by=list(sug.get("found_by") or []),
-        reason=sug.get("reason"), evidence=evidence, check=sug.get("check"), added_from="suggestion",
+        reason=sug.get("reason"), evidence=evidence, check=sug.get("check"), added_from="suggestion", **links,
     ).model_dump()
+
+
+def relinked(item: dict, data: dict, look: dict) -> list[dict]:
+    """Contract 10: the new linked suggestions of a part just put on the
+    list (links.for_parent), named as second_look._store names them --
+    only while settings.intake_links is "on" and the table loaded; [] on
+    any failure (an add never fails for them)."""
+    from app.intake import links
+
+    try:
+        opts = links.options()
+        if opts.mode != "on" or links.TABLE is None:
+            return []
+        from app.ai.second_look import other_side_listed
+
+        found = links.for_parent(item, {**data, "second_look": look}, [], links.TABLE, opts)
+        vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+        listed = {str(it.get("part")) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+        out = []
+        for it in found:
+            it["name"] = row_name(None, it["part"], vehicle)
+            it["other_side_listed"] = other_side_listed(it["part"], listed)
+            out.append(SecondLookItem.model_validate(it).model_dump())
+        return out
+    except Exception:
+        logger.exception("Linked parts of an added %s: none this time", item.get("part"))
+        return []
+
+
+def without_orphans(items: list, data: dict, look: dict) -> list:
+    """The suggestions without the linked parts nobody decided on that hang
+    off no listed part any more (contract 10: an undone add takes back the
+    links it brought)."""
+    listed = {item_key(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
+    decided = set(look.get("dismissed") or []) | {k for k, still in standing(look.get("decisions") or []).items() if still}
+    return [it for it in items if not (
+        isinstance(it, dict) and it.get("source") == "link" and it.get("linked_from")
+        and key_of(it) not in decided and not set(it["linked_from"]) & listed)]
+
+
+def with_relinks(data: dict, new_items: list) -> dict | None:
+    """Contract 10: data["second_look"] with the linked parts of new_items --
+    parts a person just put on the list by hand (the wizard's autosave, the
+    case page's POST /damage-items) -- joined to the suggestions, each by
+    relinked() against the list as it is now, in turn. None when nothing
+    joined: intake_links not "on", no second look yet (the next read links
+    the whole list), nothing new. A copy; data is left as it is."""
+    from app.config import settings
+
+    look = data.get("second_look") if isinstance(data, dict) else None
+    items = [it for it in new_items or [] if isinstance(it, dict) and it.get("part")]
+    # Off and shadow: not even the table is loaded for it.
+    if getattr(settings, "intake_links", "off") != "on" or not isinstance(look, dict) or not items:
+        return None
+    look = dict(look)
+    joined = False
+    for item in items:
+        found = relinked(item, data, look)
+        if found:
+            look["items"] = list(look.get("items") or []) + found
+            joined = True
+    return look if joined else None
+
+
+def relinks_of(before: dict | None, after: dict) -> list[dict]:
+    """The suggestions with_relinks joined: those of `after` (its answer)
+    whose key `before` (the second_look it was given) hasn't got. An
+    autosave answers these as "linked" -- new items only, no decision -- so
+    the wizard can add them to its own copy: an autosave answer landing
+    after a decision's would otherwise put the older decisions back
+    (contract 10 review L7)."""
+    had = {key_of(it) for it in (before or {}).get("items") or [] if isinstance(it, dict)}
+    return [it for it in after.get("items") or [] if isinstance(it, dict) and key_of(it) not in had]
+
+
+def by_hand(before: list, after: list) -> list[dict]:
+    """The items of `after` a person put on the list by hand since `before`
+    (the wizard's autosave): a key `before` doesn't have -- a part added or
+    renamed -- and not from a suggestion (decide() lists those and links
+    their parts itself)."""
+    had = {item_key(it) for it in before or [] if isinstance(it, dict)}
+    return [it for it in after or [] if isinstance(it, dict) and it.get("part")
+            and it.get("added_from") != "suggestion" and item_key(it) not in had]
+
+
+def _same_condition(a: dict, b: dict) -> bool:
+    return (a.get("condition") or None) == (b.get("condition") or None) and \
+        list(a.get("condition_tokens") or []) == list(b.get("condition_tokens") or [])
+
+
+def clear_strip_down(item: dict, before: dict | None) -> None:
+    """In place, contract 10 (owner default 2): an item added from a hidden
+    linked part keeps needs_strip_down ("Confirm at strip-down") until a
+    person edits its condition. Cleared when it differs from `before` (the
+    item as stored), and when there is no stored item of its key: the flag
+    is the server's alone (item_from_suggestion), never the browser's. Left
+    out rather than false, as the model dumps it (schema LINK_ITEM_DEFAULTS),
+    so a list that never had one is unchanged byte for byte."""
+    if not item.get("needs_strip_down"):
+        return
+    if before is None or not before.get("needs_strip_down") or not _same_condition(item, before):
+        item.pop("needs_strip_down", None)
+
+
+def kept_strip_down(items: list, stored: list) -> None:
+    """clear_strip_down on each item of a whole-list save (the wizard's
+    autosave) against the stored list, matched by key."""
+    by_key: dict[str, dict] = {}
+    for it in stored or []:
+        if isinstance(it, dict):
+            by_key.setdefault(item_key(it), it)
+    for it in items or []:
+        if isinstance(it, dict):
+            clear_strip_down(it, by_key.get(item_key(it)))
 
 
 @dataclass
@@ -193,6 +333,7 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
         damage_summary.append(item)
         done.item, done.item_index, done.listed = item, len(damage_summary) - 1, "added"
         done.action = "added"
+        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look)
     elif action == "dismiss":
         if key in dismissed:
             return done
@@ -225,6 +366,8 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
     ).model_dump()
     look["dismissed"] = dismissed
     look["decisions"] = (list(look["decisions"]) + [decision])[-MAX_DECISIONS:]
+    if done.listed == "removed":
+        look["items"] = without_orphans(look["items"], _with_list(data, damage_summary), look)
     done.second_look = look
     done.data = {**(_with_list(data, damage_summary) if done.listed else data), "second_look": look}
     return done
@@ -266,6 +409,9 @@ def relabel_item(item: dict, index_of: dict) -> dict:
             out["bbox_2d"] = None
     if out.get("seen_in"):
         out["seen_in"] = final_refs(out["seen_in"], index_of)
+    if out.get("intact_in"):
+        # Contract 10: a zone read's name ("zone:rear") stays as it is.
+        out["intact_in"] = final_refs(out["intact_in"], index_of)
     if out.get("evidence"):
         evidence = []
         for entry in out["evidence"]:

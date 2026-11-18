@@ -482,7 +482,8 @@ def case_decisions() -> None:
 
 
 def accuracy_outcomes() -> None:
-    check(accuracy.VERSION == 2, "accuracy VERSION 2")
+    # Contract 10 bumped it to 3 (the linked parts); the suggestions section is VERSION 2's.
+    check(accuracy.VERSION >= 2, "accuracy VERSION 2 or later")
     look = {
         "items": [
             suggestion("Left Tail Lamp", found_by=["zone:rear", "zone:left"], reason=f"cracked, plate {FAKE_PLATE}",
@@ -557,8 +558,8 @@ def accuracy_outcomes() -> None:
     db = SessionLocal()
     try:
         row = db.get(AiAccuracy, W.rid)
-        check(row is not None and row.version == 2 and FAKE_PLATE not in json.dumps(row.metrics),
-              "stored with version 2; the plate in a reason never reaches the row")
+        check(row is not None and row.version == accuracy.VERSION and FAKE_PLATE not in json.dumps(row.metrics),
+              "stored with the current version; the plate in a reason never reaches the row")
     finally:
         db.close()
     r = W.admin.get("/admin/ai-accuracy")

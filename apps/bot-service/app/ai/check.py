@@ -215,12 +215,22 @@ def _photo_id(ref: str, by_label: dict[str, str]) -> str | None:
     return by_label.get(f"P{int(match.group(1)):02d}") if match else None
 
 
+def is_hidden_link(item: dict) -> bool:
+    """A linked part no photo shows as photos are usually taken (contract
+    10: the beam behind a bumper): asked "is it damaged in this photo?" it
+    would only come back "no" and sink, so the re-check leaves it out."""
+    return item.get("source") == "link" and bool(item.get("hidden"))
+
+
 def plan_asks(items: list[dict], photos: list) -> Plan:
     """The questions for these suggestions over the draft's photos (rows in
     camera order): each suggestion with its best PHOTOS_EACH car photos still
-    there, the first MAX_QUESTIONS of them."""
+    there, the first MAX_QUESTIONS of them. Contract 10: a hidden linked
+    part is neither asked nor counted (is_hidden_link), and the linked
+    parts come after the others (a zone read saw those)."""
     from app.intake.photos import ai_input_path, photo_label
 
+    items = sorted((it for it in items if not is_hidden_link(it)), key=lambda it: it.get("source") == "link")
     labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
     by_label = {label: photo_id for photo_id, label in labels.items()}
     usable = {p.id: p for p in photos if is_car_photo(p) and Path(p.path).exists()}
@@ -591,6 +601,7 @@ def _plan(report_id: str) -> Plan | None:
         look = data.get("second_look")
         items, _ = split_settled(
             [it for it in (look or {}).get("items") or [] if isinstance(it, dict) and it.get("part")], data)
+        items = [it for it in items if not is_hidden_link(it)]
         if not items:
             return None
         return plan_asks(items, ordered_photos(db, report_id))

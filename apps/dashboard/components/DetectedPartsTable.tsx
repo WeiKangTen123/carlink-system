@@ -21,6 +21,7 @@ import {
 } from "@/lib/api";
 import type { ZoneResolution } from "@/lib/vehicleZones";
 import { isSideUndetermined } from "@/lib/vehicleZones";
+import { STRIP_DOWN_CHIP, needsStripDownChip } from "@/lib/findings";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
 import { severityClass } from "@/lib/caseFields";
@@ -442,6 +443,17 @@ export function DetectedPartsTable({
                       {!review && sideInferred(item) && (
                         <span className="chip-severity moderate" style={{ fontSize: 9, marginLeft: 6 }} title="The AI guessed the side from nearby photos; check it">
                           side inferred
+                        </span>
+                      )}
+                      {/* Contract 10: added from a hidden linked part; the
+                          chip goes once a person gives it a condition. */}
+                      {needsStripDownChip(item) && (
+                        <span
+                          className="chip-severity moderate lk-strip-chip"
+                          style={{ fontSize: 9, marginLeft: 6 }}
+                          title="Added from a hidden linked part: check it once the parts come off, then set its condition"
+                        >
+                          {STRIP_DOWN_CHIP}
                         </span>
                       )}
                     </td>

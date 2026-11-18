@@ -145,6 +145,12 @@ class IntakeSession(Base):
     # When the current stage began, so the wizard can show elapsed time and
     # an estimate of what's left. (Added later: see db._ADDED_COLUMNS.)
     stage_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Contract 10: the last beat of an AI run in another process (the
+    # Telegram bot's, intake/pipeline.keep_beating), so the api tells a live
+    # run there from one a restart cut off (pipeline.is_live). NULL while
+    # no other process runs it -- always, with telegram_full_detection off.
+    # (Added later: see db._ADDED_COLUMNS.)
+    run_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 

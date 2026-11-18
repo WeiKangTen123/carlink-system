@@ -407,6 +407,15 @@ def test_glossary_gives_up_below_half():
     ("SPACER, R. FR. BUMPER SIDE", "right"), ("BEAM COMP., L. FR. BUMPER UPPER", "left"),
     ("COMBINATION SWITCH (RH)", "right"), ("FACE, RR. BUMPER", None), ("PORTELLONE POSTERIORE", None),
     ("KIT SX E DX", None),
+    # the site cuts long names and loses the dot after the side (PANEL R, FR FENDER)
+    ("PANEL R, FR FENDER", "right"), ("PANEL L, FR FENDER", "left"), ("PANEL SET R, RR OU", "right"),
+    ("PANEL SET L, RR OU", "left"), ("HINGE R RR DOOR U", "right"), ("HINGE L RR DOOR U", "left"),
+    # RR. / FR. are ends, and a letter inside a word or a cut-off "L" of LINING is no side
+    ("PANEL COMP., RR.", None), ("SENSOR ASSY., RR.", None), ("BASE COMP., R. FR. DOOR L", "right"),
+    ("BASE COMP., FR. DOOR L", None), ("BULB, W5W LL", None), ("BRACKET R", None),
+    # a side pair names both sides (review L6)
+    ("COVER, L,R", None), ("COVER, R,L", None), ("COVER, L, R", None), ("GARNISH L/R", None),
+    ("MOLDING R.,L. SIDE", None), ("LINING, FR DOOR L", None),
 ])
 def test_side_from_name(name, side):
     assert side_of(name) == side

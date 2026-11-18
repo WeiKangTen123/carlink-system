@@ -21,6 +21,8 @@ import {
   type Owner,
   type PublicSubmissionInfo,
   type ReportData,
+  type SecondLook,
+  type SecondLookItem,
 } from "./api";
 import type { AiRead } from "./coverForm";
 import type { Review } from "./review";
@@ -361,8 +363,12 @@ export const deleteIntakePhoto = (id: string, photoId: string, opts: { keepalive
 
 /** keepalive lets the save outlive the page -- used when the tab is being
  * hidden or closed (the browser caps such bodies at 64KB, ample for a form). */
+/** Answers second_look too (contract 10) when a part put on the list by
+ * hand brought its own linked parts: the suggestions as stored now, and
+ * (since the review, L7) "linked", those new ones alone -- what the wizard
+ * adds to its own copy (lib/findings withSavedLook takes either shape). */
 export const saveIntakeData = (id: string, data: ReportData, reporterNotes?: string, opts: { keepalive?: boolean } = {}) =>
-  call<{ ok: boolean }>(`/${id}/data`, {
+  call<{ ok: boolean; second_look?: SecondLook | null; linked?: SecondLookItem[] | null }>(`/${id}/data`, {
     ...jsonInit("PUT", { data: prepareForSave(data), reporter_notes: reporterNotes }),
     keepalive: opts.keepalive,
   });

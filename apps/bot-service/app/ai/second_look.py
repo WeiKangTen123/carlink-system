@@ -709,6 +709,87 @@ def _join_twin(kept: dict, other: dict) -> None:
     evidence.join(kept, other.get("evidence") or [])
     if not kept.get("reason") and other.get("reason"):
         kept["reason"] = other["reason"]
+    if other.get("linked_from"):
+        # Contract 10: the listed parts a linked twin hangs off.
+        kept["linked_from"] = list(dict.fromkeys(list(kept.get("linked_from") or []) + list(other["linked_from"])))
+        for name in ("link_type", "link_rule", "hit"):
+            kept[name] = kept.get(name) or other.get(name)
+
+
+def _links_mode() -> str:
+    """settings.intake_links, "off" when the link table didn't load. Off:
+    the links module isn't even imported -- with every new setting off,
+    nothing of contract 10 can change what _store does."""
+    mode = getattr(settings, "intake_links", "off")
+    if mode not in ("shadow", "on"):
+        return "off"
+    from app.intake import links
+
+    return mode if links.TABLE is not None else "off"
+
+
+def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str]
+                ) -> tuple[list[dict], dict[str, dict]]:
+    """Contract 10: the linked parts of this read (intake/links.build_all)
+    against the list as it is now, beside the open suggestions `kept` --
+    a part one of them is joins it instead (the joins, by key)."""
+    from app.intake import links, zones
+    from app.intake.photos import ordered_photos
+
+    vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+    listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+    opts = links.options()
+    neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
+    return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
+                           opts, dismissed=dismissed, neighbours=neighbours)
+
+
+def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
+                  listed: set[str], listed_keys: set[str]) -> list[dict]:
+    """Contract 10, for _store (which calls it inside its protection): the
+    linked parts to show after the open suggestions `kept`, [] unless
+    intake_links is "on". "on": those a zone read (or the second look)
+    found too join that suggestion in `kept`, in place; the listed and
+    dismissed ones go. "shadow": they go on the AI draft only
+    (session.ai_draft["link_suggestions"]; [] when they couldn't be worked
+    out). "off": nothing at all, not even an import."""
+    from app.reports.schema import SecondLookItem
+
+    mode = _links_mode()
+    if mode == "off":
+        return []
+    try:
+        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed)
+    except Exception:
+        logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
+        linked, joins = [], {}
+    if mode == "shadow":
+        session.ai_draft = {**ai_draft, "link_suggestions": [
+            SecondLookItem.model_validate(it).model_dump() for it in linked]}
+        return []
+    for it in kept:
+        if it["key"] in joins:
+            _join_twin(it, joins[it["key"]])
+    return [it for it in linked if not _listed_as(it, listed, listed_keys)
+            and it["key"] not in dismissed and it["part"] not in dismissed]
+
+
+def _catalogue_neighbours(report_id: str, vehicle: dict, listed: list[dict]) -> dict | None:
+    """settings.intake_links_catalogue: the parts catalogue's diagram
+    neighbours of the listed parts (parts/catalogue.diagram_neighbours), for
+    the read's make, model and year. Cache only -- the stored catalogue
+    rows, never a web request -- so it neither slows nor fails the reading:
+    a cold cache answers {}, and any error is logged and leaves the linked
+    parts to the table alone (None). Imported only when on."""
+    try:
+        from app.parts import catalogue
+
+        parts = [str(it.get("part")) for it in listed if it.get("part")]
+        return catalogue.diagram_neighbours(vehicle.get("make"), vehicle.get("model"), catalogue.case_year(vehicle),
+                                            parts)
+    except Exception:
+        logger.exception("Second look for %s: no catalogue neighbours this time", report_id)
+        return None
 
 
 def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:
@@ -755,7 +836,15 @@ def _store(report_id: str, result: dict) -> None:
     -- on the case page too, where no read comes again. A part a person
     listed by hand stays out. reads are this reading's
     (ai_draft["zone_reads"]); the re-check's answer, about the open items
-    this replaces, goes."""
+    this replaces, goes.
+
+    Contract 10 (settings.intake_links): "off" changes nothing here, byte
+    for byte. "shadow": the linked parts go on the AI draft only
+    (ai_draft["link_suggestions"], counted at sign-off), second_look as
+    when off. "on": they follow the open suggestions in items (their own
+    cap, intake_links_max, outside MAX_SUGGESTIONS), skipped when listed or
+    dismissed like any; one that a zone read (or the second look) found
+    too is that suggestion, with the listed part it hangs off joined."""
     from app.parts.prefill import item_key, row_name
     from app.reports.db import SessionLocal
     from app.reports.models import IntakeSession, Report
@@ -809,11 +898,21 @@ def _store(report_id: str, result: dict) -> None:
                 continue
             kept.append(it)
         settled = list(decided.values())
-        for it in kept + settled:
+        kept = kept[:MAX_SUGGESTIONS]
+        # Never the reason the suggestions are lost: on any failure -- the
+        # mode itself too (the links module, or a link table it can't load,
+        # failing to import: review M2) -- the read's other suggestions are
+        # stored as they are.
+        try:
+            linked = _stored_links(db, report_id, session, data, ai_draft, kept, dismissed, listed, listed_keys)
+        except Exception:
+            logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
+            linked = []
+        for it in kept + linked + settled:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
             it["other_side_listed"] = other_side_listed(it["part"], listed)
-        items = [evidence.settle(it) for it in kept[:MAX_SUGGESTIONS] + settled]
+        items = [evidence.settle(it) for it in kept + linked + settled]
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),

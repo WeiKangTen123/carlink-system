@@ -77,6 +77,21 @@ summary the calls per model. scripts/bench/replay_check.py runs the
 re-check alone on a stored result's suggestions; scripts/bench/
 probe_boxes.py draws its evidence boxes for a person to judge.
 
+Contract 10, the linked parts: --links shadow|on works them out after the
+reading (intake/links.py on the frozen table, its knobs at their defaults),
+--link-check lite has the linked check look at them, --links-catalogue adds
+the parts catalogue's diagram neighbours. A run then keeps them apart from
+the other suggestions ("link_suggestions": part, kind, bucket, hit, hidden,
+the parts they hang off, the table's rule, the linked check's answer, and
+"truth") and scores them (score_links, as scripts/bench/replay_links.py
+scores a stored run offline): real when a key part the list and the other
+suggestions missed, the recall they add of all the key's parts and of the
+inside ones, by kind, bucket and hit; ai_settings records the table's
+version and sha256. --keep-reads keeps the overall reading's raw answer and
+each zone read's items as merged (wrappers in this harness only). Without
+these flags a run writes what it wrote before them. scripts/bench/gate.py
+--suggestions passes or fails the linked parts by the plan's G1-G6.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -271,6 +286,128 @@ def mark_truth(rows: list[dict], expected: list[dict], parts: dict) -> None:
     """Sets each suggestion row's "truth" (classify_suggestions), in place."""
     for row, truth in zip(rows, classify_suggestions(expected, parts, [r.get("part") for r in rows])):
         row["truth"] = truth
+
+
+# ---------------------------------------------------------------- linked parts (contract 10)
+
+# A linked part's kinds, buckets and hit levels (config.LINK_TYPES,
+# intake/links.BUCKETS, config.HIT_LEVELS). Repeated (not imported) so
+# scoring loads without the app; test_benchmark_scoring checks them against
+# the app's. Each group's metrics have their own prefix: "crush" is a kind
+# of link and a hit level.
+LINK_TYPES = ("attached", "opens_with", "behind", "crush")
+LINK_BUCKETS = ("seen", "likely", "strip_down")
+HIT_LEVELS = ("light", "medium", "heavy", "crush")
+LINK_GROUPS = (("link_type", "lt", LINK_TYPES), ("bucket", "lb", LINK_BUCKETS), ("hit", "lh", HIT_LEVELS))
+LINK_TRUTHS = ("real", "wrong_side", "extra")
+LINK_SIDE = "{side}"
+
+
+def hidden_children(table) -> set[str]:
+    """The parts a link table names as a hidden child (behind a part, inside
+    it, on the crush path), "{side}" as Left and Right: with the key's own
+    hidden parts, the "inside" parts the linked parts are for. Empty for no
+    table."""
+    out: set[str] = set()
+    links = table.get("links") if isinstance(table, dict) else None
+    for link in links if isinstance(links, list) else []:
+        if not isinstance(link, dict) or not link.get("hidden") or not isinstance(link.get("child"), str):
+            continue
+        child = link["child"]
+        out.update([child.replace(LINK_SIDE, side) for side in ("Left", "Right")] if LINK_SIDE in child else [child])
+    return out
+
+
+def inside_parts(expected: list[dict], hidden=()) -> list[str]:
+    """The key's parts a photo rarely shows, in key order: those the key
+    marks hidden, and those in `hidden` (hidden_children of the table)."""
+    hidden = set(hidden)
+    return [e["part"] for e in expected if e.get("hidden") or e["part"] in hidden]
+
+
+def score_links(expected: list[dict], drafted: list[str], zone_suggested: list[str], rows: list[dict],
+                inside=()) -> dict:
+    """Contract 10: the linked parts (rows, in the order shown; each sets its
+    "truth" in place) against the key, with the strict score. A link is
+    real when it finds a key part the list AND the other suggestions (zone
+    reads', second look's) missed -- classify_suggestions against
+    score_parts of list + suggestions --, wrong_side when it names such a
+    part's family on the other side, else extra. Recall of the list alone,
+    list + suggestions (lz) and list + suggestions + links (lzl), as if
+    every suggestion were ticked: of all the key's parts, of its inside
+    parts (inside_parts: the key's hidden ones and the table's hidden
+    children) and of the key's hidden ones alone. By kind of link, bucket
+    and hit level: shown, real, wrong_side, extra. strip_down_wrong: the
+    wrong ones in the strip-down bucket (the gate's flood check)."""
+    drafted = [p for p in drafted if p]
+    zone = [p for p in zone_suggested if p]
+    linked = [r.get("part") for r in rows]
+    listed = score_parts(expected, drafted)
+    lz = score_parts(expected, drafted + zone)
+    truths = classify_suggestions(expected, lz, linked)
+    for row, truth in zip(rows, truths):
+        row["truth"] = truth
+    lzl = score_parts(expected, drafted + zone + [p for p in linked if p])
+    inside = inside_parts(expected, inside)
+    hidden =[e["part"] for e in expected if e.get("hidden")]
+
+    def found(score: dict, among: list[str]) -> int:
+        return sum(1 for p in among if p in score["found_parts"])
+
+    out = {
+        "shown": len(rows),
+        "real": truths.count("real"),
+        "wrong_side": truths.count("wrong_side"),
+        "extra": truths.count("extra"),
+        "wrong": truths.count("wrong_side") + truths.count("extra"),
+        "wrong_per_real": _ratio(truths.count("wrong_side") + truths.count("extra"), truths.count("real")),
+        "real_parts": [p for p, t in zip(linked, truths) if t == "real"],
+        "wrong_side_parts": [p for p, t in zip(linked, truths) if t == "wrong_side"],
+        "extra_parts": [p for p, t in zip(linked, truths) if t == "extra"],
+        "strip_down_wrong": sum(1 for r, t in zip(rows, truths) if r.get("bucket") == "strip_down" and t != "real"),
+        "hidden_shown": sum(1 for r in rows if r.get("hidden")),
+        "expected": len(expected),
+        "list_found": listed["found"],
+        "lz_found": lz["found"],
+        "lzl_found": lzl["found"],
+        "inside_expected": len(inside),
+        "list_inside_found": found(listed, inside),
+        "lz_inside_found": found(lz, inside),
+        "lzl_inside_found": found(lzl, inside),
+        "key_hidden_expected": len(hidden),
+        "lz_hidden_found": found(lz, hidden),
+        "lzl_hidden_found": found(lzl, hidden),
+        "inside_parts": inside,
+        "missed_with_links": list(lzl["missed"]),
+    }
+    for field, _, names in LINK_GROUPS:
+        group = {name: dict.fromkeys(("shown",) + LINK_TRUTHS, 0) for name in names}
+        for row, truth in zip(rows, truths):
+            if row.get(field) in group:
+                group[row[field]]["shown"] += 1
+                group[row[field]][truth] += 1
+        out[f"by_{field}"] = group
+    return out
+
+
+def link_metrics(block) -> dict:
+    """A run's linked parts (score_links) as flat numbers for run_metrics,
+    the summary and compare.py; {} for a run without them."""
+    if not isinstance(block, dict) or "shown" not in block:
+        return {}
+    m = {"link_shown": block["shown"], "link_real": block["real"], "link_wrong_side": block["wrong_side"],
+         "link_extra": block["extra"], "link_wrong": block["wrong"], "link_strip_wrong": block["strip_down_wrong"],
+         "link_hidden_shown": block["hidden_shown"], "link_expected": block["expected"],
+         "lz_found": block["lz_found"], "lzl_found": block["lzl_found"],
+         "link_inside_expected": block["inside_expected"], "lz_inside_found": block["lz_inside_found"],
+         "lzl_inside_found": block["lzl_inside_found"], "link_key_hidden_expected": block["key_hidden_expected"],
+         "lz_hidden_found": block["lz_hidden_found"], "lzl_hidden_found": block["lzl_hidden_found"]}
+    for field, prefix, names in LINK_GROUPS:
+        group = block.get(f"by_{field}") or {}
+        for name in names:
+            for count in ("shown",) + LINK_TRUTHS:
+                m[f"{prefix}_{name}_{count}"] = (group.get(name) or {}).get(count, 0)
+    return m
 
 
 def has_ai_box(entry: dict) -> bool:
@@ -876,6 +1013,17 @@ RATIOS += (
     ("chk_wrong_no_rate", "chk_wrong_no", "sug_wrong"),
     ("sug_checked_rate", "sug_checked", "sug_n"),
 )
+# Contract 10: the linked parts' wrong per real, and the recall of the list
+# + the other suggestions (lz), + the links (lzl), as if all were ticked --
+# of every key part, of the inside ones and of the key's hidden ones.
+RATIOS += (
+    ("link_wrong_per_real", "link_wrong", "link_real"),
+    ("lz_recall", "lz_found", "link_expected"),
+    ("lzl_recall", "lzl_found", "link_expected"),
+    ("lz_inside_recall", "lz_inside_found", "link_inside_expected"),
+    ("lzl_inside_recall", "lzl_inside_found", "link_inside_expected"),
+    ("lzl_hidden_recall", "lzl_hidden_found", "link_key_hidden_expected"),
+)
 _RATIO_NAMES = {name for name, _, _ in RATIOS}
 
 
@@ -956,13 +1104,16 @@ def run_metrics(run: dict) -> dict:
     if zone_stage:
         m.update(zone_calls=zone_stage.get("calls"), zone_failed=zone_stage.get("failed_calls"),
                  zone_s=zone_stage.get("seconds"))
-    # Contract 9: the re-check's Decisions API requests and its lite call.
-    for purpose, short in (("decision", "dec"), ("check", "check")):
+    # Contract 9: the re-check's Decisions API requests and its lite call;
+    # contract 10: the linked check's (ai/link_check.PURPOSE "link").
+    for purpose, short in (("decision", "dec"), ("check", "check"), ("link", "lchk")):
         stage = (accounting or {}).get(purpose)
         if stage:
             m.update({f"{short}_calls": stage.get("calls"), f"{short}_failed": stage.get("failed_calls"),
                       f"{short}_s": stage.get("seconds")})
     m.update(evidence_metrics(run))
+    # Contract 10: the linked parts, in a run that had them on.
+    m.update(link_metrics(run.get("links")))
     zones = (run.get("zones") or {}).get("zones")
     if zones is not None:
         m["zone_side_flips"] = sum(1 for z in zones if z.get("zone") in ("left", "right")
@@ -1102,6 +1253,8 @@ _SHORT_PURPOSES["draft_zone"] = "zone"
 # Contract 9: the re-check -- the Decisions API's requests (ai/decisions.
 # PURPOSE) and the lite call ("dec_tok_in", "check_tok_in"...).
 _SHORT_PURPOSES.update({"decision": "dec", "check": "check"})
+# Contract 10: the linked check (ai/link_check.PURPOSE): "lchk_tok_in"...
+_SHORT_PURPOSES["link"] = "lchk"
 _TOKEN_METRICS = (("prompt_tokens", "tok_in"), ("output_tokens", "tok_out"), ("thought_tokens", "tok_think"),
                   ("tool_calls", "code_runs"), ("tool_tokens", "tok_tool"))
 # The label of a close-up's part (extraction._build_input, contract 8 D1):
@@ -1367,8 +1520,11 @@ def _app() -> SimpleNamespace:
     import app.ai.check as check
     import app.ai.decisions as decisions
 
-    for module in (triage, extraction, second_look, zone_read, check):  # imported before the wrap (not today)
-        if not getattr(module.call_structured, "_bench_wrapped", False):
+    # Contract 10: the linked check (a stub without a call until it is built).
+    import app.ai.link_check as link_check
+
+    for module in (triage, extraction, second_look, zone_read, check, link_check):  # imported before the wrap (not today)
+        if hasattr(module, "call_structured") and not getattr(module.call_structured, "_bench_wrapped", False):
             module.call_structured = structured.call_structured
     if not getattr(decisions.decide, "_bench_wrapped", False):
         decisions.decide = _counting(decisions.decide)
@@ -1707,6 +1863,14 @@ _ITEM_FIELDS += ("photo_reference", "bbox_2d", "reason", "evidence")
 # A suggestion as a run keeps it (second_look.items; contract 9).
 _SUGGESTION_FIELDS = ("key", "part", "name", "other_part_name", "source", "confidence", "found_by", "photo_reference",
                       "seen_in", "reason", "evidence", "check")
+# Contract 10, only while the linked parts are on (so a run without them is
+# kept as before): a suggestion's own words on how hard the part was hit,
+# and its link -- the listed parts it hangs off, the kind, the table's rule,
+# the parent's hit, the bucket, hidden / strip-down, the side it took and
+# from where, the zone reads that called it intact, the linked check's
+# answer. A zone suggestion joined to a link carries the link fields too.
+_LINK_SUGGESTION_FIELDS = ("severity", "condition_tokens", "remarks", "linked_from", "link_type", "link_rule", "hit",
+                           "bucket", "hidden", "needs_strip_down", "side_from", "intact_in", "link_check")
 
 
 def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
@@ -1724,14 +1888,141 @@ def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
     return out
 
 
-def suggestion_rows(look: dict, label_of: dict[str, str]) -> list[dict]:
-    """The second look's items (zone finds and its own) as a run keeps them."""
-    return [relabel_refs({k: it.get(k) for k in _SUGGESTION_FIELDS if k in it}, label_of)
-            for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
+def suggestion_rows(look: dict, label_of: dict[str, str], fields: tuple = _SUGGESTION_FIELDS,
+                    items: list | None = None) -> list[dict]:
+    """The second look's items (zone finds and its own) as a run keeps them;
+    or `items` (contract 10: the linked parts), with `fields`."""
+    items = look.get("items") if items is None else items
+    return [relabel_refs({k: it.get(k) for k in fields if k in it}, label_of)
+            for it in items or [] if isinstance(it, dict) and it.get("part")]
+
+
+def links_mode(settings) -> str:
+    """settings.intake_links: "off" (and before contract 10), "shadow" or
+    "on"."""
+    mode = getattr(settings, "intake_links", "off")
+    return mode if mode in ("shadow", "on") else "off"
+
+
+def _link_table():
+    """The link table the app loaded (None when it didn't)."""
+    from app.intake import links
+
+    return links.TABLE
+
+
+# ---------------------------------------------------------------- --keep-reads (contract 10)
+
+
+class KeptReads:
+    """--keep-reads: what the overall reading answered (extraction.
+    draft_report's damage items), the sides side_from_sorter changed, and
+    the reads zones.merge_reads merged (the overall items and each zone
+    read's, and what came out) -- kept by wrapping those functions on the
+    pipeline's and zones' modules in this harness only: no app change, no
+    extra call. For Z's P0 re-run (plans/2026-11-17-linked-parts/
+    Z-report.md section 7)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.kept: dict = {}
+
+    def clear(self) -> None:
+        with self._lock:
+            self.kept = {}
+
+    def add(self, name: str, value) -> None:
+        with self._lock:
+            self.kept.setdefault(name, []).append(value)
+
+    def taken(self) -> dict:
+        with self._lock:
+            return copy.deepcopy(self.kept)
+
+
+KEPT_READS = KeptReads()
+
+
+def _kept_item(item) -> dict:
+    return {k: copy.deepcopy(item.get(k)) for k in _ITEM_FIELDS if k in item} if isinstance(item, dict) else {}
+
+
+def _keeping_draft(fn):
+    """extraction.draft_report as the pipeline calls it: its damage items
+    as the model gave them (photos as the labels sent, "P07")."""
+    def wrapper(*args, **kwargs):
+        draft = fn(*args, **kwargs)
+        try:
+            items = draft.model_dump().get("damage_summary") if hasattr(draft, "model_dump") else None
+            KEPT_READS.add("overall", [_kept_item(i) for i in items or []])
+        except Exception:  # keeping must never fail a reading
+            log.warning("benchmark: couldn't keep the overall reading's answer", exc_info=True)
+        return draft
+    wrapper._bench_wrapped = True
+    return wrapper
+
+
+def _keeping_sides(fn):
+    """pipeline.side_from_sorter: each part whose side it changed."""
+    def wrapper(items, *args, **kwargs):
+        before = [str(i.get("part")) if isinstance(i, dict) else None for i in items]
+        result = fn(items, *args, **kwargs)
+        try:
+            KEPT_READS.add("side_from_sorter", [{"from": b, "to": i.get("part"), "photo_reference": i.get("photo_reference")}
+                                                for b, i in zip(before, items) if isinstance(i, dict) and i.get("part") != b])
+        except Exception:
+            log.warning("benchmark: couldn't keep side_from_sorter's changes", exc_info=True)
+        return result
+    wrapper._bench_wrapped = True
+    return wrapper
+
+
+def _keeping_merge(fn):
+    """zones.merge_reads: the overall items and each zone read's that went in,
+    and the list and the disputed names that came out."""
+    def wrapper(overall, reads, *args, **kwargs):
+        taken = {"overall": [_kept_item(i) for i in overall or []],
+                 "zones": [{"read": name, "items": [_kept_item(i) for i in found or []]} for name, found in reads or []]}
+        merged, disputed = fn(overall, reads, *args, **kwargs)
+        try:
+            taken.update(merged=[_kept_item(i) for i in merged or []], disputed=sorted(disputed or []))
+            KEPT_READS.add("merge", taken)
+        except Exception:
+            log.warning("benchmark: couldn't keep the zone merge", exc_info=True)
+        return merged, disputed
+    wrapper._bench_wrapped = True
+    return wrapper
+
+
+def keep_reads_on(A) -> None:
+    """--keep-reads: the three wrappers in place (once)."""
+    import app.intake.zones as zones
+
+    if not getattr(A.pipeline.draft_report, "_bench_wrapped", False):
+        A.pipeline.draft_report = _keeping_draft(A.pipeline.draft_report)
+    if not getattr(A.pipeline.side_from_sorter, "_bench_wrapped", False):
+        A.pipeline.side_from_sorter = _keeping_sides(A.pipeline.side_from_sorter)
+    if not getattr(zones.merge_reads, "_bench_wrapped", False):
+        zones.merge_reads = _keeping_merge(zones.merge_reads)
+
+
+def kept_reads(label_of: dict[str, str]) -> dict:
+    """This run's kept reads, photos by case label: one entry per call of
+    each wrapped function (a reading calls each once)."""
+    out = KEPT_READS.taken()
+    for name in ("overall", "side_from_sorter"):
+        if name in out:
+            out[name] = [[relabel_refs(i, label_of) for i in items] for items in out[name]]
+    for merge in out.get("merge") or []:
+        merge["overall"] = [relabel_refs(i, label_of) for i in merge.get("overall") or []]
+        merge["merged"] = [relabel_refs(i, label_of) for i in merge.get("merged") or []]
+        for zone in merge.get("zones") or []:
+            zone["items"] = [relabel_refs(i, label_of) for i in zone.get("items") or []]
+    return out
 
 
 def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, reports: ReportSet | None = None,
-             keep_photos: bool = False) -> dict:
+             keep_photos: bool = False, keep_reads: bool = False) -> dict:
     A = _app()
     held = reports.for_case(case) if reports else None
     if held is not None:
@@ -1741,6 +2032,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         load_history(reports.others(held))
     rid = load_case(cases_dir / case["folder"])
     ACCOUNTING.clear()
+    KEPT_READS.clear()
     out: dict = {"case": case["name"], "report_id": rid}
     cache_info = {"hits": apply_sort_cache(rid, sort_cache)} if sort_cache else None
     started = time.monotonic()
@@ -1799,6 +2091,19 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["checklist"] = hinted
         out["parts_with_checklist"] = score_parts(case["parts"], drafted + hinted)
         look = data.get("second_look") if isinstance(data.get("second_look"), dict) else None
+        # Contract 10: with the linked parts on, they are scored apart
+        # (score_links), so the other suggestions' numbers stay contract 9's:
+        # "on" keeps them in second_look.items (source "link"), "shadow" in
+        # the AI draft only.
+        mode = links_mode(A.settings)
+        fields = _SUGGESTION_FIELDS + (_LINK_SUGGESTION_FIELDS if mode != "off" else ())
+        link_items: list = []
+        if look and mode != "off":
+            look = dict(look)
+            link_items = [it for it in look.get("items") or [] if isinstance(it, dict) and it.get("source") == "link"]
+            look["items"] = [it for it in look.get("items") or [] if not (isinstance(it, dict) and it.get("source") == "link")]
+        if mode == "shadow":
+            link_items = [it for it in (session.ai_draft or {}).get("link_suggestions") or [] if isinstance(it, dict)]
         if look:
             suggested = [it.get("part") for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
             out["second_look"] = {
@@ -1810,9 +2115,13 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             out["parts_with_second_look"] = score_second_look(case["parts"], out["parts"], drafted, suggested)
             # Contract 9: each suggestion in detail, real or wrong by the key,
             # and what the re-check did.
-            out["suggestions"] = suggestion_rows(look, label_of)
+            out["suggestions"] = suggestion_rows(look, label_of, fields)
             mark_truth(out["suggestions"], case["parts"], out["parts"])
             out["second_look"]["check"] = look.get("check")
+            if mode != "off":
+                # The linked check's step (SecondLook.link_run; shadow: the
+                # AI draft's).
+                out["second_look"]["link_run"] = look.get("link_run") or (session.ai_draft or {}).get("link_run")
             # _read runs the second look and the re-check after the reading:
             # read_seconds stays the reading's own, comparable with runs from
             # before them.
@@ -1820,6 +2129,17 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             after = sum(x for x in after if isinstance(x, (int, float)) and not isinstance(x, bool))
             if after and "read_seconds" in out:
                 out["read_seconds"] = round(max(0.0, out["read_seconds"] - after), 1)
+        if mode != "off":
+            # Contract 10: the linked parts as shown, scored as
+            # scripts/bench/replay_links.py scores a stored run's.
+            out["link_suggestions"] = suggestion_rows({}, label_of, fields, link_items)
+            others = [r.get("part") for r in out.get("suggestions") or []]
+            out["links"] = score_links(case["parts"], drafted, others, out["link_suggestions"],
+                                       inside=hidden_children(_link_table()))
+            out["links"].update(mode=mode, zone_joined=sum(1 for r in out.get("suggestions") or [] if r.get("linked_from")),
+                                impact=(data.get("vehicle_info") or {}).get("point_of_impact"))
+        if keep_reads:
+            out["reads"] = kept_reads(label_of)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
         # Contract 8 D2: what each zone call sent and saw, from the run log's
@@ -1894,6 +2214,7 @@ def detail_lines(r: dict) -> list[str]:
                      f"(visible {ls['visible_found']}/{r['parts']['visible_expected']}), added {ls['added']} "
                      f"{ls['added_parts']}, extra {ls['extra']} {ls['extra_parts']}, wrong side {ls['wrong_side']}")
     lines += evidence_lines(r)
+    lines += link_lines(r)
     s = r["sorter"]
     cache = r.get("sort_cache")
     lines.append(f"   sorter: labels in key {s['tagged_in_key']}/{s['tagged_photos']} ({_pct(s['label_precision'])}), "
@@ -1971,6 +2292,24 @@ def evidence_lines(r: dict) -> list[str]:
             said += "; " + "; ".join(f"{group} " + " ".join(f"{v} {m[f'chk_{group}_{v}']}" for v in VERDICTS)
                                      for group in ("real", "wrong"))
         lines.append(said)
+    return lines
+
+
+def link_lines(r: dict) -> list[str]:
+    """Contract 10: a run's linked parts against the key, the recall they
+    add, and the linked check's step."""
+    b = r.get("links")
+    if not isinstance(b, dict) or "shown" not in b:
+        return []
+    lines = [f"   linked parts ({b.get('mode') or '-'}): {b['shown']} shown; real {b['real']} {b['real_parts']}, "
+             f"wrong side {b['wrong_side']} {b['wrong_side_parts']}, extra {b['extra']} {b['extra_parts']}; "
+             f"strip-down wrong {b['strip_down_wrong']}",
+             f"   if all ticked: list {b['list_found']}, + suggestions {b['lz_found']}, + links {b['lzl_found']} of "
+             f"{b['expected']}; inside parts {b['lz_inside_found']} -> {b['lzl_inside_found']} of {b['inside_expected']}"]
+    run = (r.get("second_look") or {}).get("link_run")
+    if isinstance(run, dict):
+        lines.append(f"   linked check: {run.get('status')} on {run.get('model') or '-'} in {run.get('seconds')}s, "
+                     f"{run.get('calls', 0)} call(s)" + (f" ({run['note']})" if run.get("note") else ""))
     return lines
 
 
@@ -2080,6 +2419,15 @@ TABLES += (
      ("wrong no", "chk_wrong_no"), ("real kept", "chk_real_kept_rate"), ("no on wrong", "chk_wrong_no_rate"),
      ("dec calls", "dec_calls"), ("dec s", "dec_s"), ("lite check calls", "check_calls"),
      ("re-check s", "recheck_s"), ("429", "n_429"), ("503", "n_503")),
+)
+# Contract 10: the linked parts (scored apart from the other suggestions),
+# the recall they add, and the linked check's calls.
+TABLES += (
+    (("links", "link_shown"), ("real", "link_real"), ("wrong side", "link_wrong_side"), ("extra", "link_extra"),
+     ("wrong/real", "link_wrong_per_real"), ("strip-down wrong", "link_strip_wrong"), ("hidden", "link_hidden_shown"),
+     ("list+sugg", "lz_found"), ("+links", "lzl_found"), ("inside l+s", "lz_inside_found"),
+     ("inside +links", "lzl_inside_found"), ("inside of", "link_inside_expected"),
+     ("link check calls", "lchk_calls"), ("link check s", "lchk_s")),
 )
 
 
@@ -2272,6 +2620,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "needs --check")
     ap.add_argument("--check-no", type=float, metavar="P",
                     help="p at or under which it is 'no' (settings.intake_check_no); needs --check")
+    # Contract 10: the linked parts (knobs at the L1 freeze's defaults).
+    ap.add_argument("--links", metavar="MODE",
+                    help="the linked parts: 'off', 'shadow' (worked out, kept in the AI draft only) or 'on' (shown "
+                         "with the suggestions) (settings.intake_links); scored apart from the other suggestions")
+    ap.add_argument("--link-check", metavar="MODE",
+                    help="the linked check: 'off' or 'lite' (settings.intake_link_check; app/ai/link_check.py); "
+                         "needs --links on or shadow")
+    ap.add_argument("--links-catalogue", action="store_true",
+                    help="also the parts catalogue's diagram neighbours as candidates (settings."
+                         "intake_links_catalogue; cache only); needs --links on or shadow")
+    ap.add_argument("--keep-reads", action="store_true",
+                    help="keep the overall reading's raw damage items, side_from_sorter's changes and each zone "
+                         "read's items as merged (wraps the app's functions in this harness only; no extra call)")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2283,6 +2644,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--keep-photos", action="store_true",
                     help="keep each run's copied photos in STORAGE_DIR (default: deleted after scoring)")
     return ap.parse_args(argv)
+
+
+# Contract 10's flags at their defaults: left out of a result file's "args",
+# so a run without them writes the file it wrote before them.
+C10_ARGS = {"links": None, "link_check": None, "links_catalogue": False, "keep_reads": False}
 
 
 def _now() -> str:
@@ -2363,6 +2729,36 @@ def model_settings(args: argparse.Namespace) -> dict:
     if getattr(args, "store_on", False):
         out["gemini_store_off"] = False
     out.update(check_settings(args, config, zones_on))
+    out.update(links_settings(args, config))
+    return out
+
+
+def links_settings(args: argparse.Namespace, config) -> dict:
+    """Contract 10's --links, --link-check and --links-catalogue as
+    {Settings field: value}. Exits on a value config refuses, or a flag that
+    would change nothing with the linked parts off. The knobs (cap, types,
+    side, unknown hit, intact) stay at their defaults: frozen with the
+    table (L1); scripts/bench/replay_links.py measures the pre-registered
+    variants offline."""
+    out: dict = {}
+    mode = config.settings.intake_links
+    if getattr(args, "links", None) is not None:
+        try:
+            mode = out["intake_links"] = config.normal_links_mode(args.links)
+        except ValueError as exc:
+            sys.exit(f"--links: {exc}")
+    if getattr(args, "link_check", None) is not None:
+        try:
+            check = config.normal_link_check(args.link_check)
+        except ValueError as exc:
+            sys.exit(f"--link-check: {exc}")
+        if check != "off" and mode == "off":
+            sys.exit("--link-check: checks the linked parts; give --links on or shadow too")
+        out["intake_link_check"] = check
+    if getattr(args, "links_catalogue", False):
+        if mode == "off":
+            sys.exit("--links-catalogue: adds candidates to the linked parts; give --links on or shadow too")
+        out["intake_links_catalogue"] = True
     return out
 
 
@@ -2456,7 +2852,58 @@ def ai_settings(settings) -> dict:
         if mode in ("lite", "decision_then_lite"):
             out["check_chain"] = getattr(settings, "gemini_check_chain", None)
             out["thinking_level_check"] = getattr(settings, "gemini_thinking_level_check", None)
+    # Contract 10, while the linked parts act: their mode and knobs, the
+    # link table's version and sha256 (as git keeps the file: the L1 freeze),
+    # and the linked check's settings while it runs.
+    links = links_mode(settings)
+    if links != "off":
+        out["intake_links"] = links
+        for field in ("intake_links_max", "intake_links_types", "intake_links_side", "intake_links_unknown_hit",
+                      "intake_links_intact"):
+            out[field] = getattr(settings, field, None)
+        if getattr(settings, "intake_links_catalogue", False):
+            out["intake_links_catalogue"] = True
+        out.update(link_table_settings())
+        check = getattr(settings, "intake_link_check", "off")
+        if check != "off":
+            out["intake_link_check"] = check
+            out["link_chain"] = getattr(settings, "gemini_link_chain", None)
+            out["intake_link_check_max_calls"] = getattr(settings, "intake_link_check_max_calls", None)
+            out["thinking_level_link"] = getattr(settings, "gemini_thinking_level_link", None)
     return out
+
+
+# The linked check's skill files (contract 10 section 4.4), frozen with the
+# link table.
+SKILLS_DIR = BOT_DIR / "app" / "ai" / "skills"
+
+
+def lf_sha256(path) -> str | None:
+    """sha256 of a text file as git keeps it, line endings LF: a Windows
+    checkout (core.autocrlf) has CRLF on disk, the server's has LF, and the
+    L1 freeze was taken of git's copy. None when it can't be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    except OSError:
+        return None
+
+
+def skills_sha256(folder: Path = SKILLS_DIR) -> dict[str, str | None]:
+    """{skill file name: lf_sha256} for every skill file."""
+    return {p.name: lf_sha256(p) for p in sorted(Path(folder).glob("*.md"))}
+
+
+def link_table_settings() -> dict:
+    """The link table the app loaded: its version and lf_sha256 (both None
+    when it didn't load), and one sha256 over the skill files' (name and
+    sha, a line each)."""
+    from app.intake import links
+
+    skills = skills_sha256()
+    joined = "".join(f"{name} {sha}\n" for name, sha in skills.items())
+    return {"link_table_version": links.TABLE_VERSION,
+            "link_table_sha256": lf_sha256(links.TABLE_PATH) if links.TABLE else None,
+            "link_skills_sha256": hashlib.sha256(joined.encode()).hexdigest() if skills else None}
 
 
 # The reading rules --drop-rule can take out of the prompt, by the words
@@ -2510,6 +2957,12 @@ def main(argv=None) -> int:
         A.settings.intake_max_read_photos = args.max_read
     for rule in args.drop_rule or []:
         extraction.SYSTEM_PROMPT = _drop_rule(extraction.SYSTEM_PROMPT, READING_RULES[rule])
+    # Contract 10: a run "with links" on a table that didn't load would be
+    # the baseline under another name (second_look._links_mode: off).
+    if links_mode(A.settings) != "off" and _link_table() is None:
+        sys.exit("--links: the link table (app/intake/link_table.json) didn't load; see the log")
+    if args.keep_reads:
+        keep_reads_on(A)
     A.init_db()
     key = json.loads(args.key.read_text(encoding="utf-8"))
     unknown = sorted(set(args.only or []) - {c["name"] for c in key["cases"]})
@@ -2529,7 +2982,8 @@ def main(argv=None) -> int:
     doc = {
         "label": args.label or args.out.stem,
         "git_ref": args.ref,
-        "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
+        "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
+                 if not (k in C10_ARGS and v == C10_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),
@@ -2542,7 +2996,8 @@ def main(argv=None) -> int:
     for rep in range(1, args.repeat + 1):
         for case in cases:
             print(f"== {case['name']}" + (f"  (run {rep}/{args.repeat})" if args.repeat > 1 else ""), flush=True)
-            r = run_case(case, args.cases, sort_cache=cache, reports=reports, keep_photos=args.keep_photos)
+            r = run_case(case, args.cases, sort_cache=cache, reports=reports, keep_photos=args.keep_photos,
+                         keep_reads=args.keep_reads)
             r["rep"] = rep
             doc["runs"].append(r)
             print(summary_line(r), flush=True)
@@ -2586,6 +3041,12 @@ def total_lines(runs: list[dict]) -> list[str]:
                     for k in ("sug_n", "sug_real", "sug_wrong", "sug_box", "sug_reason", "chk_real_kept", "chk_wrong_no"):
                         totals[k] += em.get(k, 0)
                     totals["chk_runs"] += 1 if "chk_real_yes" in em else 0
+                lm = link_metrics(r.get("links"))
+                if lm:
+                    totals["link_runs"] += 1
+                    for k in ("link_shown", "link_real", "link_wrong_side", "link_extra", "link_strip_wrong", "lz_found",
+                              "lzl_found", "lz_inside_found", "lzl_inside_found", "link_inside_expected"):
+                        totals[k] += lm[k]
                 ls = r.get("parts_with_second_look")
                 if ls:
                     totals["look_runs"] += 1
@@ -2617,6 +3078,12 @@ def total_lines(runs: list[dict]) -> list[str]:
                        f"AI box {totals['sug_box']}, reason {totals['sug_reason']}"
                        + (f"; RE-CHECK kept {totals['chk_real_kept']} of the real, said no to {totals['chk_wrong_no']} "
                           f"of the wrong" if totals["chk_runs"] else ""))
+        if totals["link_runs"]:
+            out.append(f"{head}LINKED PARTS {totals['link_shown']}: real {totals['link_real']}, wrong side "
+                       f"{totals['link_wrong_side']}, extra {totals['link_extra']} (strip-down wrong "
+                       f"{totals['link_strip_wrong']}); if all ticked parts {totals['lz_found']} -> {totals['lzl_found']}"
+                       f"/{totals['expected']}, inside {totals['lz_inside_found']} -> {totals['lzl_inside_found']}"
+                       f"/{totals['link_inside_expected']}")
         if totals["fair_runs"]:
             out.append(f"{head}FAIR parts {totals['fair_found']:g}/{totals['expected']}, visible "
                        f"{totals['fair_visible_found']:g}/{totals['visible_expected']} ({totals['neighbour']} neighbours "
@@ -2680,6 +3147,12 @@ def rescore(args: argparse.Namespace) -> int:
         run["parts_fair"] = score_fair(case["parts"], items, strict, contradicted)
         if isinstance(run.get("suggestions"), list):
             mark_truth(run["suggestions"], case["parts"], strict)
+        if isinstance(run.get("links"), dict) and isinstance(run.get("link_suggestions"), list):
+            # Contract 10: the linked parts on this key, as the run scored them.
+            kept = {k: run["links"][k] for k in ("mode", "zone_joined", "impact") if k in run["links"]}
+            run["links"] = score_links(case["parts"], drafted, [r.get("part") for r in run.get("suggestions") or []],
+                                       run["link_suggestions"], inside=hidden_children(_link_table()))
+            run["links"].update(kept)
         score_details(run, case, held[1].lines if held is not None else None,
                       history.normalise_item if history else None, history.side_of if history else None)
         if annex and held is not None:

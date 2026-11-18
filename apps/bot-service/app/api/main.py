@@ -1093,6 +1093,10 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
         sent.pop("checked", None)
         sent.pop("template_fields", None)
         sent.pop("second_look", None)
+        # Contract 10: "Confirm at strip-down" is the server's, kept until a
+        # person edits the item's condition (as PATCH .../damage-items).
+        if isinstance(sent.get("damage_summary"), list):
+            suggestions.kept_strip_down(sent["damage_summary"], (r.data or {}).get("damage_summary"))
         if "report_id" in sent:
             sent["report_id"] = limits.checked_our_ref(user, sent["report_id"], (r.data or {}).get("report_id"))
         data = _merge_into(dict(r.data or {}), sent)
@@ -1443,6 +1447,9 @@ def review_damage_item(
         # when a person sends one.
         if changes.get("condition_tokens") and not item.get("damage_type"):
             item["damage_type"] = damage_type_from_tokens(changes["condition_tokens"])
+        # Contract 10: "Confirm at strip-down" (an item added from a hidden
+        # linked part) holds until a person edits its condition.
+        suggestions.clear_strip_down(item, damage_summary[item_index])
         damage_summary[item_index] = item
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_edited",
                                  f"item {item_index + 1}: {item_source(item)}")
@@ -1474,8 +1481,19 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
         item = DamageSummaryItem(**fields, human_verified=True).model_dump()
         damage_summary.append(item)
         _undismiss(data, item)
+        # Contract 10 (intake_links "on"): the part's own linked parts join
+        # the suggestions, as an add from a suggestion's do; answered with
+        # second_look then, so the page shows them at once -- and "linked",
+        # those new ones alone, as the wizard's autosave answers them
+        # (review L7: no decision in it to put back).
+        before_look = data.get("second_look")
+        relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item])
+        if relinked is not None:
+            data["second_look"] = relinked
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item_source(item))
-        return {"item_index": len(damage_summary) - 1, "item": item, **out}
+        return {"item_index": len(damage_summary) - 1, "item": item, **out,
+                **({"second_look": relinked, "linked": suggestions.relinks_of(before_look, relinked)}
+                   if relinked is not None else {})}
     finally:
         db.close()
 

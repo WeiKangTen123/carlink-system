@@ -444,6 +444,105 @@ class Settings(BaseSettings):
             raise ValueError("intake_check_no must be under intake_check_yes")
         return self
 
+    # Contract 10: linked parts in detection (plans/2026-11-17-linked-parts/
+    # contract10.md section 4.6). A part on the damage list brings the parts
+    # tied to it -- the beam behind a bumper cover, the hinges a boot lid
+    # opens with -- as tick-to-add suggestions (intake/links.py and its
+    # table, intake/link_table.json), and a light "linked check" call can
+    # look at them (ai/link_check.py). Everything here is off by default:
+    # no linked part, no call, and every request and saved draft is byte
+    # for byte today's.
+    #
+    # "off": no linked parts at all. "shadow": worked out and kept in the
+    # AI draft only (ai_draft["link_suggestions"], counted at sign-off),
+    # never shown. "on": shown with the suggestions on the Review step.
+    intake_links: str = "off"
+    # The linked parts' own cap, on top of the second look's 16
+    # (second_look.MAX_SUGGESTIONS); at most 4 per listed part.
+    intake_links_max: int = 12
+    # The kinds of link that may show (link_table.json "type"): any of
+    # attached, opens_with, behind, crush.
+    intake_links_types: str = "attached,opens_with,behind,crush"
+    # When a linked part takes the side of the listed part it hangs off.
+    # "firm": that part's name has a side the reading gave it itself (not
+    # side_inferred, not Low, not disputed); "strict": also seen in 2
+    # photos or found by 2 reads. Otherwise the "(side undetermined)" name.
+    intake_links_side: str = "firm"
+    # How hard a listed part was hit when its words don't say (no Dented,
+    # Bent, Crumpled ...): light, medium, heavy or crush. A link shows at
+    # its own min_hit or harder.
+    intake_links_unknown_hit: str = "medium"
+    # A linked part a zone read listed as intact: "demote" (shown lower,
+    # with a note -- a zone read's "intact" is sometimes wrong), "drop", or
+    # "ignore" (as if no read had said so).
+    intake_links_intact: str = "demote"
+    # Also suggest the parts the parts catalogue draws on the same OEM
+    # diagram as a listed part (catalogue.diagram_neighbours: its cache
+    # only, never a web request during a reading).
+    intake_links_catalogue: bool = False
+    # The linked check (ai/link_check.py): "off", or "lite" -- per damaged
+    # end of the car, one call on gemini_link_chain with that end's photos,
+    # its skill file (ai/skills/) and the closed list of its linked parts.
+    # The answer re-buckets them; it never adds a part or sets a side.
+    intake_link_check: str = "off"
+    # The linked check's models: light ones only, never the strong model
+    # (its ~20 calls a day are the reading's).
+    gemini_link_chain: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # At most this many linked-check calls a case (one per damaged end).
+    intake_link_check_max_calls: int = 2
+    # The linked check's thinking level, written like the others above
+    # (thinking_levels); unset sends none.
+    gemini_thinking_level_link: str | None = None
+    # Staff photos sent to the Telegram bot go through the website's intake
+    # pipeline -- the same sort, reading, zone reads and suggestions. Off:
+    # the bot drafts from them as it does today.
+    telegram_full_detection: bool = False
+
+    @field_validator("intake_links")
+    @classmethod
+    def _links_mode(cls, value):
+        return normal_links_mode(value)
+
+    @field_validator("intake_links_max", "intake_link_check_max_calls")
+    @classmethod
+    def _links_counts(cls, value, info):
+        return normal_count(value, info.field_name)
+
+    @field_validator("intake_links_types")
+    @classmethod
+    def _links_types(cls, value):
+        return normal_link_types(value)
+
+    @field_validator("intake_links_side")
+    @classmethod
+    def _links_side(cls, value):
+        return normal_links_side(value)
+
+    @field_validator("intake_links_unknown_hit")
+    @classmethod
+    def _links_unknown_hit(cls, value):
+        return normal_hit_level(value)
+
+    @field_validator("intake_links_intact")
+    @classmethod
+    def _links_intact(cls, value):
+        return normal_links_intact(value)
+
+    @field_validator("intake_link_check")
+    @classmethod
+    def _link_check(cls, value):
+        return normal_link_check(value)
+
+    @field_validator("gemini_link_chain")
+    @classmethod
+    def _link_chain(cls, value):
+        return normal_chain(value, "gemini_link_chain")
+
+    @field_validator("gemini_thinking_level_link")
+    @classmethod
+    def _thinking_level_link(cls, value):
+        return normal_thinking_levels(value)
+
 
 READ_MODES = ("single", "zones")
 
@@ -516,6 +615,81 @@ def normal_check_resolution(value) -> str:
         raise ValueError(f"intake_check_resolution {value!r}: use one of {', '.join(IMAGE_RESOLUTIONS)}")
     return resolution
 # (end of Contract 9)
+
+
+# Contract 10's parsers, as Contract 9's: each raises ValueError, so a typo
+# stops the app at start-up; the benchmark checks its flags with them.
+LINKS_MODES = ("off", "shadow", "on")
+# The kinds of link (link_table.json "type"), in the order they rank among
+# a listed part's linked parts.
+LINK_TYPES = ("attached", "opens_with", "behind", "crush")
+LINKS_SIDES = ("firm", "strict")
+# How hard a listed part was hit, lightest first (intake/links.hit_of).
+HIT_LEVELS = ("light", "medium", "heavy", "crush")
+LINKS_INTACT = ("demote", "drop", "ignore")
+LINK_CHECK_MODES = ("off", "lite")
+
+
+def normal_links_mode(value) -> str:
+    """intake_links written the one way; None or blank is "off"."""
+    return _one_of(value, LINKS_MODES, "intake_links")
+
+
+def link_types(text: str | None) -> list[str]:
+    """intake_links_types as its types, once each, in LINK_TYPES order (so
+    "behind, attached" and "attached,behind" are one setting). Raises
+    ValueError on a type the table doesn't have."""
+    named = {entry.lower() for entry in _entries(text)}
+    unknown = sorted(named - set(LINK_TYPES))
+    if unknown:
+        raise ValueError(f"intake_links_types {', '.join(unknown)}: use any of {', '.join(LINK_TYPES)}")
+    return [kind for kind in LINK_TYPES if kind in named]
+
+
+def normal_link_types(value) -> str:
+    """intake_links_types written the one way, "attached,behind". Blank is
+    refused: no link could ever show (intake_links "off" is the switch)."""
+    kinds = link_types(str(value or ""))
+    if not kinds:
+        raise ValueError(f"intake_links_types: at least one of {', '.join(LINK_TYPES)}")
+    return ",".join(kinds)
+
+
+def normal_links_side(value) -> str:
+    """intake_links_side written the one way; None or blank is "firm"."""
+    return _one_of(value, LINKS_SIDES, "intake_links_side")
+
+
+def normal_hit_level(value, name: str = "intake_links_unknown_hit") -> str:
+    """A hit level, one of HIT_LEVELS; None or blank is "medium" (the level
+    of a part whose words say nothing)."""
+    level = str(value or "").strip().lower() or "medium"
+    if level not in HIT_LEVELS:
+        raise ValueError(f"{name} {value!r}: use one of {', '.join(HIT_LEVELS)}")
+    return level
+
+
+def normal_links_intact(value) -> str:
+    """intake_links_intact written the one way; None or blank is "demote"."""
+    return _one_of(value, LINKS_INTACT, "intake_links_intact")
+
+
+def normal_link_check(value) -> str:
+    """intake_link_check written the one way; None or blank is "off"."""
+    return _one_of(value, LINK_CHECK_MODES, "intake_link_check")
+
+
+def normal_count(value, name: str = "the count") -> int:
+    """A count setting (intake_links_max, intake_link_check_max_calls): a
+    whole number, 0 or more."""
+    try:
+        count = int(str(value).strip())
+    except ValueError:
+        raise ValueError(f"{name} {value!r}: a whole number, 0 or more") from None
+    if count < 0:
+        raise ValueError(f"{name} {value!r}: a whole number, 0 or more")
+    return count
+# (end of Contract 10)
 
 
 # Each model setting written the one way, None when blank (unset). Raise

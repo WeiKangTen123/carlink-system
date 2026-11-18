@@ -9,11 +9,17 @@
  */
 import type {
   Box,
+  CheckRun,
   DamageSummaryItem,
   DecideAction,
   DecideResult,
   Evidence,
+  HitLevel,
+  LinkBucket,
+  LinkCheck,
+  LinkType,
   ReportData,
+  SecondLook,
   SecondLookItem,
   SuggestionCheck,
   SuggestionDecision,
@@ -46,10 +52,54 @@ export type Finding = {
   confidence: string | null;
   check: SuggestionCheck | null;
   otherSideListed: string | null;
-  source: "list" | "zone" | "kit" | "nearby";
+  /** Contract 10: "link", a part tied to a listed one by the link table
+   * (SecondLookItem.source). */
+  source: "list" | "zone" | "kit" | "nearby" | "link";
   /** The Condition in the firm's words ("Cracked"), else the AI's damage
    * type; for the cards and the viewer. Optional: added by the evidence UI. */
   condition?: string | null;
+
+  // ---- Contract 10: linked parts (contract10.md 4.1-4.2). Each is there
+  // only when the server sent it: a linked-part suggestion, a zone
+  // suggestion joined with one, or a list item added from one.
+  /** The item keys of the listed parts it hangs off (partKey of their items). */
+  linkedFrom?: string[];
+  linkType?: LinkType | null;
+  /** "L1:rear-bumper>beam": the table's version and link id. */
+  linkRule?: string | null;
+  /** How hard the listed part was hit. */
+  hit?: HitLevel | null;
+  bucket?: LinkBucket | null;
+  /** Not seen in photos as they are usually taken. */
+  hidden?: boolean;
+  /** Confirmed only once parts come off. */
+  needsStripDown?: boolean;
+  /** The listed part whose side it took; absent when it took none. */
+  sideFrom?: string | null;
+  /** The zone reads that listed it intact ("zone:rear"); an older draft's
+   * may be photo refs. Shown with intactText. */
+  intactIn?: string[];
+  /** The linked check's answer (the AI's own words in its reason). */
+  linkCheck?: LinkCheck | null;
+  /** The catalogue's diagram names that put it with the listed part. */
+  oem?: string[];
+  /** Why it is suggested, in the link table's words: the code's reason,
+   * never shown as "AI says" (reason stays null for a linked part). */
+  linkReason?: string | null;
+  /** The listed parts it hangs off, as the cards name them. */
+  parents?: LinkParent[];
+};
+
+/** Contract 10: one listed part a linked part hangs off. */
+export type LinkParent = {
+  /** Its item key (what linked_from holds). */
+  key: string;
+  /** Its name on the list; the key when it is no longer listed. */
+  name: string;
+  /** Its condition in the firm's words, else the AI's damage type. */
+  condition: string | null;
+  /** "item:<index>" while it is on the list, else null. */
+  findingKey: string | null;
 };
 
 export type PhotoInfo = {
@@ -175,8 +225,34 @@ function itemStatus(item: DamageSummaryItem): FindingStatus {
   return "ai";
 }
 
+type LinkSource = Pick<
+  SecondLookItem,
+  "linked_from" | "link_type" | "link_rule" | "hit" | "bucket" | "hidden" | "needs_strip_down" | "side_from" | "intact_in" | "link_check" | "oem"
+>;
+
+/** Contract 10: the linked-part fields a suggestion or an item has, and
+ * only those (the server leaves the defaults out, and so does a Finding). */
+function linkFields(s: Partial<LinkSource>): Partial<Finding> {
+  const out: Partial<Finding> = {};
+  if (s.linked_from?.length) out.linkedFrom = s.linked_from;
+  if (s.link_type) out.linkType = s.link_type;
+  if (s.link_rule) out.linkRule = s.link_rule;
+  if (s.hit) out.hit = s.hit;
+  if (s.bucket) out.bucket = s.bucket;
+  if (s.hidden) out.hidden = true;
+  if (s.needs_strip_down) out.needsStripDown = true;
+  if (s.side_from) out.sideFrom = s.side_from;
+  if (s.intact_in?.length) out.intactIn = s.intact_in;
+  if (s.link_check) out.linkCheck = s.link_check;
+  if (s.oem?.length) out.oem = s.oem;
+  return out;
+}
+
 function itemFinding(item: DamageSummaryItem, index: number): Finding {
   const evidence = evidenceOf(item);
+  // An item added from a linked part no read found carries the link
+  // table's reason: the code's words, never the AI's.
+  const codeWords = Boolean(item.link_type) && !item.found_by?.length;
   return {
     key: `item:${index}`,
     kind: "item",
@@ -185,16 +261,29 @@ function itemFinding(item: DamageSummaryItem, index: number): Finding {
     part: item.part,
     name: otherName(item) || item.part,
     status: itemStatus(item),
-    reason: item.reason ?? null,
+    reason: codeWords ? null : (item.reason ?? null),
     evidence,
-    seenIn: item.seen_in?.length ? item.seen_in : evidence.map((e) => e.photo),
+    // The listed part's photo (by "link") is not one this part was seen in.
+    seenIn: item.seen_in?.length ? item.seen_in : evidence.filter((e) => e.by !== "link").map((e) => e.photo),
     foundBy: item.found_by ?? [],
     confidence: item.ai_confidence ?? null,
     check: item.check ?? null,
     otherSideListed: null,
     source: "list",
     condition: item.condition || item.damage_type || null,
+    ...linkFields(item),
+    ...(codeWords && item.reason ? { linkReason: item.reason } : {}),
   };
+}
+
+/** The listed parts a finding hangs off, named as the list names them. */
+function parentsOf(f: Finding, listed: Map<string, Finding>): LinkParent[] {
+  return (f.linkedFrom || []).map((key) => {
+    const item = listed.get(key);
+    return item
+      ? { key, name: item.name, condition: item.condition ?? null, findingKey: item.key }
+      : { key, name: key, condition: null, findingKey: null };
+  });
 }
 
 type WithDismissedParts = ReportData & { dismissed_parts?: string[] | null };
@@ -208,8 +297,16 @@ type WithDismissedParts = ReportData & { dismissed_parts?: string[] | null };
 export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean }): Finding[] {
   const items = data.damage_summary || [];
   const out: Finding[] = items.map(itemFinding);
+  // Contract 10: each linked finding names its listed parts (the first item
+  // with that key, as the server's linked_from means it).
+  const listed = new Map<string, Finding>();
+  for (const f of out) if (!listed.has(f.partKey)) listed.set(f.partKey, f);
+  const withParents = (list: Finding[]) => {
+    for (const f of list) if (f.linkedFrom?.length) f.parents = parentsOf(f, listed);
+    return list;
+  };
   const look = data.second_look;
-  if (!look) return out;
+  if (!look) return withParents(out);
   const listedParts = new Set(items.map((it) => it.part));
   const listedKeys = new Set(items.map(itemKey));
   const removed = new Set((data as WithDismissedParts).dismissed_parts || []);
@@ -230,6 +327,11 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
     // Where a suggestion with no stored evidence came from, for its photo.
     const fallbackBy = source === "zone" ? s.found_by?.[0] || "overall" : source;
     const evidence = evidenceFrom(s.evidence, s.photo_reference, null, s.seen_in, s.confidence, fallbackBy, fallbackBy);
+    // Contract 10: a linked part's reason is the link table's (the code's
+    // words), and the listed part's photo ("link") is not a photo it was
+    // seen in.
+    const isLink = source === "link";
+    const ownPhotos = isLink ? evidence.filter((e) => e.by !== "link") : evidence;
     out.push({
       key: `sug:${key}`,
       kind: "suggestion",
@@ -238,18 +340,20 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       part: s.part,
       name: s.name || otherName(s) || s.part,
       status: isDismissed ? "dismissed" : "suggestion",
-      reason: s.reason ?? null,
+      reason: isLink ? null : (s.reason ?? null),
       evidence,
-      seenIn: s.seen_in?.length ? s.seen_in : evidence.map((e) => e.photo),
+      seenIn: s.seen_in?.length ? s.seen_in : ownPhotos.map((e) => e.photo),
       foundBy: s.found_by ?? [],
       confidence: s.confidence ?? null,
       check: s.check ?? null,
       otherSideListed: s.other_side_listed ?? null,
       source,
       condition: s.condition || s.damage_type || null,
+      ...linkFields(s),
+      ...(isLink && s.reason ? { linkReason: s.reason } : {}),
     });
   }
-  return out;
+  return withParents(out);
 }
 
 const READ_NAMES: Record<string, string> = {
@@ -274,6 +378,9 @@ export function sourceName(by: string | null | undefined): string {
   if (by === "linked") return "linked by hand";
   if (by === "kit") return "past cases";
   if (by === "nearby") return "next to a found part";
+  // Contract 10: the listed part's photo (no box), and the linked check's.
+  if (by === "link") return "listed part's photo";
+  if (by === "link_check") return "linked check";
   return `${readName(by)} read`;
 }
 
@@ -300,6 +407,12 @@ export function seenCount(f: Pick<Finding, "seenIn">): string | null {
 /** Why a finding is there, built by code when the AI gave no reason (never
  * shown as "AI says"): "Listed by the main read · seen in P07, P12". */
 export function codeReason(f: Finding): string {
+  // Contract 10: a linked part's reason is the link table's plain sentence.
+  if (f.linkReason) return f.linkReason;
+  if (f.source === "link") {
+    const parent = f.parents?.[0]?.name || f.linkedFrom?.[0];
+    return parent ? `Linked to the ${parent} on the list` : "Linked to a part on the list";
+  }
   const reads = f.foundBy.filter((r) => r !== "overall").map(readName);
   let why: string;
   if (f.kind === "item") {
@@ -377,6 +490,255 @@ export function sortByCheck(list: Finding[]): Finding[] {
     .map((x) => x.f);
 }
 
+// ---------------------------------------------------------------------------
+// Contract 10: linked parts on the suggestions panel, the viewer and the map
+
+/** How hard the listed part was hit, in words (never a number). */
+export const HIT_WORDS: Record<HitLevel, string> = {
+  light: "light hit",
+  medium: "medium hit",
+  heavy: "heavy hit",
+  crush: "crushed",
+};
+const HIT_RANK: Record<string, number> = { light: 0, medium: 1, heavy: 2, crush: 3 };
+
+/** The bucket tags on the cards: Seen / Likely / Confirm at strip-down. */
+export const BUCKET_LABELS: Record<LinkBucket, string> = { seen: "Seen", likely: "Likely", strip_down: "Strip-down" };
+const BUCKET_RANK: Record<string, number> = { seen: 0, likely: 1, strip_down: 2 };
+/** The visible kinds of link first, the crush path last (as the server orders them). */
+const TYPE_RANK: Record<string, number> = { attached: 0, opens_with: 1, behind: 2, crush: 3 };
+
+/** Under a hidden part: the owner's words (17 Nov). */
+export const STRIP_DOWN_TEXT = "possible – confirm at strip-down";
+/** The chip on a list item added from a hidden part. */
+export const STRIP_DOWN_CHIP = "Confirm at strip-down";
+/** Linked parts shown per listed part before "Show more". */
+export const LINKS_PER_PARENT = 4;
+
+const CHECK_VERDICT_WORDS: Record<string, string> = {
+  seen: "seen",
+  likely: "likely",
+  strip_down: "confirm at strip-down",
+  no: "probably not",
+  cannot_tell: "can't tell",
+};
+
+/** "AI check: likely": the linked check's verdict in words. */
+export function linkCheckWords(check: LinkCheck | null | undefined): string | null {
+  const word = check ? CHECK_VERDICT_WORDS[check.verdict] : null;
+  return word ? `AI check: ${word}` : null;
+}
+
+/** "AI check: likely — AI says: “lens cracked at the corner”": the verdict
+ * and the AI's own words, which (contract 9's UI words) always start with
+ * "AI says:". The link table's reasons are the code's and stay plain. */
+export function linkCheckLine(check: LinkCheck | null | undefined): string | null {
+  const words = linkCheckWords(check);
+  if (!words) return null;
+  return check?.reason ? `${words} — ${aiSays(check.reason)}` : words;
+}
+
+/** What the linked check did (second_look.link_run), beside "Linked parts
+ * to check" as the re-check's note is beside the suggestions: "AI check:
+ * Checked 1 of 3 areas." / "AI check didn't run. The AI was busy; ...".
+ * The notes are the server's own sentences (link_check.NOTE_*). Null when
+ * it ran with nothing to say, or never ran. */
+export function linkRunNote(run: CheckRun | null | undefined): string | null {
+  if (!run || typeof run !== "object") return null;
+  const note = typeof run.note === "string" && run.note.trim() ? run.note.trim() : null;
+  if (run.status === "failed" || run.status === "skipped")
+    return `AI check didn't run. ${note ?? "The linked parts are as the link table placed them."}`;
+  return note ? `AI check: ${note}` : null;
+}
+
+const isPhotoRef = (ref: string) => ref.startsWith("@") || isLabel(ref);
+
+/** "A zone read (rear) listed it as not damaged. Check it on the car."
+ * intact_in holds the zone reads that listed the part intact ("zone:rear":
+ * ai_draft.zone_intact keeps no photo per part); a draft from before may
+ * hold photo refs ("@<id>" / "P07"), named by their labels. Null when it
+ * names nothing still there (a deleted photo). */
+export function intactText(intactIn: string[] | null | undefined, photos?: PhotoLookup | null): string | null {
+  const reads = new Set<string>();
+  const shots = new Set<string>();
+  for (const ref of intactIn ?? []) {
+    if (typeof ref !== "string" || !ref.trim()) continue;
+    if (!isPhotoRef(ref)) {
+      reads.add(readName(ref));
+      continue;
+    }
+    const label = photos?.(ref)?.label;
+    if (label) shots.add(label);
+  }
+  if (!reads.size && !shots.size) return null;
+  const names = [...reads];
+  const who = !names.length
+    ? "A zone read"
+    : names.length === 1
+      ? `A zone read (${names[0]})`
+      : `Zone reads (${joined(names)})`;
+  const where = shots.size ? ` in ${[...shots].join(", ")}` : "";
+  return `${who} listed it as not damaged${where}. Check it on the car.`;
+}
+
+/** The bucket a linked part shows in: the server's, else a hidden part is
+ * a strip-down one and anything else likely. */
+export function linkBucket(f: Pick<Finding, "bucket" | "hidden" | "needsStripDown">): LinkBucket {
+  if (f.bucket && f.bucket in BUCKET_RANK) return f.bucket;
+  return f.hidden || f.needsStripDown ? "strip_down" : "likely";
+}
+
+/** The linked check or the re-check said it is probably not damaged: it
+ * goes last in its group (still addable). */
+export function isProbablyNot(f: Pick<Finding, "linkCheck" | "check">): boolean {
+  return f.linkCheck?.verdict === "no" || f.check?.verdict === "no";
+}
+
+/** "same side as Left Rear Door" when the side came from the listed part. */
+export function sideFromText(f: Pick<Finding, "sideFrom">): string | null {
+  return f.sideFrom ? `same side as ${f.sideFrom}` : null;
+}
+
+/** The first listed part a finding hangs off, by name. */
+export function parentName(f: Pick<Finding, "parents" | "linkedFrom">): string | null {
+  return f.parents?.[0]?.name || f.linkedFrom?.[0] || null;
+}
+
+/** "Also linked to: Boot Lid" for a part tied to more than one listed part
+ * (its group is the first one's); for a zone suggestion joined with a link,
+ * every one. */
+export function alsoLinkedText(f: Pick<Finding, "parents" | "linkedFrom" | "source">): string | null {
+  const names = (f.parents?.map((p) => p.name) ?? f.linkedFrom ?? []).filter(Boolean);
+  const rest = f.source === "link" ? names.slice(1) : names;
+  if (!rest.length) return null;
+  return `${f.source === "link" ? "Also linked to" : "Linked to"}: ${rest.join(", ")}`;
+}
+
+const PLACE_WORDS: Record<LinkType, string> = {
+  behind: "sits behind it",
+  attached: "sits on it",
+  opens_with: "opens with it",
+  crush: "sits behind it",
+};
+
+/** Under the listed part's photo in the viewer (no box: the linked part is
+ * not marked on it): "Photo of the Rear Bumper (this part sits behind it)". */
+export function linkPhotoCaption(f: Pick<Finding, "parents" | "linkedFrom" | "linkType">): string {
+  const parent = parentName(f) || "listed part";
+  const place = f.linkType ? PLACE_WORDS[f.linkType] : null;
+  return `Photo of the ${parent} (this part ${place ?? "is linked to it"})`;
+}
+
+/** "possible – confirm at strip-down" goes under a linked part the server
+ * says needs the parts off (or put in the strip-down bucket). A hidden part
+ * that doesn't (a boot lid hinge: open the lid) only gets the Hidden chip. */
+export function confirmAtStripDown(f: Pick<Finding, "source" | "bucket" | "hidden" | "needsStripDown">): boolean {
+  return f.source === "link" && (Boolean(f.needsStripDown) || linkBucket(f) === "strip_down");
+}
+
+/** The viewer's words when a hidden linked part has no photo to show. */
+export function hiddenNoPhotoText(f: Pick<Finding, "parents" | "linkedFrom" | "linkType" | "needsStripDown">): string {
+  const parent = parentName(f);
+  const then = f.needsStripDown ? "confirm at strip-down" : "check it on the car";
+  if (!parent) return `Hidden – ${then}`;
+  const where = f.linkType === "opens_with" ? "under" : f.linkType === "attached" ? "on" : "behind";
+  return `Hidden ${where} the ${parent} – ${then}`;
+}
+
+/** An item added from a hidden linked part keeps its "Confirm at strip-down"
+ * chip until a person gives it a condition of its own (contract10.md 1.2):
+ * blank, or the strip-down wording the add path writes. */
+export function needsStripDownChip(item: Pick<DamageSummaryItem, "needs_strip_down" | "condition">): boolean {
+  if (!item.needs_strip_down) return false;
+  const condition = (item.condition || "").trim();
+  return !condition || /strip[\s-]?down/i.test(condition);
+}
+
+/** One "Linked to: <listed part>" group of the suggestions panel. */
+export type LinkGroup = {
+  /** The listed part's item key ("" when the server named none). */
+  key: string;
+  parent: LinkParent | null;
+  /** The hardest hit among its parts. */
+  hit: HitLevel | null;
+  /** Shown: seen, likely, then strip-down; by kind of link; then as the
+   * server sorted them. */
+  rows: Finding[];
+  /** Along the crush path: collapsed behind "> N more along the crush path". */
+  crush: Finding[];
+  /** The checks said probably not: last in the group, still addable. */
+  probablyNot: Finding[];
+};
+
+/** "Linked to: Rear Bumper (Cracked/deformed · crushed)" */
+export function linkGroupTitle(g: Pick<LinkGroup, "key" | "parent" | "hit">): string {
+  const name = g.parent?.name || g.key || "a part on the list";
+  const detail = [g.parent?.condition, g.hit ? HIT_WORDS[g.hit] : null].filter(Boolean).join(" · ");
+  return `Linked to: ${name}${detail ? ` (${detail})` : ""}${g.parent && !g.parent.findingKey ? " – no longer on the list" : ""}`;
+}
+
+export type SuggestionSections = {
+  /** Any linked part among them: without one the panel looks as before. */
+  hasLinks: boolean;
+  /** Found by a zone read (in the re-check's order, "no" last). Without
+   * linked parts: every suggestion, as before. */
+  seen: Finding[];
+  /** Past cases / next to a found part (only split out with linked parts). */
+  other: Finding[];
+  groups: LinkGroup[];
+};
+
+const linkOrder = (list: { f: Finding; i: number }[]) =>
+  list
+    .sort(
+      (a, b) =>
+        (BUCKET_RANK[linkBucket(a.f)] ?? 3) - (BUCKET_RANK[linkBucket(b.f)] ?? 3) ||
+        (TYPE_RANK[a.f.linkType || ""] ?? 4) - (TYPE_RANK[b.f.linkType || ""] ?? 4) ||
+        a.i - b.i,
+    )
+    .map((x) => x.f);
+
+/** The suggestions panel's sections (contract10.md 1.1, plan.md P5): zone
+ * suggestions under "Seen in photos" as before; linked parts grouped by the
+ * listed part they hang off, in buckets, the crush path collapsed and the
+ * "probably not" ones last. A part tied to several listed parts sits in the
+ * first one's group. Nothing here is ticked: these are suggestions only. */
+export function suggestionSections(list: Finding[]): SuggestionSections {
+  const links = list.filter((f) => f.source === "link");
+  if (!links.length) return { hasLinks: false, seen: sortByCheck(list), other: [], groups: [] };
+  const rest = list.filter((f) => f.source !== "link");
+  const groups = new Map<string, { parent: LinkParent | null; items: { f: Finding; i: number }[] }>();
+  links.forEach((f, i) => {
+    const key = f.linkedFrom?.[0] ?? "";
+    const g = groups.get(key) ?? { parent: f.parents?.[0] ?? null, items: [] };
+    g.items.push({ f, i });
+    groups.set(key, g);
+  });
+  return {
+    hasLinks: true,
+    seen: sortByCheck(rest.filter((f) => f.source === "zone")),
+    other: sortByCheck(rest.filter((f) => f.source !== "zone")),
+    groups: [...groups.entries()].map(([key, g]) => {
+      const not = g.items.filter((x) => isProbablyNot(x.f));
+      const kept = g.items.filter((x) => !isProbablyNot(x.f));
+      const crush = kept.filter((x) => x.f.linkType === "crush" && linkBucket(x.f) !== "seen");
+      const rows = kept.filter((x) => !crush.includes(x));
+      const hits = g.items.map((x) => x.f.hit).filter((h): h is HitLevel => Boolean(h && h in HIT_RANK));
+      const hit = hits.length ? hits.reduce((a, b) => (HIT_RANK[b] > HIT_RANK[a] ? b : a)) : null;
+      return { key, parent: g.parent, hit, rows: linkOrder(rows), crush: linkOrder(crush), probablyNot: linkOrder(not) };
+    }),
+  };
+}
+
+/** The suggestions in the order the panel shows them, so the viewer's A / N
+ * move on to the card below (the collapsed ones in their places). Without
+ * linked parts: the re-check's order, as before. */
+export function panelOrder(list: Finding[]): Finding[] {
+  const s = suggestionSections(list);
+  if (!s.hasLinks) return s.seen;
+  return [...s.seen, ...s.other, ...s.groups.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot])];
+}
+
 /** Each key's decision as it stands: the latest "added" / "dismissed" not
  * reverted by an "undone" (each "undone" reverts the latest one still
  * standing, as the decide endpoint does). Keys whose decisions were all
@@ -446,6 +808,62 @@ export function rowsTakenOff(
     if (it.added_from === "suggestion" && itemKey(it) === asked.key) out.push(i);
   });
   return out;
+}
+
+// reports/schema.MAX_DECISIONS: the server keeps the latest 200 decisions.
+const MAX_DECISIONS = 200;
+
+const sameDecision = (a: SuggestionDecision | undefined, b: SuggestionDecision | undefined) =>
+  Boolean(a && b) && a!.key === b!.key && a!.action === b!.action && a!.at === b!.at && (a!.by_id ?? null) === (b!.by_id ?? null);
+
+/** Contract 10 (review L7): is `incoming`, the second_look an autosave
+ * answered with, older than the wizard's own? The server takes the save and
+ * the decisions in turn, but the answers can land out of turn: a save's look
+ * landing after a later decision's would put a just-dismissed card back.
+ *
+ * The server only ever appends a decision (add, dismiss and undo alike; past
+ * MAX_DECISIONS the oldest go), so a look with fewer decisions than ours --
+ * or, at the cap, without our latest one -- was stored before ours. */
+export function isOlderLook(incoming: SecondLook | null | undefined, local: SecondLook | null | undefined): boolean {
+  if (!incoming) return true;
+  if (!local) return false;
+  const mine = Array.isArray(local.decisions) ? local.decisions : [];
+  const theirs = Array.isArray(incoming.decisions) ? incoming.decisions : [];
+  if (mine.length < MAX_DECISIONS && theirs.length < MAX_DECISIONS) return theirs.length < mine.length;
+  const last = mine[mine.length - 1];
+  return Boolean(last) && !theirs.some((d) => sameDecision(d, last));
+}
+
+/** The page's second_look after a save answered with suggestions (the
+ * wizard's autosave, the case page's added part; review L7).
+ *
+ * - Since the review the api answers `linked`: only the suggestions that
+ *   save joined. They go on the end of ours (as the server appends them),
+ *   once each, and ours keeps its own decisions -- nothing to roll back.
+ * - An older api answers only the whole second_look: taken unless it is
+ *   older than ours (isOlderLook).
+ *
+ * Returns `local` itself when nothing changes. */
+export function withSavedLook(
+  local: SecondLook | null | undefined,
+  answer: { second_look?: SecondLook | null; linked?: SecondLookItem[] | null },
+): SecondLook | null {
+  const mine = local ?? null;
+  if (Array.isArray(answer.linked) && mine) {
+    const items = Array.isArray(mine.items) ? mine.items : [];
+    const have = new Set(items.map((it) => it.key || it.part));
+    const fresh: SecondLookItem[] = [];
+    for (const it of answer.linked) {
+      const key = it && (it.key || it.part);
+      if (!key || have.has(key)) continue;
+      have.add(key);
+      fresh.push(it);
+    }
+    return fresh.length ? { ...mine, items: [...items, ...fresh] } : mine;
+  }
+  const look = answer.second_look ?? null;
+  if (!look) return mine;
+  return isOlderLook(look, mine) ? mine : look;
 }
 
 /** The wizard's local draft after a decide call (section 4.4, conflict #10):

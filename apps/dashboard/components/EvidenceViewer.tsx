@@ -18,7 +18,6 @@ import { Box as BoxIcon, Check, ChevronLeft, ChevronRight, Clock, ExternalLink, 
 import type { DecideAction, DecideResult } from "@/lib/api";
 import {
   BOX_WORDS,
-  NO_BOX_TEXT,
   aspectMatches,
   boxChip,
   boxLine,
@@ -28,13 +27,24 @@ import {
   type Slide,
 } from "@/lib/evidence";
 import {
+  BUCKET_LABELS,
+  STRIP_DOWN_TEXT,
   aiSays,
+  alsoLinkedText,
   checkWords,
   codeReason,
   confidenceText,
+  confirmAtStripDown,
   foundByNames,
   foundByText,
-  sortByCheck,
+  hiddenNoPhotoText,
+  intactText,
+  linkBucket,
+  linkCheckLine,
+  linkGroupTitle,
+  linkPhotoCaption,
+  panelOrder,
+  sideFromText,
   sourceName,
   type Finding,
   type FindingStatus,
@@ -112,6 +122,10 @@ function useNaturalSize(src: string | null): Frame | null {
  *
  * Zoom Fit / 2x / 4x / Zoom to box and Box on/off; keys A N L, arrows
  * (left/right photos, up/down findings), Z B F and Esc, never while typing.
+ *
+ * Contract 10, a linked part: with no photo of its own it shows its listed
+ * part's photo, captioned "Photo of the Rear Bumper (this part sits behind
+ * it)" and never with a box; the linked check's photo shows its "AI box".
  * Focus stays inside while it is open and goes back to the opener after. */
 export function EvidenceViewer(props: EvidenceViewerProps) {
   if (!props.open || typeof document === "undefined") return null;
@@ -137,16 +151,20 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<DecisionToastState | null>(null);
   const [announce, setAnnounce] = useState("");
-  // Every suggestion in the walk was decided here.
-  const [ended, setEnded] = useState(false);
+  // Every suggestion in the walk was decided here: the keys the walk held
+  // then, so one that arrives later (an Add's own linked parts) is new.
+  const [ended, setEnded] = useState<ReadonlySet<string> | null>(null);
+  // "2 new suggestions came in with that decision", on the first of them.
+  const [arrived, setArrived] = useState<{ key: string; text: string } | null>(null);
   const pendingScroll = useRef<{ left: number; top: number } | null>(null);
 
   const norm = useCallback((ref: string | null | undefined) => (ref ? (photos(ref)?.ref ?? ref) : ""), [photos]);
 
   // ---- what is walked ------------------------------------------------------
   const walk = useMemo(() => {
-    // In the cards' order (the re-check's), so A / N move on to the card below.
-    if (mode === "suggestions") return sortByCheck(findings.filter((f) => f.kind === "suggestion" && (f.status === "suggestion" || f.key === pinned)));
+    // In the cards' order (the re-check's; linked parts by group), so A / N
+    // move on to the card below.
+    if (mode === "suggestions") return panelOrder(findings.filter((f) => f.kind === "suggestion" && (f.status === "suggestion" || f.key === pinned)));
     if (mode === "listed") return findings.filter((f) => f.kind === "item");
     return [];
   }, [findings, mode, pinned]);
@@ -156,6 +174,20 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
   // the list changed) -- the one now in its place.
   if (mode !== "photo" && !ended && at < 0 && walk.length) at = Math.min(cur.index, walk.length - 1);
   const finding: Finding | null = at >= 0 ? walk[at] : null;
+
+  // Contract 10 (review L10): an Add can bring the added part's own linked
+  // parts. The next card was picked before the answer came, so when the
+  // last one was just decided, walk on to the newcomers once they arrive.
+  useEffect(() => {
+    if (!ended || mode !== "suggestions") return;
+    const fresh = walk.filter((f) => f.status === "suggestion" && !ended.has(f.key));
+    if (!fresh.length) return;
+    const index = walk.indexOf(fresh[0]);
+    setEnded(null);
+    setCur({ key: fresh[0].key, photo: null, index });
+    const text = `${fresh.length} new suggestion${fresh.length === 1 ? "" : "s"} came in with that decision.`;
+    setArrived({ key: fresh[0].key, text });
+  }, [ended, walk, mode]);
   const done = mode === "suggestions" && !finding;
 
   type Shown = Slide & { info: PhotoInfo | null; usable: boolean };
@@ -164,7 +196,9 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
       finding
         ? slidesOf(finding).map((s) => {
             const info = photos(s.photo);
-            return { ...s, info, usable: Boolean(info && !info.deleted && info.src) };
+            // The listed part's photo: the linked part isn't marked on it.
+            const own = s.by === "link" ? { box: null, kind: null, frame: null } : {};
+            return { ...s, ...own, info, usable: Boolean(info && !info.deleted && info.src) };
           })
         : [],
     [finding, photos]
@@ -222,7 +256,8 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const out: { f: Finding; s: Slide }[] = [];
     for (const f of findings) {
       if (f.status === "dismissed") continue;
-      const s = slidesOf(f).find((x) => norm(x.photo) === photoRef);
+      // A linked part is not on its listed part's photo (by "link").
+      const s = slidesOf(f).find((x) => norm(x.photo) === photoRef && x.by !== "link");
       if (s) out.push({ f, s });
     }
     return out;
@@ -314,6 +349,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
       const f = walk[index];
       if (!f) return;
       setError(null);
+      setArrived(null);
       setCur({ key: f.key, photo: photo ?? null, index });
     },
     [walk]
@@ -358,8 +394,9 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
       const shown = toastFor(f, action, r);
       setToast(shown);
       setPinned(null);
+      setArrived(null);
       if (next) setCur({ key: next.key, photo: null, index: next.index });
-      else setEnded(true);
+      else setEnded(new Set(walk.map((x) => x.key)));
       setAnnounce(
         shown.action === "listed" ? `${f.name} is already on the list.` : action === "add" ? `Added ${f.name}.` : `${f.name} marked not damaged.`
       );
@@ -383,7 +420,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
       await onDecide(key, "undo", true);
       setToast(null);
       setPinned(key);
-      setEnded(false);
+      setEnded(null);
       setMode((m) => (m === "photo" ? m : "suggestions"));
       setCur({ key, photo: null, index: 0 });
       setAnnounce(`Undone: ${name} is a suggestion again.`);
@@ -397,7 +434,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const nextMode = f.kind === "suggestion" ? "suggestions" : "listed";
     setMode(nextMode);
     setPinned(f.key);
-    setEnded(false);
+    setEnded(null);
     setCur({ key: f.key, photo, index: 0 });
   };
   const showOnMap = (key: string) => {
@@ -412,11 +449,13 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
         ? `Photo ${info.label}: ${onPhoto.length ? `${onPhoto.length} part${onPhoto.length === 1 ? "" : "s"} marked` : "no part marked"}.`
         : ""
       : finding
-        ? `${finding.name}${info ? `, photo ${info.label}` : ""}: ${slide ? boxLine(slide, { hidden }) : NO_BOX_TEXT}.`
+        ? `${finding.name}${info ? `, photo ${info.label}` : ""}: ${slide?.by === "link" ? linkPhotoCaption(finding) : slide ? boxLine(slide, { hidden }) : "no photo of this part"}.`
         : "";
+  const newcomer = Boolean(arrived && finding && arrived.key === finding.key);
+  const said = newcomer && where ? `${arrived!.text} ${where}` : where;
   useEffect(() => {
-    if (where) setAnnounce(where);
-  }, [where]);
+    if (said) setAnnounce(said);
+  }, [said]);
 
   // ---- focus and keys ------------------------------------------------------
   useEffect(() => {
@@ -532,7 +571,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
             />
           </div>
         ) : (
-          <div className="ev-nophoto">{finding ? "No photo of this part." : "No photo."}</div>
+          <div className="ev-nophoto">{finding ? (finding.hidden ? hiddenNoPhotoText(finding) : "No photo of this part.") : "No photo."}</div>
         )}
       </div>
       {photoCount > 1 && (
@@ -595,7 +634,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
             aria-pressed={active}
             onClick={() => setCur((c) => ({ ...c, photo: s.photo }))}
           >
-            {label} <span className="ev-chip-kind">{boxChip(s)}</span>
+            {label} <span className="ev-chip-kind">{s.by === "link" ? "listed part" : boxChip(s)}</span>
           </button>
         ) : (
           <span key={s.photo} className="ev-chip is-gone" title="This photo was deleted">
@@ -645,7 +684,15 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     );
   } else if (finding) {
     const reason = finding.reason ? aiSays(finding.reason) : null;
-    const slideReason = slide?.reason && slide.reason !== finding.reason ? slide.reason : null;
+    // The linked check's words show once, on its "AI check" line.
+    const slideReason =
+      slide?.reason && slide.reason !== finding.reason && !(slide.by === "link_check" && slide.reason === finding.linkCheck?.reason) ? slide.reason : null;
+    const isLink = finding.source === "link";
+    const bucket = isLink ? linkBucket(finding) : null;
+    const linkLine = linkCheckLine(finding.linkCheck);
+    const intact = finding.kind === "suggestion" ? intactText(finding.intactIn, photos) : null;
+    const linkFacts = [sideFromText(finding), alsoLinkedText(finding)].filter(Boolean).join(" · ");
+    const parent = finding.parents?.[0] ?? null;
     const facts = [
       finding.kind === "suggestion" ? foundByText(finding, reads) : foundByNames(finding) && `Found by: ${foundByNames(finding)}`,
       confidenceText(finding.confidence),
@@ -655,14 +702,27 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const verdict = checkWords(finding.check);
     side = (
       <>
+        {newcomer && <div className="ev-note ev-arrived">{arrived!.text}</div>}
         <div className="ev-name">
           <span>{finding.name}</span>
           {finding.condition && <span className="intake-chip">{finding.condition}</span>}
         </div>
         <div className={`ev-status ev-status-${finding.status}`}>{STATUS_TEXT[finding.status]}</div>
-        {finding.kind === "item" && <div className="ev-caption">Why the AI listed it</div>}
+        {isLink && (
+          <div className="lk-ev-head">
+            <div className="ev-facts">{linkGroupTitle({ key: finding.linkedFrom?.[0] ?? "", parent, hit: finding.hit ?? null })}</div>
+            <div className="lk-ev-tags">
+              {bucket && <span className={`lk-bucket lk-bucket-${bucket}`}>{BUCKET_LABELS[bucket]}</span>}
+              {finding.hidden && <span className="intake-chip lk-hidden">Hidden</span>}
+            </div>
+            {confirmAtStripDown(finding) && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
+          </div>
+        )}
+        {finding.kind === "item" && <div className="ev-caption">{finding.linkedFrom?.length ? "Why it was suggested" : "Why the AI listed it"}</div>}
         <p className={`ev-reason ${reason ? "" : "is-code"}`}>{reason ?? codeReason(finding)}</p>
+        {linkLine && <div className={`ev-check lk-check-${finding.linkCheck?.verdict}`}>{linkLine}</div>}
         {slideReason && <p className="ev-reason">On this photo: {aiSays(slideReason)}</p>}
+        {linkFacts && <div className="ev-facts">{linkFacts}</div>}
         {facts && <div className="ev-facts">{facts}</div>}
         {verdict && (
           <div className={`ev-check ev-check-${finding.check?.verdict}`}>
@@ -670,17 +730,24 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
             {finding.check?.reason ? ` — ${aiSays(finding.check.reason)}` : ""}
           </div>
         )}
+        {intact && <div className="ev-note">{intact}</div>}
         {finding.otherSideListed && (
           <div className="ev-note">The list already has {finding.otherSideListed}. Check this isn&apos;t the same damage on the other side.</div>
         )}
         <div className="ev-caption">Photos</div>
         {chips || <p className="intake-muted">No photo of this part.</p>}
-        {slide && (
-          <div className="ev-boxline">
-            <strong>{boxLine(slide, { hidden, boxesOff: !showBoxes })}</strong>
-            {slide.by && <span className="intake-muted"> · from the {sourceName(slide.by)}</span>}
-          </div>
-        )}
+        {slide &&
+          (slide.by === "link" ? (
+            <div className="ev-boxline lk-caption">
+              <strong>{linkPhotoCaption(finding)}</strong>
+              <span className="intake-muted"> · no box: this part isn&apos;t marked on it</span>
+            </div>
+          ) : (
+            <div className="ev-boxline">
+              <strong>{boxLine(slide, { hidden, boxesOff: !showBoxes })}</strong>
+              {slide.by && <span className="intake-muted"> · from the {sourceName(slide.by)}</span>}
+            </div>
+          ))}
       </>
     );
   }

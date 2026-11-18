@@ -16,7 +16,7 @@ here without checking whether that point has arrived.
 from typing import Annotated, Optional
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints, field_validator, model_serializer, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from app.reports.taxonomy import OTHER_PART, clean_part_name
@@ -90,7 +90,9 @@ class Evidence(BaseModel):
     # "ai" | "sort" | None -- None exactly when box is None.
     box_kind: Optional[str] = None
     # Which read said so: "overall" | "zone:front|rear|left|right|close" |
-    # "sort" | "check" | "second_look".
+    # "sort" | "check" | "second_look". Contract 10: "link" -- the photo
+    # of the listed part a linked part hangs off (no box); "link_check" --
+    # the linked check's photo, with its box when it drew one.
     by: str = "overall"
     # That source's words, cleaned (evidence.clean_reason), at most 160
     # characters.
@@ -146,6 +148,48 @@ class CheckRun(BaseModel):
     note: Optional[str] = None
     seconds: Optional[float] = None
     calls: int = 0
+
+
+# ------------------------------------------------ contract 10: linked parts
+# The parts tied to a listed part -- the beam behind a bumper cover, the
+# hinges a boot lid opens with -- suggested with it (plans/2026-11-17-
+# linked-parts/contract10.md section 4.1; intake/links.py, ai/link_check.py).
+# Code-set, lenient and out of every schema Gemini sees, as contract 9's.
+# While a field below is at its default it is left out of a dump (the
+# models' _without_unset_links), so a case with the linked parts off saves
+# byte for byte what it did before them: read them with .get().
+
+
+class LinkCheck(BaseModel):
+    """The linked check's answer on one linked part (ai/link_check.py)."""
+    # "seen" | "likely" | "strip_down" | "no" | "cannot_tell"
+    verdict: str
+    # What it looked for first: "crush" | "gap_misfit" | "displaced" |
+    # "cracked" | "none_seen" | "cannot_see".
+    cue: Optional[str] = None
+    model: Optional[str] = None
+    # Its words, cleaned (evidence.clean_reason), at most 160 characters.
+    reason: Optional[str] = None
+
+
+# Each linked-part field with its default, per model: what
+# _without_defaults leaves out of a dump.
+LINK_ITEM_DEFAULTS = {"linked_from": [], "link_type": None, "hidden": False, "needs_strip_down": False}
+LINK_SUGGESTION_DEFAULTS = {
+    "linked_from": [], "link_type": None, "link_rule": None, "hit": None, "bucket": None, "hidden": False,
+    "needs_strip_down": False, "side_from": None, "intact_in": [], "link_check": None, "oem": [],
+}
+LINK_LOOK_DEFAULTS = {"link_run": None}
+
+
+def _without_defaults(dumped, defaults: dict):
+    """A model's dump without the fields of `defaults` still at their
+    default. Leaves anything but a dict alone."""
+    if isinstance(dumped, dict):
+        for name, empty in defaults.items():
+            if name in dumped and dumped[name] == empty:
+                del dumped[name]
+    return dumped
 
 
 class DamageSummaryItem(BaseModel):
@@ -253,6 +297,18 @@ class DamageSummaryItem(BaseModel):
     evidence: SkipJsonSchema[list[Evidence]] = Field(default_factory=list)
     check: SkipJsonSchema[Optional[SuggestionCheck]] = None
     added_from: SkipJsonSchema[Optional[str]] = None
+    # Contract 10 (section 4.1), code-set and out of the drafting schema
+    # like the fields above: copied from a linked-part suggestion when a
+    # person adds it. linked_from: the keys of the listed parts it hangs
+    # off; link_type: "attached" | "behind" | "opens_with" | "crush";
+    # hidden: not seen in photos as they are usually taken; needs_strip_down:
+    # confirmed only once parts come off, shown as "Confirm at strip-down"
+    # until a person edits its condition. Not in a dump while at their
+    # defaults.
+    linked_from: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    link_type: SkipJsonSchema[Optional[str]] = None
+    hidden: SkipJsonSchema[bool] = False
+    needs_strip_down: SkipJsonSchema[bool] = False
 
     @field_validator("other_part_name", mode="before")
     @classmethod
@@ -264,6 +320,10 @@ class DamageSummaryItem(BaseModel):
         if (self.part or "").strip() != OTHER_PART:
             self.other_part_name = None
         return self
+
+    @model_serializer(mode="wrap")
+    def _without_unset_links(self, handler):
+        return _without_defaults(handler(self), LINK_ITEM_DEFAULTS)
 
 
 class TyreItem(BaseModel):
@@ -560,7 +620,9 @@ class SecondLookItem(BaseModel):
     confidence: Optional[str] = None
     # "kit": past cases of the same make had it with a part found here;
     # "nearby": next to a part found here; "zone": only a zone read found it
-    # (contract 9).
+    # (contract 9); "link": tied to a listed part (contract 10, the fields
+    # at the end). Not "linked": the dashboard uses that for a part a
+    # person linked by hand.
     source: Optional[str] = None
     # The damage-list names that mean this part is already listed (its own
     # name, and the "(side undetermined)" name of its family or the sided
@@ -582,6 +644,35 @@ class SecondLookItem(BaseModel):
     other_part_name: Optional[str] = None
     severity: Optional[str] = None
     remarks: Optional[str] = None
+    # Contract 10 (section 4.1), all code-set, on a source "link" item;
+    # not in a dump while at their defaults. linked_from: the keys of the
+    # listed parts it hangs off; link_type: "attached" | "behind" |
+    # "opens_with" | "crush"; link_rule: the table's version and link id,
+    # "L1:rear-bumper>beam" (at most 40 characters); hit: how hard the
+    # listed part was hit, "light" | "medium" | "heavy" | "crush"; bucket:
+    # "seen" | "likely" | "strip_down"; hidden / needs_strip_down: as on a
+    # damage item; side_from: the listed part whose side it took, None when
+    # it took none; intact_in: the zone reads ("zone:rear") that listed it
+    # intact -- read names, not photos: ai_draft["zone_intact"] keeps no
+    # photo per part -- (shown lower, with a note); link_check: the linked
+    # check's answer;
+    # oem: the catalogue's diagram names that put it with the listed part
+    # (at most 3).
+    linked_from: list[str] = Field(default_factory=list)
+    link_type: Optional[str] = None
+    link_rule: Optional[str] = None
+    hit: Optional[str] = None
+    bucket: Optional[str] = None
+    hidden: bool = False
+    needs_strip_down: bool = False
+    side_from: Optional[str] = None
+    intact_in: list[str] = Field(default_factory=list)
+    link_check: Optional[LinkCheck] = None
+    oem: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_unset_links(self, handler):
+        return _without_defaults(handler(self), LINK_SUGGESTION_DEFAULTS)
 
 
 # SecondLook.decisions kept per case.
@@ -614,12 +705,19 @@ class SecondLook(BaseModel):
     reads: list[str] = Field(default_factory=list)
     decisions: list[SuggestionDecision] = Field(default_factory=list)
     check: Optional[CheckRun] = None
+    # Contract 10: what the linked check did this read (status, model,
+    # note, seconds, calls); not in a dump while None.
+    link_run: Optional[CheckRun] = None
 
     @field_validator("decisions")
     @classmethod
     def _latest_decisions(cls, value):
         # Never refuses: a long-lived case keeps its newest decisions.
         return value[-MAX_DECISIONS:]
+
+    @model_serializer(mode="wrap")
+    def _without_unset_links(self, handler):
+        return _without_defaults(handler(self), LINK_LOOK_DEFAULTS)
 
 
 class SecurityIncidentDraft(BaseModel):

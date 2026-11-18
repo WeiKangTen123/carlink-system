@@ -37,13 +37,14 @@ settled against the case's photos once the reads are in (_read_into).
 import logging
 import re
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.ai import allowance, check, evidence, runs, second_look
+from app.ai import allowance, check, evidence, link_check, runs, second_look
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
@@ -103,8 +104,9 @@ def shown_state(session: IntakeSession, now: datetime | None = None) -> tuple[st
     read the same, so the case list never calls "working" a draft the
     wizard calls failed."""
     # Left mid-run by a restart: the thread is gone but the row still says
-    # it's working, and the wizard would poll forever.
-    if session.stage in RUNNING_STAGES and not is_running(session.report_id):
+    # it's working, and the wizard would poll forever. A run in the Telegram
+    # bot's process (contract 10) is alive while it keeps beating (is_live).
+    if session.stage in RUNNING_STAGES and not is_live(session, now):
         return "failed", RUN_INTERRUPTED_MESSAGE, None, None
     # Left mid-filing by a restart: failed, with File case enabled again
     # (the wizard words filing_interrupted and opens on the File case step).
@@ -184,6 +186,80 @@ def release(report_id: str) -> None:
     """Undoes reserve() when the run never got started."""
     with _lock:
         _running.discard(report_id)
+
+
+# Contract 10 (T-report H1): a run in ANOTHER process -- the Telegram bot's
+# (settings.telegram_full_detection), which shares the database but not
+# _running -- beats IntakeSession.run_heartbeat_at while it lives
+# (keep_beating). The api counts a running stage as alive while that beat
+# is fresh, so it neither calls the bot's run "stopped (server restarted)"
+# nor lets Retry, an autosave, a decision or File case in meanwhile. A run
+# here never beats: _running already says it lives, and with the setting
+# off the column stays empty.
+RUN_HEARTBEAT_SECONDS = 30.0
+RUN_HEARTBEAT_STALE = timedelta(seconds=90)
+
+
+def beat(report_id: str) -> None:
+    """The draft's run_heartbeat_at, now -- only while its stage is a running
+    one. Never raises: a busy database skips one beat."""
+    from sqlalchemy import update
+
+    db = SessionLocal()
+    try:
+        db.execute(
+            update(IntakeSession)
+            .where(IntakeSession.report_id == report_id, IntakeSession.stage.in_(RUNNING_STAGES))
+            .values(run_heartbeat_at=datetime.now(timezone.utc))
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.debug("Intake run %s: heartbeat skipped (%s)", report_id, type(exc).__name__)
+    finally:
+        db.close()
+
+
+def keep_beating(report_id: str, every: float | None = None) -> threading.Thread:
+    """Beats the draft's heartbeat (beat) at once and then every `every`
+    seconds for as long as this process runs it (is_running) -- tied to the
+    run, not to whoever waits for it: the bot's chat watcher gives up after
+    20 minutes, a slow free-tier run may not. For a run started in a process
+    other than the api's (intake/telegram_bridge.start)."""
+    every = RUN_HEARTBEAT_SECONDS if every is None else every
+
+    def loop() -> None:
+        while is_running(report_id):
+            beat(report_id)
+            waited = 0.0
+            while waited < every and is_running(report_id):
+                step = min(0.5, every - waited)
+                time.sleep(step)
+                waited += step
+
+    thread = threading.Thread(target=loop, name=f"intake-beat-{report_id}", daemon=True)
+    thread.start()
+    return thread
+
+
+def running_elsewhere(session: IntakeSession, now: datetime | None = None) -> bool:
+    """A running stage with no run in THIS process, whose run in another
+    process (the Telegram bot) beat within RUN_HEARTBEAT_STALE."""
+    if session.stage not in RUNNING_STAGES or is_running(session.report_id):
+        return False
+    beat_at = getattr(session, "run_heartbeat_at", None)
+    if beat_at is None:
+        return False
+    beat_at = beat_at if beat_at.tzinfo else beat_at.replace(tzinfo=timezone.utc)
+    return beat_at >= (now or datetime.now(timezone.utc)) - RUN_HEARTBEAT_STALE
+
+
+def is_live(session: IntakeSession, now: datetime | None = None) -> bool:
+    """Whether an AI run on this draft is alive in any process: here
+    (is_running), or in another one that keeps beating (running_elsewhere).
+    What the api asks wherever it asked is_running about a draft."""
+    return is_running(session.report_id) or running_elsewhere(session, now)
 
 
 def start_reserved(report_id: str, mode: str, actor: AiActor, on_done: Callable[[], None] | None = None) -> None:
@@ -558,6 +634,10 @@ def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
         _read_into(report_id, actor, run)
     if not run.aborted:
         second_look.run_for_intake(report_id, actor)
+        # Contract 10: the linked check of the linked parts just stored (one
+        # light call per damaged area, a closed list), before the re-check,
+        # which skips the hidden ones. Never raises; nothing while it is off.
+        link_check.run_for_intake(report_id, actor)
         check.run_for_intake(report_id, actor)
 
 
@@ -653,13 +733,18 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         total = 1 + len(zone_jobs)
         if zone_jobs:
             _set_stage(report_id, "reading", 1, total)
+        intact: dict[str, list[str]] = {}
         data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
             report_id, actor, data.get("damage_summary") or [], zone_jobs,
             progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
+            intact=intact,
         )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
         zone_draft["zone_reads"] = zone_reads
+        # Contract 10: what each zone read saw undamaged, for the linked
+        # parts (before, in the run log only). Never applied to the list.
+        zone_draft["zone_intact"] = intact
         if zones.suggest_zone_only():
             # Option B: the list is what the overall reading found; the rest
             # are suggestions. resolve_sides and the agreement rule below

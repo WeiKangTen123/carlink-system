@@ -9,7 +9,7 @@ import { AiFixLink } from "@/components/AiFixLink";
 import { CaseNotFound } from "@/components/CaseNotFound";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
-import { undecidedCount } from "@/lib/findings";
+import { undecidedCount, withSavedLook } from "@/lib/findings";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   FILING_INTERRUPTED_MESSAGE,
@@ -576,7 +576,19 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     const version = editVersionRef.current;
     if (!opts.quiet) setBusy("saving");
     try {
-      await saveIntakeData(id, dataRef.current, notesRef.current);
+      const saved = await saveIntakeData(id, dataRef.current, notesRef.current);
+      // Contract 10: a part put on the list by hand brought its own linked
+      // parts. second_look is the server's (never sent back), so taking it
+      // in is no edit of the form's. Review L7: a decision answered
+      // meanwhile may be newer than this save's second_look, so only the
+      // new linked parts are added to ours ("linked"), or -- an older api
+      // -- its second_look is taken only when it isn't older than ours.
+      if (saved.second_look || saved.linked) {
+        setData((d) => {
+          const look = withSavedLook(d.second_look, saved);
+          return look === (d.second_look ?? null) ? d : { ...d, second_look: look };
+        });
+      }
       setSavedAt(new Date());
       setSaveFailed(false);
       if (editVersionRef.current === version) setDirty(false);
