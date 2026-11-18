@@ -92,6 +92,15 @@ each zone read's items as merged (wrappers in this harness only). Without
 these flags a run writes what it wrote before them. scripts/bench/gate.py
 --suggestions passes or fails the linked parts by the plan's G1-G6.
 
+Light-model detection (plans/2026-11-18-light-detection/P-prompts.md
+section 4), one flag per experiment: --read-packs orient (R1) / cues,small
+(R2), --read-prompt v2 (R3), --read-anchor (R4), --zone-packs small (Z1) /
+intact (Z2) / orient,cues (Z3), --zone-photo-half (Z5), --sort-prompt v3
+(S2; S1 is --thinking-level-sort high), --thinking-level-link high (L1),
+--link-skill L2 with --link-prompt v2 (L2), --link-signs (L3),
+--link-order photos_first (L4). Each is in ai_settings while it acts, with
+the packs' sha256; without them a run writes what it wrote before them.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -2630,6 +2639,41 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--links-catalogue", action="store_true",
                     help="also the parts catalogue's diagram neighbours as candidates (settings."
                          "intake_links_catalogue; cache only); needs --links on or shadow")
+    # Light-model detection (plans/2026-11-18-light-detection/P-prompts.md
+    # section 4): one flag per experiment, each off by default.
+    ap.add_argument("--read-packs", metavar="PACKS",
+                    help="the main read's instruction packs, any of orient (R1), cues and small (R2), e.g. "
+                         "'orient,small' (settings.intake_read_packs; app/ai/packs/)")
+    ap.add_argument("--read-prompt", metavar="VERSION",
+                    help="the main read's prompt: v1 (today's) or v2 (R3: damage last, walk A-E, a last text part "
+                         "after the photos; settings.intake_read_prompt)")
+    ap.add_argument("--read-anchor", action="store_true",
+                    help="R4: the description's first sentence anchors the sides (settings.intake_read_anchor); "
+                         "needs --read-prompt v2")
+    ap.add_argument("--zone-packs", metavar="PACKS",
+                    help="the zone reads' packs, any of small (Z1), intact (Z2), orient and cues (Z3) "
+                         "(settings.intake_zone_packs); needs --read-mode zones")
+    ap.add_argument("--zone-photo-half", action="store_true",
+                    help="Z5: the end zones say which half of the photo each find is in, code works out the side "
+                         "(settings.intake_zone_photo_half); needs --read-mode zones")
+    ap.add_argument("--sort-prompt", metavar="VERSION",
+                    help="the sort's prompt: v2 (today's) or v3 (S2; settings.intake_sort_prompt; its own sort-cache "
+                         "folder). S1 is --thinking-level-sort high (a batch's try then gets 90 s)")
+    ap.add_argument("--thinking-level-link", metavar="LEVEL",
+                    help="L1: the linked check's thinking level, written as --thinking-level-read "
+                         "(settings.gemini_thinking_level_link; at high its time box is 60 s); needs --link-check lite")
+    ap.add_argument("--link-skill", metavar="VERSION",
+                    help="the linked check's skill files: L1 (frozen) or L2 (worked examples; "
+                         "settings.intake_link_skill); needs --link-check lite")
+    ap.add_argument("--link-prompt", metavar="VERSION",
+                    help="the linked check's base prompt: v1 (today's) or v2 (P's; settings.intake_link_prompt); "
+                         "P's L2 arm is --link-skill L2 --link-prompt v2; needs --link-check lite")
+    ap.add_argument("--link-signs", action="store_true",
+                    help="L3: the signs answered in a field of their own, kept on link_run "
+                         "(settings.intake_link_signs); needs --link-check lite and --link-skill L2")
+    ap.add_argument("--link-order", metavar="ORDER",
+                    help="L4: candidates_first (today) or photos_first, the closed list after the photos "
+                         "(settings.intake_link_order); needs --link-check lite")
     ap.add_argument("--keep-reads", action="store_true",
                     help="keep the overall reading's raw damage items, side_from_sorter's changes and each zone "
                          "read's items as merged (wraps the app's functions in this harness only; no extra call)")
@@ -2649,6 +2693,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 # Contract 10's flags at their defaults: left out of a result file's "args",
 # so a run without them writes the file it wrote before them.
 C10_ARGS = {"links": None, "link_check": None, "links_catalogue": False, "keep_reads": False}
+# The light-model flags at their defaults: left out of "args" the same way.
+LIGHT_ARGS = {"read_packs": None, "read_prompt": None, "read_anchor": False, "zone_packs": None,
+              "zone_photo_half": False, "sort_prompt": None, "thinking_level_link": None, "link_skill": None,
+              "link_prompt": None, "link_signs": False, "link_order": None}
 
 
 def _now() -> str:
@@ -2730,6 +2778,68 @@ def model_settings(args: argparse.Namespace) -> dict:
         out["gemini_store_off"] = False
     out.update(check_settings(args, config, zones_on))
     out.update(links_settings(args, config))
+    out.update(light_settings(args, config, zones_on, out))
+    return out
+
+
+def light_settings(args: argparse.Namespace, config, zones_on: bool, given: dict) -> dict:
+    """The light-model flags (P-prompts.md section 4) as {Settings field:
+    value}. Exits on a value config refuses, or a flag that would change
+    nothing (a benchmark spent measuring the baseline under another name):
+    a zone flag without zone reads, a linked-check flag without the check,
+    --read-anchor without v2, --link-signs without the L2 skills."""
+    out: dict = {}
+
+    def norm(flag: str, fn):
+        try:
+            return fn(getattr(args, flag))
+        except ValueError as exc:
+            sys.exit(f"--{flag.replace('_', '-')}: {exc}")
+
+    def packs(choices):
+        return lambda value: config.normal_packs(value, choices, "the packs")
+
+    def one_of(choices):
+        return lambda value: config._one_of(value, choices, "the value")
+
+    if getattr(args, "read_packs", None) is not None:
+        out["intake_read_packs"] = norm("read_packs", packs(config.READ_PACKS))
+    if getattr(args, "read_prompt", None) is not None:
+        out["intake_read_prompt"] = norm("read_prompt", one_of(config.READ_PROMPTS))
+    if getattr(args, "read_anchor", False):
+        out["intake_read_anchor"] = True
+    if getattr(args, "zone_packs", None) is not None:
+        if not zones_on:
+            sys.exit("--zone-packs: the zone reads' packs; give --read-mode zones too")
+        out["intake_zone_packs"] = norm("zone_packs", packs(config.ZONE_PACKS))
+    if getattr(args, "zone_photo_half", False):
+        if not zones_on:
+            sys.exit("--zone-photo-half: the end zones' photo halves; give --read-mode zones too")
+        out["intake_zone_photo_half"] = True
+    if getattr(args, "sort_prompt", None) is not None:
+        out["intake_sort_prompt"] = norm("sort_prompt", one_of(config.SORT_PROMPTS))
+    check_on = given.get("intake_link_check", config.settings.intake_link_check) != "off"
+    for flag, field, fn in (
+        ("thinking_level_link", "gemini_thinking_level_link", config.normal_thinking_levels),
+        ("link_skill", "intake_link_skill", config.normal_link_skill),
+        ("link_prompt", "intake_link_prompt", one_of(config.LINK_PROMPTS)),
+        ("link_order", "intake_link_order", one_of(config.LINK_ORDERS)),
+    ):
+        if getattr(args, flag, None) is None:
+            continue
+        if not check_on:
+            sys.exit(f"--{flag.replace('_', '-')}: tunes the linked check; give --link-check lite too")
+        out[field] = norm(flag, fn)
+    if getattr(args, "link_signs", False):
+        if not check_on:
+            sys.exit("--link-signs: tunes the linked check; give --link-check lite too")
+        out["intake_link_signs"] = True
+    prompt = out.get("intake_read_prompt", config.settings.intake_read_prompt)
+    if config.light_conflict(prompt, out.get("intake_read_anchor", config.settings.intake_read_anchor), "L1", False):
+        sys.exit("--read-anchor: a part of read prompt v2; give --read-prompt v2 too")
+    skill = out.get("intake_link_skill", config.settings.intake_link_skill)
+    if config.light_conflict("v1", False, skill, out.get("intake_link_signs", config.settings.intake_link_signs)):
+        sys.exit("--link-signs: uses the L2 skills' signs files; give --link-skill L2 too")
     return out
 
 
@@ -2870,6 +2980,40 @@ def ai_settings(settings) -> dict:
             out["link_chain"] = getattr(settings, "gemini_link_chain", None)
             out["intake_link_check_max_calls"] = getattr(settings, "intake_link_check_max_calls", None)
             out["thinking_level_link"] = getattr(settings, "gemini_thinking_level_link", None)
+    out.update(light_ai_settings(settings))
+    return out
+
+
+# The light-model settings (P-prompts.md) and their defaults: in ai_settings
+# only while not at them, so a run without them reads as before.
+LIGHT_DEFAULTS = {"intake_read_packs": "", "intake_read_prompt": "v1", "intake_read_anchor": False,
+                  "intake_zone_packs": "", "intake_zone_photo_half": False, "intake_sort_prompt": "v2",
+                  "intake_link_skill": "L1", "intake_link_prompt": "v1", "intake_link_signs": False,
+                  "intake_link_order": "candidates_first"}
+# The zone and linked-check ones only act with zone reads / the check on.
+_LIGHT_ZONE = ("intake_zone_packs", "intake_zone_photo_half")
+_LIGHT_LINK = ("intake_link_skill", "intake_link_prompt", "intake_link_signs", "intake_link_order")
+
+
+def light_ai_settings(settings) -> dict:
+    """The light-model settings that act and are not at their defaults,
+    with the sha256 of every pack and template (app/ai/packs, app/ai/prompts)
+    and, with the L2 skills, of theirs; {} at the defaults."""
+    zones = getattr(settings, "intake_read_mode", "single") == "zones"
+    check = links_mode(settings) != "off" and getattr(settings, "intake_link_check", "off") != "off"
+    out = {}
+    for field, default in LIGHT_DEFAULTS.items():
+        value = getattr(settings, field, default)
+        if value == default or (field in _LIGHT_ZONE and not zones) or (field in _LIGHT_LINK and not check):
+            continue
+        out[field] = value
+    if not out:
+        return {}
+    from app.ai import prompt_packs
+
+    out["packs_sha256"] = prompt_packs.packs_sha256()
+    if out.get("intake_link_skill") == "L2":
+        out["link_skills_l2_sha256"] = skills_sha256(SKILLS_DIR.parent / "skills-L2")
     return out
 
 
@@ -2955,6 +3099,8 @@ def main(argv=None) -> int:
         extraction.SORTER_HINTS = False
     if args.max_read:
         A.settings.intake_max_read_photos = args.max_read
+    if args.drop_rule and A.settings.intake_read_prompt != "v1":
+        sys.exit("--drop-rule: takes a rule out of read prompt v1; not with --read-prompt v2")
     for rule in args.drop_rule or []:
         extraction.SYSTEM_PROMPT = _drop_rule(extraction.SYSTEM_PROMPT, READING_RULES[rule])
     # Contract 10: a run "with links" on a table that didn't load would be
@@ -2983,7 +3129,7 @@ def main(argv=None) -> int:
         "label": args.label or args.out.stem,
         "git_ref": args.ref,
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
-                 if not (k in C10_ARGS and v == C10_ARGS[k])},
+                 if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),

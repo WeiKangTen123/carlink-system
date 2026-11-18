@@ -42,7 +42,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from app.ai import evidence
+from app.ai import evidence, prompt_packs, runs
 from app.ai.extraction import _firm_condition, _sanitize_damage_summary
 from app.ai.grid import CELLS, grid_path
 from app.ai.keys import AiActor
@@ -183,11 +183,55 @@ def _evidence_mode(value) -> str:
     return value if value in EVIDENCE_SENTENCE else EVIDENCE_OFF
 
 
-def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_OFF) -> str:
+# The prompt's lines that a light-model pack takes the place of, or goes
+# before (system_prompt), as they are sent.
+_INTACT_LINE = "In 'checked_intact' list the allowed parts you can see clearly in these photos with no damage.\n"
+_SIDES_LINE = (
+    "Left and right are the car's own sides as its driver sees them, never the photo's: work out first which way "
+    "the car's front points -- front toward the camera, the car's right is on the photo's left; tail lamps toward "
+    "the camera, the car's left is on the photo's left.\n"
+)
+_CLOSING = (
+    "Only the insured car, never the other party's vehicle. Only damage you can see: a wrong part or side is "
+    "worse than none."
+)
+# Light-model detection (plans/2026-11-18-light-detection/P-prompts.md 3.3;
+# settings.intake_zone_packs, ai/prompt_packs.py), each pack in today's
+# prompt: intact-v1 in place of the checked_intact line (Z2), orient-v1 in
+# place of the sides line (Z3) -- for a side or close-up zone with P's one
+# line after it -- and cues-v1 (Z3) and this zone's rows of small-v1 (Z1)
+# before the closing line. Off: the prompt as before.
+_ORIENT_NO_SIDE = "Here the part names carry no side: zone_side_seen gives it.\n"
+# Z5 (settings.intake_zone_photo_half), end zones only: where each find is
+# in its photo, as the camera sees it; code turns it into the car's side
+# (side_from_half). Not P's words -- P gave the field, not a sentence.
+PHOTO_HALVES = ("left", "centre", "right")
+PHOTO_HALF_SENTENCE = (
+    "For each damage item also give photo_half: where its damage is in its photo_reference photo, as the photo shows "
+    "it -- the photo's left half, its centre, or its right half.\n"
+)
+
+
+def _photo_half_on(zone: str, photo_half: bool) -> bool:
+    return bool(photo_half) and zone in END_ZONES
+
+
+def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_OFF, packs=(),
+                  photo_half: bool = False) -> str:
     """Short on purpose: the light models this is for follow a short prompt
     better than the overall reading's long one. evidence_mode
     (settings.intake_zone_evidence): "reason" / "reason_box" add the one
-    sentence asking for the tail fields; "off" adds nothing."""
+    sentence asking for the tail fields; "off" adds nothing. packs
+    (settings.intake_zone_packs) and photo_half (settings.
+    intake_zone_photo_half): the light-model packs and Z5's sentence, none
+    by default."""
+    packs = set(packs or ())
+    intact = prompt_packs.pack("intact") + "\n" if "intact" in packs else _INTACT_LINE
+    sides = _SIDES_LINE
+    if "orient" in packs:
+        sides = prompt_packs.pack("orient") + "\n" + (_ORIENT_NO_SIDE if _kind(zone) != "end" else "")
+    added = (prompt_packs.pack("cues") + "\n" if "cues" in packs else "") + (
+        prompt_packs.small_rows(zone) + "\n" if "small" in packs else "")
     return (
         "You check one area of a damaged car for a Singapore motor insurance loss adjuster, from the photos below "
         "only. Each photo is labelled, e.g. P07.\n"
@@ -201,16 +245,34 @@ def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_O
         "Repair) when you can tell; ai_confidence, Low when the damage is slight or you are unsure.\n"
         + (GRID_SENTENCE if grid else "")
         + EVIDENCE_SENTENCE.get(_evidence_mode(evidence_mode), "")
-        + "In 'checked_intact' list the allowed parts you can see clearly in these photos with no damage.\n"
-        "Left and right are the car's own sides as its driver sees them, never the photo's: work out first which way "
-        "the car's front points -- front toward the camera, the car's right is on the photo's left; tail lamps toward "
-        "the camera, the car's left is on the photo's left.\n"
-        "Only the insured car, never the other party's vehicle. Only damage you can see: a wrong part or side is "
-        "worse than none."
+        + (PHOTO_HALF_SENTENCE if _photo_half_on(zone, photo_half) else "")
+        + intact
+        + sides
+        + added
+        + _CLOSING
     )
 
 
-def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_mode: str = EVIDENCE_OFF) -> dict:
+def intact_description() -> str:
+    """Z2: intact-v1's rule (the pack without its heading), as the schema's
+    description of checked_intact."""
+    return prompt_packs.pack("intact").split("\n", 1)[1].strip()
+
+
+def side_from_half(end: str, half) -> str | None:
+    """Z5: the car's side of a find at the photo's `half` in a photo of
+    the car's `end` facing the camera (orient-v1's table): front -- the
+    photo's left is the car's Right; rear -- the photo's left is its Left.
+    None in the centre, or for anything else."""
+    if half not in ("left", "right") or end not in END_ZONES:
+        return None
+    if end == "front":
+        return "Right" if half == "left" else "Left"
+    return "Left" if half == "left" else "Right"
+
+
+def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_mode: str = EVIDENCE_OFF,
+                    packs=(), photo_half: bool = False) -> dict:
     """The small schema: zone_side_seen first (fields are filled in schema
     order, so the model settles what it is looking at before it lists
     parts), photo_reference before part (where, then what), grid_cells
@@ -219,9 +281,16 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
     "reason_box" box_2d, last (once the part is settled and its confidence
     said), not required. They go into an Evidence entry (parse_answer).
     No minItems/maxItems: each adds states Gemini counts against a schema's
-    limit (extraction._response_schema)."""
+    limit (extraction._response_schema).
+
+    packs with "intact" (Z2): checked_intact carries intact-v1's rule as
+    its description. photo_half (Z5, end zones): photo_half after
+    photo_reference, required. Neither by default."""
     names = checklist(zone)
     item: dict = {"photo_reference": {"type": "string", "enum": list(labels)}}
+    half = _photo_half_on(zone, photo_half)
+    if half:
+        item["photo_half"] = {"type": "string", "enum": list(PHOTO_HALVES)}
     if grid:
         item["grid_cells"] = {"type": "array", "items": {"type": "string", "enum": list(CELLS)}}
     item.update({
@@ -237,13 +306,17 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
         item["reason"] = {"type": "string"}
     if mode == "reason_box":
         item["box_2d"] = {"type": "array", "items": {"type": "integer"}}
-    required = ["photo_reference"] + (["grid_cells"] if grid else []) + ["part", "ai_confidence"]
+    required = (["photo_reference"] + (["photo_half"] if half else []) + (["grid_cells"] if grid else [])
+                + ["part", "ai_confidence"])
+    intact: dict = {"type": "array", "items": {"type": "string", "enum": names[:-1]}}
+    if "intact" in set(packs or ()):
+        intact = {"type": "array", "description": intact_description(), "items": intact["items"]}
     return {
         "type": "object",
         "properties": {
             "zone_side_seen": {"type": "string", "enum": _SEEN[_kind(zone)]},
             "damage": {"type": "array", "items": {"type": "object", "properties": item, "required": required}},
-            "checked_intact": {"type": "array", "items": {"type": "string", "enum": names[:-1]}},
+            "checked_intact": intact,
         },
         "required": ["zone_side_seen", "damage", "checked_intact"],
     }
@@ -308,7 +381,7 @@ _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "a
 
 
 def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
-                 evidence_mode: str = EVIDENCE_OFF) -> ZoneAnswer:
+                 evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False) -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
@@ -320,7 +393,12 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     The tail fields are read only as asked (evidence_mode): the reason
     cleaned (evidence.clean_reason; the item's reason too), the box cleaned
     (evidence.clean_box) and only with a photo to be on -- a bad one is no
-    box, never a failed answer."""
+    box, never a failed answer.
+
+    photo_half (Z5, an end zone whose photos show that end): a find's side
+    worked out from its photo_half (side_from_half); when the model named
+    the other side, the part's "(side undetermined)" name instead. packs
+    with "intact" (Z2): a part listed damaged is never kept as intact too."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
@@ -332,6 +410,7 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         answer.note = f"the photos show the {seen}, not the {zone}: its finds were dropped"
         return answer
     mode = _evidence_mode(evidence_mode)
+    half = _photo_half_on(zone, photo_half) and seen == zone
     kept: list[tuple[DamageSummaryItem, list[str], dict]] = []
     for raw_item in data.get("damage") or []:
         if not isinstance(raw_item, dict):
@@ -339,6 +418,10 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         part = canonical(zone, raw_item.get("part"), seen)
         if part is None:
             continue
+        if half:
+            named, code = split_side(part)[1], side_from_half(zone, raw_item.get("photo_half"))
+            if named and code and named != code:
+                part = unsided_part(part) or part
         values = {k: raw_item.get(k) for k in _ITEM_FIELDS if raw_item.get(k) is not None}
         item = DamageSummaryItem.model_validate(
             {**values, "part": part, "photo_reference": _label(raw_item.get("photo_reference"), sent)}
@@ -359,9 +442,10 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         dumped["evidence"] = [evidence.entry(item.photo_reference, f"zone:{zone}", box=box, reason=reason,
                                              confidence=item.ai_confidence)] if item.photo_reference else []
         answer.items.append(dumped)
+    damaged = {item.get("part") for item in answer.items} if "intact" in set(packs or ()) else set()
     for name in data.get("checked_intact") or []:
         part = canonical(zone, name, seen)
-        if part and part != OTHER_PART and part not in answer.intact:
+        if part and part != OTHER_PART and part not in answer.intact and part not in damaged:
             answer.intact.append(part)
     return answer
 
@@ -375,22 +459,31 @@ def read_zone(
     grid: bool = False,
     evidence_mode: str = EVIDENCE_OFF,
     timeout: float = ZONE_TIMEOUT,
+    packs=(),
+    photo_half: bool = False,
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
     the reading. judge_key=False, as the second look: an extra call failing
     says nothing new about the person's own key -- the reading that just
     answered used it -- and must not switch it off for every AI call.
-    evidence_mode: settings.intake_zone_evidence."""
+    evidence_mode: settings.intake_zone_evidence. packs, photo_half:
+    settings.intake_zone_packs (as config.pack_list gives them) and
+    intake_zone_photo_half."""
     labels = [label for label, _, _ in photos]
-    return call_structured(
-        purpose=PURPOSE,
-        system_instruction=system_prompt(zone, grid, evidence_mode),
-        input_parts=build_input(photos, grid),
-        schema=response_schema(zone, labels, grid, evidence_mode),
-        parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode),
-        models=models,
-        actor=actor,
-        timeout=timeout,
-        judge_key=False,
-    )
+    packs = list(packs or ())
+    system = system_prompt(zone, grid, evidence_mode, packs, photo_half)
+    named = packs + (["photo_half"] if _photo_half_on(zone, photo_half) else [])
+    tag = prompt_packs.tag(f"zone:{zone}", "v1", named, system) if named else None
+    with runs.prompt_tag(tag):
+        return call_structured(
+            purpose=PURPOSE,
+            system_instruction=system,
+            input_parts=build_input(photos, grid),
+            schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half),
+            parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half),
+            models=models,
+            actor=actor,
+            timeout=timeout,
+            judge_key=False,
+        )

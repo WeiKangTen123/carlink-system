@@ -20,10 +20,11 @@ import json
 import logging
 import re
 
+from app.ai import prompt_packs, runs
 from app.ai.evidence import clean_box
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
-from app.config import settings
+from app.config import READ_PACKS, pack_list, settings
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
     BODY_TYPES,
@@ -139,6 +140,113 @@ CLOSE_UP_NOTE = (
     "not another photo: a part seen in it is the photo's own, with that photo's label as 'photo_reference', and "
     "'bbox_2d' is always on the whole photo, never on the close-up."
 )
+
+
+# ------------------------------------------------- light-model packs
+#
+# plans/2026-11-18-light-detection/P-prompts.md 3.2, behind settings that
+# default to today's prompt (ai/prompt_packs.py). The prompt is built from
+# SYSTEM_PROMPT at call time, so the benchmark's --drop-rule still acts.
+#
+# v1 with packs: orient-v1 takes the place of today's sides rule (R1), the
+# reporter's side kept; cues-v1 and small-v1 go before the damaged_parts
+# rule, at the end of the damage rules (R2).
+_V1_SIDES_START = "   - LEFT and RIGHT mean the vehicle's own left and right"
+_V1_PACKS_BEFORE = "   - Set 'damaged_parts' array with the part names you actually identified.\n"
+_REPORTER_SIDE = "If the reporter stated the side, use it."
+# v2 (R3): P's template, ai/prompts/read-v2.txt, with a last text part of
+# its own after the photos (read-v2-tail.txt). A pack not on is left out
+# with the lines that point at it; without orient the SIDES guide is
+# today's sides rule as it stands. P's "[R4 only]" pieces are in the
+# template and taken out unless intake_read_anchor is on: the description's
+# first sentence naming where the car was hit (and "Then" made "What"), the
+# point of impact matching it, and the final check's side agreeing with it.
+_V2_ANCHOR = (
+    (" Its first sentence says where the insured car was hit, in the car's own sides worked out with the SIDES guide "
+     "below (for example 'The insured vehicle sustained impact damage to its rear right-hand corner.'). "
+     "Then what happened", " What happened"),
+    (", the same place as the description's first sentence", ""),
+    (" and with the description's first sentence, unless that photo shows a second damaged area", ""),
+)
+_V2_NO_SMALL = (
+    ("{PACK small-v1}\n\n", ""),
+    ("C. For each damaged panel, check its SMALL PARTS.\n", ""),
+    ("D. Write one", "C. Write one"),
+    ("E. Check before you finish", "D. Check before you finish"),
+)
+_V2_TAIL_NO_SMALL = ((", check the small parts of every damaged panel", ""), ("(step E)", "(step D)"))
+
+
+def read_packs() -> list[str]:
+    """settings.intake_read_packs as its packs (config.READ_PACKS order)."""
+    return pack_list(getattr(settings, "intake_read_packs", ""), READ_PACKS, "intake_read_packs")
+
+
+def read_prompt_version() -> str:
+    return getattr(settings, "intake_read_prompt", "v1") or "v1"
+
+
+def _v1_sides_span(prompt: str) -> tuple[int, int]:
+    start = prompt.index(_V1_SIDES_START)
+    return start, prompt.index("\n", start) + 1
+
+
+def _with_packs_v1(prompt: str, packs: list[str]) -> str:
+    if "orient" in packs:
+        start, end = _v1_sides_span(prompt)
+        prompt = prompt[:start] + prompt_packs.pack("orient") + "\n" + _REPORTER_SIDE + "\n" + prompt[end:]
+    added = "".join(prompt_packs.pack(name) + "\n" for name in ("cues", "small") if name in packs)
+    if added:
+        prompt = prompt_packs.once(prompt, _V1_PACKS_BEFORE, added + _V1_PACKS_BEFORE)
+    return prompt
+
+
+def _prompt_v2(packs: list[str], anchor: bool) -> str:
+    text = prompt_packs.template("read-v2")
+    if "orient" in packs:
+        text = prompt_packs.once(text, "{PACK orient-v1}", prompt_packs.pack("orient"))
+    else:
+        start, end = _v1_sides_span(SYSTEM_PROMPT)
+        today = SYSTEM_PROMPT[start:end].strip().removeprefix("- ")
+        text = prompt_packs.once(text, "{PACK orient-v1}\n" + _REPORTER_SIDE, "SIDES\n" + today)
+    if "cues" in packs:
+        text = prompt_packs.once(text, "{PACK cues-v1}", prompt_packs.pack("cues"))
+    else:
+        text = prompt_packs.once(text, "{PACK cues-v1}\n\n", "")
+        text = prompt_packs.once(text, " (WHAT COUNTS AS DAMAGE)", "")
+    if "small" in packs:
+        text = prompt_packs.once(text, "{PACK small-v1}", prompt_packs.pack("small"))
+    else:
+        for old, new in _V2_NO_SMALL:
+            text = prompt_packs.once(text, old, new)
+    if not anchor:
+        for old, new in _V2_ANCHOR:
+            text = prompt_packs.once(text, old, new)
+    return text
+
+
+def system_prompt(packs: list[str] | None = None, version: str | None = None, anchor: bool | None = None) -> str:
+    """The reading's system prompt: SYSTEM_PROMPT itself at the defaults (no
+    packs, v1); else as the packs, version and anchor say (each None: as
+    the settings say)."""
+    packs = read_packs() if packs is None else packs
+    version = read_prompt_version() if version is None else version
+    anchor = bool(getattr(settings, "intake_read_anchor", False)) if anchor is None else anchor
+    if version == "v2":
+        return _prompt_v2(packs, anchor)
+    return _with_packs_v1(SYSTEM_PROMPT, packs) if packs else SYSTEM_PROMPT
+
+
+def read_tail(packs: list[str] | None = None, version: str | None = None) -> str | None:
+    """v2's last input part, after the photos; None on v1 (no such part)."""
+    packs = read_packs() if packs is None else packs
+    if (read_prompt_version() if version is None else version) != "v2":
+        return None
+    text = prompt_packs.template("read-v2-tail")
+    if "small" not in packs:
+        for old, new in _V2_TAIL_NO_SMALL:
+            text = prompt_packs.once(text, old, new)
+    return text
 
 
 
@@ -335,12 +443,14 @@ def _build_input(
     photo_labels: list[str] | None = None,
     photo_hints: list[dict | None] | None = None,
     photo_crops: list[str | None] | None = None,
+    tail: str | None = None,
 ) -> list[dict]:
     """photo_hints: what the sorter saw in each photo, in the order of
     photo_paths (dashboard intake only; see photo_hint). photo_crops: the
     close-up of each photo's damage, or None (intake with
     settings.intake_read_crops only, pipeline.read_crops), sent right after
-    its photo; None or no close-up at all: the request is as before."""
+    its photo; None or no close-up at all: the request is as before.
+    tail: a last text part after every photo (read v2's, read_tail)."""
     parts: list[dict] = []
     if known_facts:
         # Facts the reporter already gave, passed so a PARTIAL correction can
@@ -407,6 +517,8 @@ def _build_input(
         if closeups[i - 1]:
             parts.append({"type": "text", "text": f"Close-up of photo {label}:"})
             parts.append(image_part(closeups[i - 1], kind=(hints[i - 1] or {}).get("kind")))
+    if tail:
+        parts.append({"type": "text", "text": tail})
     return parts
 
 
@@ -580,14 +692,25 @@ def draft_report(
     # Contract 8 D1: passed only when set, so call_structured is called
     # exactly as before otherwise.
     extra = {"tools_note": ZOOM_NOTE} if settings.gemini_read_zoom_hint else {}
-    return call_structured(
-        purpose="draft",
-        system_instruction=SYSTEM_PROMPT,
-        input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints, photo_crops),
-        schema=_response_schema(),
-        parse=_parse_draft,
-        models=_model_chain(),
-        actor=actor,
-        timeout=timeout,
-        **extra,
-    )
+    # The light-model switches (read once: a setting changed mid-call must
+    # not mix two prompts); at their defaults SYSTEM_PROMPT, no tail, no tag.
+    packs, version = read_packs(), read_prompt_version()
+    anchor = version == "v2" and bool(getattr(settings, "intake_read_anchor", False))
+    system = system_prompt(packs, version, anchor)
+    tail = read_tail(packs, version)
+    tag = None
+    if packs or version != "v1":
+        tag = prompt_packs.tag("read", version, packs + (["anchor"] if anchor else []), system + (tail or ""))
+    with runs.prompt_tag(tag):
+        return call_structured(
+            purpose="draft",
+            system_instruction=system,
+            input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints, photo_crops,
+                                     tail),
+            schema=_response_schema(),
+            parse=_parse_draft,
+            models=_model_chain(),
+            actor=actor,
+            timeout=timeout,
+            **extra,
+        )

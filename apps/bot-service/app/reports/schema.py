@@ -148,6 +148,16 @@ class CheckRun(BaseModel):
     note: Optional[str] = None
     seconds: Optional[float] = None
     calls: int = 0
+    # The linked check's "Signs of hidden damage" answers, by area
+    # (settings.intake_link_signs, L3 of plans/2026-11-18-light-detection):
+    # {"rear": [{"n": "1", "answer": "yes", "photo": "P03"}]}, the photo as
+    # labelled in that call. A log only; left out of a dump while None, so a
+    # run without them saves what it did before.
+    signs: Optional[dict] = None
+
+    @model_serializer(mode="wrap")
+    def _without_unset_signs(self, handler):
+        return _without_defaults(handler(self), {"signs": None})
 
 
 # ------------------------------------------------ contract 10: linked parts

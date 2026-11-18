@@ -54,11 +54,11 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from app.ai import evidence, runs
+from app.ai import evidence, prompt_packs, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.second_look import _ChainUntil, _within, split_settled
 from app.ai.structured import call_structured, image_part
-from app.config import chain, settings
+from app.config import ANY, chain, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +90,18 @@ PURPOSE = "link"
 TIME_BOX = 30.0
 MAX_TRIES = 2
 TIMEOUT = TIME_BOX
+# L1 of plans/2026-11-18-light-detection (settings.gemini_thinking_level_link
+# "high" for a model of the chain): thinking takes time, so the call's box --
+# and its try's timeout -- is this instead; the tries stay MAX_TRIES.
+TIME_BOX_THINKING = 60.0
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+# The skill files by version (settings.intake_link_skill): L1, the frozen
+# ones (plans/2026-11-17-linked-parts/L1-freeze.md), never edited; L2, P's
+# (plans/2026-11-18-light-detection/P-prompts.md 3.4): L1 word for word
+# plus worked examples and "an unseen part is never 'no' for that alone",
+# each with a <name>.signs.md twin for the signs field (L3).
+SKILL_DIRS = {"L1": SKILLS_DIR, "L2": SKILLS_DIR.parent / "skills-L2"}
 # A group's area -> its skill file. "side": a side part whose side neither
 # it nor its listed part has -- the photos of both sides go.
 SKILL_OF = {"front": "front", "rear": "rear", "left": "side", "right": "side", "side": "side",
@@ -290,13 +300,37 @@ def pick_photos(area: str, sides: set[str], photos: list, own: set[str]) -> list
     return sorted(chosen, key=lambda p: order[p.id])
 
 
-@lru_cache(maxsize=16)
-def skill_text(name: str) -> str | None:
-    """ai/skills/<name>.md as written, or None when there is no such file."""
+@lru_cache(maxsize=32)
+def skill_text(name: str, version: str = "L1", signs: bool = False) -> str | None:
+    """ai/skills/<name>.md as written (version "L2": ai/skills-L2/, and with
+    signs its <name>.signs.md), or None when there is no such file."""
+    folder = SKILL_DIRS.get(version)
+    if folder is None:
+        return None
     try:
-        return (SKILLS_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
+        return (folder / f"{name}{'.signs' if signs else ''}.md").read_text(encoding="utf-8").strip()
     except OSError:
         return None
+
+
+def skill_choice() -> tuple[str, bool]:
+    """(skill version, signs) as the settings say: settings.intake_link_skill
+    and intake_link_signs (only with the L2 skills, whose files have it)."""
+    version = getattr(settings, "intake_link_skill", "L1") or "L1"
+    return version, version == "L2" and bool(getattr(settings, "intake_link_signs", False))
+
+
+def thinking_high() -> bool:
+    """settings.gemini_thinking_level_link gives a model of the link chain
+    "high" (one time box covers the chain's tries)."""
+    levels = thinking_levels(getattr(settings, "gemini_thinking_level_link", None))
+    return any((levels.get(model) or levels.get(ANY)) == "high" for model in chain(settings.gemini_link_chain))
+
+
+def time_box() -> float:
+    """The call's time box: TIME_BOX_THINKING while thinking_high, else
+    TIME_BOX."""
+    return TIME_BOX_THINKING if thinking_high() else TIME_BOX
 
 
 def _parent_name(item: dict) -> str:
@@ -356,7 +390,7 @@ def plan_groups(items: list[dict], data: dict, photos: list, table: dict | None,
             break
         members = grouped[area][:MAX_CANDIDATES]
         skill = SKILL_OF[area]
-        if skill_text(skill) is None:
+        if skill_text(skill, *skill_choice()) is None:
             logger.warning("Linked check: no skill file %s.md; the %s area is not checked", skill, area)
             continue
         parent_keys = list(dict.fromkeys(k for it in members for k in it.get("linked_from") or []))
@@ -390,15 +424,75 @@ def plan_groups(items: list[dict], data: dict, photos: list, table: dict | None,
 # ------------------------------------------------------------ the call
 
 
-def system_prompt(group: Group) -> str:
-    return SYSTEM_PROMPT + (skill_text(group.skill) or "")
+# Light-model detection (P-prompts.md 3.4), each behind its setting:
+# base prompt v2 (settings.intake_link_prompt), ai/prompts/link-v2.txt --
+# work in order, the parents' hit first; its step 2 only with the signs
+# field (L3), the next step renumbered without it.
+_V2_SIGNS_STEP = ("2. In 'signs', answer each of the notes' \"Signs of hidden damage\" once: yes, no or cannot_see, "
+                  "with the photo that shows a yes.\n")
+SIGN_ANSWERS = ("yes", "no", "cannot_see")
+# The signs a skill file numbers (at most 12 in each).
+SIGN_NUMBERS = tuple(str(n) for n in range(1, 13))
+# L4 (settings.intake_link_order "photos_first"): the closed list after the
+# photos, as the last text part.
+ORDERS = ("candidates_first", "photos_first")
+CANDIDATES_LAST = "Based on the photos above, judge every candidate as the notes say."
 
 
-def response_schema(refs: list[str], labels: list[str]) -> dict:
+def link_prompt() -> str:
+    return getattr(settings, "intake_link_prompt", "v1") or "v1"
+
+
+def link_order() -> str:
+    order = getattr(settings, "intake_link_order", ORDERS[0])
+    return order if order in ORDERS else ORDERS[0]
+
+
+def base_prompt(prompt: str = "v1", signs: bool = False) -> str:
+    """The prompt before the skill file: SYSTEM_PROMPT (v1), or link-v2's."""
+    if prompt != "v2":
+        return SYSTEM_PROMPT
+    text = prompt_packs.template("link-v2") + "\n"
+    if not signs:
+        text = prompt_packs.once(text, _V2_SIGNS_STEP, "")
+        text = prompt_packs.once(text, "3. Then answer every", "2. Then answer every")
+    return text
+
+
+def system_prompt(group: Group, prompt: str | None = None, version: str | None = None,
+                  signs: bool | None = None) -> str:
+    """The base prompt and the group's skill file (each None: as the
+    settings say). At the defaults: SYSTEM_PROMPT + the L1 skill, as
+    before."""
+    if version is None or signs is None:
+        chosen = skill_choice()
+        version = chosen[0] if version is None else version
+        signs = chosen[1] if signs is None else signs
+    prompt = link_prompt() if prompt is None else prompt
+    return base_prompt(prompt, signs) + (skill_text(group.skill, version, signs) or "")
+
+
+def response_schema(refs: list[str], labels: list[str], signs: bool = False) -> dict:
     """One array; per candidate id the cue BEFORE the verdict (fields are
     filled in schema order: what it sees, then what it makes of it), then
     the photo, the box and the reason. No part and no side: neither is the
-    model's to give. No minItems / maxItems."""
+    model's to give. No minItems / maxItems.
+
+    signs (L3): a `signs` array before `answers` -- each of the skill's
+    signs by number, yes / no / cannot_see, the photo of a yes -- so they
+    are answered before any candidate."""
+    schema = _answers_schema(refs, labels)
+    if not signs:
+        return schema
+    field = {"type": "array", "items": {"type": "object", "properties": {
+        "n": {"type": "string", "enum": list(SIGN_NUMBERS)},
+        "answer": {"type": "string", "enum": list(SIGN_ANSWERS)},
+        "photo": {"anyOf": [{"type": "string", "enum": list(labels)}, {"type": "null"}]},
+    }, "required": ["n", "answer", "photo"]}}
+    return {"type": "object", "properties": {"signs": field, **schema["properties"]}, "required": ["signs", "answers"]}
+
+
+def _answers_schema(refs: list[str], labels: list[str]) -> dict:
     return {
         "type": "object",
         "properties": {
@@ -422,12 +516,16 @@ def response_schema(refs: list[str], labels: list[str]) -> dict:
     }
 
 
-def build_input(group: Group) -> list[dict]:
+def build_input(group: Group, order: str = "candidates_first") -> list[dict]:
     """The area, the listed parents, the closed list, then the photos --
-    "Photo P07:" before each, at RESOLUTION."""
+    "Photo P07:" before each, at RESOLUTION. order "photos_first" (L4): the
+    closed list goes after the photos instead, in a last text part that
+    ends with CANDIDATES_LAST."""
+    candidates = ["Candidates to judge, by id (the closed list):", *[c.line for c in group.candidates]]
+    last = order == "photos_first"
     lines = [f"Area: {AREA_WORDS[group.area]}.",
              "Parts already listed as damaged (the parents), and how hard each was hit:", *group.parent_lines,
-             "Candidates to judge, by id (the closed list):", *[c.line for c in group.candidates],
+             *([] if last else candidates),
              f"{len(group.photos)} photos follow, labelled with the case photo number."]
     parts: list[dict] = [{"type": "text", "text": "\n".join(lines)}]
     for photo in group.photos:
@@ -435,6 +533,8 @@ def build_input(group: Group) -> list[dict]:
         image = image_part(photo.path)
         image["resolution"] = RESOLUTION
         parts.append(image)
+    if last:
+        parts.append({"type": "text", "text": "\n".join(candidates + [CANDIDATES_LAST])})
     return parts
 
 
@@ -471,6 +571,25 @@ def parse_answer(raw: str, refs: list[str], labels: list[str]) -> dict[str, dict
     return out
 
 
+def parse_signs(raw: str, labels: list[str]) -> list[dict]:
+    """L3's signs as [{"n", "answer", "photo" (a label sent, or None)}], by
+    number, each once (the first kept); an entry with a number or answer not
+    ours dropped. For the CheckRun's log only: no verdict depends on them."""
+    data = json.loads(raw)
+    found = data.get("signs") if isinstance(data, dict) else None
+    out: dict[str, dict] = {}
+    for entry in found if isinstance(found, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        n, answer = str(entry.get("n") or "").strip(), entry.get("answer")
+        if n not in SIGN_NUMBERS or n in out or answer not in SIGN_ANSWERS:
+            continue
+        match = _LABEL_RE.match(str(entry.get("photo") or "").strip().upper())
+        label = f"P{int(match.group(1)):02d}" if match else None
+        out[n] = {"n": n, "answer": answer, "photo": label if label in labels else None}
+    return sorted(out.values(), key=lambda s: int(s["n"]))
+
+
 def code_verdict(answer: dict) -> str:
     """The verdict as code takes it: a seen or likely needs a sign it can
     point to (SIGN_CUES), else cannot_tell; a seen needs a photo it was
@@ -488,27 +607,47 @@ def _answered_by(attempts: runs.Attempts, models: list[str]) -> str | None:
     return ok[-1] if ok else None
 
 
-def ask(group: Group, actor: AiActor, attempts: runs.Attempts) -> dict[str, dict]:
+def ask(group: Group, actor: AiActor, attempts: runs.Attempts, signs_out: list | None = None) -> dict[str, dict]:
     """One area's call: {item key: {"link_check": LinkCheck dict, "entry":
     its Evidence by "link_check" or None}}. At most MAX_TRIES requests, none
-    started after TIME_BOX. Raises as call_structured does, or TimeoutError
-    after TIME_BOX."""
+    started after the time box (time_box: TIME_BOX, or TIME_BOX_THINKING
+    with thinking "high"). Raises as call_structured does, or TimeoutError
+    after the box. With the signs field on (L3), its answers are added to
+    signs_out."""
     refs = [c.ref for c in group.candidates]
     labels = [p.label for p in group.photos]
     models = chain(settings.gemini_link_chain)
-    deadline = time.monotonic() + TIME_BOX
+    # Read once: the box, the prompt and the schema of one call agree.
+    box = time_box()
+    version, signs = skill_choice()
+    prompt, order = link_prompt(), link_order()
+    system = system_prompt(group, prompt, version, signs)
+    deadline = time.monotonic() + box
+    tag = None
+    if (prompt, version, signs, order) != ("v1", "L1", False, ORDERS[0]):
+        named = [f"skill-{version}"] + (["signs"] if signs else []) + ([order] if order != ORDERS[0] else [])
+        tag = prompt_packs.tag("link", prompt, named, system)
 
-    def work(stop: threading.Event) -> dict[str, dict]:
-        return call_structured(
-            purpose=PURPOSE, system_instruction=system_prompt(group), input_parts=build_input(group),
-            schema=response_schema(refs, labels), parse=lambda raw: parse_answer(raw, refs, labels),
-            models=_ChainUntil(models, stop), actor=actor, timeout=TIMEOUT,
-            # Its own chain running out must not switch the person's key off
-            # for the reading (structured.call_structured).
-            judge_key=False, max_tries=MAX_TRIES, deadline=deadline,
-        )
+    def parse(raw: str):
+        answers = parse_answer(raw, refs, labels)
+        return (answers, parse_signs(raw, labels)) if signs else answers
 
-    got = _within(TIME_BOX, work, attempts)
+    def work(stop: threading.Event):
+        with runs.prompt_tag(tag):
+            return call_structured(
+                purpose=PURPOSE, system_instruction=system, input_parts=build_input(group, order),
+                schema=response_schema(refs, labels, signs), parse=parse,
+                models=_ChainUntil(models, stop), actor=actor, timeout=TIMEOUT if box == TIME_BOX else box,
+                # Its own chain running out must not switch the person's key off
+                # for the reading (structured.call_structured).
+                judge_key=False, max_tries=MAX_TRIES, deadline=deadline,
+            )
+
+    got = _within(box, work, attempts)
+    if signs:
+        got, said = got
+        if signs_out is not None:
+            signs_out.extend(said)
     model = _answered_by(attempts, models)
     by_label = {p.label: p for p in group.photos}
     out: dict[str, dict] = {}
@@ -618,6 +757,9 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
     calls = 0
     failure: tuple[str, BaseException] | None = None
     models: list[str] = []
+    # L3: each area's signs, for the CheckRun (only while the field is on).
+    signs_on = skill_choice()[1]
+    signs: dict[str, list[dict]] = {}
     try:
         with runs.recorded(report_id, runs.LINK_CHECK_KIND, actor) as run:
             sent: dict[str, str] = {}
@@ -626,8 +768,9 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
                 calls += 1
                 for p in group.photos:
                     sent.setdefault(p.label, p.photo_id)
+                said: list[dict] = []
                 try:
-                    got = ask(group, actor, run.attempts)
+                    got = ask(group, actor, run.attempts, said if signs_on else None)
                 except AiUnavailable as exc:
                     failure = ("skipped", exc)
                     break
@@ -638,6 +781,8 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
                     break
                 answered.append(group)
                 results.update(got)
+                if signs_on:
+                    signs[group.area] = said
                 models += [r["link_check"]["model"] for r in got.values() if r["link_check"].get("model")]
             # As "@<photo id>", in camera order, as the re-check's rows:
             # filing turns them into the case's P-numbers
@@ -658,7 +803,9 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
         notes.append(NOTE_PART.format(done=len(answered), total=plan.total))
     if failure is not None:
         notes.append({"skipped": NOTE_NO_ALLOWANCE, "busy": NOTE_BUSY}.get(failure[0], NOTE_FAILED))
-    return _check_run("ok", " ".join(notes) or None, by="lite", model=models[0] if models else None, calls=calls), results
+    extra = {"signs": signs} if signs_on else {}
+    return _check_run("ok", " ".join(notes) or None, by="lite", model=models[0] if models else None, calls=calls,
+                      **extra), results
 
 
 def _hold_write_lock(db, report_id: str) -> None:
