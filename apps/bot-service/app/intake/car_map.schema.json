@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "carlink/car_map.schema.json",
+  "title": "Carlink car map (format 1)",
+  "description": "How a car is built, for the linked parts: assemblies (members, anchors, signs, catalogue hooks), relations (L1's links plus assembly, position, body gate, prior) and chains (a second hop opened by a sign). Design: plans/2026-11-18-car-knowledge/K1-design.md. The authoritative check is app/intake/car_map.py validate() (cross-references, {side} symmetry, cycles); this file is its shape, for editors and reviewers.",
+  "type": "object",
+  "required": ["version", "format", "assemblies", "relations"],
+  "properties": {
+    "version": {"type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[^:]+$", "description": "Frozen version name, e.g. K1.0; goes in each link_rule as <version>:<relation id>."},
+    "format": {"const": 1},
+    "built_from": {"type": "array", "items": {"type": "string"}},
+    "from_l1": {"type": "boolean", "description": "Set by car_map.from_l1 on a converted L1 table."},
+    "assemblies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assembly"}},
+    "relations": {"type": "array", "items": {"$ref": "#/$defs/relation"}},
+    "chains": {"type": "array", "items": {"$ref": "#/$defs/chain"}}
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "description": "A canonical part (taxonomy.CANONICAL_PARTS, never a (side undetermined) one, never Other / Not Listed) or a name from car_map_new_names.json; {side} at the start stands for Left and Right."},
+    "level": {"enum": ["light", "medium", "heavy", "crush"]},
+    "body": {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"enum": ["Sedan", "Hatchback", "SUV", "MPV", "Van", "Pickup", "Coupe", "Wagon", "hatch", "sedan"]}}],
+      "description": "Bodies this member or relation exists on; null = every body. hatch / sedan are taxonomy.body_class. An unknown body always passes."},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 160, "description": "Plain words for the Review step; no 3+ digit number, no make or model."},
+    "member": {
+      "type": "object",
+      "required": ["part", "role"],
+      "properties": {
+        "part": {"$ref": "#/$defs/name"},
+        "role": {"enum": ["panel", "structure", "mount", "absorber", "mechanism", "seal", "trim", "lamp", "glass", "electrical", "mechanical", "safety", "wheel", "other"]},
+        "hidden": {"type": "boolean", "description": "Not visible from outside with the closures shut (default false)."},
+        "strip_down": {"type": "boolean", "description": "Only confirmable once parts come off (default false)."},
+        "fitted": {"enum": ["always", "if_fitted"], "description": "if_fitted: an option some cars lack (fog lamps, sensors, camera); shown with 'if fitted' wording."},
+        "body": {"$ref": "#/$defs/body"},
+        "new": {"type": "boolean", "description": "True exactly when the part is a new name (car_map_new_names.json)."}
+      },
+      "additionalProperties": false
+    },
+    "sign": {
+      "type": "object",
+      "required": ["id", "ask", "level"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,23}$", "description": "Unique in the whole map; the walk's enum value."},
+        "ask": {"type": "string", "maxLength": 100, "pattern": "\\?\\s*$", "description": "A yes/no question a light vision model can judge from a photo of the damaged anchor."},
+        "level": {"$ref": "#/$defs/level", "description": "The hit level a yes (with a photo) shows."},
+        "points_to": {"type": "array", "items": {"type": "string"}, "description": "Relation ids (from an anchor of this assembly) a yes lifts from strip_down to likely."},
+        "unlocks": {"type": "array", "items": {"type": "string"}, "description": "Chain ids (starting at an anchor of this assembly) a yes opens."}
+      },
+      "additionalProperties": false
+    },
+    "catalogue": {
+      "type": "object",
+      "properties": {
+        "oem_diagrams": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 60}, "description": "OEM diagram names that hold this assembly (generic words, no make)."},
+        "oem_numbers": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "pattern": "^\\d{3,5}$"}}, "description": "Diagram numbers by numbering scheme, e.g. {\"toyota\": [\"5201\"]}."}
+      },
+      "additionalProperties": false
+    },
+    "assembly": {
+      "type": "object",
+      "required": ["id", "name", "area", "members"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 60},
+        "area": {"enum": ["front", "rear", "side", "underbody", "wheel"]},
+        "anchors": {"type": "array", "items": {"$ref": "#/$defs/name"}, "description": "Members whose damage starts the assembly walk (usually the outer panel)."},
+        "members": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/member"}},
+        "signs": {"type": "array", "items": {"$ref": "#/$defs/sign"}},
+        "catalogue": {"$ref": "#/$defs/catalogue"},
+        "notes": {"type": "string", "maxLength": 300},
+        "sources": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "relation": {
+      "type": "object",
+      "required": ["id", "assembly", "parent", "child", "type", "side", "min_hit", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9>._-]{0,63}$"},
+        "assembly": {"type": "string", "description": "The parent's assembly: the Review step's group."},
+        "parent": {"$ref": "#/$defs/name"},
+        "child": {"$ref": "#/$defs/name"},
+        "type": {"enum": ["attached", "opens_with", "behind", "crush"]},
+        "side": {"enum": ["same", "impact", "none"], "description": "same: both names have {side}; impact: only the child; none: the child has none."},
+        "min_hit": {"$ref": "#/$defs/level"},
+        "trigger_tokens": {"type": "array", "items": {"enum": ["Grazed", "Dented", "Bent", "Buckled", "Deformed", "Distorted", "Crumpled", "Warped", "Shifted", "Slack", "Cracked", "Chipped", "Torn", "Cut", "Jammed", "Faulty", "Leaked", "Rattle"]}},
+        "hidden": {"type": "boolean", "description": "Default: the child member's."},
+        "strip_down": {"type": "boolean", "description": "Default: the child member's."},
+        "area": {"enum": ["front", "rear", "left", "right", "underbody", "wheel", "side"], "description": "Skill file / linked-check end; default the assembly's."},
+        "position": {"enum": ["any", "centre", "corner"], "description": "Where on the parent the hit must be (from the walk's hit_at); default any."},
+        "body": {"$ref": "#/$defs/body"},
+        "prior": {"anyOf": [{"type": "null"}, {"type": "object", "required": ["rank", "source"], "properties": {
+          "rank": {"enum": [1, 2, 3, 4, 5], "description": "1 = a surveyor lists it most often with this parent at this level."},
+          "source": {"type": "string", "minLength": 1, "maxLength": 80}}, "additionalProperties": false}]},
+        "reason": {"$ref": "#/$defs/reason"},
+        "sources": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "chain": {
+      "type": "object",
+      "required": ["id", "first", "then", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9>._-]{0,63}$", "description": "Shares one id space with the relations."},
+        "first": {"type": "string", "description": "Relation id: anchor -> middle part."},
+        "then": {"type": "string", "description": "Relation id starting at first's child: middle part -> end part. Never a chain (at most 2 hops)."},
+        "min_hit": {"$ref": "#/$defs/level", "description": "The anchor's hit level needed (default heavy)."},
+        "reason": {"$ref": "#/$defs/reason"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

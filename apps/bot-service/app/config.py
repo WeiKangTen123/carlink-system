@@ -497,6 +497,14 @@ class Settings(BaseSettings):
     # pipeline -- the same sort, reading, zone reads and suggestions. Off:
     # the bot drafts from them as it does today.
     telegram_full_detection: bool = False
+    # The car map (plans/2026-11-18-car-knowledge/K1-design.md;
+    # intake/car_map.py): which link table the linked parts are built from.
+    # "off": L1 (intake/link_table.json) as it is, byte for byte. "shadow":
+    # L1 shown, the car map's table worked out beside it for the AI draft.
+    # "on": the car map's table shown (L1 when the map can't be used).
+    # car_map.table_for_links reads it; the pipeline is wired to it in
+    # Phase 2 (I3), so until then no step changes whatever it says.
+    intake_car_map: str = "off"
 
     @field_validator("intake_links")
     @classmethod
@@ -542,6 +550,11 @@ class Settings(BaseSettings):
     @classmethod
     def _thinking_level_link(cls, value):
         return normal_thinking_levels(value)
+
+    @field_validator("intake_car_map")
+    @classmethod
+    def _car_map(cls, value):
+        return normal_car_map_mode(value)
 
 
 READ_MODES = ("single", "zones")
@@ -690,6 +703,15 @@ def normal_count(value, name: str = "the count") -> int:
         raise ValueError(f"{name} {value!r}: a whole number, 0 or more")
     return count
 # (end of Contract 10)
+
+
+# The car map's switch (intake/car_map.py), parsed as Contract 10's are.
+CAR_MAP_MODES = ("off", "shadow", "on")
+
+
+def normal_car_map_mode(value) -> str:
+    """intake_car_map written the one way; None or blank is "off"."""
+    return _one_of(value, CAR_MAP_MODES, "intake_car_map")
 
 
 # Each model setting written the one way, None when blank (unset). Raise
