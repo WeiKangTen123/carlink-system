@@ -77,6 +77,23 @@ x-bot-service: &bot-service
     - INTAKE_LINK_CHECK=${INTAKE_LINK_CHECK:-off}
     - INTAKE_LINKS_CATALOGUE=${INTAKE_LINKS_CATALOGUE:-false}
     - INTAKE_LINKS_MAX=${INTAKE_LINKS_MAX:-12}
+    # Light-model detection (plans/2026-11-18-light-detection): instruction
+    # packs and prompt versions, one switch per benchmark experiment, and
+    # the sort's and linked check's thinking levels (blank = none sent).
+    # Defaults are config.py's: today's prompts byte for byte. Live values
+    # go in infra/.env once an experiment has won.
+    - INTAKE_READ_PACKS=${INTAKE_READ_PACKS:-}
+    - INTAKE_READ_PROMPT=${INTAKE_READ_PROMPT:-v1}
+    - INTAKE_READ_ANCHOR=${INTAKE_READ_ANCHOR:-false}
+    - INTAKE_ZONE_PACKS=${INTAKE_ZONE_PACKS:-}
+    - INTAKE_ZONE_PHOTO_HALF=${INTAKE_ZONE_PHOTO_HALF:-false}
+    - INTAKE_SORT_PROMPT=${INTAKE_SORT_PROMPT:-v2}
+    - GEMINI_THINKING_LEVEL_SORT=${GEMINI_THINKING_LEVEL_SORT:-}
+    - GEMINI_THINKING_LEVEL_LINK=${GEMINI_THINKING_LEVEL_LINK:-}
+    - INTAKE_LINK_SKILL=${INTAKE_LINK_SKILL:-L1}
+    - INTAKE_LINK_PROMPT=${INTAKE_LINK_PROMPT:-v1}
+    - INTAKE_LINK_SIGNS=${INTAKE_LINK_SIGNS:-false}
+    - INTAKE_LINK_ORDER=${INTAKE_LINK_ORDER:-candidates_first}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

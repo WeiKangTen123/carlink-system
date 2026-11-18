@@ -77,7 +77,7 @@ from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
 from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_of, other_side_listed
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
-from app.config import chain, settings
+from app.config import ZONE_PACKS, chain, pack_list, settings
 from app.intake.photos import ai_input_path
 from app.parts.prefill import item_key, row_name
 from app.reports.schema import SecondLookItem
@@ -126,6 +126,20 @@ def evidence_mode() -> str:
     """What the zone calls ask for besides the part (settings.
     intake_zone_evidence): "off", "reason" or "reason_box"."""
     return getattr(settings, "intake_zone_evidence", "off") or "off"
+
+
+def light_options() -> dict:
+    """The light-model switches of the zone calls (plans/2026-11-18-light-
+    detection): read_zone's packs (settings.intake_zone_packs) and photo_half
+    (settings.intake_zone_photo_half), each only while on -- at the
+    defaults {}, and read_zone is called as before."""
+    out: dict = {}
+    packs = pack_list(getattr(settings, "intake_zone_packs", ""), ZONE_PACKS, "intake_zone_packs")
+    if packs:
+        out["packs"] = packs
+    if getattr(settings, "intake_zone_photo_half", False):
+        out["photo_half"] = True
+    return out
 
 
 def suggest_zone_only() -> bool:
@@ -513,6 +527,7 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
     models = zone_chain()
     grid = grid_on()
     asked = evidence_mode()
+    light = light_options()
     started = time.monotonic()
     answers: dict[int, ZoneAnswer] = {}
     entries: list[dict] = [{"zone": job.zone, "photos": [f"@{pid}" for _, pid, _, _ in job.photos]} for job in jobs]
@@ -536,7 +551,7 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 # error code, then added to the stage's one run.
                 with runs.collecting(attempts):
                     answer = read_zone(job.zone, [(label, path, kind) for label, _, path, kind in job.photos],
-                                       actor=actor, models=models, grid=grid, evidence_mode=asked)
+                                       actor=actor, models=models, grid=grid, evidence_mode=asked, **light)
             except Exception as exc:
                 error = exc
                 # The person's AI going away, or the day's allowance used up

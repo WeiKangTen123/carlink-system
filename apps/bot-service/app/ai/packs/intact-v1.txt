@@ -1,0 +1,2 @@
+CALLING A PART INTACT ('checked_intact')
+List a part as intact only when a sharp photo shows the whole part close enough to see a crack or a dent, and you checked it against WHAT COUNTS AS DAMAGE and found no sign. Never put a part in both lists. A part partly hidden, blurred, dark, far away or cut off at the photo's edge goes in neither list. A part with any damage sign, even a slight one, goes in 'damage' with ai_confidence Low, not in checked_intact.
