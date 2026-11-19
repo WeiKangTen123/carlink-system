@@ -101,6 +101,15 @@ x-bot-service: &bot-service
     - INTAKE_ASSEMBLY_WALK=${INTAKE_ASSEMBLY_WALK:-off}
     - INTAKE_WALK_RAISE=${INTAKE_WALK_RAISE:-one}
     - INTAKE_LINK_HOPS=${INTAKE_LINK_HOPS:-1}
+    # The car map (plans/2026-11-18-car-knowledge/K1-design.md 6): which link
+    # table the linked parts come from, and the Review step's order and caps
+    # (K4). Defaults are config.py's: L1, its order, 4 per group, strip-down
+    # inside the 12.
+    - INTAKE_CAR_MAP=${INTAKE_CAR_MAP:-off}
+    - INTAKE_LINKS_ORDER=${INTAKE_LINKS_ORDER:-table}
+    - INTAKE_LINKS_ASSEMBLY_MAX=${INTAKE_LINKS_ASSEMBLY_MAX:-4}
+    - INTAKE_LINKS_STRIPDOWN_CAP=${INTAKE_LINKS_STRIPDOWN_CAP:-in}
+    - INTAKE_LINKS_STRIPDOWN_MAX=${INTAKE_LINKS_STRIPDOWN_MAX:-12}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

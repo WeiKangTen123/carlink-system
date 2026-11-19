@@ -3037,6 +3037,17 @@ def ai_settings(settings) -> dict:
             out[field] = getattr(settings, field, None)
         if getattr(settings, "intake_links_catalogue", False):
             out["intake_links_catalogue"] = True
+        # The car map's review screen (K4): its knobs only off their
+        # defaults, and the car map's mode, version and sha256 only when it
+        # is not off -- a run at today's settings records what it did before.
+        for field, default in K4_DEFAULTS.items():
+            value = getattr(settings, field, default)
+            if value != default:
+                out[field] = value
+        car = getattr(settings, "intake_car_map", "off")
+        if car in ("shadow", "on"):
+            out["intake_car_map"] = car
+            out.update(car_map_settings())
         out.update(link_table_settings())
         check = getattr(settings, "intake_link_check", "off")
         if check != "off":
@@ -3134,6 +3145,25 @@ def lf_sha256(path) -> str | None:
 def skills_sha256(folder: Path = SKILLS_DIR) -> dict[str, str | None]:
     """{skill file name: lf_sha256} for every skill file."""
     return {p.name: lf_sha256(p) for p in sorted(Path(folder).glob("*.md"))}
+
+
+# The car map's review knobs (app/config.py, K4) at today's values.
+K4_DEFAULTS = {"intake_links_order": "table", "intake_links_assembly_max": 4, "intake_links_stripdown_cap": "in",
+               "intake_links_stripdown_max": 12}
+
+
+def car_map_settings() -> dict:
+    """The car map the app loaded (app/intake/car_map.json): its version and
+    sha256 as git keeps it (both None when there is none, or it failed its
+    check -- the linked parts then keep L1)."""
+    try:
+        from app.intake import car_map
+
+        loaded = car_map.MAP if isinstance(car_map.MAP, dict) else None
+        return {"car_map_version": loaded.get("version") if loaded else None,
+                "car_map_sha256": car_map.sha256_lf() if loaded else None}
+    except Exception:
+        return {"car_map_version": None, "car_map_sha256": None}
 
 
 def link_table_settings() -> dict:

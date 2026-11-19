@@ -738,7 +738,15 @@ def _plan(report_id: str, mode: str, max_calls: int) -> Plan | None:
         items = open_link_items(list(items), data, mode)
         if not items:
             return None
-        return plan_groups(items, data, ordered_photos(db, report_id), TABLE, max_calls)
+        table = TABLE
+        if getattr(settings, "intake_car_map", "off") == "on":
+            # The car map (K4): the areas are those of the table the linked
+            # parts were built from (L1 when the map can't be used).
+            from app.intake import car_map
+
+            vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+            table = car_map.link_tables(TABLE, vehicle, mode="on").shown
+        return plan_groups(items, data, ordered_photos(db, report_id), table, max_calls)
     finally:
         db.close()
 

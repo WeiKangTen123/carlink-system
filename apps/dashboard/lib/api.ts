@@ -1027,6 +1027,35 @@ export type SecondLookItem = {
   intact_in?: string[];
   link_check?: LinkCheck | null;
   oem?: string[];
+  /** The car map's review screen (K4; bot-service schema.SecondLookItem),
+   * only with intake_car_map "on" -- each absent while at its default, and
+   * without them the panel is as before. assembly: the group (the map's
+   * assembly id, one per side for a door: "front-door.left");
+   * assembly_name: its header; prior: the relation's rank (1 listed most
+   * often .. 5); hop 2: a second hop, via the part between; fitted
+   * "if_fitted": an option some cars lack; fitted_note: what this model's
+   * stored catalogue says; signs_yes: the walk's yes signs pointing at it;
+   * also_check: the group's words for parts with no name yet (the same on
+   * each item of the group); folded: in the "Check at strip-down" block,
+   * outside the linked parts' cap. */
+  assembly?: string | null;
+  assembly_name?: string | null;
+  prior?: number | null;
+  hop?: number | null;
+  via?: string | null;
+  fitted?: string | null;
+  fitted_note?: string | null;
+  signs_yes?: SignYes[];
+  also_check?: string[];
+  folded?: boolean;
+};
+
+/** A sign the assembly walk answered yes (K4): its id, its question, the
+ * photo ("@<photo id>" while a draft, "P07" once filed). */
+export type SignYes = {
+  id: string;
+  ask?: string | null;
+  photo?: string | null;
 };
 
 /** What the re-check step did on this read. */

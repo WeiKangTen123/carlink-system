@@ -518,13 +518,30 @@ class Settings(BaseSettings):
     # 2: a car map chain's second hop (anchor -> part -> part) when a sign
     # that unlocks it says yes; at most 4 such parts a case. 1: one hop.
     intake_link_hops: int = 1
+    # The car map's review screen (K1-design.md 5b, 6; intake/links.Options):
+    # how the linked parts are ordered and capped. Every default is today's
+    # order and caps, byte for byte.
+    # "table": inside a bucket by kind of link, hit and table order (L1);
+    # "prior": a relation's prior rank first (1 listed most often .. 5; a
+    # relation with none counts as 3) -- only the car map has priors.
+    intake_links_order: str = "table"
+    # Linked parts per group and bucket: a group is an assembly with the
+    # car map "on" (one per side for a door), else the listed part (L1's 4).
+    intake_links_assembly_max: int = 4
+    # "in": the strip-down bucket counts in intake_links_max (L1); "out":
+    # it is its own folded block on the Review step ("Check at strip-down
+    # (N)"), at most intake_links_stripdown_max, never counted in the 12.
+    # A second hop's part (hop 2) goes there unless a photo shows it.
+    intake_links_stripdown_cap: str = "in"
+    intake_links_stripdown_max: int = 12
 
     @field_validator("intake_links")
     @classmethod
     def _links_mode(cls, value):
         return normal_links_mode(value)
 
-    @field_validator("intake_links_max", "intake_link_check_max_calls")
+    @field_validator("intake_links_max", "intake_link_check_max_calls", "intake_links_assembly_max",
+                     "intake_links_stripdown_max")
     @classmethod
     def _links_counts(cls, value, info):
         return normal_count(value, info.field_name)
@@ -675,6 +692,15 @@ class Settings(BaseSettings):
         if problem:
             raise ValueError(problem)
         return self
+    @field_validator("intake_links_order")
+    @classmethod
+    def _links_order(cls, value):
+        return normal_links_order(value)
+
+    @field_validator("intake_links_stripdown_cap")
+    @classmethod
+    def _links_stripdown_cap(cls, value):
+        return normal_stripdown_cap(value)
 
 
 READ_MODES = ("single", "zones")
@@ -902,6 +928,22 @@ def light_conflict(read_prompt: str, read_anchor: bool, link_skill: str, link_si
         return "intake_link_signs uses the L2 skills' signs files: set intake_link_skill L2 too"
     return None
 # (end of light-model detection)
+
+
+# The car map's review screen (K4): the order inside a bucket, and where
+# the strip-down bucket is counted.
+LINKS_ORDERS = ("table", "prior")
+STRIPDOWN_CAPS = ("in", "out")
+
+
+def normal_links_order(value) -> str:
+    """intake_links_order written the one way; None or blank is "table"."""
+    return _one_of(value, LINKS_ORDERS, "intake_links_order")
+
+
+def normal_stripdown_cap(value) -> str:
+    """intake_links_stripdown_cap written the one way; None or blank is "in"."""
+    return _one_of(value, STRIPDOWN_CAPS, "intake_links_stripdown_cap")
 
 
 # Each model setting written the one way, None when blank (unset). Raise

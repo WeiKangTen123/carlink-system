@@ -43,8 +43,9 @@ logger = logging.getLogger(__name__)
 PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
 # The AI draft's lists whose items name photos: the damage list (contract
 # 8's seen_in, contract 9's evidence), the parts only zone reads found
-# (contract 9) and the linked parts kept in shadow mode (contract 10).
-AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions")
+# (contract 9), the linked parts kept in shadow mode (contract 10) and the
+# car map's in its shadow mode (K4).
+AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions", "car_map_suggestions")
 
 
 def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
