@@ -25,6 +25,12 @@ and table_for_links() is the seam -- settings.intake_car_map, "off" by
 default: L1 as it is, the very same object. links never imports this
 module (no cycle when the seam is wired).
 
+The Review step's groups (K4): link_tables() is the seam as the app calls
+it (second_look._store, suggestions.relinked, the linked check's areas),
+with review_lookup() -- each relation's facts by link_rule, which
+links.build takes as `info` -- and add_also_check(), the words for the new
+parts a names-off table leaves out.
+
 New part names below today's taxonomy (car_map_new_names.json, owner
 option a) are proposed, not applied: a map may name them, and the
 compiled table leaves out every relation that does until the taxonomy
@@ -39,6 +45,7 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,6 +58,7 @@ from app.reports.taxonomy import (
     OTHER_PART,
     UNDETERMINED_SUFFIX,
     body_class,
+    body_type_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -287,6 +295,11 @@ def new_name_set(doc: dict | None) -> frozenset[str]:
 @lru_cache(maxsize=1)
 def _default_new_names() -> frozenset[str]:
     return new_name_set(load_new_names())
+
+
+@lru_cache(maxsize=1)
+def _default_new_names_doc() -> dict | None:
+    return load_new_names()
 
 
 # ------------------------------------------------------------ the check
@@ -789,6 +802,118 @@ def relation_info(car_map: dict | None, link_rule) -> dict | None:
             "position": rel.get("position", "any"), "fitted": child.get("fitted", "always"), "hop": 1}
 
 
+def _sided_assembly(asm: dict) -> bool:
+    """An assembly that is one per side of the car: every anchor a {side}
+    name (the front doors), never the front bumper with its {side} fog
+    lamps."""
+    anchors = asm.get("anchors") if isinstance(asm, dict) else None
+    return bool(anchors) and all(isinstance(a, str) and a.startswith(SIDE + " ") for a in anchors)
+
+
+def review_info(car_map: dict | None, link_rule) -> dict | None:
+    """relation_info plus "sided" (the assembly is one per side: _sided_
+    assembly) -- what links.build's `info` reads (K4): the group, its name,
+    the prior that orders it, the hop and "if fitted". None as
+    relation_info."""
+    info = relation_info(car_map, link_rule)
+    if info is None:
+        return None
+    asm = next((a for a in car_map.get("assemblies") or [] if isinstance(a, dict) and a.get("id") == info["assembly"]), {})
+    return {**info, "sided": _sided_assembly(asm)}
+
+
+def review_lookup(car_map: dict | None):
+    """A link_rule -> review_info function over this map, worked out once
+    for every relation (a build asks for each of its candidates). None
+    when there is no map. Never raises: a bad map gives a lookup that
+    knows nothing."""
+    if not isinstance(car_map, dict):
+        return None
+    table: dict[str, dict] = {}
+    try:
+        version = car_map.get("version")
+        for rel in car_map.get("relations") or []:
+            if isinstance(rel, dict) and isinstance(rel.get("id"), str):
+                rule = f"{version}:{rel['id']}"
+                info = review_info(car_map, rule)
+                if info is not None:
+                    table.setdefault(rule, info)
+    except Exception as exc:
+        logger.warning("Car map: its relations can't be looked up (%s); the linked parts are not grouped",
+                       type(exc).__name__)
+        table = {}
+
+    def lookup(link_rule) -> dict | None:
+        found = table.get(link_rule) if isinstance(link_rule, str) else None
+        return dict(found) if found is not None else None
+
+    return lookup
+
+
+def _also_words(new_names: dict | None) -> dict[str, str]:
+    """{a new name as a map writes it ("{side} Front Bumper Bracket"): its
+    also_check words}."""
+    out: dict[str, str] = {}
+    for entry in (new_names or {}).get("names") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("also_check"), str):
+            out.setdefault(entry["name"], entry["also_check"].strip())
+    return out
+
+
+def add_also_check(items: list[dict], car_map: dict | None, levels: dict[str, str], *, body_type: str | None = None,
+                   names: bool = False, new_names: dict | None = None) -> list[dict]:
+    """In place (and returned): K1-design.md section 2, the names off. Each
+    group (an item's "assembly") gets also_check -- the words of the new
+    parts its relations name that the compiled table left out ("absorber",
+    "side brackets") -- when such a relation's parent is a listed part the
+    group hangs off, hit hard enough for it (its min_hit against `levels`,
+    links.levels_of; trigger words and positions are not looked at), and
+    its body gate passes. Every item of the group carries the same words;
+    the Review step shows them once, on the group's header. names True (a
+    taxonomy that holds them), no map or no words: nothing changes."""
+    if names or not isinstance(car_map, dict) or not items:
+        return items
+    try:
+        words = _also_words(_default_new_names_doc() if new_names is None else new_names)
+        if not words:
+            return items
+        allowed = set(CANONICAL_PARTS)
+        by_pair, first = _members(car_map)
+        rank = {level: n for n, level in enumerate(HIT_LEVELS)}
+        groups: dict[str, list[dict]] = {}
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("assembly"), str) and it["assembly"]:
+                groups.setdefault(it["assembly"], []).append(it)
+        for group, members in groups.items():
+            aid = group.split(".", 1)[0]
+            parents = {str(k) for it in members for k in it.get("linked_from") or []}
+            found: list[str] = []
+            for rel in car_map.get("relations") or []:
+                if not isinstance(rel, dict) or rel.get("assembly") != aid:
+                    continue
+                parent, child = rel.get("parent"), rel.get("child")
+                if not (isinstance(parent, str) and isinstance(child, str)):
+                    continue
+                new = [n for n in (parent, child) if any(full not in allowed for full in expand(n))]
+                if not new:
+                    continue
+                hit = [levels.get(p) for p in expand(parent) if p in parents]
+                if not any(lvl in rank and rank[lvl] >= rank.get(rel.get("min_hit"), len(rank)) for lvl in hit):
+                    continue
+                gates = (rel.get("body"), (by_pair.get((aid, child)) or first.get(child) or {}).get("body"),
+                         (by_pair.get((aid, parent)) or {}).get("body"))
+                if not all(_body_ok(g, body_type) for g in gates):
+                    continue
+                found += [words[n] for n in new if words.get(n)]
+            found = list(dict.fromkeys(w for w in found if w))
+            if found:
+                for it in members:
+                    it["also_check"] = found
+    except Exception as exc:
+        logger.warning("Car map: no \"also check\" words this time (%s)", type(exc).__name__)
+    return items
+
+
 # ------------------------------------------------------------ the seam
 
 _UNSET = object()
@@ -826,3 +951,41 @@ def table_for_links(l1_table: dict | None, *, mode: str | None = None, car_map=_
         logger.warning("Car map: intake_car_map is on but there is no usable map; the linked parts keep L1")
         return l1_table, None
     return compiled, None
+
+
+@dataclass(frozen=True)
+class LinkTables:
+    """What the linked parts are built from for one case (K4, the seam
+    wired): the table shown and the car map's facts for it (None: L1, no
+    group fields), the shadow table and its facts (None: no shadow), and
+    the body the gates went by."""
+    shown: dict | None
+    shown_info: object = None
+    shadow: dict | None = None
+    shadow_info: object = None
+    body_type: str | None = None
+    car_map: dict | None = None
+
+
+def link_tables(l1_table: dict | None, vehicle: dict | None = None, *, mode: str | None = None,
+                car_map=_UNSET) -> LinkTables:
+    """table_for_links for one case's vehicle, with each table's facts
+    (review_lookup) when it is the map's. The body gate goes by the make
+    and model only (taxonomy.body_type_for without the reading's own guess,
+    K1-design.md 8.2: on a guess the link stays). Never raises: anything
+    wrong gives L1 alone, with a log line."""
+    mode = mode if mode is not None else getattr(settings, "intake_car_map", "off")
+    if mode not in ("shadow", "on"):
+        return LinkTables(shown=l1_table)
+    try:
+        cm = MAP if car_map is _UNSET else car_map
+        v = vehicle if isinstance(vehicle, dict) else {}
+        body = body_type_for(v.get("make"), v.get("model"), None)
+        shown, shadow = table_for_links(l1_table, mode=mode, car_map=cm, body_type=body)
+        lookup = review_lookup(cm) if (shown is not l1_table or shadow is not None) else None
+        return LinkTables(shown=shown, shown_info=lookup if shown is not l1_table else None, shadow=shadow,
+                          shadow_info=lookup if shadow is not None else None, body_type=body,
+                          car_map=cm if isinstance(cm, dict) else None)
+    except Exception as exc:
+        logger.warning("Car map: no tables this time (%s); the linked parts keep L1", type(exc).__name__)
+        return LinkTables(shown=l1_table)

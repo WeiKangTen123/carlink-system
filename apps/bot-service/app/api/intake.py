@@ -811,7 +811,8 @@ def _with_final_labels(ai_draft: dict | None, index_of: dict) -> dict | None:
     The damage list (photo_reference, contract 8's seen_in, contract 9's
     evidence), the parts only zone reads found (contract 9) and, in shadow
     mode, the linked parts (contract 10: ai_draft["link_suggestions"], their
-    linked check's photos too), frozen here as "what the AI suggested":
+    linked check's photos too) and the car map's (K4:
+    ai_draft["car_map_suggestions"]), frozen here as "what the AI suggested":
     filing.relabel_ai_draft (suggestions.relabel_item on each of
     filing.AI_DRAFT_PHOTO_LISTS), a deleted photo's references dropped."""
     return relabel_ai_draft(ai_draft, index_of)

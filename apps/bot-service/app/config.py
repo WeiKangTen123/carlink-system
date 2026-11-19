@@ -505,13 +505,30 @@ class Settings(BaseSettings):
     # car_map.table_for_links reads it; the pipeline is wired to it in
     # Phase 2 (I3), so until then no step changes whatever it says.
     intake_car_map: str = "off"
+    # The car map's review screen (K1-design.md 5b, 6; intake/links.Options):
+    # how the linked parts are ordered and capped. Every default is today's
+    # order and caps, byte for byte.
+    # "table": inside a bucket by kind of link, hit and table order (L1);
+    # "prior": a relation's prior rank first (1 listed most often .. 5; a
+    # relation with none counts as 3) -- only the car map has priors.
+    intake_links_order: str = "table"
+    # Linked parts per group and bucket: a group is an assembly with the
+    # car map "on" (one per side for a door), else the listed part (L1's 4).
+    intake_links_assembly_max: int = 4
+    # "in": the strip-down bucket counts in intake_links_max (L1); "out":
+    # it is its own folded block on the Review step ("Check at strip-down
+    # (N)"), at most intake_links_stripdown_max, never counted in the 12.
+    # A second hop's part (hop 2) goes there unless a photo shows it.
+    intake_links_stripdown_cap: str = "in"
+    intake_links_stripdown_max: int = 12
 
     @field_validator("intake_links")
     @classmethod
     def _links_mode(cls, value):
         return normal_links_mode(value)
 
-    @field_validator("intake_links_max", "intake_link_check_max_calls")
+    @field_validator("intake_links_max", "intake_link_check_max_calls", "intake_links_assembly_max",
+                     "intake_links_stripdown_max")
     @classmethod
     def _links_counts(cls, value, info):
         return normal_count(value, info.field_name)
@@ -555,6 +572,16 @@ class Settings(BaseSettings):
     @classmethod
     def _car_map(cls, value):
         return normal_car_map_mode(value)
+
+    @field_validator("intake_links_order")
+    @classmethod
+    def _links_order(cls, value):
+        return normal_links_order(value)
+
+    @field_validator("intake_links_stripdown_cap")
+    @classmethod
+    def _links_stripdown_cap(cls, value):
+        return normal_stripdown_cap(value)
 
 
 READ_MODES = ("single", "zones")
@@ -712,6 +739,22 @@ CAR_MAP_MODES = ("off", "shadow", "on")
 def normal_car_map_mode(value) -> str:
     """intake_car_map written the one way; None or blank is "off"."""
     return _one_of(value, CAR_MAP_MODES, "intake_car_map")
+
+
+# The car map's review screen (K4): the order inside a bucket, and where
+# the strip-down bucket is counted.
+LINKS_ORDERS = ("table", "prior")
+STRIPDOWN_CAPS = ("in", "out")
+
+
+def normal_links_order(value) -> str:
+    """intake_links_order written the one way; None or blank is "table"."""
+    return _one_of(value, LINKS_ORDERS, "intake_links_order")
+
+
+def normal_stripdown_cap(value) -> str:
+    """intake_links_stripdown_cap written the one way; None or blank is "in"."""
+    return _one_of(value, STRIPDOWN_CAPS, "intake_links_stripdown_cap")
 
 
 # Each model setting written the one way, None when blank (unset). Raise

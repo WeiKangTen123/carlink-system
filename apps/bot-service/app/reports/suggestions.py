@@ -163,6 +163,7 @@ def relinked(item: dict, data: dict, look: dict) -> list[dict]:
     list (links.for_parent), named as second_look._store names them --
     only while settings.intake_links is "on" and the table loaded; [] on
     any failure (an add never fails for them)."""
+    from app.config import settings
     from app.intake import links
 
     try:
@@ -171,8 +172,21 @@ def relinked(item: dict, data: dict, look: dict) -> list[dict]:
             return []
         from app.ai.second_look import other_side_listed
 
-        found = links.for_parent(item, {**data, "second_look": look}, [], links.TABLE, opts)
         vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+        case = {**data, "second_look": look}
+        if getattr(settings, "intake_car_map", "off") == "on":
+            # The car map (K4): the shown table is the map's, with its
+            # group fields; "shadow" relinks from L1 as when off.
+            from app.intake import car_map
+
+            tables = car_map.link_tables(links.TABLE, vehicle, mode="on")
+            found = links.for_parent(item, case, [], tables.shown, opts, info=tables.shown_info)
+            if tables.shown_info is not None:
+                listed_items = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+                car_map.add_also_check(found, tables.car_map, links.levels_of(listed_items, [], opts),
+                                       body_type=tables.body_type)
+        else:
+            found = links.for_parent(item, case, [], links.TABLE, opts)
         listed = {str(it.get("part")) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         out = []
         for it in found:
@@ -412,6 +426,11 @@ def relabel_item(item: dict, index_of: dict) -> dict:
     if out.get("intact_in"):
         # Contract 10: a zone read's name ("zone:rear") stays as it is.
         out["intact_in"] = final_refs(out["intact_in"], index_of)
+    if out.get("signs_yes"):
+        # The car map (K4): each yes sign's photo as the case's P-number; a
+        # deleted photo's gone, the sign kept.
+        out["signs_yes"] = [{**sign, "photo": final_label(sign.get("photo"), index_of)}
+                            for sign in out["signs_yes"] if isinstance(sign, dict)]
     if out.get("evidence"):
         evidence = []
         for entry in out["evidence"]:
