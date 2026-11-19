@@ -1487,7 +1487,7 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
         # those new ones alone, as the wizard's autosave answers them
         # (review L7: no decision in it to put back).
         before_look = data.get("second_look")
-        relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item])
+        relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item], r.ai_draft)
         if relinked is not None:
             data["second_look"] = relinked
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item_source(item))
@@ -1561,7 +1561,8 @@ def decide_case_suggestion(
         if _is_signed_off(r):
             raise ApiError(409, "Report is signed off and locked. Reopen it before editing.", "signed_off")
         try:
-            done = suggestions.decide(r.data or {}, body.key, body.action, body.looked, user, where="case")
+            done = suggestions.decide(r.data or {}, body.key, body.action, body.looked, user, where="case",
+                                      ai_draft=r.ai_draft)
         except suggestions.UnknownSuggestion:
             raise ApiError(404, UNKNOWN_SUGGESTION, "unknown_suggestion")
         data = done.data

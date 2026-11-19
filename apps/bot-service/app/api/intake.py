@@ -509,7 +509,8 @@ def save_intake_data(report_id: str, body: IntakeDataRequest, user: CurrentUser 
         # answered so the wizard shows them at once.
         before = [it for it in stored.get("damage_summary") or [] if isinstance(it, dict)]
         suggestions.kept_strip_down(data.get("damage_summary"), before)
-        relinked = suggestions.with_relinks(data, suggestions.by_hand(before, data.get("damage_summary")))
+        relinked = suggestions.with_relinks(data, suggestions.by_hand(before, data.get("damage_summary")),
+                                            session.ai_draft)
         if relinked is not None:
             data["second_look"] = relinked
         # Only a ref to one of this draft's own catalogue rows stays on a
@@ -711,7 +712,8 @@ def decide_intake_suggestion(
         if session.stage in pipeline.RUNNING_STAGES and pipeline.is_live(session):
             raise ApiError(409, "Wait for the AI to finish reading this case.", "running")
         try:
-            done = suggestions.decide(report.data or {}, body.key, body.action, body.looked, user, where="intake")
+            done = suggestions.decide(report.data or {}, body.key, body.action, body.looked, user, where="intake",
+                                      ai_draft=session.ai_draft)
         except suggestions.UnknownSuggestion:
             raise ApiError(404, UNKNOWN_SUGGESTION, "unknown_suggestion")
         if done.action:

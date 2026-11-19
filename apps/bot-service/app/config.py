@@ -502,8 +502,9 @@ class Settings(BaseSettings):
     # "off": L1 (intake/link_table.json) as it is, byte for byte. "shadow":
     # L1 shown, the car map's table worked out beside it for the AI draft.
     # "on": the car map's table shown (L1 when the map can't be used).
-    # car_map.table_for_links reads it; the pipeline is wired to it in
-    # Phase 2 (I3), so until then no step changes whatever it says.
+    # car_map.link_tables reads it: second_look._store, the re-link after
+    # a hand-add (reports/suggestions.relinked) and the linked check's
+    # areas (ai/link_check._plan) build from the table it names (K4).
     intake_car_map: str = "off"
     # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
     # each zone read also answers short yes/no signs about the damaged

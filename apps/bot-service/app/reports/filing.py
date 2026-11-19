@@ -62,6 +62,27 @@ def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
     for key in AI_DRAFT_PHOTO_LISTS:
         if isinstance(out.get(key), list):
             out[key] = [relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
+    if isinstance(out.get("assembly_walk"), dict):
+        # The assembly walk (K3b): each sign's photo as the case's P-number
+        # (a deleted photo's gone, the answer kept), so a re-link on the
+        # filed case names its yes signs' photos as the case does.
+        out["assembly_walk"] = relabel_walk(out["assembly_walk"], index_of)
+    return out
+
+
+def relabel_walk(walk: dict, index_of: dict) -> dict:
+    """ai_draft["assembly_walk"] ({panel: {hit_at, signs: {id: {answer,
+    photo, zone}}}}) with each sign's "@<photo id>" as the case's P-number.
+    Anything that isn't a panel's record is left as it is."""
+    from app.reports.suggestions import final_label
+
+    out = {}
+    for panel, rec in walk.items():
+        if isinstance(rec, dict) and isinstance(rec.get("signs"), dict):
+            rec = {**rec, "signs": {sid: ({**got, "photo": final_label(got.get("photo"), index_of)}
+                                          if isinstance(got, dict) and got.get("photo") else got)
+                                    for sid, got in rec["signs"].items()}}
+        out[panel] = rec
     return out
 
 

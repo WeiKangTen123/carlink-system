@@ -1896,6 +1896,18 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   /** Shadow mode: linked parts worked out but not shown, against the
    * signed-off list. */
   shadow?: AiAccuracyLinkShadow | null;
+  // The car map (K4, K3b; still accuracy VERSION 3): only on a case whose
+  // linked parts carry them, so an older record has none.
+  /** By the car map's group, its id without the side ("front-door"). */
+  by_assembly?: Record<string, AiAccuracySuggestionCounts>;
+  /** By hop: "1" linked to a listed part, "2" through a linked part. */
+  by_hop?: Partial<Record<"1" | "2", AiAccuracySuggestionCounts>>;
+  /** The parts in the folded strip-down block. */
+  folded?: AiAccuracySuggestionCounts;
+  /** The parts a yes sign of the assembly walk lifted or opened. */
+  sign_lifted?: AiAccuracySuggestionCounts;
+  /** intake_car_map "shadow": the car map's linked parts on the AI draft. */
+  car_map_shadow?: AiAccuracyLinkShadow | null;
 };
 
 export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };

@@ -110,6 +110,20 @@ the linked parts make of them. While on: ai_settings has them with the
 map's version and sha256, a run keeps the merged walk ("assembly_walk",
 photos by label) and each linked part's hop / via / signs_yes.
 
+The car map (plans/2026-11-18-car-knowledge/K1-design.md 5b, 6; K4):
+--car-map on|PATH|from-l1|off (needs --links on|shadow) builds the linked
+parts from a car map's table with its facts (settings.intake_car_map on):
+"on" the app's own (app/intake/car_map.json), PATH another map file,
+"from-l1" L1 converted (the same links grouped by L1 parent; a sanity
+arm), "off" L1 (the default); with --assembly-walk the walk reads the
+same map. --links-order table|prior, --assembly-max N, --stripdown-cap
+in|out and --stripdown-max N (with --stripdown-cap out) set the Review
+step's order and caps (settings.intake_links_*), on L1 as on a map. Off
+their defaults they are in ai_settings, with the map's source, version
+and sha256 (LF); each linked part then keeps its group fields (assembly,
+prior, hop, fitted, also_check, folded) and "links" counts the folded
+strip-down block.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -1892,6 +1906,34 @@ _LINK_SUGGESTION_FIELDS = ("severity", "condition_tokens", "remarks", "linked_fr
 # The assembly walk, only while it acts: a second hop's hop and middle part,
 # and the yes signs that lifted a linked part or opened its chain.
 _WALK_SUGGESTION_FIELDS = ("hop", "via", "signs_yes")
+# The car map's review screen (K4), only while the map or a knob acts: the
+# group, its prior, the hop, "if fitted", the also-check words, and whether
+# the part is in the folded strip-down block.
+_CARMAP_SUGGESTION_FIELDS = ("assembly", "assembly_name", "prior", "hop", "via", "fitted", "also_check", "folded")
+
+
+def review_on(settings) -> bool:
+    """The car map or a Review-step knob (K4) acts: the linked parts on and
+    intake_car_map not off, or a knob off today's value."""
+    if links_mode(settings) == "off":
+        return False
+    return (getattr(settings, "intake_car_map", "off") != "off"
+            or any(getattr(settings, f, d) != d for f, d in K4_DEFAULTS.items()))
+
+
+def links_table_shown(settings):
+    """The table the linked parts were built from, for the "inside" parts
+    (hidden_children): the car map's (no body gate, as the replay) while
+    intake_car_map is on with a usable map, else L1."""
+    if getattr(settings, "intake_car_map", "off") == "on":
+        try:
+            from app.intake import car_map
+
+            shown, _ = car_map.table_for_links(_link_table(), mode="on")
+            return shown
+        except Exception:
+            return _link_table()
+    return _link_table()
 
 
 def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
@@ -2120,6 +2162,8 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         fields = _SUGGESTION_FIELDS + (_LINK_SUGGESTION_FIELDS if mode != "off" else ())
         if mode != "off" and walk_on(A.settings):
             fields += _WALK_SUGGESTION_FIELDS
+        if review_on(A.settings):
+            fields += tuple(f for f in _CARMAP_SUGGESTION_FIELDS if f not in fields)
         link_items: list = []
         if look and mode != "off":
             look = dict(look)
@@ -2162,9 +2206,17 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                                         if isinstance(s, dict) else s for s in row["signs_yes"]]
             others = [r.get("part") for r in out.get("suggestions") or []]
             out["links"] = score_links(case["parts"], drafted, others, out["link_suggestions"],
-                                       inside=hidden_children(_link_table()))
+                                       inside=hidden_children(links_table_shown(A.settings)))
             out["links"].update(mode=mode, zone_joined=sum(1 for r in out.get("suggestions") or [] if r.get("linked_from")),
                                 impact=(data.get("vehicle_info") or {}).get("point_of_impact"))
+            if review_on(A.settings):
+                # K4: the folded strip-down block (counted in "shown" above,
+                # as the replay counts it) and the second hops.
+                out["links"].update(
+                    folded=sum(1 for r in out["link_suggestions"] if r.get("folded")),
+                    hop2=sum(1 for r in out["link_suggestions"] if r.get("hop") == 2),
+                    groups=len({str(r.get("assembly") or (r.get("linked_from") or [""])[0])
+                                for r in out["link_suggestions"]}))
         if keep_reads:
             out["reads"] = kept_reads(label_of)
         if walk_on(A.settings):
@@ -2706,6 +2758,25 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--link-hops", metavar="N",
                     help="1 (the default) or 2: a chain's second hop when a sign that unlocks it says yes, at most 4 "
                          "a case (settings.intake_link_hops); needs --assembly-walk and --links on or shadow")
+    # The car map and the Review step's order and caps (K1-design.md 5b, 6;
+    # K4), each at today's value by default.
+    ap.add_argument("--car-map", metavar="MAP",
+                    help="the linked parts' table: 'on' (the app's car map, app/intake/car_map.json), a car map file "
+                         "PATH, 'from-l1' (L1 converted, grouped by L1 parent) or 'off' (L1, the default) "
+                         "(settings.intake_car_map on); needs --links on or shadow; --assembly-walk reads the same map")
+    ap.add_argument("--links-order", metavar="ORDER",
+                    help="inside a bucket: table (today) or prior (a relation's prior rank first; needs --car-map) "
+                         "(settings.intake_links_order); needs --links on or shadow")
+    ap.add_argument("--assembly-max", metavar="N",
+                    help="linked parts per group and bucket (default 4; a group is the assembly with a car map, else "
+                         "the listed part) (settings.intake_links_assembly_max); needs --links on or shadow")
+    ap.add_argument("--stripdown-cap", metavar="WHERE",
+                    help="in (today: strip-down counts in the 12) or out (its own folded block, outside the 12; an "
+                         "unseen second hop goes there too) (settings.intake_links_stripdown_cap); needs --links on "
+                         "or shadow")
+    ap.add_argument("--stripdown-max", metavar="N",
+                    help="the folded strip-down block's cap (default 12) (settings.intake_links_stripdown_max); "
+                         "needs --stripdown-cap out")
     ap.add_argument("--keep-reads", action="store_true",
                     help="keep the overall reading's raw damage items, side_from_sorter's changes and each zone "
                          "read's items as merged (wraps the app's functions in this harness only; no extra call)")
@@ -2731,6 +2802,9 @@ LIGHT_ARGS = {"read_packs": None, "read_prompt": None, "read_anchor": False, "zo
               "link_prompt": None, "link_signs": False, "link_order": None}
 # The assembly walk's flags at their defaults: left out of "args" too.
 WALK_ARGS = {"assembly_walk": False, "walk_raise": None, "link_hops": None}
+# The car map's and the Review step's flags (K4) at their defaults: likewise.
+CARMAP_ARGS = {"car_map": None, "links_order": None, "assembly_max": None, "stripdown_cap": None,
+               "stripdown_max": None}
 
 
 def _now() -> str:
@@ -2814,6 +2888,7 @@ def model_settings(args: argparse.Namespace) -> dict:
     out.update(links_settings(args, config))
     out.update(light_settings(args, config, zones_on, out))
     out.update(walk_settings(args, config, zones_on, out))
+    out.update(carmap_settings(args, config, out))
     return out
 
 
@@ -2905,6 +2980,93 @@ def walk_settings(args: argparse.Namespace, config, zones_on: bool, given: dict)
         except ValueError as exc:
             sys.exit(f"{name}: {exc}")
     return out
+
+
+def car_map_choice(value) -> str | None:
+    """--car-map written the one way: "on", "off", "from-l1" or a path as
+    given; None when not given. Exits on a blank one."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        sys.exit("--car-map: on, off, from-l1 or a car map file")
+    return text.lower() if text.lower() in ("on", "off", "from-l1") else text
+
+
+def carmap_settings(args: argparse.Namespace, config, given: dict) -> dict:
+    """The car map's and the Review step's flags (K4) as {Settings field:
+    value}: --car-map as intake_car_map ("on" for a map, "off"; the map
+    itself is put in place by use_car_map, which needs the app), the four
+    knobs normalised. Exits on a value config refuses, or a flag that would
+    change nothing: any of them with the linked parts off, --links-order
+    prior on L1 (it has no priors), --stripdown-max with the strip-down
+    bucket inside the 12."""
+    out: dict = {}
+    links_on = given.get("intake_links", config.settings.intake_links) != "off"
+    choice = car_map_choice(getattr(args, "car_map", None))
+    if choice is not None:
+        if not links_on:
+            sys.exit("--car-map: the table the linked parts are built from; give --links on or shadow too")
+        out["intake_car_map"] = "off" if choice == "off" else "on"
+    for flag, field, fn in (("links_order", "intake_links_order", config.normal_links_order),
+                            ("assembly_max", "intake_links_assembly_max",
+                             lambda v: config.normal_count(v, "--assembly-max")),
+                            ("stripdown_cap", "intake_links_stripdown_cap", config.normal_stripdown_cap),
+                            ("stripdown_max", "intake_links_stripdown_max",
+                             lambda v: config.normal_count(v, "--stripdown-max"))):
+        if getattr(args, flag, None) is None:
+            continue
+        name = f"--{flag.replace('_', '-')}"
+        if not links_on:
+            sys.exit(f"{name}: orders or caps the linked parts; give --links on or shadow too")
+        try:
+            out[field] = fn(getattr(args, flag))
+        except ValueError as exc:
+            sys.exit(f"{name}: {exc}")
+    map_on = out.get("intake_car_map", getattr(config.settings, "intake_car_map", "off")) != "off"
+    if out.get("intake_links_order") == "prior" and not map_on:
+        sys.exit("--links-order prior: L1 has no priors (the same as table); give --car-map too")
+    cap = out.get("intake_links_stripdown_cap", getattr(config.settings, "intake_links_stripdown_cap", "in"))
+    if "intake_links_stripdown_max" in out and cap != "out":
+        sys.exit("--stripdown-max: caps the folded strip-down block; give --stripdown-cap out too")
+    return out
+
+
+# What --car-map put in place (use_car_map): {"source", "sha256"}; empty --
+# the app's own map as it loaded (app/intake/car_map.json).
+CAR_MAP_USED: dict = {}
+
+
+def use_car_map(choice: str | None, settings) -> None:
+    """--car-map: the car map the run builds from (and the assembly walk
+    reads) put in place as car_map.MAP, intake_car_map "on" -- the app's own
+    ("on"), a map file (PATH), L1 converted ("from-l1"); "off": L1. Exits
+    when the map doesn't load or its table fails links.validate_table (a
+    run on it would be L1 under another name)."""
+    if choice is None:
+        return
+    from app.intake import car_map, links
+
+    if choice == "off":
+        settings.intake_car_map = "off"
+        return
+    if choice == "on":
+        cm, source = car_map.MAP, "app/intake/car_map.json"
+        sha = car_map.sha256_lf() if isinstance(cm, dict) else None
+    elif choice == "from-l1":
+        cm, source, sha = (car_map.from_l1(links.TABLE) if links.TABLE else None), "from-l1", None
+    else:
+        path = Path(choice)
+        cm, source, sha = car_map.load(path), str(path), car_map.sha256_lf(path)
+    if not isinstance(cm, dict):
+        sys.exit(f"--car-map {choice}: no car map loaded (see the log)")
+    problems = links.validate_table(car_map.links_table(cm))
+    if problems:
+        sys.exit(f"--car-map {choice}: its link table fails the check: {problems[0]}")
+    car_map.MAP = cm
+    settings.intake_car_map = "on"
+    CAR_MAP_USED.clear()
+    CAR_MAP_USED.update(source=source, sha256=sha)
 
 
 def links_settings(args: argparse.Namespace, config) -> dict:
@@ -3083,11 +3245,7 @@ def walk_ai_settings(settings) -> dict:
     on, the raise and the hops; {} while off."""
     if not walk_on(settings):
         return {}
-    from app.intake import car_map
-
-    out = {"intake_assembly_walk": "on",
-           "car_map_version": car_map.MAP.get("version") if isinstance(car_map.MAP, dict) else None,
-           "car_map_sha256": car_map.sha256_lf(car_map.MAP_PATH) if isinstance(car_map.MAP, dict) else None}
+    out = {"intake_assembly_walk": "on", **car_map_settings()}
     if links_mode(settings) != "off":
         out["intake_walk_raise"] = getattr(settings, "intake_walk_raise", "one")
         out["intake_link_hops"] = getattr(settings, "intake_link_hops", 1)
@@ -3153,13 +3311,18 @@ K4_DEFAULTS = {"intake_links_order": "table", "intake_links_assembly_max": 4, "i
 
 
 def car_map_settings() -> dict:
-    """The car map the app loaded (app/intake/car_map.json): its version and
-    sha256 as git keeps it (both None when there is none, or it failed its
-    check -- the linked parts then keep L1)."""
+    """The car map the app loaded (app/intake/car_map.json), or the one
+    --car-map put in place (CAR_MAP_USED, then with its source): its
+    version and sha256 as git keeps it (both None when there is none, or
+    it failed its check -- the linked parts then keep L1; the sha None for
+    "from-l1", which is no file)."""
     try:
         from app.intake import car_map
 
         loaded = car_map.MAP if isinstance(car_map.MAP, dict) else None
+        if CAR_MAP_USED and loaded:
+            return {"car_map_version": loaded.get("version"), "car_map_sha256": CAR_MAP_USED.get("sha256"),
+                    "car_map_source": CAR_MAP_USED.get("source")}
         return {"car_map_version": loaded.get("version") if loaded else None,
                 "car_map_sha256": car_map.sha256_lf() if loaded else None}
     except Exception:
@@ -3236,6 +3399,8 @@ def main(argv=None) -> int:
     # the baseline under another name (second_look._links_mode: off).
     if links_mode(A.settings) != "off" and _link_table() is None:
         sys.exit("--links: the link table (app/intake/link_table.json) didn't load; see the log")
+    # --car-map: the map the linked parts build from and the walk reads.
+    use_car_map(car_map_choice(args.car_map), A.settings)
     # The assembly walk with no car map that has signs would be skipped:
     # the baseline under another name.
     if walk_on(A.settings):
@@ -3266,7 +3431,7 @@ def main(argv=None) -> int:
         "git_ref": args.ref,
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
                  if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])
-                 and not (k in WALK_ARGS and v == WALK_ARGS[k])},
+                 and not (k in WALK_ARGS and v == WALK_ARGS[k]) and not (k in CARMAP_ARGS and v == CARMAP_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),
