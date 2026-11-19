@@ -505,6 +505,19 @@ class Settings(BaseSettings):
     # car_map.table_for_links reads it; the pipeline is wired to it in
     # Phase 2 (I3), so until then no step changes whatever it says.
     intake_car_map: str = "off"
+    # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
+    # each zone read also answers short yes/no signs about the damaged
+    # anchor panels of the car map (car_map.MAP; none with signs: the walk
+    # is skipped) inside the same call, kept as ai_draft["assembly_walk"],
+    # and the linked parts use them. "off": every zone request and linked
+    # part as before.
+    intake_assembly_walk: str = "off"
+    # How far a "yes" sign lifts a listed part's hit level: "one" step above
+    # its own words at most, or "full" (up to the sign's level). Never lower.
+    intake_walk_raise: str = "one"
+    # 2: a car map chain's second hop (anchor -> part -> part) when a sign
+    # that unlocks it says yes; at most 4 such parts a case. 1: one hop.
+    intake_link_hops: int = 1
 
     @field_validator("intake_links")
     @classmethod
@@ -555,6 +568,21 @@ class Settings(BaseSettings):
     @classmethod
     def _car_map(cls, value):
         return normal_car_map_mode(value)
+
+    @field_validator("intake_assembly_walk")
+    @classmethod
+    def _assembly_walk(cls, value):
+        return normal_walk_mode(value)
+
+    @field_validator("intake_walk_raise")
+    @classmethod
+    def _walk_raise(cls, value):
+        return normal_walk_raise(value)
+
+    @field_validator("intake_link_hops", mode="before")
+    @classmethod
+    def _link_hops(cls, value):
+        return normal_link_hops(value)
 
     # Light-model detection (plans/2026-11-18-light-detection/P-prompts.md):
     # instruction packs (ai/prompt_packs.py, ai/packs/*.txt) and prompt
@@ -804,6 +832,30 @@ CAR_MAP_MODES = ("off", "shadow", "on")
 def normal_car_map_mode(value) -> str:
     """intake_car_map written the one way; None or blank is "off"."""
     return _one_of(value, CAR_MAP_MODES, "intake_car_map")
+
+
+# The assembly walk's switches (intake/assembly_walk.py), parsed the same way.
+WALK_MODES = ("off", "on")
+WALK_RAISES = ("one", "full")
+LINK_HOPS = (1, 2)
+
+
+def normal_walk_mode(value) -> str:
+    """intake_assembly_walk written the one way; None or blank is "off"."""
+    return _one_of(value, WALK_MODES, "intake_assembly_walk")
+
+
+def normal_walk_raise(value) -> str:
+    """intake_walk_raise written the one way; None or blank is "one"."""
+    return _one_of(value, WALK_RAISES, "intake_walk_raise")
+
+
+def normal_link_hops(value) -> int:
+    """intake_link_hops as 1 or 2; None or blank is 1."""
+    text = "" if value is None else str(value).strip()
+    if isinstance(value, bool) or text not in ("",) + tuple(str(h) for h in LINK_HOPS):
+        raise ValueError(f"intake_link_hops {value!r}: use 1 or 2")
+    return int(text or LINK_HOPS[0])
 
 # Light-model detection's parsers (P-prompts.md), as contract 10's: each
 # raises ValueError, so a typo stops the app at start-up; the benchmark

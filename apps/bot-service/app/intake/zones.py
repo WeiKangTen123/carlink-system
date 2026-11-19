@@ -48,7 +48,10 @@ came back, the parts seen intact included. Contract 10: those intact lists
 are also kept beside the AI draft, ai_draft["zone_intact"] = {"zone:rear":
 [part, ...]} (read_and_merge's `intact`, intact_of), for the linked parts
 to weigh; they never change the list -- a zone that calls a part intact
-can be wrong about it.
+can be wrong about it. The assembly walk (settings.intake_assembly_walk,
+intake/assembly_walk.py) is kept the same way: each zone read's yes/no
+signs about its damaged anchor panels, merged into ai_draft[
+"assembly_walk"] (read_and_merge's `walk`), for the linked parts.
 
 Contract 9, option B (settings.intake_zone_only "suggest", the default; it
 acts only in zone mode): the damage list keeps the parts the overall
@@ -78,6 +81,7 @@ from app.ai.keys import AiActor, AiUnavailable
 from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_of, other_side_listed
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import ZONE_PACKS, chain, pack_list, settings
+from app.intake import assembly_walk
 from app.intake.photos import ai_input_path
 from app.parts.prefill import item_key, row_name
 from app.reports.schema import SecondLookItem
@@ -132,14 +136,31 @@ def light_options() -> dict:
     """The light-model switches of the zone calls (plans/2026-11-18-light-
     detection): read_zone's packs (settings.intake_zone_packs) and photo_half
     (settings.intake_zone_photo_half), each only while on -- at the
-    defaults {}, and read_zone is called as before."""
+    defaults {}, and read_zone is called as before. The assembly walk too
+    (walk: the car map's assembly_walk.MapIndex), only while on and with a
+    map that has signs (walk_index)."""
     out: dict = {}
     packs = pack_list(getattr(settings, "intake_zone_packs", ""), ZONE_PACKS, "intake_zone_packs")
     if packs:
         out["packs"] = packs
     if getattr(settings, "intake_zone_photo_half", False):
         out["photo_half"] = True
+    walk = walk_index()
+    if walk is not None:
+        out["walk"] = walk
     return out
+
+
+def walk_index() -> "assembly_walk.MapIndex | None":
+    """The car map the assembly walk reads (car_map.MAP, checked once:
+    assembly_walk.index_for), only with settings.intake_assembly_walk "on";
+    None when off or there is no map with signs (logged: the walk is
+    skipped, never an error)."""
+    if getattr(settings, "intake_assembly_walk", "off") != "on":
+        return None
+    from app.intake import car_map
+
+    return assembly_walk.index_for(car_map.MAP)
 
 
 def suggest_zone_only() -> bool:
@@ -492,6 +513,7 @@ def read_and_merge(
     jobs: list[ZoneJob],
     progress: Callable[[int], None] | None = None,
     intact: dict[str, list[str]] | None = None,
+    walk: dict | None = None,
 ) -> tuple[list[dict], set[str], list[str]]:
     """The zone stage, for pipeline._read_into once the overall reading has
     answered: one call per job, then merge_reads. items: the overall
@@ -503,15 +525,22 @@ def read_and_merge(
 
     intact, when given, is filled with what each zone read that answered
     saw undamaged, {"zone:rear": [canonical part, ...]} (contract 10,
-    ai_draft["zone_intact"]); left empty when no zone read answered."""
+    ai_draft["zone_intact"]); left empty when no zone read answered.
+
+    walk, when given, is filled with the zone reads' assembly walk merged
+    (assembly_walk.merge_all, photos as "@<photo id>"; ai_draft[
+    "assembly_walk"]); left empty when no zone read walked."""
     seen_intact: dict[str, list[str]] = {}
+    seen_walk: dict = {}
     try:
-        reads = _read_zones(report_id, actor, jobs, progress, seen_intact) if jobs else []
+        reads = _read_zones(report_id, actor, jobs, progress, seen_intact, seen_walk) if jobs else []
     except Exception:
         logger.exception("Zone reading for %s failed; the overall reading stands", report_id)
-        reads, seen_intact = [], {}
+        reads, seen_intact, seen_walk = [], {}, {}
     if intact is not None:
         intact.update(seen_intact)
+    if walk is not None:
+        walk.update(seen_walk)
     answered = [OVERALL] + [name for name, _ in reads]
     try:
         merged, disputed = merge_reads(items, reads)
@@ -523,7 +552,8 @@ def read_and_merge(
 
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 progress: Callable[[int], None] | None,
-                intact: dict[str, list[str]] | None = None) -> list[tuple[str, list[dict]]]:
+                intact: dict[str, list[str]] | None = None,
+                walk: dict | None = None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
     grid = grid_on()
     asked = evidence_mode()
@@ -564,6 +594,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             entry.update(status="ok", side_seen=answer.side_seen, found=len(answer.items), intact=answer.intact)
             if answer.note:
                 entry["note"] = answer.note
+            if "walk" in light:
+                # The assembly walk, short: each panel's hit_at and yes signs.
+                entry["walk"] = assembly_walk.log_entry(answer.walk)
         finally:
             tries, size = attempts.drain()
             for attempt in tries:
@@ -603,11 +636,14 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         return []
 
     reads = []
+    walks: list[tuple[str, dict, dict]] = []
     for i, job in enumerate(jobs):
         answer = answers.get(i)
         if answer is None:
             continue
         label_to_id = {label: pid for label, pid, _, _ in job.photos}
+        if answer.walk:
+            walks.append((f"zone:{job.zone}", answer.walk, label_to_id))
         found = []
         for item in answer.items:
             item = dict(item)
@@ -622,6 +658,12 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         reads.append((f"zone:{job.zone}", found))
         if intact is not None:
             intact[f"zone:{job.zone}"] = list(answer.intact)
+    if walk is not None and walks:
+        try:
+            walk.update(assembly_walk.merge_all([(read, assembly_walk.with_photo_ids(found, ids))
+                                                 for read, found, ids in walks]))
+        except Exception:  # never the reason the zone reads are lost
+            logger.exception("Zone reading for %s: couldn't merge the assembly walk; none kept", report_id)
     return reads
 
 

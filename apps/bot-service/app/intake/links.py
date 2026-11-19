@@ -47,6 +47,17 @@ the parent's best photo by "link" with no box (and the sorter's photos by
 settings.intake_links ("off" by default) switches it all; the callers
 (ai/second_look._store, reports/suggestions.decide) read it, not this
 module, so the benchmark's replay can run build with any Options.
+
+The assembly walk (K1-design.md 5a; settings.intake_assembly_walk, off by
+default): with `walk` (an assembly_walk.Walk -- the zone reads' yes/no
+signs and the map they came from), a yes sign lifts its panel's hit level
+(step 1, before the end bonus; assembly_walk.raise_levels), a relation's
+position on the parent gates it against where the walk saw the hit (step
+2, only ever removing), a yes sign pointing at a strip-down relation makes
+it likely and is kept in signs_yes (step 5), and with intake_link_hops 2 a
+chain the walk unlocked adds its second hop (_hop2: at most
+assembly_walk.MAX_HOP2 a case, hop 2, via the middle part, its link_rule
+"<version>:<chain id>"). Without a walk -- the default -- none of it runs.
 """
 import hashlib
 import json
@@ -58,6 +69,7 @@ from pathlib import Path
 from app.ai import evidence
 # HIT_LEVELS and LINK_TYPES (config) are the links' names here too.
 from app.config import HIT_LEVELS, LINK_TYPES, link_types, settings  # noqa: F401
+from app.intake import assembly_walk
 from app.parts.prefill import item_key
 from app.reports.taxonomy import (
     CANONICAL_DAMAGE_TYPES,
@@ -453,6 +465,8 @@ class _Ctx:
     photos: list
     intact: dict
     neighbours: dict | None
+    # The assembly walk (assembly_walk.Walk), None when off.
+    walk: object = None
 
 
 def _end_crush(listed: list[dict], levels: list[str], photos: list) -> set[str]:
@@ -633,12 +647,17 @@ def _candidates(parents: list[int], ctx: _Ctx, table: dict) -> list[dict]:
                 continue
             if _RANK[level] < _RANK[link["min_hit"]] and not words & set(link.get("trigger_tokens") or []):
                 continue
+            if ctx.walk is not None and not assembly_walk.position_ok(ctx.walk, part, link["id"], ctx.version):
+                continue
             named = _child(link, parent, parent_side, ctx)
             if named is None:
                 continue
             child, side_from = named
             seen = _seen_photos(child, ctx)
             bucket = bucket_of(link, bool(seen))
+            signs_yes = []
+            if ctx.walk is not None:
+                bucket, signs_yes = assembly_walk.lift(ctx.walk, part, link["id"], ctx.version, bucket)
             entries = [evidence.entry(r, evidence.SORT) for r in seen]
             entries += [evidence.entry(photo, "link")] if photo else []
             oem = list(link.get("oem") or [])
@@ -655,6 +674,94 @@ def _candidates(parents: list[int], ctx: _Ctx, table: dict) -> list[dict]:
                 "seen_in": seen, "evidence": evidence.order_evidence(entries, seen[0] if seen else None),
                 "covers": covers(child), "confidence": None,
                 "_order": (_BUCKET_RANK[bucket], _TYPE_RANK[link["type"]], -_RANK[level], n, t_index),
+            })
+            if signs_yes:
+                out[-1]["signs_yes"] = signs_yes
+    return out
+
+
+def _hop2_child(then: dict, middle: dict, anchor: dict, ctx: _Ctx) -> tuple[str, str | None] | None:
+    """(the end part's name, side_from) of a second hop through `middle`
+    (a first-hop candidate): "same" takes the middle part's side only when
+    that side came from a firm rule (it has a side_from); "impact" as at
+    the first hop, at the middle part's end (else the anchor's); otherwise
+    the "(side undetermined)" name. Never from the walk."""
+    child, kind = then["child"], then["side"]
+    if SIDE not in child:
+        return child, None
+    side = split_side(middle["part"])[1]
+    if kind == "same" and side in ("Left", "Right") and middle.get("side_from"):
+        return child.replace(SIDE, side), middle["side_from"]
+    if kind == "impact":
+        found, side_from = _impact_side(end_of(middle["part"]) or end_of(str(anchor.get("part") or "")), ctx)
+        if found:
+            return child.replace(SIDE, found), side_from
+    undetermined = unsided_part(child.replace(SIDE, "Left"))
+    return (undetermined, None) if undetermined else None
+
+
+def _hop2(found: list[dict], ctx: _Ctx, table: dict) -> list[dict]:
+    """K1 S4 (intake_link_hops 2): the second hops the walk unlocked, as
+    candidates beside `found` (the first hops). A chain fires when its
+    `first` relation gave a candidate that is not listed or dismissed (nor
+    dropped as intact), a sign that unlocks it about the anchor said yes,
+    and the anchor's level reaches the chain's min_hit. The item comes from
+    `then` with the middle part as its parent: strip_down unless a sorter
+    photo shows it, hop 2, via the middle part, linked_from the anchor, the
+    chain's rule and reason, the unlocking signs in signs_yes. Never a
+    third hop (a second hop is never a `first`), never a part a first hop
+    already gives, at most walk.hop2_max a case."""
+    walk = ctx.walk
+    chains = assembly_walk.chains(walk, ctx.version)
+    if not chains:
+        return []
+    by_id = {link["id"]: link for link in table.get("links") or []
+             if isinstance(link, dict) and isinstance(link.get("id"), str)}
+    anchors = {item_key(it) or str(it["part"]): n for n, it in enumerate(ctx.listed)}
+    out: list[dict] = []
+    for chain in chains:
+        first, then = by_id.get(chain["first"]), by_id.get(chain["then"])
+        if first is None or then is None or then["type"] not in ctx.opts.types:
+            continue
+        for middle in found:
+            if middle["link_rule"] != f"{ctx.version}:{first['id']}" or len(out) >= walk.hop2_max:
+                continue
+            if set(middle["covers"]) & ctx.listed_names or middle["key"] in ctx.skip or middle["part"] in ctx.skip:
+                continue
+            if ctx.opts.intact == "drop" and intact_in(middle["part"], ctx.intact):
+                continue
+            n = anchors.get(middle["linked_from"][0])
+            if n is None or _RANK[ctx.levels[n]] < _RANK[chain["min_hit"]]:
+                continue
+            anchor = ctx.listed[n]
+            signs = assembly_walk.unlocked(walk, str(anchor.get("part") or ""), chain["id"])
+            if not signs:
+                continue
+            named = _hop2_child(then, middle, anchor, ctx)
+            if named is None:
+                continue
+            child, side_from = named
+            key = item_key({"part": child}) or child
+            if set(covers(child)) & ctx.listed_names or child in ctx.skip or key in ctx.skip:
+                continue
+            if any(_twins(child, other["part"]) for other in found + out):
+                continue
+            seen = _seen_photos(child, ctx)
+            bucket = "seen" if seen else "strip_down"
+            photo = _parent_photo(anchor, ctx)
+            entries = [evidence.entry(r, evidence.SORT) for r in seen]
+            entries += [evidence.entry(photo, "link")] if photo else []
+            out.append({
+                "key": key, "part": child, "source": "link",
+                "linked_from": [middle["linked_from"][0]], "link_type": then["type"],
+                "link_rule": f"{ctx.version}:{chain['id']}", "hit": ctx.levels[n], "bucket": bucket,
+                "hidden": bool(then["hidden"]), "needs_strip_down": bool(then["strip_down"]),
+                "side_from": side_from, "intact_in": [], "oem": [],
+                "reason": evidence.clean_reason(chain["reason"]), "photo_reference": seen[0] if seen else None,
+                "seen_in": seen, "evidence": evidence.order_evidence(entries, seen[0] if seen else None),
+                "covers": covers(child), "confidence": None, "hop": 2, "via": middle["part"], "signs_yes": signs,
+                # After every first hop of its bucket, in its middle part's order.
+                "_order": (_BUCKET_RANK[bucket], len(_TYPE_RANK)) + tuple(middle["_order"][1:]),
             })
     return out
 
@@ -674,6 +781,8 @@ def _join(kept: dict, other: dict) -> None:
 
 def _build(parents: list[int], ctx: _Ctx, table: dict) -> tuple[list[dict], dict[str, dict]]:
     found = sorted(_candidates(parents, ctx, table), key=lambda c: c["_order"])
+    if ctx.walk is not None:
+        found = sorted(found + _hop2(found, ctx, table), key=lambda c: c["_order"])
     items: list[dict] = []
     joins: dict[str, dict] = {}
     for cand in found:
@@ -714,10 +823,12 @@ def _build(parents: list[int], ctx: _Ctx, table: dict) -> tuple[list[dict], dict
     return shown, joins
 
 
-def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighbours) -> _Ctx:
+def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighbours, walk=None) -> _Ctx:
     listed = [it for it in listed or [] if isinstance(it, dict) and it.get("part")]
     photos = list(photos or [])
     levels = [hit_of(it) or opts.unknown_hit for it in listed]
+    if walk is not None:
+        levels = assembly_walk.raise_levels(walk, listed, levels)
     crushed = _end_crush(listed, levels, photos)
     levels = ["crush" if lvl == "heavy" and end_of(str(it["part"])) in crushed else lvl
               for it, lvl in zip(listed, levels)]
@@ -725,24 +836,26 @@ def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighb
                 listed_names={str(it["part"]) for it in listed}, skip={str(k) for k in dismissed or () if k},
                 others=[o for o in others or [] if isinstance(o, dict) and o.get("part")], photos=photos,
                 intact=zone_intact if isinstance(zone_intact, dict) else {},
-                neighbours=neighbours if isinstance(neighbours, dict) else None)
+                neighbours=neighbours if isinstance(neighbours, dict) else None, walk=walk)
 
 
 def build_all(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-              opts: Options, *, dismissed=(), neighbours: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
+              opts: Options, *, dismissed=(), neighbours: dict | None = None,
+              walk=None) -> tuple[list[dict], dict[str, dict]]:
     """(the linked-part suggestions, the joins). The suggestions are what
     build returns. The joins are the links whose part another suggestion
     is already (zone_suggestions: a zone read's, the second look's), by
     that suggestion's key: {"linked_from", "link_type", "link_rule",
-    "hit"} for the caller to put on it, so the part shows once."""
+    "hit"} for the caller to put on it, so the part shows once. walk: the
+    assembly walk (assembly_walk.Walk), None for today's build."""
     if not table or not isinstance(table.get("links"), list):
         return [], {}
-    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours)
+    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours, walk)
     return _build(list(range(len(ctx.listed))), ctx, table)
 
 
 def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-          opts: Options, *, dismissed=(), neighbours: dict | None = None) -> list[dict]:
+          opts: Options, *, dismissed=(), neighbours: dict | None = None, walk=None) -> list[dict]:
     """The linked-part suggestions for one reading, as SecondLookItem dicts
     (source "link"), at most opts.max_items, in the order shown (see the
     module's docstring). listed: the damage list's items; zone_suggestions:
@@ -750,18 +863,19 @@ def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_i
     photos: the case's photos (IntakePhoto rows, or a stored run's dicts);
     zone_intact: ai_draft["zone_intact"]; dismissed: the keys a person
     marked Not damaged; neighbours: catalogue.diagram_neighbours' answer,
-    used when opts.catalogue."""
+    used when opts.catalogue; walk: the assembly walk (None: off)."""
     return build_all(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed=dismissed,
-                     neighbours=neighbours)[0]
+                     neighbours=neighbours, walk=walk)[0]
 
 
 def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: Options, *,
-               zone_intact: dict | None = None, neighbours: dict | None = None) -> list[dict]:
+               zone_intact: dict | None = None, neighbours: dict | None = None, walk=None) -> list[dict]:
     """The new linked parts of one listed part -- the re-link after a person
     adds it: build from that part alone, against the case as it is (`data`,
     the part on its list or not yet): what is listed, every suggestion
     there already (open or decided), the dismissed. At most the room
-    opts.max_items leaves beside the open linked parts."""
+    opts.max_items leaves beside the open linked parts. walk: the assembly
+    walk; its second hops count the case's open ones against MAX_HOP2."""
     if not table or not isinstance(table.get("links"), list) or not isinstance(item, dict) or not item.get("part"):
         return []
     data = data if isinstance(data, dict) else {}
@@ -772,7 +886,11 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
     look = data.get("second_look") if isinstance(data.get("second_look"), dict) else {}
     existing = [it for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
     dismissed = {k for k in look.get("dismissed") or [] if isinstance(k, str)}
-    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, neighbours)
+    if walk is not None:
+        open_hop2 = sum(1 for it in existing if it.get("source") == "link" and it.get("hop") == 2
+                        and str(it.get("key") or it["part"]) not in dismissed)
+        walk = assembly_walk.with_room(walk, open_hop2)
+    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, neighbours, walk)
     mine = next(n for n, it in enumerate(ctx.listed) if it is item or item_key(it) == key)
     items, _ = _build([mine], ctx, table)
     open_links = [it for it in existing if it.get("source") == "link"

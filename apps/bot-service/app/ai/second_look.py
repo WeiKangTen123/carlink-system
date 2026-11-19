@@ -732,16 +732,20 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
                 ) -> tuple[list[dict], dict[str, dict]]:
     """Contract 10: the linked parts of this read (intake/links.build_all)
     against the list as it is now, beside the open suggestions `kept` --
-    a part one of them is joins it instead (the joins, by key)."""
-    from app.intake import links, zones
+    a part one of them is joins it instead (the joins, by key). With the
+    assembly walk on (settings.intake_assembly_walk) and a stored walk,
+    its signs too (intake/assembly_walk.from_settings); off, build_all is
+    called as before."""
+    from app.intake import assembly_walk, links, zones
     from app.intake.photos import ordered_photos
 
     vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
     listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
     opts = links.options()
     neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
+    walk = assembly_walk.from_settings(ai_draft, settings)
     return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
-                           opts, dismissed=dismissed, neighbours=neighbours)
+                           opts, dismissed=dismissed, neighbours=neighbours, **({"walk": walk} if walk else {}))
 
 
 def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],

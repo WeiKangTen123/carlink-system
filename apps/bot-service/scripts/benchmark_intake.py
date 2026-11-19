@@ -101,6 +101,15 @@ intact (Z2) / orient,cues (Z3), --zone-photo-half (Z5), --sort-prompt v3
 --link-order photos_first (L4). Each is in ai_settings while it acts, with
 the packs' sha256; without them a run writes what it wrote before them.
 
+The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a):
+--assembly-walk (needs --read-mode zones and a car map with signs,
+app/intake/car_map.json) has each zone read answer the map's yes/no signs
+about its damaged anchor panels (+0 calls); --walk-raise one|full and
+--link-hops 1|2 (both need --assembly-walk and --links on|shadow) tune what
+the linked parts make of them. While on: ai_settings has them with the
+map's version and sha256, a run keeps the merged walk ("assembly_walk",
+photos by label) and each linked part's hop / via / signs_yes.
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -1880,6 +1889,9 @@ _SUGGESTION_FIELDS = ("key", "part", "name", "other_part_name", "source", "confi
 # answer. A zone suggestion joined to a link carries the link fields too.
 _LINK_SUGGESTION_FIELDS = ("severity", "condition_tokens", "remarks", "linked_from", "link_type", "link_rule", "hit",
                            "bucket", "hidden", "needs_strip_down", "side_from", "intact_in", "link_check")
+# The assembly walk, only while it acts: a second hop's hop and middle part,
+# and the yes signs that lifted a linked part or opened its chain.
+_WALK_SUGGESTION_FIELDS = ("hop", "via", "signs_yes")
 
 
 def relabel_refs(entry: dict, label_of: dict[str, str]) -> dict:
@@ -2106,6 +2118,8 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         # the AI draft only.
         mode = links_mode(A.settings)
         fields = _SUGGESTION_FIELDS + (_LINK_SUGGESTION_FIELDS if mode != "off" else ())
+        if mode != "off" and walk_on(A.settings):
+            fields += _WALK_SUGGESTION_FIELDS
         link_items: list = []
         if look and mode != "off":
             look = dict(look)
@@ -2142,6 +2156,10 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             # Contract 10: the linked parts as shown, scored as
             # scripts/bench/replay_links.py scores a stored run's.
             out["link_suggestions"] = suggestion_rows({}, label_of, fields, link_items)
+            for row in out["link_suggestions"]:
+                if isinstance(row.get("signs_yes"), list):
+                    row["signs_yes"] = [dict(s, photo=label_of.get(s.get("photo"), s.get("photo")))
+                                        if isinstance(s, dict) else s for s in row["signs_yes"]]
             others = [r.get("part") for r in out.get("suggestions") or []]
             out["links"] = score_links(case["parts"], drafted, others, out["link_suggestions"],
                                        inside=hidden_children(_link_table()))
@@ -2149,6 +2167,9 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                                 impact=(data.get("vehicle_info") or {}).get("point_of_impact"))
         if keep_reads:
             out["reads"] = kept_reads(label_of)
+        if walk_on(A.settings):
+            # The assembly walk as the zone reads merged it, photos by label.
+            out["assembly_walk"] = walk_rows((session.ai_draft or {}).get("assembly_walk"), label_of)
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
         # Contract 8 D2: what each zone call sent and saw, from the run log's
@@ -2674,6 +2695,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--link-order", metavar="ORDER",
                     help="L4: candidates_first (today) or photos_first, the closed list after the photos "
                          "(settings.intake_link_order); needs --link-check lite")
+    # The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a).
+    ap.add_argument("--assembly-walk", action="store_true",
+                    help="each zone read also answers the car map's yes/no signs about its damaged anchor panels "
+                         "(settings.intake_assembly_walk on; +0 calls); needs --read-mode zones and a car map with "
+                         "signs (app/intake/car_map.json)")
+    ap.add_argument("--walk-raise", metavar="HOW",
+                    help="how far a yes sign lifts a listed part's hit: one (a step at most, the default) or full "
+                         "(settings.intake_walk_raise); needs --assembly-walk and --links on or shadow")
+    ap.add_argument("--link-hops", metavar="N",
+                    help="1 (the default) or 2: a chain's second hop when a sign that unlocks it says yes, at most 4 "
+                         "a case (settings.intake_link_hops); needs --assembly-walk and --links on or shadow")
     ap.add_argument("--keep-reads", action="store_true",
                     help="keep the overall reading's raw damage items, side_from_sorter's changes and each zone "
                          "read's items as merged (wraps the app's functions in this harness only; no extra call)")
@@ -2697,6 +2729,8 @@ C10_ARGS = {"links": None, "link_check": None, "links_catalogue": False, "keep_r
 LIGHT_ARGS = {"read_packs": None, "read_prompt": None, "read_anchor": False, "zone_packs": None,
               "zone_photo_half": False, "sort_prompt": None, "thinking_level_link": None, "link_skill": None,
               "link_prompt": None, "link_signs": False, "link_order": None}
+# The assembly walk's flags at their defaults: left out of "args" too.
+WALK_ARGS = {"assembly_walk": False, "walk_raise": None, "link_hops": None}
 
 
 def _now() -> str:
@@ -2779,6 +2813,7 @@ def model_settings(args: argparse.Namespace) -> dict:
     out.update(check_settings(args, config, zones_on))
     out.update(links_settings(args, config))
     out.update(light_settings(args, config, zones_on, out))
+    out.update(walk_settings(args, config, zones_on, out))
     return out
 
 
@@ -2840,6 +2875,35 @@ def light_settings(args: argparse.Namespace, config, zones_on: bool, given: dict
     skill = out.get("intake_link_skill", config.settings.intake_link_skill)
     if config.light_conflict("v1", False, skill, out.get("intake_link_signs", config.settings.intake_link_signs)):
         sys.exit("--link-signs: uses the L2 skills' signs files; give --link-skill L2 too")
+    return out
+
+
+def walk_settings(args: argparse.Namespace, config, zones_on: bool, given: dict) -> dict:
+    """The assembly walk's flags as {Settings field: value}. Exits on a
+    value config refuses, or a flag that would change nothing: the walk
+    without zone reads, --walk-raise / --link-hops without the walk or
+    without the linked parts. (Whether a car map with signs loaded is
+    main's check: it needs the app.)"""
+    out: dict = {}
+    walk = bool(getattr(args, "assembly_walk", False))
+    if walk:
+        if not zones_on:
+            sys.exit("--assembly-walk: asked inside the zone reads; give --read-mode zones too")
+        out["intake_assembly_walk"] = "on"
+    links_on = given.get("intake_links", config.settings.intake_links) != "off"
+    for flag, field, fn in (("walk_raise", "intake_walk_raise", config.normal_walk_raise),
+                            ("link_hops", "intake_link_hops", config.normal_link_hops)):
+        if getattr(args, flag, None) is None:
+            continue
+        name = f"--{flag.replace('_', '-')}"
+        if not walk:
+            sys.exit(f"{name}: tunes what the linked parts make of the walk; give --assembly-walk too")
+        if not links_on:
+            sys.exit(f"{name}: tunes the linked parts; give --links on or shadow too")
+        try:
+            out[field] = fn(getattr(args, flag))
+        except ValueError as exc:
+            sys.exit(f"{name}: {exc}")
     return out
 
 
@@ -2981,6 +3045,41 @@ def ai_settings(settings) -> dict:
             out["intake_link_check_max_calls"] = getattr(settings, "intake_link_check_max_calls", None)
             out["thinking_level_link"] = getattr(settings, "gemini_thinking_level_link", None)
     out.update(light_ai_settings(settings))
+    out.update(walk_ai_settings(settings))
+    return out
+
+
+def walk_rows(walk, label_of: dict[str, str]) -> dict:
+    """ai_draft["assembly_walk"] with each sign's photo by case label."""
+    out = {}
+    for panel, rec in walk.items() if isinstance(walk, dict) else ():
+        if isinstance(rec, dict):
+            signs = {sid: dict(got, photo=label_of.get(got.get("photo"), got.get("photo")))
+                     for sid, got in (rec.get("signs") or {}).items() if isinstance(got, dict)}
+            out[panel] = {"hit_at": rec.get("hit_at"), "signs": signs}
+    return out
+
+
+def walk_on(settings) -> bool:
+    """The assembly walk acts: on, in zone mode."""
+    return (getattr(settings, "intake_assembly_walk", "off") == "on"
+            and getattr(settings, "intake_read_mode", "single") == "zones")
+
+
+def walk_ai_settings(settings) -> dict:
+    """The assembly walk's settings while it acts -- with the car map's
+    version and sha256 (as git keeps the file) and, with the linked parts
+    on, the raise and the hops; {} while off."""
+    if not walk_on(settings):
+        return {}
+    from app.intake import car_map
+
+    out = {"intake_assembly_walk": "on",
+           "car_map_version": car_map.MAP.get("version") if isinstance(car_map.MAP, dict) else None,
+           "car_map_sha256": car_map.sha256_lf(car_map.MAP_PATH) if isinstance(car_map.MAP, dict) else None}
+    if links_mode(settings) != "off":
+        out["intake_walk_raise"] = getattr(settings, "intake_walk_raise", "one")
+        out["intake_link_hops"] = getattr(settings, "intake_link_hops", 1)
     return out
 
 
@@ -3107,6 +3206,13 @@ def main(argv=None) -> int:
     # the baseline under another name (second_look._links_mode: off).
     if links_mode(A.settings) != "off" and _link_table() is None:
         sys.exit("--links: the link table (app/intake/link_table.json) didn't load; see the log")
+    # The assembly walk with no car map that has signs would be skipped:
+    # the baseline under another name.
+    if walk_on(A.settings):
+        from app.intake import zones as _zones
+
+        if _zones.walk_index() is None:
+            sys.exit("--assembly-walk: no car map with signs loaded (app/intake/car_map.json); see the log")
     if args.keep_reads:
         keep_reads_on(A)
     A.init_db()
@@ -3129,7 +3235,8 @@ def main(argv=None) -> int:
         "label": args.label or args.out.stem,
         "git_ref": args.ref,
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
-                 if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])},
+                 if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])
+                 and not (k in WALK_ARGS and v == WALK_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),

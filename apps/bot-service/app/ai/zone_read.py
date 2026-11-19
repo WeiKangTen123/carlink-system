@@ -36,6 +36,14 @@ as two optional fields after ai_confidence and one prompt sentence. They
 become the item's reports/schema.Evidence entry (ai/evidence.py), never
 fields of the drafting schema. "off" (the default) asks for neither: the
 request is as before, byte for byte.
+
+The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a;
+settings.intake_assembly_walk, intake/assembly_walk.py): with a car map
+that has signs, `walk` (its assembly_walk.MapIndex) adds one paragraph and
+a line per anchor panel this zone offers (after the packs, before the
+closing line) and an `assembly_walk` field after `damage`; the answer's
+walk is ZoneAnswer.walk. None (the default): the request as before, byte
+for byte. A zone that offers no anchor with a sign is asked nothing new.
 """
 import json
 import logging
@@ -48,6 +56,7 @@ from app.ai.grid import CELLS, grid_path
 from app.ai.keys import AiActor
 from app.ai.second_look import ZONES
 from app.ai.structured import call_structured, image_part
+from app.intake import assembly_walk
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
     CANONICAL_PARTS,
@@ -216,15 +225,29 @@ def _photo_half_on(zone: str, photo_half: bool) -> bool:
     return bool(photo_half) and zone in END_ZONES
 
 
+def _walk_spec(zone: str, walk) -> "assembly_walk.ZoneSpec | None":
+    """The assembly walk this zone call asks for (walk: the car map's
+    assembly_walk.MapIndex), or None: no walk, or no anchor here -- or a
+    map it can't read, logged: the walk never costs a zone read."""
+    if walk is None:
+        return None
+    try:
+        return assembly_walk.zone_spec(walk, _kind(zone), checklist(zone))
+    except Exception:
+        logger.exception("Assembly walk: couldn't build zone %s's walk; asked without it", zone)
+        return None
+
+
 def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_OFF, packs=(),
-                  photo_half: bool = False) -> str:
+                  photo_half: bool = False, walk=None) -> str:
     """Short on purpose: the light models this is for follow a short prompt
     better than the overall reading's long one. evidence_mode
     (settings.intake_zone_evidence): "reason" / "reason_box" add the one
     sentence asking for the tail fields; "off" adds nothing. packs
     (settings.intake_zone_packs) and photo_half (settings.
     intake_zone_photo_half): the light-model packs and Z5's sentence, none
-    by default."""
+    by default. walk (settings.intake_assembly_walk): the walk's paragraph
+    and panel lines, before the closing line."""
     packs = set(packs or ())
     intact = prompt_packs.pack("intact") + "\n" if "intact" in packs else _INTACT_LINE
     sides = _SIDES_LINE
@@ -249,6 +272,7 @@ def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_O
         + intact
         + sides
         + added
+        + assembly_walk.prompt_text(_walk_spec(zone, walk))
         + _CLOSING
     )
 
@@ -272,7 +296,7 @@ def side_from_half(end: str, half) -> str | None:
 
 
 def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_mode: str = EVIDENCE_OFF,
-                    packs=(), photo_half: bool = False) -> dict:
+                    packs=(), photo_half: bool = False, walk=None) -> dict:
     """The small schema: zone_side_seen first (fields are filled in schema
     order, so the model settles what it is looking at before it lists
     parts), photo_reference before part (where, then what), grid_cells
@@ -285,7 +309,8 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
 
     packs with "intact" (Z2): checked_intact carries intact-v1's rule as
     its description. photo_half (Z5, end zones): photo_half after
-    photo_reference, required. Neither by default."""
+    photo_reference, required. walk (the assembly walk): `assembly_walk`
+    after `damage`, required. None of them by default."""
     names = checklist(zone)
     item: dict = {"photo_reference": {"type": "string", "enum": list(labels)}}
     half = _photo_half_on(zone, photo_half)
@@ -311,7 +336,7 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
     intact: dict = {"type": "array", "items": {"type": "string", "enum": names[:-1]}}
     if "intact" in set(packs or ()):
         intact = {"type": "array", "description": intact_description(), "items": intact["items"]}
-    return {
+    schema = {
         "type": "object",
         "properties": {
             "zone_side_seen": {"type": "string", "enum": _SEEN[_kind(zone)]},
@@ -320,6 +345,14 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
         },
         "required": ["zone_side_seen", "damage", "checked_intact"],
     }
+    spec = _walk_spec(zone, walk)
+    if spec is not None:
+        props = schema["properties"]
+        schema["properties"] = {"zone_side_seen": props["zone_side_seen"], "damage": props["damage"],
+                                "assembly_walk": assembly_walk.schema_field(spec, labels),
+                                "checked_intact": props["checked_intact"]}
+        schema["required"] = ["zone_side_seen", "damage", "assembly_walk", "checked_intact"]
+    return schema
 
 
 def build_input(photos: list[tuple[str, str, str | None]], grid: bool = False) -> list[dict]:
@@ -360,6 +393,9 @@ class ZoneAnswer:
     intact: list[str] = field(default_factory=list)
     # Why the finds were dropped, when they were (photos of the other end).
     note: str | None = None
+    # The assembly walk (walk on): {canonical panel: {"hit_at", "signs":
+    # {id: {"answer", "photo" (a label)}}}}, assembly_walk.parse_zone.
+    walk: dict = field(default_factory=dict)
 
 
 def _label(value, labels: set[str]) -> str | None:
@@ -381,7 +417,7 @@ _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "a
 
 
 def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
-                 evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False) -> ZoneAnswer:
+                 evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False, walk=None) -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
@@ -398,7 +434,9 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     photo_half (Z5, an end zone whose photos show that end): a find's side
     worked out from its photo_half (side_from_half); when the model named
     the other side, the part's "(side undetermined)" name instead. packs
-    with "intact" (Z2): a part listed damaged is never kept as intact too."""
+    with "intact" (Z2): a part listed damaged is never kept as intact too.
+    walk: the answer's assembly_walk, for this zone's damaged panels only
+    (assembly_walk.parse_zone) -- never a reason to refuse the answer."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
@@ -447,6 +485,15 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         part = canonical(zone, name, seen)
         if part and part != OTHER_PART and part not in answer.intact and part not in damaged:
             answer.intact.append(part)
+    spec = _walk_spec(zone, walk)
+    if spec is not None:
+        try:
+            answer.walk = assembly_walk.parse_zone(
+                spec, data.get("assembly_walk"), lambda name: canonical(zone, name, seen),
+                {item.get("part") for item in answer.items}, lambda value: _label(value, sent))
+        except Exception:  # parse_zone is total; this is in case it ever isn't
+            logger.exception("Assembly walk: zone %s's walk couldn't be read; the finds stand", zone)
+            answer.walk = {}
     return answer
 
 
@@ -461,6 +508,7 @@ def read_zone(
     timeout: float = ZONE_TIMEOUT,
     packs=(),
     photo_half: bool = False,
+    walk=None,
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
@@ -469,19 +517,23 @@ def read_zone(
     answered used it -- and must not switch it off for every AI call.
     evidence_mode: settings.intake_zone_evidence. packs, photo_half:
     settings.intake_zone_packs (as config.pack_list gives them) and
-    intake_zone_photo_half."""
+    intake_zone_photo_half. walk: the car map's assembly_walk.MapIndex
+    (settings.intake_assembly_walk), None for no walk; a walked call is
+    tagged "+walk-<map version>" in the run log."""
     labels = [label for label, _, _ in photos]
     packs = list(packs or ())
-    system = system_prompt(zone, grid, evidence_mode, packs, photo_half)
+    system = system_prompt(zone, grid, evidence_mode, packs, photo_half, walk)
     named = packs + (["photo_half"] if _photo_half_on(zone, photo_half) else [])
+    if _walk_spec(zone, walk) is not None:
+        named.append(f"walk-{walk.version}")
     tag = prompt_packs.tag(f"zone:{zone}", "v1", named, system) if named else None
     with runs.prompt_tag(tag):
         return call_structured(
             purpose=PURPOSE,
             system_instruction=system,
             input_parts=build_input(photos, grid),
-            schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half),
-            parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half),
+            schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half, walk),
+            parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half, walk),
             models=models,
             actor=actor,
             timeout=timeout,

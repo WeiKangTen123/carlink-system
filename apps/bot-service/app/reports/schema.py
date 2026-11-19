@@ -188,6 +188,9 @@ LINK_ITEM_DEFAULTS = {"linked_from": [], "link_type": None, "hidden": False, "ne
 LINK_SUGGESTION_DEFAULTS = {
     "linked_from": [], "link_type": None, "link_rule": None, "hit": None, "bucket": None, "hidden": False,
     "needs_strip_down": False, "side_from": None, "intact_in": [], "link_check": None, "oem": [],
+    # The assembly walk (K3b; K4 adds the same names): not in a dump at
+    # their defaults either.
+    "hop": None, "via": None, "signs_yes": [],
 }
 LINK_LOOK_DEFAULTS = {"link_run": None}
 
@@ -679,6 +682,14 @@ class SecondLookItem(BaseModel):
     intact_in: list[str] = Field(default_factory=list)
     link_check: Optional[LinkCheck] = None
     oem: list[str] = Field(default_factory=list)
+    # The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a,
+    # intake/assembly_walk.py), code-set, not in a dump at their defaults:
+    # hop -- 2 for a car map chain's second hop (None: the first); via --
+    # the middle part it was reached through; signs_yes -- the yes signs
+    # that lifted it or opened its chain, [{"id", "ask", "photo"}].
+    hop: Optional[int] = None
+    via: Optional[str] = None
+    signs_yes: list[dict] = Field(default_factory=list)
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):

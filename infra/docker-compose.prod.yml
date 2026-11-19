@@ -94,6 +94,13 @@ x-bot-service: &bot-service
     - INTAKE_LINK_PROMPT=${INTAKE_LINK_PROMPT:-v1}
     - INTAKE_LINK_SIGNS=${INTAKE_LINK_SIGNS:-false}
     - INTAKE_LINK_ORDER=${INTAKE_LINK_ORDER:-candidates_first}
+    # The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a):
+    # yes/no signs inside the zone reads, how far a yes lifts a hit, and the
+    # car map's second hop. Defaults are config.py's: off, today's requests
+    # and linked parts byte for byte.
+    - INTAKE_ASSEMBLY_WALK=${INTAKE_ASSEMBLY_WALK:-off}
+    - INTAKE_WALK_RAISE=${INTAKE_WALK_RAISE:-one}
+    - INTAKE_LINK_HOPS=${INTAKE_LINK_HOPS:-1}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 
