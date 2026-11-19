@@ -8091,6 +8091,91 @@ button.pb-box:focus-visible {
 }
 /* ---- end Contract 10 U ---- */
 
+/* ---- K4: the car map's review screen ---- */
+/* Linked parts grouped by assembly (K1-design.md 5b): the header names the
+   damaged listed parts and the yes signs; "— if fitted" after a part's
+   name; "Also check (no part name yet)" under a group; the folded "Check
+   at strip-down" block outside the cap. Its rules go between these lines. */
+
+.lk-asm-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lk-asm-damaged {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Yes signs: a word and a dotted edge, never colour alone. */
+.lk-signs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.lk-sign {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px dotted var(--badge-amber-border);
+  border-radius: 999px;
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.lk-fitted {
+  font-size: 12px;
+  font-style: italic;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.lk-also {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px dashed var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* The folded block: collapsed behind one line, outside the cap. */
+.lk-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.lk-block-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  border: 1px dashed var(--text-secondary);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  font-size: 13px;
+}
+
+.lk-block-title {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lk-block-title .intake-muted {
+  font-weight: 500;
+}
+/* ---- end K4 ---- */
+
 /* ---- P3: upload, sort, viewer ---- */
 
 /* Sticky step footers and group list. A card's overflow: hidden makes it a

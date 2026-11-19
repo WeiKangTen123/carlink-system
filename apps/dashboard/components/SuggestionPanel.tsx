@@ -9,13 +9,17 @@ import {
   LINKS_PER_PARENT,
   STRIP_DOWN_TEXT,
   aiSays,
+  alsoCheckText,
   alsoLinkedText,
+  assemblyDamagedText,
   checkWords,
   codeReason,
   confidenceText,
   confirmAtStripDown,
   decisionStates,
+  fittedText,
   foundByText,
+  hopText,
   intactText,
   linkBucket,
   linkCheckLine,
@@ -24,7 +28,10 @@ import {
   parentName,
   seenCount,
   sideFromText,
+  signText,
+  stripDownBlockNote,
   suggestionSections,
+  type AssemblyGroup,
   type Finding,
   type LinkGroup,
   type PhotoLookup,
@@ -155,11 +162,19 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
   // Contract 10: the groups whose extra rows / crush path are shown.
   const [moreOpen, setMoreOpen] = useState<Set<string>>(() => new Set());
   const [crushOpen, setCrushOpen] = useState<Set<string>>(() => new Set());
+  // K4: the folded "Check at strip-down" block, opened by a person.
+  const [blockOpen, setBlockOpen] = useState(false);
 
   const suggestions = useMemo(() => findings.filter((f) => f.kind === "suggestion"), [findings]);
   const sections = useMemo(() => suggestionSections(suggestions.filter((f) => f.status === "suggestion")), [suggestions]);
   const open = useMemo(
-    () => [...sections.seen, ...sections.other, ...sections.groups.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot])],
+    () => [
+      ...sections.seen,
+      ...sections.other,
+      ...sections.assemblies.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot]),
+      ...sections.groups.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot]),
+      ...sections.stripDown,
+    ],
     [sections]
   );
   // Without linked parts, `seen` is every suggestion in the re-check's order.
@@ -204,14 +219,20 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
     }
   };
 
-  const card = (f: Finding) => {
+  const card = (f: Finding, inBlock = false) => {
     const isLink = f.source === "link";
     // A linked part's card shows only its own photos; the listed part's
     // photo is in the viewer, captioned as the listed part's.
     const slides = slidesOf(f).filter((s) => !(isLink && s.by === "link"));
     const sided = isLink && !f.sideFrom && f.part.includes("(side undetermined)") ? "side not known" : null;
     const oem = isLink && f.oem?.length ? `the parts catalogue puts it with the ${parentName(f) ?? "listed part"}` : null;
-    const facts = [sideFromText(f), sided, foundByText(f, reads), seenCount(f), confidenceText(f.confidence), oem].filter(Boolean).join(" · ");
+    // K4: in the strip-down block a card names its group; a second hop's says via what.
+    const where = inBlock && f.assemblyName ? f.assemblyName : null;
+    const facts = [where, hopText(f), sideFromText(f), sided, foundByText(f, reads), seenCount(f), confidenceText(f.confidence), oem]
+      .filter(Boolean)
+      .join(" · ");
+    const fitted = isLink ? fittedText(f) : null;
+    const signs = isLink ? (f.signsYes ?? []) : [];
     const verdict = checkWords(f.check);
     const isBusy = busy === f.key;
     const bucket = isLink ? linkBucket(f) : null;
@@ -229,12 +250,22 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
         <div className="sg-card-head">
           {bucket && <span className={`lk-bucket lk-bucket-${bucket}`}>{BUCKET_LABELS[bucket]}</span>}
           <span className="sg-name">{f.name}</span>
+          {fitted && <span className="lk-fitted">{fitted}</span>}
           {f.hidden && <span className="intake-chip lk-hidden">Hidden</span>}
           {f.condition && <span className="intake-chip">{f.condition}</span>}
           {verdict && <span className={`sg-check sg-check-${f.check?.verdict}`}>{verdict}</span>}
         </div>
         {strip && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
         <p className={`sg-reason ${f.reason ? "" : "is-code"}`}>{f.reason ? aiSays(f.reason) : codeReason(f)}</p>
+        {signs.length > 0 && (
+          <div className="lk-signs" aria-label="Signs seen">
+            {signs.map((sign) => (
+              <span key={sign.id} className="lk-sign">
+                Sign: {signText(sign, photos)}
+              </span>
+            ))}
+          </div>
+        )}
         {lc && <p className={`sg-reason lk-check lk-check-${f.linkCheck?.verdict}`}>{lc}</p>}
         {f.check?.reason && <p className="sg-reason">Re-check: {aiSays(f.check.reason)}</p>}
         {facts && <div className="sg-facts">{facts}</div>}
@@ -337,7 +368,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
             </button>
           )}
         </h4>
-        {shown.length > 0 && <ul className="sg-list">{shown.map(card)}</ul>}
+        {shown.length > 0 && <ul className="sg-list">{shown.map((f) => card(f))}</ul>}
         {g.rows.length > LINKS_PER_PARENT && (
           <button type="button" className="intake-link lk-more" aria-expanded={more} onClick={() => toggle(setMoreOpen, g.key)}>
             {more ? "Show fewer" : `Show ${g.rows.length - LINKS_PER_PARENT} more`}
@@ -353,7 +384,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
                 {crush ? "Hide" : "Show"}
               </button>
             </div>
-            {crush && <ul className="sg-list">{g.crush.map(card)}</ul>}
+            {crush && <ul className="sg-list">{g.crush.map((f) => card(f))}</ul>}
           </div>
         )}
         {g.probablyNot.length > 0 && (
@@ -361,14 +392,102 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
             <h5 className="lk-not-head">
               Probably not ({g.probablyNot.length})<span className="intake-muted"> Still here: add one if the car shows damage.</span>
             </h5>
-            <ul className="sg-list">{g.probablyNot.map(card)}</ul>
+            <ul className="sg-list">{g.probablyNot.map((f) => card(f))}</ul>
           </div>
         )}
       </div>
     );
   };
 
-  const linkedCount = sections.groups.reduce((n, g) => n + g.rows.length + g.crush.length + g.probablyNot.length, 0);
+  /** K4: "Front bumper assembly (damaged: Front Bumper ...)" and its parts,
+   * the yes signs as chips, "Also check (no part name yet): ..." last. */
+  const assemblyGroup = (g: AssemblyGroup) => {
+    const more = moreOpen.has(g.key);
+    const shown = more ? g.rows : g.rows.slice(0, LINKS_PER_PARENT);
+    const crush = crushOpen.has(g.key);
+    const damaged = assemblyDamagedText(g);
+    const also = alsoCheckText(g.alsoCheck);
+    const parentKey = g.parents.find((p) => p.parent.findingKey)?.parent.findingKey;
+    return (
+      <div key={`asm:${g.key}`} className="lk-group lk-assembly" role="group" aria-label={`${g.name}${damaged ? ` (${damaged})` : ""}`}>
+        <div className="lk-asm-head">
+          <h4 className="lk-group-head">
+            <span>{g.name}</span>
+            {onShowOnMap && parentKey && (
+              <button
+                type="button"
+                className="intake-link sg-map"
+                onClick={() => onShowOnMap(parentKey)}
+                aria-label={`Show the ${g.parents[0]?.parent.name} and its linked parts on the 3D model`}
+              >
+                <BoxIcon style={{ width: 13, height: 13 }} /> 3D
+              </button>
+            )}
+          </h4>
+          {damaged && <div className="lk-asm-damaged">{damaged}</div>}
+          {g.signs.length > 0 && (
+            <div className="lk-signs" aria-label="Signs seen">
+              {g.signs.map((sign) => (
+                <span key={sign.id} className="lk-sign">
+                  Sign: {signText(sign, photos)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        {shown.length > 0 && <ul className="sg-list">{shown.map((f) => card(f))}</ul>}
+        {g.rows.length > LINKS_PER_PARENT && (
+          <button type="button" className="intake-link lk-more" aria-expanded={more} onClick={() => toggle(setMoreOpen, g.key)}>
+            {more ? "Show fewer" : `Show ${g.rows.length - LINKS_PER_PARENT} more`}
+          </button>
+        )}
+        {g.crush.length > 0 && (
+          <div className="lk-crush">
+            <div className="lk-crush-line">
+              <span>
+                <span aria-hidden="true">{crush ? "⌄" : "›"}</span> {g.crush.length} more along the crush path
+              </span>
+              <button type="button" className="intake-link" aria-expanded={crush} onClick={() => toggle(setCrushOpen, g.key)}>
+                {crush ? "Hide" : "Show"}
+              </button>
+            </div>
+            {crush && <ul className="sg-list">{g.crush.map((f) => card(f))}</ul>}
+          </div>
+        )}
+        {g.probablyNot.length > 0 && (
+          <div className="lk-not">
+            <h5 className="lk-not-head">
+              Probably not ({g.probablyNot.length})<span className="intake-muted"> Still here: add one if the car shows damage.</span>
+            </h5>
+            <ul className="sg-list">{g.probablyNot.map((f) => card(f))}</ul>
+          </div>
+        )}
+        {also && <p className="lk-also">{also}</p>}
+      </div>
+    );
+  };
+
+  /** K4: "› Check at strip-down (N) not counted in the parts above · k via
+   * a second hop [Show]": folded until a person opens it. */
+  const stripDownBlock = () => (
+    <div className="lk-block">
+      <div className="lk-block-line">
+        <span className="lk-block-title">
+          <span aria-hidden="true">{blockOpen ? "⌄" : "›"}</span> Check at strip-down ({sections.stripDown.length})
+          <span className="intake-muted"> {stripDownBlockNote(sections.stripDown)}</span>
+        </span>
+        <button type="button" className="intake-link" aria-expanded={blockOpen} onClick={() => setBlockOpen((v) => !v)}>
+          {blockOpen ? "Hide" : "Show"}
+        </button>
+      </div>
+      {blockOpen && <ul className="sg-list">{sections.stripDown.map((f) => card(f, true))}</ul>}
+    </div>
+  );
+
+  const linkedCount =
+    sections.assemblies.reduce((n, g) => n + g.rows.length + g.crush.length + g.probablyNot.length, 0) +
+    sections.groups.reduce((n, g) => n + g.rows.length + g.crush.length + g.probablyNot.length, 0) +
+    sections.stripDown.length;
   const linkNote = linkRunNote(linkRun);
 
   return (
@@ -394,14 +513,14 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
           Seen in photos ({sections.seen.length})<span className="intake-muted"> found by a zone read, not by the main read</span>
         </h3>
       )}
-      {likely.length > 0 && <ul className="sg-list">{likely.map(card)}</ul>}
+      {likely.length > 0 && <ul className="sg-list">{likely.map((f) => card(f))}</ul>}
       {unlikely.length > 0 && (
         <div className="sg-group">
           <h3 className="sg-group-head">
             AI re-check: probably not damaged ({unlikely.length})
             <span className="intake-muted"> Still here: add one if the photo shows damage.</span>
           </h3>
-          <ul className="sg-list">{unlikely.map(card)}</ul>
+          <ul className="sg-list">{unlikely.map((f) => card(f))}</ul>
         </div>
       )}
       {sections.other.length > 0 && (
@@ -409,16 +528,18 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
           <h3 className="lk-section-head">
             Other suggestions ({sections.other.length})<span className="intake-muted"> from past cases or next to a part found</span>
           </h3>
-          <ul className="sg-list">{sections.other.map(card)}</ul>
+          <ul className="sg-list">{sections.other.map((f) => card(f))}</ul>
         </>
       )}
-      {sections.groups.length > 0 && (
+      {linkedCount > 0 && (
         <>
           <h3 className="lk-section-head">
             Linked parts to check ({linkedCount})<span className="intake-muted"> tied to parts on the list; check each one on the car</span>
           </h3>
           {linkNote && <div className="intake-muted sg-run-note lk-run-note">{linkNote}</div>}
+          {sections.assemblies.map(assemblyGroup)}
           {sections.groups.map(group)}
+          {sections.stripDown.length > 0 && stripDownBlock()}
         </>
       )}
       {!open.length && <div className="intake-muted">Every suggestion is decided.</div>}

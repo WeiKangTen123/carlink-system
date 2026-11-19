@@ -35,9 +35,11 @@ import {
   codeReason,
   confidenceText,
   confirmAtStripDown,
+  fittedText,
   foundByNames,
   foundByText,
   hiddenNoPhotoText,
+  hopText,
   intactText,
   linkBucket,
   linkCheckLine,
@@ -45,6 +47,7 @@ import {
   linkPhotoCaption,
   panelOrder,
   sideFromText,
+  signText,
   sourceName,
   type Finding,
   type FindingStatus,
@@ -691,7 +694,11 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const bucket = isLink ? linkBucket(finding) : null;
     const linkLine = linkCheckLine(finding.linkCheck);
     const intact = finding.kind === "suggestion" ? intactText(finding.intactIn, photos) : null;
-    const linkFacts = [sideFromText(finding), alsoLinkedText(finding)].filter(Boolean).join(" · ");
+    // K4: the car map's group, "if fitted", a second hop and the yes signs.
+    const linkFacts = [finding.assemblyName ?? null, hopText(finding), sideFromText(finding), alsoLinkedText(finding)]
+      .filter(Boolean)
+      .join(" · ");
+    const fitted = isLink ? fittedText(finding) : null;
     const parent = finding.parents?.[0] ?? null;
     const facts = [
       finding.kind === "suggestion" ? foundByText(finding, reads) : foundByNames(finding) && `Found by: ${foundByNames(finding)}`,
@@ -705,6 +712,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
         {newcomer && <div className="ev-note ev-arrived">{arrived!.text}</div>}
         <div className="ev-name">
           <span>{finding.name}</span>
+          {fitted && <span className="lk-fitted">{fitted}</span>}
           {finding.condition && <span className="intake-chip">{finding.condition}</span>}
         </div>
         <div className={`ev-status ev-status-${finding.status}`}>{STATUS_TEXT[finding.status]}</div>
@@ -716,6 +724,15 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
               {finding.hidden && <span className="intake-chip lk-hidden">Hidden</span>}
             </div>
             {confirmAtStripDown(finding) && <p className="lk-strip">{STRIP_DOWN_TEXT}</p>}
+            {(finding.signsYes ?? []).length > 0 && (
+              <div className="lk-signs" aria-label="Signs seen">
+                {(finding.signsYes ?? []).map((sign) => (
+                  <span key={sign.id} className="lk-sign">
+                    Sign: {signText(sign, photos)}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
         {finding.kind === "item" && <div className="ev-caption">{finding.linkedFrom?.length ? "Why it was suggested" : "Why the AI listed it"}</div>}
