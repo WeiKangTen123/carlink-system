@@ -141,7 +141,7 @@ EXAMPLE = {
               "level": "heavy", "points_to": ["front-bumper>condenser"], "unlocks": ["front-bumper>condenser>radiator"]},
          ],
          "catalogue": {"oem_diagrams": ["FRONT BUMPER", "BUMPERS", "FRONT BUMPER & BUMPER STAY"],
-                       "oem_numbers": {"toyota": ["5201"]}},
+                       "oem_numbers": {"scheme": ["1234"]}},
          "sources": [R]},
         {"id": "front-end", "name": "Front end and cooling", "area": "front", "anchors": [],
          "members": [

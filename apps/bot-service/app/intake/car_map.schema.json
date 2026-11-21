@@ -51,7 +51,7 @@
       "type": "object",
       "properties": {
         "oem_diagrams": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 60}, "description": "OEM diagram names that hold this assembly (generic words, no make)."},
-        "oem_numbers": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "pattern": "^\\d{3,5}$"}}, "description": "Diagram numbers by numbering scheme, e.g. {\"toyota\": [\"5201\"]}."}
+        "oem_numbers": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "pattern": "^\\d{3,5}$"}}, "description": "Diagram numbers by numbering scheme, e.g. {\"scheme\": [\"1234\"]}."}
       },
       "additionalProperties": false
     },
