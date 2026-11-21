@@ -506,6 +506,15 @@ class Settings(BaseSettings):
     # a hand-add (reports/suggestions.relinked) and the linked check's
     # areas (ai/link_check._plan) build from the table it names (K4).
     intake_car_map: str = "off"
+    # The car map's own part names (taxonomy.CAR_MAP_PARTS: a bumper's
+    # absorber and brackets, a door's lock, hinges and handle ...). "off":
+    # the car map's table leaves out every relation that names one (today's
+    # linked parts) and the part pickers offer today's list. "on": its
+    # linked parts may name them (car_map.table_for_links) and GET
+    # /taxonomy tells the dashboard to offer them. Never in a Gemini enum of
+    # the reads either way; a case that already holds one keeps it valid
+    # and printed when this is turned off.
+    intake_car_map_names: str = "off"
     # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
     # each zone read also answers short yes/no signs about the damaged
     # anchor panels of the car map (car_map.MAP; none with signs: the walk
@@ -586,6 +595,11 @@ class Settings(BaseSettings):
     @classmethod
     def _car_map(cls, value):
         return normal_car_map_mode(value)
+
+    @field_validator("intake_car_map_names")
+    @classmethod
+    def _car_map_names(cls, value):
+        return normal_car_map_names(value)
 
     @field_validator("intake_assembly_walk")
     @classmethod
@@ -693,6 +707,7 @@ class Settings(BaseSettings):
         if problem:
             raise ValueError(problem)
         return self
+
     @field_validator("intake_links_order")
     @classmethod
     def _links_order(cls, value):
@@ -859,6 +874,14 @@ CAR_MAP_MODES = ("off", "shadow", "on")
 def normal_car_map_mode(value) -> str:
     """intake_car_map written the one way; None or blank is "off"."""
     return _one_of(value, CAR_MAP_MODES, "intake_car_map")
+
+
+CAR_MAP_NAMES = ("off", "on")
+
+
+def normal_car_map_names(value) -> str:
+    """intake_car_map_names written the one way; None or blank is "off"."""
+    return _one_of(value, CAR_MAP_NAMES, "intake_car_map_names")
 
 
 # The assembly walk's switches (intake/assembly_walk.py), parsed the same way.

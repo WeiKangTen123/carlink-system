@@ -44,13 +44,14 @@ from app.reports.synthesize_annexes import (
     synthesize_annexes_for_report,
 )
 from app.reports.taxonomy import (
-    CANONICAL_PARTS,
+    CAR_MAP_PARTS,
     OTHER_PART,
     SIDE_CODES,
     annex_condition,
     body_type_for,
     clean_part_name,
     firm_part_name,
+    known_part,
     other_part_name,
     unsided_part,
 )
@@ -255,9 +256,10 @@ def row_name(db: Session | None, part: str, vehicle: dict, unsided: bool = False
     wording often names a different sub-part (history.firm_wording) -- else
     the same make's past wording (when `db` is given). A pre-taxonomy case's
     free text ("Tail gate lock striker") is kept as written: its family's
-    wording would only be coarser. unsided: worded without LH / RH
-    (side_unconfirmed)."""
-    if part not in CANONICAL_PARTS:
+    wording would only be coarser. A car map part (taxonomy.CAR_MAP_PARTS)
+    has its floor too, whatever settings.intake_car_map_names says now.
+    unsided: worded without LH / RH (side_unconfirmed)."""
+    if not known_part(part):
         return part
     make, model = vehicle.get("make"), vehicle.get("model")
     body = vehicle.get("body_type") or body_type_for(make, model)
@@ -453,7 +455,7 @@ def _sided_namer(db: Session | None, part: dict, vehicle: dict):
     make's history would write for the sided part, and the floor. Built on
     first use (most syncs rename nothing). None when the part has no
     confirmed side."""
-    if part["unsided"] or part.get("other") or part["part"] not in CANONICAL_PARTS or side_of(part["part"]) is None:
+    if part["unsided"] or part.get("other") or not known_part(part["part"]) or side_of(part["part"]) is None:
         return None
     cache: dict[str, str] | None = None
 
@@ -585,10 +587,18 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     # its family: held once, by whichever damaged side's row has it.
     family_held = {(_held_family(_family(r["source_part"])), line_key(r.get("part_name", "")))
                    for r in kept if r.get("source_part") and not r["stale"]}
+    # A car map part (taxonomy.CAR_MAP_PARTS) has no past family of its own:
+    # its line sits in the kit of the panel it is fitted to ("Front bumper
+    # absorber" is a front bumper line). The lines its own kept rows hold
+    # are not printed again from that kit, and it goes after the canonical
+    # parts (below) so its one unpriced row isn't added beside the kit's.
+    car_map = set(CAR_MAP_PARTS)
+    car_map_held = {line_key(r.get("part_name", "")) for r in kept
+                    if r.get("source_part") in car_map and not r["stale"]}
     # Named unlisted parts last, so one that a listed part's past lines
     # already hold (a "Rear air vent" in the Civic's bumper kit) isn't
-    # printed twice.
-    for part in sorted(damaged, key=lambda p: p["other"] is not None):
+    # printed twice; car map parts just before them (above).
+    for part in sorted(damaged, key=lambda p: (p["other"] is not None, p["part"] in car_map)):
         key = part["key"]
         if key in dismissed:
             continue
@@ -638,6 +648,10 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # one unpriced row, worded as the firm would (row_name).
             row_part_name = row_name(db, part["part"], vehicle, unsided=part["unsided"])
             covered = has_own_row or _covered(row_part_name, own_keys) or _covered(part["part"], own_keys)
+            if not covered and part["part"] in car_map:
+                # Its line from another part's past kit, already in the table.
+                covered = _covered(row_part_name, {line_key(r.get("part_name", "")) for r in kept + new_rows
+                                                   if not r.get("stale")})
             if not covered and (key, row_part_name) not in seen:
                 seen.add((key, row_part_name))
                 new_rows.append(_unpriced_row(part, row_part_name))
@@ -645,7 +659,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
         # _rows_for gives one row per past line, in order.
         floor = row_name(None, part["part"], vehicle, unsided=part["unsided"])
         for ln, row in zip(found["lines"], _rows_for(part, suggestion, found, floor)):
-            if _covered(row["part_name"], own_keys):
+            if _covered(row["part_name"], own_keys) or _covered(row["part_name"], car_map_held):
                 continue
             if ln.get("sided"):
                 # A past case wrote it for one side: this side's own row (a

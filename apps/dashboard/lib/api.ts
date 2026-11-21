@@ -3092,6 +3092,11 @@ export async function testService(service: string): Promise<{ ok: boolean; messa
 
 export type Taxonomy = {
   parts: string[];
+  /** The car map's own part names (taxonomy.CAR_MAP_PARTS) and whether the
+   * server offers them (intake_car_map_names "on"); absent from an older
+   * API. The pickers use lib/partsList.ts partsToPick, never these alone. */
+  car_map_parts?: string[];
+  car_map_names?: boolean;
   damage_types: string[];
   severities: string[];
   body_types: string[];

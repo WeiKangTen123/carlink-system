@@ -4,7 +4,7 @@ links.py) replayed on stored benchmark runs, and scored against the key.
     python scripts/bench/replay_links.py RESULT.json [MORE.json ...] --key KEY.json [--out OUT.json]
         [--variant NAME ...] [--label L] [--ref R] [--freeze L1-freeze.md] [--not-frozen-ok]
         [--car-map PATH|from-l1|off] [--links-order table|prior] [--assembly-max N]
-        [--stripdown-cap in|out] [--stripdown-max N]
+        [--stripdown-cap in|out] [--stripdown-max N] [--car-map-names]
         [--no-walk] [--walk-raise one|full] [--link-hops 1|2]
 
 For every stored run that scored (benchmark_intake.py --out; an errored run
@@ -314,7 +314,8 @@ def _shown(listed, others, photos, intact, table, opts, review, walk=None) -> tu
     names = {str(i.get("part")) for i in listed}
     items = [it for it in items if not set(links.covers(it["part"])) & names]
     if info is not None:
-        review["module"].add_also_check(items, review["map"], links.levels_of(listed, photos, opts, **walk_kw))
+        review["module"].add_also_check(items, review["map"], links.levels_of(listed, photos, opts, **walk_kw),
+                                        names=review.get("names", False))
     return items, joins
 
 
@@ -549,6 +550,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     k4 = ap.add_argument_group("the car map's review screen (K4); any of these adds the review metrics")
     k4.add_argument("--car-map", metavar="PATH|from-l1|off",
                     help="build from this car map's table and facts ('from-l1': L1 converted; 'off': L1)")
+    k4.add_argument("--car-map-names", action="store_true",
+                    help="the car map's table with its own part names (N1, intake_car_map_names on); needs --car-map")
     k4.add_argument("--links-order", choices=config.LINKS_ORDERS, help="intake_links_order (default table)")
     k4.add_argument("--assembly-max", type=int, metavar="N", help="intake_links_assembly_max (default 4)")
     k4.add_argument("--stripdown-cap", choices=config.STRIPDOWN_CAPS, help="intake_links_stripdown_cap (default in)")
@@ -623,9 +626,12 @@ def review_setup(args: argparse.Namespace) -> tuple[dict | None, dict | None, di
     the table to build from -- None: L1 --, the Options changes). Exits 2
     when --car-map names a map that doesn't load or compile."""
     change = {opt: getattr(args, flag) for flag, opt in REVIEW_FLAGS if getattr(args, flag) is not None}
+    if args.car_map_names and args.car_map in (None, "off"):
+        print("replay_links: --car-map-names names a car map's linked parts; give --car-map too", file=sys.stderr)
+        sys.exit(2)
     if args.car_map is None and not change:
         return None, None, {}
-    review: dict = {"car_map": "off", "info": None, "map": None, "module": None}
+    review: dict = {"car_map": "off", "info": None, "map": None, "module": None, "names": False}
     table = None
     if args.car_map not in (None, "off"):
         from app.intake import car_map
@@ -639,7 +645,7 @@ def review_setup(args: argparse.Namespace) -> tuple[dict | None, dict | None, di
         if cm is None:
             print(f"replay_links: the car map {args.car_map} doesn't load (see the log)", file=sys.stderr)
             sys.exit(2)
-        compiled = car_map.links_table(cm)
+        compiled = car_map.links_table(cm, names=bool(args.car_map_names))
         problems = links.validate_table(compiled)
         if problems:
             print(f"replay_links: the car map's table fails the check: {problems[0]}", file=sys.stderr)
@@ -647,7 +653,7 @@ def review_setup(args: argparse.Namespace) -> tuple[dict | None, dict | None, di
         table = compiled
         review.update(car_map=where, version=cm.get("version"), sha256_lf=sha, links=len(compiled["links"]),
                       info=car_map.review_lookup(cm), map=cm, module=car_map,
-                      map_frozen=car_map.frozen_as(cm.get("version"), sha))
+                      map_frozen=car_map.frozen_as(cm.get("version"), sha), names=bool(args.car_map_names))
     return review, table, change
 
 
@@ -713,7 +719,7 @@ def main(argv=None) -> int:
     if review is not None:
         doc["review_screen"] = {
             "car_map": review["car_map"], "version": review.get("version"), "sha256_lf": review.get("sha256_lf"),
-            "map_frozen": review.get("map_frozen"),
+            "map_frozen": review.get("map_frozen"), "names": review.get("names", False),
             "links": review.get("links"), "flags": {flag: getattr(args, flag) for flag, _ in REVIEW_FLAGS},
             "summary": entries["default"]["review"]}
     print(f"REPLAY linked parts: table {freeze['version']} "

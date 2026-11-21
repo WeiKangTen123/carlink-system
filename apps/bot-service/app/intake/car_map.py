@@ -31,10 +31,11 @@ with review_lookup() -- each relation's facts by link_rule, which
 links.build takes as `info` -- and add_also_check(), the words for the new
 parts a names-off table leaves out.
 
-New part names below today's taxonomy (car_map_new_names.json, owner
-option a) are proposed, not applied: a map may name them, and the
-compiled table leaves out every relation that does until the taxonomy
-holds them (names=True, after the integrator's change).
+New part names below today's canonical list (car_map_new_names.json,
+owner option a) are taxonomy.CAR_MAP_PARTS: a map may name them, and the
+compiled table keeps the relations that do only with names=True --
+table_for_links takes it from settings.intake_car_map_names ("off" by
+default: every such relation left out, today's table).
 
 Everything that reads a file is total: load() and load_new_names() answer
 None (and log) for a missing, unreadable or invalid file, and validate()
@@ -891,7 +892,7 @@ def _also_words(new_names: dict | None) -> dict[str, str]:
 
 
 def add_also_check(items: list[dict], car_map: dict | None, levels: dict[str, str], *, body_type: str | None = None,
-                   names: bool = False, new_names: dict | None = None) -> list[dict]:
+                   names: bool | None = None, new_names: dict | None = None) -> list[dict]:
     """In place (and returned): K1-design.md section 2, the names off. Each
     group (an item's "assembly") gets also_check -- the words of the new
     parts its relations name that the compiled table left out ("absorber",
@@ -900,7 +901,9 @@ def add_also_check(items: list[dict], car_map: dict | None, levels: dict[str, st
     links.levels_of; trigger words and positions are not looked at), and
     its body gate passes. Every item of the group carries the same words;
     the Review step shows them once, on the group's header. names True (a
-    taxonomy that holds them), no map or no words: nothing changes."""
+    taxonomy that holds them; None: settings.intake_car_map_names,
+    names_on), no map or no words: nothing changes."""
+    names = names_on() if names is None else bool(names)
     if names or not isinstance(car_map, dict) or not items:
         return items
     try:
@@ -964,18 +967,36 @@ def frozen_as(version, sha) -> bool | None:
     return None if want is None else sha == want
 
 
+def names_on() -> bool:
+    """settings.intake_car_map_names is "on": the car map's tables may name
+    taxonomy.CAR_MAP_PARTS."""
+    return getattr(settings, "intake_car_map_names", "off") == "on"
+
+
+def link_body_type(vehicle: dict | None) -> str | None:
+    """The body type a map's body gates are read against: the make/model
+    match only (taxonomy.body_type_for without the AI's stated guess; owner
+    decision, K1-design section 8 question 2). None -- every gate passes,
+    the reason says "tailgate only" -- when the make/model isn't known."""
+    vehicle = vehicle if isinstance(vehicle, dict) else {}
+    return body_type_for(vehicle.get("make"), vehicle.get("model"))
+
+
 def table_for_links(l1_table: dict | None, *, mode: str | None = None, car_map=_UNSET, body_type: str | None = None,
-                    names: bool = False) -> tuple[dict | None, dict | None]:
+                    names: bool | None = None) -> tuple[dict | None, dict | None]:
     """(the table to build the shown linked parts from, the table to build
     the shadow ones from -- None for none), by settings.intake_car_map
     (or `mode`): "off" -> (l1_table itself, None): today, untouched;
     "shadow" -> (l1_table, the map's table); "on" -> (the map's table,
     None). The map's table is links_table(car_map) when it passes
     links.validate_table; otherwise none -- "on" then keeps l1_table, with
-    a log line. Never raises."""
+    a log line. names: whether that table keeps the relations naming a
+    car map part, by default settings.intake_car_map_names (names_on).
+    body_type: link_body_type(vehicle). Never raises."""
     mode = mode if mode is not None else getattr(settings, "intake_car_map", "off")
     if mode not in ("shadow", "on"):
         return l1_table, None
+    names = names_on() if names is None else bool(names)
     cm = MAP if car_map is _UNSET else car_map
     compiled = None
     if isinstance(cm, dict):
@@ -1013,8 +1034,9 @@ def link_tables(l1_table: dict | None, vehicle: dict | None = None, *, mode: str
                 car_map=_UNSET) -> LinkTables:
     """table_for_links for one case's vehicle, with each table's facts
     (review_lookup) when it is the map's. The body gate goes by the make
-    and model only (taxonomy.body_type_for without the reading's own guess,
-    K1-design.md 8.2: on a guess the link stays). Never raises: anything
+    and model only (link_body_type: taxonomy.body_type_for without the
+    reading's own guess, K1-design.md 8.2: on a guess the link stays); the
+    new names by settings.intake_car_map_names. Never raises: anything
     wrong gives L1 alone, with a log line."""
     mode = mode if mode is not None else getattr(settings, "intake_car_map", "off")
     if mode not in ("shadow", "on"):
@@ -1022,7 +1044,7 @@ def link_tables(l1_table: dict | None, vehicle: dict | None = None, *, mode: str
     try:
         cm = MAP if car_map is _UNSET else car_map
         v = vehicle if isinstance(vehicle, dict) else {}
-        body = body_type_for(v.get("make"), v.get("model"), None)
+        body = link_body_type(v)
         shown, shadow = table_for_links(l1_table, mode=mode, car_map=cm, body_type=body)
         lookup = review_lookup(cm) if (shown is not l1_table or shadow is not None) else None
         return LinkTables(shown=shown, shown_info=lookup if shown is not l1_table else None, shadow=shadow,

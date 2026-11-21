@@ -111,7 +111,8 @@ map's version and sha256, a run keeps the merged walk ("assembly_walk",
 photos by label) and each linked part's hop / via / signs_yes.
 
 The car map (plans/2026-11-18-car-knowledge/K1-design.md 5b, 6; K4):
---car-map on|PATH|from-l1|off (needs --links on|shadow) builds the linked
+--car-map on|PATH|from-l1|off (needs --links on|shadow; --car-map-names
+adds the map's own part names, N1) builds the linked
 parts from a car map's table with its facts (settings.intake_car_map on):
 "on" the app's own (app/intake/car_map.json), PATH another map file,
 "from-l1" L1 converted (the same links grouped by L1 parent; a sanity
@@ -2764,6 +2765,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="the linked parts' table: 'on' (the app's car map, app/intake/car_map.json), a car map file "
                          "PATH, 'from-l1' (L1 converted, grouped by L1 parent) or 'off' (L1, the default) "
                          "(settings.intake_car_map on); needs --links on or shadow; --assembly-walk reads the same map")
+    ap.add_argument("--car-map-names", action="store_true",
+                    help="the car map's own part names (N1: absorbers, brackets, door locks ...) in its linked parts "
+                         "(settings.intake_car_map_names on); needs --car-map (not off). Never in a read's enum")
     ap.add_argument("--links-order", metavar="ORDER",
                     help="inside a bucket: table (today) or prior (a relation's prior rank first; needs --car-map) "
                          "(settings.intake_links_order); needs --links on or shadow")
@@ -2803,8 +2807,8 @@ LIGHT_ARGS = {"read_packs": None, "read_prompt": None, "read_anchor": False, "zo
 # The assembly walk's flags at their defaults: left out of "args" too.
 WALK_ARGS = {"assembly_walk": False, "walk_raise": None, "link_hops": None}
 # The car map's and the Review step's flags (K4) at their defaults: likewise.
-CARMAP_ARGS = {"car_map": None, "links_order": None, "assembly_max": None, "stripdown_cap": None,
-               "stripdown_max": None}
+CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "assembly_max": None,
+               "stripdown_cap": None, "stripdown_max": None}
 
 
 def _now() -> str:
@@ -3024,6 +3028,10 @@ def carmap_settings(args: argparse.Namespace, config, given: dict) -> dict:
         except ValueError as exc:
             sys.exit(f"{name}: {exc}")
     map_on = out.get("intake_car_map", getattr(config.settings, "intake_car_map", "off")) != "off"
+    if getattr(args, "car_map_names", False):
+        if not map_on:
+            sys.exit("--car-map-names: names the car map's linked parts; give --car-map too")
+        out["intake_car_map_names"] = "on"
     if out.get("intake_links_order") == "prior" and not map_on:
         sys.exit("--links-order prior: L1 has no priors (the same as table); give --car-map too")
     cap = out.get("intake_links_stripdown_cap", getattr(config.settings, "intake_links_stripdown_cap", "in"))
@@ -3060,9 +3068,11 @@ def use_car_map(choice: str | None, settings) -> None:
         cm, source, sha = car_map.load(path), str(path), car_map.sha256_lf(path)
     if not isinstance(cm, dict):
         sys.exit(f"--car-map {choice}: no car map loaded (see the log)")
-    problems = links.validate_table(car_map.links_table(cm))
+    names = getattr(settings, "intake_car_map_names", "off") == "on"
+    problems = links.validate_table(car_map.links_table(cm, names=names))
     if problems:
-        sys.exit(f"--car-map {choice}: its link table fails the check: {problems[0]}")
+        sys.exit(f"--car-map {choice}: its link table{' with the names' if names else ''} fails the check: "
+                 f"{problems[0]}")
     car_map.MAP = cm
     settings.intake_car_map = "on"
     CAR_MAP_USED.clear()
@@ -3210,6 +3220,9 @@ def ai_settings(settings) -> dict:
         if car in ("shadow", "on"):
             out["intake_car_map"] = car
             out.update(car_map_settings())
+            # N1's names, only while on (off: the record as before).
+            if getattr(settings, "intake_car_map_names", "off") == "on":
+                out["intake_car_map_names"] = "on"
         out.update(link_table_settings())
         check = getattr(settings, "intake_link_check", "off")
         if check != "off":

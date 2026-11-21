@@ -21,6 +21,7 @@ import { ReviewBadge } from "@/components/ReviewBadge";
 import { ReviewConfirmButton, ReviewUndoButton } from "@/components/ReviewConfirmButton";
 import type { Review } from "@/lib/review";
 import { damageCheckDetail, damageState } from "@/lib/reviewRows";
+import { partsToPick } from "@/lib/partsList";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
@@ -465,7 +466,9 @@ export function ReviewStep({
   // [+ Add as damage] on a part of the 3D model nobody listed: the add row
   // gets the first part that sits there, for the person to check and add.
   const addRowRef = useRef<HTMLDivElement>(null);
-  const partsList = taxonomy.parts;
+  // The car map's names join only while the server offers them
+  // (lib/partsList.ts); Select still shows a row's own part either way.
+  const partsList = useMemo(() => partsToPick(taxonomy), [taxonomy]);
   const addForZone = useCallback(
     (zoneKey: string) => {
       setNewPart(partsList.find((p) => zoneKeyFor(p) === zoneKey) ?? "");
@@ -633,7 +636,7 @@ export function ReviewStep({
                           <Select
                             className="annex-cell-input"
                             value={item.part}
-                            options={taxonomy.parts}
+                            options={partsList}
                             placeholder="Choose the part…"
                             ariaLabel={`Vehicle parts description, item ${i + 1}`}
                             onChange={(val) => setItem(i, { part: val })}
@@ -808,7 +811,7 @@ export function ReviewStep({
             </div>
           )}
           <div className="intake-add-row" ref={addRowRef}>
-            <Select value={newPart} options={taxonomy.parts} placeholder="Add a damaged part…" ariaLabel="Add a damaged part" onChange={setNewPart} />
+            <Select value={newPart} options={partsList} placeholder="Add a damaged part…" ariaLabel="Add a damaged part" onChange={setNewPart} />
             <button type="button" className="btn-secondary-modern" onClick={addItem} disabled={!newPart}>
               <Plus style={{ width: 14, height: 14 }} /> Add
             </button>

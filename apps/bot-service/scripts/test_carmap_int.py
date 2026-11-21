@@ -34,6 +34,11 @@ scripts/test_c10_integration.py, no server, made-up cases only.
      place, ai_settings;
   8. the AI-accuracy record: the car map's counts only on a case that has
      them; older rows and the sum as before;
+  5b. everything on with the car map's own part names (N1,
+     intake_car_map_names on): a new-name child appears (the absorber,
+     lifted by its sign; the bracket's undetermined twin), no "also check"
+     words, no new name in any request's enum, and an added one gets its
+     Annex A wording;
   9. the seams between the walk and the review screen: a second hop's rule
      known to review_lookup (its chain's first relation's group, sided by
      the anchor, no prior, the end part's "if fitted"); it sorts after every
@@ -175,6 +180,8 @@ NEW_SETTINGS = {
     # K1 / K4, the car map and the review screen
     "intake_car_map": "off", "intake_links_order": "table", "intake_links_assembly_max": 4,
     "intake_links_stripdown_cap": "in", "intake_links_stripdown_max": 12,
+    # N1, the car map's own part names
+    "intake_car_map_names": "off",
 }
 
 
@@ -189,9 +196,11 @@ def settings_section() -> None:
     check({k: getattr(fresh, k) for k in NEW_SETTINGS} == NEW_SETTINGS, "every new setting defaults to today's",
           {k: getattr(fresh, k) for k in NEW_SETTINGS if getattr(fresh, k) != NEW_SETTINGS[k]})
     check({k: getattr(settings, k) for k in NEW_SETTINGS} == NEW_SETTINGS, "and this process runs at them")
-    names = fields.get("intake_car_map_names")
-    check(names is None or names.default in (False, "off"),
-          "the new part names (N1's intake_car_map_names) stay off: not here yet, or off by default")
+    from app.reports import taxonomy
+
+    check(len(taxonomy.CAR_MAP_PARTS) == 45 and not set(taxonomy.CAR_MAP_PARTS) & set(taxonomy.CANONICAL_PARTS)
+          and len(taxonomy.CANONICAL_PARTS) == 102,
+          "N1's names: 45 car map parts beside the 102 canonical ones (which are unchanged)")
     compose = (REPO / "infra" / "docker-compose.prod.yml").read_text(encoding="utf-8")
     anchor, services = compose.index("x-bot-service: &bot-service"), compose.index("\nservices:")
     bad = []
@@ -242,11 +251,11 @@ def requests_section() -> None:
     got = _hashes()
     check(got == master, "every switch off: sort, main read (intake, Telegram), 5 zones x 3 modes, linked check x 5 "
                          "-- byte for byte master's", {k: v for k, v in got.items() if master.get(k) != v})
-    got = _hashes(INTAKE_CAR_MAP="on", INTAKE_LINKS_ORDER="prior", INTAKE_LINKS_ASSEMBLY_MAX="3",
-                  INTAKE_LINKS_STRIPDOWN_CAP="out", INTAKE_LINKS_STRIPDOWN_MAX="6", INTAKE_WALK_RAISE="full",
-                  INTAKE_LINK_HOPS="2")
-    check(got == master, "car map on, review knobs off their defaults, raise full, hops 2 -- the walk off: still "
-                         "master's requests", {k: v for k, v in got.items() if master.get(k) != v})
+    got = _hashes(INTAKE_CAR_MAP="on", INTAKE_CAR_MAP_NAMES="on", INTAKE_LINKS_ORDER="prior",
+                  INTAKE_LINKS_ASSEMBLY_MAX="3", INTAKE_LINKS_STRIPDOWN_CAP="out", INTAKE_LINKS_STRIPDOWN_MAX="6",
+                  INTAKE_WALK_RAISE="full", INTAKE_LINK_HOPS="2")
+    check(got == master, "car map on with its names, review knobs off their defaults, raise full, hops 2 -- the walk "
+                         "off: still master's requests", {k: v for k, v in got.items() if master.get(k) != v})
     check(zones.light_options() == {} and zones.walk_index() is None,
           "with the car map loaded, the walk off: no zone call gets anything new")
 
@@ -489,6 +498,13 @@ def _end_to_end_on() -> None:
         check(order_ok, "prior order: inside each group and bucket the likelier relation first")
         check(all(SecondLookItem.model_validate(it).model_dump() == it for it in items),
               "the stored items are what SecondLookItem keeps (nothing lost on a re-save)")
+        from app.reports.taxonomy import CAR_MAP_PARTS
+
+        rb = [it for it in items if it.get("assembly") == "rear-bumper"]
+        check(not set(CAR_MAP_PARTS) & {it["part"] for it in items}
+              and rb and all("absorber" in (it.get("also_check") or []) for it in rb),
+              "names off: no car map name among them; the bumper's group says 'also check: absorber ...'",
+              rb[0].get("also_check") if rb else None)
 
         # A hand-add on the wizard re-links with the stored walk.
         data = state["data"]
@@ -547,6 +563,73 @@ def _end_to_end_on() -> None:
               and s.get("links_table") == "K1.0",
               "the AI-accuracy row (still VERSION 3): by assembly, by hop, the folded block, the sign-lifted parts, "
               "table K1.0", {k: s.get(k) for k in ("by_hop", "folded", "sign_lifted", "links_table")} if s else row)
+
+
+def _enums(obj) -> set:
+    """Every string in every enum of a JSON schema."""
+    out: set = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "enum" and isinstance(v, list):
+                out |= {x for x in v if isinstance(x, str)}
+            else:
+                out |= _enums(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            out |= _enums(v)
+    return out
+
+
+def end_to_end_names() -> None:
+    t.ANSWERS["zone"] = _zone_with_walk
+    try:
+        _end_to_end_names()
+    finally:
+        t.ANSWERS["zone"] = _ZONE
+
+
+def _end_to_end_names() -> None:
+    from app.parts.prefill import sync_annex_a
+    from app.reports.taxonomy import CAR_MAP_PARTS
+
+    t.REQUESTS.clear()
+    with Settings(**ON_ALL, intake_car_map_names="on"), TestClient(t._app()) as client:
+        sign_in(client, role="admin", may_sign_off=True)
+        rid, pids = t.new_draft(client)
+        label_id = {f"P{i + 1:02d}": pid for i, pid in enumerate(pids)}
+        state = t.read(client, rid)
+        check(state["stage"] == "ready", "the read with everything on and the names on ends ready", state.get("error"))
+        items = t.links_of(state["data"].get("second_look") or {})
+        by = {it["part"]: it for it in items}
+        absorber = by.get("Rear Bumper Absorber") or {}
+        check(absorber.get("bucket") == "likely" and absorber.get("assembly") == "rear-bumper"
+              and [s["id"] for s in absorber.get("signs_yes") or []] == ["rb-pushed"]
+              and absorber["signs_yes"][0]["photo"] == f"@{label_id['P03']}" and not absorber.get("folded"),
+              "a new-name child appears: Rear Bumper Absorber, lifted to likely by the pushed-in sign", absorber)
+        bracket = by.get("Rear Bumper Bracket (side undetermined)") or {}
+        check(bracket.get("hidden") and bracket.get("side_from") is None
+              and not any(it["part"] in ("Left Rear Bumper Bracket", "Right Rear Bumper Bracket") for it in items),
+              "the bracket by its undetermined twin (no firm side at the rear end; never one from the walk)", bracket)
+        check(set(CAR_MAP_PARTS) & set(by) and not any(it.get("also_check") for it in items),
+              "with the names on: no 'also check' words (the parts are named)")
+        enums = set()
+        for r in t.REQUESTS:
+            enums |= _enums(r.get("response_format"))
+        check(t.REQUESTS and not set(CAR_MAP_PARTS) & enums,
+              f"no car map name in any request's enum ({len(t.REQUESTS)} requests: sort, read, zones)",
+              sorted(set(CAR_MAP_PARTS) & enums))
+        r = client.post(f"/intake/{rid}/suggestions", json={"key": "Rear Bumper Absorber", "action": "add"})
+        check(r.status_code == 200 and (r.json().get("item") or {}).get("part") == "Rear Bumper Absorber",
+              "added on the wizard", r.text[:300])
+        state = client.get(f"/intake/{rid}").json()
+        r = client.post(f"/intake/{rid}/finalize", json={"data": state["data"]})
+        check(r.status_code == 200, "filed", r.text[:300])
+        filed = t.db_row(Report, rid)
+        rows = ((filed.data or {}).get("annex_a") or {}).get("items") or \
+            sync_annex_a(None, filed.data, price_book=False)["annex_a"]["items"]
+        pairs = {(row.get("part_name"), row.get("source_part")) for row in rows}
+        check(("Rear bumper absorber", "Rear Bumper Absorber") in pairs,
+              "Annex A words it in the firm's words: 'Rear bumper absorber'", sorted(p for p in pairs if p[0])[:12])
 
 
 # ------------------------------------------------------------- 6. the replay
@@ -616,6 +699,15 @@ def replay_section() -> None:
     check(rc == 0 and "Underbody / Chassis" not in rows and doc.get("walk", {}).get("map") == "app/intake/car_map.json"
           and (rows.get("Rear Bumper Beam") or {}).get("bucket") == "strip_down",
           "on L1 (no --car-map): the walk read against the app's map, only the hit raise can act")
+    rc, doc, _ = replay(walked, "--car-map", cm, "--stripdown-cap", "out", "--car-map-names")
+    rows = {r["part"]: r for r in (doc.get("runs") or [{}])[0].get("link_suggestions") or []}
+    check(rc == 0 and (rows.get("Rear Bumper Absorber") or {}).get("bucket") == "likely"
+          and (doc.get("review_screen") or {}).get("names") is True
+          and (doc.get("review_screen") or {}).get("links", 0) > 117,
+          "--car-map-names: the map's table with its own names (more links), the absorber lifted",
+          (doc.get("review_screen") or {}).get("links"))
+    rc_n, _, log = replay(walked, "--car-map-names")
+    check(rc_n == 2 and "give --car-map too" in log, "--car-map-names without --car-map: exit 2")
     rc_plain, doc_plain, _ = replay(plain)
     check(rc_plain == 0 and "walk" not in doc_plain and not any(
         k in r for r in doc_plain["runs"][0]["link_suggestions"] for k in ("hop", "via", "signs_yes")),
@@ -642,6 +734,13 @@ def bench_section() -> None:
           == {"intake_car_map": "on", "intake_links_order": "prior", "intake_links_assembly_max": 4,
               "intake_links_stripdown_cap": "out", "intake_links_stripdown_max": 12, "intake_link_hops": 2},
           "the full arm's flags: each its setting", got)
+    got = bi.model_settings(bi.parse_args(["--links", "on", "--car-map", "on", "--car-map-names"]))
+    check(got.get("intake_car_map") == "on" and got.get("intake_car_map_names") == "on",
+          "--car-map-names: the car map's own names on", got)
+    with Settings(intake_links="on", intake_car_map="on", intake_car_map_names="on"):
+        check(bi.ai_settings(settings).get("intake_car_map_names") == "on", "... and in ai_settings while on")
+    with Settings(intake_links="on", intake_car_map="on"):
+        check("intake_car_map_names" not in bi.ai_settings(settings), "... and not while off")
     got = bi.model_settings(bi.parse_args(["--links", "on", "--stripdown-cap", "out"]))
     check(got == {"intake_links": "on", "intake_links_stripdown_cap": "out"}, "strip-down out on L1 alone", got)
     for bad, says in ((["--car-map", "on"], "--links on"), (["--stripdown-cap", "out"], "--links on"),
@@ -649,7 +748,8 @@ def bench_section() -> None:
                       (["--links", "on", "--stripdown-max", "6"], "--stripdown-cap out"),
                       (["--links", "on", "--assembly-max", "-1"], "--assembly-max"),
                       (["--links", "on", "--stripdown-cap", "half"], "--stripdown-cap"),
-                      (["--links", "on", "--car-map", " "], "--car-map")):
+                      (["--links", "on", "--car-map", " "], "--car-map"),
+                      (["--links", "on", "--car-map-names"], "--car-map too")):
         try:
             bi.model_settings(bi.parse_args(bad))
             check(False, f"{bad} should stop the run")
@@ -841,6 +941,7 @@ def main() -> int:
         ("3. everything off: the linked parts through the seam == master's links.py", links_section),
         ("4. everything off, end to end: master 99aaa85's requests and stored data", end_to_end_off),
         ("5. everything on, end to end: K1.0, walk, hops 2, strip-down out, prior", end_to_end_on),
+        ("5b. everything on with the car map's own part names (N1)", end_to_end_names),
         ("6. the replay reads a stored walk", replay_section),
         ("7. the benchmark's car map flags", bench_section),
         ("8. the AI-accuracy record", accuracy_section),

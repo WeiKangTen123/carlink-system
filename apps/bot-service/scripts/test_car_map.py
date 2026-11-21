@@ -730,8 +730,9 @@ def compiling() -> None:
                       "Other": True, None: True},
           "body gate: the tailgate glass link goes on a sedan or coupe, stays on a hatch body or an unknown one", by_body)
     named = car_map.links_table(EXAMPLE, names=True)
-    check(len(named["links"]) == len(EXAMPLE["relations"]) and links.validate_table(named),
-          "names on: every relation kept -- and links.validate_table refuses them until the taxonomy has them")
+    check(len(named["links"]) == len(EXAMPLE["relations"]) and links.validate_table(named) == [],
+          "names on: every relation kept -- and links.validate_table takes them (taxonomy.CAR_MAP_PARTS, N1)",
+          links.validate_table(named)[:2])
     motor = "boot-lid>wiper-motor"
     check(motor not in {l["id"] for l in car_map.links_table(EXAMPLE, body_type="Sedan", names=True)["links"]}
           and motor in {l["id"] for l in car_map.links_table(EXAMPLE, body_type="Hatchback", names=True)["links"]},
@@ -772,8 +773,12 @@ def seam() -> None:
     check(shown == car_map.links_table(EXAMPLE, body_type="Sedan") and shadow is None, "on: the map's table, gated")
     check(car_map.table_for_links(L1, mode="on", car_map=None) == (L1, None)
           and car_map.table_for_links(L1, mode="shadow", car_map=None) == (L1, None), "no map: L1")
-    check(car_map.table_for_links(L1, mode="on", car_map=EXAMPLE, names=True) == (L1, None),
-          "a map whose table fails links' check (new names not applied): L1")
+    check(car_map.table_for_links(L1, mode="on", car_map=EXAMPLE, names=True) == (car_map.links_table(EXAMPLE, names=True), None),
+          "names on: the map's table with its new-name relations (the taxonomy holds them)")
+    unknown = copy.deepcopy(EXAMPLE)
+    unknown["relations"][0] = {**unknown["relations"][0], "child": "Front Bumper Gizmo", "side": "none"}
+    check(car_map.table_for_links(L1, mode="on", car_map=unknown, names=True) == (L1, None),
+          "a map whose table fails links' check (a name on neither list): L1")
     check(car_map.table_for_links(L1, mode="on", car_map={"relations": [{}]}) == (L1, None),
           "a broken map object: L1, no exception")
     on = car_map.table_for_links(L1, mode="on", car_map=car_map.from_l1(L1))[0]
