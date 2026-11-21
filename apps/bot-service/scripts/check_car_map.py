@@ -60,7 +60,7 @@ def notes_for(cm: dict) -> list[str]:
     new = sorted({m["part"] for a in cm.get("assemblies") or [] for m in a.get("members") or []
                   if any(full not in links.CANONICAL_PARTS for full in car_map.expand(m["part"]))})
     if new:
-        out.append(f"{len(new)} new name(s) used (left out of the compiled table until applied): {', '.join(new)}")
+        out.append(f"{len(new)} new name(s) used (taxonomy.CAR_MAP_PARTS; left out of the compiled table while intake_car_map_names is off): {', '.join(new)}")
     return out
 
 

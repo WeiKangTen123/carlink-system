@@ -77,6 +77,10 @@ x-bot-service: &bot-service
     - INTAKE_LINK_CHECK=${INTAKE_LINK_CHECK:-off}
     - INTAKE_LINKS_CATALOGUE=${INTAKE_LINKS_CATALOGUE:-false}
     - INTAKE_LINKS_MAX=${INTAKE_LINKS_MAX:-12}
+    # The car map's own part names (app/config.py intake_car_map_names):
+    # offered in the part pickers and named by the car map's linked parts.
+    # Off by default; both containers read it (the bot runs the pipeline).
+    - INTAKE_CAR_MAP_NAMES=${INTAKE_CAR_MAP_NAMES:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

@@ -25,10 +25,11 @@ and table_for_links() is the seam -- settings.intake_car_map, "off" by
 default: L1 as it is, the very same object. links never imports this
 module (no cycle when the seam is wired).
 
-New part names below today's taxonomy (car_map_new_names.json, owner
-option a) are proposed, not applied: a map may name them, and the
-compiled table leaves out every relation that does until the taxonomy
-holds them (names=True, after the integrator's change).
+New part names below today's canonical list (car_map_new_names.json,
+owner option a) are taxonomy.CAR_MAP_PARTS: a map may name them, and the
+compiled table keeps the relations that do only with names=True --
+table_for_links takes it from settings.intake_car_map_names ("off" by
+default: every such relation left out, today's table).
 
 Everything that reads a file is total: load() and load_new_names() answer
 None (and log) for a missing, unreadable or invalid file, and validate()
@@ -51,6 +52,7 @@ from app.reports.taxonomy import (
     OTHER_PART,
     UNDETERMINED_SUFFIX,
     body_class,
+    body_type_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -797,18 +799,36 @@ _UNSET = object()
 MAP = load()
 
 
+def names_on() -> bool:
+    """settings.intake_car_map_names is "on": the car map's tables may name
+    taxonomy.CAR_MAP_PARTS."""
+    return getattr(settings, "intake_car_map_names", "off") == "on"
+
+
+def link_body_type(vehicle: dict | None) -> str | None:
+    """The body type a map's body gates are read against: the make/model
+    match only (taxonomy.body_type_for without the AI's stated guess; owner
+    decision, K1-design section 8 question 2). None -- every gate passes,
+    the reason says "tailgate only" -- when the make/model isn't known."""
+    vehicle = vehicle if isinstance(vehicle, dict) else {}
+    return body_type_for(vehicle.get("make"), vehicle.get("model"))
+
+
 def table_for_links(l1_table: dict | None, *, mode: str | None = None, car_map=_UNSET, body_type: str | None = None,
-                    names: bool = False) -> tuple[dict | None, dict | None]:
+                    names: bool | None = None) -> tuple[dict | None, dict | None]:
     """(the table to build the shown linked parts from, the table to build
     the shadow ones from -- None for none), by settings.intake_car_map
     (or `mode`): "off" -> (l1_table itself, None): today, untouched;
     "shadow" -> (l1_table, the map's table); "on" -> (the map's table,
     None). The map's table is links_table(car_map) when it passes
     links.validate_table; otherwise none -- "on" then keeps l1_table, with
-    a log line. Never raises."""
+    a log line. names: whether that table keeps the relations naming a
+    car map part, by default settings.intake_car_map_names (names_on).
+    body_type: link_body_type(vehicle). Never raises."""
     mode = mode if mode is not None else getattr(settings, "intake_car_map", "off")
     if mode not in ("shadow", "on"):
         return l1_table, None
+    names = names_on() if names is None else bool(names)
     cm = MAP if car_map is _UNSET else car_map
     compiled = None
     if isinstance(cm, dict):

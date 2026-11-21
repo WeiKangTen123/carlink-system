@@ -505,6 +505,15 @@ class Settings(BaseSettings):
     # car_map.table_for_links reads it; the pipeline is wired to it in
     # Phase 2 (I3), so until then no step changes whatever it says.
     intake_car_map: str = "off"
+    # The car map's own part names (taxonomy.CAR_MAP_PARTS: a bumper's
+    # absorber and brackets, a door's lock, hinges and handle ...). "off":
+    # the car map's table leaves out every relation that names one (today's
+    # linked parts) and the part pickers offer today's list. "on": its
+    # linked parts may name them (car_map.table_for_links) and GET
+    # /taxonomy tells the dashboard to offer them. Never in a Gemini enum of
+    # the reads either way; a case that already holds one keeps it valid
+    # and printed when this is turned off.
+    intake_car_map_names: str = "off"
 
     @field_validator("intake_links")
     @classmethod
@@ -555,6 +564,11 @@ class Settings(BaseSettings):
     @classmethod
     def _car_map(cls, value):
         return normal_car_map_mode(value)
+
+    @field_validator("intake_car_map_names")
+    @classmethod
+    def _car_map_names(cls, value):
+        return normal_car_map_names(value)
 
 
 READ_MODES = ("single", "zones")
@@ -712,6 +726,14 @@ CAR_MAP_MODES = ("off", "shadow", "on")
 def normal_car_map_mode(value) -> str:
     """intake_car_map written the one way; None or blank is "off"."""
     return _one_of(value, CAR_MAP_MODES, "intake_car_map")
+
+
+CAR_MAP_NAMES = ("off", "on")
+
+
+def normal_car_map_names(value) -> str:
+    """intake_car_map_names written the one way; None or blank is "off"."""
+    return _one_of(value, CAR_MAP_NAMES, "intake_car_map_names")
 
 
 # Each model setting written the one way, None when blank (unset). Raise

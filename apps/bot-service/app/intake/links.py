@@ -66,9 +66,11 @@ from app.reports.taxonomy import (
     FIRM_CONDITION_TOKENS,
     FIRM_REMARKS,
     FIRM_WHOLE_CONDITIONS,
+    KNOWN_PARTS,
     OTHER_PART,
     UNDETERMINED_SUFFIX,
     condition_tokens_of,
+    known_part,
     split_side,
     unsided_part,
 )
@@ -161,6 +163,13 @@ REAR_END = frozenset({
     "Rear Floor Panel", "Rear Subframe", "Suspension - Rear", "Exhaust System", "Fuel Tank", "Parking Sensor",
     "Reversing Camera",
 })
+# The car map's names (taxonomy.CAR_MAP_PARTS) at each end; the doors' are
+# at neither. Only a case holding one of them meets these.
+FRONT_END |= {"Front Bumper Absorber", "Front Bumper Bracket", "Front Parking Sensor", "Fog Lamp Cover",
+              "Radiator Support", "Radiator Fan", "Bonnet Hinge", "Bonnet Latch", "Bonnet Insulator"}
+REAR_END |= {"Rear Bumper Absorber", "Rear Bumper Bracket", "Rear Parking Sensor", "Boot Lid Striker", "Boot Lid Strut",
+             "Rear Number Plate Lamp", "Boot Lid Garnish", "Boot Lid Spoiler", "Rear Wiper Motor",
+             "High Mount Stop Lamp", "Fuel Filler Flap"}
 # A structural part listed at an end: the hit went past the outer panels.
 STRUCTURAL = {
     "front": frozenset({"Front Bumper Beam", "Front Subframe", "Underbody / Chassis"}),
@@ -207,9 +216,9 @@ def _expand(name: str) -> list[tuple[str, str | None]]:
 def validate_table(table) -> list[str]:
     """What is wrong with a link table (contract10.md section 4.3), as
     plain lines; [] when nothing is. Every parent and child, {side}
-    expanded, is a canonical part (not a "(side undetermined)" name, not
-    Other); ids and parent/child pairs are unique; the side field matches
-    where {side} is; types, sides, levels, areas and trigger words are the
+    expanded, is a canonical or car map part (taxonomy.KNOWN_PARTS; not a
+    "(side undetermined)" name, not Other); ids and parent/child pairs are
+    unique; the side field matches where {side} is; types, sides, levels, areas and trigger words are the
     known ones; hidden / strip_down are true or false; a reason is at most
     MAX_REASON characters with no number of three or more digits. Total:
     a value of any JSON type anywhere is a line here, never an exception
@@ -222,7 +231,7 @@ def validate_table(table) -> list[str]:
     links = table.get("links")
     if not isinstance(links, list):
         return errors + ["no list of links"]
-    canonical = set(CANONICAL_PARTS)
+    canonical = set(KNOWN_PARTS)
     ids, pairs = set(), set()
     for n, link in enumerate(links):
         where = f"link {n}"
@@ -394,7 +403,7 @@ def covers(part: str) -> list[str]:
     undetermined)" name, or for an undetermined name every sided one."""
     family = unsided_part(part) or part
     if part.endswith(UNDETERMINED_SUFFIX):
-        return [p for p in CANONICAL_PARTS if (unsided_part(p) or p) == family]
+        return [p for p in KNOWN_PARTS if (unsided_part(p) or p) == family]
     return [part] if family == part else [part, family]
 
 
@@ -621,7 +630,7 @@ def _candidates(parents: list[int], ctx: _Ctx, table: dict) -> list[dict]:
     for n in parents:
         parent = ctx.listed[n]
         part = str(parent.get("part") or "")
-        if part not in CANONICAL_PARTS or part == OTHER_PART:
+        if not known_part(part) or part == OTHER_PART:
             continue
         level, words = ctx.levels[n], set(_tokens(parent))
         pairs = _parent_links(parent, table_links)

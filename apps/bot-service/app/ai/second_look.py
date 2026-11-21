@@ -48,9 +48,11 @@ from app.config import settings
 from app.reports.taxonomy import (
     CANONICAL_PARTS,
     FIRM_CONDITION_TOKENS,
+    KNOWN_PARTS,
     UNDETERMINED_SUFFIX,
     damage_type_from_tokens,
     firm_condition,
+    known_part,
     split_side,
     unsided_part,
 )
@@ -168,10 +170,11 @@ def covers_of(part: str) -> list[str]:
     itself, and its family's "(side undetermined)" name -- or, for a
     side-undetermined part, every sided name of its family. "Left Tail
     Lamp" is listed by "Tail Lamp (side undetermined)" (the reading saw a
-    tail lamp it couldn't place) but not by "Right Tail Lamp"."""
+    tail lamp it couldn't place) but not by "Right Tail Lamp". A car map
+    part's family the same way (taxonomy.KNOWN_PARTS)."""
     family = unsided_part(part) or part
     if part.endswith(UNDETERMINED_SUFFIX):
-        return [p for p in CANONICAL_PARTS if (unsided_part(p) or p) == family]
+        return [p for p in KNOWN_PARTS if (unsided_part(p) or p) == family]
     return [part] if family == part else [part, family]
 
 
@@ -200,7 +203,7 @@ def other_side_listed(part: str, listed: set[str]) -> str | None:
     if side not in ("Left", "Right"):
         return None
     other = f"{'Right' if side == 'Left' else 'Left'} {base}"
-    return other if other in CANONICAL_PARTS and other in listed else None
+    return other if known_part(other) and other in listed else None
 
 
 # ------------------------------------------------------------ candidates

@@ -1,5 +1,5 @@
 {"version": "N1",
- "status": "proposed, not applied: taxonomy.py, vehicleZones.ts and the firm wording are unchanged until the integrator (I3) applies this list behind intake_car_map_names",
+ "status": "applied (N1 agent, 19 Nov 2026): taxonomy.CAR_MAP_PARTS (+ twins), the firm wording, vehicleZones.ts zones and stand-ins; offered and suggested only while intake_car_map_names is on",
  "fields": "name ({side} = Left and Right), sided, twin (its side-undetermined name), area, assembly (the car map assembly it belongs to), role, hidden, strip_down, fitted, body, firm (Annex A floor wording, side code added last), firm_hatch (tailgate wording), zone (3D zone key: one, or per Left / Right / twin), stand_in (where it really is, for the 3D map), coarse (today's name that also covers it), also_check (the words shown when the names are off), why",
  "names": [
   {"name": "Front Bumper Absorber", "sided": false, "twin": null, "area": "front", "assembly": "front-bumper", "role": "absorber", "hidden": true, "strip_down": true, "fitted": "always", "body": null, "firm": "Front bumper absorber", "firm_hatch": null, "zone": "front_bumper", "stand_in": "behind the bumper", "coarse": null, "also_check": "absorber", "why": "The foam or plastic energy absorber between cover and beam; priced on its own once the bumper is off."},
