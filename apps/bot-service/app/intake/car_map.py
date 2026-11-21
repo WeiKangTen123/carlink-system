@@ -950,6 +950,18 @@ _UNSET = object()
 # The map as the app started with it (None: there is none yet -- K1b
 # writes it -- or it failed the check).
 MAP = load()
+# The frozen car map versions (plans/2026-11-18-car-knowledge/K1-freeze.md,
+# written by the lead before any scoring): version -> sha256 of git's copy
+# (LF). A run or replay on a map says whether it is that version's file.
+FROZEN = {"K1.0": "21298e9ef6ced02a8c8b24fb8222f74e104cc79f4d7f5281623ae38719ee39ba"}
+
+
+def frozen_as(version, sha) -> bool | None:
+    """True: `sha` is the frozen file of `version`; False: that version is
+    frozen but this is another file (a changed map under a frozen name);
+    None: no freeze line for that version (L1 converted, a test map)."""
+    want = FROZEN.get(version) if isinstance(version, str) else None
+    return None if want is None else sha == want
 
 
 def table_for_links(l1_table: dict | None, *, mode: str | None = None, car_map=_UNSET, body_type: str | None = None,

@@ -882,10 +882,23 @@ def _strip_block(item: dict) -> bool:
     return item.get("bucket") == "strip_down" or (item.get("hop") == 2 and item.get("bucket") != "seen")
 
 
+def cap_slot(item: dict) -> tuple[str, str]:
+    """The per-group cap's slot of a linked part: (its group, its bucket),
+    the strip-down block's parts as "strip_down" -- and a second hop's
+    (hop 2) in a slot of its own, "hop2": it sorts after every first hop
+    of its bucket, so sharing the anchor group's strip-down slot it would
+    never show on the heavy hits that open it (I3). At most
+    assembly_walk.MAX_HOP2 a case all the same."""
+    if item.get("hop") == 2:
+        return group_of(item), "hop2"
+    return group_of(item), "strip_down" if _strip_block(item) else str(item.get("bucket"))
+
+
 def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[dict]:
     """The linked parts shown, in order, from `kept` (sorted already): at
-    most opts.assembly_max per group (group_of) and bucket -- a second hop
-    counted as strip-down -- then opts.max_items in all; with
+    most opts.assembly_max per group (group_of) and bucket (cap_slot: the
+    strip-down block's as strip-down, a second hop's in its own slot) --
+    then opts.max_items in all; with
     stripdown_cap "out", the strip-down block (_strip_block) apart, after
     the others, at most opts.stripdown_max, never counted in max_items,
     each marked folded. counted: the per-(group, bucket) counts already shown
@@ -895,7 +908,7 @@ def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[d
     shown, folded = [], []
     for it in kept:
         block = _strip_block(it)
-        slot = (group_of(it), "strip_down" if block else it["bucket"])
+        slot = cap_slot(it)
         if per.get(slot, 0) < opts.assembly_max:
             per[slot] = per.get(slot, 0) + 1
             (folded if out_block and block else shown).append(it)
@@ -1044,7 +1057,7 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
     if ctx.info is not None:
         for it in open_links:
             if isinstance(it.get("assembly"), str) and it["assembly"]:
-                slot = (it["assembly"], "strip_down" if _strip_block(it) else str(it.get("bucket")))
+                slot = cap_slot(it)
                 counted[slot] = counted.get(slot, 0) + 1
     items, _ = _build([mine], ctx, table, counted)
     if opts.stripdown_cap != "out":

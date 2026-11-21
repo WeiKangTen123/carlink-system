@@ -3321,10 +3321,15 @@ def car_map_settings() -> dict:
 
         loaded = car_map.MAP if isinstance(car_map.MAP, dict) else None
         if CAR_MAP_USED and loaded:
-            return {"car_map_version": loaded.get("version"), "car_map_sha256": CAR_MAP_USED.get("sha256"),
-                    "car_map_source": CAR_MAP_USED.get("source")}
-        return {"car_map_version": loaded.get("version") if loaded else None,
-                "car_map_sha256": car_map.sha256_lf() if loaded else None}
+            out = {"car_map_version": loaded.get("version"), "car_map_sha256": CAR_MAP_USED.get("sha256"),
+                   "car_map_source": CAR_MAP_USED.get("source")}
+        else:
+            out = {"car_map_version": loaded.get("version") if loaded else None,
+                   "car_map_sha256": car_map.sha256_lf() if loaded else None}
+        # Whether it is the frozen file of its version (K1-freeze.md); None
+        # for a version with no freeze line.
+        out["car_map_frozen"] = car_map.frozen_as(out["car_map_version"], out["car_map_sha256"])
+        return out
     except Exception:
         return {"car_map_version": None, "car_map_sha256": None}
 

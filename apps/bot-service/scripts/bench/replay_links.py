@@ -646,7 +646,8 @@ def review_setup(args: argparse.Namespace) -> tuple[dict | None, dict | None, di
             sys.exit(2)
         table = compiled
         review.update(car_map=where, version=cm.get("version"), sha256_lf=sha, links=len(compiled["links"]),
-                      info=car_map.review_lookup(cm), map=cm, module=car_map)
+                      info=car_map.review_lookup(cm), map=cm, module=car_map,
+                      map_frozen=car_map.frozen_as(cm.get("version"), sha))
     return review, table, change
 
 
@@ -712,6 +713,7 @@ def main(argv=None) -> int:
     if review is not None:
         doc["review_screen"] = {
             "car_map": review["car_map"], "version": review.get("version"), "sha256_lf": review.get("sha256_lf"),
+            "map_frozen": review.get("map_frozen"),
             "links": review.get("links"), "flags": {flag: getattr(args, flag) for flag, _ in REVIEW_FLAGS},
             "summary": entries["default"]["review"]}
     print(f"REPLAY linked parts: table {freeze['version']} "
@@ -721,8 +723,10 @@ def main(argv=None) -> int:
     if review is not None:
         flags = ", ".join(f"{flag.replace('_', '-')} {getattr(args, flag)}" for flag, _ in REVIEW_FLAGS
                           if getattr(args, flag) is not None)
+        frozen = {True: ", the frozen file (K1-freeze.md)", False: ", NOT the frozen file of that version",
+                  None: ""}[review.get("map_frozen")]
         print(f"   review screen (K4): car map {review['car_map']}"
-              + (f" ({review.get('version')}, {review.get('links')} links, sha256 LF {review.get('sha256_lf')})"
+              + (f" ({review.get('version')}, {review.get('links')} links, sha256 LF {review.get('sha256_lf')}{frozen})"
                  if review["car_map"] != "off" else "") + (f"; {flags}" if flags else ""))
     if walking is not None:
         w = doc["walk"]
