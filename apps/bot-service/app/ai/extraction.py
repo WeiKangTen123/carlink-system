@@ -523,13 +523,18 @@ def _build_input(
         # The sorter's kind picks the image's resolution
         # (settings.gemini_image_resolution); no kind -- the bots, a photo
         # never sorted -- sends it at Gemini's default, as before.
-        parts.append(image_part(path, kind=(hints[i - 1] or {}).get("kind"), **sized))
+        kind = (hints[i - 1] or {}).get("kind")
+        if sized and hints[i - 1] is not None and not kind:
+            # E12b (the review's L3): an intake photo the sort didn't sort
+            # takes the table's "unsorted" (else "*") entry too.
+            kind = "unsorted"
+        parts.append(image_part(path, kind=kind, **sized))
         # The close-up has a label part of its own, after the photo: the
         # photo's own "Photo P07:" stays exactly that, and the model still
         # cites P07. Its photo's kind, so it gets the same resolution.
         if closeups[i - 1]:
             parts.append({"type": "text", "text": f"Close-up of photo {label}:"})
-            parts.append(image_part(closeups[i - 1], kind=(hints[i - 1] or {}).get("kind"), **sized))
+            parts.append(image_part(closeups[i - 1], kind=kind, **sized))
     if tail:
         parts.append({"type": "text", "text": tail})
     return parts

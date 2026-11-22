@@ -144,12 +144,25 @@ UNSORTED_BUDGET = 4
 # setting (read_limit): 40 is ~10.7MB, still one request.
 MAX_READ_PHOTOS = 32
 # E12 (plans/2026-11-22-enhance-staging 3c): with intake_max_read_photos
-# above MAX_READ_PHOTOS, the photos stop being added once those taken so far
-# would send more than this many bytes (base64, as they go): Gemini takes at
-# most 20 MB in one inline request, the prompt and the notes included, and
-# 64 previews of ~200 KB would pass it. Lowest priority first out. At 32 or
-# fewer photos nothing is counted -- the choice is exactly as before.
+# above MAX_READ_PHOTOS, the photos past today's first 32 are added only
+# while the request stays under this many bytes (the photos and close-ups as
+# sent, base64): Gemini takes at most 20 MB in one inline request, the prompt
+# and the notes included, and 64 previews of ~200 KB would pass it. The
+# first 32 are picked exactly as today, whatever their size; a later photo
+# that would pass the budget is skipped and the next one tried (the review's
+# M2). At 32 or fewer photos nothing is counted -- the choice is as before.
 READ_BYTES_BUDGET = 18_000_000
+# The review's M3: with settings.intake_read_crops, each close-up the read
+# may send (intake_read_crops_max) is counted at this many bytes before the
+# extra photos are picked -- a 1600 px JPEG at quality 85 (crops.MAX_EDGE,
+# QUALITY) is ~0.3-0.8 MB as base64 -- and the close-ups made are measured
+# again after (fit_crops).
+CROP_RESERVE_BYTES = 800_000
+# The review's L5: the main read's try waits READ_TIMEOUT, plus this much for
+# each photo past MAX_READ_PHOTOS, at most READ_TIMEOUT_MAX.
+READ_TIMEOUT = 120.0
+READ_TIMEOUT_PER_EXTRA = 1.5
+READ_TIMEOUT_MAX = 180.0
 # Kinds whose photo still counts as damage evidence when it shows damage and
 # names the damaged part (e.g. a boot photo the sorter called interior).
 # An "other" photo showing damage counts with no part too: the sorter can't
@@ -692,14 +705,39 @@ def _top_up_order(
     )
 
 
+def _file_bytes(path) -> int:
+    """A file as base64 sends it; 0 when it is gone."""
+    try:
+        return (Path(path).stat().st_size + 2) // 3 * 4
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
 def _sent_bytes(photo: IntakePhoto) -> int:
     """What one photo adds to the reading's request: its AI input (the 1600
     px preview, else the original) as base64. 0 when the file is gone (it
     can't be sent anyway)."""
     try:
-        return (Path(ai_input_path(photo.path)).stat().st_size + 2) // 3 * 4
+        return _file_bytes(ai_input_path(photo.path))
     except (OSError, TypeError, ValueError):
         return 0
+
+
+def read_bytes_budget() -> int:
+    """E12's budget for the photos (READ_BYTES_BUDGET), less the close-ups'
+    reserve while settings.intake_read_crops is on (the review's M3)."""
+    reserve = 0
+    if getattr(settings, "intake_read_crops", False):
+        reserve = max(0, int(getattr(settings, "intake_read_crops_max", 0) or 0)) * CROP_RESERVE_BYTES
+    return max(0, READ_BYTES_BUDGET - reserve)
+
+
+def read_timeout(photos: int) -> float:
+    """The main read's try timeout for this many photos: READ_TIMEOUT up to
+    MAX_READ_PHOTOS (as before), then READ_TIMEOUT_PER_EXTRA more for each
+    photo past it, at most READ_TIMEOUT_MAX (the review's L5)."""
+    extra = max(0, photos - MAX_READ_PHOTOS)
+    return min(READ_TIMEOUT_MAX, READ_TIMEOUT + READ_TIMEOUT_PER_EXTRA * extra) if extra else READ_TIMEOUT
 
 
 def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = False) -> list[IntakePhoto]:
@@ -722,17 +760,74 @@ def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = Fals
       5. slots still left: _top_up_order (the rest of the damage, other car
          photos showing damage, overviews, unsorted, tyre / interior /
          other, then the other party's car, the scene and paperwork).
-    So with 40 or 64 slots, step 3 simply takes more of the same damage
-    order (the 32 chosen at the default are among them).
-
-    Above MAX_READ_PHOTOS (E12) the photos also stop once the request would
-    pass READ_BYTES_BUDGET; at 32 or fewer nothing is measured.
+    Above MAX_READ_PHOTOS (E12, the review's M2): the first MAX_READ_PHOTOS
+    are exactly today's (_priority_pick at 32, whatever their size); the
+    rest follow the order a pick of read_limit() photos takes (step 3 then
+    takes further down the same damage order), then any usable photo left,
+    each only while the request stays within read_bytes_budget() -- one that
+    would pass it is skipped and the next tried (_extra_photos). At 32 or
+    fewer nothing is measured.
     priority_order: the chosen photos in the order they were taken (for the
     tests and the benchmark's notes), not in case order."""
     cap = read_limit()
-    budget = READ_BYTES_BUDGET if cap > MAX_READ_PHOTOS else None
-    spent = [0]
-    full = [False]
+    chosen = _priority_pick(photos, min(cap, MAX_READ_PHOTOS))
+    if cap > MAX_READ_PHOTOS:
+        chosen = chosen + _extra_photos(photos, chosen, cap)
+    if priority_order:
+        return chosen
+    order = {p.id: i for i, p in enumerate(photos)}
+    return sorted(chosen, key=lambda p: order[p.id])
+
+
+def _extra_photos(photos: list[IntakePhoto], first: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
+    """E12: the photos past today's first ones, up to cap in all: in the
+    order a pick of `cap` photos takes them, then every other usable photo
+    in an unlimited pick's order; one that would take the request past
+    read_bytes_budget() is skipped (logged), never ending the choice."""
+    budget = read_bytes_budget()
+    spent = sum(_sent_bytes(p) for p in first)
+    taken = {p.id for p in first}
+    out: list[IntakePhoto] = []
+    skipped = 0
+    for p in _priority_pick(photos, cap) + _priority_pick(photos, len(photos)):
+        if len(first) + len(out) >= cap:
+            break
+        if p.id in taken:
+            continue
+        taken.add(p.id)
+        size = _sent_bytes(p)
+        if spent + size > budget:
+            skipped += 1
+            continue
+        spent += size
+        out.append(p)
+    if skipped:
+        logger.warning("Reading: %d photo(s) left out of the %d-photo read to stay under %.1f MB (%d taken, %.1f MB)",
+                       skipped, cap, budget / 1e6, len(first) + len(out), spent / 1e6)
+    return out
+
+
+def fit_crops(photo_bytes: int, made: dict[str, str]) -> dict[str, str]:
+    """E12 with close-ups (the review's M3): the close-ups `made` (best
+    first) that keep the request -- photo_bytes of photos, then each
+    close-up as sent -- within READ_BYTES_BUDGET; the rest are left out."""
+    out: dict[str, str] = {}
+    total = photo_bytes
+    for photo_id, path in made.items():
+        size = _file_bytes(path)
+        if total + size > READ_BYTES_BUDGET:
+            continue
+        total += size
+        out[photo_id] = path
+    if len(out) < len(made):
+        logger.warning("Reading: %d close-up(s) left out to stay under %.1f MB", len(made) - len(out),
+                       READ_BYTES_BUDGET / 1e6)
+    return out
+
+
+def _priority_pick(photos: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
+    """select_for_reading's choice of at most `cap` photos, in the priority
+    order they are taken (its docstring), nothing measured."""
     usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
     for p in usable:
@@ -749,19 +844,9 @@ def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = Fals
 
     def take(candidates: list[IntakePhoto], limit: int) -> None:
         for p in candidates:
-            if limit <= 0 or len(chosen) >= cap or full[0]:
+            if limit <= 0 or len(chosen) >= cap:
                 return
             if p.id not in chosen_ids:
-                if budget is not None:
-                    # E12: the request's size; past the budget no photo
-                    # more, so the lowest priorities are the ones left out.
-                    size = _sent_bytes(p)
-                    if spent[0] + size > budget:
-                        full[0] = True
-                        logger.warning("Reading: %d photos fill %.1f MB; the rest stay out of the %d-photo read "
-                                       "(READ_BYTES_BUDGET)", len(chosen), spent[0] / 1e6, cap)
-                        return
-                    spent[0] += size
                 chosen.append(p)
                 chosen_ids.add(p.id)
                 limit -= 1
@@ -774,11 +859,7 @@ def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = Fals
     take(unsorted, UNSORTED_BUDGET)
     # Room left over (a case with few damage photos): every other photo.
     take(_top_up_order(usable, by_kind, damage_pool, unsorted), cap)
-
-    if priority_order:
-        return chosen
-    order = {p.id: i for i, p in enumerate(photos)}
-    return sorted(chosen, key=lambda p: order[p.id])
+    return chosen
 
 
 # Contract 8 D1: the photos a close-up may be cut from -- the insured car's
@@ -900,6 +981,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     closeups: set[str] = set()
     if with_crops:
         made = read_crops(candidates, settings.intake_read_crops_max)
+        if read_limit() > MAX_READ_PHOTOS:
+            # E12 (the review's M3): the close-ups made count in the budget.
+            made = fit_crops(sum(_file_bytes(path) for _, _, path in inputs), made)
         extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
         closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
@@ -910,7 +994,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             [path for _, _, path in inputs],
             photo_labels=[label for label, _, _ in inputs],
             photo_hints=hints,
-            timeout=120.0,
+            # The review's L5: 120 s as before, more for a read past 32 photos.
+            timeout=read_timeout(len(inputs)),
             actor=actor,
             **extra,
             **limits,
