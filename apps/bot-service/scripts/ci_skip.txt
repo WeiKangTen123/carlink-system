@@ -1,0 +1,10 @@
+# Scripts CI does not run (scripts/run_ci_tests.py), one per line:
+#
+#   test_name  # why it can't run in CI
+#
+# A line without a reason, or naming a script that no longer exists, fails
+# the run. Take a line out once the test has a fixture fallback; run the
+# skipped ones by hand with the private case folder before a release.
+
+test_annexes       # needs the private example_case past reports: its prefill checks expect priced Annex A rows from them
+test_damage_items  # needs the private example_case past reports: POST /damage-items expects a priced tail-lamp row from them
