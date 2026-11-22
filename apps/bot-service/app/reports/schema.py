@@ -189,6 +189,15 @@ class LinkCheck(BaseModel):
     model: Optional[str] = None
     # Its words, cleaned (evidence.clean_reason), at most 160 characters.
     reason: Optional[str] = None
+    # F6 (settings.intake_link_hidden_no "cannot_tell"; the review's L8):
+    # the model's own verdict when a code rule changed it ("no" on a hidden
+    # part, now "cannot_tell"). Not in a dump while None, so a check made
+    # without the rule saves what it did before.
+    model_verdict: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _without_unset_model_verdict(self, handler):
+        return _without_defaults(handler(self), {"model_verdict": None})
 
 
 # Each linked-part field with its default, per model: what

@@ -714,7 +714,11 @@ def apply(items: list[dict], results: dict[str, dict], skip: set[str], hidden_ru
         if got is not None:
             it["link_check"] = dict(got["link_check"])
             if rule != "keep":
-                it["link_check"]["verdict"] = hidden_verdict(it["link_check"].get("verdict"), it, rule)
+                said = it["link_check"].get("verdict")
+                it["link_check"]["verdict"] = hidden_verdict(said, it, rule)
+                if it["link_check"]["verdict"] != said:
+                    # The model's own word, beside the code's (the review's L8).
+                    it["link_check"]["model_verdict"] = said
             bucket = BUCKET_OF.get(got["link_check"]["verdict"])
             if bucket:
                 it["bucket"] = bucket
@@ -851,6 +855,10 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
 # A failure's rank when several areas failed at once (B3): the one the
 # CheckRun names. The person's AI going away says what to fix.
 _FAILURE_RANK = {"skipped": 0, "busy": 1, "failed": 2}
+# B3: at most this many areas' calls in flight (the review's M1). Each
+# area's time box starts when its call starts, so a wider pool would spend
+# the later areas' boxes waiting for the rate limiter's slots.
+PARALLEL_WORKERS = 2
 
 
 def _ask_parallel(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str, dict]]:
@@ -865,8 +873,16 @@ def _ask_parallel(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dic
     signs_on = skill_choice()[1]
     groups = list(plan.groups)
     outcomes: list[tuple | None] = [None] * len(groups)
+    workers = min(PARALLEL_WORKERS, len(groups))
+    # The rate limiter's gap between two requests (rate_limit.acquire): the
+    # second call starts that much later, so its 30 s box starts about when
+    # its slot comes, not while it queues behind the first (the review's
+    # M1). A call after those waits for a worker, and starts its box then.
+    spacing = max(0.0, float(getattr(settings, "gemini_min_call_interval_seconds", 0.0) or 0.0))
 
     def one(i: int, group: Group, run: runs.Run) -> None:
+        if 0 < i < workers and spacing:
+            time.sleep(i * spacing)
         attempts = runs.Attempts()
         said: list[dict] = []
         try:
@@ -893,7 +909,7 @@ def _ask_parallel(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dic
     calls = len(groups)
     try:
         with runs.recorded(report_id, runs.LINK_CHECK_KIND, actor) as run:
-            with ThreadPoolExecutor(max_workers=len(groups), thread_name_prefix=f"link-{report_id}") as pool:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"link-{report_id}") as pool:
                 futures = [pool.submit(one, i, group, run) for i, group in enumerate(groups)]
             for future in futures:
                 if future.exception() is not None:
