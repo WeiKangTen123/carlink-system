@@ -107,6 +107,21 @@ _SEQUENCES = (
     "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p",
 )
 _SEPARATORS = re.compile(r"[\s._\-!@#$%^&*()+=,;:'\"/\\|?~`]+")
+# One digit, symbol or underscore: what _trim_pads takes off both ends.
+_PAD = re.compile(r"[\d\W_]")
+
+
+def _trim_pads(text: str) -> str:
+    """text without the digits and symbols at either end:
+    "Password12345678!" -> "password". A loop rather than the regex this
+    used to be (_PAD+ at the start or at the end), whose end half, tried
+    from every position, is quadratic on a long run of digits."""
+    start, end = 0, len(text)
+    while start < end and _PAD.match(text, start):
+        start += 1
+    while end > start and _PAD.match(text, end - 1):
+        end -= 1
+    return text[start:end]
 
 
 @lru_cache(maxsize=1)
@@ -124,7 +139,7 @@ def _is_predictable(password: str) -> bool:
         return True
     # What's left once digits and symbols are trimmed from both ends:
     # "Password12345678!" -> "password".
-    core = _SEPARATORS.sub("", re.sub(r"^[\d\W_]+|[\d\W_]+$", "", low))
+    core = _SEPARATORS.sub("", _trim_pads(low))
     # One short piece repeated, padded or not: "passwordpassword",
     # "abcabcabcabcabc", "passwordpassword1".
     for text in (squashed, core):

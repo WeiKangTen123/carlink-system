@@ -73,8 +73,10 @@ router = APIRouter(tags=["auth"])
 WRONG_CREDENTIALS = "Email, username or password is wrong."
 # Plain ASCII only, checked after lower-casing. Emails aren't verified, so a
 # zero-width space or a Cyrillic look-alike would otherwise make an address
-# that reads exactly like someone else's in the users list.
-_EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}")
+# that reads exactly like someone else's in the users list. Only ever used
+# with fullmatch; the ^ says so to readers and scanners (one start position,
+# so no retrying from every character).
+_EMAIL = re.compile(r"^[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}")
 
 # Changing your own username answers "is this one taken?", so it is limited
 # per account like signup is per network.
