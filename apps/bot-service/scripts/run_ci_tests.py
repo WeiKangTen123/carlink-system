@@ -112,6 +112,11 @@ def main() -> int:
     parser.add_argument("--allow-network", action="store_true", help="do not point outside traffic at a dead proxy")
     parser.add_argument("--log-dir", type=Path, help="also write each script's output to <dir>/<name>.log")
     args = parser.parse_args()
+    # A test's output can hold any character; a Windows console's code page
+    # can't print them all, and the runner must not die reporting a failure.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     skips = read_skips()
     if args.names:
