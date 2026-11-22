@@ -437,7 +437,7 @@ def _sort(report_id: str, actor: AiActor) -> None:
         # The actor (and the run's collector) go to each worker as
         # arguments: a pool thread sees nothing of the thread that
         # submitted to it.
-        with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
+        with ThreadPoolExecutor(max_workers=sort_workers(), thread_name_prefix=f"sort-{report_id}") as pool:
             futures = [pool.submit(sort_batch, batch, actor, run.attempts) for batch in batches]
         run.photos_sent = {"count": sent}
         # A failed batch fails the run, but every batch that finished stays
@@ -464,6 +464,17 @@ def _sort(report_id: str, actor: AiActor) -> None:
 def sort_retry_on() -> bool:
     """F7: settings.intake_sort_retry_skipped is "on"."""
     return getattr(settings, "intake_sort_retry_skipped", "off") == "on"
+
+
+def sort_workers() -> int:
+    """B4: sorting batches in flight at once -- settings.intake_sort_workers
+    (1 to config.MAX_SORT_WORKERS), else SORT_WORKERS. Each batch's request
+    still waits for the rate limiter (rate_limit.acquire), so five starts
+    arrive spaced and under the per-minute limit."""
+    from app.config import MAX_SORT_WORKERS
+
+    value = getattr(settings, "intake_sort_workers", SORT_WORKERS)
+    return value if isinstance(value, int) and 1 <= value <= MAX_SORT_WORKERS else SORT_WORKERS
 
 
 def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
