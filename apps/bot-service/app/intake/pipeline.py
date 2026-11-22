@@ -459,11 +459,92 @@ def _sort(report_id: str, actor: AiActor) -> None:
             except Exception as exc:
                 logger.warning("Sorting %s: the skipped photos stay unsorted (%s)", report_id, type(exc).__name__)
             run.photos_sent = {"count": sent}
+        if sort_rescue_on():
+            # B9: one more short call for the photos no read would see.
+            rescue = _rescue_sort(report_id, actor, todo)
+            if rescue is not None:
+                run.photos_sent = {"count": sent + rescue["asked"], "rescue": rescue}
 
 
 def sort_retry_on() -> bool:
     """F7: settings.intake_sort_retry_skipped is "on"."""
     return getattr(settings, "intake_sort_retry_skipped", "off") == "on"
+
+
+def sort_rescue_on() -> bool:
+    """B9: settings.intake_sort_rescue is "on"."""
+    return getattr(settings, "intake_sort_rescue", "off") == "on"
+
+
+# B9: the sorter's kinds whose photos no zone read sees and the main read
+# only takes when slots are left (zones.NO_ZONE_KINDS) -- the paperwork the
+# main read needs (log card, VIN plate, police report, odometer) is not
+# among them.
+RESCUE_KINDS = frozenset({"interior", "document", "third_party", "scene"})
+
+
+def rescue_candidate(photo) -> bool:
+    """B9: a photo the sort left where no read would look for damage --
+    unsorted (a batch skipped it), unusable, one of RESCUE_KINDS, or "other"
+    with no damage seen. Never an excluded photo or one a person regrouped."""
+    if photo.excluded or photo.kind_source == "surveyor":
+        return False
+    if photo.kind is None or photo.quality == "unusable" or photo.kind in RESCUE_KINDS:
+        return True
+    return photo.kind == "other" and not photo.shows_damage
+
+
+def _rescue_sort(report_id: str, actor: AiActor, todo: list[tuple[str, str, str]]) -> dict | None:
+    """B9, on the sort run's thread (its tries go to that run): the photos
+    sorted in this run that rescue_candidate picks, in camera order, at most
+    BATCH_SIZE, in one triage.rescue_photos call; each it says shows damage
+    on the insured car becomes a damage photo of the area it names (an
+    unusable one "blurry", the first kind in its note). Never fails the
+    sort: None when there was nothing to ask, else {"asked", "rescued"} (and
+    "failed" when the call failed)."""
+    from app.ai.triage import rescue_photos
+
+    db = SessionLocal()
+    try:
+        asked = []
+        for label, photo_id, path in todo:
+            photo = db.get(IntakePhoto, photo_id)
+            if photo is not None and Path(path).exists() and rescue_candidate(photo):
+                asked.append((label, photo_id, path))
+        asked = asked[:BATCH_SIZE]
+    finally:
+        db.close()
+    if not asked:
+        return None
+    logger.info("Sorting %s: %d photo(s) no read would see sent to the rescue sort", report_id, len(asked))
+    try:
+        answers = rescue_photos([(label, path) for label, _, path in asked], actor=actor)
+    except Exception as exc:
+        logger.warning("Sorting %s: the rescue sort failed (%s); the photos stay as sorted", report_id,
+                       type(exc).__name__)
+        return {"asked": len(asked), "rescued": 0, "failed": True}
+    rescued = 0
+    db = SessionLocal()
+    try:
+        for label, photo_id, _ in asked:
+            answer = answers.get(label)
+            photo = db.get(IntakePhoto, photo_id)
+            if not answer or not answer["damage"] or photo is None or not rescue_candidate(photo):
+                continue
+            was = (photo.kind or "unsorted") + (", unusable" if photo.quality == "unusable" else "")
+            if photo.kind == "third_party":
+                photo.part = None  # the other vehicle's part, not ours
+            photo.kind = "damage"
+            photo.shows_damage = True
+            photo.area = answer["area"] or (photo.area if photo.area != "interior" else None)
+            photo.quality = "blurry" if photo.quality == "unusable" else (photo.quality or "good")
+            photo.note = f"Rescue sort: damage on the insured car (first sorted: {was})"
+            rescued += 1
+        db.commit()
+    finally:
+        db.close()
+    logger.info("Sorting %s: the rescue sort put %d of %d photo(s) back", report_id, rescued, len(asked))
+    return {"asked": len(asked), "rescued": rescued}
 
 
 def sort_workers() -> int:
