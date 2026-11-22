@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          # Full history: test_carmap_int, test_carmap_review and
+          # test_case_access read files at older commits (git show/archive
+          # 99aaa85, f4b1a66), which a shallow clone doesn't have.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
