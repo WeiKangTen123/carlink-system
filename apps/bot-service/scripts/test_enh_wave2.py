@@ -808,6 +808,30 @@ def bench_section() -> None:
     check(m.get("zone_other_end") == 1 and m.get("wrong_end_items") == 2 and m.get("geo_zone_changed") == 1
           and m.get("geo_side_changed") == 1 and m.get("wrong_end_sugg") == 1 and m.get("wrong_end_sugg_real") == 1,
           "E11 / E7 metrics", m)
+    # join_runs.py: an arm's rounds (arms taking turns) as one result file.
+    sys.path.insert(0, str(HERE / "bench"))
+    import join_runs
+
+    parts = bench.score_parts([{"part": "Rear Bumper"}], ["Rear Bumper"])
+
+    def doc(label, reps, ai):
+        return {"label": label, "git_ref": "r@1", "models": {"model_chain": "m"}, "ai_settings": ai,
+                "runs": [{"case": c, "rep": r, "parts": parts} for r in reps for c in ("A", "B")]}
+    joined = join_runs.join([("r1.json", doc("base", [1], {"x": 1})), ("r2.json", doc("base", [1], {"x": 1})),
+                             ("r3.json", doc("base", [1, 2], {"x": 1}))])
+    check(sorted({r["rep"] for r in joined["runs"]}) == [1, 2, 3, 4] and joined["summary"]["complete_reps"] == [1, 2, 3, 4]
+          and [s["reps"] for s in joined["joined_from"]] == [[1], [2], [3, 4]]
+          and joined["runs"][-1]["source_file"] == "r3.json" and joined["runs"][-1]["source_rep"] == 2
+          and joined["summary"]["total"]["found"]["n"] == 4,
+          "join_runs: the rounds' reps numbered on, the summary made again", joined["joined_from"])
+    try:
+        join_runs.join([("a", doc("base", [1], {"x": 1})), ("b", doc("arm", [1], {"x": 2}))])
+        refused = False
+    except ValueError:
+        refused = True
+    check(refused and join_runs.join([("a", doc("base", [1], {"x": 1})), ("b", doc("arm", [1], {"x": 2}))],
+                                     force=True)["summary"]["reps"] == 2,
+          "join_runs: files of different arms refused (--force joins them)")
 
 
 # ------------------------------------------------------------- 6. replay_link_check
