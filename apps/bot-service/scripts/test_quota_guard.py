@@ -593,7 +593,7 @@ def slot_deadlines() -> None:
     key = "deadline-key"
     window = STORAGE / ".ratelimit" / f"{quota_guard.key_tag(key)}.json"
     window.parent.mkdir(parents=True, exist_ok=True)
-    full = [time.monotonic()] * settings.gemini_max_requests_per_minute
+    full = [time.time()] * settings.gemini_max_requests_per_minute
     window.write_text(json.dumps(full))
     try:
         rate_limit.acquire(key, deadline=time.monotonic() + 5)
@@ -635,7 +635,7 @@ def slot_deadlines() -> None:
     env_key = os.environ["GEMINI_API_KEY"]
     env_window = STORAGE / ".ratelimit" / f"{quota_guard.key_tag(env_key)}.json"
     env_window.parent.mkdir(parents=True, exist_ok=True)
-    env_window.write_text(json.dumps([time.monotonic()] * settings.gemini_max_requests_per_minute))
+    env_window.write_text(json.dumps([time.time()] * settings.gemini_max_requests_per_minute))
     structured.get_client = lambda k: SimpleNamespace(interactions=SimpleNamespace(create=_create))
     SENT.clear()
     PLAN.clear()

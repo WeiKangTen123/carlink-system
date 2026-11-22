@@ -63,6 +63,7 @@ Nothing here may break production's AI: an unreadable file is a fresh one
 does.
 """
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -176,10 +177,17 @@ def mode() -> str:
     return "refuse" if lane() == "staging" else "local"
 
 
+# The label of the keyed hash that names a key's files. Not a secret: it
+# only keeps a file name from being a plain hash of an API key.
+FILE_TAG_LABEL = b"carlink-quota-file"
+
+
 def key_tag(api_key: str | None) -> str:
-    """What a key's files are named after: the same hash rate_limit.py
-    names its window by, never the key."""
-    return hashlib.sha256((api_key or "env-default").encode()).hexdigest()[:16]
+    """What a key's files are named after, here and in rate_limit.py: an
+    HMAC of the key under a fixed label, truncated -- a file name, never the
+    key nor a plain hash of it (and not a password hash: nothing is ever
+    checked against it)."""
+    return hmac.new(FILE_TAG_LABEL, (api_key or "env-default").encode(), hashlib.sha256).hexdigest()[:16]
 
 
 def _warn_once(key: str, message: str, *args) -> None:

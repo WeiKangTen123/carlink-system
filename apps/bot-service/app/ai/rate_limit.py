@@ -31,6 +31,16 @@ delayed, never dropped, and never fail for being early.
 The key itself is never written to disk -- files are named by a hash of it,
 so a window file leaks nothing if read.
 
+Wall-clock stamps (2026-11-22, review H3)
+-----------------------------------------
+The stamps were time.monotonic(), which starts again at every boot -- but
+the file outlives a reboot (it is on the storage volume), so after one, the
+old stamps looked like the future, counted as "in the window", and the
+spacing turned them into a sleep of about the previous uptime (days). The
+stamps are now time.time(), a stamp outside (now - 60 s, now + 1 s] is
+dropped, and no single wait is longer than the window. The file has a new
+name (key_tag), so an old file of monotonic stamps is simply never read.
+
 Two stacks, one key (2026-11-22)
 --------------------------------
 With settings.gemini_shared_quota_dir set and mounted, production and
@@ -38,7 +48,6 @@ staging share ONE window (and a per-day count) in that folder instead, with
 a lane each: ai/quota_guard.py. Without it -- the default -- everything
 below runs exactly as before.
 """
-import hashlib
 import json
 import logging
 import os
@@ -54,6 +63,12 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 WINDOW_SECONDS = 60.0
+# A stamp further ahead than this is from a clock that went back: dropped.
+FUTURE_SLACK_SECONDS = 1.0
+
+# The window's clock: wall time, which a reboot doesn't reset (H3). Tests
+# move it.
+_clock = time.time
 
 # Same-process concurrency. flock handles process-to-process; this stops two
 # threads in ONE process racing between their read and their write.
@@ -67,11 +82,10 @@ def _window_dir() -> Path:
 
 
 def _window_file(api_key: str | None) -> Path:
-    # Hashed so the key never touches disk. Truncated because collisions
-    # only cost two keys sharing a window, and 16 hex chars makes that
-    # vanishingly unlikely.
-    tag = hashlib.sha256((api_key or "env-default").encode()).hexdigest()[:16]
-    return _window_dir() / f"{tag}.json"
+    # Named by a keyed hash of the key (quota_guard.key_tag), so the key
+    # never touches disk. Truncated because collisions only cost two keys
+    # sharing a window, and 16 hex chars makes that vanishingly unlikely.
+    return _window_dir() / f"{quota_guard.key_tag(api_key)}.json"
 
 
 def _read_window(path: Path, now: float) -> list[float]:
@@ -85,8 +99,11 @@ def _read_window(path: Path, now: float) -> list[float]:
             return []
         stamps = json.loads(raw)
         # Anything outside the window is irrelevant; this is also what keeps
-        # the file from growing without bound.
-        return [t for t in stamps if isinstance(t, (int, float)) and now - t < WINDOW_SECONDS]
+        # the file from growing without bound. A stamp in the future is from
+        # a clock that went back (H3): never trusted.
+        return [float(t) for t in stamps
+                if isinstance(t, (int, float)) and not isinstance(t, bool)
+                and now - WINDOW_SECONDS < t <= now + FUTURE_SLACK_SECONDS]
     except FileNotFoundError:
         return []
     except Exception:
@@ -120,6 +137,19 @@ def _locked_window(path: Path, now: float):
     return handle, _read_window(path, now)
 
 
+def _wait_for(stamps: list[float], now: float, limit: int, spacing: float) -> float:
+    """Seconds until a slot is free in this window: the oldest call ageing
+    out of a full window, else the gap after the latest call; never more
+    than the window itself (H3). 0 = now."""
+    if len(stamps) >= limit:
+        wait = max(0.05, WINDOW_SECONDS - (now - min(stamps)))
+    elif stamps and spacing > 0:
+        wait = max(0.0, spacing - (now - max(stamps)))
+    else:
+        wait = 0.0
+    return min(wait, WINDOW_SECONDS)
+
+
 def _release(handle) -> None:
     try:
         import fcntl
@@ -149,14 +179,14 @@ def estimate_wait(api_key: str | None = None) -> float:
             logger.warning("Shared AI quota: couldn't estimate the wait (%s)", type(exc).__name__)
             return 0.0
     limit = max(1, settings.gemini_max_requests_per_minute)
-    now = time.monotonic()
+    spacing = max(0.0, settings.gemini_min_call_interval_seconds)
+    now = _clock()
     path = _window_file(api_key)
     with _local_lock:
         handle, stamps = _locked_window(path, now)
         try:
-            if len(stamps) < limit:
-                return 0.0
-            return max(0.0, WINDOW_SECONDS - (now - min(stamps)))
+            # The same reckoning as acquire's (H3: the two used to disagree).
+            return _wait_for(stamps, now, limit, spacing)
         finally:
             _release(handle)
 
@@ -223,25 +253,19 @@ def _acquire_local(api_key: str | None, deadline: float | None = None) -> float:
     waited = 0.0
 
     while True:
-        now = time.monotonic()
+        now = _clock()
         with _local_lock:
             handle, stamps = _locked_window(path, now)
             try:
-                if len(stamps) < limit:
-                    # Also keep a minimum gap between consecutive calls, so a
-                    # burst well under the per-minute cap still arrives spaced
-                    # rather than all at once.
-                    gap = 0.0
-                    if stamps and spacing > 0:
-                        gap = max(0.0, spacing - (now - max(stamps)))
-                    if gap <= 0:
-                        stamps.append(now)
-                        _write_window(path, stamps)
-                        return waited
-                    sleep_for = gap
-                else:
-                    # Window full: wait for the oldest call to age out of it.
-                    sleep_for = max(0.05, WINDOW_SECONDS - (now - min(stamps)))
+                # The window full: wait for the oldest call to age out of it.
+                # Else keep a minimum gap between consecutive calls, so a
+                # burst well under the per-minute cap still arrives spaced
+                # rather than all at once.
+                sleep_for = _wait_for(stamps, now, limit, spacing)
+                if sleep_for <= 0:
+                    stamps.append(now)
+                    _write_window(path, stamps)
+                    return waited
             finally:
                 _release(handle)
         # A caller's deadline (None: none, as always): give up before a wait
