@@ -207,6 +207,51 @@ FITTING_CONDITIONS = frozenset({"necessary", "serviceable"})
 SORT_FIELDS = ("kind", "area", "quality", "shows_damage", "part", "note")
 REFUSAL = ("Refusing to run: give --scratch DIR, or set BENCHMARK_SCRATCH=1 with DATABASE_URL and STORAGE_DIR "
            "pointing at scratch locations.")
+# Where a live stack keeps its database and files (infra/docker-compose.prod.yml:
+# STORAGE_DIR=/app/storage, DATABASE_URL=sqlite:////app/storage/carlink.db)
+# and the app's own defaults (app/config.py DEFAULT_DB_PATH /
+# DEFAULT_STORAGE_DIR): never scratch (Wave 2 review L6).
+LIVE_STORAGE_DIRS = ("/app/storage", str(BOT_DIR / "storage"))
+LIVE_DATABASES = (str(BOT_DIR / "carlink.db"),)
+
+
+def _path_within(path: str, roots) -> bool:
+    """Whether `path` is one of `roots` or inside one (resolved, so "/app/
+    storage/../storage" is caught)."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return True
+    for root in roots:
+        try:
+            base = Path(root).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if target == base or base in target.parents:
+            return True
+    return False
+
+
+def scratch_problem(env=None) -> str | None:
+    """Why this process may not write a scratch database and storage, or
+    None: BENCHMARK_SCRATCH=1, and DATABASE_URL (a sqlite file) and
+    STORAGE_DIR both set, neither the live stack's (LIVE_STORAGE_DIRS,
+    LIVE_DATABASES: inside the api container they are set to the live ones,
+    so being set is not enough) nor the app's defaults. --scratch DIR sets
+    all three."""
+    env = os.environ if env is None else env
+    if env.get("BENCHMARK_SCRATCH") != "1":
+        return REFUSAL
+    db, storage = (env.get("DATABASE_URL") or "").strip(), (env.get("STORAGE_DIR") or "").strip()
+    if not db or not storage:
+        return REFUSAL
+    if not db.startswith("sqlite:///"):
+        return f"{REFUSAL} (DATABASE_URL must be a sqlite file in a scratch folder)"
+    db_path = db[len("sqlite:///"):]
+    if (_path_within(storage, LIVE_STORAGE_DIRS) or _path_within(db_path, LIVE_STORAGE_DIRS)
+            or _path_within(db_path, LIVE_DATABASES)):
+        return f"{REFUSAL} (DATABASE_URL / STORAGE_DIR point at the live stack's or the app's own)"
+    return None
 OTHER_PART = "Other / Not Listed"
 
 log = logging.getLogger("benchmark")
@@ -3578,8 +3623,9 @@ def main(argv=None) -> int:
         sys.exit(f"needs {', '.join(missing)} (or --rescore FILE)")
     if args.scratch:
         _use_scratch(args.scratch)
-    if os.environ.get("BENCHMARK_SCRATCH") != "1":
-        sys.exit(REFUSAL)
+    problem = scratch_problem()
+    if problem:
+        sys.exit(problem)
     A = _app()
     for field, value in model_settings(args).items():
         setattr(A.settings, field, value)
@@ -3771,6 +3817,8 @@ def rescore(args: argparse.Namespace) -> int:
     if args.out is not None and args.out.resolve() == args.rescore.resolve():
         sys.exit("--rescore: --out must be another file; the stored result is kept as it is")
     annex = args.reports is not None and (args.scratch is not None or os.environ.get("BENCHMARK_SCRATCH") == "1")
+    if annex and args.scratch is None and scratch_problem():
+        sys.exit(scratch_problem())
     if annex and args.scratch is not None:
         _use_scratch(args.scratch)  # before anything imports the app's database
     doc = json.loads(args.rescore.read_text(encoding="utf-8"))

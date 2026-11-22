@@ -10,9 +10,13 @@ The runs of each file in the order given, their repetitions numbered on
 (the first file's 1..n, the next file's n+1.., each run keeping
 source_file / source_rep), and the summary made again
 (benchmark_intake.summarize). Works on benchmark_intake.py results and on
-replay_link_check.py outputs alike. Refuses files of different arms --
-another kind, git ref, model chains or ai_settings -- unless --force, and
-never writes over one of its inputs. No Gemini call, no app import.
+replay_link_check.py outputs alike: a replay's own assertions
+(damage_list_identical, links_match) are true in the joined file only when
+true in every input, and its stored source is carried over (the review's
+M1). Refuses files of different arms -- another kind, git ref, model
+chains or ai_settings, or replays of different stored results (source,
+L7) -- unless --force, and never writes over one of its inputs. No Gemini
+call, no app import.
 """
 import argparse
 import json
@@ -23,8 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import benchmark_intake as bench  # noqa: E402
 
-# What makes two files the same arm.
-SAME = ("kind", "git_ref", "models", "ai_settings")
+# What makes two files the same arm: for a replay, the stored result it
+# replays too (its reads).
+SAME = ("kind", "git_ref", "models", "ai_settings", "source", "source_label")
+# A replay's assertions over all its runs: the joined file's is the AND.
+ASSERTIONS = ("damage_list_identical", "links_match")
 
 
 def join(docs: list[tuple[str, dict]], label: str | None = None, force: bool = False) -> dict:
@@ -50,7 +57,11 @@ def join(docs: list[tuple[str, dict]], label: str | None = None, force: bool = F
         sources.append({"file": name, "label": doc.get("label"), "started": doc.get("started"),
                         "finished": doc.get("finished"), "reps": [number[rep] for rep in reps]})
         offset += len(reps)
-    out = {k: first.get(k) for k in ("kind", "git_ref", "args", "models", "ai_settings", "sort_cache") if k in first}
+    out = {k: first.get(k) for k in ("kind", "git_ref", "args", "models", "ai_settings", "sort_cache", "source",
+                                     "source_label", "knobs") if k in first}
+    for name in ASSERTIONS:
+        if any(name in doc for _, doc in docs):
+            out[name] = all(bool(doc.get(name)) for _, doc in docs)
     out.update(label=label or f"{first.get('label')}+{len(docs) - 1}", joined_from=sources,
                started=first.get("started"), finished=docs[-1][1].get("finished"), runs=runs,
                summary=bench.summarize(runs))

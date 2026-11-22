@@ -345,8 +345,10 @@ def main(argv=None) -> int:
         sys.exit("--out must be another file: the stored result is kept as it is")
     if args.scratch:
         bench._use_scratch(args.scratch)
-    if os.environ.get("BENCHMARK_SCRATCH") != "1":
-        sys.exit(bench.REFUSAL)
+    # A scratch database and storage, never the live stack's (review L6).
+    problem = bench.scratch_problem()
+    if problem:
+        sys.exit(problem)
     doc = json.loads(args.result.read_text(encoding="utf-8"))
     key = {c["name"]: c for c in json.loads(args.key.read_text(encoding="utf-8"))["cases"]}
     stored = [r for r in doc.get("runs") or [] if isinstance(r, dict) and bench.run_ok(r) and r.get("drafted_items")
