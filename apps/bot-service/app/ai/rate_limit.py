@@ -48,6 +48,7 @@ import time
 from pathlib import Path
 
 from app.ai import quota_guard
+from app.ai.quota_guard import SlotDeadline, slot_deadline  # noqa: F401 (callers import them from here)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -160,7 +161,8 @@ def estimate_wait(api_key: str | None = None) -> float:
             _release(handle)
 
 
-def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None) -> float:
+def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None,
+            deadline: float | None = None) -> float:
     """Claims one slot, waiting for the window if it's full.
 
     Returns how long it waited, for logging. The sleep happens with the file
@@ -172,10 +174,18 @@ def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint
     .acquire), which take over when the shared folder is there -- or when
     this is the staging lane, which then refuses (quota_guard.LaneRefused,
     nothing sent). Unused otherwise: the window below, as always.
+
+    deadline: a time.monotonic() by which the slot must be had, else
+    SlotDeadline is raised before any wait that would end at or past it,
+    with nothing taken or counted -- so a call whose time box has run out
+    never sends. Unset: the slot_deadline context's (with slot_deadline(t):
+    ...), else none -- wait as long as it takes, as always.
     """
+    deadline = quota_guard.current_deadline(deadline)
+    quota_guard.check_deadline(deadline, 0.0)
     if quota_guard.mode() != "local":
-        return _guarded(api_key, model, fingerprint)
-    return _acquire_local(api_key)
+        return _guarded(api_key, model, fingerprint, deadline)
+    return _acquire_local(api_key, deadline)
 
 
 def acquire_retry(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None) -> float:
@@ -185,26 +195,26 @@ def acquire_retry(api_key: str | None = None, *, model: str | None = None, finge
     window and today's count, so the retry takes one like any request."""
     if quota_guard.mode() == "local":
         return 0.0
-    return _guarded(api_key, model, fingerprint)
+    return _guarded(api_key, model, fingerprint, quota_guard.current_deadline())
 
 
-def _guarded(api_key: str | None, model: str | None, fingerprint: str | None) -> float:
+def _guarded(api_key: str | None, model: str | None, fingerprint: str | None, deadline: float | None = None) -> float:
     """quota_guard.acquire. Its refusals (LaneRefused) go to the caller.
     Any other failure of the shared folder (a full disk, a lost mount) must
     not stop production's AI: the production lane falls back to its own
     window and says so; the staging lane is refused."""
     try:
-        return quota_guard.acquire(api_key, model=model, fingerprint=fingerprint)
-    except quota_guard.LaneRefused:
+        return quota_guard.acquire(api_key, model=model, fingerprint=fingerprint, deadline=deadline)
+    except (quota_guard.LaneRefused, SlotDeadline):
         raise
     except Exception as exc:
         if quota_guard.lane() == "staging":
             raise quota_guard.LaneRefused(model, f"the shared quota folder failed: {type(exc).__name__}") from None
         logger.warning("Shared AI quota failed (%s); this request uses this stack's own window", type(exc).__name__)
-        return _acquire_local(api_key)
+        return _acquire_local(api_key, deadline)
 
 
-def _acquire_local(api_key: str | None) -> float:
+def _acquire_local(api_key: str | None, deadline: float | None = None) -> float:
     """The window in this stack's own STORAGE_DIR/.ratelimit (before the
     shared quota guard, the only one)."""
     limit = max(1, settings.gemini_max_requests_per_minute)
@@ -234,6 +244,9 @@ def _acquire_local(api_key: str | None) -> float:
                     sleep_for = max(0.05, WINDOW_SECONDS - (now - min(stamps)))
             finally:
                 _release(handle)
+        # A caller's deadline (None: none, as always): give up before a wait
+        # that would end past it, with no slot taken.
+        quota_guard.check_deadline(deadline, sleep_for)
 
         logger.info("Gemini rate limit: waiting %.1fs for a slot", sleep_for)
         time.sleep(sleep_for)

@@ -497,7 +497,7 @@ def _lanes_in_call_structured(root: Path, env_key: str) -> None:
     configure(gemini_min_call_interval_seconds=0.0)
     slots: list[str] = []
     real_local = rate_limit._acquire_local
-    rate_limit._acquire_local = lambda api_key: slots.append("slot") or 0.0
+    rate_limit._acquire_local = lambda api_key, deadline=None: slots.append("slot") or 0.0
     try:
         PLAN.clear()
         PLAN[LITE5] = [Busy(), '{"ok": 3}']
@@ -586,8 +586,76 @@ def settings_refuse_typos() -> None:
     check(config.day_limits("a=1, b = 2") == {"a": 1, "b": 2}, "day limits parse")
 
 
+def slot_deadlines() -> None:
+    print("\n11. a caller's deadline for its slot (review L4)")
+    configure(gemini_min_call_interval_seconds=0.0)
+    use_clock()
+    key = "deadline-key"
+    window = STORAGE / ".ratelimit" / f"{quota_guard.key_tag(key)}.json"
+    window.parent.mkdir(parents=True, exist_ok=True)
+    full = [time.monotonic()] * settings.gemini_max_requests_per_minute
+    window.write_text(json.dumps(full))
+    try:
+        rate_limit.acquire(key, deadline=time.monotonic() + 5)
+        check(False, "own window full, 5 s left: SlotDeadline")
+    except rate_limit.SlotDeadline:
+        check(json.loads(window.read_text()) == full, "own window full, 5 s left: SlotDeadline, no slot taken")
+    try:
+        with rate_limit.slot_deadline(time.monotonic() + 5):
+            rate_limit.acquire(key)
+        check(False, "the same through slot_deadline(): acquire(key) unchanged for its callers")
+    except rate_limit.SlotDeadline:
+        check(True, "the same through slot_deadline(): acquire(key) unchanged for its callers")
+    window.write_text("[]")
+    check(rate_limit.acquire(key, deadline=time.monotonic() + 5) == 0.0 and len(json.loads(window.read_text())) == 1,
+          "a free slot before the deadline is taken")
+    try:
+        rate_limit.acquire(key, deadline=time.monotonic() - 1)
+        check(False, "a deadline already past: SlotDeadline")
+    except rate_limit.SlotDeadline:
+        check(len(json.loads(window.read_text())) == 1, "a deadline already past: SlotDeadline, nothing taken")
+    with rate_limit.slot_deadline(None):
+        check(rate_limit.acquire(key) == 0.0, "slot_deadline(None): no limit, as always")
+
+    root = new_shared()
+    configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
+    clock = use_clock()
+    for _ in range(12):
+        rate_limit.acquire(KEY, model=LITE5)
+    try:
+        rate_limit.acquire(KEY, model=LITE5, deadline=time.monotonic() + 5)
+        check(False, "shared window full: SlotDeadline")
+    except rate_limit.SlotDeadline:
+        check(day_file(root)["counts"] == {LITE5: {"prod": 12}} and len(window_file(root)) == 12 and clock.slept == [],
+              "shared window full, 5 s left: SlotDeadline, nothing counted, no wait")
+
+    # call_structured with a deadline and a full window: nothing sent.
+    configure(gemini_min_call_interval_seconds=0.0)
+    init_db()
+    env_key = os.environ["GEMINI_API_KEY"]
+    env_window = STORAGE / ".ratelimit" / f"{quota_guard.key_tag(env_key)}.json"
+    env_window.parent.mkdir(parents=True, exist_ok=True)
+    env_window.write_text(json.dumps([time.monotonic()] * settings.gemini_max_requests_per_minute))
+    structured.get_client = lambda k: SimpleNamespace(interactions=SimpleNamespace(create=_create))
+    SENT.clear()
+    PLAN.clear()
+    PLAN[LITE5] = ['{"ok": 9}']
+    started = time.monotonic()
+    try:
+        structured.call_structured(
+            purpose="link", system_instruction="s", input_parts=[{"type": "text", "text": "x"}],
+            schema={"type": "object"}, parse=lambda raw: raw, models=[LITE5], actor=AiActor.cli(), timeout=5,
+            deadline=time.monotonic() + 3,
+        )
+        check(False, "call_structured past its time box: fails")
+    except Exception:
+        check(SENT == [] and time.monotonic() - started < 2.5,
+              "call_structured whose slot would come after its deadline: no request, no 60 s wait", repr(SENT))
+    env_window.write_text("[]")
+
+
 SECTIONS = [defaults_unchanged, prod_lane, staging_lane, day_rollover, missing_folder, concurrent_writers,
-            call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos]
+            call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos, slot_deadlines]
 
 
 def main() -> int:

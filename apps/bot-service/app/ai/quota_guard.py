@@ -109,6 +109,43 @@ class LaneRefused(allowance.DaySpent):
         self.why = why
 
 
+class SlotDeadline(Exception):
+    """No rate-limit slot could be had before the caller's deadline (a
+    time.monotonic() value): nothing was taken, counted or sent. Raised
+    before a wait that would end past it (rate_limit.acquire, this
+    module's acquire)."""
+
+
+# The deadline of the slot this thread is asking for (slot_deadline sets
+# it around a call); None = wait as long as it takes, as always.
+_deadline = threading.local()
+
+
+@contextmanager
+def slot_deadline(deadline: float | None) -> Iterator[None]:
+    """Within this block, a slot this thread asks for gives up (SlotDeadline)
+    rather than wait past `deadline` (time.monotonic()). None: no limit --
+    today's behaviour. A context rather than an argument, so callers whose
+    acquire is replaced in tests (one-argument stand-ins) need no change."""
+    previous = getattr(_deadline, "value", None)
+    _deadline.value = deadline
+    try:
+        yield
+    finally:
+        _deadline.value = previous
+
+
+def current_deadline(explicit: float | None = None) -> float | None:
+    return explicit if explicit is not None else getattr(_deadline, "value", None)
+
+
+def check_deadline(deadline: float | None, wait: float) -> None:
+    """SlotDeadline when a wait of `wait` seconds from now would end at or
+    past the deadline (or it has passed already)."""
+    if deadline is not None and time.monotonic() + max(0.0, wait) >= deadline:
+        raise SlotDeadline(f"no rate-limit slot within the time left (a {wait:.1f}s wait)")
+
+
 # ------------------------------------------------------------ the mode
 
 
@@ -353,12 +390,17 @@ def _slot_wait(stamps: list[list], me: str, now: float, *, spacing: bool = True)
 # ------------------------------------------------------------ taking a slot
 
 
-def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None) -> float:
+def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None,
+            deadline: float | None = None) -> float:
     """Claims one slot in the shared window for one request about to be
     sent, and counts it for today (model, lane). Waits when the lane's
     share of the window is full (the file lock released while it sleeps).
     Returns the seconds waited. Raises LaneRefused for the staging lane
-    when it may not send at all (staging_stop, or no shared folder)."""
+    when it may not send at all (staging_stop, or no shared folder), and
+    SlotDeadline -- nothing taken or counted -- when the slot would come
+    only at or after `deadline` (time.monotonic(); else the slot_deadline
+    context's; None = no limit)."""
+    deadline = current_deadline(deadline)
     me = lane()
     root = shared_dir()
     if root is None:
@@ -380,6 +422,7 @@ def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint
                 if why:
                     raise LaneRefused(model, why)
             sleep_for = _slot_wait(stamps, me, now)
+            check_deadline(deadline, max(0.0, sleep_for))
             if sleep_for <= 0:
                 stamps.append([now, me])
                 counts = day["counts"].setdefault(model or UNKNOWN_MODEL, {})

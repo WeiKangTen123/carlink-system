@@ -32,7 +32,14 @@ from app.ai.keys import (
 )
 from app.ai import quota_guard
 from app.ai.quota_guard import LaneRefused
-from app.ai.rate_limit import acquire, acquire_retry, is_rate_limit_error, retry_after_seconds
+from app.ai.rate_limit import (
+    SlotDeadline,
+    acquire,
+    acquire_retry,
+    is_rate_limit_error,
+    retry_after_seconds,
+    slot_deadline,
+)
 from app.config import ANY, image_resolutions, read_tools_by_model, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
@@ -334,7 +341,13 @@ def call_structured(
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
             try:
-                waited = _slot(key, model_id)
+                # Past the call's deadline, no slot is taken (and nothing
+                # sent): SlotDeadline. None: no limit, as always.
+                with slot_deadline(deadline):
+                    waited = _slot(key, model_id)
+            except SlotDeadline:
+                stopped = True
+                break
             except LaneRefused as exc:
                 # The staging lane's share of the one shared key is used up
                 # (ai/quota_guard.py): skipped with nothing sent, like a
@@ -362,7 +375,11 @@ def call_structured(
                     # a slot, a retry too (0 and nothing done without it, as
                     # before: rate_limit.acquire_retry).
                     try:
-                        extra_wait = _retry_slot(key, model_id)
+                        with slot_deadline(deadline):
+                            extra_wait = _retry_slot(key, model_id)
+                    except SlotDeadline:
+                        stopped = True
+                        break
                     except LaneRefused as exc:
                         _lane_refused(key, model_id, exc)
                         last_error = exc
