@@ -903,7 +903,14 @@ def cap_slot(item: dict) -> tuple[str, str]:
     return group_of(item), "strip_down" if _strip_block(item) else str(item.get("bucket"))
 
 
-def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[dict]:
+def cut_reason(item: dict) -> str:
+    """F2/F5: why a cap cut a linked part -- "intact" when a zone read
+    listed it intact (intact_in: demoted, so last, so cut; or dropped),
+    else "limit"."""
+    return "intact" if item.get("intact_in") else "limit"
+
+
+def _cap(kept: list[dict], opts: Options, counted: dict | None = None, cut: list | None = None) -> list[dict]:
     """The linked parts shown, in order, from `kept` (sorted already): at
     most opts.assembly_max per group (group_of) and bucket (cap_slot: the
     strip-down block's as strip-down, a second hop's in its own slot) --
@@ -911,7 +918,9 @@ def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[d
     stripdown_cap "out", the strip-down block (_strip_block) apart, after
     the others, at most opts.stripdown_max, never counted in max_items,
     each marked folded. counted: the per-(group, bucket) counts already shown
-    (for_parent: the open ones of the same groups)."""
+    (for_parent: the open ones of the same groups). cut (F2/F5), when
+    given: the parts the caps left out are added to it, in kept's order,
+    each with its cut_reason."""
     per: dict[tuple[str, str], int] = dict(counted or {})
     out_block = opts.stripdown_cap == "out"
     shown, folded = [], []
@@ -925,10 +934,13 @@ def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[d
     folded = folded[:max(0, opts.stripdown_max)]
     for it in folded:
         it["folded"] = True
+    if cut is not None:
+        kept_ids = {id(it) for it in shown + folded}
+        cut.extend({**it, "cut_reason": cut_reason(it)} for it in kept if id(it) not in kept_ids)
     return shown + folded
 
 
-def _build(parents: list[int], ctx: _Ctx, table: dict, counted: dict | None = None
+def _build(parents: list[int], ctx: _Ctx, table: dict, counted: dict | None = None, cut: list | None = None
            ) -> tuple[list[dict], dict[str, dict]]:
     found = sorted(_candidates(parents, ctx, table), key=lambda c: c["_order"])
     if ctx.walk is not None:
@@ -954,15 +966,25 @@ def _build(parents: list[int], ctx: _Ctx, table: dict, counted: dict | None = No
             continue
         items.append(cand)
     kept = []
+    dropped = []
     for it in items:
         it["intact_in"] = intact_in(it["part"], ctx.intact) if ctx.opts.intact != "ignore" else []
         if it["intact_in"] and ctx.opts.intact == "drop":
+            dropped.append(it)
             continue
         kept.append(it)
     kept.sort(key=lambda it: (bool(it["intact_in"]),) + it["_order"])
-    shown = _cap(kept, ctx.opts, counted)
+    capped: list[dict] | None = [] if cut is not None else None
+    shown = _cap(kept, ctx.opts, counted, capped)
     for it in shown:
         del it["_order"]
+    if cut is not None:
+        # F2/F5: what the caps cut, then what a zone read's "intact"
+        # dropped (intake_links_intact "drop"), in their order.
+        dropped.sort(key=lambda it: it["_order"])
+        for it in capped + [{**it, "cut_reason": "intact"} for it in dropped]:
+            it.pop("_order", None)
+            cut.append(it)
     return shown, joins
 
 
@@ -998,18 +1020,21 @@ def levels_of(listed: list[dict], photos: list, opts: Options, walk=None) -> dic
 
 def build_all(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
               opts: Options, *, dismissed=(), neighbours: dict | None = None, info=None,
-              walk=None) -> tuple[list[dict], dict[str, dict]]:
+              walk=None, cut: list | None = None) -> tuple[list[dict], dict[str, dict]]:
     """(the linked-part suggestions, the joins). The suggestions are what
     build returns. The joins are the links whose part another suggestion
     is already (zone_suggestions: a zone read's, the second look's), by
     that suggestion's key: {"linked_from", "link_type", "link_rule",
     "hit"} for the caller to put on it, so the part shows once. walk: the
-    assembly walk (assembly_walk.Walk), None for today's build."""
+    assembly walk (assembly_walk.Walk), None for today's build. cut (F2/F5,
+    settings.intake_keep_cut): when a list is given, the linked parts the
+    caps cut -- and those a zone read's "intact" dropped -- are added to
+    it, each with its cut_reason (_cap)."""
     if not table or not isinstance(table.get("links"), list):
         return [], {}
     ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours, walk=walk,
                    info=info)
-    return _build(list(range(len(ctx.listed))), ctx, table)
+    return _build(list(range(len(ctx.listed))), ctx, table, cut=cut)
 
 
 def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
@@ -1033,7 +1058,7 @@ def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_i
 
 def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: Options, *,
                zone_intact: dict | None = None, neighbours: dict | None = None, info=None,
-               walk=None) -> list[dict]:
+               walk=None, cut: list | None = None) -> list[dict]:
     """The new linked parts of one listed part -- the re-link after a person
     adds it: build from that part alone, against the case as it is (`data`,
     the part on its list or not yet): what is listed, every suggestion
@@ -1042,7 +1067,9 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
     "out", the folded ones by the room opts.stripdown_max leaves beside the
     open folded ones. With the car map's facts (info), an assembly's open
     linked parts count in its per-group cap. walk: the assembly walk; its
-    second hops count the case's open ones against MAX_HOP2."""
+    second hops count the case's open ones against MAX_HOP2. cut (F2/F5):
+    when a list is given, what the caps and the room left out is added to
+    it, each with its cut_reason, as build_all's."""
     if not table or not isinstance(table.get("links"), list) or not isinstance(item, dict) or not item.get("part"):
         return []
     data = data if isinstance(data, dict) else {}
@@ -1068,9 +1095,16 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
             if isinstance(it.get("assembly"), str) and it["assembly"]:
                 slot = cap_slot(it)
                 counted[slot] = counted.get(slot, 0) + 1
-    items, _ = _build([mine], ctx, table, counted)
+    items, _ = _build([mine], ctx, table, counted, cut=cut)
     if opts.stripdown_cap != "out":
-        return items[:max(0, opts.max_items - len(open_links))]
-    room = max(0, opts.max_items - sum(1 for it in open_links if not it.get("folded")))
-    fold_room = max(0, opts.stripdown_max - sum(1 for it in open_links if it.get("folded")))
-    return [it for it in items if not it.get("folded")][:room] + [it for it in items if it.get("folded")][:fold_room]
+        shown = items[:max(0, opts.max_items - len(open_links))]
+    else:
+        room = max(0, opts.max_items - sum(1 for it in open_links if not it.get("folded")))
+        fold_room = max(0, opts.stripdown_max - sum(1 for it in open_links if it.get("folded")))
+        shown = [it for it in items if not it.get("folded")][:room] + [it for it in items if it.get("folded")][:fold_room]
+    if cut is not None:
+        # Past the room the open linked parts leave: cut too.
+        kept_ids = {id(it) for it in shown}
+        cut.extend({**{k: v for k, v in it.items() if k != "folded"}, "cut_reason": cut_reason(it)}
+                   for it in items if id(it) not in kept_ids)
+    return shown

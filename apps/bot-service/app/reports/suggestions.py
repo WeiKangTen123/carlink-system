@@ -158,7 +158,7 @@ def item_from_suggestion(sug: dict) -> dict:
     ).model_dump()
 
 
-def relinked(item: dict, data: dict, look: dict, ai_draft: dict | None = None) -> list[dict]:
+def relinked(item: dict, data: dict, look: dict, ai_draft: dict | None = None, cut: list | None = None) -> list[dict]:
     """Contract 10: the new linked suggestions of a part just put on the
     list (links.for_parent), named as second_look._store names them --
     only while settings.intake_links is "on" and the table loaded; [] on
@@ -166,7 +166,8 @@ def relinked(item: dict, data: dict, look: dict, ai_draft: dict | None = None) -
     draft (IntakeSession.ai_draft, or Report.ai_draft once filed): with
     the assembly walk on, its stored walk (ai_draft["assembly_walk"]) acts
     on the re-link as on the read's (assembly_walk.from_settings); None,
-    or the walk off: as before."""
+    or the walk off: as before. cut (F2/F5): when a list is given, what
+    for_parent's caps cut is added to it, named the same way."""
     from app.config import settings
     from app.intake import links
 
@@ -184,29 +185,75 @@ def relinked(item: dict, data: dict, look: dict, ai_draft: dict | None = None) -
 
             walk = assembly_walk.from_settings(ai_draft, settings)
         extra = {"walk": walk} if walk is not None else {}
+        mine: list[dict] | None = [] if cut is not None else None
         if getattr(settings, "intake_car_map", "off") == "on":
             # The car map (K4): the shown table is the map's, with its
             # group fields; "shadow" relinks from L1 as when off.
             from app.intake import car_map
 
             tables = car_map.link_tables(links.TABLE, vehicle, mode="on")
-            found = links.for_parent(item, case, [], tables.shown, opts, info=tables.shown_info, **extra)
+            found = links.for_parent(item, case, [], tables.shown, opts, info=tables.shown_info, **extra,
+                                     **({"cut": mine} if mine is not None else {}))
             if tables.shown_info is not None:
                 listed_items = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
                 car_map.add_also_check(found, tables.car_map, links.levels_of(listed_items, [], opts, **extra),
                                        body_type=tables.body_type)
         else:
-            found = links.for_parent(item, case, [], links.TABLE, opts, **extra)
+            found = links.for_parent(item, case, [], links.TABLE, opts, **extra,
+                                     **({"cut": mine} if mine is not None else {}))
         listed = {str(it.get("part")) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         out = []
         for it in found:
             it["name"] = row_name(None, it["part"], vehicle)
             it["other_side_listed"] = other_side_listed(it["part"], listed)
             out.append(SecondLookItem.model_validate(it).model_dump())
+        if mine:
+            for it in mine:
+                it["name"] = row_name(None, it["part"], vehicle)
+                it["other_side_listed"] = other_side_listed(it["part"], listed)
+                cut.append(SecondLookItem.model_validate(it).model_dump())
         return out
     except Exception:
         logger.exception("Linked parts of an added %s: none this time", item.get("part"))
         return []
+
+
+def _keep_cut() -> bool:
+    from app.ai.second_look import keep_cut_on
+
+    return keep_cut_on()
+
+
+def _set_cut(look: dict, cut: list[dict]) -> None:
+    """In place: look's cut list and its counts, both left out when empty
+    (as SecondLook dumps them)."""
+    from app.ai.second_look import cut_counts
+
+    if cut:
+        look["cut"], look["cut_counts"] = cut, cut_counts(cut)
+    else:
+        look.pop("cut", None)
+        look.pop("cut_counts", None)
+
+
+def with_cut(look: dict, more: list[dict]) -> None:
+    """F2/F5, in place: `more` (a re-link's cut linked parts) joined to
+    look's cut list -- none that items already has (open or decided), each
+    part once (second_look.tidy_cut); and any cut one items now has, out."""
+    from app.ai.second_look import tidy_cut
+
+    items = [it for it in look.get("items") or [] if isinstance(it, dict)]
+    _set_cut(look, tidy_cut([dict(it) for it in list(look.get("cut") or []) + list(more or [])], items))
+
+
+def _uncut(look: dict, held: dict) -> dict:
+    """F2/F5, in place: a cut suggestion a person decides on moves into
+    items (where "Decided" and undo find it), keeping its cut_reason; the
+    rest of cut stays. Returns it as it is in items."""
+    item = dict(held)
+    look["items"] = list(look.get("items") or []) + [item]
+    _set_cut(look, [it for it in look.get("cut") or [] if it is not held])
+    return item
 
 
 def without_orphans(items: list, data: dict, look: dict) -> list:
@@ -238,9 +285,15 @@ def with_relinks(data: dict, new_items: list, ai_draft: dict | None = None) -> d
     look = dict(look)
     joined = False
     for item in items:
-        found = relinked(item, data, look, ai_draft)
+        # F2/F5 (settings.intake_keep_cut "on"): what the re-link's caps
+        # cut joins look's cut list. Off: relinked as before.
+        cut: list[dict] | None = [] if _keep_cut() else None
+        found = relinked(item, data, look, ai_draft, **({"cut": cut} if cut is not None else {}))
         if found:
             look["items"] = list(look.get("items") or []) + found
+            joined = True
+        if cut or (found and look.get("cut")):
+            with_cut(look, cut or [])
             joined = True
     return look if joined else None
 
@@ -342,8 +395,15 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str,
     data = dict(data or {})
     look = SecondLook.model_validate(data.get("second_look") or {}).model_dump()
     sug = _find(look["items"], key)
-    dismissed = list(look["dismissed"])
     damage_summary = [dict(it) for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+    if sug is None and action in ("add", "dismiss") and look.get("cut"):
+        # F2/F5: a suggestion from the folded "More" block (second_look.cut)
+        # moves into items when a person decides on it -- unless an add
+        # would change nothing (on the list already).
+        held = _find(look["cut"], key)
+        if held is not None and not (action == "add" and _listed(held, data)) and key not in look["dismissed"]:
+            sug = _uncut(look, held)
+    dismissed = list(look["dismissed"])
     # The decision an undo takes back. A decided suggestion stays in items
     # over a re-read (second_look._store), but an old draft's re-read
     # dropped it, so its part may come from that decision.
@@ -360,7 +420,13 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str,
         damage_summary.append(item)
         done.item, done.item_index, done.listed = item, len(damage_summary) - 1, "added"
         done.action = "added"
-        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look, ai_draft)
+        # F2/F5 (settings.intake_keep_cut "on"): the re-link's cut parts
+        # join the cut list. Off: relinked as before.
+        cut: list[dict] | None = [] if _keep_cut() else None
+        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look, ai_draft,
+                                                       **({"cut": cut} if cut is not None else {}))
+        if cut or look.get("cut"):
+            with_cut(look, cut or [])
     elif action == "dismiss":
         if key in dismissed:
             return done
@@ -395,6 +461,9 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str,
     look["decisions"] = (list(look["decisions"]) + [decision])[-MAX_DECISIONS:]
     if done.listed == "removed":
         look["items"] = without_orphans(look["items"], _with_list(data, damage_summary), look)
+        if look.get("cut"):
+            # F2/F5: the undone add's re-link cut parts go with it.
+            _set_cut(look, without_orphans(look["cut"], _with_list(data, damage_summary), look))
     done.second_look = look
     done.data = {**(_with_list(data, damage_summary) if done.listed else data), "second_look": look}
     return done
@@ -462,4 +531,8 @@ def relabel_second_look(look: dict | None, index_of: dict) -> dict | None:
     name no photo."""
     if not isinstance(look, dict):
         return look
-    return {**look, "items": [relabel_item(it, index_of) for it in look.get("items") or [] if isinstance(it, dict)]}
+    out = {**look, "items": [relabel_item(it, index_of) for it in look.get("items") or [] if isinstance(it, dict)]}
+    if look.get("cut"):
+        # F2/F5: the cut suggestions' photos too.
+        out["cut"] = [relabel_item(it, index_of) for it in look["cut"] if isinstance(it, dict)]
+    return out

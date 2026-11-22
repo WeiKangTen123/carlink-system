@@ -739,7 +739,7 @@ def _car_map_mode() -> str:
 
 
 def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
-                tables=None, *, shadow: bool = False) -> tuple[list[dict], dict[str, dict]]:
+                tables=None, *, shadow: bool = False, cut: list | None = None) -> tuple[list[dict], dict[str, dict]]:
     """Contract 10: the linked parts of this read (intake/links.build_all)
     against the list as it is now, beside the open suggestions `kept` --
     a part one of them is joins it instead (the joins, by key). tables:
@@ -748,7 +748,8 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
     each group also gets its "also check" words (car_map.add_also_check).
     With the assembly walk on (settings.intake_assembly_walk) and a stored
     walk, its signs too (intake/assembly_walk.from_settings), on whichever
-    table is built; off, build_all is called as before."""
+    table is built; off, build_all is called as before. cut (F2/F5): when
+    a list is given, build_all adds what its caps cut to it."""
     from app.intake import assembly_walk, links, zones
     from app.intake.photos import ordered_photos
 
@@ -758,6 +759,8 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
     neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
     walk = assembly_walk.from_settings(ai_draft, settings)
     extra = {"walk": walk} if walk else {}
+    if cut is not None:
+        extra["cut"] = cut
     if tables is None:
         return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
                                opts, dismissed=dismissed, neighbours=neighbours, **extra)
@@ -768,13 +771,13 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
     if info is not None:
         from app.intake import car_map
 
-        car_map.add_also_check(linked, tables.car_map, links.levels_of(listed, photos, opts, **extra),
-                               body_type=tables.body_type)
+        levels = links.levels_of(listed, photos, opts, **({"walk": extra["walk"]} if "walk" in extra else {}))
+        car_map.add_also_check(linked, tables.car_map, levels, body_type=tables.body_type)
     return linked, joins
 
 
 def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
-                  listed: set[str], listed_keys: set[str]) -> list[dict]:
+                  listed: set[str], listed_keys: set[str], cut: list | None = None) -> list[dict]:
     """Contract 10, for _store (which calls it inside its protection): the
     linked parts to show after the open suggestions `kept`, [] unless
     intake_links is "on". "on": those a zone read (or the second look)
@@ -788,7 +791,10 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     map can't be used) with its group fields; "shadow" builds from L1 as
     when off and from the map's table beside it, kept on the AI draft only
     (session.ai_draft["car_map_suggestions"], for the replay and the log;
-    [] when it couldn't be worked out)."""
+    [] when it couldn't be worked out).
+
+    cut (F2/F5): when a list is given and the mode is "on", the linked
+    parts the caps cut -- not listed, not dismissed -- are added to it."""
     from app.reports.schema import SecondLookItem
 
     mode = _links_mode()
@@ -800,11 +806,14 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
 
         vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
         tables = car_map.link_tables(links.TABLE, vehicle)
+    link_cut: list[dict] | None = [] if cut is not None and mode == "on" else None
     try:
-        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables)
+        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables,
+                                    **({"cut": link_cut} if link_cut is not None else {}))
     except Exception:
         logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
         linked, joins = [], {}
+        link_cut = None
     extra: dict = {}
     if tables is not None and tables.shadow is not None:
         try:
@@ -824,6 +833,9 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     for it in kept:
         if it["key"] in joins:
             _join_twin(it, joins[it["key"]])
+    if link_cut:
+        cut.extend(it for it in link_cut if not _listed_as(it, listed, listed_keys)
+                   and it["key"] not in dismissed and it["part"] not in dismissed)
     return [it for it in linked if not _listed_as(it, listed, listed_keys)
             and it["key"] not in dismissed and it["part"] not in dismissed]
 
@@ -844,6 +856,45 @@ def _catalogue_neighbours(report_id: str, vehicle: dict, listed: list[dict]) -> 
     except Exception:
         logger.exception("Second look for %s: no catalogue neighbours this time", report_id)
         return None
+
+
+def keep_cut_on() -> bool:
+    """F2/F5: settings.intake_keep_cut is "on"."""
+    return getattr(settings, "intake_keep_cut", "off") == "on"
+
+
+# F2/F5: what the Review step's folded "More (N)" block may say of a cut
+# item, by its cut_reason (the dashboard words its own; these are the
+# plan's).
+CUT_NOTES = {"limit": "Not shown (limit).", "intact": "A zone read called it not damaged."}
+
+
+def tidy_cut(cut: list[dict], shown: list[dict]) -> list[dict]:
+    """F2/F5: the cut suggestions to keep, in order: each with its key, once
+    per part, and none that a shown item (open or decided) already is --
+    twins as _store joins them (a sided name and its "(side undetermined)"
+    one are one part)."""
+    from app.parts.prefill import item_key
+
+    out: list[dict] = []
+    for it in cut:
+        if not isinstance(it, dict) or not it.get("part"):
+            continue
+        it["key"] = it.get("key") or item_key(it) or it["part"]
+        if any(_listed_as(it, {str(k.get("part") or "")}, {str(k.get("key") or "")}) for k in shown + out
+               if isinstance(k, dict)):
+            continue
+        out.append(it)
+    return out
+
+
+def cut_counts(cut: list[dict]) -> dict[str, int]:
+    """F2/F5: {cut_reason: how many} of the cut suggestions."""
+    counts: dict[str, int] = {}
+    for it in cut:
+        reason = str(it.get("cut_reason") or "limit")
+        counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def split_settled(items: list[dict], data: dict) -> tuple[list[dict], list[dict]]:
@@ -952,26 +1003,34 @@ def _store(report_id: str, result: dict) -> None:
                 continue
             kept.append(it)
         settled = list(decided.values())
+        # F2/F5 (settings.intake_keep_cut "on"): what the caps cut is kept
+        # apart (SecondLook.cut). None while off: nothing of it runs.
+        cut: list[dict] | None = [] if keep_cut_on() else None
+        if cut is not None:
+            cut.extend({**it, "cut_reason": "limit"} for it in kept[MAX_SUGGESTIONS:])
         kept = kept[:MAX_SUGGESTIONS]
         # Never the reason the suggestions are lost: on any failure -- the
         # mode itself too (the links module, or a link table it can't load,
         # failing to import: review M2) -- the read's other suggestions are
         # stored as they are.
         try:
-            linked = _stored_links(db, report_id, session, data, ai_draft, kept, dismissed, listed, listed_keys)
+            linked = _stored_links(db, report_id, session, data, ai_draft, kept, dismissed, listed, listed_keys,
+                                   **({"cut": cut} if cut is not None else {}))
         except Exception:
             logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
             linked = []
-        for it in kept + linked + settled:
+        cut = tidy_cut(cut, kept + linked + settled) if cut else []
+        for it in kept + linked + settled + cut:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_of(it["part"])
             it["other_side_listed"] = other_side_listed(it["part"], listed)
         items = [evidence.settle(it) for it in kept + linked + settled]
+        extra = {"cut": [evidence.settle(it) for it in cut], "cut_counts": cut_counts(cut)} if cut else {}
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),
             photos_sent=result.get("photos_sent") or 0, candidates=result.get("candidates") or 0,
-            items=items, dismissed=dismissed, reads=reads, decisions=decisions,
+            items=items, dismissed=dismissed, reads=reads, decisions=decisions, **extra,
         )
         report.data = {**data, "second_look": stored.model_dump()}
         db.commit()
