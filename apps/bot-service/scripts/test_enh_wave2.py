@@ -179,6 +179,36 @@ def side_zone(seen: str):
     return answer
 
 
+def mixed_side_zone(kwargs, labels):
+    """The side zone says "unclear" and lists the rear door on P07 and the
+    front door on P08 (photos the geometry splits)."""
+    if "one side of the car" not in kwargs["system_instruction"]:
+        return t._zone_answer(kwargs, labels)
+    props = kwargs["response_format"]["schema"]["properties"]["damage"]["items"]["properties"]
+    damage = [_zone_item(props, lb, part, "High", ("Dented",)) for lb, part in (("P07", "Rear Door"), ("P08", "Front Door"))
+              if lb in labels]
+    return {"zone_side_seen": "unclear", "damage": damage, "checked_intact": []}
+
+
+def bad_wrong_end_zone(kwargs, labels):
+    """The rear zone says FRONT, with a find that can't be read."""
+    if "the car's rear" not in kwargs["system_instruction"]:
+        return t._zone_answer(kwargs, labels)
+    return {"zone_side_seen": "front", "damage": [{"photo_reference": "P04", "part": "Left Tail Lamp",
+                                                   "ai_confidence": "Medium", "condition_tokens": 5}],
+            "checked_intact": []}
+
+
+def wrong_end_and_close(kwargs, labels):
+    """The wrong-end rear zone, and a close zone that genuinely finds the
+    tail lamp on P09."""
+    if "whose place on the car wasn't clear" in kwargs["system_instruction"]:
+        props = kwargs["response_format"]["schema"]["properties"]["damage"]["items"]["properties"]
+        damage = [_zone_item(props, "P09", "Tail Lamp (side undetermined)")] if "P09" in labels else []
+        return {"zone_side_seen": "rear", "damage": damage, "checked_intact": []}
+    return wrong_end_zone(kwargs, labels)
+
+
 def no_door_draft(kwargs, labels):
     """The main read without the door: the side zone's find is a suggestion."""
     out = t._draft_answer(labels)
@@ -477,21 +507,60 @@ def e12_section() -> None:
     facts = [p.kind for p in picked[None][:5]]
     check(facts == ["log_card", "odometer", "overview", "overview", "overview"],
           "the facts first, then the overviews (FACT_BUDGET, OVERVIEW_BUDGET)", facts)
-    # The byte budget, only above 32.
-    folder = Path(tempfile.mkdtemp(prefix="wave2-sizes-"))
-    sized = _many(70, folder, size=600_000)  # 800 KB each as base64
-    with read_limit(32):
-        default = pipeline.select_for_reading(sized)
-    with read_limit(64):
-        big = pipeline.select_for_reading(sized, priority_order=True)
-    budget = pipeline.READ_BYTES_BUDGET // pipeline._sent_bytes(sized[0])
-    check(len(default) == 32, "at 32 nothing is measured: 32 photos of 800 KB still go (as before)", len(default))
-    check(len(big) == budget < 64 and [p.id for p in big] == [p.id for p in pipeline.select_for_reading(
-        sized, priority_order=True)][:budget], f"above 32 the request stops at READ_BYTES_BUDGET: {budget} of 64, "
-          "the lowest priority left out", len(big))
+    # The byte budget, only above 32 and only past today's first 32 (the
+    # review's M2), as the reviewer's probe_e12 measured it.
     import shutil
 
+    folder = Path(tempfile.mkdtemp(prefix="wave2-sizes-"))
+    for size, label in ((150_000, "150 KB"), (300_000, "300 KB"), (600_000, "600 KB")):
+        sized = _many(70, folder / str(size), size=size) if (folder / str(size)).mkdir() is None else []
+        unsorted = [_photo(70 + i, None, None, None, False, path=str(folder / f"u{size}-{i}.jpg")) for i in range(6)]
+        for photo in unsorted:
+            Path(photo.path).write_bytes(b"x" * size)
+        sized += unsorted
+        got = {}
+        for n in (None, 40, 64):
+            with read_limit(n):
+                got[n] = [p.id for p in pipeline.select_for_reading(sized, priority_order=True)]
+        check(len(got[40]) >= 32 and len(got[64]) >= 32 and got[40][:32] == got[None] and got[64][:32] == got[None]
+              and got[64][:len(got[40])] == got[40] if len(got[64]) >= len(got[40]) else False,
+              f"{label} photos: 40 -> {len(got[40])}, 64 -> {len(got[64])}; never fewer than the default 32, which is "
+              f"the prefix of both (unsorted photos in the case too)", {n: len(v) for n, v in got.items()})
+    check(len(got[64]) == 32 and len(got[40]) == 32,
+          "600 KB: today's 32 already pass the budget -- they go as today, and nothing more", len(got[64]))
+    # An over-budget photo is skipped, not the end of the choice.
+    mixed = _many(70, folder / "mixed", size=0) if (folder / "mixed").mkdir() is None else []
+    with read_limit(64):
+        order = [p.id for p in pipeline.select_for_reading(mixed, priority_order=True)]
+    big_one = next(p for p in mixed if p.id == order[32])
+    Path(big_one.path).write_bytes(b"x" * 15_000_000)
+    for p in mixed:
+        if p is not big_one:
+            Path(p.path).write_bytes(b"x" * 1_000)
+    with read_limit(64):
+        skipped = [p.id for p in pipeline.select_for_reading(mixed, priority_order=True)]
+    check(big_one.id not in skipped and len(skipped) == 64 and skipped[:32] == order[:32]
+          and skipped[32:] == [i for i in order[33:]] + skipped[63:],
+          "one photo too big for the budget is skipped and the next taken: 64 still read", len(skipped))
+    # The review's M3: the close-ups' reserve, and the ones made measured.
+    with t.Settings(intake_read_crops=True, intake_read_crops_max=8):
+        reserve = pipeline.read_bytes_budget()
+    check(reserve == pipeline.READ_BYTES_BUDGET - 8 * pipeline.CROP_RESERVE_BYTES
+          and pipeline.read_bytes_budget() == pipeline.READ_BYTES_BUDGET,
+          "with close-ups on, 8 x CROP_RESERVE_BYTES come off the photos' budget (off: the whole budget)", reserve)
+    crops_dir = folder / "crops"
+    crops_dir.mkdir()
+    made = {}
+    for i in range(4):
+        path = crops_dir / f"c{i}.jpg"
+        path.write_bytes(b"x" * 600_000)
+        made[f"p{i}"] = str(path)
+    fitted = pipeline.fit_crops(pipeline.READ_BYTES_BUDGET - 2 * 800_000, made)
+    check(list(fitted) == ["p0", "p1"], "fit_crops: the close-ups made that still fit, best first", list(fitted))
     shutil.rmtree(folder, ignore_errors=True)
+    # The review's L5: the main read's timeout.
+    check([pipeline.read_timeout(n) for n in (10, 32, 33, 40, 64, 100)] == [120.0, 120.0, 121.5, 132.0, 168.0, 180.0],
+          "read_timeout: 120 s up to 32 photos, +1.5 s a photo past it, at most 180 s")
     # The main read's own resolution, end to end.
     def images_of(kind):
         return [p.get("resolution") for r in t.REQUESTS if t.kind_of(r) == kind for p in r["input"]
@@ -511,6 +580,26 @@ def e12_section() -> None:
     check(structured.image_resolution("damage", "*=medium") == "medium"
           and structured.image_resolution(None, "*=medium") is None,
           "image_resolution: a table given wins; a photo with no kind (the bot's) none")
+    # The review's L3: an unsorted intake photo takes the table too; a bot's
+    # photo (no hints at all) never.
+    from app.ai import extraction
+
+    image = Path(tempfile.mkdtemp(prefix="wave2-img-")) / "a.jpg"
+    image.write_bytes(t.jpeg(1))
+    with t.Settings(gemini_image_resolution_main_read="damage=low,*=medium"):
+        intake = extraction._build_input("notes", [str(image)] * 2, photo_labels=["P01", "P02"],
+                                         photo_hints=[{"kind": "damage"}, {"kind": None}])
+        bot = extraction._build_input("notes", [str(image)])
+    sizes = [p.get("resolution") for p in intake if p.get("type") == "image"]
+    check(sizes == ["low", "medium"] and [p.get("resolution") for p in bot if p.get("type") == "image"] == [None],
+          "E12b: an unsorted photo takes the table's * (or unsorted) entry; the bot's photos as before", sizes)
+    with t.Settings(gemini_image_resolution_main_read="unsorted=low"):
+        intake = extraction._build_input("notes", [str(image)], photo_labels=["P01"], photo_hints=[{"kind": None}])
+    check([p.get("resolution") for p in intake if p.get("type") == "image"] == ["low"],
+          "... by its 'unsorted' key when the table names it")
+    plain = extraction._build_input("notes", [str(image)], photo_labels=["P01"], photo_hints=[{"kind": None}])
+    check([p.get("resolution") for p in plain if p.get("type") == "image"] == [None],
+          "unset: an unsorted photo as before")
 
 
 # ------------------------------------------------------------- 3. E7
@@ -526,6 +615,8 @@ def e7_units() -> None:
         ({"view": "side", "angle": "front to photo right", "wheel": "near_side"}, "Right"),
         ({"view": "side", "angle": "front to photo left", "wheel": "near_side"}, None),
         ({"view": "side", "angle": "front toward camera", "wheel": "not_seen"}, None),
+        ({"view": "side", "angle": "front toward camera", "wheel": "near_side"}, None),
+        ({"view": "side", "angle": "front away from camera", "wheel": "far_side"}, None),
         ({"view": "corner", "angle": "front to photo left", "wheel": "near_side"}, None),
         ({"view": "front", "angle": "front toward camera", "wheel": "photo_left"}, None),
         ({"view": "rear", "angle": "front away from camera", "wheel": "photo_right"}, None),
@@ -534,7 +625,8 @@ def e7_units() -> None:
     ]
     got = [(g, side(g)) for g, want in cases if side(g) != want]
     check(not got, "photo_side: a whole-side view by its angle (front to the photo's left = the LEFT side) and the "
-                   "wheel (near = RIGHT, right-hand drive); a conflict, a corner, an end, unknown: none", got)
+                   "wheel (near = RIGHT, right-hand drive); a conflict, a side view facing toward / away (even "
+                   "with a wheel: the review's L2), a corner, an end, unknown: none", got)
     check(geometry.rhd_check({"view": "front", "angle": "front toward camera", "wheel": "photo_left"}) == "ok"
           and geometry.rhd_check({"view": "rear", "angle": "front away from camera", "wheel": "photo_right"}) == "ok"
           and geometry.rhd_check({"view": "front", "angle": "front toward camera", "wheel": "photo_right"}) == "conflict"
@@ -558,10 +650,20 @@ def e7_units() -> None:
                   ("overview", "right", {"view": "side", "angle": "front to photo left", "wheel": "not_seen"}),
                   ("overview", "right", {"view": "side", "angle": "front to photo right", "wheel": "not_seen"}),
               ])]
+    photos.append(SimpleNamespace(id="g7", kind="damage", area="left", quality="good", excluded=True,
+                                  geometry={"view": "side", "angle": "front to photo left", "wheel": "not_seen"}))
+    photos.append(SimpleNamespace(id="g8", kind="damage", area="left", quality="unusable", excluded=False,
+                                  geometry={"view": "unknown", "angle": None, "wheel": "not_seen"}))
     groups = geometry.area_sides(photos)
-    check(groups == {"g0": "Right", "g1": "Right", "g2": "Right", "g3": "Right"},
-          "area_sides: per sorter area; the other party's car never votes; a corner area of corner views and a "
-          "tied area have none", groups)
+    check(groups == {"g0": "Right", "g1": "Right", "g2": "Right", "g5": "Left", "g6": "Right"},
+          "area_sides: a photo's own side first, else its sorter area's majority; the other party's car, an "
+          "excluded or unusable photo never in it (the review's L1); a corner area of corner views none", groups)
+    check(geometry.unanimous(["Right", None, "Right"]) == "Right" and geometry.unanimous(["Right", "Left"]) is None
+          and geometry.unanimous([None]) is None and geometry.unanimous([]) is None,
+          "unanimous: one side named by all that name one; split or none: None")
+    with t.Settings(intake_side_geometry="shadow"):
+        modes = (geometry.mode(), geometry.on(), geometry.acting(), triage.geometry_on())
+    check(modes == ("shadow", True, False, True), "shadow: the sort answers the geometry, nothing acts on it", modes)
     rec = geometry.reconcile
     combos = {("left", "Right", "vote"): "unclear", ("left", "Left", "vote"): "left", ("unclear", "Right", "vote"): "right",
               ("left", None, "vote"): "left", ("left", "Right", "tiebreak"): "left",
@@ -570,6 +672,33 @@ def e7_units() -> None:
     bad = {k: rec(*k) for k, want in combos.items() if rec(*k) != want}
     check(not bad, "reconcile: vote -- agree or one abstains: that side; disagree: unclear; tiebreak -- only an "
                    "unclear model takes the geometry", bad)
+    # The side zone's parse (the review's M4).
+    raw = json.dumps({"zone_side_seen": "unclear", "damage": [
+        {"photo_reference": "P01", "part": "Front Door", "ai_confidence": "High"},
+        {"photo_reference": "P02", "part": "Rear Door", "ai_confidence": "High"},
+        {"photo_reference": "P03", "part": "Wing Mirror", "ai_confidence": "High"}], "checked_intact": ["Sill / Rocker Panel"]})
+    labels = ["P01", "P02", "P03"]
+
+    def parts(geo):
+        got = zone_read.parse_answer("left", raw, labels, geometry=geo)
+        return [i["part"] for i in got.items], got.side_seen, got.per_find, got.intact
+    split = {"P01": "Left", "P02": "Right"}
+    check(parts((None, "tiebreak", split))[:3] == (["Left Front Door", "Right Rear Door",
+                                                    "Wing Mirror (side undetermined)"], "unclear", 2),
+          "split photos + an unclear model: each find by its own photo's side, the rest (and the zone) undetermined "
+          "-- never the majority side for every find", parts((None, "tiebreak", split)))
+    check(parts(("Right", "tiebreak", {"P02": "Right"}))[:3] == (["Right Front Door", "Right Rear Door",
+                                                                   "Right Wing Mirror"], "right", 0),
+          "unanimous photos: the zone's side for every find", parts(("Right", "tiebreak", {"P02": "Right"})))
+    raw_left = raw.replace('"unclear"', '"left"')
+    voted = zone_read.parse_answer("left", raw_left, labels, geometry=(None, "vote", split))
+    check([i["part"] for i in voted.items] == ["Left Front Door", "Door (side undetermined)", "Left Wing Mirror"]
+          and voted.side_seen == "left",
+          "vote, split: a find whose own photo says the other side is undetermined; the rest the model's",
+          [i["part"] for i in voted.items])
+    tied = zone_read.parse_answer("left", raw_left, labels, geometry=(None, "tiebreak", split))
+    check([i["part"] for i in tied.items] == ["Left Front Door", "Left Rear Door", "Left Wing Mirror"],
+          "tiebreak, split: the model's side stands for every find", [i["part"] for i in tied.items])
     # The resolver.
     # c: a rear photo with no neighbour that has an area within reach.
     areas = [("a", "left"), ("b", "left"), ("x", None), ("y", None), ("c", "rear"), ("d", None)]
@@ -657,8 +786,8 @@ def e7_end_to_end() -> None:
           and stored[8]["side"] is None, "on: each photo keeps the sort's geometry and its side", stored[6])
     left = entries.get("left") or {}
     check(left.get("side_seen") == "right" and left.get("geometry") == {
-        "mode": "tiebreak", "side": "Right", "votes": {"Left": 0, "Right": 2}, "model": "unclear"},
-          "tiebreak: the side zone's 'unclear' takes the geometry's Right (2 votes of its photos); logged", left)
+        "mode": "tiebreak", "side": "Right", "votes": {"Left": 0, "Right": 2}, "model": "unclear", "per_find": 0},
+          "tiebreak: the side zone's 'unclear' takes the geometry's Right (its photos unanimous); logged", left)
     check("Right Rear Door" in sugg and "Door (side undetermined)" not in sugg,
           "... so its find is named Right Rear Door", sugg)
     check(isinstance(ai_draft.get("side_geometry"), list), "the resolver's changes are kept beside the AI draft")
@@ -673,6 +802,51 @@ def e7_end_to_end() -> None:
     with a_case(dict(ZONES, intake_side_geometry="tiebreak"), answers_left, SIDE_ROWS) as (client, rid, pids, uid, state):
         sugg = [it["part"] for it in look_of(rid).get("items") or []]
     check("Left Rear Door" in sugg, "tiebreak: the model's own side stands", sugg)
+    # The review's M4: photos of both sides in the zone, the model unclear.
+    saved = dict(SIDE_GEOMETRY)
+    SIDE_GEOMETRY["P08"] = ("side", "front to photo left", "not_seen")
+    try:
+        mixed = dict(answers, zone=mixed_side_zone)
+        with a_case(dict(ZONES, intake_side_geometry="tiebreak"), mixed, SIDE_ROWS) as (client, rid, pids, uid, state):
+            sugg = [it["part"] for it in look_of(rid).get("items") or []]
+            left = {e["zone"]: e for e in zone_entries(rid)}.get("left") or {}
+    finally:
+        SIDE_GEOMETRY.clear()
+        SIDE_GEOMETRY.update(saved)
+    check(left.get("side_seen") == "unclear" and (left.get("geometry") or {}).get("side") is None
+          and (left.get("geometry") or {}).get("votes") == {"Left": 1, "Right": 2}
+          and (left.get("geometry") or {}).get("per_find") == 2
+          and "Right Rear Door" in sugg and "Left Front Door" in sugg,
+          "split photos (2 Right, 1 Left) and 'unclear': the zone stays unclear, each door by its own photo -- the "
+          "majority never names every find (the review's M4)", (left, sugg))
+    # The review's M6: shadow asks the sort exactly as tiebreak, uses nothing.
+    with a_case(dict(ZONES), answers, SIDE_ROWS) as (client, rid, pids, uid, state):
+        off = {"data": t.db_row(Report, rid).data, "ai_draft": t.db_row(IntakeSession, rid).ai_draft,
+               "ids": {rid: "<rid>", uid: "<uid>", **{pid: f"<p{i}>" for i, pid in enumerate(pids)}}}
+    with a_case(dict(ZONES, intake_side_geometry="shadow"), answers, SIDE_ROWS) as (client, rid, pids, uid, state):
+        shadow_sort = [r for r in t.REQUESTS if t.kind_of(r) == "sort"]
+        shadow = {"data": t.db_row(Report, rid).data, "ai_draft": t.db_row(IntakeSession, rid).ai_draft,
+                  "ids": {rid: "<rid>", uid: "<uid>", **{pid: f"<p{i}>" for i, pid in enumerate(pids)}}}
+        left = {e["zone"]: e for e in zone_entries(rid)}.get("left") or {}
+        db = SessionLocal()
+        try:
+            stored = [p.geometry for p in ordered_photos(db, rid)]
+        finally:
+            db.close()
+    with a_case(dict(ZONES, intake_side_geometry="tiebreak"), answers, SIDE_ROWS) as (client, rid, pids, uid, state):
+        tie_sort = [r for r in t.REQUESTS if t.kind_of(r) == "sort"]
+    same = [(a["system_instruction"], a["response_format"]) for a in shadow_sort] == [
+        (b["system_instruction"], b["response_format"]) for b in tie_sort]
+    check(same and stored[5] and stored[5]["side"] == "Right",
+          "shadow: the sort's request is tiebreak's (the same sort cache), the geometry stored")
+    check(t.normalised({k: shadow[k] for k in ("data", "ai_draft")}, shadow["ids"])
+          == t.normalised({k: off[k] for k in ("data", "ai_draft")}, off["ids"]),
+          "shadow: the stored data and the AI draft as off's -- nothing uses the geometry",
+          _first_diff(t.normalised({k: shadow[k] for k in ("data", "ai_draft")}, shadow["ids"]),
+                      t.normalised({k: off[k] for k in ("data", "ai_draft")}, off["ids"])))
+    check(left.get("side_seen") == "unclear" and (left.get("geometry") or {}).get("mode") == "shadow"
+          and (left.get("geometry") or {}).get("side") == "Right",
+          "shadow: the side zone's run-log entry says what the geometry would name", left)
 
 
 # ------------------------------------------------------------- 4. E11
@@ -701,6 +875,21 @@ def e11_units() -> None:
     check(suggestion["source"] == "zone" and suggestion["found_by"] == ["zone:rear"] and suggestion["seen_in"] == ["@x"]
           and suggestion["wrong_end_note"] == "The rear read thought these photos show the front.",
           "a kept find is a zone suggestion with the note", suggestion)
+    check(suggestion["part"] == "Tail Lamp (side undetermined)" and suggestion["confidence"] == "Low"
+          and "Left Tail Lamp" in suggestion["covers"],
+          "... by its '(side undetermined)' name and Low: its side came from a read wrong about the end (the "
+          "review's M5)", (suggestion["part"], suggestion["confidence"]))
+    bad = json.dumps({"zone_side_seen": "front", "damage": [{"photo_reference": "P04", "part": "Left Tail Lamp",
+                                                             "ai_confidence": "Medium", "condition_tokens": 5}],
+                      "checked_intact": []})
+    try:
+        got = [zone_read.parse_answer("rear", bad, labels, wrong_end=m) for m in ("shadow", "keep")]
+        safe = all(a.items == [] and a.wrong_end_items == [] for a in got) and got[0].note == drop.note
+    except Exception as exc:
+        safe = False
+        got = exc
+    check(safe, "a wrong-end find that can't be read: no finds kept, the answer as drop's -- never a failed parse "
+                "(no other model asked; the review's L4)", got)
     dumped = SecondLookItem.model_validate({"part": "Boot Lid"}).model_dump()
     check("wrong_end_note" not in dumped and SecondLookItem.model_validate(suggestion).model_dump()["wrong_end_note"],
           "the note is left out of a dump while None (drafts as before), kept when set")
@@ -726,14 +915,33 @@ def e11_end_to_end() -> None:
     items = (results["keep"]["data"].get("second_look") or {}).get("items") or []
     kept = [it for it in items if it.get("wrong_end_note")]
     listed = [it["part"] for it in results["keep"]["data"]["damage_summary"]]
-    check([it["part"] for it in kept] == ["Left Tail Lamp"]
+    check([it["part"] for it in kept] == ["Tail Lamp (side undetermined)"] and kept[0]["confidence"] == "Low"
           and kept[0]["wrong_end_note"] == "The rear read thought these photos show the front."
-          and kept[0]["source"] == "zone" and kept[0]["found_by"] == ["zone:rear"],
-          "keep: the tail lamp is a suggestion with the note (the Rear Bumper, already listed, isn't)", kept)
+          and kept[0]["source"] == "zone" and kept[0]["found_by"] == ["zone:rear"] and items[-1] is kept[-1],
+          "keep: the tail lamp is a suggestion with the note, undetermined and Low, after the others (the Rear "
+          "Bumper, already listed, isn't)", kept)
     check(listed == [it["part"] for it in results["drop"]["data"]["damage_summary"]] and "Left Tail Lamp" not in listed,
           "keep: never on the list; the list as drop's", listed)
     check(not any(it.get("wrong_end_note") for it in (results["drop"]["data"].get("second_look") or {}).get("items") or []),
           "drop: no such suggestion")
+    # The review's M5: a part a read genuinely found keeps its place; the
+    # wrong-end twin neither wins nor joins it.
+    rows = list(t.CASE)
+    rows[8] = ("damage", None, None, True)
+    with a_case(dict(ZONES, intake_zone_wrong_end="keep"), {"zone": wrong_end_and_close}, rows) as (
+            client, rid, pids, uid, state):
+        items = look_of(rid).get("items") or []
+    lamps = [it for it in items if "Tail Lamp" in it["part"]]
+    check(len(lamps) == 1 and not lamps[0].get("wrong_end_note") and lamps[0]["found_by"] == ["zone:close"],
+          "keep: the close-up read's own tail lamp stands as found -- no note, not joined with the wrong-end one",
+          lamps)
+    # The review's L4: shadow and keep never cost a call more, whatever the answer.
+    calls = {}
+    for mode in ("drop", "shadow", "keep"):
+        with a_case(dict(ZONES, intake_zone_wrong_end=mode), {"zone": bad_wrong_end_zone}) as (client, rid, pids, uid, state):
+            calls[mode] = (kinds()["zone"], state["stage"], len(look_of(rid).get("items") or []))
+    check(calls["shadow"] == calls["drop"] == calls["keep"],
+          "a wrong-end find that can't be read: the same zone calls and the same suggestions in every mode", calls)
 
 
 # ------------------------------------------------------------- 5. the benchmark
@@ -832,6 +1040,48 @@ def bench_section() -> None:
     check(refused and join_runs.join([("a", doc("base", [1], {"x": 1})), ("b", doc("arm", [1], {"x": 2}))],
                                      force=True)["summary"]["reps"] == 2,
           "join_runs: files of different arms refused (--force joins them)")
+    check(model_settings("--side-geometry", "shadow").get("intake_side_geometry") == "shadow",
+          "--side-geometry shadow (the review's M6)")
+    # The review's M1 / L7, as its probe_join: a joined linked-check replay.
+    import gate
+
+    run = {"case": "c1", "rep": 1, "parts": parts,
+           "links": {**bench.score_links([{"part": "Rear Bumper"}], ["Rear Bumper"], [], []), "damage_list_identical": True},
+           "suggestions": [], "link_suggestions": []}
+    replay_doc = {"kind": "replay_link_check", "git_ref": "x", "ai_settings": {"a": 1}, "damage_list_identical": True,
+                  "links_match": True, "source": "/tmp/bench/out/base.json", "source_label": "base", "runs": [run]}
+    joined = join_runs.join([("a.json", replay_doc), ("b.json", copy.deepcopy(replay_doc))])
+    check(joined["damage_list_identical"] is True and joined["links_match"] is True
+          and joined["source_label"] == "base" and joined["source"] == "/tmp/bench/out/base.json"
+          and gate._g5(joined, joined["runs"], None, Path("j.json"), None)[0],
+          "join_runs: a replay's assertions and its source carried over; gate's G5 passes the joined file",
+          {k: joined.get(k) for k in ("damage_list_identical", "links_match", "source_label")})
+    broken = copy.deepcopy(replay_doc)
+    broken["links_match"] = False
+    check(join_runs.join([("a.json", replay_doc), ("b.json", broken)], force=True)["links_match"] is False,
+          "join_runs: an assertion false in any input is false in the joined file")
+    other = copy.deepcopy(replay_doc)
+    other["source"], other["source_label"] = "/tmp/bench/out/other.json", "other"
+    try:
+        join_runs.join([("a.json", replay_doc), ("b.json", other)])
+        refused = False
+    except ValueError:
+        refused = True
+    check(refused, "join_runs: replays of different stored results (other reads) are refused (the review's L7)")
+    # The review's L6: the scratch guard.
+    good = {"BENCHMARK_SCRATCH": "1", "DATABASE_URL": "sqlite:////tmp/bench/x/run.db", "STORAGE_DIR": "/tmp/bench/x/storage"}
+    live = {"BENCHMARK_SCRATCH": "1", "DATABASE_URL": "sqlite:////app/storage/carlink.db", "STORAGE_DIR": "/app/storage"}
+    cases = {"scratch": good, "live (the container's own env)": live,
+             "live storage only": dict(good, STORAGE_DIR="/app/storage/bench"),
+             "live database only": dict(good, DATABASE_URL="sqlite:////app/storage/carlink.db"),
+             "the app's default database": dict(good, DATABASE_URL=f"sqlite:///{(ROOT / 'carlink.db').as_posix()}"),
+             "no STORAGE_DIR": {k: v for k, v in good.items() if k != "STORAGE_DIR"},
+             "no BENCHMARK_SCRATCH": {k: v for k, v in good.items() if k != "BENCHMARK_SCRATCH"},
+             "not sqlite": dict(good, DATABASE_URL="postgresql://x/y")}
+    verdicts = {name: bench.scratch_problem(env) is None for name, env in cases.items()}
+    check(verdicts == {name: name == "scratch" for name in cases},
+          "scratch_problem: only a scratch database and storage pass -- never the live stack's or the app's own",
+          verdicts)
 
 
 # ------------------------------------------------------------- 6. replay_link_check
@@ -1005,6 +1255,20 @@ def replay_section() -> None:
     except SystemExit:
         refused = True
     check(refused, "without BENCHMARK_SCRATCH (a scratch database) it refuses")
+    keep_env = {k: os.environ.get(k) for k in ("DATABASE_URL", "STORAGE_DIR")}
+    os.environ.update(BENCHMARK_SCRATCH="1", DATABASE_URL="sqlite:////app/storage/carlink.db", STORAGE_DIR="/app/storage")
+    try:
+        replay.main([str(stored), "--cases", str(folder / "cases"), "--key", str(key), "--out", str(folder / "z.json")])
+        refused = False
+    except SystemExit:
+        refused = True
+    finally:
+        os.environ.pop("BENCHMARK_SCRATCH", None)
+        for k, v in keep_env.items():
+            os.environ[k] = v
+    check(refused and not (folder / "z.json").exists(),
+          "with BENCHMARK_SCRATCH=1 but the live stack's database and storage (the container's env) it refuses "
+          "(the review's L6)")
     del bench
 
 
