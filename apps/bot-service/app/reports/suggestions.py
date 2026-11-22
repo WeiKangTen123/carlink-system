@@ -225,12 +225,24 @@ def _keep_cut() -> bool:
 
 
 def _set_cut(look: dict, cut: list[dict]) -> None:
-    """In place: look's cut list and its counts, both left out when empty
-    (as SecondLook dumps them)."""
-    from app.ai.second_look import cut_counts
+    """In place: look's cut list (at most second_look.MAX_CUT) and its
+    counts, both left out when empty (as SecondLook dumps them). The counts
+    are the stored ones changed by what left or joined the list (by key),
+    so the cut ones past MAX_CUT stay counted (the review's L7)."""
+    from app.ai.second_look import MAX_CUT, cut_counts
 
-    if cut:
-        look["cut"], look["cut_counts"] = cut, cut_counts(cut)
+    before = [it for it in look.get("cut") or [] if isinstance(it, dict)]
+    counts = dict(look.get("cut_counts") or cut_counts(before))
+    had, now = {key_of(it) for it in before}, {key_of(it) for it in cut}
+    for it in before:
+        if key_of(it) not in now:
+            reason = str(it.get("cut_reason") or "limit")
+            counts[reason] = counts.get(reason, 0) - 1
+    for reason, n in cut_counts([it for it in cut if key_of(it) not in had]).items():
+        counts[reason] = counts.get(reason, 0) + n
+    counts = {reason: n for reason, n in sorted(counts.items()) if n > 0}
+    if cut or counts:
+        look["cut"], look["cut_counts"] = cut[:MAX_CUT], counts
     else:
         look.pop("cut", None)
         look.pop("cut_counts", None)

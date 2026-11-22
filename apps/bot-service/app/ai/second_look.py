@@ -77,6 +77,10 @@ MAX_CANDIDATES = 40
 # Contract 9 (conflict #22): 16, the zone reads giving about 13 a case; the
 # re-check sorts the doubtful ones last.
 MAX_SUGGESTIONS = 16
+# F2/F5 (the review's L7): at most this many cut suggestions are stored
+# (surest first) -- the list rides on every GET and poll of the draft;
+# cut_counts still counts every one cut.
+MAX_CUT = 30
 # Past wordings shown per kit candidate ("Tail gate hinge LH").
 MAX_HINTS = 3
 # The photos a suggestion says it was seen in (SecondLookItem.seen_in).
@@ -1048,7 +1052,7 @@ def _store(report_id: str, result: dict) -> None:
             it["covers"] = covers_for(it)
             it["other_side_listed"] = other_side_note(it, listed)
         items = [evidence.settle(it) for it in kept + linked + settled]
-        extra = {"cut": [evidence.settle(it) for it in cut], "cut_counts": cut_counts(cut)} if cut else {}
+        extra = {"cut": [evidence.settle(it) for it in cut[:MAX_CUT]], "cut_counts": cut_counts(cut)} if cut else {}
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),
             scope=result.get("scope"), seconds=result.get("seconds"),
