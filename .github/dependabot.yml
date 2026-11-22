@@ -1,0 +1,122 @@
+# Dependabot VERSION updates: weekly, grouped, after a 7-day cooldown so
+# brand-new releases settle first.
+#
+#   - minor + patch updates: one grouped PR per ecosystem;
+#   - each major update: its own PR (it may break things).
+#
+# Security updates are a repository setting (on) and are separate: no
+# cooldown, not counted in the PR limits below, and they also cover files
+# not listed here (e.g. tools/parts_mcp/requirements-worker.txt).
+#
+# Every Dependabot PR takes the normal path (CONTRIBUTING.md): CI green,
+# then staging. Base-image PRs are not built by CI yet: build them on staging.
+#
+# Labels must exist in the repository, or Dependabot skips them.
+version: 2
+updates:
+  # The actions in .github/workflows. They are pinned to full commit SHAs;
+  # Dependabot updates the SHA and the version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kuala_Lumpur
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    labels: [dependencies, github_actions]
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Python: the api and Telegram bot image (apps/bot-service/requirements.txt).
+  # Not locked yet (a pip-compile lock comes in Phase 1): most lines are ">="
+  # ranges that already allow the newest release. "increase-if-necessary"
+  # leaves those alone, so today only the pinned google-genai gets PRs. Once
+  # the file holds exact pins, the same rules update them.
+  - package-ecosystem: pip
+    directory: /apps/bot-service
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kuala_Lumpur
+    cooldown:
+      default-days: 7
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 3
+    labels: [dependencies, python]
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # The Gemini SDK changes what the AI reads and returns: always its own
+      # PR, and it needs the AI benchmark gate before staging.
+      ai-sdk:
+        patterns: ["google-genai"]
+      python-minor-patch:
+        patterns: ["*"]
+        exclude-patterns: ["google-genai"]
+        update-types: [minor, patch]
+
+  # The dashboard (apps/dashboard/package.json + package-lock.json).
+  - package-ecosystem: npm
+    directory: /apps/dashboard
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kuala_Lumpur
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # ESLint 10: the plugins inside eslint-config-next (import, react,
+      # jsx-a11y) still require ESLint 9 (checked 22 Nov 2026).
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7: Next.js's build and typescript-eslint still need the
+      # TypeScript 6 compiler API (see apps/dashboard/README.md).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
+  # Base images in the Dockerfiles. In a tag like python:3.11-slim or
+  # node:20-alpine the "minor"/"major" number is the language runtime, so
+  # each such change is its own PR and needs staging + the owner's trial
+  # (Node: take even-numbered LTS lines only). Patch/digest refreshes are
+  # grouped (they start once the images are pinned by digest, Phase 1).
+  - package-ecosystem: docker
+    directories:
+      - /apps/bot-service
+      - /apps/dashboard
+      - /tools/parts_mcp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kuala_Lumpur
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      base-images-patch:
+        patterns: ["*"]
+        update-types: [patch]
