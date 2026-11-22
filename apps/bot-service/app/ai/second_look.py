@@ -1017,7 +1017,12 @@ def _store(report_id: str, result: dict) -> None:
                 continue
             if n >= len(previous_items):
                 items.append(it)
-        items.sort(key=lambda it: (_RANK.get(it.get("confidence"), len(CONFIDENCES)), it.get("source") != "kit"))
+        # Wave 2 E11 (the review's M5): a "wrong end" zone read's find
+        # (wrong_end_note) after every other suggestion; none has one unless
+        # settings.intake_zone_wrong_end is "keep", and then the order of the
+        # rest is as before.
+        items.sort(key=lambda it: (bool(it.get("wrong_end_note")), _RANK.get(it.get("confidence"), len(CONFIDENCES)),
+                                   it.get("source") != "kit"))
         kept: list[dict] = []
         for it in items:
             # "Left Tail Lamp" and "Tail Lamp (side undetermined)" both: one
@@ -1026,6 +1031,8 @@ def _store(report_id: str, result: dict) -> None:
             # the surer too. What the other saw joins it.
             twin = next((k for k in kept if _listed_as(it, {k["part"]}, {k["key"]})), None)
             if twin is not None:
+                if it.get("wrong_end_note") and not twin.get("wrong_end_note"):
+                    continue  # E11: a part a read genuinely found stands as it was found
                 _join_twin(twin, it)
                 continue
             kept.append(it)

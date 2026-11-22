@@ -836,8 +836,12 @@ def wrong_end_suggestions(wrong_end: dict) -> list[dict]:
     that read, its photo, reason and evidence) with wrong_end_note -- "The
     rear read thought these photos show the front." -- never merged with
     the reads (it neither credits nor disputes a list part) and never on
-    the list. second_look._store then treats it as any zone suggestion: a
-    part listed or dismissed goes, a twin joins."""
+    the list. The review's M5: its side was worked out by a read wrong about
+    which end it saw (or the part is of the wrong end), so it goes by its
+    "(side undetermined)" name, and Low whatever the model said;
+    second_look._store ranks it after every other suggestion and drops it
+    behind a twin a read genuinely found (the note stays on it alone). A
+    part listed or dismissed goes, as any suggestion."""
     from app.ai.zone_read import wrong_end_note
 
     out = []
@@ -846,8 +850,9 @@ def wrong_end_suggestions(wrong_end: dict) -> list[dict]:
         for item in block.get("items") or []:
             if not item.get("part"):
                 continue
-            found = {**item, "found_by": [read], "seen_in": [item["photo_reference"]] if item.get("photo_reference")
-                     else []}
+            part = str(item["part"])
+            found = {**item, "part": unsided_part(part) or part, "ai_confidence": "Low", "found_by": [read],
+                     "seen_in": [item["photo_reference"]] if item.get("photo_reference") else []}
             suggestion = as_suggestion(found)
             suggestion["wrong_end_note"] = wrong_end_note(zone, str(block.get("seen") or ""))
             out.append(suggestion)
