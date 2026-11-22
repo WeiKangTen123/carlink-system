@@ -152,10 +152,22 @@ def _env_map(env) -> dict[str, str | None]:
     return out
 
 
+def _split_volume(text: str) -> list[str]:
+    """"src:target[:mode]" split at its colons -- but a Windows host path's
+    drive letter ("C:/..." or "C:\\...", in tests on Windows) stays with the
+    source."""
+    drive = ""
+    if re.match(r"^[A-Za-z]:[\\/]", text):
+        drive, text = text[:2], text[2:]
+    parts = text.split(":")
+    parts[0] = drive + parts[0]
+    return parts
+
+
 def _volume_target(v) -> str:
     if isinstance(v, dict):
         return str(v.get("target"))
-    parts = str(v).split(":")
+    parts = _split_volume(str(v))
     return parts[1] if len(parts) >= 2 else parts[0]
 
 
@@ -272,7 +284,7 @@ def _normalize_volume(v, project: str, base_dir: Path) -> str:
         src, target, ro = v.get("source", ""), v.get("target", ""), v.get("read_only", False)
         mode = "ro" if ro else ""
     else:
-        parts = str(v).split(":")
+        parts = _split_volume(str(v))
         src, target = (parts[0], parts[1]) if len(parts) >= 2 else ("", parts[0])
         mode = parts[2] if len(parts) >= 3 else ""
     if src.startswith(".") or src.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", src):

@@ -18,6 +18,19 @@ compose commands of each stack; smoke failures (a Traceback, a token in a
 log) give exit 2 and a record that blocks production until --smoke-only
 passes; --compose (infra/compose.sh). Also bash -n, and shellcheck -S error
 when it is installed (CI has it).
+
+Review fixes (22 Nov): `docker compose` is infra/tests/fake_compose.py,
+which renders the real compose files from the environment deploy.sh hands
+it -- so a token, port, name or project exported in the shell is shown NOT
+to reach either stack (H1, M3), and the rendered-config check refuses
+production's token in staging's .env before anything starts; a failed build
+puts the previous checkout back (M4); compose.sh restarts nginx after up /
+restart / start (H2) and refuses production's destructive verbs (M7); a
+failed prune still smokes and records (L2); restart counts from before the
+deploy don't fail it (L3); the flags list hides secrets (L4); .env parsed
+as compose does (L5); the backup record must be newer than the run, read
+from the volume (L8); staging's smoke fails when https doesn't ask for the
+password (L9) or production no longer mounts the shared folder (L14).
 """
 import os
 import re
@@ -32,7 +45,7 @@ FAILURES: list[str] = []
 BACKUP_RAN = None
 PASSED = [0]
 
-GEMINI = "AIzaSyTESTKEYvalue-never-printed-0000000"
+GEMINI = "AIzaSyTESTKEYvalue-never-printed-000000"  # AIza + 35, a real key's shape
 PROD_BOT = "1234567890:AA" + "p" * 33
 STAGING_BOT = "9876543210:AA" + "s" * 33
 assert re.fullmatch(r"[0-9]{8,10}:[A-Za-z0-9_-]{35}", PROD_BOT) and re.fullmatch(r"[0-9]{8,10}:[A-Za-z0-9_-]{35}", STAGING_BOT)
@@ -53,26 +66,28 @@ SHIMS = {
 echo "docker $*" >> "$MOCK_LOG"
 case "$1" in
   compose)
-    if [ "${2:-}" = version ]; then echo "Docker Compose version v2.30.3"; exit 0; fi
-    for a in "$@"; do [ "$a" = up ] && exit "${MOCK_UP_EXIT:-0}"; done
-    exit 0 ;;
+    # infra/tests/fake_compose.py: renders the real compose files from the
+    # environment it is given (so what deploy.sh scrubbed is really gone).
+    shift
+    export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"
+    exec "$MOCK_PY" "$MOCK_FAKE_COMPOSE" "$@" ;;
   exec)
     shift; [ "$1" = -i ] && shift; name=$1; shift
     case "$*" in
       "printenv GEMINI_API_KEY") [ "$name" = carlink_api ] && [ -n "${MOCK_PROD_GEMINI:-}" ] && { echo "$MOCK_PROD_GEMINI"; exit 0; }; exit 1 ;;
       "printenv TELEGRAM_BOT_TOKEN") [ -n "${MOCK_PROD_BOT:-}" ] && { echo "$MOCK_PROD_BOT"; exit 0; }; exit 1 ;;
       "printenv CATALOGUE_WORKER_TOKEN") exit 1 ;;
-      "cat /app/storage/.last_backup")
-        printf '{"at": "%s", "reports": 3, "local_path": "/root/.carlink-backup/local/carlink-x.db", "uploaded": false, "bucket": null}' \
-          "${MOCK_BACKUP_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; exit 0 ;;
       *list-users*) echo "1 owner@example.com admin"; exit 0 ;;
       *GEMINI_SHARED_QUOTA_DIR*) exit "${MOCK_CONTAINER_SHARED:-0}" ;;
       *) exit 0 ;;
     esac ;;
   inspect)
     if [[ "$*" == *Mounts* ]]; then echo "${MOCK_PROD_MOUNTS-/app/storage /app/app /app/secrets /app/ai-shared}"; exit 0; fi
-    if [[ "$*" == *RestartCount* ]]; then echo "${MOCK_STATE:-true 0}"; exit 0; fi
+    if [[ "$*" == *State.Running* ]]; then echo "${MOCK_STATE:-true 0}"; exit 0; fi
+    if [[ "$*" == *RestartCount* ]]; then echo "${MOCK_RESTARTS:-0}"; exit 0; fi
     exit 0 ;;
+  volume) [ "${2:-}" = inspect ] && echo "$MOCK_VOL_DIR"; exit 0 ;;
+  builder | image) exit "${MOCK_PRUNE_EXIT:-0}" ;;
   logs) [ -n "${MOCK_LOGS:-}" ] && printf '%s\n' "$MOCK_LOGS"; exit 0 ;;
   run) exit "${MOCK_NGINX_T_EXIT:-0}" ;;
   ps) echo "${MOCK_PS:-carlink_staging_api}"; exit 0 ;;
@@ -113,7 +128,15 @@ else
 fi
 ''',
     "sleep": '#!/bin/bash\nexit 0\n',
+    "python3": '#!/bin/bash\nexport MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"\nexec "$MOCK_PY" "$@"\n',
 }
+
+# The test repo's backup.sh: says which one ran, and writes the record in the
+# (mock) production volume, as infra/backup.sh does.
+BACKUP_SH = r'''echo __WHICH__ > "$MOCK_BACKUP_RAN"
+at=${MOCK_BACKUP_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+printf '{"at": "%s", "reports": 3, "local_path": "/root/.carlink-backup/local/carlink-x.db", "uploaded": false}' "$at" > "$MOCK_VOL_DIR/.last_backup"
+'''
 
 
 class World:
@@ -138,6 +161,9 @@ class World:
         self.home.mkdir()
         self.shared = self.tmp / "ai-shared"
         self.shared.mkdir()
+        self.vol = self.tmp / "infra_bot_data"
+        self.vol.mkdir()
+        self.render_out = self.tmp / "rendered.json"
         self._make_repo()
 
     def git(self, *args, cwd=None) -> str:
@@ -153,7 +179,10 @@ class World:
         self.git("checkout", "-q", "-b", "master", cwd=work)
         (work / "infra").mkdir()
         (work / "infra" / "nginx.conf").write_text("server {}\n")
-        (work / "infra" / "backup.sh").write_text('echo old-backup > "$MOCK_BACKUP_RAN"\n')
+        (work / "infra" / "backup.sh").write_text(BACKUP_SH.replace("__WHICH__", "old-backup"))
+        for name in ("docker-compose.prod.yml", "docker-compose.staging.yml", "docker-compose.ai-shared.yml"):
+            text = (REPO / "infra" / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+            (work / "infra" / name).write_text(text, encoding="utf-8", newline="\n")
         (work / ".gitignore").write_text("infra/.env\n.deployed\n")
         self.git("add", "-A", cwd=work)
         self.git("commit", "-q", "-m", "A", cwd=work)
@@ -161,7 +190,7 @@ class World:
         self.git("push", "-q", "origin", "master", cwd=work)
         self.git("checkout", "-q", "-b", "feat/x", cwd=work)
         (work / "README").write_text("B\n")
-        (work / "infra" / "backup.sh").write_text('echo release-backup > "$MOCK_BACKUP_RAN"\n')
+        (work / "infra" / "backup.sh").write_text(BACKUP_SH.replace("__WHICH__", "release-backup"))
         self.git("add", "-A", cwd=work)
         self.git("commit", "-q", "-m", "B", cwd=work)
         self.B = self.git("rev-parse", "HEAD", cwd=work)
@@ -182,6 +211,7 @@ class World:
     def write_env(self, which: str, text: str | None = None) -> None:
         if text is None:
             text = ("COMPOSE_PROJECT_NAME=carlink-staging\nCARLINK_NAME=carlink_staging\nNGINX_PORT=8081\n"
+                    "PUBLIC_BASE_URL=https://carlink-staging.34-16-92-98.sslip.io\n"
                     f"GEMINI_API_KEY={GEMINI}\nTELEGRAM_BOT_TOKEN=\nCOMPOSE_PROFILES=\nINTAKE_LINKS=on\n")
         (self.staging if which == "staging" else self.prod).joinpath("infra", ".env").write_text(text, encoding="utf-8")
 
@@ -196,6 +226,9 @@ class World:
             "CARLINK_SMOKE_WAIT": "0", "CARLINK_SMOKE_SETTLE": "0", "CARLINK_REPO_SLUG": "carlink-system.git",
             "MOCK_BACKUP_RAN": str(BACKUP_RAN),
             "MOCK_PROD_GEMINI": GEMINI, "MOCK_PROD_BOT": PROD_BOT,
+            "MOCK_PY": Path(sys.executable).as_posix(),
+            "MOCK_FAKE_COMPOSE": (REPO / "infra" / "tests" / "fake_compose.py").as_posix(),
+            "MOCK_VOL_DIR": str(self.vol), "MOCK_RENDER_OUT": str(self.render_out),
         })
         for k, v in mock.items():
             if v is None:
@@ -210,6 +243,11 @@ class World:
 
     def calls(self) -> str:
         return self.log.read_text(encoding="utf-8")
+
+    def rendered(self) -> dict:
+        """The last config the fake compose rendered (what compose would run)."""
+        import json
+        return json.loads(self.render_out.read_text(encoding="utf-8")) if self.render_out.exists() else {}
 
     def head(self, which: str) -> str:
         return self.git("-C", str(self.prod if which == "prod" else self.staging), "rev-parse", "HEAD")
@@ -272,7 +310,6 @@ def staging_refusals(w: World) -> None:
          "NGINX_PORT must be set, and not 8080"),
         ("no key", "CARLINK_NAME=carlink_staging\nNGINX_PORT=8081\nGEMINI_API_KEY=\n", {}, "GEMINI_API_KEY is empty"),
         ("mode 644", None, {"MOCK_PERMS": "644"}, "chmod 600"),
-        ("the shell says COMPOSE_PROJECT_NAME=infra", None, {"COMPOSE_PROJECT_NAME": "infra"}, "would be 'infra'"),
         ("telegram profile, no token", "CARLINK_NAME=carlink_staging\nNGINX_PORT=8081\n"
          f"GEMINI_API_KEY={GEMINI}\nCOMPOSE_PROFILES=telegram\n", {}, "TELEGRAM_BOT_TOKEN is empty"),
     ]
@@ -292,9 +329,10 @@ def staging_refusals(w: World) -> None:
     check(code == 1 and "is production's" in out and no_secret(out),
           "refused: staging with production's Telegram token (compared by hash; neither shown)", out)
     code, out = w.run("deploy.sh", *dry, MOCK_PROD_BOT=None)
-    check(code == 1 and "can't read production's TELEGRAM_BOT_TOKEN" in out,
+    check(code == 1 and "production's can't be read to compare" in out,
           "refused: a staging token when production's can't be read to compare", out)
     w.write_env("staging", "CARLINK_NAME=carlink_staging\nNGINX_PORT=8081\n" f"GEMINI_API_KEY={GEMINI}\n"
+                "PUBLIC_BASE_URL=https://carlink-staging.34-16-92-98.sslip.io\n"
                 f"TELEGRAM_BOT_TOKEN={STAGING_BOT}\nCOMPOSE_PROFILES=telegram\n")
     code, out = w.run("deploy.sh", *dry)
     check(code == 0 and no_secret(out), "a separate test bot's token passes (not shown)", out)
@@ -315,6 +353,24 @@ def staging_refusals(w: World) -> None:
     check(code == 1 and "doesn't mount the shared AI folder" in out, "refused: production doesn't mount it", out)
     code, out = w.run("deploy.sh", *dry, "--allow-unshared-prod", MOCK_PROD_MOUNTS="/app/storage /app/app")
     check(code == 0 and "--allow-unshared-prod" in out, "--allow-unshared-prod: allowed, with a warning", out)
+
+    # Review H1/M3: what the SHELL exported never reaches a stack -- the
+    # rendered config is built from staging's infra/.env alone.
+    shell = {"TELEGRAM_BOT_TOKEN": PROD_BOT, "COMPOSE_PROJECT_NAME": "infra", "CARLINK_NAME": "carlink",
+             "NGINX_PORT": "8080", "PUBLIC_BASE_URL": "https://carlink.34-16-92-98.sslip.io",
+             "COMPOSE_PROFILES": "telegram", "CATALOGUE_WORKER_TOKEN": "prod-worker"}
+    code, out = w.run("deploy.sh", *dry, **shell)
+    r = w.rendered()
+    api = (r.get("services") or {}).get("api") or {}
+    env = api.get("environment") or {}
+    check(code == 0 and "exported in this shell are ignored" in out and no_secret(out),
+          "a shell that exported production's token, project, names, port, profiles: ignored (dry run passes)", out)
+    check(r.get("name") == "carlink-staging" and api.get("container_name") == "carlink_staging_api"
+          and env.get("TELEGRAM_BOT_TOKEN") == "" and env.get("CATALOGUE_WORKER_TOKEN") == ""
+          and env.get("PUBLIC_BASE_URL") != "https://carlink.34-16-92-98.sslip.io"
+          and "telegram-bot" not in (r.get("services") or {})
+          and (r["services"]["nginx"].get("ports") or [{}])[0].get("published") == "8081",
+          "... the rendered config has staging's .env values: no token, carlink_staging_*, 8081, no bot", repr(r)[:400])
 
     code, out = w.run("deploy.sh", *dry, CARLINK_STAGING_DIR=str(w.prod))
     check(code == 1 and "its own clone" in out, "refused: staging in production's clone", out)
@@ -337,10 +393,11 @@ def staging_deploy(w: World) -> None:
     detached = subprocess.run(["git", "-C", str(w.staging), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode
     check(detached != 0, "HEAD is detached (no branch to pull)")
     want = ("docker compose -p carlink-staging -f infra/docker-compose.prod.yml -f infra/docker-compose.staging.yml "
-            "-f infra/docker-compose.ai-shared.yml up -d --build")
-    check(want in calls, "compose: -p carlink-staging, the three files, up -d --build", calls)
-    check("config -q" in calls and calls.index("config -q") < calls.index("up -d --build"),
-          "the files are rendered (config -q) before anything starts")
+            "-f infra/docker-compose.ai-shared.yml up -d --no-build")
+    check(want in calls, "compose: -p carlink-staging, the three files, up -d --no-build", calls)
+    check("config --format json" in calls and " build" in calls
+          and calls.rindex("config --format json") < calls.index(" build") < calls.index("up -d --no-build"),
+          "the rendered config is checked, then the images built, then started", calls)
     check("sudo" not in calls, "no backup, no sudo for staging", calls)
     check("--network carlink-staging_default" in calls and "docker restart carlink_staging_nginx" in calls,
           "nginx -t on staging's network, then staging's nginx restarted")
@@ -389,15 +446,22 @@ def prod_deploy(w: World) -> None:
     check(code == 1 and "backup failed -- not deploying" in out and w.head("prod") == w.A,
           "backup fails: refused, nothing checked out", out)
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", MOCK_BACKUP_AT="2026-01-01T00:00:00Z")
-    check(code == 1 and "not fresh" in out and w.head("prod") == w.A, "a stale backup record: refused", out)
+    check(code == 1 and "older than this backup run" in out and w.head("prod") == w.A,
+          "a backup record older than this run (backup.sh wrote none): refused (review L8)", out)
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", MOCK_BUILD_EXIT="1")
+    calls = w.calls()
+    check(code == 1 and "build failed" in out and w.head("prod") == w.A and " up " not in calls,
+          "a failed build: refused, the previous checkout put back, nothing started (review M4)", out)
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master")
     calls = w.calls()
     check(code == 0 and "smoke: PASS" in out and w.head("prod") == w.M, "deployed the merge commit, smoke PASS", out)
     check("sudo bash" in calls and "/backup.sh" in calls
-          and calls.index("/backup.sh") < calls.index("up -d --build"), "backup first", calls)
+          and calls.index("/backup.sh") < calls.index("up -d --no-build"), "backup first", calls)
+    check("sudo cat" in calls and "docker exec carlink_api cat" not in calls,
+          "the backup record is read from the volume, not through carlink_api (review L8)", calls)
     check(BACKUP_RAN.exists() and BACKUP_RAN.read_text().strip() == "release-backup",
           "the RELEASE's backup.sh ran (taken from the commit, not the old checkout)")
-    check("docker compose -p infra -f infra/docker-compose.prod.yml -f infra/docker-compose.ai-shared.yml up -d --build" in calls,
+    check("docker compose -p infra -f infra/docker-compose.prod.yml -f infra/docker-compose.ai-shared.yml up -d --no-build" in calls,
           "compose: -p infra, production's file + the shared AI folder (it exists)", calls)
     check("docker restart carlink_nginx" in calls and "127.0.0.1:8080/api/health" in calls, "carlink_nginx, port 8080")
     check(no_secret(out), "no key or token in the output (they came from the running container)")
@@ -410,6 +474,26 @@ def prod_deploy(w: World) -> None:
     w.shared.mkdir()
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--no-backup")
     check(code == 0 and "WITHOUT A BACKUP" in out and "sudo bash" not in w.calls(), "--no-backup: loud, no backup run", out)
+    # Review M3: a shell set up for staging can't re-render production.
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--no-backup",
+                      NGINX_PORT="8081", CARLINK_NAME="carlink_staging", COMPOSE_PROJECT_NAME="carlink-staging",
+                      TELEGRAM_BOT_TOKEN=STAGING_BOT, GEMINI_QUOTA_LANE="staging")
+    r = w.rendered()
+    svcs = r.get("services") or {}
+    check(code == 0 and r.get("name") == "infra"
+          and sorted(b.get("container_name") for b in svcs.values()) ==
+          ["carlink_api", "carlink_dashboard", "carlink_nginx", "carlink_parts_worker", "carlink_telegram_bot"]
+          and svcs["nginx"]["ports"][0]["published"] == "8080"
+          and svcs["api"]["environment"].get("TELEGRAM_BOT_TOKEN") == PROD_BOT
+          and "GEMINI_QUOTA_LANE" not in svcs["api"]["environment"] and no_secret(out),
+          "production with a staging-flavoured shell: still infra, carlink_*, 8080, its own token, prod lane", repr(r)[:300])
+    w.write_env("prod", "NGINX_PORT=8081\n")
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--dry-run")
+    check(code == 1 and "production is 127.0.0.1:8080" in out, "production's .env with another port: refused", out)
+    w.write_env("prod", "")
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--no-backup", MOCK_PRUNE_EXIT="1")
+    check(code == 0 and "prune failed (ignored)" in out and w.record("prod").get("smoke") == "pass",
+          "a failed prune: warned; the smoke and the record still happen (review L2)", out)
 
 
 def smoke_failures(w: World) -> None:
@@ -430,8 +514,20 @@ def smoke_failures(w: World) -> None:
     code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_SIGNUP='{"open":true}')
     check(code == 1 and "signups are not closed" in out, "staging with signups open fails the smoke", out)
     code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_STATE="true 3")
-    check(code == 1 and "want running, 0 restarts" in out, "a restarting container fails the smoke", out)
-    w.run("deploy.sh", "--env", "staging", "--smoke-only")
+    check(code == 1 and "restarts 3 (was 0 after the deploy)" in out, "a container restarted since the deploy fails the smoke", out)
+    # Review L3: a container up's left alone that once restarted is fine...
+    code, out = w.run("deploy.sh", "--env", "staging", "--ref", "feat/x", MOCK_RESTARTS="3", MOCK_STATE="true 3")
+    check(code == 0 and w.record("staging").get("restarts", "").count("=3") >= 3,
+          "restart counts from before the deploy don't fail it (the baseline is kept in .deployed)", out)
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_STATE="true 4")
+    check(code == 1 and "restarts 4 (was 3 after the deploy)" in out, "... a restart after it does", out)
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_PUBLIC_CODE="200")
+    check(code == 1 and "don't use staging until it is" in out,
+          "the public address not asking for the password fails the staging smoke (review L9)", out)
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_PROD_MOUNTS="/app/storage /app/app")
+    check(code == 1 and "doesn't mount the shared AI folder" in out,
+          "production no longer mounting the shared folder fails the staging smoke (review L14)", out)
+    w.run("deploy.sh", "--env", "staging", "--ref", "feat/x")
 
 
 def compose_wrapper(w: World) -> None:
@@ -446,6 +542,46 @@ def compose_wrapper(w: World) -> None:
           "prod: -p infra (secrets from the running api, not shown)", w.calls())
     code, out = w.run("compose.sh")
     check(code == 2, "no arguments: the usage")
+    # Review H2: up / restart / start restart nginx afterwards (new addresses).
+    for env_name, args in (("prod", ["up", "-d"]), ("staging", ["restart", "api"]), ("prod", ["start"])):
+        code, out = w.run("compose.sh", env_name, *args)
+        calls = w.calls()
+        nginx = "carlink_nginx" if env_name == "prod" else "carlink_staging_nginx"
+        check(code == 0 and "config --format json" in calls and f"docker restart {nginx}" in calls
+              and calls.index(f"{' '.join(args)}") < calls.index(f"docker restart {nginx}"),
+              f"{env_name} {' '.join(args)}: rendered config checked, then nginx restarted after it", calls)
+    code, out = w.run("compose.sh", "prod", "logs", "api")
+    check(code == 0 and "docker restart" not in w.calls(), "prod logs: nothing restarted")
+    # Review M7: production's live data is one `down -v` away.
+    for args in (["down", "-v"], ["down"], ["rm", "-f"], ["kill"], ["stop"], ["volume", "ls"], ["build"],
+                 ["up", "-d", "--build"], ["up", "-V"], ["logs", "-v"]):
+        code, out = w.run("compose.sh", "prod", *args)
+        check(code == 1 and "not allowed on production" in out and "docker compose -p infra" not in w.calls(),
+              f"prod {' '.join(args)}: refused, compose not run", out)
+    code, out = w.run("compose.sh", "prod", "exec", "api", "ls")
+    check(code == 0 and "exec api ls" in w.calls(), "prod exec: allowed")
+    code, out = w.run("compose.sh", "staging", "down", "-v")
+    check(code == 0 and "down -v" in w.calls(), "staging down -v: allowed (staging's own volumes)")
+    w.write_env("staging", "CARLINK_NAME=carlink_staging\nNGINX_PORT=8081\n" f"GEMINI_API_KEY={GEMINI}\n"
+                f"TELEGRAM_BOT_TOKEN={PROD_BOT}\nCOMPOSE_PROFILES=telegram\n")
+    code, out = w.run("compose.sh", "staging", "up", "-d")
+    check(code == 1 and "is production's" in out and " up -d" not in w.calls() and no_secret(out),
+          "staging up with production's token in its .env: refused before anything starts (review H1)", out)
+    w.write_env("staging")
+
+
+def env_parsing(w: World) -> None:
+    print("\n9. .env read as compose reads it; the flags list hides secrets (review L4, L5)")
+    w.write_env("staging", "COMPOSE_PROJECT_NAME=carlink-staging\nCARLINK_NAME=carlink_staging\n"
+                "PUBLIC_BASE_URL='https://carlink-staging.34-16-92-98.sslip.io'\n"
+                "export NGINX_PORT=8081   # staging's port\n"
+                f"GEMINI_API_KEY=\"{GEMINI}\"\nTELEGRAM_BOT_TOKEN=\nINTAKE_LINKS=on\n"
+                f"GEMINI_SPARE_KEY={GEMINI}\nINTAKE_NOTE=uses {GEMINI} here\n")
+    code, out = w.run("deploy.sh", "--env", "staging", "--ref", "feat/x", "--dry-run")
+    check(code == 0 and "127.0.0.1:8081" in out, "export, spaces, quotes and a # comment parse as compose does", out)
+    check("GEMINI_SPARE_KEY" not in out and GEMINI not in out and "INTAKE_NOTE=uses <key> here" in out,
+          "the flags list leaves out *KEY* names and masks a key-shaped value", out)
+    w.write_env("staging")
 
 
 def bench_lane(w: World) -> None:
@@ -509,7 +645,7 @@ def main() -> int:
     static_checks()
     w = World()
     for section in (options, staging_refusals, staging_deploy, prod_checks, prod_deploy, smoke_failures, compose_wrapper,
-                    bench_lane):
+                    env_parsing, bench_lane):
         try:
             section(w)
         except Exception as exc:
