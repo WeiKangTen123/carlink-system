@@ -135,21 +135,36 @@ def gate() -> None:
         whatsapp._download_media, structured.get_client = real
 
 
+# Shaped like Twilio's ids: two letters and 32 hex characters.
+AC, MM, ME = "AC" + "a1" * 16, "MM" + "b2" * 16, "ME" + "c3" * 16
+TWILIO_MEDIA = f"https://api.twilio.com/2010-04-01/Accounts/{AC}/Messages/{MM}/Media/{ME}"
+
+
 def media_urls() -> None:
     for url, ok in (
-        ("https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1", True),
-        ("https://api.twilio.com:443/2010-04-01/Accounts/AC1/Media/ME1", True),
-        ("http://api.twilio.com/2010-04-01/Accounts/AC1/Media/ME1", False),
-        ("https://api.twilio.com:8443/x", False),
-        ("https://api.twilio.com.evil.example/x", False),
-        ("https://evil.example/?u=https://api.twilio.com/x", False),
+        (TWILIO_MEDIA, True),
+        (TWILIO_MEDIA.replace("api.twilio.com", "api.twilio.com:443"), True),
+        (TWILIO_MEDIA.replace("/Messages/MM", "/Messages/SM"), True),
+        (TWILIO_MEDIA.replace("https://", "http://"), False),
+        (TWILIO_MEDIA.replace("api.twilio.com", "api.twilio.com:8443"), False),
+        (TWILIO_MEDIA.replace("api.twilio.com", "api.twilio.com.evil.example"), False),
+        (TWILIO_MEDIA.replace("https://", "https://user:pw@"), False),
+        (TWILIO_MEDIA + "?u=http://169.254.169.254/", False),
+        (TWILIO_MEDIA + "#x", False),
+        (TWILIO_MEDIA + "/../../../x", False),
+        ("https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1", False),
+        ("https://api.twilio.com/x", False),
+        ("https://evil.example/?u=" + TWILIO_MEDIA, False),
         ("https://user@evil.example/x", False),
         ("http://169.254.169.254/latest/meta-data/", False),
         ("https://localhost/x", False),
         ("file:///etc/passwd", False),
         ("not a url", False),
     ):
-        check(whatsapp._media_url_ok(url) is ok, f"{url}: {'fetched' if ok else 'refused'}")
+        got = whatsapp._media_url(url)
+        check((got is not None) is ok, f"{url}: {'fetched' if ok else 'refused'}", repr(got))
+    check(whatsapp._media_url(TWILIO_MEDIA.replace("api.twilio.com", "api.twilio.com:443")) == TWILIO_MEDIA,
+          "the URL fetched is rebuilt from the ids, on https://api.twilio.com")
 
 
 def downloads() -> None:
@@ -171,8 +186,10 @@ def downloads() -> None:
             super().__init__(*args, **kwargs)
 
     whatsapp.httpx.AsyncClient = MockAsync
+    real_public = whatsapp._public_host
+    whatsapp._public_host = lambda host: host == "media.twiliocdn.example"
     try:
-        url = "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1"
+        url = TWILIO_MEDIA
         path = asyncio.run(whatsapp._download_media("whatsapp:+6511111111", url, 0))
         check(Path(path).exists() and Path(path).stat().st_size == 2050, "a Twilio photo is fetched, through Twilio's redirect")
         check(seen[0][0] == "api.twilio.com" and (seen[0][1] or "").startswith("Basic "), "...the credentials go to api.twilio.com")
@@ -199,6 +216,7 @@ def downloads() -> None:
         check(not seen, "...without a single request", repr(seen))
     finally:
         whatsapp.httpx.AsyncClient = real_async
+        whatsapp._public_host = real_public
 
 
 def main() -> int:
