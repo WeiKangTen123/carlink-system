@@ -24,10 +24,10 @@
 #      the files staging last deployed and passed its smoke checks with
 #      (/opt/carlink-staging/.deployed), or --fast-lane "<why>" (a small
 #      urgent non-AI fix, owner's OK in chat), which is logged.
-#   3. production only: a backup first (sudo bash <the release's
-#      infra/backup.sh>, local copy at least; it never runs for staging), and
-#      its record must be newer than the moment it started -- or --no-backup,
-#      loudly.
+#   3. production only: a backup first (sudo bash infra/backup.sh of this
+#      checkout, else of the release; local copy at least; it never runs for
+#      staging), and its record must be newer than the moment it started --
+#      or --no-backup, loudly.
 #   4. the RENDERED config is checked (docker compose config): project,
 #      container names, the one published port, volume names, the AI lane,
 #      and -- staging -- that no token is production's. Then the images are
@@ -196,8 +196,10 @@ compose_files() {
     FILES=(-f infra/docker-compose.prod.yml)
     if [ "$ENV_NAME" = staging ]; then
         FILES+=(-f infra/docker-compose.staging.yml -f infra/docker-compose.ai-shared.yml)
-    elif [ -d "$AI_SHARED_DIR" ]; then
-        # Production joins the shared AI quota folder once it exists.
+    elif [ -d "$AI_SHARED_DIR" ] && [ -f "$DIR/infra/docker-compose.ai-shared.yml" ]; then
+        # Production joins the shared AI quota folder once it exists -- and
+        # only with a commit that has the override (a rollback to an older
+        # one keeps its own window, as that code did).
         FILES+=(-f infra/docker-compose.ai-shared.yml)
     fi
 }
@@ -706,7 +708,7 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
     say "dry run: every check passed; nothing changed. A real run would now:"
     if [ "$ENV_NAME" = prod ]; then
-        if [ "$NO_BACKUP" = 1 ]; then say "  - skip the backup (--no-backup)"; else say "  - sudo bash <the release's infra/backup.sh>, and check its record is new"; fi
+        if [ "$NO_BACKUP" = 1 ]; then say "  - skip the backup (--no-backup)"; else say "  - sudo bash infra/backup.sh (this checkout's, else the release's), and check its record is new"; fi
     fi
     say "  - git -C $DIR checkout --detach $SHA; check the rendered config; build"
     say "    (a failed check or build puts $ROLLBACK back)"
@@ -725,24 +727,25 @@ if [ "$ENV_NAME" = prod ]; then
         # backup.sh decides (exit 0 = a checked local copy, and the upload
         # when a bucket is set); then its record must be the one it just
         # wrote (review L8: read from the volume, not through carlink_api,
-        # which may be down) and the copy there. The release's own backup.sh
-        # (it doesn't depend on where it sits); the checkout's when the
-        # release has none.
+        # which may be down) and the copy there. The checkout's backup.sh
+        # first (reviewed, already running here); if it fails, the release's
+        # own (it doesn't depend on where it sits) -- so a release that FIXES
+        # the backup (the first deploy of D1's) deploys, and a rollback to an
+        # older commit backs up with today's script.
         backup_dir=$(mktemp -d)
-        backup_script="$backup_dir/backup.sh"
-        if ! git -C "$DIR" show "$SHA:infra/backup.sh" >"$backup_script" 2>/dev/null; then
-            cp "$DIR/infra/backup.sh" "$backup_script" 2>/dev/null || {
-                rm -rf "$backup_dir"
-                die "no infra/backup.sh in $SHA or in $DIR: not deploying without a backup (or --no-backup)"
-            }
-        fi
-        say "backing up first (backup.sh of $SHA; local copy at least)"
+        backup_ok=0
         started_s=$(date -u +%s)
-        sudo bash "$backup_script" || {
-            rm -rf "$backup_dir"
-            die "backup failed -- not deploying. Fix it (Settings > Company shows the last backup), or --no-backup"
-        }
+        say "backing up first (this checkout's backup.sh; local copy at least)"
+        if [ -f "$DIR/infra/backup.sh" ] && sudo bash "$DIR/infra/backup.sh"; then
+            backup_ok=1
+        elif git -C "$DIR" show "$SHA:infra/backup.sh" >"$backup_dir/backup.sh" 2>/dev/null; then
+            warn "this checkout's backup.sh failed or is missing: trying the release's (backup.sh of $SHA)"
+            started_s=$(date -u +%s)
+            sudo bash "$backup_dir/backup.sh" && backup_ok=1
+        fi
         rm -rf "$backup_dir"
+        [ "$backup_ok" = 1 ] ||
+            die "backup failed -- not deploying. Fix it (Settings > Company shows the last backup), or --no-backup"
         vol_dir=$(docker volume inspect infra_bot_data --format '{{.Mountpoint}}' 2>/dev/null || true)
         record=
         [ -z "$vol_dir" ] || record=$(sudo cat "$vol_dir/.last_backup" 2>/dev/null || true)
@@ -765,6 +768,9 @@ put_back() {
 }
 say "checking out $SHA"
 git -C "$DIR" checkout --quiet --detach "$SHA"
+# The release's own compose files decide (production: the shared AI override
+# only when this commit has it).
+compose_files
 
 if ! render_check; then
     put_back

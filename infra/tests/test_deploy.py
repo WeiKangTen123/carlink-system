@@ -179,7 +179,11 @@ class World:
         self.git("checkout", "-q", "-b", "master", cwd=work)
         (work / "infra").mkdir()
         (work / "infra" / "nginx.conf").write_text("server {}\n")
-        (work / "infra" / "backup.sh").write_text(BACKUP_SH.replace("__WHICH__", "old-backup"))
+        # A's backup.sh is broken, like production's before D1 (it aimed at the
+        # deleted bucket), unless MOCK_OLD_BACKUP_BROKEN=0.
+        (work / "infra" / "backup.sh").write_text(
+            'if [ "${MOCK_OLD_BACKUP_BROKEN:-1}" = 1 ]; then echo "old backup: NoSuchBucket" >&2; exit 1; fi\n'
+            + BACKUP_SH.replace("__WHICH__", "old-backup"))
         for name in ("docker-compose.prod.yml", "docker-compose.staging.yml", "docker-compose.ai-shared.yml"):
             text = (REPO / "infra" / name).read_text(encoding="utf-8").replace("\r\n", "\n")
             (work / "infra" / name).write_text(text, encoding="utf-8", newline="\n")
@@ -448,10 +452,12 @@ def prod_deploy(w: World) -> None:
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", MOCK_BACKUP_AT="2026-01-01T00:00:00Z")
     check(code == 1 and "older than this backup run" in out and w.head("prod") == w.A,
           "a backup record older than this run (backup.sh wrote none): refused (review L8)", out)
-    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", MOCK_BUILD_EXIT="1")
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", MOCK_BUILD_EXIT="1", MOCK_OLD_BACKUP_BROKEN="0")
     calls = w.calls()
     check(code == 1 and "build failed" in out and w.head("prod") == w.A and " up " not in calls,
           "a failed build: refused, the previous checkout put back, nothing started (review M4)", out)
+    check(BACKUP_RAN.read_text().strip() == "old-backup" and "trying the release's" not in out,
+          "a working backup.sh in the checkout is the one used")
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master")
     calls = w.calls()
     check(code == 0 and "smoke: PASS" in out and w.head("prod") == w.M, "deployed the merge commit, smoke PASS", out)
@@ -459,8 +465,9 @@ def prod_deploy(w: World) -> None:
           and calls.index("/backup.sh") < calls.index("up -d --no-build"), "backup first", calls)
     check("sudo cat" in calls and "docker exec carlink_api cat" not in calls,
           "the backup record is read from the volume, not through carlink_api (review L8)", calls)
-    check(BACKUP_RAN.exists() and BACKUP_RAN.read_text().strip() == "release-backup",
-          "the RELEASE's backup.sh ran (taken from the commit, not the old checkout)")
+    check(BACKUP_RAN.exists() and BACKUP_RAN.read_text().strip() == "release-backup"
+          and "trying the release's" in out,
+          "the checkout's backup.sh failing (pre-D1), the RELEASE's ran (taken from the commit)", out)
     check("docker compose -p infra -f infra/docker-compose.prod.yml -f infra/docker-compose.ai-shared.yml up -d --no-build" in calls,
           "compose: -p infra, production's file + the shared AI folder (it exists)", calls)
     check("docker restart carlink_nginx" in calls and "127.0.0.1:8080/api/health" in calls, "carlink_nginx, port 8080")
@@ -494,6 +501,19 @@ def prod_deploy(w: World) -> None:
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--no-backup", MOCK_PRUNE_EXIT="1")
     check(code == 0 and "prune failed (ignored)" in out and w.record("prod").get("smoke") == "pass",
           "a failed prune: warned; the smoke and the record still happen (review L2)", out)
+    # A rollback to a commit from before this tooling (no shared-AI override
+    # in it): production deploys it with its own window.
+    work = w.tmp / "work"
+    w.git("checkout", "-q", "-b", "pre-tooling", w.A, cwd=work)
+    w.git("rm", "-q", "infra/docker-compose.ai-shared.yml", "infra/docker-compose.staging.yml", cwd=work)
+    w.git("commit", "-q", "-m", "old", cwd=work)
+    w.git("push", "-q", "origin", "pre-tooling", cwd=work)
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "pre-tooling", "--fast-lane", "rollback", "--no-backup")
+    calls = w.calls()
+    check(code == 0 and "docker compose -p infra -f infra/docker-compose.prod.yml up -d --no-build" in calls,
+          "a rollback to a commit without the shared-AI override: deployed without it", out + calls)
+    code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master", "--fast-lane", "back again", "--no-backup")
+    check(code == 0 and w.head("prod") == w.M, "... and forward again", out)
 
 
 def smoke_failures(w: World) -> None:
