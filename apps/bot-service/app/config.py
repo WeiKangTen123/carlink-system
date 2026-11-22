@@ -191,6 +191,12 @@ class Settings(BaseSettings):
     # the sort's prompt and schema, so sorts made with it are cached apart
     # (triage.sort_prompt_version).
     intake_sort_damage_box: bool = False
+    # F7 (plans/2026-11-22-enhance-staging): the photos a sorting batch
+    # skipped -- a batch answered for at least half its photos, so the rest
+    # stayed unsorted and got no zone read -- go into ONE more small batch
+    # at the end (at most BATCH_SIZE photos; +0-1 call, only when it
+    # happens). "off": they stay unsorted, as before.
+    intake_sort_retry_skipped: str = "off"
     # Right after a photo the sorter boxed, the reading gets a close-up of
     # that box cut from the largest copy of the photo we keep
     # (intake/crops.py), as "Close-up of photo P07:" and the image. At most
@@ -207,6 +213,14 @@ class Settings(BaseSettings):
     # Off: measured on the light reader (2026-11-10) it added no parts and
     # made sides worse when the sorter's own side was wrong.
     intake_side_from_sorter: bool = False
+    # F3 (plans/2026-11-22-enhance-staging): the side resolver
+    # (intake/pipeline.resolve_sides) drops a "(side undetermined)" find it
+    # places on a side whose name is already listed. "on": when that find
+    # is on a different photo from the listed part, it is kept as a
+    # suggestion instead (source "other_side", other_side_of the listed
+    # name: "Other side? Tail Lamp (side undetermined)") -- two lamps on two
+    # photos no longer become one. "off": dropped, as before.
+    intake_keep_other_side: str = "off"
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
@@ -320,6 +334,11 @@ class Settings(BaseSettings):
             raise ValueError("intake_read_crops_max: 0 or more")
         return value
 
+    @field_validator("intake_sort_retry_skipped", "intake_keep_other_side")
+    @classmethod
+    def _off_on(cls, value, info):
+        return _one_of(value, OFF_ON, info.field_name)
+
     # Contract 8 D2: reading the car one area at a time (intake/zones.py).
     # "single": the one overall reading, as before. "zones": after it, one
     # short call per area the photos show -- front, rear, left, right, and
@@ -390,6 +409,20 @@ class Settings(BaseSettings):
     # R4's offline sweep.
     intake_check_yes: float = 0.7
     intake_check_no: float = 0.3
+    # F1 (plans/2026-11-22-enhance-staging, owner decision 9): when the
+    # main read fails (every model busy, out of allowance, the person's AI
+    # unavailable) -- "zones": the zone reads still run (zone mode), then
+    # the main read is tried once more; if it fails again, the zone reads'
+    # finds become the list as "Check" (Low) rows, with a notice ("The
+    # overall read failed. This list is from the area reads. Press
+    # Re-read."; IntakeSession.ai_draft["main_read"], GET /intake/{id}'s
+    # read_notice). "off": the run fails ("Retry"), as before.
+    intake_main_read_fallback: str = "off"
+
+    @field_validator("intake_main_read_fallback")
+    @classmethod
+    def _main_read_fallback(cls, value):
+        return _one_of(value, MAIN_READ_FALLBACKS, "intake_main_read_fallback")
 
     @field_validator("gemini_zone_chain", "gemini_check_chain")
     @classmethod
@@ -544,6 +577,29 @@ class Settings(BaseSettings):
     # A second hop's part (hop 2) goes there unless a photo shows it.
     intake_links_stripdown_cap: str = "in"
     intake_links_stripdown_max: int = 12
+    # F2 + F5 (plans/2026-11-22-enhance-staging): what the caps cut -- the
+    # suggestions past second_look.MAX_SUGGESTIONS, the linked parts past
+    # intake_links_assembly_max a group or intake_links_max (and the
+    # strip-down block's max), a linked part dropped because a zone read
+    # called it intact -- is kept beside the suggestions, never shown or
+    # printed until the Review step folds it in "More (N)":
+    # data["second_look"]["cut"] (each with cut_reason "limit" or
+    # "intact") and ["cut_counts"]. "off": cut and gone, as before.
+    intake_keep_cut: str = "off"
+    # F6: the linked check's "no" on a part the table marks hidden (a beam,
+    # a regulator: no photo can show it) becomes "cannot_tell", as the cue
+    # rule does for a seen with nothing to point at. "keep": as before.
+    intake_link_hidden_no: str = "keep"
+
+    @field_validator("intake_keep_cut")
+    @classmethod
+    def _keep_cut(cls, value):
+        return _one_of(value, OFF_ON, "intake_keep_cut")
+
+    @field_validator("intake_link_hidden_no")
+    @classmethod
+    def _link_hidden_no(cls, value):
+        return _one_of(value, LINK_HIDDEN_NO, "intake_link_hidden_no")
 
     @field_validator("intake_links")
     @classmethod
@@ -720,6 +776,11 @@ class Settings(BaseSettings):
 
 
 READ_MODES = ("single", "zones")
+# plans/2026-11-22-enhance-staging's fixes: the first of each is the
+# default, today's behaviour.
+OFF_ON = ("off", "on")
+MAIN_READ_FALLBACKS = ("off", "zones")
+LINK_HIDDEN_NO = ("keep", "cannot_tell")
 
 
 def normal_read_mode(value) -> str:
