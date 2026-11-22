@@ -653,6 +653,33 @@ def slot_deadlines() -> None:
               "call_structured whose slot would come after its deadline: no request, no 60 s wait", repr(SENT))
     env_window.write_text("[]")
 
+    # Shared mode: a busy model's retry whose slot would come past the
+    # deadline ends the call -- no retry, and no next model either.
+    root = new_shared()
+    configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0,
+              gemini_max_requests_per_minute=1)
+    use_clock()
+    real_sleep = structured.time.sleep
+    structured.time.sleep = lambda s: None
+    SENT.clear()
+    PLAN.clear()
+    PLAN[LITE5] = [Busy(), '{"ok": 1}']
+    PLAN[LITE1] = ['{"ok": 2}']
+    try:
+        structured.call_structured(
+            purpose="link", system_instruction="s", input_parts=[{"type": "text", "text": "x"}],
+            schema={"type": "object"}, parse=lambda raw: raw, models=[LITE5, LITE1], actor=AiActor.cli(), timeout=5,
+            deadline=time.monotonic() + 20,
+        )
+        check(False, "a retry past the deadline ends the call")
+    except Exception:
+        day = json.loads((root / "day" / f"{quota_guard.key_tag(env_key)}.json").read_text())
+        check(SENT == [LITE5] and day["counts"] == {LITE5: {"prod": 1}},
+              "shared mode: a retry whose slot comes past the deadline -- not sent, not counted, no next model",
+              repr(SENT) + repr(day))
+    finally:
+        structured.time.sleep = real_sleep
+
 
 SECTIONS = [defaults_unchanged, prod_lane, staging_lane, day_rollover, missing_folder, concurrent_writers,
             call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos, slot_deadlines]

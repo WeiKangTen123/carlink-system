@@ -475,6 +475,10 @@ def call_structured(
                         model_id, key.label, runs.scrub_error(str(exc), (key.value,)),
                     )
                     break
+            if stopped:
+                # The retry's slot would come past the deadline (shared
+                # quota folder only): no more requests in this call.
+                break
             verdicts.append(verdict)
             if verdict == "invalid":
                 break  # Google refused the key itself: no other model will take it
