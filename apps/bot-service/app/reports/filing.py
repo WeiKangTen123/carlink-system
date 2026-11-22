@@ -105,6 +105,11 @@ def photo_index_for(photo_kinds: list[dict] | None, ai_draft: dict | None, read_
         for entry, p in zip(index, photo_kinds or []):
             if (p or {}).get("id") in read_ids:
                 entry["read"] = True
+    for entry, p in zip(index, photo_kinds or []):
+        # B5: the sorter's own kind of a photo a person regrouped
+        # (IntakePhoto.ai_kind), only where there is one.
+        if isinstance(p, dict) and p.get("ai_kind"):
+            entry["ai_kind"] = p["ai_kind"]
     unsorted = {entry["label"]: entry for entry in index if entry["kind"] is None}
     for item in (ai_draft or {}).get("damage_summary") or []:
         entry = unsorted.get(item.get("photo_reference"))

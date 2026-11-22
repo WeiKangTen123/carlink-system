@@ -53,6 +53,13 @@ surveyor kept, removed, added or changed before signing:
            opened (sign_lifted); and with intake_car_map "shadow" what the
            car map's linked parts on the AI draft
            (ai_draft["car_map_suggestions"]) predicted (car_map_shadow).
+  regroups  (R-batching B5, still VERSION 3, only on a case whose photo
+           index keeps the sorter's own kind of a photo a person regrouped,
+           photo_index[i].ai_kind -- settings.intake_keep_sort_label; a case
+           without has no such key, so older rows and the sums read as
+           before): the photos with a kind (photos), those a person moved
+           to another kind (moved), and each move as "sorter>person"
+           (pairs).
 
 compare() is pure: no database, no AI. Old cases and missing keys count as
 empty. The answer holds counts, canonical part names, Annex A wordings and
@@ -605,13 +612,49 @@ def compare(ai_draft: dict | None, final_data: dict | None, machine_annex: list 
     out and counts only the signed-off lines' origins."""
     ai = ai_draft if isinstance(ai_draft, dict) else {}
     final = final_data if isinstance(final_data, dict) else {}
+    regroups = _regroups(final)
     return {
         "version": VERSION,
         "damage": _damage(ai, final),
         "annex_a": _annex(final, machine_annex),
         "fields": _fields(ai, final),
         "suggestions": _suggestions(ai, final),
+        **({"regroups": regroups} if regroups is not None else {}),
     }
+
+
+def _regroups(final: dict) -> dict | None:
+    """B5: what people did to the sorter's kinds (see the module's
+    docstring), or None when the case's photo index keeps no sorter's kind
+    (photo_index[i].ai_kind) -- the setting off, nobody regrouped, or a case
+    filed before it."""
+    index = _dicts(final.get("photo_index"))
+    if not any(isinstance(entry.get("ai_kind"), str) and entry["ai_kind"] for entry in index):
+        return None
+    pairs: dict[str, int] = {}
+    moved = 0
+    for entry in index:
+        was, now = entry.get("ai_kind"), entry.get("kind")
+        if isinstance(was, str) and was and isinstance(now, str) and now and was != now:
+            moved += 1
+            pair = f"{was}>{now}"
+            pairs[pair] = pairs.get(pair, 0) + 1
+    photos = sum(1 for entry in index if entry.get("kind") or entry.get("ai_kind"))
+    return {"photos": photos, "moved": moved, "pairs": dict(sorted(pairs.items()))}
+
+
+def sum_regroups(metrics: list[dict]) -> dict | None:
+    """B5: the regroups summed over cases, or None when no case has any."""
+    rows = [m["regroups"] for m in metrics if isinstance(m, dict) and isinstance(m.get("regroups"), dict)]
+    if not rows:
+        return None
+    pairs: dict[str, int] = {}
+    for row in rows:
+        for pair, n in (row.get("pairs") or {}).items():
+            if isinstance(n, int) and not isinstance(n, bool):
+                pairs[pair] = pairs.get(pair, 0) + n
+    total = lambda key: sum(r.get(key) for r in rows if isinstance(r.get(key), int) and not isinstance(r.get(key), bool))  # noqa: E731
+    return {"cases": len(rows), "photos": total("photos"), "moved": total("moved"), "pairs": dict(sorted(pairs.items()))}
 
 
 # ---------------------------------------------------------- recording

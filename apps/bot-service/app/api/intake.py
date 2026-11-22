@@ -39,6 +39,7 @@ from app.api import limits
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import ApiError, current_user, editable_case, not_allowed, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, in_inbox, is_staff
+from app.config import settings
 from app.intake import pipeline, public
 from app.intake.photos import (
     copy_into_case,
@@ -453,6 +454,11 @@ def update_intake_photo(
         if body.kind is not None:
             if body.kind not in PHOTO_KINDS:
                 raise HTTPException(status_code=400, detail=f"Unknown photo group '{body.kind}'")
+            if (getattr(settings, "intake_keep_sort_label", "off") == "on" and photo.ai_kind is None
+                    and photo.kind_source != "surveyor" and photo.kind):
+                # B5: the sorter's own kind, kept from the first regroup on
+                # (IntakePhoto.ai_kind), for the AI-accuracy record.
+                photo.ai_kind = photo.kind
             photo.kind = body.kind
             # Never overwritten by a later sorting run.
             photo.kind_source = "surveyor"
@@ -867,7 +873,8 @@ def _finalize_claimed(db, report_id: str, body: "FinalizeRequest", user: Current
     read_ids = list(session.read_photo_ids or [])
     data = file_case_data(
         db, data, user, ai_draft=ai_draft,
-        photo_kinds=[{"id": p.id, **{key: getattr(p, key) for key in PHOTO_INDEX_KEYS}} for p in photos],
+        photo_kinds=[{"id": p.id, **{key: getattr(p, key) for key in PHOTO_INDEX_KEYS},
+                      **({"ai_kind": p.ai_kind} if getattr(p, "ai_kind", None) else {})} for p in photos],
         owner=owner, report_id=report_id, read_ids=set(read_ids),
     )
     label_of = {p.id: photo_label(i) for i, p in enumerate(photos)}
