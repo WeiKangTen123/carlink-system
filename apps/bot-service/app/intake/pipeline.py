@@ -957,7 +957,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # group for the side resolver, None while off.
         extras = zones.extras_for(photos) if zone_mode else None
         geo_mode = geometry.mode()
-        side_groups = geometry.area_sides(photos) if geo_mode != "off" else None
+        side_groups = geometry.area_sides(photos) if geo_mode in geometry.ACTING else None
         # Contract 8 D1: close-ups beside the photos the sorter boxed. Off:
         # no box is read and the request is as before.
         with_crops = bool(getattr(settings, "intake_read_crops", False))
@@ -1210,12 +1210,12 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # resolve_sides is called as before.
             geo_log: list[dict] = []
             geo_args = ({"geo_sides": side_groups or {}, "geometry_mode": geo_mode, "geometry_log": geo_log}
-                        if geo_mode != "off" else {})
+                        if geo_mode in geometry.ACTING else {})
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
                                                    keep_undetermined=checked | disputed | kept_as_they_were,
                                                    **({"other_side": other_side} if other_side is not None else {}),
                                                    **geo_args)
-            if geo_mode != "off":
+            if geo_mode in geometry.ACTING:
                 zone_draft["side_geometry"] = geo_log
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])

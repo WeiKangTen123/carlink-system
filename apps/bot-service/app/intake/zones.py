@@ -184,9 +184,11 @@ class ZoneExtras:
     3c), made only when one is on (extras_for) -- at the defaults no zone
     function is handed one, and every call is as before.
 
-    E7: geometry_mode ("vote" / "tiebreak") and photo_sides ({photo id:
-    "Left" / "Right"}, intake/geometry.photo_sides): a side zone's side_seen
-    is reconciled with the majority over the photos it is sent.
+    E7: geometry_mode ("vote" / "tiebreak"; "shadow": logged only) and
+    photo_sides ({photo id: "Left" / "Right"}, intake/geometry.photo_sides):
+    a side zone's side_seen is reconciled with its photos' geometry side
+    when they are unanimous, else each find with its own photo's (the
+    review's M4; zone_read.parse_answer).
     E11: wrong_end_mode ("shadow" / "keep") -- an end zone that sees the
     other end has its finds parsed apart; _read_zones files them in
     wrong_end ({"zone:rear": {"seen": "front", "items": [... photos as
@@ -209,14 +211,23 @@ def extras_for(photos) -> "ZoneExtras | None":
                       wrong_end_mode=end)
 
 
-def _zone_geometry(job, extras) -> tuple | None:
-    """E7: (the majority side of a side zone's photos, the mode), for
-    read_zone; None for an end or close zone, or with the geometry off."""
-    if extras is None or extras.geometry_mode == "off" or job.zone not in SIDE_ZONES:
-        return None
-    from app.intake.geometry import majority
+def _zone_sides(job, extras) -> dict[str, str]:
+    """E7: {label: its photo's geometry side} for a job's photos that have
+    one."""
+    return {label: extras.photo_sides[pid] for label, pid, _, _ in job.photos if pid in extras.photo_sides}
 
-    return majority(extras.photo_sides.get(pid) for _, pid, _, _ in job.photos), extras.geometry_mode
+
+def _zone_geometry(job, extras) -> tuple | None:
+    """E7, for read_zone: (the side the zone's photos' geometry names when
+    they are unanimous, else None; the mode; {label: each photo's geometry
+    side}) -- None for an end or close zone, or with the geometry off or in
+    shadow (asked, not used)."""
+    from app.intake.geometry import ACTING, unanimous
+
+    if extras is None or extras.geometry_mode not in ACTING or job.zone not in SIDE_ZONES:
+        return None
+    sides = _zone_sides(job, extras)
+    return unanimous(sides.values()), extras.geometry_mode, sides
 
 
 def _extra_kwargs(job, extras) -> dict:
@@ -724,14 +735,15 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             entry.update(status="ok", side_seen=answer.side_seen, found=len(answer.items), intact=answer.intact)
             if answer.note:
                 entry["note"] = answer.note
-            geo = _zone_geometry(job, extras)
-            if geo is not None:
-                # E7: the side zone's geometry, as the run log keeps it.
-                from app.intake.geometry import tally
+            if extras is not None and extras.geometry_mode != "off" and job.zone in SIDE_ZONES:
+                # E7: the side zone's geometry, as the run log keeps it (in
+                # shadow too: what it would have said, nothing applied).
+                from app.intake.geometry import tally, unanimous
 
-                entry["geometry"] = {"mode": geo[1], "side": geo[0],
-                                     "votes": tally(extras.photo_sides.get(pid) for _, pid, _, _ in job.photos),
-                                     "model": answer.side_model or answer.side_seen}
+                sides = _zone_sides(job, extras)
+                entry["geometry"] = {"mode": extras.geometry_mode, "side": unanimous(sides.values()),
+                                     "votes": tally(sides.values()), "model": answer.side_model or answer.side_seen,
+                                     "per_find": answer.per_find}
             if extras is not None and extras.wrong_end_mode != "drop" and answer.note:
                 # E11: what the end zone that saw the other end found.
                 entry["wrong_end"] = {"mode": extras.wrong_end_mode,

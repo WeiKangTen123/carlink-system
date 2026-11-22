@@ -201,8 +201,9 @@ _WHEEL_BEFORE = "- area: "
 
 
 def geometry_on() -> bool:
-    """E7: settings.intake_side_geometry is "vote" or "tiebreak"."""
-    return getattr(settings, "intake_side_geometry", "off") in ("vote", "tiebreak")
+    """E7: settings.intake_side_geometry is "shadow", "vote" or "tiebreak"
+    -- the sort answers the geometry (shadow too: the same request)."""
+    return getattr(settings, "intake_side_geometry", "off") in ("shadow", "vote", "tiebreak")
 
 
 # Light-model detection (plans/2026-11-18-light-detection/P-prompts.md 3.1),

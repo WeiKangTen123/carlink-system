@@ -246,8 +246,10 @@ class Settings(BaseSettings):
     # area, and uses it where code decides a side from the reads: the side
     # zone reads' side_seen (zones) and the side resolver (pipeline.
     # resolve_sides). "vote": one more vote; "tiebreak": only where today's
-    # rule leaves the side undetermined. "off": the sort is asked nothing
-    # new -- its request byte for byte as before -- and no side changes.
+    # rule leaves the side undetermined; "shadow": the sort is asked and the
+    # geometry stored as for those two (the same sort cache), nothing uses
+    # it. "off": the sort is asked nothing new -- its request byte for byte
+    # as before -- and no side changes.
     intake_side_geometry: str = "off"
     # E11 (Wave 2): an end zone read (front, rear) whose photos it says show
     # the OTHER end. "drop": its finds are dropped, as before. "shadow": the
@@ -884,7 +886,7 @@ LINK_HIDDEN_NO = ("keep", "cannot_tell")
 MAX_SORT_WORKERS = 5
 # Wave 2 (plans/2026-11-22-enhance-staging 3c): the first of each is the
 # default, today's behaviour. E7, E11.
-SIDE_GEOMETRY = ("off", "vote", "tiebreak")
+SIDE_GEOMETRY = ("off", "shadow", "vote", "tiebreak")
 ZONE_WRONG_END = ("drop", "shadow", "keep")
 # E12: the most photos one reading may send (64 at medium is 32 at high's
 # image tokens).

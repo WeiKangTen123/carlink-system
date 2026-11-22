@@ -399,6 +399,9 @@ class ZoneAnswer:
     # E7 (settings.intake_side_geometry, a side zone): the side the model
     # said, when the geometry changed side_seen (None otherwise).
     side_model: str | None = None
+    # E7 (the review's M4): finds named by their own photo's geometry side,
+    # in a side zone whose photos' geometry is split.
+    per_find: int = 0
     # E11 (settings.intake_zone_wrong_end "shadow" / "keep", an end zone whose
     # photos it says show the other end): its finds, parsed as items are, and
     # kept apart -- `items` stays empty, as when they are dropped.
@@ -435,7 +438,7 @@ _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "a
 
 def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
                  evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False, walk=None,
-                 geometry: tuple[str | None, str] | None = None, wrong_end: str = "drop") -> ZoneAnswer:
+                 geometry: tuple | None = None, wrong_end: str = "drop") -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
@@ -456,72 +459,57 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     walk: the answer's assembly_walk, for this zone's damaged panels only
     (assembly_walk.parse_zone) -- never a reason to refuse the answer.
 
-    geometry (E7, a side zone only): (the majority side of the zone's
-    photos by the sort's geometry, "Left" / "Right" / None; "vote" or
-    "tiebreak") -- the side seen is reconciled with it before any find is
-    named (intake/geometry.reconcile), the model's own kept in side_model.
+    geometry (E7, a side zone only; intake/geometry's module docstring):
+    (the side the zone's photos' geometry names when they are unanimous,
+    else None; "vote" or "tiebreak"; {label: each photo's geometry side}).
+    Unanimous: the side seen is reconciled with it before any find is named
+    (geometry.reconcile), the model's own kept in side_model. Split (the
+    review's M4): the side seen stays the model's, and each find whose own
+    photo has a geometry side is named by reconcile(the model's, that side)
+    (per_find counts them); the rest by the model's.
     wrong_end (E11): "drop" (the default) leaves an end zone that sees the
     other end with no finds, as before; "shadow" and "keep" also parse its
-    finds into wrong_end_items (items stays empty either way)."""
+    finds into wrong_end_items (items stays empty either way). Their parse
+    failing is never the answer failing (the review's L4): no finds kept,
+    and the answer is drop's -- no other model is asked."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
     seen = str(data.get("zone_side_seen") or "").strip().lower()
     seen = seen if seen in _SEEN[_kind(zone)] else UNCLEAR
     model_seen = seen
+    sent = set(labels)
+    side_of = None
     if geometry is not None and zone in SIDE_ZONES:
         from app.intake.geometry import reconcile
 
-        seen = reconcile(seen, geometry[0], geometry[1])
-    sent = set(labels)
+        zone_geo, how, by_label = geometry
+        seen = reconcile(seen, zone_geo, how)
+        if zone_geo is None and by_label:
+            # Split: each find by its own photo's geometry, when it has one.
+            def side_of(raw_item: dict) -> str | None:
+                own = by_label.get(_label(raw_item.get("photo_reference"), sent))
+                return reconcile(model_seen, own, how) if own else None
     answer = ZoneAnswer(zone=zone, side_seen=seen)
     if seen != model_seen:
         answer.side_model = model_seen
+    mode = _evidence_mode(evidence_mode)
     wrong = zone in END_ZONES and seen in END_ZONES and seen != zone
     if wrong:
-        kept_apart = wrong_end in ("shadow", "keep")
         answer.note = (f"the photos show the {seen}, not the {zone}: its finds were "
                        + ("kept as suggestions" if wrong_end == "keep" else "dropped"))
-        if not kept_apart:
-            return answer
-    mode = _evidence_mode(evidence_mode)
-    half = _photo_half_on(zone, photo_half) and seen == zone
-    kept: list[tuple[DamageSummaryItem, list[str], dict]] = []
-    for raw_item in data.get("damage") or []:
-        if not isinstance(raw_item, dict):
-            continue
-        part = canonical(zone, raw_item.get("part"), seen)
-        if part is None:
-            continue
-        if half:
-            named, code = split_side(part)[1], side_from_half(zone, raw_item.get("photo_half"))
-            if named and code and named != code:
-                part = unsided_part(part) or part
-        values = {k: raw_item.get(k) for k in _ITEM_FIELDS if raw_item.get(k) is not None}
-        item = DamageSummaryItem.model_validate(
-            {**values, "part": part, "photo_reference": _label(raw_item.get("photo_reference"), sent)}
-        )
-        if part == OTHER_PART and not item.other_part_name:
-            continue
-        kept.append((item, _cells(raw_item.get("grid_cells")) if grid else [], raw_item))
-    # The overall reading's clean-up, on a draft holding only these items.
-    draft = SecurityIncidentDraft(description="", damage_summary=[item for item, _, _ in kept])
-    draft = _firm_condition(_sanitize_damage_summary(draft))
-    for item, (_, cells, raw_item) in zip(draft.damage_summary, kept):
-        dumped = item.model_dump()
-        # Cells of a photo: none without one.
-        dumped["grid_cells"] = cells if item.photo_reference else []
-        reason = evidence.clean_reason(raw_item.get("reason")) if mode != EVIDENCE_OFF else None
-        box = raw_item.get("box_2d") if mode == "reason_box" else None
-        dumped["reason"] = reason
-        dumped["evidence"] = [evidence.entry(item.photo_reference, f"zone:{zone}", box=box, reason=reason,
-                                             confidence=item.ai_confidence)] if item.photo_reference else []
-        answer.items.append(dumped)
-    if wrong:
-        # E11: apart from the zone's answer, which stays as dropped (no
-        # finds, no intact, no walk).
-        answer.wrong_end_items, answer.items = answer.items, []
+        if wrong_end in ("shadow", "keep"):
+            # E11: apart from the zone's answer, which stays as dropped (no
+            # finds, no intact, no walk) -- even when they can't be read.
+            try:
+                answer.wrong_end_items = _items(zone, data, sent, seen, grid, mode, False, None, answer)
+            except Exception:
+                logger.warning("Zone %s: the finds of the photos it says show the %s couldn't be read; none kept",
+                               zone, seen, exc_info=True)
+                answer.wrong_end_items = []
         return answer
+    half = _photo_half_on(zone, photo_half) and seen == zone
+    answer.items = _items(zone, data, sent, seen, grid, mode, half, side_of, answer)
     damaged = {item.get("part") for item in answer.items} if "intact" in set(packs or ()) else set()
     for name in data.get("checked_intact") or []:
         part = canonical(zone, name, seen)
@@ -539,6 +527,48 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     return answer
 
 
+def _items(zone: str, data: dict, sent: set[str], seen: str, grid: bool, mode: str, half: bool, side_of,
+           answer: ZoneAnswer) -> list[dict]:
+    """parse_answer's damage items (its docstring): each named with the
+    side seen, or side_of(raw item)'s when that gives one (E7 per find)."""
+    kept: list[tuple[DamageSummaryItem, list[str], dict]] = []
+    for raw_item in data.get("damage") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        own = side_of(raw_item) if side_of is not None else None
+        if own is not None:
+            answer.per_find += 1
+        part = canonical(zone, raw_item.get("part"), own or seen)
+        if part is None:
+            continue
+        if half:
+            named, code = split_side(part)[1], side_from_half(zone, raw_item.get("photo_half"))
+            if named and code and named != code:
+                part = unsided_part(part) or part
+        values = {k: raw_item.get(k) for k in _ITEM_FIELDS if raw_item.get(k) is not None}
+        item = DamageSummaryItem.model_validate(
+            {**values, "part": part, "photo_reference": _label(raw_item.get("photo_reference"), sent)}
+        )
+        if part == OTHER_PART and not item.other_part_name:
+            continue
+        kept.append((item, _cells(raw_item.get("grid_cells")) if grid else [], raw_item))
+    # The overall reading's clean-up, on a draft holding only these items.
+    draft = SecurityIncidentDraft(description="", damage_summary=[item for item, _, _ in kept])
+    draft = _firm_condition(_sanitize_damage_summary(draft))
+    out: list[dict] = []
+    for item, (_, cells, raw_item) in zip(draft.damage_summary, kept):
+        dumped = item.model_dump()
+        # Cells of a photo: none without one.
+        dumped["grid_cells"] = cells if item.photo_reference else []
+        reason = evidence.clean_reason(raw_item.get("reason")) if mode != EVIDENCE_OFF else None
+        box = raw_item.get("box_2d") if mode == "reason_box" else None
+        dumped["reason"] = reason
+        dumped["evidence"] = [evidence.entry(item.photo_reference, f"zone:{zone}", box=box, reason=reason,
+                                             confidence=item.ai_confidence)] if item.photo_reference else []
+        out.append(dumped)
+    return out
+
+
 def read_zone(
     zone: str,
     photos: list[tuple[str, str, str | None]],
@@ -551,7 +581,7 @@ def read_zone(
     packs=(),
     photo_half: bool = False,
     walk=None,
-    geometry: tuple[str | None, str] | None = None,
+    geometry: tuple | None = None,
     wrong_end: str = "drop",
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
