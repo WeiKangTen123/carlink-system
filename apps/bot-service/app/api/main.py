@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import uuid
@@ -944,14 +945,23 @@ def _checked_temp_paths(paths: list[str], user: CurrentUser) -> list[str]:
     Only the caller's own uploads (_temp_prefix) pass, or anyone could move
     someone else's photos -- a Telegram draft's, say -- into their case.
     """
-    root = tmp_dir().resolve()
+    root = os.path.realpath(tmp_dir())
     prefix = _temp_prefix(user)
     checked: list[str] = []
     for raw in paths:
-        resolved = Path(raw).resolve()
-        if resolved.parent != root or not resolved.name.startswith(prefix):
+        # Symlinks and ".." worked out first, then checked: inside tmp...
+        try:
+            if "\x00" in raw:
+                raise ValueError("NUL in a path")
+            resolved = os.path.realpath(raw)
+        except (TypeError, ValueError, OSError):
             raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
-        checked.append(str(resolved))
+        if not resolved.startswith(root + os.sep):
+            raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
+        # ...directly, not in a folder below it, and one of this person's.
+        if os.path.dirname(resolved) != root or not os.path.basename(resolved).startswith(prefix):
+            raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
+        checked.append(resolved)
     return checked
 
 
