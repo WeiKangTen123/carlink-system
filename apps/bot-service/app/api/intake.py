@@ -457,8 +457,11 @@ def update_intake_photo(
             if (getattr(settings, "intake_keep_sort_label", "off") == "on" and photo.ai_kind is None
                     and photo.kind_source != "surveyor" and photo.kind):
                 # B5: the sorter's own kind, kept from the first regroup on
-                # (IntakePhoto.ai_kind), for the AI-accuracy record.
-                photo.ai_kind = photo.kind
+                # (IntakePhoto.ai_kind), for the AI-accuracy record. A photo
+                # the rescue sort put back (B9) is the rescue's label, kept
+                # as "rescue:<kind>" so it never counts as the sorter's.
+                rescued = (photo.note or "").startswith(pipeline.RESCUE_NOTE_PREFIX)
+                photo.ai_kind = f"rescue:{photo.kind}" if rescued else photo.kind
             photo.kind = body.kind
             # Never overwritten by a later sorting run.
             photo.kind_source = "surveyor"

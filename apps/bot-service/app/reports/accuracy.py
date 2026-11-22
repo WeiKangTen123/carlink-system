@@ -59,7 +59,10 @@ surveyor kept, removed, added or changed before signing:
            without has no such key, so older rows and the sums read as
            before): the photos with a kind (photos), those a person moved
            to another kind (moved), and each move as "sorter>person"
-           (pairs).
+           (pairs). A photo the rescue sort (B9) had put back keeps
+           "rescue:<kind>" as its first kind: its moves are pairs
+           "rescue:damage>interior" and rescue_moved (only when there are
+           some), never the sorter's moved.
 
 compare() is pure: no database, no AI. Old cases and missing keys count as
 empty. The answer holds counts, canonical part names, Annex A wordings and
@@ -632,15 +635,26 @@ def _regroups(final: dict) -> dict | None:
     if not any(isinstance(entry.get("ai_kind"), str) and entry["ai_kind"] for entry in index):
         return None
     pairs: dict[str, int] = {}
-    moved = 0
+    moved = rescue_moved = 0
     for entry in index:
         was, now = entry.get("ai_kind"), entry.get("kind")
-        if isinstance(was, str) and was and isinstance(now, str) and now and was != now:
+        if not (isinstance(was, str) and was and isinstance(now, str) and now):
+            continue
+        if was.startswith("rescue:"):
+            if was[len("rescue:"):] == now:
+                continue
+            rescue_moved += 1
+        elif was == now:
+            continue
+        else:
             moved += 1
-            pair = f"{was}>{now}"
-            pairs[pair] = pairs.get(pair, 0) + 1
+        pair = f"{was}>{now}"
+        pairs[pair] = pairs.get(pair, 0) + 1
     photos = sum(1 for entry in index if entry.get("kind") or entry.get("ai_kind"))
-    return {"photos": photos, "moved": moved, "pairs": dict(sorted(pairs.items()))}
+    out = {"photos": photos, "moved": moved, "pairs": dict(sorted(pairs.items()))}
+    if rescue_moved:
+        out["rescue_moved"] = rescue_moved
+    return out
 
 
 def sum_regroups(metrics: list[dict]) -> dict | None:
@@ -654,7 +668,10 @@ def sum_regroups(metrics: list[dict]) -> dict | None:
             if isinstance(n, int) and not isinstance(n, bool):
                 pairs[pair] = pairs.get(pair, 0) + n
     total = lambda key: sum(r.get(key) for r in rows if isinstance(r.get(key), int) and not isinstance(r.get(key), bool))  # noqa: E731
-    return {"cases": len(rows), "photos": total("photos"), "moved": total("moved"), "pairs": dict(sorted(pairs.items()))}
+    out = {"cases": len(rows), "photos": total("photos"), "moved": total("moved"), "pairs": dict(sorted(pairs.items()))}
+    if total("rescue_moved"):
+        out["rescue_moved"] = total("rescue_moved")
+    return out
 
 
 # ---------------------------------------------------------- recording

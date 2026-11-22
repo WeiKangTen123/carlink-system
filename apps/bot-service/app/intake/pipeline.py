@@ -484,6 +484,26 @@ def sort_rescue_on() -> bool:
 RESCUE_KINDS = frozenset({"interior", "document", "third_party", "scene"})
 
 
+# B9: the rescue sort's mark at the start of a photo's note; api/intake's
+# regroup (B5) reads it, so a rescued photo's regroup counts against the
+# rescue sort, not the sorter.
+RESCUE_NOTE_PREFIX = "Rescue sort:"
+
+
+def rescue_rank(photo) -> int:
+    """B9's order before the cut at BATCH_SIZE (the review's L5): the photos
+    likeliest to hide damage first -- unsorted (a batch skipped it),
+    unusable, "other" with no damage seen -- then interior, document, third
+    party and scene."""
+    if photo.kind is None:
+        return 0
+    if photo.quality == "unusable":
+        return 1
+    if photo.kind == "other":
+        return 2
+    return 3
+
+
 def rescue_candidate(photo) -> bool:
     """B9: a photo the sort left where no read would look for damage --
     unsorted (a batch skipped it), unusable, one of RESCUE_KINDS, or "other"
@@ -507,12 +527,15 @@ def _rescue_sort(report_id: str, actor: AiActor, todo: list[tuple[str, str, str]
 
     db = SessionLocal()
     try:
-        asked = []
-        for label, photo_id, path in todo:
+        ranked = []
+        for n, (label, photo_id, path) in enumerate(todo):
             photo = db.get(IntakePhoto, photo_id)
             if photo is not None and Path(path).exists() and rescue_candidate(photo):
-                asked.append((label, photo_id, path))
-        asked = asked[:BATCH_SIZE]
+                ranked.append((rescue_rank(photo), n, (label, photo_id, path)))
+        # The likeliest first (rescue_rank), at most BATCH_SIZE, then sent
+        # in camera order.
+        chosen = sorted(sorted(ranked)[:BATCH_SIZE], key=lambda r: r[1])
+        asked = [entry for _, _, entry in chosen]
     finally:
         db.close()
     if not asked:
@@ -539,7 +562,7 @@ def _rescue_sort(report_id: str, actor: AiActor, todo: list[tuple[str, str, str]
             photo.shows_damage = True
             photo.area = answer["area"] or (photo.area if photo.area != "interior" else None)
             photo.quality = "blurry" if photo.quality == "unusable" else (photo.quality or "good")
-            photo.note = f"Rescue sort: damage on the insured car (first sorted: {was})"
+            photo.note = f"{RESCUE_NOTE_PREFIX} damage on the insured car (first sorted: {was})"
             rescued += 1
         db.commit()
     finally:
