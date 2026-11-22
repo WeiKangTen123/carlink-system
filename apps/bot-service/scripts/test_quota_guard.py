@@ -138,21 +138,21 @@ def tag() -> str:
 
 
 def day_file(root: Path) -> dict:
-    return json.loads((root / "day" / f"{tag()}.json").read_text(encoding="utf-8"))
+    return json.loads((root / "day" / f"v1-{tag()}.json").read_text(encoding="utf-8"))
 
 
 def window_file(root: Path) -> list:
-    return json.loads((root / "window" / f"{tag()}.json").read_text(encoding="utf-8"))["stamps"]
+    return json.loads((root / "window" / f"v1-{tag()}.json").read_text(encoding="utf-8"))["stamps"]
 
 
 def put_window(root: Path, stamps: list) -> None:
     (root / "window").mkdir(parents=True, exist_ok=True)
-    (root / "window" / f"{tag()}.json").write_text(json.dumps({"stamps": stamps}), encoding="utf-8")
+    (root / "window" / f"v1-{tag()}.json").write_text(json.dumps({"stamps": stamps}), encoding="utf-8")
 
 
 def put_day(root: Path, counts: dict) -> None:
     (root / "day").mkdir(parents=True, exist_ok=True)
-    (root / "day" / f"{tag()}.json").write_text(json.dumps({"day": quota_guard.today(), "counts": counts}),
+    (root / "day" / f"v1-{tag()}.json").write_text(json.dumps({"day": quota_guard.today(), "counts": counts}),
                                                 encoding="utf-8")
 
 
@@ -284,7 +284,7 @@ def staging_lane() -> None:
         put_day(root, counts)
         why = refused(lambda: rate_limit.acquire(KEY, model=model))
         check(why is not None and words in why, f"refused when {words}", repr(why))
-        check(day_file(root)["counts"] == counts and not (root / "window" / f"{tag()}.json").exists(),
+        check(day_file(root)["counts"] == counts and not (root / "window" / f"v1-{tag()}.json").exists(),
               "  ... and nothing counted or put in the window")
     root = new_shared()
     configure(gemini_quota_lane="staging", gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
@@ -347,7 +347,7 @@ def missing_folder() -> None:
     finally:
         quota_guard._read_day = real
     (root / "day").mkdir(exist_ok=True)
-    (root / "day" / f"{tag()}.json").write_text("{not json", encoding="utf-8")
+    (root / "day" / f"v1-{tag()}.json").write_text("{not json", encoding="utf-8")
     configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
     rate_limit.acquire(KEY, model=LITE5)
     check(day_file(root)["counts"] == {LITE5: {"prod": 1}}, "a corrupt day file starts afresh, no error")
@@ -365,7 +365,10 @@ os.environ["GEMINI_STAGING_WINDOW_SHARE"] = "100000"
 os.environ["GEMINI_STAGING_DAY_MAX"] = "100000"
 os.environ["GEMINI_STAGING_PROD_BUSY"] = "100000"
 os.environ["GEMINI_STAGING_MODEL_RESERVE"] = "0"
-from app.ai import rate_limit
+from app.ai import quota_guard, rate_limit
+# This checks for lost updates under the lock; the 2 s give-up (section 12)
+# would turn heavy contention into fallbacks to the stack's own window.
+quota_guard.LOCK_TIMEOUT_SECONDS = 60
 for _ in range(int(sys.argv[3])):
     rate_limit.acquire("test-key-value", model="gemini-3.5-flash-lite")
 print("done")
@@ -472,10 +475,10 @@ def _lanes_in_call_structured(root: Path, env_key: str) -> None:
     first = notes[0] if notes else {}
     check(first.get("outcome") == "day_spent" and "no known daily limit" in first.get("lane_stop", "")
           and first.get("spent_until"), "the skip is in the run log: day_spent, the reason, until the reset", repr(first))
-    day = json.loads((root / "day" / f"{quota_guard.key_tag(env_key)}.json").read_text())
+    day = json.loads((root / "day" / f"v1-{quota_guard.key_tag(env_key)}.json").read_text())
     check(day["counts"] == {LITE5: {"staging": 1}}, "the request sent is counted (staging lane)", repr(day))
 
-    put_day_key = root / "day" / f"{quota_guard.key_tag(env_key)}.json"
+    put_day_key = root / "day" / f"v1-{quota_guard.key_tag(env_key)}.json"
     put_day_key.write_text(json.dumps({"day": quota_guard.today(), "counts": {LITE5: {"staging": 300}}}))
     PLAN.clear()
     try:
@@ -490,7 +493,7 @@ def _lanes_in_call_structured(root: Path, env_key: str) -> None:
     PLAN.clear()
     PLAN[LITE5] = [Busy(), '{"ok": 2}']
     out, _ = call([LITE5])
-    day = json.loads((root / "day" / f"{quota_guard.key_tag(env_key)}.json").read_text())
+    day = json.loads((root / "day" / f"v1-{quota_guard.key_tag(env_key)}.json").read_text())
     check(out == '{"ok": 2}' and SENT == [LITE5, LITE5] and day["counts"] == {LITE5: {"prod": 2}},
           "shared mode: a busy model's retry is counted (2 requests sent, 2 counted)", repr(day))
 
@@ -518,14 +521,24 @@ def allowance_moves() -> None:
     check(local.exists(), "without the folder: STORAGE_DIR/.allowance/days.json, as before")
     root = new_shared()
     configure(gemini_shared_quota_dir=str(root))
-    check(allowance.spent_until("fp-local", LITE5) is not None,
-          "with the folder: the stack's own memory is copied in on first use (still spent)")
+    # The OTHER stack got there first (review L13): its entry is in the
+    # shared store already; this process (a fresh one) merges its own in.
+    (root / "allowance").mkdir()
+    staged_until = CLOCK.t + 3600
+    (root / "allowance" / "days.json").write_text(json.dumps(
+        {"spent": {allowance._entry("fp-other-stack", LITE1): staged_until}, "limits": {}}))
+    allowance._merged_local = False
+    check(allowance.spent_until("fp-local", LITE5) is not None
+          and allowance.spent_until("fp-other-stack", LITE1) is not None,
+          "with the folder: this stack's own memory is merged in on first use, the other stack's kept")
     shared = root / "allowance" / "days.json"
     check(shared.exists(), "the store is <folder>/allowance/days.json")
     allowance.mark_spent("fp-shared", LITE1, 500)
     local_data = json.loads(local.read_text())
     check(not any("fp-shared" in k for k in local_data.get("spent", {})) and
-          len(json.loads(shared.read_text())["spent"]) == 2, "new entries go to the shared store only")
+          len(json.loads(shared.read_text())["spent"]) == 3, "new entries go to the shared store only")
+    check(not [p.name for p in (root / "allowance").iterdir() if p.name.endswith(".tmp")],
+          "no temp file left behind (random names, replaced atomically)")
     configure()
     check(allowance.spent_until("fp-shared", LITE1) is None, "back without the folder: the stack's own store again")
     allowance.clear()
@@ -537,7 +550,7 @@ def tiers_and_summary() -> None:
     configure(gemini_shared_quota_dir=str(root))
     use_clock()
     env_key = os.environ["GEMINI_API_KEY"]
-    path = root / "day" / f"{quota_guard.key_tag(env_key)}.json"
+    path = root / "day" / f"v1-{quota_guard.key_tag(env_key)}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     for used, want in ((0, "RICH"), (249, "RICH"), (250, "NORMAL"), (375, "NORMAL"), (376, "LEAN"), (600, "LEAN")):
         path.write_text(json.dumps({"day": quota_guard.today(), "counts": {LITE5: {"prod": used}}}))
@@ -673,7 +686,7 @@ def slot_deadlines() -> None:
         )
         check(False, "a retry past the deadline ends the call")
     except Exception:
-        day = json.loads((root / "day" / f"{quota_guard.key_tag(env_key)}.json").read_text())
+        day = json.loads((root / "day" / f"v1-{quota_guard.key_tag(env_key)}.json").read_text())
         check(SENT == [LITE5] and day["counts"] == {LITE5: {"prod": 1}},
               "shared mode: a retry whose slot comes past the deadline -- not sent, not counted, no next model",
               repr(SENT) + repr(day))
@@ -681,8 +694,128 @@ def slot_deadlines() -> None:
         structured.time.sleep = real_sleep
 
 
+LOCK_HOLDER = r"""
+import os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+try:
+    import fcntl
+    fcntl.flock(fd, fcntl.LOCK_EX)
+except ImportError:
+    import msvcrt
+    os.lseek(fd, 0, 0)
+    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+print("locked", flush=True)
+time.sleep(float(sys.argv[2]))
+"""
+
+
+def hold_lock(path: Path, seconds: float):
+    """Another process (staging, frozen) holding a shared-folder lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    p = subprocess.Popen([sys.executable, "-c", LOCK_HOLDER, str(path), str(seconds)], stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().strip() == "locked"
+    return p
+
+
+def stuck_staging_lock() -> None:
+    print("\n12. a lock staging holds and doesn't let go of (review M1)")
+    root = new_shared()
+    configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
+    use_clock()
+    own = STORAGE / ".ratelimit" / f"{tag()}.json"
+    before = len(json.loads(own.read_text())) if own.exists() else 0
+    holder = hold_lock(root / "locks" / f"v1-{tag()}.lock", 15)
+    try:
+        t0 = time.monotonic()
+        rate_limit.acquire(KEY, model=LITE5)
+        took = time.monotonic() - t0
+        after = len(json.loads(own.read_text())) if own.exists() else 0
+        check(took < 5 and after == before + 1 and not (root / "day" / f"v1-{tag()}.json").exists(),
+              f"production waits at most ~{quota_guard.LOCK_TIMEOUT_SECONDS:.0f} s, then uses its own window "
+              f"({took:.1f} s)")
+        configure(gemini_quota_lane="staging", gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
+        t0 = time.monotonic()
+        why = refused(lambda: rate_limit.acquire(KEY, model=LITE5))
+        check(why is not None and time.monotonic() - t0 < 5, "staging is refused (nothing sent)", repr(why))
+        check(rate_limit.estimate_wait(KEY) == 0.0, "estimate_wait doesn't hang either")
+    finally:
+        holder.kill()
+        holder.wait()
+
+    configure(gemini_shared_quota_dir=str(root))
+    allowance.mark_spent("fp-stuck", LITE5, 500)
+    holder = hold_lock(root / "allowance" / "days.lock", 15)
+    try:
+        t0 = time.monotonic()
+        state = allowance.spent_until("fp-stuck", LITE5)
+        took = time.monotonic() - t0
+        check(state is None and took < 5,
+              f"the day memory with its lock held: 'nothing remembered' after ~2 s, as for an unreadable file ({took:.1f} s)")
+        t0 = time.monotonic()
+        allowance.mark_spent("fp-stuck-2", LITE5, 500)
+        check(time.monotonic() - t0 < 5, "... and writing to it gives up too, without an error")
+    finally:
+        holder.kill()
+        holder.wait()
+    allowance.clear()
+
+
+def can_symlink(where: Path) -> bool:
+    try:
+        os.symlink(where / "nothing", where / "probe-link")
+        os.unlink(where / "probe-link")
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def hostile_shared_folder() -> None:
+    print("\n13. symlinks planted in the shared folder are never followed (review M2)")
+    root = new_shared()
+    if not can_symlink(root):
+        print("    skip: this machine can't make symlinks (Windows without developer mode); CI (Linux) runs these")
+        return
+    victim_dir = Path(tempfile.mkdtemp(prefix="victim-", dir=_tmp))
+    victim = victim_dir / "carlink.db"
+    victim.write_bytes(b"PRECIOUS LIVE DATABASE")
+    configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
+    use_clock()
+    (root / "day").mkdir()
+    os.symlink(victim, root / "day" / f"v1-{tag()}.json")
+    rate_limit.acquire(KEY, model=LITE5)
+    check(victim.read_bytes() == b"PRECIOUS LIVE DATABASE" and not (root / "day" / f"v1-{tag()}.json").is_symlink(),
+          "a day file that is a symlink: replaced by a real file, the target untouched")
+    (root / "locks").mkdir(exist_ok=True)
+    lock = root / "locks" / f"v1-{tag()}.lock"
+    lock.unlink(missing_ok=True)
+    os.symlink(victim, lock)
+    own = STORAGE / ".ratelimit" / f"{tag()}.json"
+    before = len(json.loads(own.read_text())) if own.exists() else 0
+    rate_limit.acquire(KEY, model=LITE5)
+    check(victim.read_bytes() == b"PRECIOUS LIVE DATABASE" and len(json.loads(own.read_text())) == before + 1,
+          "a lock file that is a symlink: refused; production uses its own window")
+    lock.unlink()
+
+    root2 = new_shared()
+    configure(gemini_shared_quota_dir=str(root2))
+    os.symlink(victim_dir, root2 / "allowance")
+    allowance.mark_spent("fp-hostile", LITE5, 500)
+    check(sorted(p.name for p in victim_dir.iterdir()) == ["carlink.db"] and victim.read_bytes() == b"PRECIOUS LIVE DATABASE",
+          "an allowance folder that is a symlink: nothing written through it")
+    check(allowance.spent_until("fp-hostile", LITE5) is None, "... and nothing read from it")
+    os.unlink(root2 / "allowance")
+    (root2 / "allowance").mkdir()
+    os.symlink(victim, root2 / "allowance" / "days.tmp")
+    os.symlink(victim, root2 / "allowance" / "days.json.tmp")
+    allowance.mark_spent("fp-hostile", LITE5, 500)
+    check(victim.read_bytes() == b"PRECIOUS LIVE DATABASE" and allowance.spent_until("fp-hostile", LITE5) is not None,
+          "planted temp-file symlinks: never used (random temp names); the store works")
+    allowance.clear()
+
+
 SECTIONS = [defaults_unchanged, prod_lane, staging_lane, day_rollover, missing_folder, concurrent_writers,
-            call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos, slot_deadlines]
+            call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos, slot_deadlines,
+            stuck_staging_lock, hostile_shared_folder]
 
 
 def main() -> int:

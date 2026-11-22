@@ -67,6 +67,8 @@ import hmac
 import json
 import logging
 import os
+import stat
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -85,6 +87,9 @@ LANES = ("prod", "staging")
 TIERS = ("RICH", "NORMAL", "LEAN")
 # The count of a request whose model the caller didn't say.
 UNKNOWN_MODEL = "(model not given)"
+# The shared files' format version, in their names (review L11): a staged
+# change to the format uses new names instead of rewriting production's.
+FILE_VERSION = "v1"
 
 # The window's clock: wall time, the same in every container on the host
 # (unlike time.monotonic across a reboot). Tests move it; and the sleep.
@@ -199,20 +204,103 @@ def _warn_once(key: str, message: str, *args) -> None:
 # ------------------------------------------------------------ the files
 
 
-def _folder(root: Path, name: str) -> Path:
+# The shared folder is written by BOTH stacks, and staging runs code under
+# test as root: production treats what it finds there as untrusted (review
+# M2). So: no symlink is ever followed -- a sub-folder that isn't a real
+# folder is refused, files are opened with O_NOFOLLOW and must be regular
+# files, and new contents go to a random temp name (mkstemp, O_EXCL) that
+# os.replace swaps in (a rename replaces a symlink, never writes through it).
+# And no lock is waited for long (review M1): a lock staging holds and
+# doesn't let go of (a frozen or stopped process, a staged change to this
+# code) would otherwise stall every production AI call. After
+# LOCK_TIMEOUT_SECONDS the caller gets SharedUnavailable: production then
+# uses its own window (rate_limit._guarded), staging is refused.
+
+# How long a lock in the shared folder is waited for, at most.
+LOCK_TIMEOUT_SECONDS = 2.0
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+class SharedUnavailable(OSError):
+    """The shared folder can't be used safely right now: a lock not had in
+    LOCK_TIMEOUT_SECONDS, or something there that isn't a real folder or
+    file (a symlink)."""
+
+
+def safe_dir(root: Path, name: str) -> Path:
+    """root/name, made (0700) when missing; SharedUnavailable when it is
+    anything but a real folder (a symlink to elsewhere, a file)."""
     d = root / name
-    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        st = os.lstat(d)
+    except FileNotFoundError:
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(d)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise SharedUnavailable(f"{d.name} in the shared quota folder is not a real folder")
     return d
 
 
+def _open_regular(path: Path, flags: int, mode: int = 0o600) -> int:
+    """An fd on a REGULAR file at path, never through a symlink."""
+    fd = os.open(path, flags | _NOFOLLOW, mode)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise SharedUnavailable(f"{path.name} in the shared quota folder is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def safe_read_text(path: Path) -> str | None:
+    """The file's text; None when it isn't there. SharedUnavailable for a
+    symlink or anything but a regular file."""
+    try:
+        fd = _open_regular(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if isinstance(exc, SharedUnavailable):
+            raise
+        if os.path.islink(path):
+            raise SharedUnavailable(f"{path.name} in the shared quota folder is a symlink") from None
+        raise
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def safe_write_text(path: Path, text: str) -> None:
+    """Replaces path's contents atomically: a random temp file in the same
+    folder (O_EXCL), then os.replace -- which swaps the name, so a symlink
+    planted at path is replaced, never written through."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 @contextmanager
-def _locked(root: Path, tag: str) -> Iterator[None]:
-    """One key's window and day files, held exclusively: this process's
-    threads by _local_lock, every process on the host (any container) by
-    flock on locks/<tag>.lock. Not the data files themselves: os.replace
-    swaps them."""
-    with _local_lock:
-        handle = open(_folder(root, "locks") / f"{tag}.lock", "a+b")
+def held(lock_path: Path, local_lock: threading.Lock | None = None) -> Iterator[None]:
+    """lock_path's lock (a regular file, never a symlink), held for the
+    block; SharedUnavailable when it can't be had within
+    LOCK_TIMEOUT_SECONDS. With this process's other threads serialized by
+    local_lock (this module's by default; bounded the same way)."""
+    local_lock = local_lock or _local_lock
+    if not local_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+        raise SharedUnavailable("the shared quota lock is busy in this process")
+    try:
+        handle = os.fdopen(_open_regular(lock_path, os.O_RDWR | os.O_CREAT), "r+b")
         try:
             locked = _lock(handle)
             try:
@@ -222,36 +310,45 @@ def _locked(root: Path, tag: str) -> Iterator[None]:
                     _unlock(handle)
         finally:
             handle.close()
+    finally:
+        local_lock.release()
+
+
+@contextmanager
+def _locked(root: Path, tag: str) -> Iterator[None]:
+    """One key's window and day files, held exclusively (held): this
+    process's threads and every process on the host (any container), by a
+    lock on locks/<v>-<tag>.lock. Not the data files themselves: os.replace
+    swaps them."""
+    with held(safe_dir(root, "locks") / f"{FILE_VERSION}-{tag}.lock"):
+        yield
 
 
 def _lock(handle) -> bool:
+    """An exclusive lock on the open file, tried without blocking until
+    LOCK_TIMEOUT_SECONDS: True when had; SharedUnavailable when not."""
+    give_up = time.monotonic() + LOCK_TIMEOUT_SECONDS
     try:
         import fcntl
-
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        return True
     except ImportError:
-        pass
-    except OSError as exc:
-        _warn_once("flock", "Shared AI quota: couldn't lock (%s); going on without it", type(exc).__name__)
-        return False
-    # Windows (tests and local runs only; the server is Linux): a byte lock.
-    try:
-        import msvcrt
+        fcntl = None
+    while True:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                # Windows (tests and local runs only; the server is Linux).
+                import msvcrt
 
-        deadline = time.monotonic() + 30
-        while True:
-            try:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                return True
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(0.005)
-    except (ImportError, OSError) as exc:
-        _warn_once("msvcrt", "Shared AI quota: couldn't lock (%s); going on without it", type(exc).__name__)
-        return False
+            return True
+        except (BlockingIOError, PermissionError, OSError) as exc:
+            if fcntl is not None and not isinstance(exc, (BlockingIOError, PermissionError)):
+                raise SharedUnavailable(f"couldn't lock ({type(exc).__name__})") from None
+            if time.monotonic() >= give_up:
+                raise SharedUnavailable(f"the shared quota lock wasn't free within {LOCK_TIMEOUT_SECONDS:.0f}s") from None
+            time.sleep(0.01)
 
 
 def _unlock(handle) -> None:
@@ -275,9 +372,12 @@ def _unlock(handle) -> None:
 
 def _read_json(path: Path):
     try:
-        raw = path.read_text(encoding="utf-8").strip()
+        raw = (safe_read_text(path) or "").strip()
         return json.loads(raw) if raw else None
-    except FileNotFoundError:
+    except SharedUnavailable:
+        # A symlink planted in the folder: never followed; the write that
+        # follows replaces it with a real file.
+        logger.warning("Shared AI quota file %s is not a regular file; starting it afresh", path.name)
         return None
     except Exception:
         # Losing it costs at worst one over-permissive minute or day count.
@@ -286,10 +386,7 @@ def _read_json(path: Path):
 
 
 def _write_json(path: Path, data) -> None:
-    # Per process: even unlocked (a failed lock), two writers can't share one.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, path)  # atomic: a reader never sees half a file
+    safe_write_text(path, json.dumps(data, separators=(",", ":")))
 
 
 def _read_window(path: Path, now: float) -> list[list]:
@@ -416,8 +513,8 @@ def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint
             raise LaneRefused(model, "no shared quota folder, so staging can't see production's use of the key")
         raise RuntimeError("quota_guard.acquire without the shared folder: use rate_limit.acquire")
     tag = key_tag(api_key)
-    window_path = _folder(root, "window") / f"{tag}.json"
-    day_path = _folder(root, "day") / f"{tag}.json"
+    window_path = safe_dir(root, "window") / f"{FILE_VERSION}-{tag}.json"
+    day_path = safe_dir(root, "day") / f"{FILE_VERSION}-{tag}.json"
     limit = model_limit(model, fingerprint) if me == "staging" else None
     waited = 0.0
     while True:
@@ -453,7 +550,7 @@ def estimate_wait(api_key: str | None = None) -> float:
     now = _now()
     tag = key_tag(api_key)
     with _locked(root, tag):
-        stamps = _read_window(_folder(root, "window") / f"{tag}.json", now)
+        stamps = _read_window(safe_dir(root, "window") / f"{FILE_VERSION}-{tag}.json", now)
     return _slot_wait(stamps, lane(), now, spacing=False)
 
 
@@ -466,7 +563,7 @@ def day_counts(api_key: str | None = None) -> dict[str, dict[str, int]]:
     root = shared_dir()
     if root is None:
         return {}
-    return _read_day(root / "day" / f"{key_tag(api_key)}.json")["counts"]
+    return _read_day(safe_dir(root, "day") / f"{FILE_VERSION}-{key_tag(api_key)}.json")["counts"]
 
 
 def extras_state(api_key: str | None = None, model: str | None = None, fingerprint: str | None = None) -> dict:
@@ -519,12 +616,12 @@ def summary(key_labels: dict[str, str] | None = None) -> dict:
         return out
     labels = key_labels or {}
     now = _now()
-    for path in sorted((root / "day").glob("*.json")):
-        tag = path.stem
+    for path in sorted(safe_dir(root, "day").glob(f"{FILE_VERSION}-*.json")):
+        tag = path.stem[len(FILE_VERSION) + 1:]
         counts = _read_day(path)["counts"]
         if not counts:
             continue
-        stamps = _read_window(root / "window" / f"{tag}.json", now)
+        stamps = _read_window(safe_dir(root, "window") / f"{FILE_VERSION}-{tag}.json", now)
         models = {}
         for model, lanes in sorted(counts.items()):
             limit = model_limit(model) if model != UNKNOWN_MODEL else None
