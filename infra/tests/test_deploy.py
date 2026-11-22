@@ -29,6 +29,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FAILURES: list[str] = []
+BACKUP_RAN = None
 PASSED = [0]
 
 GEMINI = "AIzaSyTESTKEYvalue-never-printed-0000000"
@@ -96,7 +97,7 @@ if [ "$code_only" = 1 ]; then printf '%s' "$code"; else printf '%s' "$body"; fi
     "sudo": r'''#!/bin/bash
 echo "sudo $*" >> "$MOCK_LOG"
 case "$1" in
-  bash) exit "${MOCK_BACKUP_EXIT:-0}" ;;
+  bash) [ "${MOCK_BACKUP_EXIT:-0}" = 0 ] || exit "$MOCK_BACKUP_EXIT"; bash "$2"; exit $? ;;
   test) exit 0 ;;
   *) exec "$@" ;;
 esac
@@ -131,6 +132,8 @@ class World:
             name = Path(name).name
             (self.infra / name).write_text(text, encoding="utf-8", newline="\n")
         self.log = self.tmp / "calls.log"
+        global BACKUP_RAN
+        BACKUP_RAN = self.tmp / "backup-ran"
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.shared = self.tmp / "ai-shared"
@@ -150,6 +153,7 @@ class World:
         self.git("checkout", "-q", "-b", "master", cwd=work)
         (work / "infra").mkdir()
         (work / "infra" / "nginx.conf").write_text("server {}\n")
+        (work / "infra" / "backup.sh").write_text('echo old-backup > "$MOCK_BACKUP_RAN"\n')
         (work / ".gitignore").write_text("infra/.env\n.deployed\n")
         self.git("add", "-A", cwd=work)
         self.git("commit", "-q", "-m", "A", cwd=work)
@@ -157,6 +161,7 @@ class World:
         self.git("push", "-q", "origin", "master", cwd=work)
         self.git("checkout", "-q", "-b", "feat/x", cwd=work)
         (work / "README").write_text("B\n")
+        (work / "infra" / "backup.sh").write_text('echo release-backup > "$MOCK_BACKUP_RAN"\n')
         self.git("add", "-A", cwd=work)
         self.git("commit", "-q", "-m", "B", cwd=work)
         self.B = self.git("rev-parse", "HEAD", cwd=work)
@@ -189,6 +194,7 @@ class World:
             "CARLINK_PROD_DIR": str(self.prod), "CARLINK_STAGING_DIR": str(self.staging),
             "CARLINK_AI_SHARED_DIR": str(self.shared), "CARLINK_DEPLOY_LOG": str(self.home / "carlink-deploy.log"),
             "CARLINK_SMOKE_WAIT": "0", "CARLINK_SMOKE_SETTLE": "0", "CARLINK_REPO_SLUG": "carlink-system.git",
+            "MOCK_BACKUP_RAN": str(BACKUP_RAN),
             "MOCK_PROD_GEMINI": GEMINI, "MOCK_PROD_BOT": PROD_BOT,
         })
         for k, v in mock.items():
@@ -387,8 +393,10 @@ def prod_deploy(w: World) -> None:
     code, out = w.run("deploy.sh", "--env", "prod", "--ref", "master")
     calls = w.calls()
     check(code == 0 and "smoke: PASS" in out and w.head("prod") == w.M, "deployed the merge commit, smoke PASS", out)
-    check("sudo bash" in calls and "infra/backup.sh" in calls
-          and calls.index("infra/backup.sh") < calls.index("up -d --build"), "backup first", calls)
+    check("sudo bash" in calls and "/backup.sh" in calls
+          and calls.index("/backup.sh") < calls.index("up -d --build"), "backup first", calls)
+    check(BACKUP_RAN.exists() and BACKUP_RAN.read_text().strip() == "release-backup",
+          "the RELEASE's backup.sh ran (taken from the commit, not the old checkout)")
     check("docker compose -p infra -f infra/docker-compose.prod.yml -f infra/docker-compose.ai-shared.yml up -d --build" in calls,
           "compose: -p infra, production's file + the shared AI folder (it exists)", calls)
     check("docker restart carlink_nginx" in calls and "127.0.0.1:8080/api/health" in calls, "carlink_nginx, port 8080")

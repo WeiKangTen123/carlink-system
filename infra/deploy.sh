@@ -24,9 +24,10 @@
 #      the files staging last deployed and passed its smoke checks with
 #      (/opt/carlink-staging/.deployed), or --fast-lane "<why>" (a small
 #      urgent non-AI fix, owner's OK in chat), which is logged.
-#   3. production only: a backup first (sudo bash infra/backup.sh, local copy
-#      at least; it never runs for staging), and the copy must be fresh
-#      (.last_backup under 15 minutes old) -- or --no-backup, loudly.
+#   3. production only: a backup first (sudo bash <the release's
+#      infra/backup.sh>, local copy at least; it never runs for staging), and
+#      the copy must be fresh (.last_backup under 15 minutes old) -- or
+#      --no-backup, loudly.
 #   4. docker compose (v2) -p <project> -f ... up -d --build; nginx -t in a
 #      throwaway container, then a restart of nginx (see below).
 #   5. smoke checks: health, 401s when signed out, the worker route 404,
@@ -472,7 +473,7 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
     say "dry run: every check passed; nothing changed. A real run would now:"
     if [ "$ENV_NAME" = prod ]; then
-        if [ "$NO_BACKUP" = 1 ]; then say "  - skip the backup (--no-backup)"; else say "  - sudo bash infra/backup.sh, and check the copy is fresh"; fi
+        if [ "$NO_BACKUP" = 1 ]; then say "  - skip the backup (--no-backup)"; else say "  - sudo bash <the release's infra/backup.sh>, and check the copy is fresh"; fi
     fi
     say "  - git -C $DIR checkout --detach $SHA"
     say "  - docker compose -p $PROJECT ${FILES[*]} up -d --build; nginx -t; restart ${NAME}_nginx"
@@ -488,10 +489,24 @@ if [ "$ENV_NAME" = prod ]; then
         BACKUP_NOTE=skipped
     else
         # backup.sh decides (exit 0 = a checked local copy, and the upload
-        # when a bucket is set); then the copy must be fresh and there.
-        say "backing up first (infra/backup.sh; local copy at least)"
-        sudo bash "$DIR/infra/backup.sh" ||
+        # when a bucket is set); then the copy must be fresh and there. The
+        # release's own backup.sh (it doesn't depend on where it sits), so a
+        # fix to it applies to the deploy that ships it; the checkout's when
+        # the release has none.
+        backup_dir=$(mktemp -d)
+        backup_script="$backup_dir/backup.sh"
+        if ! git -C "$DIR" show "$SHA:infra/backup.sh" >"$backup_script" 2>/dev/null; then
+            cp "$DIR/infra/backup.sh" "$backup_script" 2>/dev/null || {
+                rm -rf "$backup_dir"
+                die "no infra/backup.sh in $SHA or in $DIR: not deploying without a backup (or --no-backup)"
+            }
+        fi
+        say "backing up first (backup.sh of $SHA; local copy at least)"
+        sudo bash "$backup_script" || {
+            rm -rf "$backup_dir"
             die "backup failed -- not deploying. Fix it (Settings > Company shows the last backup), or --no-backup"
+        }
+        rm -rf "$backup_dir"
         record=$(docker exec carlink_api cat /app/storage/.last_backup 2>/dev/null || true)
         at=$(printf '%s' "$record" | sed -n 's/.*"at": *"\([^"]*\)".*/\1/p')
         local_path=$(printf '%s' "$record" | sed -n 's/.*"local_path": *"\([^"]*\)".*/\1/p')
