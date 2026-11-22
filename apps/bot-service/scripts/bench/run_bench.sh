@@ -28,11 +28,15 @@
 # 300 that day, production 400, or a light model has fewer than 300 left. It
 # is sandbox work: it runs inside a container but only ever on its scratch
 # database and storage under /tmp/bench (never the stack's own data).
-#   BENCH_CONTAINER=carlink_staging_api BENCH_REPO=/opt/carlink-staging bash run_bench.sh LABEL REF ...
+#   bash run_bench.sh LABEL REF ...       # carlink_staging_api, /opt/carlink-staging
+# Since review M5 those are the DEFAULTS (BENCH_CONTAINER, BENCH_REPO).
 # BENCH_LANE=staging (the default) needs the shared folder mounted in the
 # container (GEMINI_SHARED_QUOTA_DIR): the script refuses otherwise.
-# BENCH_LANE=prod runs as before the guard (production's lane) -- only for a
-# container without the guard, and never beside live use.
+# Production's container (BENCH_CONTAINER=carlink_api: the live storage and
+# secrets mounted, no memory cap) and BENCH_LANE=prod where the shared guard
+# is on (production's 12 a minute and its whole day for a benchmark) are
+# refused unless the FIRST option says so, with the reason:
+#   bash run_bench.sh --allow-prod-bench "<why>" LABEL REF ...
 #
 # PII (photos, key.json, reports, results, logs) stays in ~/carlink-bench
 # (0700) and the container's /tmp/bench (0700); none of it goes into git.
@@ -53,7 +57,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: bash run_bench.sh LABEL GIT_REF [benchmark_intake.py options, e.g. --repeat 3 --only NAME]" >&2
+    echo "usage: bash run_bench.sh [--allow-prod-bench \"<why>\"] LABEL GIT_REF [benchmark_intake.py options, e.g. --repeat 3 --only NAME]" >&2
     exit 2
 }
 
@@ -62,13 +66,19 @@ die() {
     exit 1
 }
 
+ALLOW_PROD=
+if [ "${1:-}" = --allow-prod-bench ]; then
+    [ "$#" -ge 2 ] && [ -n "${2// /}" ] || die "--allow-prod-bench needs the reason, in quotes"
+    ALLOW_PROD=$2
+    shift 2
+fi
 [ "$#" -ge 2 ] || usage
 LABEL=$1
 GIT_REF=$2
 shift 2
 
-REPO=${BENCH_REPO:-/opt/carlink-system}
-CONTAINER=${BENCH_CONTAINER:-carlink_api}
+REPO=${BENCH_REPO:-/opt/carlink-staging}
+CONTAINER=${BENCH_CONTAINER:-carlink_staging_api}
 LANE=${BENCH_LANE:-staging}
 HOME_DIR=${BENCH_HOME:-$HOME/carlink-bench}
 HARNESS_REF=${BENCH_HARNESS_REF:-}
@@ -104,6 +114,9 @@ case "$LANE" in
     staging | prod) ;;
     *) die "BENCH_LANE: staging (the default) or prod" ;;
 esac
+if [ "$CONTAINER" = carlink_api ] && [ -z "$ALLOW_PROD" ]; then
+    die "carlink_api is PRODUCTION's container (live storage and secrets, no memory cap). Benchmarks run in staging (the default, carlink_staging_api), or: bash run_bench.sh --allow-prod-bench \"<why>\" ..."
+fi
 
 [ "$(id -u)" -ne 0 ] || die "run as user weika, not root (the files in $HOME_DIR must stay theirs)"
 for tool in docker git tar flock df awk; do
@@ -123,10 +136,17 @@ running=$(docker ps --filter "name=^${CONTAINER}\$" --format '{{.Names}}')
 [ "$running" = "$CONTAINER" ] || die "container $CONTAINER is not running"
 # The staging lane sends nothing without the shared quota folder (it can't
 # see production's use of the one key): stop here rather than fail every call.
-if [ "$LANE" = staging ]; then
-    docker exec "$CONTAINER" sh -c 'test -n "${GEMINI_SHARED_QUOTA_DIR:-}" && test -d "$GEMINI_SHARED_QUOTA_DIR"' ||
-        die "$CONTAINER has no shared AI quota folder (GEMINI_SHARED_QUOTA_DIR), so the staging lane can't send. Use the staging stack (BENCH_CONTAINER=carlink_staging_api BENCH_REPO=/opt/carlink-staging), or BENCH_LANE=prod in a container without the guard."
+guarded=0
+docker exec "$CONTAINER" sh -c 'test -n "${GEMINI_SHARED_QUOTA_DIR:-}" && test -d "$GEMINI_SHARED_QUOTA_DIR"' && guarded=1
+if [ "$LANE" = staging ] && [ "$guarded" = 0 ]; then
+    die "$CONTAINER has no shared AI quota folder (GEMINI_SHARED_QUOTA_DIR), so the staging lane can't send. Use the staging stack (the default)."
 fi
+# Review M5: production's lane where the guard is on would spend production's
+# 12 a minute and its day on a benchmark.
+if [ "$LANE" = prod ] && [ "$guarded" = 1 ] && [ -z "$ALLOW_PROD" ]; then
+    die "BENCH_LANE=prod in $CONTAINER, where the shared quota guard is on, takes production's share of the one key. Use the staging lane (the default), or: bash run_bench.sh --allow-prod-bench \"<why>\" ..."
+fi
+[ -z "$ALLOW_PROD" ] || echo "run_bench: --allow-prod-bench: $ALLOW_PROD" >&2
 
 docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || docker_root=/
 [ -n "$docker_root" ] || docker_root=/

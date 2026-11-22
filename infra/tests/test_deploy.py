@@ -595,7 +595,7 @@ def bench_lane(w: World) -> None:
     w.git("add", "-A", cwd=work)
     w.git("commit", "-q", "-m", "bench harness", cwd=work)
     w.git("push", "-q", "origin", "feat/x", cwd=work)
-    bench = {"BENCH_CONTAINER": "carlink_staging_api", "BENCH_REPO": str(w.staging)}
+    bench = {"BENCH_REPO": str(w.staging)}  # the container: the default (review M5: staging's)
     code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_LANE="fast", **bench)
     check(code == 1 and "BENCH_LANE: staging (the default) or prod" in out, "an unknown lane: refused", out)
     code, out = w.run("run_bench.sh", "lane-test", "feat/x", MOCK_CONTAINER_SHARED="1", **bench)
@@ -606,8 +606,22 @@ def bench_lane(w: World) -> None:
           "by default the run is in the staging lane, in the named container", out + calls)
     check("BENCHMARK_SCRATCH=1" in calls and "run.db" in calls and "/tmp/bench/lane-test" in calls,
           "on its scratch database under /tmp/bench (sandbox work), never the stack's own", calls)
+    check("docker exec" in calls and "carlink_api" not in calls, "the default container is staging's, never production's")
+    # Review M5: production's lane where the guard is on, and production's
+    # container, only with --allow-prod-bench "<why>".
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_LANE="prod", **bench)
+    check(code == 1 and "takes production's share" in out and "GEMINI_QUOTA_LANE" not in w.calls(),
+          "BENCH_LANE=prod where the shared guard is on: refused", out)
+    code, out = w.run("run_bench.sh", "--allow-prod-bench", "compare with the old numbers", "lane-test", "feat/x",
+                      BENCH_LANE="prod", **bench)
+    check("-e GEMINI_QUOTA_LANE=prod" in w.calls() and "--allow-prod-bench: compare with the old numbers" in out,
+          "... allowed with --allow-prod-bench and a reason (said in the output)", out)
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_CONTAINER="carlink_api", MOCK_PS="carlink_api", **bench)
+    check(code == 1 and "PRODUCTION's container" in out, "production's container: refused", out)
+    code, out = w.run("run_bench.sh", "--allow-prod-bench", "  ", "lane-test", "feat/x", **bench)
+    check(code == 1 and "needs the reason" in out, "--allow-prod-bench without a reason: refused", out)
     code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_LANE="prod", MOCK_CONTAINER_SHARED="1", **bench)
-    check("-e GEMINI_QUOTA_LANE=prod" in w.calls(), "BENCH_LANE=prod: the old behaviour, no shared folder needed",
+    check("-e GEMINI_QUOTA_LANE=prod" in w.calls(), "BENCH_LANE=prod in a container without the guard: as before",
           out + w.calls())
 
 
