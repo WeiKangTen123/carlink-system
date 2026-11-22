@@ -258,7 +258,7 @@ async def whatsapp_webhook(request: Request) -> Response:
             return _twiml(
                 "✅ Report saved to Carlink System!\n\n"
                 f"🖥️ Loss Adjuster Studio:\n"
-                f"https://carlink.34-45-253-162.sslip.io/reports/{report_id}\n\n"
+                f"{settings.public_base_url.rstrip('/')}/reports/{report_id}\n\n"
                 "Send /new or a photo to file another report."
             )
         session.pending_edits.append(body)
