@@ -667,6 +667,7 @@ def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
 
 
 def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
+    read_started = time.monotonic()
     _set_stage(report_id, "reading", 0, 1)
     # Contract 8 D2: read once, so a reading is all one mode.
     zone_mode = zones.zones_on()
@@ -741,28 +742,42 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     early_reads: list[tuple[str, list[dict]]] | None = None
     early_intact: dict[str, list[str]] = {}
     early_walk: dict | None = None
+    zone_started: float | None = None
+    tries_before = len(run.attempts.snapshot())
     try:
         draft = read_once()
     except Exception as exc:
-        if not (main_read_fallback_on() and fallback_worthy(exc)):
+        if not (main_read_fallback_on() and fallback_worthy(exc, run.attempts.snapshot()[tries_before:])):
             raise
         logger.warning("Reading %s: the overall read failed (%s); %s, then once more", report_id,
                        type(exc).__name__, "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
         if zone_mode and zone_jobs:
             early_walk = {} if zones.walk_index() is not None else None
+            zone_started = time.monotonic()
             early_reads = zones.zone_reads(
                 report_id, actor, zone_jobs,
                 progress=lambda done: _set_stage(report_id, "reading", done, 1 + len(zone_jobs)),
                 intact=early_intact, walk=early_walk,
             )
-        try:
-            draft = read_once()
-        except Exception as again:
-            if not any(found for _, found in early_reads or []):
+        found_some = any(found for _, found in early_reads or [])
+        # The lead's rule (22 Nov): the second try only while the run is
+        # inside the zone stage's time box (zones.TIME_BOX from when the
+        # zone reads started; with none, from when the reading began).
+        if time.monotonic() - (zone_started or read_started) >= zones.TIME_BOX:
+            if not found_some:
                 raise
-            logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
-                           report_id, type(again).__name__)
+            logger.warning("Reading %s: past the zone stage's time box, no second try; the list is the zone "
+                           "reads' finds", report_id)
             draft = None
+        else:
+            try:
+                draft = read_once()
+            except Exception as again:
+                if not found_some:
+                    raise
+                logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
+                               report_id, type(again).__name__)
+                draft = None
 
     if draft is None:
         data = fallback_draft(previous_ai)
@@ -925,15 +940,25 @@ def main_read_fallback_on() -> bool:
     return getattr(settings, "intake_main_read_fallback", "off") == "zones"
 
 
-def fallback_worthy(exc: BaseException) -> bool:
-    """A main read failure the fallback is for: every model of the chain
-    failed (busy, the day's allowance, a timeout: call_structured's "All
-    Gemini fallback models ... failed", DayUsedUp among them), or the
-    person's AI wasn't available (AiUnavailable). Not a photo removed
-    mid-run or nothing to read."""
-    if isinstance(exc, AiUnavailable):
+def fallback_worthy(exc: BaseException, tries: list[dict] | None = None) -> bool:
+    """A main read failure the fallback is for (the lead, 22 Nov): Google
+    busy (503) or out of time -- what a few minutes, or the zone reads' own
+    smaller calls, may get past. Our TimeoutError (a deadline), or
+    call_structured's "All Gemini fallback models ... failed" when every
+    try it sent (`tries`: that call's attempts; a model skipped for its
+    spent day is not a try) was busy or a timeout. Never for the person's
+    AI being unavailable (AiUnavailable: a refused, invalid or unticked
+    key), a spent daily allowance (DayUsedUp, a per-day 429), a request
+    Google refused (400, 403) or a bad answer -- the zone reads would fail
+    the same way -- nor for a photo removed mid-run or nothing to read."""
+    if isinstance(exc, AiUnavailable) or allowance.day_spent_error(exc):
+        return False
+    if isinstance(exc, TimeoutError):
         return True
-    return isinstance(exc, RuntimeError) and "fallback models" in str(exc)
+    if not (isinstance(exc, RuntimeError) and "fallback models" in str(exc)):
+        return False
+    sent = [a for a in tries or [] if isinstance(a, dict) and a.get("outcome") != "day_spent"]
+    return bool(sent) and all(a.get("busy") or a.get("outcome") == "timeout" for a in sent)
 
 
 def fallback_draft(previous: dict | None) -> dict:

@@ -154,6 +154,29 @@ def no_zone_damage(kwargs, labels):
     return {"zone_side_seen": "unclear", "damage": [], "checked_intact": []}
 
 
+class Refused(Exception):
+    """A 400 that is not "busy": Google refused the request itself."""
+    status_code = 400
+
+    def __init__(self):
+        super().__init__("400 INVALID_ARGUMENT: request contains an invalid argument")
+
+
+def refused_draft(kwargs, labels):
+    raise Refused()
+
+
+def slow_zone(seconds: float):
+    """The zone answer, the rear zone's after `seconds`."""
+    import time as _time
+
+    def answer(kwargs, labels):
+        if "the car's rear" in kwargs["system_instruction"]:
+            _time.sleep(seconds)
+        return t._zone_answer(kwargs, labels)
+    return answer
+
+
 @contextlib.contextmanager
 def fakes(answers: dict | None = None, case: dict | None = None):
     """The fake's answers and case photos, for the block."""
@@ -176,7 +199,7 @@ def a_case(values: dict, answers: dict | None = None, case: dict | None = None):
     t.REQUESTS.clear()
     with t.Settings(**values), fakes(answers, case), TestClient(t._app()) as client:
         uid = sign_in(client, role="admin", may_sign_off=True)
-        rid, pids = t.new_draft(client)
+        rid, pids = t.new_draft(client, len(t.CASE))
         state = t.read(client, rid)
         yield client, rid, pids, uid, state
 
@@ -249,7 +272,9 @@ from app import config  # noqa: E402
 from app.ai import link_check, second_look  # noqa: E402
 from app.ai.keys import AiUnavailable  # noqa: E402
 from app.config import settings  # noqa: E402
+from app.ai import allowance  # noqa: E402
 from app.intake import links, pipeline  # noqa: E402
+from app.intake import zones as zones_module  # noqa: E402
 from app.reports import suggestions  # noqa: E402
 from app.reports.schema import SecondLook, SecondLookItem  # noqa: E402
 
@@ -495,13 +520,45 @@ def f1_main_read_fallback() -> None:
     check(state["stage"] == "failed" and asked["draft"] == 2 * per_call and asked["zone"] == 0,
           "single mode: tried once more, then the run fails", (state["stage"], dict(asked)))
 
+    # (e) the lead's narrowing (22 Nov): a refusal that is not "busy" (a
+    # 400) never falls back -- no zone read, no second try.
+    with a_case(dict(ZONES), {"draft": refused_draft}) as (client, rid, pids, uid, state):
+        refused_off = kinds()
+    with a_case(dict(on), {"draft": refused_draft}) as (client, rid, pids, uid, state):
+        asked = kinds()
+    check(state["stage"] == "failed" and asked["zone"] == 0 and asked == refused_off and asked["draft"] > 0,
+          "a refused request (400, not busy): fails as with the setting off -- no zone read, no second try",
+          (state["stage"], dict(asked), dict(refused_off)))
+
+    # (f) past the zone stage's time box: no second try; the zone finds are the list.
+    old_box = zones_module.TIME_BOX
+    zones_module.TIME_BOX = 0.5
+    try:
+        with a_case(dict(on), {"draft": busy_draft(), "zone": slow_zone(0.7)}) as (client, rid, pids, uid, state):
+            asked = kinds()
+            listed = [it["part"] for it in t.db_row(Report, rid).data.get("damage_summary") or []]
+    finally:
+        zones_module.TIME_BOX = old_box
+    check(state["stage"] == "ready" and asked["draft"] == per_call and state.get("read_notice")
+          and sorted(listed) == ["Left Tail Lamp", "Rear Bumper"],
+          "past the zone stage's time box: no second try, the zone finds are the list", (dict(asked), listed))
+
     # Which failures it is for, and the draft it keeps.
-    check(pipeline.fallback_worthy(RuntimeError("All Gemini fallback models (a, b) failed across 1 key(s)."))
-          and pipeline.fallback_worthy(AiUnavailable("ai_quota_used"))
-          and not pipeline.fallback_worthy(ValueError("there is nothing to read"))
-          and not pipeline.fallback_worthy(FileNotFoundError("x"))
-          and not pipeline.fallback_worthy(RuntimeError("something else")),
-          "for every model failing or the person's AI unavailable; not a removed photo or nothing to read")
+    busy = [{"outcome": "error", "busy": True}, {"outcome": "timeout"}, {"outcome": "day_spent"}]
+    chain_failed = RuntimeError("All Gemini fallback models (a, b) failed across 1 key(s).")
+    check(pipeline.fallback_worthy(chain_failed, busy) and pipeline.fallback_worthy(TimeoutError("deadline"))
+          and not pipeline.fallback_worthy(chain_failed, busy + [{"outcome": "error"}])
+          and not pipeline.fallback_worthy(chain_failed, [{"outcome": "429", "spent_until": "x"}])
+          and not pipeline.fallback_worthy(chain_failed, [{"outcome": "day_spent"}])
+          and not pipeline.fallback_worthy(chain_failed, [])
+          and not pipeline.fallback_worthy(AiUnavailable("ai_key_invalid"), busy)
+          and not pipeline.fallback_worthy(AiUnavailable("ai_quota_used"), busy)
+          and not pipeline.fallback_worthy(allowance.DayUsedUp("All Gemini fallback models (a) failed"), busy)
+          and not pipeline.fallback_worthy(ValueError("there is nothing to read"), busy)
+          and not pipeline.fallback_worthy(FileNotFoundError("x"), busy)
+          and not pipeline.fallback_worthy(RuntimeError("something else"), busy),
+          "only busy (503) or timeout: never a refused/invalid key, a spent day, a 400, a bad answer, nothing to "
+          "read")
     prev = {"description": "Hit at the rear.", "vehicle_info": {"make": "Gammamotors", "plate_number": "SZZ1Z"},
             "damage_summary": [{"part": "Boot Lid"}], "damaged_parts": ["Boot Lid"], "zone_reads": ["overall"]}
     kept = pipeline.fallback_draft(prev)
