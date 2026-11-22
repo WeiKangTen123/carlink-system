@@ -64,6 +64,12 @@ one question about the grey square, at settings.intake_check_resolution or
 --resolution) and says the probability and the seconds, or why not: a 400
 (Google's "safety" among them) counts as a rejection.
 
+The assembly walk (plans/2026-11-18-car-knowledge/K1-design.md 5a):
+--zone-walk smokes the zone schemas with the `assembly_walk` field (nested
+arrays: the field to watch for "too complex"), from the car map the app
+loaded (app/intake/car_map.json; implies --zones); without a map that has
+signs it can't run.
+
 Exit status: 0 when no model answered 400; 1 when any did; 2 when it could
 not run (no --live, no key).
 """
@@ -172,7 +178,15 @@ def _zone_schemas(image: str) -> dict[str, dict]:
     mode = getattr(settings, "intake_zone_evidence", "off")
 
     def evidence(fn) -> dict:
-        return {"evidence_mode": mode} if mode != "off" and "evidence_mode" in inspect.signature(fn).parameters else {}
+        out = {"evidence_mode": mode} if mode != "off" and "evidence_mode" in inspect.signature(fn).parameters else {}
+        # The assembly walk (--zone-walk): the map's index, as zones.light_options gives it.
+        if walk is not None and "walk" in inspect.signature(fn).parameters:
+            out["walk"] = walk
+        return out
+
+    from app.intake import zones
+
+    walk = zones.walk_index()
 
     for name, zone, grid in (("zone_rear", "rear", False), ("zone_close_grid", "close", True)):
         PURPOSES[name] = zone_read.PURPOSE
@@ -286,6 +300,9 @@ def main() -> int:
     # Contract 9.
     parser.add_argument("--zone-evidence", choices=("reason", "reason_box"),
                         help="the zone schemas with the tail fields (settings.intake_zone_evidence); implies --zones")
+    parser.add_argument("--zone-walk", action="store_true",
+                        help="the zone schemas with the assembly walk field, from the loaded car map "
+                             "(settings.intake_assembly_walk on); implies --zones")
     parser.add_argument("--check", action="store_true",
                         help="also the lite re-check's schema (ai/check.py), on the check chain only")
     parser.add_argument("--check-models", help="the check chain to try instead of settings.gemini_check_chain")
@@ -310,6 +327,14 @@ def main() -> int:
         return 2
     if args.zone_evidence:
         settings.intake_zone_evidence = args.zone_evidence
+        args.zones = True
+    if args.zone_walk:
+        from app.intake import zones
+
+        settings.intake_assembly_walk = "on"
+        if zones.walk_index() is None:
+            print("--zone-walk: no car map with signs loaded (app/intake/car_map.json); nothing to smoke.")
+            return 2
         args.zones = True
     if args.read_tools_timeout is not None:
         if args.read_tools_timeout <= 0:

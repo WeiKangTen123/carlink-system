@@ -1,0 +1,169 @@
+{
+  "version": "W1",
+  "format": 1,
+  "built_from": ["a small made-up map for scripts/test_assembly_walk.py, generic body-repair knowledge, no case"],
+  "assemblies": [
+    {
+      "id": "front-bumper", "name": "Front bumper (test)", "area": "front", "anchors": ["Front Bumper"],
+      "members": [
+        {"part": "Front Bumper", "role": "panel"},
+        {"part": "Front Bumper Beam", "role": "structure", "hidden": true, "strip_down": true},
+        {"part": "{side} Fog Lamp", "role": "lamp", "fitted": "if_fitted"},
+        {"part": "Front Number Plate", "role": "trim"},
+        {"part": "Front Grille", "role": "trim"},
+        {"part": "Engine Undercover", "role": "trim", "hidden": true}
+      ],
+      "signs": [
+        {"id": "fb-pushed", "ask": "Is the bumper cover pushed inward, not just scratched?", "level": "heavy",
+         "points_to": ["front-bumper>beam"], "unlocks": ["fb>beam>subframe"]},
+        {"id": "fb-gap", "ask": "Is the gap between the bumper and a fender or lamp uneven or closed?",
+         "level": "medium", "points_to": ["front-bumper>beam"]},
+        {"id": "fb-fluid", "ask": "Is there fluid on the ground or dripping under the front?", "level": "crush",
+         "points_to": ["front-bumper>condenser"], "unlocks": ["fb>condenser>radiator"]}
+      ],
+      "catalogue": {"oem_diagrams": ["FRONT BUMPER"]}
+    },
+    {
+      "id": "front-end", "name": "Front end and cooling (test)", "area": "front", "anchors": [],
+      "members": [
+        {"part": "Air Conditioning Condenser", "role": "mechanical", "hidden": true, "strip_down": true},
+        {"part": "Radiator", "role": "mechanical", "hidden": true, "strip_down": true},
+        {"part": "Front Subframe", "role": "structure", "hidden": true, "strip_down": true},
+        {"part": "Steering Assembly", "role": "mechanical", "hidden": true, "strip_down": true}
+      ],
+      "signs": []
+    },
+    {
+      "id": "headlamp", "name": "Headlamp (test)", "area": "front", "anchors": ["{side} Headlamp"],
+      "members": [
+        {"part": "{side} Headlamp", "role": "lamp"},
+        {"part": "Front Bumper Beam", "role": "structure", "hidden": true, "strip_down": true}
+      ],
+      "signs": [
+        {"id": "hl-pushed", "ask": "Is the lamp pushed back into the car or hanging out of its opening?",
+         "level": "heavy", "points_to": ["headlamp>beam"]}
+      ]
+    },
+    {
+      "id": "boot-lid", "name": "Boot lid (test)", "area": "rear", "anchors": ["Boot Lid"],
+      "members": [
+        {"part": "Boot Lid", "role": "panel"},
+        {"part": "Boot Lid Lock", "role": "mechanism", "hidden": true},
+        {"part": "Boot Lid Hinge", "role": "mechanism", "hidden": true},
+        {"part": "Boot Lid Inner Trim", "role": "trim", "hidden": true},
+        {"part": "{side} Boot Lid Lamp", "role": "lamp"},
+        {"part": "Rear End Panel", "role": "structure", "hidden": true, "strip_down": true}
+      ],
+      "signs": [
+        {"id": "bl-shut", "ask": "Is the lid open, tied shut, or not closed flush?", "level": "heavy",
+         "points_to": ["boot-lid>lock"]},
+        {"id": "bl-gap", "ask": "Are the gaps at the lid's top corners uneven?", "level": "heavy",
+         "points_to": ["boot-lid>hinge"]},
+        {"id": "bl-crease", "ask": "Is the lid creased or buckled, not just dented?", "level": "heavy",
+         "points_to": ["boot-lid>rear-end-panel"], "unlocks": ["bl>rear-end>floor", "bl>rear-end>side-trim"]}
+      ]
+    },
+    {
+      "id": "rear-end", "name": "Rear end panel (test)", "area": "rear", "anchors": [],
+      "members": [
+        {"part": "Rear End Panel", "role": "structure", "hidden": true, "strip_down": true},
+        {"part": "Rear Floor Panel", "role": "structure", "hidden": true, "strip_down": true},
+        {"part": "{side} Boot Side Trim", "role": "trim", "hidden": true}
+      ],
+      "signs": []
+    },
+    {
+      "id": "front-door", "name": "Front door (test)", "area": "side", "anchors": ["{side} Front Door"],
+      "members": [
+        {"part": "{side} Front Door", "role": "panel"},
+        {"part": "{side} Wing Mirror", "role": "other"},
+        {"part": "{side} Front Window Regulator", "role": "mechanism", "hidden": true, "strip_down": true},
+        {"part": "{side} Front Door Glass", "role": "glass"},
+        {"part": "Interior Trim", "role": "trim", "hidden": true}
+      ],
+      "signs": [
+        {"id": "fd-crease", "ask": "Is the door skin creased sharply or pushed in deep, not just dented?",
+         "level": "heavy", "points_to": ["front-door>regulator"], "unlocks": ["fd>regulator>glass"]},
+        {"id": "fd-gap", "ask": "Is the gap between this door and the panel next to it uneven?", "level": "medium",
+         "points_to": ["front-door>interior-trim"]}
+      ]
+    }
+  ],
+  "relations": [
+    {"id": "front-bumper>fog-lamp", "assembly": "front-bumper", "parent": "Front Bumper", "child": "{side} Fog Lamp",
+     "type": "attached", "side": "impact", "min_hit": "medium", "hidden": false, "strip_down": false, "area": "front",
+     "position": "corner", "reason": "Fog lamps sit in the cover's lower corners; a hit there can break them."},
+    {"id": "front-bumper>number-plate", "assembly": "front-bumper", "parent": "Front Bumper",
+     "child": "Front Number Plate", "type": "attached", "side": "none", "min_hit": "medium", "hidden": false,
+     "strip_down": false, "area": "front", "position": "centre",
+     "reason": "The plate is fixed to the cover's centre; a dent there bends it."},
+    {"id": "front-bumper>grille", "assembly": "front-bumper", "parent": "Front Bumper", "child": "Front Grille",
+     "type": "attached", "side": "none", "min_hit": "medium", "hidden": false, "strip_down": false, "area": "front",
+     "reason": "The grille clips into the cover and breaks its tabs with it."},
+    {"id": "front-bumper>beam", "assembly": "front-bumper", "parent": "Front Bumper", "child": "Front Bumper Beam",
+     "type": "behind", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": true, "area": "front",
+     "reason": "Sits behind the cover; a pushed-in cover can bend it. Check with the bumper off."},
+    {"id": "front-bumper>undercover", "assembly": "front-bumper", "parent": "Front Bumper", "child": "Engine Undercover",
+     "type": "behind", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": false, "area": "front",
+     "reason": "Fixed to the bumper's lower edge; a torn lower bumper tears it."},
+    {"id": "front-bumper>condenser", "assembly": "front-bumper", "parent": "Front Bumper",
+     "child": "Air Conditioning Condenser", "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true,
+     "strip_down": true, "area": "front", "position": "centre",
+     "reason": "The first cooling part behind the bumper; a pushed-in front bends its fins."},
+    {"id": "condenser>radiator", "assembly": "front-end", "parent": "Air Conditioning Condenser", "child": "Radiator",
+     "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": true, "area": "front",
+     "reason": "Sits behind the condenser; a condenser pushed back can bend its core."},
+    {"id": "front-bumper-beam>subframe", "assembly": "front-bumper", "parent": "Front Bumper Beam",
+     "child": "Front Subframe", "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true,
+     "strip_down": true, "area": "front", "reason": "The beam's mounts sit on the frame ends; a bent beam can push them back."},
+    {"id": "headlamp>beam", "assembly": "headlamp", "parent": "{side} Headlamp", "child": "Front Bumper Beam",
+     "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": true, "area": "front",
+     "reason": "A lamp pushed back means the hit reached the beam's end."},
+    {"id": "boot-lid>lamp", "assembly": "boot-lid", "parent": "Boot Lid", "child": "{side} Boot Lid Lamp",
+     "type": "attached", "side": "impact", "min_hit": "medium", "hidden": false, "strip_down": false, "area": "rear",
+     "position": "corner", "reason": "Lamps on the lid crack when the lid is dented next to them."},
+    {"id": "boot-lid>lock", "assembly": "boot-lid", "parent": "Boot Lid", "child": "Boot Lid Lock",
+     "type": "opens_with", "side": "none", "min_hit": "heavy", "trigger_tokens": ["Jammed"], "hidden": true,
+     "strip_down": false, "area": "rear",
+     "reason": "The lock sits in the lid's lower edge; a lid that will not latch usually means a bent lock."},
+    {"id": "boot-lid>hinge", "assembly": "boot-lid", "parent": "Boot Lid", "child": "Boot Lid Hinge",
+     "type": "opens_with", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": false, "area": "rear",
+     "reason": "A lid pushed out of line bends its hinges."},
+    {"id": "boot-lid>inner-trim", "assembly": "boot-lid", "parent": "Boot Lid", "child": "Boot Lid Inner Trim",
+     "type": "opens_with", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": false, "area": "rear",
+     "reason": "The trim inside the lid cracks when the lid buckles."},
+    {"id": "boot-lid>rear-end-panel", "assembly": "boot-lid", "parent": "Boot Lid", "child": "Rear End Panel",
+     "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": true, "area": "rear",
+     "position": "centre", "reason": "A lid buckled low pushes into the panel below the opening."},
+    {"id": "rear-end>floor", "assembly": "rear-end", "parent": "Rear End Panel", "child": "Rear Floor Panel",
+     "type": "crush", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": true, "area": "rear",
+     "reason": "The end panel is welded to the boot floor; pushed in, it creases the floor."},
+    {"id": "rear-end>side-trim", "assembly": "rear-end", "parent": "Rear End Panel", "child": "{side} Boot Side Trim",
+     "type": "crush", "side": "impact", "min_hit": "heavy", "hidden": true, "strip_down": false, "area": "rear",
+     "reason": "The side trims clip to the end panel's corners and crack when it moves."},
+    {"id": "front-door>mirror", "assembly": "front-door", "parent": "{side} Front Door", "child": "{side} Wing Mirror",
+     "type": "attached", "side": "same", "min_hit": "medium", "hidden": false, "strip_down": false, "area": "side",
+     "position": "corner", "reason": "The mirror is bolted to the door's front corner."},
+    {"id": "front-door>regulator", "assembly": "front-door", "parent": "{side} Front Door",
+     "child": "{side} Front Window Regulator", "type": "behind", "side": "same", "min_hit": "heavy", "hidden": true,
+     "strip_down": true, "area": "side", "reason": "The regulator sits inside the door; a deep dent bends its rails."},
+    {"id": "front-door>interior-trim", "assembly": "front-door", "parent": "{side} Front Door", "child": "Interior Trim",
+     "type": "behind", "side": "none", "min_hit": "heavy", "hidden": true, "strip_down": false, "area": "side",
+     "reason": "The door card clips to the inner skin and cracks when the door is pushed in."},
+    {"id": "regulator>glass", "assembly": "front-door", "parent": "{side} Front Window Regulator",
+     "child": "{side} Front Door Glass", "type": "attached", "side": "same", "min_hit": "heavy", "hidden": false,
+     "strip_down": false, "area": "side", "reason": "The glass rides on the regulator; a bent regulator jams or cracks it."}
+  ],
+  "chains": [
+    {"id": "fb>condenser>radiator", "first": "front-bumper>condenser", "then": "condenser>radiator",
+     "reason": "A front pushed in far enough to reach the condenser can reach the radiator behind it."},
+    {"id": "fb>beam>subframe", "first": "front-bumper>beam", "then": "front-bumper-beam>subframe",
+     "reason": "A cover pushed in hard can bend the beam and push its mounts into the frame ends."},
+    {"id": "bl>rear-end>floor", "first": "boot-lid>rear-end-panel", "then": "rear-end>floor",
+     "reason": "A buckled lid that pushed the end panel in can crease the boot floor behind it."},
+    {"id": "bl>rear-end>side-trim", "first": "boot-lid>rear-end-panel", "then": "rear-end>side-trim",
+     "reason": "A buckled lid that moved the end panel can crack the trim at its corners."},
+    {"id": "fd>regulator>glass", "first": "front-door>regulator", "then": "regulator>glass",
+     "reason": "A door pushed in deep enough to bend the regulator can jam or crack the glass on it."}
+  ]
+}

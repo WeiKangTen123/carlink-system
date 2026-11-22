@@ -412,13 +412,15 @@ def family_of(item: str) -> str | None:
 
 
 def canonical_part(text: str) -> str | None:
-    """A damaged part as a canonical name: as is when it already is one,
-    otherwise read with the same rules as past-report lines -- cases filed
-    before the taxonomy hold free text like "Tail gate lock striker" or
-    "Tail lamp LH"."""
-    from app.reports.taxonomy import CANONICAL_PARTS
+    """A damaged part as a canonical name: as is when it already is one --
+    or a car map part (taxonomy.known_part): "Front Bumper Absorber" is not
+    the front bumper's family, and keyed as it (prefill.item_key) it would
+    read as the bumper already listed -- otherwise read with the same rules
+    as past-report lines -- cases filed before the taxonomy hold free text
+    like "Tail gate lock striker" or "Tail lamp LH"."""
+    from app.reports.taxonomy import known_part
 
-    if text in CANONICAL_PARTS:
+    if known_part(text):
         return text
     family = family_of(text)
     if not family:

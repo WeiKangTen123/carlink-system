@@ -148,6 +148,16 @@ class CheckRun(BaseModel):
     note: Optional[str] = None
     seconds: Optional[float] = None
     calls: int = 0
+    # The linked check's "Signs of hidden damage" answers, by area
+    # (settings.intake_link_signs, L3 of plans/2026-11-18-light-detection):
+    # {"rear": [{"n": "1", "answer": "yes", "photo": "P03"}]}, the photo as
+    # labelled in that call. A log only; left out of a dump while None, so a
+    # run without them saves what it did before.
+    signs: Optional[dict] = None
+
+    @model_serializer(mode="wrap")
+    def _without_unset_signs(self, handler):
+        return _without_defaults(handler(self), {"signs": None})
 
 
 # ------------------------------------------------ contract 10: linked parts
@@ -158,6 +168,15 @@ class CheckRun(BaseModel):
 # While a field below is at its default it is left out of a dump (the
 # models' _without_unset_links), so a case with the linked parts off saves
 # byte for byte what it did before them: read them with .get().
+
+
+class SignYes(BaseModel):
+    """A sign the assembly walk answered "yes" for a linked part (the car
+    map, K1-design.md 5a): its id, its question, the photo it was seen in
+    ("@<photo id>" while a draft, "P07" once filed)."""
+    id: str
+    ask: Optional[str] = None
+    photo: Optional[str] = None
 
 
 class LinkCheck(BaseModel):
@@ -178,6 +197,9 @@ LINK_ITEM_DEFAULTS = {"linked_from": [], "link_type": None, "hidden": False, "ne
 LINK_SUGGESTION_DEFAULTS = {
     "linked_from": [], "link_type": None, "link_rule": None, "hit": None, "bucket": None, "hidden": False,
     "needs_strip_down": False, "side_from": None, "intact_in": [], "link_check": None, "oem": [],
+    # The car map's review screen (K4): only with intake_car_map "on".
+    "assembly": None, "assembly_name": None, "prior": None, "hop": None, "via": None, "fitted": None,
+    "fitted_note": None, "signs_yes": [], "also_check": [], "folded": False,
 }
 LINK_LOOK_DEFAULTS = {"link_run": None}
 
@@ -669,6 +691,28 @@ class SecondLookItem(BaseModel):
     intact_in: list[str] = Field(default_factory=list)
     link_check: Optional[LinkCheck] = None
     oem: list[str] = Field(default_factory=list)
+    # The car map's review screen (K1-design.md 5b; K4), code-set, only
+    # with intake_car_map "on" (an older draft has none, and loads as it
+    # was): assembly: the group -- the map's assembly id, one per side for
+    # a sided assembly ("front-door.left"); assembly_name: its name for
+    # the header; prior: the relation's rank (1 listed most often .. 5),
+    # None for none; hop: 1, or 2 for a second hop (via: the part between);
+    # fitted: "if_fitted" for an option some cars lack ("-- if fitted");
+    # fitted_note: what the stored catalogue says of this model (layer 2);
+    # signs_yes: the walk's yes signs that point at it; also_check: the
+    # group's words for parts with no name yet (the same on each item of
+    # the group, shown once); folded: in the strip-down block outside
+    # intake_links_max (intake_links_stripdown_cap "out").
+    assembly: Optional[str] = None
+    assembly_name: Optional[str] = None
+    prior: Optional[int] = None
+    hop: Optional[int] = None
+    via: Optional[str] = None
+    fitted: Optional[str] = None
+    fitted_note: Optional[str] = None
+    signs_yes: list[SignYes] = Field(default_factory=list)
+    also_check: list[str] = Field(default_factory=list)
+    folded: bool = False
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):

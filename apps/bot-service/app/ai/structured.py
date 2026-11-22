@@ -644,6 +644,11 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
             attempt["spent_until"] = allowance.iso(spent_until)
         if busy:
             attempt["busy"] = True
+        # The prompt version and packs of a call made with a light-model
+        # switch on (runs.prompt_tag); none otherwise.
+        tag = runs.current_prompt_tag()
+        if tag:
+            attempt["prompt"] = tag
         prompt_tokens, output_tokens = _tokens(interaction) if interaction is not None else (None, None)
         if prompt_tokens is not None:
             attempt["prompt_tokens"] = prompt_tokens

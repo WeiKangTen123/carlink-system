@@ -44,6 +44,15 @@ surveyor kept, removed, added or changed before signing:
            shadow mode what the linked parts kept on the AI draft
            (ai_draft["link_suggestions"]) predicted against the signed-off
            list (shadow). A case without any has none of these keys.
+           Still VERSION 3, added only on a case whose linked parts carry
+           them (the car map, K4/K3b; a case without has none of these
+           keys, so older rows and the sums read as before): by the car
+           map's group (by_assembly, its id without the side), by hop
+           (by_hop, "1" / "2"), the parts in the folded strip-down block
+           (folded) and those a yes sign of the assembly walk lifted or
+           opened (sign_lifted); and with intake_car_map "shadow" what the
+           car map's linked parts on the AI draft
+           (ai_draft["car_map_suggestions"]) predicted (car_map_shadow).
 
 compare() is pure: no database, no AI. Old cases and missing keys count as
 empty. The answer holds counts, canonical part names, Annex A wordings and
@@ -107,6 +116,11 @@ LINK_CHECK_VERDICTS = ("seen", "likely", "strip_down", "no", "cannot_tell")
 # A link_rule as counted ("L1:rear-quarter-panel>rear-wheel-arch-liner" is
 # 43 characters; two rules must not run into one).
 MAX_RULE = 60
+# The car map's (K4, K3b; still VERSION 3, each key only on a case that has
+# it): groups by the car map's assembly and by hop, and tallies of the
+# folded strip-down block and of the parts a yes sign lifted or opened.
+CARMAP_GROUPS = ("by_assembly", "by_hop")
+CARMAP_TALLIES = ("folded", "sign_lifted")
 
 
 def _num(value) -> float:
@@ -415,6 +429,11 @@ def _suggestions(ai_draft: dict, final_data: dict) -> dict:
     shadow = _shadow(ai_draft, final_data, tables)
     if shadow is not None:
         _link_groups(out)["shadow"] = shadow
+    # The car map's own linked parts in its shadow mode (K4): their table is
+    # not the one shown, so its version stays out of links_table.
+    car_shadow = _shadow(ai_draft, final_data, [], "car_map_suggestions")
+    if car_shadow is not None:
+        _link_groups(out)["car_map_shadow"] = car_shadow
     if "links_table" in out:
         out["links_table"] = tables[0] if tables else None
     return out
@@ -451,23 +470,43 @@ def _link_tallies(out: dict, fact: dict, tables: list[str]) -> list[dict]:
     found = fact.get("link_check") if isinstance(fact.get("link_check"), dict) else {}
     if found.get("verdict") in LINK_CHECK_VERDICTS:
         tallies.append(out["link_check"].setdefault(found["verdict"], _suggestion_counts()))
+    return tallies + _carmap_tallies(out, fact)
+
+
+def _carmap_tallies(out: dict, fact: dict) -> list[dict]:
+    """The car map's tallies one linked part counts in (each group or
+    tally made on first use): its assembly (the side cut off: one row for
+    both front doors), its hop, the folded block, a yes sign."""
+    tallies = []
+    assembly = fact.get("assembly")
+    if isinstance(assembly, str) and assembly.strip():
+        name = assembly.split(".", 1)[0][:40]
+        tallies.append(out.setdefault("by_assembly", {}).setdefault(name, _suggestion_counts()))
+    hop = fact.get("hop")
+    if hop in (1, 2) and not isinstance(hop, bool):
+        tallies.append(out.setdefault("by_hop", {}).setdefault(str(hop), _suggestion_counts()))
+    if fact.get("folded") is True:
+        tallies.append(out.setdefault("folded", _suggestion_counts()))
+    if isinstance(fact.get("signs_yes"), list) and fact["signs_yes"]:
+        tallies.append(out.setdefault("sign_lifted", _suggestion_counts()))
     return tallies
 
 
-def _shadow(ai_draft: dict, final_data: dict, tables: list[str]) -> dict | None:
+def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str = "link_suggestions") -> dict | None:
     """Shadow mode's outcome (contract 10): the linked parts the AI draft
-    kept but nobody saw (ai_draft["link_suggestions"]), one per key, and
-    how many of them are on the signed-off list (by name, or by a name
-    that stands for them: "Tail Lamp (side undetermined)" for a "Left Tail
-    Lamp") -- in all and by rule. None when the draft has no such list."""
-    if not isinstance(ai_draft.get("link_suggestions"), list):
+    kept but nobody saw (ai_draft["link_suggestions"], or list_key: the
+    car map's "car_map_suggestions"), one per key, and how many of them
+    are on the signed-off list (by name, or by a name that stands for
+    them: "Tail Lamp (side undetermined)" for a "Left Tail Lamp") -- in
+    all and by rule. None when the draft has no such list."""
+    if not isinstance(ai_draft.get(list_key), list):
         return None
     final = damage_items(final_data)
     final_keys = {item_key(it) for it in final}
     final_parts = {str(it.get("part")) for it in final}
     out: dict = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
     seen: set[str] = set()
-    for it in _dicts(ai_draft.get("link_suggestions")):
+    for it in _dicts(ai_draft.get(list_key)):
         key = key_of(it)
         if not key or key in seen:
             continue
@@ -534,14 +573,25 @@ def sum_suggestions(metrics: list[dict]) -> dict:
         found = s.get("links_table")
         tables.update(name[:20] for name in (found if isinstance(found, list) else [found])
                       if isinstance(name, str) and name)
-        shadow = s.get("shadow") if isinstance(s.get("shadow"), dict) else None
-        if shadow is not None:
-            add_shadow(out["shadow"], shadow)
+        for shadow_key in ("shadow", "car_map_shadow"):
+            shadow = s.get(shadow_key) if isinstance(s.get(shadow_key), dict) else None
+            if shadow is None:
+                continue
+            into = out.setdefault(shadow_key, {"predicted": 0, "on_final_list": 0, "by_rule": {}})
+            add_shadow(into, shadow)
             rules = shadow.get("by_rule") if isinstance(shadow.get("by_rule"), dict) else {}
             for name, counts in rules.items():
                 if isinstance(counts, dict):
-                    add_shadow(out["shadow"]["by_rule"].setdefault(
+                    add_shadow(into["by_rule"].setdefault(
                         str(name)[:MAX_RULE], {"predicted": 0, "on_final_list": 0}), counts)
+        # The car map's (K4, K3b): in the sum only once a row has them.
+        for group in CARMAP_GROUPS:
+            for name, counts in (s.get(group) or {}).items() if isinstance(s.get(group), dict) else ():
+                if isinstance(counts, dict):
+                    add(out.setdefault(group, {}).setdefault(str(name)[:40], _suggestion_counts()), counts)
+        for tally in CARMAP_TALLIES:
+            if isinstance(s.get(tally), dict):
+                add(out.setdefault(tally, _suggestion_counts()), s[tally])
     out["links_table"] = sorted(tables)
     return out
 

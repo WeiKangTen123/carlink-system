@@ -171,6 +171,99 @@ CANONICAL_PARTS: list[str] = [
     "Other / Not Listed",
 ]
 
+# ---------------------------------------------------------------------------
+# The car map's part names (plans/2026-11-18-car-knowledge/K1-design.md
+# section 2, owner option a; intake/car_map_new_names.json, N1).
+#
+# Sub-parts the firm prices on their own lines that CANONICAL_PARTS has no
+# name for: the absorber and side brackets behind a bumper, a door's lock,
+# hinges and handle, a boot lid's striker and struts. Kept OUT of
+# CANONICAL_PARTS on purpose: that list is the Gemini enum of the sort, the
+# drafting call, the zone reads and the second look, so a name added there
+# would change every read whatever any setting says. These are named only
+# by the car map's linked parts (intake/car_map.links_table, names on) and
+# by a person picking a part, and both only while
+# settings.intake_car_map_names is "on". A part named here that is already
+# on a case stays valid and prints (known_part) whatever the setting:
+# turning the names off never breaks a draft.
+#
+# Same layout as CANONICAL_PARTS: side in the name, Left and Right, then the
+# "(side undetermined)" names unsided_part finds for them (no new 3D mesh:
+# lib/vehicleZones.ts draws each on the panel it sits behind or in).
+# ---------------------------------------------------------------------------
+
+CAR_MAP_PARTS: list[str] = [
+    # Front bumper assembly
+    "Front Bumper Absorber",
+    "Left Front Bumper Bracket",
+    "Right Front Bumper Bracket",
+    # Split from today's Parking Sensor, which stays (it covers both ends).
+    "Front Parking Sensor",
+    "Left Fog Lamp Cover",
+    "Right Fog Lamp Cover",
+    # Front end (behind the grille) and bonnet
+    "Radiator Support",
+    "Radiator Fan",
+    "Left Bonnet Hinge",
+    "Right Bonnet Hinge",
+    "Bonnet Latch",
+    "Bonnet Insulator",
+    # Doors
+    "Left Front Door Lock",
+    "Right Front Door Lock",
+    "Left Rear Door Lock",
+    "Right Rear Door Lock",
+    "Left Front Door Hinge",
+    "Right Front Door Hinge",
+    "Left Rear Door Hinge",
+    "Right Rear Door Hinge",
+    "Left Front Door Handle",
+    "Right Front Door Handle",
+    "Left Rear Door Handle",
+    "Right Rear Door Handle",
+    # Rear bumper assembly
+    "Rear Bumper Absorber",
+    "Left Rear Bumper Bracket",
+    "Right Rear Bumper Bracket",
+    "Rear Parking Sensor",
+    # Boot lid / tailgate assembly
+    "Boot Lid Striker",
+    "Left Boot Lid Strut",
+    "Right Boot Lid Strut",
+    "Rear Number Plate Lamp",
+    "Boot Lid Garnish",
+    "Boot Lid Spoiler",
+    # Hatches and estates only (car_map.json's body gate).
+    "Rear Wiper Motor",
+    "High Mount Stop Lamp",
+    # On one rear quarter; which one is the car's own fact, so no side.
+    "Fuel Filler Flap",
+    # Side undetermined. The door ones are never placed on a side
+    # (_NOT_PLACED): a side alone doesn't say which door.
+    "Front Bumper Bracket (side undetermined)",
+    "Fog Lamp Cover (side undetermined)",
+    "Bonnet Hinge (side undetermined)",
+    "Door Lock (side undetermined)",
+    "Door Hinge (side undetermined)",
+    "Door Handle (side undetermined)",
+    "Rear Bumper Bracket (side undetermined)",
+    "Boot Lid Strut (side undetermined)",
+]
+
+# Every part name a stored or added damage item may carry: what the API
+# accepts on PATCH / POST /damage-items, what Annex A words, what the
+# linked parts may name. CANONICAL_PARTS first, in its order.
+KNOWN_PARTS: list[str] = CANONICAL_PARTS + CAR_MAP_PARTS
+_KNOWN = frozenset(KNOWN_PARTS)
+
+
+def known_part(name) -> bool:
+    """A canonical part or a car map part: valid on a case whatever
+    settings.intake_car_map_names says (the setting only decides whether
+    the new names are offered and suggested)."""
+    return isinstance(name, str) and name in _KNOWN
+
+
 OTHER_PART = "Other / Not Listed"
 # A part's name as anyone writes it fits a report line ("Front door glass
 # regulator mechanism motor" is 42); longer is a sentence, not a name.
@@ -613,6 +706,46 @@ _FIRM_WORDING_HATCH: dict[str, str] = {
     "Boot Floor Board": "Rear floor panel board",
     "Boot Side Trim": "Rear fender inner trim board",
 }
+# The car map's names (CAR_MAP_PARTS), as car_map_new_names.json words them
+# ("firm" / "firm_hatch"), keyed the same way. Kept apart so the canonical
+# parts' wording above stays exactly as it is.
+_CAR_MAP_WORDING: dict[str, str] = {
+    "Front Bumper Absorber": "Front bumper absorber",
+    "Front Bumper Bracket": "Front bumper side bracket",
+    "Front Parking Sensor": "Front parking sensor",
+    "Fog Lamp Cover": "Fog lamp cover",
+    "Radiator Support": "Radiator support panel",
+    "Radiator Fan": "Radiator fan assy",
+    "Bonnet Hinge": "Bonnet hinge",
+    "Bonnet Latch": "Bonnet lock",
+    "Bonnet Insulator": "Bonnet insulator",
+    "Front Door Lock": "Front door lock",
+    "Rear Door Lock": "Rear door lock",
+    "Door Lock": "Door lock",
+    "Front Door Hinge": "Front door hinge",
+    "Rear Door Hinge": "Rear door hinge",
+    "Door Hinge": "Door hinge",
+    "Front Door Handle": "Front door outer handle",
+    "Rear Door Handle": "Rear door outer handle",
+    "Door Handle": "Door outer handle",
+    "Rear Bumper Absorber": "Rear bumper absorber",
+    "Rear Bumper Bracket": "Rear bumper side bracket",
+    "Rear Parking Sensor": "Reverse sensor",
+    "Boot Lid Striker": "Boot lid lock striker",
+    "Boot Lid Strut": "Boot lid gas stay",
+    "Rear Number Plate Lamp": "Rear number plate lamp",
+    "Boot Lid Garnish": "Boot lid garnish",
+    "Boot Lid Spoiler": "Boot lid spoiler",
+    "Rear Wiper Motor": "Rear wiper motor",
+    "High Mount Stop Lamp": "High mount stop lamp",
+    "Fuel Filler Flap": "Fuel filler lid",
+}
+_CAR_MAP_WORDING_HATCH: dict[str, str] = {
+    "Boot Lid Striker": "Tail gate lock striker",
+    "Boot Lid Strut": "Tail gate gas stay",
+    "Boot Lid Garnish": "Tail gate garnish",
+    "Boot Lid Spoiler": "Tail gate spoiler",
+}
 
 
 def split_side(part: str) -> tuple[str, str | None]:
@@ -627,9 +760,9 @@ def split_side(part: str) -> tuple[str, str | None]:
     return part, None
 
 
-def _firm_names(wording: dict[str, str]) -> dict[str, str]:
+def _firm_names(wording: dict[str, str], parts: list[str] = CANONICAL_PARTS) -> dict[str, str]:
     out = {}
-    for part in CANONICAL_PARTS:
+    for part in parts:
         base, side = split_side(part)
         if base in wording:
             out[part] = f"{wording[base]} {SIDE_CODES[side]}" if side else wording[base]
@@ -638,8 +771,12 @@ def _firm_names(wording: dict[str, str]) -> dict[str, str]:
 
 # canonical name -> the firm's wording; scripts/test_detection_wording.py
 # checks every canonical part has one and none prints as a canonical name.
-FIRM_PART_NAMES: dict[str, str] = _firm_names(_FIRM_WORDING)
-FIRM_PART_NAMES_HATCH: dict[str, str] = _firm_names({**_FIRM_WORDING, **_FIRM_WORDING_HATCH})
+# The car map's names follow (scripts/test_carmap_names.py checks theirs):
+# a case may hold them whatever the setting, so they always have a wording.
+FIRM_PART_NAMES: dict[str, str] = {**_firm_names(_FIRM_WORDING),
+                                   **_firm_names(_CAR_MAP_WORDING, CAR_MAP_PARTS)}
+FIRM_PART_NAMES_HATCH: dict[str, str] = {**_firm_names({**_FIRM_WORDING, **_FIRM_WORDING_HATCH}),
+                                         **_firm_names({**_CAR_MAP_WORDING, **_CAR_MAP_WORDING_HATCH}, CAR_MAP_PARTS)}
 
 
 def firm_part_name(part: str | None, body_type: str | None = None, unsided: bool = False) -> str | None:
@@ -663,13 +800,15 @@ def unsided_part(part: str) -> str | None:
     Lamp" -> "Tail Lamp (side undetermined)", "Left Rear Wheel" -> "Wheel
     (side undetermined)", "Right Rear Quarter Panel" -> "Quarter Panel (side
     undetermined)". The part itself when it has no side; None when no such
-    name exists. The inverse of sided_part."""
+    name exists. The inverse of sided_part. A car map part's too ("Left
+    Front Door Lock" -> "Door Lock (side undetermined)"): no canonical
+    name's twin is a car map name, so canonical answers are as before."""
     base, side = split_side(part)
     if side is None:
         return part
     for candidate in (base, base.removeprefix("Front ").removeprefix("Rear ")):
         name = candidate + UNDETERMINED_SUFFIX
-        if name in CANONICAL_PARTS:
+        if name in _KNOWN:
             return name
     return None
 
@@ -682,7 +821,8 @@ def unsided_part(part: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _NEEDS_END = {"Wheel", "Tyre", "Wheel Arch Liner", "Wheel Arch Trim"}
-_NOT_PLACED = {"Door", "Door Glass", "Window Regulator"}
+# The car map's door parts likewise (CAR_MAP_PARTS).
+_NOT_PLACED = {"Door", "Door Glass", "Window Regulator", "Door Lock", "Door Hinge", "Door Handle"}
 
 
 def sided_part(part: str, side: str | None, end: str | None = None) -> str | None:
@@ -703,4 +843,4 @@ def sided_part(part: str, side: str | None, end: str | None = None) -> str | Non
         name = f"{side} Rear Quarter Panel"
     else:
         name = f"{side} {base}"
-    return name if name in CANONICAL_PARTS else None
+    return name if name in _KNOWN else None

@@ -172,6 +172,27 @@ def note_input(size: int) -> None:
         current.add_input(size)
 
 
+@contextmanager
+def prompt_tag(tag: str | None) -> Iterator[None]:
+    """Every try call_structured makes on this thread in the block carries
+    "prompt": tag in the run log (ai/prompt_packs.tag: the prompt version,
+    packs and sha a call sent while a light-model switch is on). None:
+    nothing changes -- the tries are as before."""
+    if not tag:
+        yield
+        return
+    previous = getattr(_local, "prompt", None)
+    _local.prompt = tag
+    try:
+        yield
+    finally:
+        _local.prompt = previous
+
+
+def current_prompt_tag() -> str | None:
+    return getattr(_local, "prompt", None)
+
+
 # ------------------------------------------------------------ what's kept
 
 # Digit runs of 5 or more, single spaces or dashes allowed between them:

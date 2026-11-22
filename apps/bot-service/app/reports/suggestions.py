@@ -158,11 +158,16 @@ def item_from_suggestion(sug: dict) -> dict:
     ).model_dump()
 
 
-def relinked(item: dict, data: dict, look: dict) -> list[dict]:
+def relinked(item: dict, data: dict, look: dict, ai_draft: dict | None = None) -> list[dict]:
     """Contract 10: the new linked suggestions of a part just put on the
     list (links.for_parent), named as second_look._store names them --
     only while settings.intake_links is "on" and the table loaded; [] on
-    any failure (an add never fails for them)."""
+    any failure (an add never fails for them). ai_draft: the case's AI
+    draft (IntakeSession.ai_draft, or Report.ai_draft once filed): with
+    the assembly walk on, its stored walk (ai_draft["assembly_walk"]) acts
+    on the re-link as on the read's (assembly_walk.from_settings); None,
+    or the walk off: as before."""
+    from app.config import settings
     from app.intake import links
 
     try:
@@ -171,8 +176,27 @@ def relinked(item: dict, data: dict, look: dict) -> list[dict]:
             return []
         from app.ai.second_look import other_side_listed
 
-        found = links.for_parent(item, {**data, "second_look": look}, [], links.TABLE, opts)
         vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+        case = {**data, "second_look": look}
+        walk = None
+        if ai_draft is not None and getattr(settings, "intake_assembly_walk", "off") == "on":
+            from app.intake import assembly_walk
+
+            walk = assembly_walk.from_settings(ai_draft, settings)
+        extra = {"walk": walk} if walk is not None else {}
+        if getattr(settings, "intake_car_map", "off") == "on":
+            # The car map (K4): the shown table is the map's, with its
+            # group fields; "shadow" relinks from L1 as when off.
+            from app.intake import car_map
+
+            tables = car_map.link_tables(links.TABLE, vehicle, mode="on")
+            found = links.for_parent(item, case, [], tables.shown, opts, info=tables.shown_info, **extra)
+            if tables.shown_info is not None:
+                listed_items = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
+                car_map.add_also_check(found, tables.car_map, links.levels_of(listed_items, [], opts, **extra),
+                                       body_type=tables.body_type)
+        else:
+            found = links.for_parent(item, case, [], links.TABLE, opts, **extra)
         listed = {str(it.get("part")) for it in data.get("damage_summary") or [] if isinstance(it, dict)}
         out = []
         for it in found:
@@ -196,13 +220,14 @@ def without_orphans(items: list, data: dict, look: dict) -> list:
         and key_of(it) not in decided and not set(it["linked_from"]) & listed)]
 
 
-def with_relinks(data: dict, new_items: list) -> dict | None:
+def with_relinks(data: dict, new_items: list, ai_draft: dict | None = None) -> dict | None:
     """Contract 10: data["second_look"] with the linked parts of new_items --
     parts a person just put on the list by hand (the wizard's autosave, the
     case page's POST /damage-items) -- joined to the suggestions, each by
-    relinked() against the list as it is now, in turn. None when nothing
-    joined: intake_links not "on", no second look yet (the next read links
-    the whole list), nothing new. A copy; data is left as it is."""
+    relinked() against the list as it is now, in turn (ai_draft: the
+    case's AI draft, for the assembly walk). None when nothing joined:
+    intake_links not "on", no second look yet (the next read links the
+    whole list), nothing new. A copy; data is left as it is."""
     from app.config import settings
 
     look = data.get("second_look") if isinstance(data, dict) else None
@@ -213,7 +238,7 @@ def with_relinks(data: dict, new_items: list) -> dict | None:
     look = dict(look)
     joined = False
     for item in items:
-        found = relinked(item, data, look)
+        found = relinked(item, data, look, ai_draft)
         if found:
             look["items"] = list(look.get("items") or []) + found
             joined = True
@@ -302,12 +327,14 @@ def _with_list(data: dict, damage_summary: list[dict]) -> dict:
             "damaged_parts": [it.get("part") for it in damage_summary if it.get("part")]}
 
 
-def decide(data: dict, key: str, action: str, looked: bool, user, where: str) -> Decided:
+def decide(data: dict, key: str, action: str, looked: bool, user, where: str,
+           ai_draft: dict | None = None) -> Decided:
     """One person's add / dismiss / undo on the suggestion `key` (see the
     module's docstring), on a copy of `data`. Raises UnknownSuggestion when
     the case has no such suggestion -- nor, for an undo, a decision on it;
     ValueError for an action that isn't one of ACTIONS. A repeated click
-    changes nothing (action None)."""
+    changes nothing (action None). ai_draft: the case's AI draft, for the
+    assembly walk on an add's re-link (relinked)."""
     from app.auth.core import display_name
 
     if action not in ACTIONS:
@@ -333,7 +360,7 @@ def decide(data: dict, key: str, action: str, looked: bool, user, where: str) ->
         damage_summary.append(item)
         done.item, done.item_index, done.listed = item, len(damage_summary) - 1, "added"
         done.action = "added"
-        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look)
+        look["items"] = list(look["items"]) + relinked(item, _with_list(data, damage_summary), look, ai_draft)
     elif action == "dismiss":
         if key in dismissed:
             return done
@@ -412,6 +439,11 @@ def relabel_item(item: dict, index_of: dict) -> dict:
     if out.get("intact_in"):
         # Contract 10: a zone read's name ("zone:rear") stays as it is.
         out["intact_in"] = final_refs(out["intact_in"], index_of)
+    if out.get("signs_yes"):
+        # The car map (K4): each yes sign's photo as the case's P-number; a
+        # deleted photo's gone, the sign kept.
+        out["signs_yes"] = [{**sign, "photo": final_label(sign.get("photo"), index_of)}
+                            for sign in out["signs_yes"] if isinstance(sign, dict)]
     if out.get("evidence"):
         evidence = []
         for entry in out["evidence"]:

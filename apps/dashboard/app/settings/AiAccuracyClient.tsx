@@ -107,6 +107,15 @@ const LINK_CHECK_NAMES: Record<string, string> = {
 };
 // Rules listed before the rest go under "more"; counts only.
 const RULES_SHOWN = 12;
+// The car map (K4, K3b): a linked part's hop, and the two tallies.
+const HOP_NAMES: Record<string, string> = {
+  "1": "Linked to a listed part",
+  "2": "Second hop, through a linked part",
+};
+const CARMAP_TALLY_NAMES: Record<string, string> = {
+  sign_lifted: "Raised by a yes sign in the photos",
+  folded: "In the strip-down block",
+};
 
 /** "L1" or "L1, L2": the link table versions behind these counts. One case
  * has links_table; a sum has links_table (a list), or links_tables (cases
@@ -182,6 +191,13 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
     { head: "Linked parts: how hard the listed part was hit", rows: groupRows(s.by_hit, (k) => HIT_NAMES[k] ?? k, Object.keys(HIT_NAMES)) },
     { head: "Linked parts: AI linked check", rows: groupRows(s.link_check, (k) => LINK_CHECK_NAMES[k] ?? k, Object.keys(LINK_CHECK_NAMES)) },
     { head: "Linked parts: link rule (most suggested)", rows: rules.slice(0, RULES_SHOWN) },
+    // The car map (K4, K3b): absent on a case without it.
+    { head: "Linked parts: car map group", rows: groupRows(s.by_assembly, (k) => k, []) },
+    { head: "Linked parts: hop", rows: groupRows(s.by_hop, (k) => HOP_NAMES[k] ?? k, Object.keys(HOP_NAMES)) },
+    {
+      head: "Linked parts: car map signs and strip-down block",
+      rows: groupRows({ sign_lifted: s.sign_lifted, folded: s.folded }, (k) => CARMAP_TALLY_NAMES[k] ?? k, Object.keys(CARMAP_TALLY_NAMES)),
+    },
   ].filter((g) => g.rows.length > 0);
   const table = tableNames(s);
   const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
@@ -247,13 +263,24 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
         </div>
       )}
       {s.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={table} />}
+      {s.car_map_shadow && s.car_map_shadow.predicted > 0 && (
+        <ShadowBlock shadow={s.car_map_shadow} table={null} title="Car map's linked parts in shadow mode (not shown to people)" />
+      )}
     </Section>
   );
 }
 
 /** Contract 10, shadow mode: the linked parts worked out but not shown to
  * anyone, against the signed-off list (counts only, never a percentage). */
-function ShadowBlock({ shadow, table }: { shadow: AiAccuracyLinkShadow; table: string | null }) {
+function ShadowBlock({
+  shadow,
+  table,
+  title = "Linked parts in shadow mode (not shown to people)",
+}: {
+  shadow: AiAccuracyLinkShadow;
+  table: string | null;
+  title?: string;
+}) {
   const rules = Object.entries(shadow.by_rule ?? {})
     .filter(([, c]) => c && c.predicted > 0)
     .sort((a, b) => b[1].predicted - a[1].predicted || a[0].localeCompare(b[0]))
@@ -261,7 +288,7 @@ function ShadowBlock({ shadow, table }: { shadow: AiAccuracyLinkShadow; table: s
   const cell = { textAlign: "right" as const, fontFamily: "var(--font-mono)" };
   return (
     <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-secondary)" }}>Linked parts in shadow mode (not shown to people)</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-secondary)" }}>{title}</div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 8px" }}>
         {num(shadow.predicted)} worked out · {num(shadow.on_final_list)} on the signed-off list
         {table ? <span style={{ color: "var(--text-muted)" }}> · link table {table}</span> : null}

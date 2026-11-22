@@ -13,9 +13,10 @@ import json
 import logging
 import math
 
+from app.ai import prompt_packs, runs
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
-from app.config import settings
+from app.config import ANY, settings, thinking_levels
 from app.reports.taxonomy import CANONICAL_PARTS, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -177,20 +178,56 @@ def damage_box_on() -> bool:
     return bool(getattr(settings, "intake_sort_damage_box", False))
 
 
-def sort_prompt_version(box: bool | None = None) -> str:
-    """SORT_PROMPT_VERSION, marked while the sort also boxes the damage: the
-    benchmark's sort cache (--sort-cache) is kept per version, so sorts
-    made with and without boxes are never served for each other. box: as
-    the setting says when None."""
-    box = damage_box_on() if box is None else box
-    return SORT_PROMPT_VERSION + ("+damage-box" if box else "")
+# Light-model detection (plans/2026-11-18-light-detection/P-prompts.md 3.1),
+# settings.intake_sort_prompt: "v2" is SYSTEM_PROMPT above; "v3" (S2) is P's
+# template, ai/prompts/sort-v3.txt -- orient-v1 in place of _SIDES, a close-up
+# of a small part named as that part, more shows_damage examples -- with the
+# same PHOTO_KINDS lines and the same schema. P's optional `clue` field (S3)
+# is not built.
+SORT_PROMPT_V3 = "v3-orient"
+# S1 (settings.gemini_thinking_level_sort): a batch's try waits this long
+# when a model of the sort's chain thinks at "high", else SORT_TIMEOUT.
+SORT_TIMEOUT = 60.0
+SORT_TIMEOUT_THINKING = 90.0
 
 
-def system_prompt(box: bool | None = None) -> str:
-    """The sort's system prompt: SYSTEM_PROMPT itself without boxes, else
-    with _BOX_RULE before the note's line."""
+def sort_prompt() -> str:
+    return getattr(settings, "intake_sort_prompt", "v2") or "v2"
+
+
+def sort_prompt_version(box: bool | None = None, prompt: str | None = None) -> str:
+    """SORT_PROMPT_VERSION (SORT_PROMPT_V3 for prompt "v3"), marked while
+    the sort also boxes the damage: the benchmark's sort cache
+    (--sort-cache) is kept per version, so sorts made with and without
+    boxes, or by another prompt, are never served for each other. box and
+    prompt: as the settings say when None."""
     box = damage_box_on() if box is None else box
-    return SYSTEM_PROMPT.replace(_BOX_BEFORE, _BOX_RULE + _BOX_BEFORE, 1) if box else SYSTEM_PROMPT
+    prompt = sort_prompt() if prompt is None else prompt
+    return (SORT_PROMPT_V3 if prompt == "v3" else SORT_PROMPT_VERSION) + ("+damage-box" if box else "")
+
+
+def _prompt_v3() -> str:
+    text = prompt_packs.once(prompt_packs.template("sort-v3"), "{PACK orient-v1}", prompt_packs.pack("orient"))
+    kinds = "".join(f"    {key}: {desc}\n" for key, desc in PHOTO_KINDS.items())
+    return prompt_packs.once(text, "{PHOTO_KINDS}\n", kinds)
+
+
+def system_prompt(box: bool | None = None, prompt: str | None = None) -> str:
+    """The sort's system prompt: SYSTEM_PROMPT itself without boxes (v3:
+    _prompt_v3), else with _BOX_RULE before the note's line."""
+    box = damage_box_on() if box is None else box
+    prompt = sort_prompt() if prompt is None else prompt
+    base = _prompt_v3() if prompt == "v3" else SYSTEM_PROMPT
+    return base.replace(_BOX_BEFORE, _BOX_RULE + _BOX_BEFORE, 1) if box else base
+
+
+def sort_timeout() -> float:
+    """SORT_TIMEOUT_THINKING when settings.gemini_thinking_level_sort gives
+    a model of the sort's chain "high" (one timeout covers the chain's
+    tries), else SORT_TIMEOUT."""
+    levels = thinking_levels(getattr(settings, "gemini_thinking_level_sort", None))
+    high = any((levels.get(model) or levels.get(ANY)) == "high" for model in _triage_chain())
+    return SORT_TIMEOUT_THINKING if high else SORT_TIMEOUT
 
 
 def response_schema(box: bool | None = None) -> dict:
@@ -289,6 +326,8 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
     # Read once: a setting changed mid-call (the benchmark) mustn't parse a
     # boxed answer as an unboxed one.
     box = damage_box_on()
+    prompt = sort_prompt()
+    system = system_prompt(box, prompt)
 
     def parse(raw_output: str) -> dict[str, dict]:
         data = json.loads(raw_output)
@@ -303,13 +342,15 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
             raise ValueError(f"model sorted only {len(result)} of {len(expected)} photos")
         return result
 
-    return call_structured(
-        purpose="photo sort",
-        system_instruction=system_prompt(box),
-        input_parts=parts,
-        schema=response_schema(box),
-        parse=parse,
-        models=_triage_chain(),
-        actor=actor,
-        timeout=60.0,
-    )
+    tag = prompt_packs.tag("sort", prompt, ["orient"], system) if prompt != "v2" else None
+    with runs.prompt_tag(tag):
+        return call_structured(
+            purpose="photo sort",
+            system_instruction=system,
+            input_parts=parts,
+            schema=response_schema(box),
+            parse=parse,
+            models=_triage_chain(),
+            actor=actor,
+            timeout=sort_timeout(),
+        )

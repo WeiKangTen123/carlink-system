@@ -21,6 +21,7 @@ import type {
   ReportData,
   SecondLook,
   SecondLookItem,
+  SignYes,
   SuggestionCheck,
   SuggestionDecision,
 } from "./api";
@@ -88,6 +89,25 @@ export type Finding = {
   linkReason?: string | null;
   /** The listed parts it hangs off, as the cards name them. */
   parents?: LinkParent[];
+
+  // ---- The car map's review screen (K4): each there only when the server
+  // sent it (intake_car_map "on"); without them the panel is as before.
+  /** Its group: the assembly ("front-bumper", "front-door.left"). */
+  assembly?: string;
+  assemblyName?: string;
+  /** The relation's rank, 1 listed most often .. 5. */
+  prior?: number;
+  /** 2: a second hop, via the part between. */
+  hop?: number;
+  via?: string;
+  /** "if_fitted": an option some cars lack ("— if fitted"). */
+  fitted?: string;
+  fittedNote?: string;
+  signsYes?: SignYes[];
+  /** The group's words for parts with no name yet. */
+  alsoCheck?: string[];
+  /** In the "Check at strip-down" block, outside the linked parts' cap. */
+  folded?: boolean;
 };
 
 /** Contract 10: one listed part a linked part hangs off. */
@@ -248,6 +268,22 @@ function linkFields(s: Partial<LinkSource>): Partial<Finding> {
   return out;
 }
 
+/** K4: the car map's fields a suggestion has, and only those. */
+function carMapFields(s: SecondLookItem): Partial<Finding> {
+  const out: Partial<Finding> = {};
+  if (s.assembly) out.assembly = s.assembly;
+  if (s.assembly_name) out.assemblyName = s.assembly_name;
+  if (typeof s.prior === "number") out.prior = s.prior;
+  if (typeof s.hop === "number") out.hop = s.hop;
+  if (s.via) out.via = s.via;
+  if (s.fitted) out.fitted = s.fitted;
+  if (s.fitted_note) out.fittedNote = s.fitted_note;
+  if (s.signs_yes?.length) out.signsYes = s.signs_yes.filter((x) => x && typeof x.id === "string");
+  if (s.also_check?.length) out.alsoCheck = s.also_check.filter((w) => typeof w === "string" && w.trim());
+  if (s.folded) out.folded = true;
+  return out;
+}
+
 function itemFinding(item: DamageSummaryItem, index: number): Finding {
   const evidence = evidenceOf(item);
   // An item added from a linked part no read found carries the link
@@ -350,6 +386,7 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       source,
       condition: s.condition || s.damage_type || null,
       ...linkFields(s),
+      ...(isLink ? carMapFields(s) : {}),
       ...(isLink && s.reason ? { linkReason: s.reason } : {}),
     });
   }
@@ -606,12 +643,13 @@ export function parentName(f: Pick<Finding, "parents" | "linkedFrom">): string |
 
 /** "Also linked to: Boot Lid" for a part tied to more than one listed part
  * (its group is the first one's); for a zone suggestion joined with a link,
- * every one. */
-export function alsoLinkedText(f: Pick<Finding, "parents" | "linkedFrom" | "source">): string | null {
+ * every one. `all`: a card outside its parent's group (the folded strip-down
+ * block without a group name) names every listed part: "Linked to: ...". */
+export function alsoLinkedText(f: Pick<Finding, "parents" | "linkedFrom" | "source">, all = false): string | null {
   const names = (f.parents?.map((p) => p.name) ?? f.linkedFrom ?? []).filter(Boolean);
-  const rest = f.source === "link" ? names.slice(1) : names;
+  const rest = f.source === "link" && !all ? names.slice(1) : names;
   if (!rest.length) return null;
-  return `${f.source === "link" ? "Also linked to" : "Linked to"}: ${rest.join(", ")}`;
+  return `${f.source === "link" && !all ? "Also linked to" : "Linked to"}: ${rest.join(", ")}`;
 }
 
 const PLACE_WORDS: Record<LinkType, string> = {
@@ -677,6 +715,26 @@ export function linkGroupTitle(g: Pick<LinkGroup, "key" | "parent" | "hit">): st
   return `Linked to: ${name}${detail ? ` (${detail})` : ""}${g.parent && !g.parent.findingKey ? " – no longer on the list" : ""}`;
 }
 
+/** K4: one assembly group of the suggestions panel (the car map on). */
+export type AssemblyGroup = {
+  /** The item's assembly ("front-bumper", "front-door.left"). */
+  key: string;
+  /** Its header ("Front bumper assembly"). */
+  name: string;
+  /** The listed parts its linked parts hang off, first seen first, each
+   * with the hardest hit its parts give it (null: none says). */
+  parents: { parent: LinkParent; hit: HitLevel | null }[];
+  /** The yes signs of its parts, once each. */
+  signs: SignYes[];
+  /** "Also check (no part name yet)": the group's words, once each. */
+  alsoCheck: string[];
+  /** As a LinkGroup's: the server's order inside each bucket (its prior
+   * order), the crush path collapsed, the checks' "probably not" last. */
+  rows: Finding[];
+  crush: Finding[];
+  probablyNot: Finding[];
+};
+
 export type SuggestionSections = {
   /** Any linked part among them: without one the panel looks as before. */
   hasLinks: boolean;
@@ -685,7 +743,14 @@ export type SuggestionSections = {
   seen: Finding[];
   /** Past cases / next to a found part (only split out with linked parts). */
   other: Finding[];
+  /** The linked parts without an assembly, by the listed part they hang off
+   * (contract 10; every linked part when none has an assembly). */
   groups: LinkGroup[];
+  /** K4: the linked parts with an assembly, by assembly ([] without). */
+  assemblies: AssemblyGroup[];
+  /** K4: the folded "Check at strip-down" block, outside the cap ([] when
+   * the server folded none). */
+  stripDown: Finding[];
 };
 
 const linkOrder = (list: { f: Finding; i: number }[]) =>
@@ -698,45 +763,169 @@ const linkOrder = (list: { f: Finding; i: number }[]) =>
     )
     .map((x) => x.f);
 
+/** The server's order inside each bucket (K4: its prior order, which the
+ * kind-of-link order would undo). */
+const bucketOrder = (list: { f: Finding; i: number }[]) =>
+  list.sort((a, b) => (BUCKET_RANK[linkBucket(a.f)] ?? 3) - (BUCKET_RANK[linkBucket(b.f)] ?? 3) || a.i - b.i).map((x) => x.f);
+
+const hardest = (hits: (HitLevel | null | undefined)[]): HitLevel | null => {
+  const known = hits.filter((h): h is HitLevel => Boolean(h && h in HIT_RANK));
+  return known.length ? known.reduce((a, b) => (HIT_RANK[b] > HIT_RANK[a] ? b : a)) : null;
+};
+
+/** K4: the server put it in the folded "Check at strip-down" block, and it
+ * is still a strip-down part (a second hop's: still unseen) -- the linked
+ * check may have seen it since, and then it shows in its group. */
+export function inStripDownBlock(f: Pick<Finding, "folded" | "hop" | "bucket" | "hidden" | "needsStripDown">): boolean {
+  if (!f.folded) return false;
+  return f.hop === 2 ? linkBucket(f) !== "seen" : linkBucket(f) === "strip_down";
+}
+
 /** The suggestions panel's sections (contract10.md 1.1, plan.md P5): zone
  * suggestions under "Seen in photos" as before; linked parts grouped by the
  * listed part they hang off, in buckets, the crush path collapsed and the
  * "probably not" ones last. A part tied to several listed parts sits in the
- * first one's group. Nothing here is ticked: these are suggestions only. */
+ * first one's group. Nothing here is ticked: these are suggestions only.
+ *
+ * K4 (the car map on): a linked part with an assembly is in its assembly's
+ * group instead (in the server's order inside each bucket: its prior
+ * order), and one the server folded is in the "Check at strip-down" block
+ * after every group. Without those fields: exactly as before. */
 export function suggestionSections(list: Finding[]): SuggestionSections {
   const links = list.filter((f) => f.source === "link");
-  if (!links.length) return { hasLinks: false, seen: sortByCheck(list), other: [], groups: [] };
+  if (!links.length) return { hasLinks: false, seen: sortByCheck(list), other: [], groups: [], assemblies: [], stripDown: [] };
   const rest = list.filter((f) => f.source !== "link");
   const groups = new Map<string, { parent: LinkParent | null; items: { f: Finding; i: number }[] }>();
+  const assemblies = new Map<string, { name: string; items: { f: Finding; i: number }[] }>();
+  const block: { f: Finding; i: number }[] = [];
   links.forEach((f, i) => {
+    if (inStripDownBlock(f)) {
+      block.push({ f, i });
+      return;
+    }
+    if (f.assembly) {
+      const a = assemblies.get(f.assembly) ?? { name: f.assemblyName || "", items: [] };
+      if (!a.name && f.assemblyName) a.name = f.assemblyName;
+      a.items.push({ f, i });
+      assemblies.set(f.assembly, a);
+      return;
+    }
     const key = f.linkedFrom?.[0] ?? "";
     const g = groups.get(key) ?? { parent: f.parents?.[0] ?? null, items: [] };
     g.items.push({ f, i });
     groups.set(key, g);
   });
+  const split = (items: { f: Finding; i: number }[]) => {
+    const not = items.filter((x) => isProbablyNot(x.f));
+    const kept = items.filter((x) => !isProbablyNot(x.f));
+    const crush = kept.filter((x) => x.f.linkType === "crush" && linkBucket(x.f) !== "seen");
+    const rows = kept.filter((x) => !crush.includes(x));
+    return { not, crush, rows };
+  };
   return {
     hasLinks: true,
     seen: sortByCheck(rest.filter((f) => f.source === "zone")),
     other: sortByCheck(rest.filter((f) => f.source !== "zone")),
     groups: [...groups.entries()].map(([key, g]) => {
-      const not = g.items.filter((x) => isProbablyNot(x.f));
-      const kept = g.items.filter((x) => !isProbablyNot(x.f));
-      const crush = kept.filter((x) => x.f.linkType === "crush" && linkBucket(x.f) !== "seen");
-      const rows = kept.filter((x) => !crush.includes(x));
-      const hits = g.items.map((x) => x.f.hit).filter((h): h is HitLevel => Boolean(h && h in HIT_RANK));
-      const hit = hits.length ? hits.reduce((a, b) => (HIT_RANK[b] > HIT_RANK[a] ? b : a)) : null;
+      const { not, crush, rows } = split(g.items);
+      const hit = hardest(g.items.map((x) => x.f.hit));
       return { key, parent: g.parent, hit, rows: linkOrder(rows), crush: linkOrder(crush), probablyNot: linkOrder(not) };
     }),
+    assemblies: [...assemblies.entries()].map(([key, a]) => {
+      const { not, crush, rows } = split(a.items);
+      const parents = new Map<string, { parent: LinkParent; hits: (HitLevel | null | undefined)[] }>();
+      for (const { f } of a.items) {
+        const named: LinkParent[] = f.parents ?? (f.linkedFrom ?? []).map((k) => ({ key: k, name: k, condition: null, findingKey: null }));
+        named.forEach((p, n) => {
+          const held = parents.get(p.key) ?? { parent: p, hits: [] };
+          // A part's hit is its first listed part's.
+          if (n === 0) held.hits.push(f.hit);
+          parents.set(p.key, held);
+        });
+      }
+      const signs = new Map<string, SignYes>();
+      for (const { f } of a.items) for (const sign of f.signsYes ?? []) if (!signs.has(sign.id)) signs.set(sign.id, sign);
+      return {
+        key,
+        name: a.name || assemblyFallbackName(key),
+        parents: [...parents.values()].map((p) => ({ parent: p.parent, hit: hardest(p.hits) })),
+        signs: [...signs.values()],
+        alsoCheck: [...new Set(a.items.flatMap((x) => x.f.alsoCheck ?? []))],
+        rows: bucketOrder(rows),
+        crush: bucketOrder(crush),
+        probablyNot: bucketOrder(not),
+      };
+    }),
+    stripDown: [...block.filter((x) => !isProbablyNot(x.f)), ...block.filter((x) => isProbablyNot(x.f))].map((x) => x.f),
   };
 }
 
 /** The suggestions in the order the panel shows them, so the viewer's A / N
  * move on to the card below (the collapsed ones in their places). Without
- * linked parts: the re-check's order, as before. */
+ * linked parts: the re-check's order, as before. K4: the assembly groups,
+ * then the listed parts' groups, then the folded strip-down block. */
 export function panelOrder(list: Finding[]): Finding[] {
   const s = suggestionSections(list);
   if (!s.hasLinks) return s.seen;
-  return [...s.seen, ...s.other, ...s.groups.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot])];
+  return [
+    ...s.seen,
+    ...s.other,
+    ...s.assemblies.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot]),
+    ...s.groups.flatMap((g) => [...g.rows, ...g.crush, ...g.probablyNot]),
+    ...s.stripDown,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// K4: the car map's words on the suggestions panel and the viewer
+
+/** An assembly with no name sent: its id in words ("front-door.left" ->
+ * "Front door assembly"). */
+export function assemblyFallbackName(key: string): string {
+  const base = (key.split(".")[0] || "").replace(/-/g, " ").trim();
+  return base ? `${base.charAt(0).toUpperCase()}${base.slice(1)} assembly` : "Linked parts";
+}
+
+/** "damaged: Front Bumper (heavy hit), Front Grille (crushed)" */
+export function assemblyDamagedText(g: Pick<AssemblyGroup, "parents">): string | null {
+  const names = g.parents.map(({ parent, hit }) => {
+    const detail = [parent.condition, hit ? HIT_WORDS[hit] : null].filter(Boolean).join(" · ");
+    const gone = parent.findingKey ? "" : " – no longer on the list";
+    return `${parent.name}${detail ? ` (${detail})` : ""}${gone}`;
+  });
+  return names.length ? `damaged: ${names.join(", ")}` : null;
+}
+
+/** "— if fitted" (and the catalogue's note) after the part's name. */
+export function fittedText(f: Pick<Finding, "fitted" | "fittedNote">): string | null {
+  if (f.fitted !== "if_fitted") return f.fittedNote ? `(${f.fittedNote})` : null;
+  return f.fittedNote ? `— if fitted (${f.fittedNote})` : "— if fitted";
+}
+
+/** A yes sign in words: "Is the bumper cover pushed inward? yes · P03". */
+export function signText(sign: SignYes, photos?: PhotoLookup | null): string {
+  const ask = (sign.ask || sign.id).trim();
+  const label = sign.photo ? photos?.(sign.photo)?.label || (isLabel(sign.photo) ? sign.photo : null) : null;
+  return `${ask} yes${label ? ` · ${label}` : ""}`;
+}
+
+/** "Also check (no part name yet): absorber, side brackets" */
+export function alsoCheckText(words: string[] | null | undefined): string | null {
+  const list = [...new Set((words ?? []).map((w) => w.trim()).filter(Boolean))];
+  return list.length ? `Also check (no part name yet): ${list.join(", ")}` : null;
+}
+
+/** "second hop, via Air Conditioning Condenser" for a hop-2 part. */
+export function hopText(f: Pick<Finding, "hop" | "via">): string | null {
+  if (f.hop !== 2) return null;
+  return f.via ? `second hop, via ${f.via}` : "second hop";
+}
+
+/** The block's line after its count: "not counted in the parts above · 2
+ * via a second hop". */
+export function stripDownBlockNote(list: Pick<Finding, "hop">[]): string {
+  const hops = list.filter((f) => f.hop === 2).length;
+  return `not counted in the parts above${hops ? ` · ${hops} via a second hop` : ""}`;
 }
 
 /** Each key's decision as it stands: the latest "added" / "dismissed" not

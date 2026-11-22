@@ -1027,6 +1027,35 @@ export type SecondLookItem = {
   intact_in?: string[];
   link_check?: LinkCheck | null;
   oem?: string[];
+  /** The car map's review screen (K4; bot-service schema.SecondLookItem),
+   * only with intake_car_map "on" -- each absent while at its default, and
+   * without them the panel is as before. assembly: the group (the map's
+   * assembly id, one per side for a door: "front-door.left");
+   * assembly_name: its header; prior: the relation's rank (1 listed most
+   * often .. 5); hop 2: a second hop, via the part between; fitted
+   * "if_fitted": an option some cars lack; fitted_note: what this model's
+   * stored catalogue says; signs_yes: the walk's yes signs pointing at it;
+   * also_check: the group's words for parts with no name yet (the same on
+   * each item of the group); folded: in the "Check at strip-down" block,
+   * outside the linked parts' cap. */
+  assembly?: string | null;
+  assembly_name?: string | null;
+  prior?: number | null;
+  hop?: number | null;
+  via?: string | null;
+  fitted?: string | null;
+  fitted_note?: string | null;
+  signs_yes?: SignYes[];
+  also_check?: string[];
+  folded?: boolean;
+};
+
+/** A sign the assembly walk answered yes (K4): its id, its question, the
+ * photo ("@<photo id>" while a draft, "P07" once filed). */
+export type SignYes = {
+  id: string;
+  ask?: string | null;
+  photo?: string | null;
 };
 
 /** What the re-check step did on this read. */
@@ -1867,6 +1896,18 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   /** Shadow mode: linked parts worked out but not shown, against the
    * signed-off list. */
   shadow?: AiAccuracyLinkShadow | null;
+  // The car map (K4, K3b; still accuracy VERSION 3): only on a case whose
+  // linked parts carry them, so an older record has none.
+  /** By the car map's group, its id without the side ("front-door"). */
+  by_assembly?: Record<string, AiAccuracySuggestionCounts>;
+  /** By hop: "1" linked to a listed part, "2" through a linked part. */
+  by_hop?: Partial<Record<"1" | "2", AiAccuracySuggestionCounts>>;
+  /** The parts in the folded strip-down block. */
+  folded?: AiAccuracySuggestionCounts;
+  /** The parts a yes sign of the assembly walk lifted or opened. */
+  sign_lifted?: AiAccuracySuggestionCounts;
+  /** intake_car_map "shadow": the car map's linked parts on the AI draft. */
+  car_map_shadow?: AiAccuracyLinkShadow | null;
 };
 
 export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };
@@ -3051,6 +3092,11 @@ export async function testService(service: string): Promise<{ ok: boolean; messa
 
 export type Taxonomy = {
   parts: string[];
+  /** The car map's own part names (taxonomy.CAR_MAP_PARTS) and whether the
+   * server offers them (intake_car_map_names "on"); absent from an older
+   * API. The pickers use lib/partsList.ts partsToPick, never these alone. */
+  car_map_parts?: string[];
+  car_map_names?: boolean;
   damage_types: string[];
   severities: string[];
   body_types: string[];

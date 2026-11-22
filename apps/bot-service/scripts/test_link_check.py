@@ -709,6 +709,17 @@ def pieces() -> None:
     check([it["key"] for it in out] == ["c", "z", "b", "a", "d"] and "link_check" not in out[2],
           "apply: the \"no\"s after the other open linked parts, in their order; a settled one untouched and in place",
           [it["key"] for it in out])
+    folded = [{"key": "f1", "source": "link", "bucket": "strip_down", "folded": True},
+              {"key": "f2", "source": "link", "bucket": "strip_down", "folded": True},
+              {"key": "f3", "source": "link", "bucket": "strip_down", "folded": True}]
+    out = {it["key"]: it for it in lc.apply(folded, {
+        "f1": {"link_check": {"verdict": "likely", "cue": "crush"}, "entry": None},
+        "f2": {"link_check": {"verdict": "strip_down", "cue": "cannot_see"}, "entry": None},
+        "f3": {"link_check": {"verdict": "cannot_tell", "cue": "cannot_see"}, "entry": None}}, set())}
+    check(out["f1"]["bucket"] == "likely" and "folded" not in out["f1"]
+          and out["f2"].get("folded") is True and out["f3"].get("folded") is True and folded[0]["folded"] is True,
+          "apply: a folded part lifted to likely is no longer folded; strip_down / cannot_tell stay folded; input untouched",
+          out)
 
 
 def main() -> int:

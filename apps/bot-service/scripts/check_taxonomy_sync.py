@@ -1,4 +1,6 @@
-"""Verifies every canonical part has an explicit decision in the dashboard.
+"""Verifies every canonical part -- and every car map part
+(taxonomy.CAR_MAP_PARTS, which a case may hold) -- has an explicit decision
+in the dashboard.
 
 The taxonomy (Python) and the zone map (TypeScript) live in separate
 packages, so they can drift. A part present here but missing there renders
@@ -12,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app.reports.taxonomy import CANONICAL_PARTS  # noqa: E402
+from app.reports.taxonomy import CANONICAL_PARTS, KNOWN_PARTS  # noqa: E402
 
 TS = Path(__file__).resolve().parents[3] / "apps/dashboard/lib/vehicleZones.ts"
 
@@ -28,8 +30,8 @@ def main() -> int:
         return 1
 
     mapped = set(re.findall(r'"([^"]+)":\s*(?:"[a-z_]+"|null)', block.group(1)))
-    missing = [p for p in CANONICAL_PARTS if p not in mapped]
-    extra = [p for p in mapped if p not in CANONICAL_PARTS]
+    missing = [p for p in KNOWN_PARTS if p not in mapped]
+    extra = [p for p in mapped if p not in KNOWN_PARTS]
 
     for p in missing:
         print(f"  MISSING from vehicleZones.ts: {p!r}")
@@ -39,7 +41,8 @@ def main() -> int:
     if missing or extra:
         print(f"\n{len(missing)} missing, {len(extra)} extra -- taxonomy and zone map are out of sync")
         return 1
-    print(f"  all {len(CANONICAL_PARTS)} canonical parts have an explicit zone decision")
+    print(f"  all {len(CANONICAL_PARTS)} canonical parts and {len(KNOWN_PARTS) - len(CANONICAL_PARTS)} car map parts "
+          "have an explicit zone decision")
     return 0
 
 

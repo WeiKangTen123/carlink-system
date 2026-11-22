@@ -43,8 +43,9 @@ logger = logging.getLogger(__name__)
 PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
 # The AI draft's lists whose items name photos: the damage list (contract
 # 8's seen_in, contract 9's evidence), the parts only zone reads found
-# (contract 9) and the linked parts kept in shadow mode (contract 10).
-AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions")
+# (contract 9), the linked parts kept in shadow mode (contract 10) and the
+# car map's in its shadow mode (K4).
+AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions", "car_map_suggestions")
 
 
 def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
@@ -61,6 +62,27 @@ def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
     for key in AI_DRAFT_PHOTO_LISTS:
         if isinstance(out.get(key), list):
             out[key] = [relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
+    if isinstance(out.get("assembly_walk"), dict):
+        # The assembly walk (K3b): each sign's photo as the case's P-number
+        # (a deleted photo's gone, the answer kept), so a re-link on the
+        # filed case names its yes signs' photos as the case does.
+        out["assembly_walk"] = relabel_walk(out["assembly_walk"], index_of)
+    return out
+
+
+def relabel_walk(walk: dict, index_of: dict) -> dict:
+    """ai_draft["assembly_walk"] ({panel: {hit_at, signs: {id: {answer,
+    photo, zone}}}}) with each sign's "@<photo id>" as the case's P-number.
+    Anything that isn't a panel's record is left as it is."""
+    from app.reports.suggestions import final_label
+
+    out = {}
+    for panel, rec in walk.items():
+        if isinstance(rec, dict) and isinstance(rec.get("signs"), dict):
+            rec = {**rec, "signs": {sid: ({**got, "photo": final_label(got.get("photo"), index_of)}
+                                          if isinstance(got, dict) and got.get("photo") else got)
+                                    for sid, got in rec["signs"].items()}}
+        out[panel] = rec
     return out
 
 
