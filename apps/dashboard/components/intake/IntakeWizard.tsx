@@ -1122,6 +1122,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           onChange={editData}
           photos={state.photos}
           readPhotoIds={state.read_photo_ids}
+          readNotice={state.read_notice ?? null}
           taxonomy={reviewTaxonomy}
           aiSkipped={aiSkipped}
           aiRead={state.ai_read}

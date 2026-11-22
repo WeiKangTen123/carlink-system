@@ -139,6 +139,11 @@ export type IntakeState = {
   error_mine?: boolean;
   reporter_notes: string;
   read_photo_ids: string[];
+  /** F1 (INTAKE_MAIN_READ_FALLBACK): set when the newest reading's main read
+   * failed and the list comes from the area reads ("The overall read
+   * failed because Google was busy..."); null otherwise, absent from an
+   * older API. The review step shows it as a banner. */
+  read_notice?: string | null;
   photos: IntakePhoto[];
   data: ReportData;
   limits: { max_photos: number; max_photo_bytes: number };
