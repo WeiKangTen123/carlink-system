@@ -100,8 +100,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     # Where people open Carlink in a browser, for links sent outside the
     # dashboard: the Telegram bot's "open your case" and "connect first"
-    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml.
-    public_base_url: str = "https://carlink.34-45-253-162.sslip.io"
+    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml
+    # (from each stack's infra/.env); the default is production's address.
+    public_base_url: str = "https://carlink.34-16-92-98.sslip.io"
     gemini_api_key: str = ""
     # Ordered by real capability, not just cost -- confirmed live:
     # gemini-3-flash-preview is the only one of these that has actually

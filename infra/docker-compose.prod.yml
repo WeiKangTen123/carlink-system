@@ -1,5 +1,10 @@
 version: '3.8'
 
+# Container names: ${CARLINK_NAME:-carlink}_<service>. Production leaves
+# CARLINK_NAME unset (carlink_api, carlink_nginx, ... as always); a staging
+# stack sets CARLINK_NAME=carlink_staging and runs as its own compose project
+# (infra/docker-compose.staging.yml, infra/README.md "Staging").
+
 # Both telegram-bot and api are the SAME image (apps/bot-service) with a
 # different startup command -- they share one Docker volume for photos/PDFs
 # and the SQLite database, since they're really one application split into
@@ -25,10 +30,13 @@ x-bot-service: &bot-service
   logging: *default-logging
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
-    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+    # Optional here (a staging stack runs without a bot); infra/deploy.sh
+    # still refuses a production deploy without it.
+    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
     # Where people open Carlink (app/config.py public_base_url): the bot's
-    # case links and "connect first" message. Both api and bot get it.
-    - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-45-253-162.sslip.io}
+    # case links and "connect first" message. Both api and bot get it. Set
+    # it in each stack's infra/.env; the default is production's address.
+    - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-16-92-98.sslip.io}
     # Kept in sync with config.py's default -- see the comment there for
     # why this order (bbox-capable models first, -lite models as the
     # always-available fallback) and why antigravity was dropped (no
@@ -120,7 +128,7 @@ x-bot-service: &bot-service
 services:
   telegram-bot:
     <<: *bot-service
-    container_name: carlink_telegram_bot
+    container_name: ${CARLINK_NAME:-carlink}_telegram_bot
     command: ["python", "-m", "app.main", "--bot-only"]
     volumes:
       - bot_data:/app/storage
@@ -130,7 +138,7 @@ services:
 
   api:
     <<: *bot-service
-    container_name: carlink_api
+    container_name: ${CARLINK_NAME:-carlink}_api
     command: ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - bot_data:/app/storage
@@ -155,7 +163,7 @@ services:
         # API container's port directly. See lib/api.ts for why.
         - NEXT_PUBLIC_API_BASE_URL=/api
         - NEXT_PUBLIC_FILES_BASE_URL=
-    container_name: carlink_dashboard
+    container_name: ${CARLINK_NAME:-carlink}_dashboard
     restart: always
     logging: *default-logging
     # Not published to the host either -- same reasoning as api's port,
@@ -170,7 +178,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    container_name: carlink_nginx
+    container_name: ${CARLINK_NAME:-carlink}_nginx
     restart: always
     logging: *default-logging
     ports:
@@ -200,7 +208,7 @@ services:
     build:
       context: ../tools/parts_mcp
       dockerfile: Dockerfile
-    container_name: carlink_parts_worker
+    container_name: ${CARLINK_NAME:-carlink}_parts_worker
     restart: unless-stopped
     logging: *default-logging
     environment:

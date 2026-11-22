@@ -1164,7 +1164,9 @@ def config() -> None:
     need(prod.exists(), "infra/docker-compose.prod.yml is there", str(prod))
     body = prod.read_text(encoding="utf-8")
     check("TELEGRAM_ALLOWED_IDS" not in body, "prod compose no longer passes TELEGRAM_ALLOWED_IDS")
-    want = "PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-45-253-162.sslip.io}"
+    # The default is the live server's address (the old one was deleted on
+    # 2026-11-04); each stack sets its own in infra/.env.
+    want = "PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-16-92-98.sslip.io}"
     try:
         import yaml
         services = (yaml.safe_load(body) or {}).get("services") or {}
