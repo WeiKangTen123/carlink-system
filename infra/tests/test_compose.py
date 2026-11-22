@@ -110,6 +110,126 @@ def prod_unchanged() -> None:
           "without a Telegram token it renders (empty): a staging stack runs without a bot (deploy.sh still demands it for production)")
 
 
+SHARED_FILE = "infra/docker-compose.ai-shared.yml"
+STAGING_FILE = "infra/docker-compose.staging.yml"
+SHARED_MOUNT = "bind:/opt/carlink-ai-shared:/app/ai-shared"
+LANE_VARS = {"GEMINI_SHARED_QUOTA_DIR", "GEMINI_QUOTA_DAY_LIMITS", "GEMINI_STAGING_MAX_PER_MINUTE",
+             "GEMINI_STAGING_WINDOW_SHARE", "GEMINI_STAGING_DAY_MAX", "GEMINI_STAGING_MODEL_RESERVE",
+             "GEMINI_STAGING_PROD_BUSY"}
+
+
+def shared_override() -> None:
+    print("\n2. production + the shared AI folder override")
+    env = dict(cr.PROD_ENV_DEFAULTS)
+    prod = render([cr.PROD_FILE], env)
+    both = render([cr.PROD_FILE, SHARED_FILE], env)
+    allowed = {f"services.{svc}.environment.{v}" for svc in ("api", "telegram-bot") for v in LANE_VARS}
+    allowed |= {"services.api.volumes", "services.telegram-bot.volumes"}
+    found = cr.diff(prod, both)
+    check(found and all(p in allowed for p, _, _ in found),
+          "it changes only api's and telegram-bot's lane settings and volumes",
+          repr([p for p, _, _ in found if p not in allowed]))
+    for svc in ("api", "telegram-bot"):
+        before, after = prod["services"][svc]["volumes"], both["services"][svc]["volumes"]
+        check(after == before + [SHARED_MOUNT], f"{svc}: the host folder is added at /app/ai-shared, the rest kept",
+              repr(after))
+        e = both["services"][svc]["environment"]
+        check(e.get("GEMINI_SHARED_QUOTA_DIR") == "/app/ai-shared" and "GEMINI_QUOTA_LANE" not in e,
+              f"{svc}: GEMINI_SHARED_QUOTA_DIR set, lane left at the app's default (prod)")
+    check(both["services"]["parts-worker"] == prod["services"]["parts-worker"]
+          and both["services"]["dashboard"] == prod["services"]["dashboard"]
+          and both["services"]["nginx"] == prod["services"]["nginx"],
+          "dashboard, nginx and parts-worker are untouched")
+    moved = render([cr.PROD_FILE, SHARED_FILE], dict(env, CARLINK_AI_SHARED_DIR="/srv/ai"))
+    check("bind:/srv/ai:/app/ai-shared" in moved["services"]["api"]["volumes"],
+          "CARLINK_AI_SHARED_DIR moves the host folder")
+
+
+def staging_env() -> dict:
+    env = cr.read_env_file(REPO / "infra" / "staging.env.example")
+    check(env.get("GEMINI_API_KEY") == "" and env.get("TELEGRAM_BOT_TOKEN") == ""
+          and env.get("CATALOGUE_WORKER_TOKEN") == "",
+          "staging.env.example holds no secret values")
+    env["GEMINI_API_KEY"] = "placeholder-gemini-key"
+    return env
+
+
+def staging_stack() -> None:
+    print("\n3. the staging stack beside production")
+    env = staging_env()
+    files = [cr.PROD_FILE, STAGING_FILE, SHARED_FILE]
+    st = render(files, env)
+    prod = render([cr.PROD_FILE], dict(cr.PROD_ENV_DEFAULTS))
+    check(st["name"] == "carlink-staging", "project carlink-staging", st["name"])
+    no_name = {k: v for k, v in env.items() if k != "COMPOSE_PROJECT_NAME"}
+    check(render(files, no_name)["name"] == "carlink-staging",
+          "still carlink-staging without COMPOSE_PROJECT_NAME (the override's name:), never 'infra'")
+    names = {s: b["container_name"] for s, b in st["services"].items()}
+    prod_names = {b["container_name"] for b in prod["services"].values()}
+    check(all(n.startswith("carlink_staging_") for n in names.values()), "every container is carlink_staging_*",
+          repr(names))
+    check(not (set(names.values()) & prod_names), "no container name is production's")
+    check(set(st["volumes"]) == {"carlink-staging_ai_secrets", "carlink-staging_bot_data", "carlink-staging_parts_data"}
+          and not (set(st["volumes"]) & set(prod["volumes"])), "its own volumes, none of production's",
+          repr(sorted(st["volumes"])))
+    check(list(st["networks"]) == ["carlink-staging_default"], "its own network")
+    check(st["services"]["nginx"].get("ports") == ["127.0.0.1:8081:80"], "nginx on 127.0.0.1:8081 only",
+          repr(st["services"]["nginx"].get("ports")))
+    used_vols = [v for b in st["services"].values() for v in b.get("volumes") or [] if v.startswith("volume:")]
+    check(used_vols and all(v.startswith("volume:carlink-staging_") for v in used_vols),
+          "every named volume a service mounts is staging's", repr(used_vols))
+
+    total = 0
+    for svc, body in st["services"].items():
+        limits = ((body.get("deploy") or {}).get("resources") or {}).get("limits") or {}
+        check(body.get("restart") == "unless-stopped" and body.get("oom_score_adj") == 500
+              and limits.get("memory") and limits.get("cpus"),
+              f"{svc}: unless-stopped, oom_score_adj 500, memory {limits.get('memory')} and cpus {limits.get('cpus')} capped")
+        mem = str(limits.get("memory", "0"))
+        total += int(mem[:-1]) if mem.endswith("M") else int(float(mem[:-1]) * 1024) if mem.endswith("G") else 0
+    check(2800 <= total <= 3200, f"worst case about 3 GB of memory ({total} MB, everything on)")
+    check(st["services"]["telegram-bot"].get("profiles") == ["telegram"]
+          and st["services"]["parts-worker"].get("profiles") == ["catalogue"]
+          and not any(st["services"][s].get("profiles") for s in ("api", "dashboard", "nginx")),
+          "the bot and the parts worker only on request (profiles telegram / catalogue)")
+    check(not any(b.get("profiles") for b in prod["services"].values()), "production has no profiles (all five run)")
+
+    for svc in ("api", "telegram-bot"):
+        e = st["services"][svc]["environment"]
+        want = {"GEMINI_QUOTA_LANE": "staging", "GEMINI_SHARED_QUOTA_DIR": "/app/ai-shared",
+                "GEMINI_MAX_REQUESTS_PER_MINUTE": "4", "CARLINK_STACK": "staging",
+                "PUBLIC_BASE_URL": "https://carlink-staging.34-16-92-98.sslip.io", "TELEGRAM_BOT_TOKEN": ""}
+        got = {k: e.get(k) for k in want}
+        check(got == want, f"{svc}: staging lane, shared folder, pace 4/min, staging URL, no bot token", repr(got))
+        check(SHARED_MOUNT in st["services"][svc]["volumes"], f"{svc}: the shared AI folder is mounted")
+
+    # Parity: apart from what staging changes on purpose, each service is
+    # production's (same build, command, image source, the same flags).
+    staged_keys = {"container_name", "restart", "oom_score_adj", "deploy", "profiles", "labels", "volumes", "image"}
+    staged_env = LANE_VARS | {"GEMINI_QUOTA_LANE", "GEMINI_MAX_REQUESTS_PER_MINUTE", "GEMINI_MIN_CALL_INTERVAL_SECONDS",
+                              "CARLINK_STACK", "PUBLIC_BASE_URL", "TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY",
+                              "CATALOGUE_ENABLED", "CATALOGUE_WORKER_TOKEN"}
+    flags_env = dict(cr.PROD_ENV_DEFAULTS, **{k: v for k, v in env.items() if k not in staged_env})
+    prod_same_flags = render([cr.PROD_FILE], flags_env)
+    for svc, body in st["services"].items():
+        p = prod_same_flags["services"][svc]
+        a = {k: v for k, v in body.items() if k not in staged_keys and k != "environment"}
+        b = {k: v for k, v in p.items() if k not in staged_keys and k != "environment"}
+        ea = {k: v for k, v in (body.get("environment") or {}).items() if k not in staged_env}
+        eb = {k: v for k, v in (p.get("environment") or {}).items() if k not in staged_env}
+        check(a == b and ea == eb, f"{svc}: otherwise the same as production (build, command, flags)",
+              repr(cr.diff(b, a) + cr.diff(eb, ea))[:300])
+    check(st["services"]["parts-worker"]["deploy"]["resources"]["limits"]["memory"] == "512M",
+          "parts-worker keeps production's 512M cap")
+
+    for var, why in (("CARLINK_NAME", "production's container names"), ("NGINX_PORT", "production's port 8080")):
+        try:
+            render(files, {k: v for k, v in env.items() if k != var})
+            check(False, f"without {var} the staging files refuse to render (no fallback to {why})")
+        except cr.RenderError:
+            check(True, f"without {var} the staging files refuse to render (no fallback to {why})")
+
+
 def _snapshot_source() -> str | None:
     """master's prod compose file from git (5ee5e03), when this checkout has
     the history; None in a shallow CI checkout."""
@@ -139,7 +259,7 @@ def main() -> int:
     return 1 if FAILURES else 0
 
 
-SECTIONS = [prod_unchanged]
+SECTIONS = [prod_unchanged, shared_override, staging_stack]
 
 if __name__ == "__main__":
     sys.exit(main())

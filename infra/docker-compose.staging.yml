@@ -1,0 +1,114 @@
+# The STAGING stack: production's compose file plus this override (and the
+# shared AI folder's, docker-compose.ai-shared.yml), from its OWN clone
+# /opt/carlink-staging -- never production's checkout, whose code is
+# bind-mounted into production's containers.
+#
+#   bash infra/deploy.sh --env staging --ref <commit>     # the normal way
+#   bash infra/compose.sh staging ps | logs api | stop    # by-hand commands
+#
+# which run, in /opt/carlink-staging:
+#   docker compose -p carlink-staging -f infra/docker-compose.prod.yml \
+#     -f infra/docker-compose.staging.yml -f infra/docker-compose.ai-shared.yml ...
+#
+# Only what differs from production is here (infra/README.md "Staging"):
+#   - its own compose project, so its own containers (carlink_staging_*),
+#     volumes (carlink-staging_*) and network -- production's project is
+#     "infra" and its volumes infra_* hold the live data;
+#   - nginx on 127.0.0.1:8081 (NGINX_PORT in its infra/.env; host nginx site
+#     host-nginx/carlink-staging.conf adds HTTPS, basic auth and noindex);
+#   - memory and CPU caps (about 3 GB if everything ran at once), and
+#     oom_score_adj 500, so if memory ever runs out the kernel stops staging
+#     before production, Solv or Xero;
+#   - restart: unless-stopped, so `bash infra/compose.sh staging stop` keeps it
+#     stopped, even across a reboot;
+#   - the Telegram bot and the parts worker only when asked
+#     (COMPOSE_PROFILES=telegram / catalogue in its infra/.env): staging never
+#     polls production's bot token, and never adds to the parts sites' load;
+#   - the AI in the staging lane of the shared quota guard (one Gemini key for
+#     both stacks: production first, staging at most 4 a minute and 300 a day;
+#     app/ai/quota_guard.py), at a lower pace than production.
+# Signups are switched off by scripts/seed_staging.py (deploy.sh runs its
+# --close-signups-only on every staging deploy).
+
+# The project name, even for a by-hand `docker compose` without -p: this
+# file's name wins over the folder's ("infra"). deploy.sh passes -p too.
+name: carlink-staging
+
+x-staging: &staging
+  restart: unless-stopped
+  oom_score_adj: 500
+
+x-staging-ai: &staging-ai
+  # app/ai/quota_guard.py: the staging lane. Without the shared folder
+  # (docker-compose.ai-shared.yml) it sends nothing at all.
+  - GEMINI_QUOTA_LANE=staging
+  # Its own pace, under production's 12: one rolling minute per key.
+  - GEMINI_MAX_REQUESTS_PER_MINUTE=4
+  - GEMINI_MIN_CALL_INTERVAL_SECONDS=6
+  # scripts/seed_staging.py and the deploy checks refuse a stack without it.
+  - CARLINK_STACK=staging
+
+services:
+  api:
+    <<: *staging
+    # ${CARLINK_NAME:?}: without CARLINK_NAME=carlink_staging in infra/.env
+    # this file refuses to render, rather than fall back to production's
+    # names (carlink_api, ...).
+    container_name: ${CARLINK_NAME:?set CARLINK_NAME=carlink_staging in infra/.env}_api
+    environment: *staging-ai
+    deploy:
+      resources:
+        limits:
+          # Includes Chromium for the PDFs.
+          memory: 1536M
+          cpus: "1.0"
+
+  telegram-bot:
+    <<: *staging
+    container_name: ${CARLINK_NAME:?set CARLINK_NAME=carlink_staging in infra/.env}_telegram_bot
+    # Off unless COMPOSE_PROFILES has "telegram", with a separate TEST bot's
+    # token in staging's infra/.env (never production's: one poller per
+    # token, and production's bot would miss messages; deploy.sh refuses it).
+    profiles: [telegram]
+    environment: *staging-ai
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  dashboard:
+    <<: *staging
+    container_name: ${CARLINK_NAME:?set CARLINK_NAME=carlink_staging in infra/.env}_dashboard
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  nginx:
+    <<: *staging
+    container_name: ${CARLINK_NAME:?set CARLINK_NAME=carlink_staging in infra/.env}_nginx
+    # The port comes from NGINX_PORT in infra/.env (8081): a port added here
+    # would be published NEXT TO the base file's 8080, not instead of it.
+    # This label only makes a missing NGINX_PORT an error instead of 8080.
+    labels:
+      carlink.staging.port: ${NGINX_PORT:?set NGINX_PORT=8081 in infra/.env (8080 is production)}
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.25"
+
+  parts-worker:
+    <<: *staging
+    container_name: ${CARLINK_NAME:?set CARLINK_NAME=carlink_staging in infra/.env}_parts_worker
+    # Off unless COMPOSE_PROFILES has "catalogue" (catalogue pull requests
+    # only), with its own CATALOGUE_WORKER_TOKEN. It is the only container
+    # that contacts the parts sites, from the same IP as production's.
+    profiles: [catalogue]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.25"

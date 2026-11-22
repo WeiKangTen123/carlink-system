@@ -1,0 +1,43 @@
+# The shared AI quota folder (quota guard "B1", app/ai/quota_guard.py):
+# production and staging use ONE Gemini key (owner decision, 22 Nov), and
+# Google's limits are per Google Cloud project -- one daily allowance per
+# model and one per-minute window for both stacks. So both stacks keep their
+# per-minute window, their per-day request counts (per model, per lane) and
+# the "day used up" memory in ONE host folder, locked with flock:
+#
+#   host /opt/carlink-ai-shared  (root, 0700)  ->  /app/ai-shared in
+#   production's api + telegram-bot and staging's api (+ its bot when on)
+#
+# Production: up to 12 requests a minute, never waits for staging.
+# Staging: a slot only while the window would hold at most 6 requests, at
+# most 4 a minute; none for the rest of the Pacific day once staging has
+# sent 300, production 400, or a model has fewer than 300 left.
+#
+# Added by infra/deploy.sh (and infra/compose.sh) whenever the host folder
+# exists -- for production too, once it does; staging refuses to deploy
+# without it. Without this file the app keeps today's per-volume files
+# (STORAGE_DIR/.ratelimit, .allowance): exactly the old behaviour.
+#
+# The lane settings below are the app's defaults (app/config.py); a stack's
+# infra/.env may change them. The host folder: CARLINK_AI_SHARED_DIR.
+
+x-ai-shared-env: &ai-shared-env
+  - GEMINI_SHARED_QUOTA_DIR=/app/ai-shared
+  - GEMINI_QUOTA_DAY_LIMITS=${GEMINI_QUOTA_DAY_LIMITS:-gemini-3.5-flash-lite=500,gemini-3.1-flash-lite=500}
+  - GEMINI_STAGING_MAX_PER_MINUTE=${GEMINI_STAGING_MAX_PER_MINUTE:-4}
+  - GEMINI_STAGING_WINDOW_SHARE=${GEMINI_STAGING_WINDOW_SHARE:-6}
+  - GEMINI_STAGING_DAY_MAX=${GEMINI_STAGING_DAY_MAX:-300}
+  - GEMINI_STAGING_MODEL_RESERVE=${GEMINI_STAGING_MODEL_RESERVE:-300}
+  - GEMINI_STAGING_PROD_BUSY=${GEMINI_STAGING_PROD_BUSY:-400}
+
+x-ai-shared-volume: &ai-shared-volume "${CARLINK_AI_SHARED_DIR:-/opt/carlink-ai-shared}:/app/ai-shared"
+
+services:
+  api:
+    environment: *ai-shared-env
+    volumes:
+      - *ai-shared-volume
+  telegram-bot:
+    environment: *ai-shared-env
+    volumes:
+      - *ai-shared-volume
