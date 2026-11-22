@@ -125,6 +125,15 @@ x-bot-service: &bot-service
     - INTAKE_KEEP_OTHER_SIDE=${INTAKE_KEEP_OTHER_SIDE:-off}
     - INTAKE_LINK_HIDDEN_NO=${INTAKE_LINK_HIDDEN_NO:-keep}
     - INTAKE_SORT_RETRY_SKIPPED=${INTAKE_SORT_RETRY_SKIPPED:-off}
+    # The batching items (plans/2026-11-22-enhance-staging/R-batching.md B2-B5,
+    # B9): the main read and the zone reads at once, the linked check's calls
+    # at once, sort workers, keeping the sorter's label on a regroup, and a
+    # rescue sort. Defaults are config.py's: today's behaviour byte for byte.
+    - INTAKE_PARALLEL_READS=${INTAKE_PARALLEL_READS:-off}
+    - INTAKE_LINK_CHECK_PARALLEL=${INTAKE_LINK_CHECK_PARALLEL:-off}
+    - INTAKE_SORT_WORKERS=${INTAKE_SORT_WORKERS:-3}
+    - INTAKE_KEEP_SORT_LABEL=${INTAKE_KEEP_SORT_LABEL:-off}
+    - INTAKE_SORT_RESCUE=${INTAKE_SORT_RESCUE:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

@@ -197,6 +197,25 @@ class Settings(BaseSettings):
     # at the end (at most BATCH_SIZE photos; +0-1 call, only when it
     # happens). "off": they stay unsorted, as before.
     intake_sort_retry_skipped: str = "off"
+    # B4 (plans/2026-11-22-enhance-staging R-batching): sorting batches in
+    # flight at once (intake/pipeline._sort), 1 to 5. 3: as before. 5 sorts
+    # a 60-photo case in one wave; the requests still go through the rate
+    # limiter (ai/rate_limit.acquire: at least gemini_min_call_interval_
+    # seconds apart, at most gemini_max_requests_per_minute a minute).
+    intake_sort_workers: int = 3
+    # B9: one more sort call at thinking "low" (ai/triage.rescue_photos) for
+    # the photos about to drop out of every read -- called unusable,
+    # interior, document, third_party or scene, "other" with no damage, or
+    # skipped by a batch -- asking only whether each shows damage on the
+    # insured car and where; a "yes" puts it back as a damage photo, so the
+    # zone reads see it. +0-1 call, only when such photos exist. "off":
+    # none, as before.
+    intake_sort_rescue: str = "off"
+    # B5: when a person regroups a photo, the sorter's own kind is kept
+    # (IntakePhoto.ai_kind; data["photo_index"][i]["ai_kind"] once filed),
+    # and the AI-accuracy record counts the regroups at sign-off. "off":
+    # the sorter's kind is overwritten and nothing is counted, as before.
+    intake_keep_sort_label: str = "off"
     # Right after a photo the sorter boxed, the reading gets a close-up of
     # that box cut from the largest copy of the photo we keep
     # (intake/crops.py), as "Close-up of photo P07:" and the image. At most
@@ -334,10 +353,24 @@ class Settings(BaseSettings):
             raise ValueError("intake_read_crops_max: 0 or more")
         return value
 
-    @field_validator("intake_sort_retry_skipped", "intake_keep_other_side")
+    @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
+                     "intake_keep_sort_label")
     @classmethod
     def _off_on(cls, value, info):
         return _one_of(value, OFF_ON, info.field_name)
+
+    @field_validator("intake_sort_workers", mode="before")
+    @classmethod
+    def _sort_workers(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 3
+        try:
+            workers = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"intake_sort_workers {value!r}: a whole number, 1 to {MAX_SORT_WORKERS}") from None
+        if not 1 <= workers <= MAX_SORT_WORKERS:
+            raise ValueError(f"intake_sort_workers {value!r}: 1 to {MAX_SORT_WORKERS}")
+        return workers
 
     # Contract 8 D2: reading the car one area at a time (intake/zones.py).
     # "single": the one overall reading, as before. "zones": after it, one
@@ -418,11 +451,22 @@ class Settings(BaseSettings):
     # Re-read."; IntakeSession.ai_draft["main_read"], GET /intake/{id}'s
     # read_notice). "off": the run fails ("Retry"), as before.
     intake_main_read_fallback: str = "off"
+    # B2 (R-batching): zone mode's zone reads start beside the main read
+    # instead of after it -- they need only the sort (intake/pipeline.
+    # ParallelZones). The same calls, through the same rate limiter; with
+    # F1 on, a failed main read finds the zone answers already there.
+    # "off": one after the other, as before.
+    intake_parallel_reads: str = "off"
 
     @field_validator("intake_main_read_fallback")
     @classmethod
     def _main_read_fallback(cls, value):
         return _one_of(value, MAIN_READ_FALLBACKS, "intake_main_read_fallback")
+
+    @field_validator("intake_parallel_reads")
+    @classmethod
+    def _parallel_reads(cls, value):
+        return _one_of(value, OFF_ON, "intake_parallel_reads")
 
     @field_validator("gemini_zone_chain", "gemini_check_chain")
     @classmethod
@@ -590,11 +634,16 @@ class Settings(BaseSettings):
     # a regulator: no photo can show it) becomes "cannot_tell", as the cue
     # rule does for a seen with nothing to point at. "keep": as before.
     intake_link_hidden_no: str = "keep"
+    # B3 (R-batching): the linked check's calls (one per area, at most
+    # intake_link_check_max_calls) at the same time, each area standing
+    # alone -- one failed call no longer ends the step for the others.
+    # "off": one after the other, a failure ending the step, as before.
+    intake_link_check_parallel: str = "off"
 
-    @field_validator("intake_keep_cut")
+    @field_validator("intake_keep_cut", "intake_link_check_parallel")
     @classmethod
-    def _keep_cut(cls, value):
-        return _one_of(value, OFF_ON, "intake_keep_cut")
+    def _keep_cut(cls, value, info):
+        return _one_of(value, OFF_ON, info.field_name)
 
     @field_validator("intake_link_hidden_no")
     @classmethod
@@ -781,6 +830,9 @@ READ_MODES = ("single", "zones")
 OFF_ON = ("off", "on")
 MAIN_READ_FALLBACKS = ("off", "zones")
 LINK_HIDDEN_NO = ("keep", "cannot_tell")
+# B4: at most this many sorting batches at once (5 batch starts still sit
+# under the 12-a-minute limit; the limiter spaces them).
+MAX_SORT_WORKERS = 5
 
 
 def normal_read_mode(value) -> str:
