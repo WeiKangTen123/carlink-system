@@ -101,8 +101,10 @@ FIELD_COUNTS = ("ai_filled", "kept", "changed", "emptied", "filled", "template")
 SUGGESTION_COUNTS = ("shown", "added", "dismissed", "left")
 SUGGESTION_GROUPS = ("by_source", "by_read", "by_check")
 # Where a suggestion came from (SecondLookItem.source) and the re-check's
-# verdicts (SuggestionCheck.verdict); "none": not re-checked.
-SUGGESTION_SOURCES = ("zone", "kit", "nearby", "link")
+# verdicts (SuggestionCheck.verdict); "none": not re-checked. "other_side":
+# F3's "Other side?" suggestions (settings.intake_keep_other_side), counted
+# only on a case that has them.
+SUGGESTION_SOURCES = ("zone", "kit", "nearby", "link", "other_side")
 CHECK_VERDICTS = ("yes", "no", "unsure")
 # Contract 10: a linked part's groups -- (group, its field, the values
 # counted; None: any, cut to MAX_RULE) -- and the linked check's verdicts.

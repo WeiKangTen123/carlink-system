@@ -78,7 +78,7 @@ from typing import Callable
 
 from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
-from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_of, other_side_listed
+from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_for, covers_of, other_side_note
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import ZONE_PACKS, chain, pack_list, settings
 from app.intake import assembly_walk
@@ -481,8 +481,26 @@ def name_suggestions(suggestions: list[dict], listed: list[dict], db, vehicle: d
     parts = {str(it.get("part") or "") for it in listed if isinstance(it, dict)}
     for suggestion in suggestions:
         suggestion["name"] = row_name(db, suggestion["part"], vehicle or {})
-        suggestion["other_side_listed"] = other_side_listed(suggestion["part"], parts)
+        suggestion["other_side_listed"] = other_side_note(suggestion, parts)
     return suggestions
+
+
+OTHER_SIDE = "other_side"
+
+
+def other_side_suggestion(item: dict) -> dict:
+    """F3 (settings.intake_keep_other_side): a list item the side resolver
+    placed on a side already listed, from another photo (resolve_sides'
+    other_side: the item, still "(side undetermined)", with other_side_of
+    the listed name), as a suggestion -- "Other side? Tail Lamp (side
+    undetermined)": source "other_side", Low, its covers without the listed
+    name (second_look.covers_for), other_side_listed that name (the Review
+    step's "Check this isn't the same damage on the other side")."""
+    out = as_suggestion(item)
+    out.update(source=OTHER_SIDE, confidence="Low", other_side_of=item["other_side_of"],
+               covers=covers_for({**out, "other_side_of": item["other_side_of"]}),
+               other_side_listed=item["other_side_of"])
+    return out
 
 
 def apply_agreement(items: list[dict]) -> list[dict]:

@@ -204,9 +204,9 @@ LINK_SUGGESTION_DEFAULTS = {
 LINK_LOOK_DEFAULTS = {"link_run": None}
 # plans/2026-11-22-enhance-staging's fixes, the same way: left out of a dump
 # while at their default, so a draft made with the fixes off saves what it
-# did before them (read them with .get()). F2/F5: cut_reason on a cut
-# item, and SecondLook.cut / cut_counts.
-FIX_SUGGESTION_DEFAULTS = {"cut_reason": None}
+# did before them (read them with .get()). F3: other_side_of; F2/F5:
+# cut_reason on a cut item, and SecondLook.cut / cut_counts.
+FIX_SUGGESTION_DEFAULTS = {"other_side_of": None, "cut_reason": None}
 FIX_LOOK_DEFAULTS = {"cut": [], "cut_counts": {}}
 
 
@@ -720,10 +720,15 @@ class SecondLookItem(BaseModel):
     also_check: list[str] = Field(default_factory=list)
     folded: bool = False
     # plans/2026-11-22-enhance-staging, code-set, not in a dump while None.
-    # cut_reason (F2/F5, on SecondLook.cut's items only): why a cap cut it
-    # -- "limit" (a cap: second_look.MAX_SUGGESTIONS, the linked parts'
-    # per-group or overall max) or "intact" (a zone read called it not
-    # damaged: demoted, then cut, or dropped).
+    # other_side_of (F3, source "other_side"): the listed sided part this
+    # "(side undetermined)" find was placed on -- seen on another photo, so
+    # it may be the other side's ("Other side? Tail Lamp (side
+    # undetermined)"); its covers leave that name out, so the listed part
+    # doesn't hide it. cut_reason (F2/F5, on SecondLook.cut's items only):
+    # why a cap cut it -- "limit" (a cap: second_look.MAX_SUGGESTIONS, the
+    # linked parts' per-group or overall max) or "intact" (a zone read
+    # called it not damaged: demoted, then cut, or dropped).
+    other_side_of: Optional[str] = None
     cut_reason: Optional[str] = None
 
     @model_serializer(mode="wrap")

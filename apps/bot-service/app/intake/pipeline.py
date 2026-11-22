@@ -864,8 +864,14 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             checked = {it.get("part") for it in (current.get("damage_summary") or []) if it.get("human_verified")}
             # A side the reads disputed (zones.merge_reads) isn't placed from
             # the sorter's areas either: they are where wrong sides came from.
+            # F3 (settings.intake_keep_other_side "on"): a placed find whose
+            # name is listed already, on another photo, comes back in
+            # other_side for a suggestion; off, resolve_sides is called as
+            # before.
+            other_side: list[dict] | None = [] if keep_other_side_on() else None
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
-                                                   keep_undetermined=checked | disputed)
+                                                   keep_undetermined=checked | disputed,
+                                                   **({"other_side": other_side} if other_side is not None else {}))
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
             if draft is None:
@@ -873,6 +879,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                 for item in data["damage_summary"]:
                     if not item.get("human_verified"):
                         item["ai_confidence"] = "Low"
+            if other_side:
+                zone_draft.setdefault("zone_suggestions", []).extend(
+                    zones.other_side_suggestion(item) for item in other_side)
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
         if zone_draft.get("zone_suggestions"):
@@ -948,6 +957,11 @@ def read_notice(ai_draft) -> str | None:
     if not isinstance(look, dict) or look.get("status") != "failed":
         return None
     return str(look.get("note") or MAIN_READ_FAILED_NOTE)
+
+
+def keep_other_side_on() -> bool:
+    """F3: settings.intake_keep_other_side is "on"."""
+    return getattr(settings, "intake_keep_other_side", "off") == "on"
 
 
 # ---------------------------------------------------------- side resolver
@@ -1030,8 +1044,14 @@ def side_from_sorter(items: list[dict], sorter_parts: dict[str, str]) -> list[di
     return items
 
 
+def _photos_of(item: dict) -> set[str]:
+    """The photos an item was seen in: its photo_reference and seen_in."""
+    refs = [item.get("photo_reference")] + list(item.get("seen_in") or [])
+    return {r for r in refs if isinstance(r, str) and r}
+
+
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
-                  keep_undetermined=frozenset()) -> list[dict]:
+                  keep_undetermined=frozenset(), other_side: list[dict] | None = None) -> list[dict]:
     """The damage items with each "(side undetermined)" part placed on a
     side where the clues agree. photo_areas: every photo of the case in
     camera order as (photo id, area) -- voting_areas; items reference photos
@@ -1052,7 +1072,15 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
     placed, a wheel needs its photo to say front or rear). The placed item
     becomes the sided name with ai_confidence Low and side_inferred True;
     when that name is already listed, it is dropped instead (the reader
-    found it already)."""
+    found it already).
+
+    other_side (F3, settings.intake_keep_other_side): when a list is given,
+    a dropped item none of whose photos the listed one was seen in (its
+    photo_reference and seen_in, against the listed item's) is added to it
+    instead, as it was with other_side_of = the listed name -- two lamps
+    on two photos may be both lamps (pipeline makes it an "Other side?"
+    suggestion). On a photo the listed one was seen in it is the same find,
+    dropped as before."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
 
@@ -1081,6 +1109,11 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
         return out
 
     names = {item.get("part") for item in items}
+    # F3: where each name on the list was seen (only with other_side).
+    seen_at: dict[str, set[str]] = {}
+    if other_side is not None:
+        for item in items:
+            seen_at.setdefault(item.get("part"), set()).update(_photos_of(item))
     out: list[dict] = []
     for item in items:
         part = item.get("part") or ""
@@ -1109,6 +1142,10 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
         elif name not in names:
             names.add(name)
             out.append({**item, "part": name, "ai_confidence": "Low", "side_inferred": True})
+            if other_side is not None:
+                seen_at.setdefault(name, set()).update(_photos_of(item))
+        elif other_side is not None and not _photos_of(item) & seen_at.get(name, set()):
+            other_side.append({**item, "other_side_of": name})
     return out
 
 

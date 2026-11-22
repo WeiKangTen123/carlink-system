@@ -206,6 +206,27 @@ def other_side_listed(part: str, listed: set[str]) -> str | None:
     return other if known_part(other) and other in listed else None
 
 
+def covers_for(item: dict) -> list[str]:
+    """A suggestion's covers: covers_of its part -- but for an "Other
+    side?" one (F3, other_side_of) without the listed name it was placed
+    on, so that listed part doesn't count it as listed (and the Review step
+    doesn't hide it); the other side's name still does."""
+    names = covers_of(str(item.get("part") or ""))
+    other = item.get("other_side_of")
+    return [n for n in names if n != other] if other else names
+
+
+def other_side_note(item: dict, listed: set[str]) -> str | None:
+    """A suggestion's other_side_listed: other_side_listed of its part; for
+    an "Other side?" one (F3) the listed part it was placed on, while it is
+    listed -- the Review step's "The list already has Left Tail Lamp. Check
+    this isn't the same damage on the other side."."""
+    other = item.get("other_side_of")
+    if other:
+        return other if other in listed else None
+    return other_side_listed(str(item.get("part") or ""), listed)
+
+
 # ------------------------------------------------------------ candidates
 
 
@@ -684,6 +705,8 @@ def _listed_as(item: dict, listed: set[str], listed_keys: set) -> bool:
     -- anything else by covers_of."""
     if item["part"] == _NOT_A_PART:
         return item.get("key") in listed_keys
+    if item.get("other_side_of"):
+        return bool(set(covers_for(item)) & set(listed))
     return is_listed(item["part"], listed)
 
 
@@ -1022,8 +1045,8 @@ def _store(report_id: str, result: dict) -> None:
         cut = tidy_cut(cut, kept + linked + settled) if cut else []
         for it in kept + linked + settled + cut:
             it["name"] = row_name(db, it["part"], vehicle)
-            it["covers"] = covers_of(it["part"])
-            it["other_side_listed"] = other_side_listed(it["part"], listed)
+            it["covers"] = covers_for(it)
+            it["other_side_listed"] = other_side_note(it, listed)
         items = [evidence.settle(it) for it in kept + linked + settled]
         extra = {"cut": [evidence.settle(it) for it in cut], "cut_counts": cut_counts(cut)} if cut else {}
         stored = SecondLook(
