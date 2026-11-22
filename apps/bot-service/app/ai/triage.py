@@ -178,6 +178,33 @@ def damage_box_on() -> bool:
     return bool(getattr(settings, "intake_sort_damage_box", False))
 
 
+# E7 (plans/2026-11-22-enhance-staging 3c, Wave 2; settings.
+# intake_side_geometry not "off"; intake/geometry.py): the sort also says per
+# photo which part of the car it looks at (view, before the existing angle)
+# and where the steering wheel shows (steering_wheel, after it) -- never a
+# left or a right; code works the side out. Off, the sort asks exactly what
+# it did before: the prompt, the schema and the version are as above.
+GEOMETRY_VIEW_RULE = (
+    "- view: which part of the INSURED car the photo looks at, from where the camera stood: front (its front end, "
+    "from ahead), rear (its tail, from behind), side (one whole side, from beside the car), corner (an end and a "
+    "side together, from a corner), unknown (a close-up with nothing to tell by, or the insured car isn't shown). "
+    "Say only what you see: no left or right here.\n"
+)
+GEOMETRY_WHEEL_RULE = (
+    "- steering_wheel: whether the insured car's steering wheel can be seen through its glass, and where: not_seen; "
+    "photo_left or photo_right (through the windscreen or the rear window, on that half of the photo); near_side "
+    "(through a side window of the side facing the camera); far_side (across the cabin, through the windows of the "
+    "side away from the camera).\n"
+)
+_VIEW_BEFORE = "- angle: "
+_WHEEL_BEFORE = "- area: "
+
+
+def geometry_on() -> bool:
+    """E7: settings.intake_side_geometry is "vote" or "tiebreak"."""
+    return getattr(settings, "intake_side_geometry", "off") in ("vote", "tiebreak")
+
+
 # Light-model detection (plans/2026-11-18-light-detection/P-prompts.md 3.1),
 # settings.intake_sort_prompt: "v2" is SYSTEM_PROMPT above; "v3" (S2) is P's
 # template, ai/prompts/sort-v3.txt -- orient-v1 in place of _SIDES, a close-up
@@ -195,15 +222,17 @@ def sort_prompt() -> str:
     return getattr(settings, "intake_sort_prompt", "v2") or "v2"
 
 
-def sort_prompt_version(box: bool | None = None, prompt: str | None = None) -> str:
+def sort_prompt_version(box: bool | None = None, prompt: str | None = None, geometry: bool | None = None) -> str:
     """SORT_PROMPT_VERSION (SORT_PROMPT_V3 for prompt "v3"), marked while
-    the sort also boxes the damage: the benchmark's sort cache
-    (--sort-cache) is kept per version, so sorts made with and without
-    boxes, or by another prompt, are never served for each other. box and
-    prompt: as the settings say when None."""
+    the sort also boxes the damage or (E7) answers the geometry: the
+    benchmark's sort cache (--sort-cache) is kept per version, so sorts
+    made with and without them, or by another prompt, are never served for
+    each other. box, prompt, geometry: as the settings say when None."""
     box = damage_box_on() if box is None else box
     prompt = sort_prompt() if prompt is None else prompt
-    return (SORT_PROMPT_V3 if prompt == "v3" else SORT_PROMPT_VERSION) + ("+damage-box" if box else "")
+    geometry = geometry_on() if geometry is None else geometry
+    return ((SORT_PROMPT_V3 if prompt == "v3" else SORT_PROMPT_VERSION) + ("+damage-box" if box else "")
+            + ("+geometry" if geometry else ""))
 
 
 def _prompt_v3() -> str:
@@ -212,12 +241,18 @@ def _prompt_v3() -> str:
     return prompt_packs.once(text, "{PHOTO_KINDS}\n", kinds)
 
 
-def system_prompt(box: bool | None = None, prompt: str | None = None) -> str:
+def system_prompt(box: bool | None = None, prompt: str | None = None, geometry: bool | None = None) -> str:
     """The sort's system prompt: SYSTEM_PROMPT itself without boxes (v3:
-    _prompt_v3), else with _BOX_RULE before the note's line."""
+    _prompt_v3), else with _BOX_RULE before the note's line; with the
+    geometry (E7), GEOMETRY_VIEW_RULE before the angle's line and
+    GEOMETRY_WHEEL_RULE before the area's."""
     box = damage_box_on() if box is None else box
     prompt = sort_prompt() if prompt is None else prompt
+    geometry = geometry_on() if geometry is None else geometry
     base = _prompt_v3() if prompt == "v3" else SYSTEM_PROMPT
+    if geometry:
+        base = base.replace(_VIEW_BEFORE, GEOMETRY_VIEW_RULE + _VIEW_BEFORE, 1)
+        base = base.replace(_WHEEL_BEFORE, GEOMETRY_WHEEL_RULE + _WHEEL_BEFORE, 1)
     return base.replace(_BOX_BEFORE, _BOX_RULE + _BOX_BEFORE, 1) if box else base
 
 
@@ -230,18 +265,27 @@ def sort_timeout() -> float:
     return SORT_TIMEOUT_THINKING if high else SORT_TIMEOUT
 
 
-def response_schema(box: bool | None = None) -> dict:
-    """The sort's response schema: _RESPONSE_SCHEMA itself without boxes,
-    else a copy with damage_box after part, required like every field."""
+def response_schema(box: bool | None = None, geometry: bool | None = None) -> dict:
+    """The sort's response schema: _RESPONSE_SCHEMA itself without boxes or
+    geometry, else a copy with damage_box after part (box) and view before
+    angle, steering_wheel after it (E7's geometry), each required like every
+    field."""
     box = damage_box_on() if box is None else box
-    if not box:
+    geometry = geometry_on() if geometry is None else geometry
+    if not box and not geometry:
         return _RESPONSE_SCHEMA
+    from app.intake.geometry import VIEWS, WHEELS
+
     schema = copy.deepcopy(_RESPONSE_SCHEMA)
     item = schema["properties"]["photos"]["items"]
     fields: dict = {}
     for name, field in item["properties"].items():
+        if geometry and name == "angle":
+            fields["view"] = {"type": "string", "enum": list(VIEWS)}
         fields[name] = field
-        if name == "part":
+        if geometry and name == "angle":
+            fields["steering_wheel"] = {"type": "string", "enum": list(WHEELS)}
+        if box and name == "part":
             fields["damage_box"] = copy.deepcopy(_BOX_FIELD)
     item["properties"] = fields
     item["required"] = list(fields)
@@ -268,7 +312,7 @@ def _triage_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_triage_model_chain.split(",") if m.strip()]
 
 
-def _clean(item: dict, box: bool = False) -> dict:
+def _clean(item: dict, box: bool = False, geometry: bool = False) -> dict:
     """Constrains one entry to the known vocabulary -- same reasoning as
     extraction._sanitize_damage_summary: a stray value is safer nulled (or
     put in "other") than stored and shown. angle and batch_sides only steer
@@ -284,7 +328,10 @@ def _clean(item: dict, box: bool = False) -> dict:
 
     box: the sort asked for damage boxes (damage_box_on). The result then
     carries "damage_box" too -- clean_box's, and only on a photo showing
-    damage; without it the result has exactly the keys it always had."""
+    damage; without it the result has exactly the keys it always had.
+    geometry (E7, geometry_on): the result also carries "geometry" --
+    view, angle (kept this once), wheel and the side code works out
+    (intake/geometry.clean)."""
     kind = item.get("kind")
     area = item.get("area")
     area = area if area in AREAS else None
@@ -305,6 +352,10 @@ def _clean(item: dict, box: bool = False) -> dict:
     }
     if box:
         out["damage_box"] = clean_box(item.get("damage_box")) if out["shows_damage"] else None
+    if geometry:
+        from app.intake.geometry import clean as clean_geometry
+
+        out["geometry"] = clean_geometry(item)
     return out
 
 
@@ -327,7 +378,8 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
     # boxed answer as an unboxed one.
     box = damage_box_on()
     prompt = sort_prompt()
-    system = system_prompt(box, prompt)
+    geometry = geometry_on()
+    system = system_prompt(box, prompt, geometry)
 
     def parse(raw_output: str) -> dict[str, dict]:
         data = json.loads(raw_output)
@@ -337,18 +389,19 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
                 continue
             label = str(item.get("label") or "").strip().upper()
             if label in expected:
-                result[label] = _clean(item, box)
+                result[label] = _clean(item, box, geometry) if geometry else _clean(item, box)
         if len(result) * 2 < len(expected):
             raise ValueError(f"model sorted only {len(result)} of {len(expected)} photos")
         return result
 
-    tag = prompt_packs.tag("sort", prompt, ["orient"], system) if prompt != "v2" else None
+    named = (["orient"] if prompt != "v2" else []) + (["geometry"] if geometry else [])
+    tag = prompt_packs.tag("sort", prompt, named, system) if named else None
     with runs.prompt_tag(tag):
         return call_structured(
             purpose="photo sort",
             system_instruction=system,
             input_parts=parts,
-            schema=response_schema(box),
+            schema=response_schema(box, geometry),
             parse=parse,
             models=_triage_chain(),
             actor=actor,

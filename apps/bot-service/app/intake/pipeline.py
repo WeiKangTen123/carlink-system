@@ -51,7 +51,7 @@ from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
 from app.config import settings
-from app.intake import crops, zones
+from app.intake import crops, geometry, zones
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts import catalogue
 from app.parts.prefill import item_key
@@ -425,6 +425,10 @@ def _sort(report_id: str, actor: AiActor) -> None:
                 # (settings.intake_sort_damage_box).
                 if "damage_box" in found:
                     photo.damage_box = found["damage_box"]
+                # E7: only a sort asked for the geometry says anything of it
+                # (settings.intake_side_geometry).
+                if "geometry" in found:
+                    photo.geometry = found["geometry"]
             with done_lock:
                 done += len(batch)
                 progress = done
@@ -867,12 +871,19 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if zone_mode:
             # The areas to read one at a time, from every photo of the case.
             zone_jobs = zones.jobs_for(photos, labels)
+        # Wave 2 (plans/2026-11-22-enhance-staging 3c): the zone reads' E7 /
+        # E11 options, None at the defaults; E7's side of each photo's area
+        # group for the side resolver, None while off.
+        extras = zones.extras_for(photos) if zone_mode else None
+        geo_mode = geometry.mode()
+        side_groups = geometry.area_sides(photos) if geo_mode != "off" else None
         # Contract 8 D1: close-ups beside the photos the sorter boxed. Off:
         # no box is read and the request is as before.
         with_crops = bool(getattr(settings, "intake_read_crops", False))
         candidates = crop_candidates(selected) if with_crops else []
     finally:
         db.close()
+    with_extras = {"extras": extras} if extras is not None else {}
 
     # The photos as the model was told them ("Photo P03:"); renumbered to
     # the case's at filing (runs.relabel_last_read).
@@ -917,7 +928,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     zone_started: float | None = None
     # B2 only with F1 "zones" (the review's M4): a failed main read then
     # uses the zone answers already paid for, instead of throwing them away.
-    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact) if (
+    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact, **with_extras) if (
         zone_mode and zone_jobs and parallel_reads_on() and main_read_fallback_on()) else None
     if parallel is not None:
         early_walk, zone_started = parallel.walk, parallel.started
@@ -955,7 +966,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             early_reads = zones.zone_reads(
                 report_id, actor, zone_jobs,
                 progress=lambda done: _set_stage(report_id, "reading", done, 1 + len(zone_jobs)),
-                intact=early_intact, walk=early_walk,
+                intact=early_intact, walk=early_walk, **with_extras,
             )
         found_some = any(found for _, found in early_reads or [])
         # The lead's rule (22 Nov): the second try only while the run is
@@ -1036,7 +1047,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
                 report_id, actor, data.get("damage_summary") or [], zone_jobs,
                 progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
-                intact=intact, **({"walk": walked} if walked is not None else {}),
+                intact=intact, **({"walk": walked} if walked is not None else {}), **with_extras,
             )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
@@ -1059,6 +1070,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # are suggestions. resolve_sides and the agreement rule below
             # then see the list only.
             data["damage_summary"], zone_draft["zone_suggestions"] = zones.split_suggestions(data["damage_summary"])
+        if extras is not None and extras.wrong_end_mode == "keep" and extras.wrong_end:
+            # E11 "keep": the finds of an end zone read that saw the other
+            # end, as suggestions with their note -- never on the list.
+            zone_draft.setdefault("zone_suggestions", []).extend(zones.wrong_end_suggestions(extras.wrong_end))
     try:
         # Each finding's evidence against the photos: frames, boxes on raw
         # originals dropped, the sorter's boxes, best first. Code only; the
@@ -1104,9 +1119,19 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             other_side: list[dict] | None = [] if keep_other_side_on() else None
             # F1: the last reading's own rows were placed by their reading.
             kept_as_they_were = {str(it.get("part")) for it in previous_rows}
+            # E7 (settings.intake_side_geometry): each photo's area group's
+            # side by the sort's geometry, as a vote or a tie-break, and what
+            # it changed, kept beside the AI draft (side_geometry); off,
+            # resolve_sides is called as before.
+            geo_log: list[dict] = []
+            geo_args = ({"geo_sides": side_groups or {}, "geometry_mode": geo_mode, "geometry_log": geo_log}
+                        if geo_mode != "off" else {})
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
                                                    keep_undetermined=checked | disputed | kept_as_they_were,
-                                                   **({"other_side": other_side} if other_side is not None else {}))
+                                                   **({"other_side": other_side} if other_side is not None else {}),
+                                                   **geo_args)
+            if geo_mode != "off":
+                zone_draft["side_geometry"] = geo_log
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
             if other_side:
@@ -1286,21 +1311,22 @@ class ParallelZones:
     and `walk` filled. cancel() stops new zone calls and waits for those in
     flight."""
 
-    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict):
+    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict, extras=None):
         self.report_id = report_id
         self.walk: dict | None = {} if zones.walk_index() is not None else None
         self.progress = ReadProgress(report_id, len(jobs))
         self._stop = threading.Event()
         self.started = time.monotonic()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"zones-{report_id}")
+        # Wave 2's zone options (zones.ZoneExtras), passed only when given.
         self._future = self._pool.submit(zones.zone_reads, report_id, actor, jobs, self.progress.zone_done, intact,
-                                         self.walk, cancel=self._stop)
+                                         self.walk, cancel=self._stop, **({"extras": extras} if extras else {}))
         self._pool.shutdown(wait=False)
 
     @classmethod
-    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict) -> "ParallelZones":
+    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict, extras=None) -> "ParallelZones":
         logger.info("Reading %s: %d zone read(s) started beside the overall reading", report_id, len(jobs))
-        return cls(report_id, actor, jobs, intact)
+        return cls(report_id, actor, jobs, intact, extras)
 
     def result(self) -> list[tuple[str, list[dict]]]:
         try:
@@ -1432,8 +1458,19 @@ def _photos_of(item: dict) -> set[str]:
     return {r for r in refs if isinstance(r, str) and r}
 
 
+def _placed_side(own_side: str | None, others: Counter) -> str | None:
+    """resolve_sides' rule: the photo's own area side when no clue opposes
+    it, else (no own side) a clear majority of the clues (_clear_side)."""
+    if own_side:
+        opposite = "Right" if own_side == "Left" else "Left"
+        return own_side if others[opposite] == 0 else None
+    return _clear_side(others)
+
+
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
-                  keep_undetermined=frozenset(), other_side: list[dict] | None = None) -> list[dict]:
+                  keep_undetermined=frozenset(), other_side: list[dict] | None = None,
+                  geo_sides: dict[str, str] | None = None, geometry_mode: str = "off",
+                  geometry_log: list[dict] | None = None) -> list[dict]:
     """The damage items with each "(side undetermined)" part placed on a
     side where the clues agree. photo_areas: every photo of the case in
     camera order as (photo id, area) -- voting_areas; items reference photos
@@ -1462,7 +1499,18 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
     instead, as it was with other_side_of = the listed name -- two lamps
     on two photos may be both lamps (pipeline makes it an "Other side?"
     suggestion). On a photo the listed one was seen in it is the same find,
-    dropped as before."""
+    dropped as before.
+
+    geo_sides (E7, settings.intake_side_geometry; intake/geometry.py):
+    {photo id: the side of its sorter-area group by the sort's geometry}
+    (geometry.area_sides) and geometry_mode -- "vote": that side is one
+    more clue in `others` for an item on that photo (so against the
+    photo's own area side it leaves the item undetermined, as any opposing
+    clue does); "tiebreak": it is placed only where the rules above place
+    nothing. geometry_log, when given, gets one entry for each item whose
+    outcome the geometry changed: {"part", "photo", "was", "now",
+    "geometry"} (was / now the side placed, None for none). None / "off":
+    as before."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
 
@@ -1513,11 +1561,19 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
             if zone and other_zone == zone:
                 others[side] += 1
         own_side = _AREA_SIDE.get(own)
-        if own_side:
-            opposite = "Right" if own_side == "Left" else "Left"
-            side = own_side if others[opposite] == 0 else None
-        else:
-            side = _clear_side(others)
+        geo = (geo_sides or {}).get(photo_id) if geometry_mode in ("vote", "tiebreak") else None
+        side = _placed_side(own_side, others)
+        if geo:
+            # E7: the area group's geometry side, by the mode.
+            was = side
+            if geometry_mode == "vote":
+                others[geo] += 1
+                side = _placed_side(own_side, others)
+            else:
+                side = geometry.resolve(side, geo, geometry_mode)
+            if side != was and geometry_log is not None:
+                geometry_log.append({"part": part, "photo": f"@{photo_id}", "was": was, "now": side,
+                                     "geometry": geo})
         name = sided_part(part, side, _AREA_END.get(own)) if side else None
         if name is None:
             out.append(item)

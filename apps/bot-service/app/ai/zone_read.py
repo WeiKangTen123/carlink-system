@@ -396,6 +396,23 @@ class ZoneAnswer:
     # The assembly walk (walk on): {canonical panel: {"hit_at", "signs":
     # {id: {"answer", "photo" (a label)}}}}, assembly_walk.parse_zone.
     walk: dict = field(default_factory=dict)
+    # E7 (settings.intake_side_geometry, a side zone): the side the model
+    # said, when the geometry changed side_seen (None otherwise).
+    side_model: str | None = None
+    # E11 (settings.intake_zone_wrong_end "shadow" / "keep", an end zone whose
+    # photos it says show the other end): its finds, parsed as items are, and
+    # kept apart -- `items` stays empty, as when they are dropped.
+    wrong_end_items: list[dict] = field(default_factory=list)
+
+
+# E11: what an end zone whose photos show the other end does with its finds.
+WRONG_END_MODES = ("drop", "shadow", "keep")
+
+
+def wrong_end_note(zone: str, seen: str) -> str:
+    """E11's words on a kept suggestion: "The rear read thought these photos
+    show the front.\""""
+    return f"The {zone} read thought these photos show the {seen}."
 
 
 def _label(value, labels: set[str]) -> str | None:
@@ -417,7 +434,8 @@ _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "a
 
 
 def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
-                 evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False, walk=None) -> ZoneAnswer:
+                 evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False, walk=None,
+                 geometry: tuple[str | None, str] | None = None, wrong_end: str = "drop") -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
@@ -436,17 +454,36 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     the other side, the part's "(side undetermined)" name instead. packs
     with "intact" (Z2): a part listed damaged is never kept as intact too.
     walk: the answer's assembly_walk, for this zone's damaged panels only
-    (assembly_walk.parse_zone) -- never a reason to refuse the answer."""
+    (assembly_walk.parse_zone) -- never a reason to refuse the answer.
+
+    geometry (E7, a side zone only): (the majority side of the zone's
+    photos by the sort's geometry, "Left" / "Right" / None; "vote" or
+    "tiebreak") -- the side seen is reconciled with it before any find is
+    named (intake/geometry.reconcile), the model's own kept in side_model.
+    wrong_end (E11): "drop" (the default) leaves an end zone that sees the
+    other end with no finds, as before; "shadow" and "keep" also parse its
+    finds into wrong_end_items (items stays empty either way)."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
     seen = str(data.get("zone_side_seen") or "").strip().lower()
     seen = seen if seen in _SEEN[_kind(zone)] else UNCLEAR
+    model_seen = seen
+    if geometry is not None and zone in SIDE_ZONES:
+        from app.intake.geometry import reconcile
+
+        seen = reconcile(seen, geometry[0], geometry[1])
     sent = set(labels)
     answer = ZoneAnswer(zone=zone, side_seen=seen)
-    if zone in END_ZONES and seen in END_ZONES and seen != zone:
-        answer.note = f"the photos show the {seen}, not the {zone}: its finds were dropped"
-        return answer
+    if seen != model_seen:
+        answer.side_model = model_seen
+    wrong = zone in END_ZONES and seen in END_ZONES and seen != zone
+    if wrong:
+        kept_apart = wrong_end in ("shadow", "keep")
+        answer.note = (f"the photos show the {seen}, not the {zone}: its finds were "
+                       + ("kept as suggestions" if wrong_end == "keep" else "dropped"))
+        if not kept_apart:
+            return answer
     mode = _evidence_mode(evidence_mode)
     half = _photo_half_on(zone, photo_half) and seen == zone
     kept: list[tuple[DamageSummaryItem, list[str], dict]] = []
@@ -480,6 +517,11 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         dumped["evidence"] = [evidence.entry(item.photo_reference, f"zone:{zone}", box=box, reason=reason,
                                              confidence=item.ai_confidence)] if item.photo_reference else []
         answer.items.append(dumped)
+    if wrong:
+        # E11: apart from the zone's answer, which stays as dropped (no
+        # finds, no intact, no walk).
+        answer.wrong_end_items, answer.items = answer.items, []
+        return answer
     damaged = {item.get("part") for item in answer.items} if "intact" in set(packs or ()) else set()
     for name in data.get("checked_intact") or []:
         part = canonical(zone, name, seen)
@@ -509,6 +551,8 @@ def read_zone(
     packs=(),
     photo_half: bool = False,
     walk=None,
+    geometry: tuple[str | None, str] | None = None,
+    wrong_end: str = "drop",
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
@@ -519,7 +563,9 @@ def read_zone(
     settings.intake_zone_packs (as config.pack_list gives them) and
     intake_zone_photo_half. walk: the car map's assembly_walk.MapIndex
     (settings.intake_assembly_walk), None for no walk; a walked call is
-    tagged "+walk-<map version>" in the run log."""
+    tagged "+walk-<map version>" in the run log. geometry (E7) and
+    wrong_end (E11): parse_answer's, how the answer is read -- the request
+    is the same."""
     labels = [label for label, _, _ in photos]
     packs = list(packs or ())
     system = system_prompt(zone, grid, evidence_mode, packs, photo_half, walk)
@@ -533,7 +579,8 @@ def read_zone(
             system_instruction=system,
             input_parts=build_input(photos, grid),
             schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half, walk),
-            parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half, walk),
+            parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half, walk,
+                                           geometry=geometry, wrong_end=wrong_end),
             models=models,
             actor=actor,
             timeout=timeout,

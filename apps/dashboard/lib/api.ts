@@ -1000,6 +1000,9 @@ export type SecondLookItem = {
   source: "kit" | "nearby" | "zone" | "link" | "other_side" | null;
   /** F3: the listed part an "Other side?" suggestion was placed on. */
   other_side_of?: string | null;
+  /** Wave 2 E11: a find of an end zone read whose photos it said show the
+   * other end -- "The rear read thought these photos show the front." */
+  wrong_end_note?: string | null;
   /** Damage-list names that mean the part is listed already. */
   covers: string[];
   reason: string | null;
