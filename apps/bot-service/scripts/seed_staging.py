@@ -6,6 +6,8 @@ customer's data. Refuses to run anywhere but staging.
     docker exec carlink_staging_api python scripts/seed_staging.py --close-signups-only
     docker exec carlink_staging_api python scripts/seed_staging.py --reset-passwords
     docker exec carlink_staging_api python scripts/seed_staging.py --images-out /app/storage/seed-photos
+    docker exec carlink_staging_api cat /tmp/seed-staging-passwords.txt     # the new passwords, then:
+    docker exec carlink_staging_api rm /tmp/seed-staging-passwords.txt
 
 What it makes (again on a second run: only what is missing):
   - signups switched off (owner decision D3), and the company name
@@ -13,7 +15,10 @@ What it makes (again on a second run: only what is missing):
   - three accounts: staging-admin (admin), staging-staff (a user ticked
     "sees all cases", "may use the company AI key", "may sign off") and
     staging-user (a plain self-signup user). New passwords are made at
-    random and printed ONCE (--reset-passwords makes new ones);
+    random and written to a 0600 file in the container, never printed
+    (--passwords-file, default /tmp/seed-staging-passwords.txt -- gone when
+    the container is recreated; read it, keep them in a password manager,
+    delete it). --reset-passwords makes new ones;
   - placeholder photos drawn here (Pillow): a grey box of a car with
     "SYNTHETIC TEST PHOTO -- not a real vehicle" and a TEST plate on each.
     Never a customer's photo, never example_case;
@@ -28,8 +33,9 @@ What it makes (again on a second run: only what is missing):
                           shared key (a few light-model calls).
 
 No Gemini call is ever made by this script (the client is switched off
-before anything runs). It refuses unless CARLINK_STACK=staging (set by
-infra/docker-compose.staging.yml) and PUBLIC_BASE_URL is not production's.
+before anything runs). It refuses unless CARLINK_STACK=staging and the AI
+lane is staging's (both set by infra/docker-compose.staging.yml), and
+PUBLIC_BASE_URL is not production's.
 """
 import argparse
 import io
@@ -70,8 +76,30 @@ def refuse_unless_staging() -> None:
         sys.exit(f"seed_staging: refused -- CARLINK_STACK is {stack!r}, not 'staging'. "
                  "This only runs in the staging stack (infra/docker-compose.staging.yml).")
     from app.config import settings
+    # Review L6: a second, independent sign -- not only production's host name.
+    if settings.gemini_quota_lane != "staging":
+        sys.exit("seed_staging: refused -- the AI lane is not staging's (GEMINI_QUOTA_LANE). Is this really staging?")
     if PROD_HOST in (settings.public_base_url or ""):
         sys.exit("seed_staging: refused -- PUBLIC_BASE_URL is production's address. Is this really staging?")
+
+
+PASSWORDS_FILE = "/tmp/seed-staging-passwords.txt"
+
+
+def write_passwords(path: Path, passwords: list[tuple[str, str]]) -> None:
+    """The new passwords into a file only its owner can read (0600), never
+    through a symlink -- they are never printed (CodeQL: clear-text
+    logging of sensitive data)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass  # Windows (tests)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("# Carlink STAGING seed accounts (made-up). Keep them in a password manager, then delete this file.\n")
+        for username, password in passwords:
+            f.write(f"{username} {password}\n")
 
 
 # ------------------------------------------------------------------ photos
@@ -152,6 +180,8 @@ def main(argv=None) -> int:
     ap.add_argument("--close-signups-only", action="store_true", help="only switch new signups off")
     ap.add_argument("--reset-passwords", action="store_true", help="new passwords for the three seed accounts")
     ap.add_argument("--images-out", help="also write the placeholder photos to this folder (for upload trials)")
+    ap.add_argument("--passwords-file", default=PASSWORDS_FILE,
+                    help=f"where new passwords go, 0600 (default {PASSWORDS_FILE}); never printed")
     args = ap.parse_args(argv)
     refuse_unless_staging()
 
@@ -188,9 +218,10 @@ def main(argv=None) -> int:
     made = ensure_cases(photos_out)
     print("\nseed_staging: done.")
     if passwords:
-        print("Passwords (shown once; keep them in a password manager, then clear this screen):")
-        for username, password in passwords:
-            print(f"  {username:14s} {password}")
+        target = Path(args.passwords_file)
+        write_passwords(target, passwords)
+        print(f"New passwords for {', '.join(u for u, _ in passwords)}: in {target} (0600), not shown here.")
+        print(f"  docker exec carlink_staging_api cat {target}   # then: docker exec carlink_staging_api rm {target}")
     else:
         print("Accounts were there already (passwords unchanged; --reset-passwords for new ones).")
     print(f"Cases made now: {', '.join(made) or 'none (all four were there)'}")

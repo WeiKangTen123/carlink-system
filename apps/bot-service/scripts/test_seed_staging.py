@@ -45,6 +45,8 @@ ENV = {
     "TELEGRAM_BOT_TOKEN": "",
     "MIN_FREE_DISK_GB": "0",
     "PUBLIC_BASE_URL": "https://carlink-staging.example",
+    # As infra/docker-compose.staging.yml sets it (the seed's second sign, review L6).
+    "GEMINI_QUOTA_LANE": "staging",
 }
 os.environ.update(ENV)
 (_tmp / "storage").mkdir()
@@ -69,7 +71,8 @@ def refusals() -> None:
     for extra, words in (({}, "CARLINK_STACK is ''"),
                          ({"CARLINK_STACK": "prod"}, "CARLINK_STACK is 'prod'"),
                          ({"CARLINK_STACK": "staging", "PUBLIC_BASE_URL": "https://carlink.34-16-92-98.sslip.io"},
-                          "production's address")):
+                          "production's address"),
+                         ({"CARLINK_STACK": "staging", "GEMINI_QUOTA_LANE": "prod"}, "AI lane is not staging's")):
         env = {k: v for k, v in os.environ.items() if k != "CARLINK_STACK"}
         env.update(extra)
         r = subprocess.run([sys.executable, script, "--close-signups-only"], env=env, capture_output=True, text=True,
@@ -92,13 +95,24 @@ def _offline(sock, address):
     return _real_connect(sock, address)
 
 
+PWFILE = _tmp / "seed-passwords.txt"
+
+
+def read_passwords() -> dict:
+    if not PWFILE.exists():
+        return {}
+    pairs = [line.split() for line in PWFILE.read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.startswith("#")]
+    return {u: pw for u, pw in pairs}
+
+
 def run_seed(*args) -> tuple[int, str]:
     import seed_staging
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         try:
-            code = seed_staging.main(list(args))
+            code = seed_staging.main(list(args) + ["--passwords-file", str(PWFILE)])
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
             print(exc.code)
@@ -127,9 +141,13 @@ def seeding() -> None:
 
     code, out = run_seed()
     check(code == 0 and "seed_staging: done." in out, "the seed runs", out)
-    passwords = dict(re.findall(r"^\s+(staging-\w+)\s+(\S+)$", out, re.M))
-    check(sorted(passwords) == ["staging-admin", "staging-staff", "staging-user"], "three passwords printed once",
-          repr(sorted(passwords)))
+    passwords = read_passwords()
+    check(sorted(passwords) == ["staging-admin", "staging-staff", "staging-user"],
+          "three new passwords, in the passwords file", repr(sorted(passwords)))
+    check(passwords and not any(pw in out for pw in passwords.values()) and str(PWFILE) in out,
+          "never printed (CodeQL: clear-text logging); the output names the file", out)
+    if os.name != "nt":
+        check((PWFILE.stat().st_mode & 0o777) == 0o600, "the file is 0600", oct(PWFILE.stat().st_mode))
     db = SessionLocal()
     try:
         users = {u.username: u for u in db.query(User).all()}
@@ -182,12 +200,12 @@ def seeding() -> None:
     c = TestClient(main.app, base_url="https://carlink-staging.example")
     check(c.get("/auth/signup").json() == {"open": False}, "signups are off")
     r = c.post("/auth/login", json={"email": "staging-staff", "password": passwords.get("staging-staff", "")})
-    check(r.status_code == 200, "the printed password signs staging-staff in", r.text[:200])
+    check(r.status_code == 200, "the password from the file signs staging-staff in", r.text[:200])
     check(clients == [] and NET == [], "no AI client made, nothing left the machine", repr(clients + NET))
 
     print("\n3. again")
     code, out = run_seed()
-    check(code == 0 and "Cases made now: none" in out and "Passwords" not in out,
+    check(code == 0 and "Cases made now: none" in out and "New passwords" not in out,
           "a second run adds nothing and keeps the passwords", out)
     db = SessionLocal()
     try:
@@ -195,7 +213,7 @@ def seeding() -> None:
     finally:
         db.close()
     code, out = run_seed("--reset-passwords")
-    new = dict(re.findall(r"^\s+(staging-\w+)\s+(\S+)$", out, re.M))
+    new = read_passwords()
     check(code == 0 and len(new) == 3 and new.get("staging-staff") != passwords.get("staging-staff"),
           "--reset-passwords: three new ones")
     r = TestClient(main.app, base_url="https://carlink-staging.example").post(
