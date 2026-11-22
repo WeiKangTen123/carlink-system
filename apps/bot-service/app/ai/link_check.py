@@ -677,14 +677,32 @@ def _is_no(item: dict) -> bool:
     return isinstance(check, dict) and check.get("verdict") == "no"
 
 
-def apply(items: list[dict], results: dict[str, dict], skip: set[str]) -> list[dict]:
+def hidden_no() -> str:
+    """settings.intake_link_hidden_no (F6): "keep" (today) or "cannot_tell"."""
+    return getattr(settings, "intake_link_hidden_no", "keep") or "keep"
+
+
+def hidden_verdict(verdict: str, item: dict, rule: str = "keep") -> str:
+    """F6 (plans/2026-11-22-enhance-staging), a code rule like code_verdict's
+    cue rule: with rule "cannot_tell", a "no" on a part the table marks
+    hidden (SecondLookItem.hidden: a beam, a regulator -- no photo can show
+    it, so "no" says only that it isn't in view) becomes "cannot_tell", and
+    the part keeps its place instead of going last. "keep": as it is."""
+    if rule == "cannot_tell" and verdict == "no" and item.get("hidden"):
+        return "cannot_tell"
+    return verdict
+
+
+def apply(items: list[dict], results: dict[str, dict], skip: set[str], hidden_rule: str | None = None) -> list[dict]:
     """The answers on these items (copies), by key: link_check, the bucket
     the verdict gives, a "seen" photo joined to the evidence (one entry per
     photo, a boxed one over a boxless one: evidence.join). Then each open
     linked part answered "no" goes after the other open linked parts --
     last in its group, whatever the grouping -- the rest keeping their
     places. Never an item more or less; `skip` (keys a person settled) and
-    anything not a linked part left exactly as they are."""
+    anything not a linked part left exactly as they are. hidden_rule: F6's
+    hidden_verdict rule, settings.intake_link_hidden_no when None."""
+    rule = hidden_no() if hidden_rule is None else hidden_rule
     out: list[dict] = []
     open_at: list[int] = []
     for it in items:
@@ -694,6 +712,8 @@ def apply(items: list[dict], results: dict[str, dict], skip: set[str]) -> list[d
         got = results.get(key) if is_open else None
         if got is not None:
             it["link_check"] = dict(got["link_check"])
+            if rule != "keep":
+                it["link_check"]["verdict"] = hidden_verdict(it["link_check"].get("verdict"), it, rule)
             bucket = BUCKET_OF.get(got["link_check"]["verdict"])
             if bucket:
                 it["bucket"] = bucket
