@@ -63,6 +63,10 @@ Nothing here may break production's AI: an unreadable file is a fresh one
 (logged), a lock that can't be taken is skipped (logged), as rate_limit.py
 does.
 """
+# Python 3.11 (the api image): threading.Lock is a factory function there, so
+# `threading.Lock | None` in a signature fails at import without this.
+from __future__ import annotations
+
 import hashlib
 import hmac
 import json
