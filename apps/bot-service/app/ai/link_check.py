@@ -50,6 +50,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -780,10 +781,17 @@ def _all_busy(attempts: list[dict]) -> bool:
     return bool(tried) and all(a.get("busy") for a in tried)
 
 
+def parallel_on() -> bool:
+    """B3: settings.intake_link_check_parallel is "on"."""
+    return getattr(settings, "intake_link_check_parallel", "off") == "on"
+
+
 def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str, dict]]:
     """(the CheckRun, {item key: its answer}) for one draft, as one run of
     the log. A failed call ends the step; the areas answered before it are
-    kept."""
+    kept. B3 (parallel_on, more than one area): _ask_parallel instead."""
+    if parallel_on() and len(plan.groups) > 1:
+        return _ask_parallel(report_id, actor, plan)
     results: dict[str, dict] = {}
     answered: list[Group] = []
     calls = 0
@@ -828,6 +836,93 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
         return _check_run("skipped", NOTE_NO_ALLOWANCE, calls=calls), {}
     except Exception as exc:
         if failure is None:  # not a call's failure: the run log's, or ours
+            logger.warning("Linked check for %s failed: %s", report_id, runs.scrub_error(f"{type(exc).__name__}: {exc}"))
+        return _check_run("failed", NOTE_BUSY if failure and failure[0] == "busy" else NOTE_FAILED, calls=calls), {}
+    notes = []
+    if len(answered) < plan.total:
+        notes.append(NOTE_PART.format(done=len(answered), total=plan.total))
+    if failure is not None:
+        notes.append({"skipped": NOTE_NO_ALLOWANCE, "busy": NOTE_BUSY}.get(failure[0], NOTE_FAILED))
+    extra = {"signs": signs} if signs_on else {}
+    return _check_run("ok", " ".join(notes) or None, by="lite", model=models[0] if models else None, calls=calls,
+                      **extra), results
+
+
+# A failure's rank when several areas failed at once (B3): the one the
+# CheckRun names. The person's AI going away says what to fix.
+_FAILURE_RANK = {"skipped": 0, "busy": 1, "failed": 2}
+
+
+def _ask_parallel(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str, dict]]:
+    """B3 (settings.intake_link_check_parallel "on"): _ask_all with every
+    area's call at the same time, each standing alone -- an area whose call
+    fails is left out, the others' answers are kept. Each call keeps its
+    tries apart (its model is read from its own), then adds them to the
+    step's one run. Through the same rate limiter and busy handling as
+    one after the other (ask, call_structured). The answers, the photos
+    sent and the CheckRun are put together in the plan's order, so with
+    every call answering they are what _ask_all gives."""
+    signs_on = skill_choice()[1]
+    groups = list(plan.groups)
+    outcomes: list[tuple | None] = [None] * len(groups)
+
+    def one(i: int, group: Group, run: runs.Run) -> None:
+        attempts = runs.Attempts()
+        said: list[dict] = []
+        try:
+            got = ask(group, actor, attempts, said if signs_on else None)
+            outcomes[i] = ("ok", got, said)
+        except AiUnavailable as exc:
+            outcomes[i] = ("skipped", exc, None)
+        except Exception as exc:
+            outcomes[i] = ("busy" if _all_busy(attempts.snapshot()) else "failed", exc, None)
+            logger.warning("Linked check for %s: the %s call failed (%s)", report_id, group.area,
+                           runs.scrub_error(f"{type(exc).__name__}: {exc}"))
+        finally:
+            tries, size = attempts.drain()
+            for attempt in tries:
+                run.attempts.add(attempt)
+            if size is not None:
+                run.attempts.add_input(size)
+
+    results: dict[str, dict] = {}
+    answered: list[Group] = []
+    failure: tuple[str, BaseException] | None = None
+    models: list[str] = []
+    signs: dict[str, list[dict]] = {}
+    calls = len(groups)
+    try:
+        with runs.recorded(report_id, runs.LINK_CHECK_KIND, actor) as run:
+            with ThreadPoolExecutor(max_workers=len(groups), thread_name_prefix=f"link-{report_id}") as pool:
+                futures = [pool.submit(one, i, group, run) for i, group in enumerate(groups)]
+            for future in futures:
+                if future.exception() is not None:
+                    logger.error("Linked check for %s: a worker failed", report_id, exc_info=future.exception())
+            sent: dict[str, str] = {}
+            for group, outcome in zip(groups, outcomes):
+                for p in group.photos:
+                    sent.setdefault(p.label, p.photo_id)
+                if outcome is None:
+                    continue
+                if outcome[0] != "ok":
+                    if failure is None or _FAILURE_RANK[outcome[0]] < _FAILURE_RANK[failure[0]]:
+                        failure = (outcome[0], outcome[1])
+                    continue
+                got, said = outcome[1], outcome[2]
+                answered.append(group)
+                results.update(got)
+                if signs_on:
+                    signs[group.area] = said
+                models += [r["link_check"]["model"] for r in got.values() if r["link_check"].get("model")]
+            run.photos_sent = [f"@{sent[label]}" for label in sorted(sent, key=lambda lb: int(lb[1:]))]
+            run.parts_found = sum(1 for r in results.values() if r["link_check"]["verdict"] == "seen")
+            if not answered and failure is not None:
+                raise failure[1]
+    except AiUnavailable as exc:
+        logger.info("Linked check for %s skipped: %s", report_id, exc.code)
+        return _check_run("skipped", NOTE_NO_ALLOWANCE, calls=calls), {}
+    except Exception as exc:
+        if failure is None:
             logger.warning("Linked check for %s failed: %s", report_id, runs.scrub_error(f"{type(exc).__name__}: {exc}"))
         return _check_run("failed", NOTE_BUSY if failure and failure[0] == "busy" else NOTE_FAILED, calls=calls), {}
     notes = []
