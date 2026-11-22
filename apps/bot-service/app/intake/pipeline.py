@@ -378,6 +378,9 @@ def _sort(report_id: str, actor: AiActor) -> None:
     done = 0
     sent = 0
     done_lock = threading.Lock()
+    # F7 (settings.intake_sort_retry_skipped "on"): the photos a batch's
+    # answer left out, for one more batch at the end. None while off.
+    skipped: list[tuple[str, str, str]] | None = [] if sort_retry_on() else None
 
     def sort_batch(batch: list[tuple[str, str, str]], actor: AiActor, attempts: runs.Attempts) -> None:
         nonlocal done, sent
@@ -393,11 +396,14 @@ def _sort(report_id: str, actor: AiActor) -> None:
             result = triage_photos([(label, path) for label, _, path in batch], actor=actor)
         db = SessionLocal()
         try:
-            for label, photo_id, _ in batch:
+            for label, photo_id, path in batch:
                 found = result.get(label)
                 photo = db.get(IntakePhoto, photo_id)
                 # Deleted mid-run, or regrouped by the surveyor meanwhile.
                 if not found or photo is None or photo.kind_source == "surveyor":
+                    if skipped is not None and not found and photo is not None and photo.kind_source != "surveyor":
+                        with done_lock:
+                            skipped.append((label, photo_id, path))
                     continue
                 photo.kind = found["kind"]
                 photo.area = found["area"]
@@ -439,6 +445,23 @@ def _sort(report_id: str, actor: AiActor) -> None:
         failures = [future.exception() for future in futures if future.exception()]
         if failures:
             raise next((e for e in failures if isinstance(e, AiUnavailable)), failures[0])
+        if skipped:
+            # F7: one more small batch, in camera order, at most BATCH_SIZE
+            # photos -- one call. It never fails the run: a photo it can't
+            # sort stays unsorted, as it would have.
+            order = {photo_id: i for i, (_, photo_id, _) in enumerate(todo)}
+            again = sorted(skipped, key=lambda item: order.get(item[1], 0))[:BATCH_SIZE]
+            logger.info("Sorting %s: %d skipped photo(s) sent again", report_id, len(again))
+            try:
+                sort_batch(again, actor, run.attempts)
+            except Exception as exc:
+                logger.warning("Sorting %s: the skipped photos stay unsorted (%s)", report_id, type(exc).__name__)
+            run.photos_sent = {"count": sent}
+
+
+def sort_retry_on() -> bool:
+    """F7: settings.intake_sort_retry_skipped is "on"."""
+    return getattr(settings, "intake_sort_retry_skipped", "off") == "on"
 
 
 def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
