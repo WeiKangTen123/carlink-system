@@ -37,6 +37,13 @@
 #   BENCH_SCRIPT=replay_links bash run_bench.sh c10-replay-lite1 GIT_REF /tmp/bench/out/c9-base-35.json /tmp/bench/out/l3-lite.json --variant all
 # It needs no container (any venv with the app's requirements runs it);
 # here it runs on the server's copies of the result files.
+#
+# Wave 2 (plans/2026-11-22-enhance-staging 3c, E9): BENCH_SCRIPT=
+# replay_link_check runs scripts/bench/replay_link_check.py -- the linked
+# check alone, LIVE (its calls only, through the rate limiter), on a stored
+# result's reads -- the first option being that result's path in the
+# container, then the arm's flags:
+#   BENCH_SCRIPT=replay_link_check bash run_bench.sh w2-lc-e9a GIT_REF /tmp/bench/out/STORED.json --link-check-max-calls 3
 set -euo pipefail
 
 usage() {
@@ -63,7 +70,8 @@ case "$SCRIPT" in
     benchmark_intake) SCRIPT_PATH=scripts/benchmark_intake.py ;;
     replay_check) SCRIPT_PATH=scripts/bench/replay_check.py ;;
     replay_links) SCRIPT_PATH=scripts/bench/replay_links.py ;;
-    *) die "BENCH_SCRIPT: benchmark_intake (the default), replay_check or replay_links" ;;
+    replay_link_check) SCRIPT_PATH=scripts/bench/replay_link_check.py ;;
+    *) die "BENCH_SCRIPT: benchmark_intake (the default), replay_check, replay_links or replay_link_check" ;;
 esac
 # The app refuses uploads below 3 GB free (settings.min_free_disk_gb); a
 # run copies every case's photos into the container's /tmp.
@@ -206,6 +214,9 @@ if docker exec "$CONTAINER" test -f "$B/out/$LABEL.json"; then
     if [ "$SCRIPT" = benchmark_intake ]; then
         echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BEFORE.json $HOME_DIR/out/$LABEL.json"
     elif [ "$SCRIPT" = replay_links ]; then
+        echo "gate:      python3 $CODE/apps/bot-service/scripts/bench/gate.py --suggestions $HOME_DIR/out/$LABEL.json"
+    elif [ "$SCRIPT" = replay_link_check ]; then
+        echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BASE.json $HOME_DIR/out/$LABEL.json --all"
         echo "gate:      python3 $CODE/apps/bot-service/scripts/bench/gate.py --suggestions $HOME_DIR/out/$LABEL.json"
     else
         echo "sweep:     python3 $CODE/apps/bot-service/scripts/bench/replay_check.py --sweep $HOME_DIR/out/$LABEL.json"

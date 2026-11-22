@@ -32,7 +32,8 @@ Exit status 0 when every candidate passes, 1 when any fails. Offline:
 reads JSON files, imports no app code; prints no case names (plates).
 
 Contract 10, the linked parts' gate (plans/2026-11-17-linked-parts/plan.md
-8.1, G1-G6), on a replay (scripts/bench/replay_links.py --out) or a live
+8.1, G1-G6), on a replay (scripts/bench/replay_links.py --out, or Wave 2's
+linked-check replay scripts/bench/replay_link_check.py --out) or a live
 result run with --links (each file gated on its own: the B group's, the
 lite1 group's):
 
@@ -321,9 +322,11 @@ def suggestion_checks(runs: list[dict], scored: list[dict], g5: tuple[bool, str]
 
 
 def _g5(doc: dict, scored: list[dict], baseline: dict | None, path: Path, key: dict | None) -> tuple[bool, str]:
-    """G5: a replay asserted the list unchanged on every case-run; a live
-    result passes the contract 8 list gate (judge) against --baseline."""
-    if doc.get("kind") == "replay_links":
+    """G5: a replay asserted the list unchanged on every case-run (the
+    linked parts' replay_links, or Wave 2's linked-check replay
+    replay_link_check); a live result passes the contract 8 list gate
+    (judge) against --baseline."""
+    if doc.get("kind") in ("replay_links", "replay_link_check"):
         same = bool(scored) and bool(doc.get("damage_list_identical")) and all(
             r["links"].get("damage_list_identical") for r in scored)
         return same, f"the damage list {'identical' if same else 'CHANGED (or nothing replayed)'} in every replayed case-run"
@@ -379,6 +382,11 @@ def suggestions_report(path: Path, doc: dict, *, variant: str | None, limits: di
         what = (f"replay, table {(doc.get('table') or {}).get('version')} "
                 f"({'frozen' if doc.get('frozen') else 'NOT FROZEN'}), variant {variant or 'default'}"
                 + ("" if variant in (None, "default") else " (pre-registered, sensitivity only)"))
+    elif doc.get("kind") == "replay_link_check":
+        s = doc.get("ai_settings") or {}
+        what = (f"linked-check replay of {doc.get('source_label')}, table {s.get('link_table_version')}, "
+                f"{s.get('intake_link_check_max_calls')} area(s), skill {s.get('intake_link_skill', 'L1')}"
+                + ("" if doc.get("links_match") else "; the linked parts rebuilt differ from the stored run's"))
     else:
         s = doc.get("ai_settings") or {}
         what = (f"live result, links {s.get('intake_links', 'off')}, table {s.get('link_table_version')} "
