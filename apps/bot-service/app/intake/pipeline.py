@@ -143,6 +143,13 @@ UNSORTED_BUDGET = 4
 # 120-second reading timeout. The default of the intake_max_read_photos
 # setting (read_limit): 40 is ~10.7MB, still one request.
 MAX_READ_PHOTOS = 32
+# E12 (plans/2026-11-22-enhance-staging 3c): with intake_max_read_photos
+# above MAX_READ_PHOTOS, the photos stop being added once those taken so far
+# would send more than this many bytes (base64, as they go): Gemini takes at
+# most 20 MB in one inline request, the prompt and the notes included, and
+# 64 previews of ~200 KB would pass it. Lowest priority first out. At 32 or
+# fewer photos nothing is counted -- the choice is exactly as before.
+READ_BYTES_BUDGET = 18_000_000
 # Kinds whose photo still counts as damage evidence when it shows damage and
 # names the damaged part (e.g. a boot photo the sorter called interior).
 # An "other" photo showing damage counts with no part too: the sorter can't
@@ -681,12 +688,47 @@ def _top_up_order(
     )
 
 
-def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
+def _sent_bytes(photo: IntakePhoto) -> int:
+    """What one photo adds to the reading's request: its AI input (the 1600
+    px preview, else the original) as base64. 0 when the file is gone (it
+    can't be sent anyway)."""
+    try:
+        return (Path(ai_input_path(photo.path)).stat().st_size + 2) // 3 * 4
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
+def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = False) -> list[IntakePhoto]:
     """The photos the drafting call sees, in case order: up to read_limit(),
     every slot filled while usable photos are left (_top_up_order). Excluded
     and unusable photos never go; blurry ones only after sharp ones of the
-    same kind."""
+    same kind.
+
+    The priority order the slots fill in (E12 documents it; a higher
+    intake_max_read_photos only takes further down the same order):
+      1. fact photos by FACT_BUDGET -- log card 3, VIN plate 1, police
+         report 3, odometer 1, document 2, the other party's car 2, tyre 1
+         (at most 13; sharp before blurry, spread over the camera order);
+      2. OVERVIEW_BUDGET (3) overviews, one per area in turn;
+      3. damage evidence (_is_damage_evidence: damage close-ups, and
+         interior / "other" photos showing damage) in _damage_order --
+         every damaged part one photo before any part a second, the groups
+         showing damage first -- taking every slot but the unsorted ones';
+      4. up to UNSORTED_BUDGET (4) unsorted photos, spread;
+      5. slots still left: _top_up_order (the rest of the damage, other car
+         photos showing damage, overviews, unsorted, tyre / interior /
+         other, then the other party's car, the scene and paperwork).
+    So with 40 or 64 slots, step 3 simply takes more of the same damage
+    order (the 32 chosen at the default are among them).
+
+    Above MAX_READ_PHOTOS (E12) the photos also stop once the request would
+    pass READ_BYTES_BUDGET; at 32 or fewer nothing is measured.
+    priority_order: the chosen photos in the order they were taken (for the
+    tests and the benchmark's notes), not in case order."""
     cap = read_limit()
+    budget = READ_BYTES_BUDGET if cap > MAX_READ_PHOTOS else None
+    spent = [0]
+    full = [False]
     usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
     for p in usable:
@@ -703,9 +745,19 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
 
     def take(candidates: list[IntakePhoto], limit: int) -> None:
         for p in candidates:
-            if limit <= 0 or len(chosen) >= cap:
+            if limit <= 0 or len(chosen) >= cap or full[0]:
                 return
             if p.id not in chosen_ids:
+                if budget is not None:
+                    # E12: the request's size; past the budget no photo
+                    # more, so the lowest priorities are the ones left out.
+                    size = _sent_bytes(p)
+                    if spent[0] + size > budget:
+                        full[0] = True
+                        logger.warning("Reading: %d photos fill %.1f MB; the rest stay out of the %d-photo read "
+                                       "(READ_BYTES_BUDGET)", len(chosen), spent[0] / 1e6, cap)
+                        return
+                    spent[0] += size
                 chosen.append(p)
                 chosen_ids.add(p.id)
                 limit -= 1
@@ -719,6 +771,8 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     # Room left over (a case with few damage photos): every other photo.
     take(_top_up_order(usable, by_kind, damage_pool, unsorted), cap)
 
+    if priority_order:
+        return chosen
     order = {p.id: i for i, p in enumerate(photos)}
     return sorted(chosen, key=lambda p: order[p.id])
 

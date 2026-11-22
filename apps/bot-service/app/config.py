@@ -224,8 +224,38 @@ class Settings(BaseSettings):
     intake_read_crops: bool = False
     intake_read_crops_max: int = 8
     # How many photos one intake reading sends (intake/pipeline.read_limit);
-    # unset: pipeline.MAX_READ_PHOTOS (32).
+    # unset: pipeline.MAX_READ_PHOTOS (32). E12 (plans/2026-11-22-enhance-
+    # staging 3c, Wave 2): 40 at today's image size, or 48-64 with
+    # gemini_image_resolution_main_read below at medium -- the same image
+    # tokens as 32 at Gemini's default. 1 to MAX_READ_PHOTOS_LIMIT; the
+    # photos are picked in the same priority order (pipeline.
+    # select_for_reading), and above 32 a request never grows past
+    # pipeline.READ_BYTES_BUDGET.
     intake_max_read_photos: int | None = None
+    # E12b: the main read's own photo resolution, written like
+    # gemini_image_resolution ("*=medium", or per photo kind). Set, it
+    # replaces gemini_image_resolution on the main read's photos only (the
+    # zone reads keep theirs); the Telegram bot's drafts, whose photos have
+    # no kind, are sent as before. Unset (the default): as before.
+    gemini_image_resolution_main_read: str | None = None
+    # E7 (Wave 2): the side worked out in code. The sort also says per photo
+    # which part of the car it looks at (view), which way the car's front
+    # points (its existing angle) and where the steering wheel shows;
+    # intake/geometry.py turns that into the car's left or right (right-hand
+    # drive) for whole-side views, takes a majority over the photos of one
+    # area, and uses it where code decides a side from the reads: the side
+    # zone reads' side_seen (zones) and the side resolver (pipeline.
+    # resolve_sides). "vote": one more vote; "tiebreak": only where today's
+    # rule leaves the side undetermined. "off": the sort is asked nothing
+    # new -- its request byte for byte as before -- and no side changes.
+    intake_side_geometry: str = "off"
+    # E11 (Wave 2): an end zone read (front, rear) whose photos it says show
+    # the OTHER end. "drop": its finds are dropped, as before. "shadow": the
+    # run log also keeps what "keep" would add (zones' entry wrong_end);
+    # nothing else changes. "keep": its finds become suggestions with the
+    # note "The rear read thought these photos show the front." -- never on
+    # the list.
+    intake_zone_wrong_end: str = "drop"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
     # side_from_sorter). Off: the reader's side stands, as before.
@@ -325,10 +355,26 @@ class Settings(BaseSettings):
     def _thinking_level(cls, value):
         return normal_thinking_levels(value)
 
-    @field_validator("gemini_image_resolution")
+    @field_validator("gemini_image_resolution", "gemini_image_resolution_main_read")
     @classmethod
     def _image_resolution(cls, value):
         return normal_image_resolutions(value)
+
+    # E12: blank is unset (32); 1 to MAX_READ_PHOTOS_LIMIT.
+    @field_validator("intake_max_read_photos", mode="before")
+    @classmethod
+    def _max_read_photos(cls, value):
+        return normal_max_read_photos(value)
+
+    @field_validator("intake_side_geometry")
+    @classmethod
+    def _side_geometry(cls, value):
+        return _one_of(value, SIDE_GEOMETRY, "intake_side_geometry")
+
+    @field_validator("intake_zone_wrong_end")
+    @classmethod
+    def _zone_wrong_end(cls, value):
+        return _one_of(value, ZONE_WRONG_END, "intake_zone_wrong_end")
 
     @field_validator("gemini_read_tools")
     @classmethod
@@ -836,6 +882,27 @@ LINK_HIDDEN_NO = ("keep", "cannot_tell")
 # B4: at most this many sorting batches at once (5 batch starts still sit
 # under the 12-a-minute limit; the limiter spaces them).
 MAX_SORT_WORKERS = 5
+# Wave 2 (plans/2026-11-22-enhance-staging 3c): the first of each is the
+# default, today's behaviour. E7, E11.
+SIDE_GEOMETRY = ("off", "vote", "tiebreak")
+ZONE_WRONG_END = ("drop", "shadow", "keep")
+# E12: the most photos one reading may send (64 at medium is 32 at high's
+# image tokens).
+MAX_READ_PHOTOS_LIMIT = 64
+
+
+def normal_max_read_photos(value) -> int | None:
+    """intake_max_read_photos: None (unset: 32) when blank, else a whole
+    number 1 to MAX_READ_PHOTOS_LIMIT. Raises ValueError otherwise."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        count = int(str(value).strip())
+    except ValueError:
+        raise ValueError(f"intake_max_read_photos {value!r}: a whole number, 1 to {MAX_READ_PHOTOS_LIMIT}") from None
+    if isinstance(value, bool) or not 1 <= count <= MAX_READ_PHOTOS_LIMIT:
+        raise ValueError(f"intake_max_read_photos {value!r}: 1 to {MAX_READ_PHOTOS_LIMIT}")
+    return count
 
 
 def normal_read_mode(value) -> str:
