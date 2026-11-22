@@ -15,6 +15,7 @@ gone afterwards, every run has --network none; and the refusals (not root,
 no copy, a damaged copy).
 """
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -212,6 +213,9 @@ def main() -> int:
           calls)
     check(":/app/app:ro" in calls, "the code is mounted read-only")
     check("carlink_api" not in calls and "infra_bot_data" not in calls, "production's container and volume never named")
+    names = re.findall(r"volume create --label carlink\.migration-check=1 (\S+)", calls)
+    check(len(names) == 1 and re.fullmatch(r"carlink_migration_check_\d{14}_\d+_\d+", names[0]),
+          "the throwaway volume's name is unique per run: time, pid and a random number (review L7)", repr(names))
 
     print("\n2. --ref: the release's code from git, nothing checked out")
     git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -241,6 +245,22 @@ def main() -> int:
     code, out = run(bad.as_posix())
     check(code != 0 and "PASS" not in out, "a damaged copy: not a pass", out[-400:])
     check(list(vols.iterdir()) == [], "... and its volume is removed too")
+
+    print("\n4. restore_test.sh (D1's) says why when there is no backup folder (review L1)")
+    restore = repo / "infra" / "restore_test.sh"
+    restore.write_text((REPO / "infra" / "restore_test.sh").read_text(encoding="utf-8").replace("\r\n", "\n"),
+                       encoding="utf-8", newline="\n")
+    log.write_text("")
+    env = {**os.environ, "MOCK_VOLS": str(vols), "MOCK_LOG": str(log), "SHIMS": str(bin_dir)}
+    snippet = ('s="$SHIMS"; command -v cygpath >/dev/null 2>&1 && s=$(cygpath -u "$s"); '
+               'export PATH="$s:$PATH"; exec bash "$0" "$@"')
+    r = subprocess.run([BASH, "-c", snippet, restore.as_posix()], env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
+    check(r.returncode == 1 and "no local copy in /root/.carlink-backup/local" in (r.stdout + r.stderr),
+          "no /root/.carlink-backup/local: exits 1 WITH the message (it used to exit silently)", r.stdout + r.stderr)
+    text = restore.read_text(encoding="utf-8")
+    check('carlink_restore_test_$(date -u +%Y%m%d%H%M%S)_$$_$RANDOM' in text,
+          "its throwaway volume's name is unique per run too (review L7)")
 
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")
     for f in FAILURES:

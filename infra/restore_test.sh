@@ -39,7 +39,9 @@ die() { echo "restore-test: ERROR: $*" >&2; exit 1; }
 if [ $# -ge 1 ]; then
     FILE=$(readlink -f "$1")
 else
-    FILE=$(find "$LOCAL_DIR" -maxdepth 1 -name 'carlink-*.db' -printf '%p\n' 2>/dev/null | sort | tail -n 1)
+    # `|| true`: under pipefail a missing folder made find fail and the
+    # script exit silently, before the message below (review L1).
+    FILE=$(find "$LOCAL_DIR" -maxdepth 1 -name 'carlink-*.db' -printf '%p\n' 2>/dev/null | sort | tail -n 1 || true)
     [ -n "$FILE" ] || die "no local copy in $LOCAL_DIR (run: sudo bash infra/backup.sh)"
 fi
 [ -f "$FILE" ] || die "no such file: $FILE"
@@ -48,7 +50,10 @@ echo "restore-test: copy under test: $FILE"
 # The image the live api runs (already on the server: nothing is pulled).
 IMAGE=$(docker inspect -f '{{.Config.Image}}' "$API") || die "container $API not found"
 VOL=$(docker volume inspect "$PROD_VOLUME" --format '{{.Mountpoint}}')
-TMPVOL="carlink_restore_test_$(date -u +%Y%m%d%H%M%S)"
+# Unique per run (review L7): two runs in one second must not share a volume.
+# A run killed hard can leave one behind (it holds real data):
+#   docker volume ls -f label=carlink.restore-test=1   then: docker volume rm <name>
+TMPVOL="carlink_restore_test_$(date -u +%Y%m%d%H%M%S)_$$_$RANDOM"
 WORK=$(mktemp -d)
 cleanup() {
     docker volume rm -f "$TMPVOL" >/dev/null 2>&1 || true

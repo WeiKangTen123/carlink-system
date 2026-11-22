@@ -81,7 +81,10 @@ if [ -z "$IMAGE" ]; then
         die "no carlink_staging_api or carlink_api to take the image from; set CARLINK_MIGRATION_IMAGE"
 fi
 
-TMPVOL="carlink_migration_check_$(date -u +%Y%m%d%H%M%S)"
+# Unique per run (review L7): two runs in one second must not share a volume.
+# A run killed hard can leave one behind (it holds a copy of real data):
+#   docker volume ls -f label=carlink.migration-check=1   then: docker volume rm <name>
+TMPVOL="carlink_migration_check_$(date -u +%Y%m%d%H%M%S)_$$_$RANDOM"
 WORK=$(mktemp -d)
 cleanup() {
     docker volume rm -f "$TMPVOL" >/dev/null 2>&1 || true
