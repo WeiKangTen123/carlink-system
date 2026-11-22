@@ -48,9 +48,11 @@ from app.config import settings
 from app.reports.taxonomy import (
     CANONICAL_PARTS,
     FIRM_CONDITION_TOKENS,
+    KNOWN_PARTS,
     UNDETERMINED_SUFFIX,
     damage_type_from_tokens,
     firm_condition,
+    known_part,
     split_side,
     unsided_part,
 )
@@ -168,10 +170,11 @@ def covers_of(part: str) -> list[str]:
     itself, and its family's "(side undetermined)" name -- or, for a
     side-undetermined part, every sided name of its family. "Left Tail
     Lamp" is listed by "Tail Lamp (side undetermined)" (the reading saw a
-    tail lamp it couldn't place) but not by "Right Tail Lamp"."""
+    tail lamp it couldn't place) but not by "Right Tail Lamp". A car map
+    part's family the same way (taxonomy.KNOWN_PARTS)."""
     family = unsided_part(part) or part
     if part.endswith(UNDETERMINED_SUFFIX):
-        return [p for p in CANONICAL_PARTS if (unsided_part(p) or p) == family]
+        return [p for p in KNOWN_PARTS if (unsided_part(p) or p) == family]
     return [part] if family == part else [part, family]
 
 
@@ -200,7 +203,7 @@ def other_side_listed(part: str, listed: set[str]) -> str | None:
     if side not in ("Left", "Right"):
         return None
     other = f"{'Right' if side == 'Left' else 'Left'} {base}"
-    return other if other in CANONICAL_PARTS and other in listed else None
+    return other if known_part(other) and other in listed else None
 
 
 # ------------------------------------------------------------ candidates
@@ -728,20 +731,46 @@ def _links_mode() -> str:
     return mode if links.TABLE is not None else "off"
 
 
-def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str]
-                ) -> tuple[list[dict], dict[str, dict]]:
+def _car_map_mode() -> str:
+    """settings.intake_car_map: "off" (anything else too), "shadow" or "on".
+    Off: the car map module isn't even imported."""
+    mode = getattr(settings, "intake_car_map", "off")
+    return mode if mode in ("shadow", "on") else "off"
+
+
+def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
+                tables=None, *, shadow: bool = False) -> tuple[list[dict], dict[str, dict]]:
     """Contract 10: the linked parts of this read (intake/links.build_all)
     against the list as it is now, beside the open suggestions `kept` --
-    a part one of them is joins it instead (the joins, by key)."""
-    from app.intake import links, zones
+    a part one of them is joins it instead (the joins, by key). tables:
+    car_map.link_tables' answer (None: L1 as before); shadow: build from
+    its shadow table instead of the shown one. With the car map's facts,
+    each group also gets its "also check" words (car_map.add_also_check).
+    With the assembly walk on (settings.intake_assembly_walk) and a stored
+    walk, its signs too (intake/assembly_walk.from_settings), on whichever
+    table is built; off, build_all is called as before."""
+    from app.intake import assembly_walk, links, zones
     from app.intake.photos import ordered_photos
 
     vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
     listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
     opts = links.options()
     neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
-    return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
-                           opts, dismissed=dismissed, neighbours=neighbours)
+    walk = assembly_walk.from_settings(ai_draft, settings)
+    extra = {"walk": walk} if walk else {}
+    if tables is None:
+        return links.build_all(listed, kept, ordered_photos(db, report_id), zones.intact_of(ai_draft), links.TABLE,
+                               opts, dismissed=dismissed, neighbours=neighbours, **extra)
+    table, info = (tables.shadow, tables.shadow_info) if shadow else (tables.shown, tables.shown_info)
+    photos = ordered_photos(db, report_id)
+    linked, joins = links.build_all(listed, kept, photos, zones.intact_of(ai_draft), table, opts, dismissed=dismissed,
+                                    neighbours=neighbours, info=info, **extra)
+    if info is not None:
+        from app.intake import car_map
+
+        car_map.add_also_check(linked, tables.car_map, links.levels_of(listed, photos, opts, **extra),
+                               body_type=tables.body_type)
+    return linked, joins
 
 
 def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
@@ -752,21 +781,46 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     found too join that suggestion in `kept`, in place; the listed and
     dismissed ones go. "shadow": they go on the AI draft only
     (session.ai_draft["link_suggestions"]; [] when they couldn't be worked
-    out). "off": nothing at all, not even an import."""
+    out). "off": nothing at all, not even an import.
+
+    The car map (settings.intake_car_map, K1-design.md 3, S1): "off"
+    changes nothing here; "on" builds from the map's table (L1 when the
+    map can't be used) with its group fields; "shadow" builds from L1 as
+    when off and from the map's table beside it, kept on the AI draft only
+    (session.ai_draft["car_map_suggestions"], for the replay and the log;
+    [] when it couldn't be worked out)."""
     from app.reports.schema import SecondLookItem
 
     mode = _links_mode()
     if mode == "off":
         return []
+    tables = None
+    if _car_map_mode() != "off":
+        from app.intake import car_map, links
+
+        vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
+        tables = car_map.link_tables(links.TABLE, vehicle)
     try:
-        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed)
+        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables)
     except Exception:
         logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
         linked, joins = [], {}
+    extra: dict = {}
+    if tables is not None and tables.shadow is not None:
+        try:
+            mapped, _ = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables, shadow=True)
+            mapped = [it for it in mapped if not _listed_as(it, listed, listed_keys)
+                      and it["key"] not in dismissed and it["part"] not in dismissed]
+            extra["car_map_suggestions"] = [SecondLookItem.model_validate(it).model_dump() for it in mapped]
+        except Exception:
+            logger.exception("Second look for %s: couldn't work out the car map's linked parts", report_id)
+            extra["car_map_suggestions"] = []
     if mode == "shadow":
         session.ai_draft = {**ai_draft, "link_suggestions": [
-            SecondLookItem.model_validate(it).model_dump() for it in linked]}
+            SecondLookItem.model_validate(it).model_dump() for it in linked], **extra}
         return []
+    if extra:
+        session.ai_draft = {**ai_draft, **extra}
     for it in kept:
         if it["key"] in joins:
             _join_twin(it, joins[it["key"]])

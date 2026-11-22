@@ -3,6 +3,9 @@ links.py) replayed on stored benchmark runs, and scored against the key.
 
     python scripts/bench/replay_links.py RESULT.json [MORE.json ...] --key KEY.json [--out OUT.json]
         [--variant NAME ...] [--label L] [--ref R] [--freeze L1-freeze.md] [--not-frozen-ok]
+        [--car-map PATH|from-l1|off] [--links-order table|prior] [--assembly-max N]
+        [--stripdown-cap in|out] [--stripdown-max N] [--car-map-names]
+        [--no-walk] [--walk-raise one|full] [--link-hops 1|2]
 
 For every stored run that scored (benchmark_intake.py --out; an errored run
 -- a 503 storm, no list -- is skipped, never scored as a miss), the inputs
@@ -49,6 +52,37 @@ skill files' are checked against the L1 freeze (FROZEN, or --freeze FILE);
 a mismatch stops the replay (exit 2) unless --not-frozen-ok, which labels
 every number "NOT the frozen table". The knob defaults in app/config.py are
 checked the same way.
+
+The car map's review screen (K4, plans/2026-11-18-car-knowledge/
+K1-design.md 5b; still 0 calls): --car-map builds from a car map's table
+(car_map.links_table; no body gate -- a stored run keeps no make and
+model) with its facts (car_map.review_lookup: groups by assembly, priors,
+"also check" words); "from-l1" is L1 converted (car_map.from_l1, the same
+links grouped one assembly per L1 parent); a map that doesn't load stops
+the replay (exit 2). --links-order, --assembly-max, --stripdown-cap and
+--stripdown-max set links.Options' K4 knobs, on L1 as on a map. Any of
+them (even at its default, "--car-map off" too) adds the review metrics
+per case-run: the strip-down block's size (folded) and the strip-down
+parts shown, the cap hits (what intake_links_max cut, seen + likely and
+strip-down, beside an uncapped build; what the per-group cap cut beside
+one without it), the items per group (assembly, else listed part); and
+the K4 fields on each row. With none of them the output is today's, byte
+for byte.
+
+The assembly walk (K3b, K1-design.md 5a; still 0 calls): a run stored with
+its walk (benchmark_intake.py --assembly-walk keeps "assembly_walk", photos
+by label) is replayed with it, as second_look._store builds it
+(assembly_walk.for_links: the yes signs raise a hit, gate positions, lift a
+strip-down part, and with hops 2 open a chain's second hop) -- with the
+raise and hops the file recorded (ai_settings intake_walk_raise /
+intake_link_hops; else one / 1), or --walk-raise / --link-hops; --no-walk
+replays the same reads without it (the baseline). The signs are read
+against the --car-map map when it has signs, else the app's car map
+(app/intake/car_map.json); positions, lifts and chains act only on that
+map's own table (--car-map), the hit raise on L1 too. Then each row keeps
+hop / via / signs_yes and each case-run a "walk" block; a walk flag with
+no stored walk in the files, or no map with signs, stops the replay (exit
+2). Files without a walk replay as before, byte for byte.
 
 Prints per variant the 4-case-run totals, a per-case table and the kinds /
 buckets / hits; --out writes every case-run's links (part names, kinds,
@@ -167,6 +201,17 @@ VARIANTS = {
 # What a replayed link keeps (no reason text, no photo of the parent).
 ROW_FIELDS = ("key", "part", "link_type", "link_rule", "hit", "bucket", "hidden", "needs_strip_down", "linked_from",
               "side_from", "intact_in", "seen_in")
+# ... and with the review knobs (K4), the car map's fields too.
+REVIEW_ROW_FIELDS = ("assembly", "assembly_name", "prior", "hop", "fitted", "also_check", "folded")
+# links.Options' K4 knobs, by flag.
+REVIEW_FLAGS = (("links_order", "order"), ("assembly_max", "assembly_max"), ("stripdown_cap", "stripdown_cap"),
+                ("stripdown_max", "stripdown_max"))
+# ... and with a stored assembly walk (K3b).
+WALK_ROW_FIELDS = ("hop", "via", "signs_yes")
+# A cap no case reaches: the builds the cap hits are counted against.
+UNCAPPED = 10 ** 6
+# links.Options' fields that only a K4 flag shows in the output.
+K4_OPTIONS = ("order", "assembly_max", "stripdown_cap", "stripdown_max")
 
 
 def parse_freeze(text: str) -> tuple[str | None, dict[str, str]]:
@@ -258,33 +303,114 @@ def zone_intact_of(run: dict) -> dict[str, list[str]]:
     return out
 
 
-def replay_run(run: dict, case: dict, table: dict, opts: links.Options, inside: set[str]) -> dict:
+def _shown(listed, others, photos, intact, table, opts, review, walk=None) -> tuple[list[dict], dict]:
+    """build_all as second_look._store calls it ("on": a link on the list
+    goes), with the car map's facts and "also check" words when review
+    has them, and the run's assembly walk when it has one."""
+    info = (review or {}).get("info")
+    kw = {"info": info} if info is not None else {}
+    walk_kw = {"walk": walk} if walk is not None else {}
+    items, joins = links.build_all(listed, others, photos, intact, table, opts, dismissed=(), **kw, **walk_kw)
+    names = {str(i.get("part")) for i in listed}
+    items = [it for it in items if not set(links.covers(it["part"])) & names]
+    if info is not None:
+        review["module"].add_also_check(items, review["map"], links.levels_of(listed, photos, opts, **walk_kw),
+                                        names=review.get("names", False))
+    return items, joins
+
+
+def walk_of(run: dict, walking: dict | None):
+    """The run's stored assembly walk as links.build takes it
+    (assembly_walk.for_links on the walk's map index, with the raise and
+    hops in `walking`), or None: no walk stored, or none asked for."""
+    if walking is None or not isinstance(run.get("assembly_walk"), dict) or not run["assembly_walk"]:
+        return None
+    return walking["module"].for_links(run["assembly_walk"], walking["index"], walking["raise"], walking["hops"])
+
+
+def walk_metrics(items: list[dict], walk) -> dict:
+    """What the walk did in one case-run: its panels and yes answers, the
+    linked parts a yes sign lifted or opened (signs_yes), the second hops."""
+    answers = walk.answers if walk is not None else {}
+    return {
+        "used": walk is not None,
+        "panels": len(answers),
+        "yes": sum(1 for rec in answers.values() for got in rec.get("signs", {}).values() if got.get("answer") == "yes"),
+        "signs_yes_items": sum(1 for it in items if it.get("signs_yes")),
+        "hop2": sum(1 for it in items if it.get("hop") == 2),
+    }
+
+
+def review_metrics(items: list[dict], listed, others, photos, intact, table, opts, review, walk=None) -> dict:
+    """K4's numbers for one case-run: the strip-down block (folded) and the
+    strip-down parts shown; the cap hits -- the parts intake_links_max (and
+    the folded block's own cap) cut, beside a build without those caps, by
+    seen + likely and strip-down -- and what the per-group cap cut, beside
+    a build without that one too; the items per group. Pure: two more
+    builds, on copies."""
+    keys = {it["key"] for it in items}
+    free = links.Options(**{**opts.__dict__, "max_items": UNCAPPED, "stripdown_max": UNCAPPED})
+    loose = links.Options(**{**free.__dict__, "assembly_max": UNCAPPED})
+    uncapped, _ = _shown(copy.deepcopy(listed), copy.deepcopy(others), photos, intact, table, free, review, walk)
+    ungrouped, _ = _shown(copy.deepcopy(listed), copy.deepcopy(others), photos, intact, table, loose, review, walk)
+    cut = [it for it in uncapped if it["key"] not in keys]
+    free_keys = {it["key"] for it in uncapped}
+    groups: dict[str, int] = {}
+    for it in items:
+        groups[links.group_of(it)] = groups.get(links.group_of(it), 0) + 1
+    return {
+        "folded": sum(1 for it in items if it.get("folded")),
+        "stripdown_shown": sum(1 for it in items if it.get("bucket") == "strip_down"),
+        "cap_cut_seen_likely": sum(1 for it in cut if it.get("bucket") in ("seen", "likely")),
+        "cap_cut_stripdown": sum(1 for it in cut if it.get("bucket") == "strip_down"),
+        "cap_hit": bool(cut),
+        "group_cut": sum(1 for it in ungrouped if it["key"] not in free_keys),
+        "groups": len(groups),
+        "group_max": max(groups.values()) if groups else 0,
+        "per_group": dict(sorted(groups.items())),
+    }
+
+
+def replay_run(run: dict, case: dict, table: dict, opts: links.Options, inside: set[str], review=None,
+               walking=None) -> dict:
     """One stored case-run: the linked parts build gives, scored. The list,
     the suggestions, the photos and the intact lists go in as they are
     (never copied), so a change build made to any of them shows:
-    damage_list_identical."""
+    damage_list_identical. review (any K4 flag): the car map's facts, and
+    the review metrics and fields. walking (a stored walk in the files,
+    not --no-walk): the run's walk, if it has one, and its fields."""
     listed = listed_of(run)
     others, others_from = suggestions_of(run)
     photos = run.get("sorted_photos") or []
     intact = zone_intact_of(run)
-    before = json.dumps([listed, others, photos, intact], sort_keys=True)
+    walk = walk_of(run, walking)
+    before = json.dumps([listed, others, photos, intact, run.get("assembly_walk")], sort_keys=True)
     stored = json.dumps(run.get("drafted_items"), sort_keys=True)
-    items, joins = links.build_all(listed, others, photos, intact, table, opts, dismissed=())
     # second_look._store ("on"): a link on the list, or dismissed, goes.
-    names = {str(i.get("part")) for i in listed}
-    items = [it for it in items if not set(links.covers(it["part"])) & names]
-    identical = (json.dumps([listed, others, photos, intact], sort_keys=True) == before
+    items, joins = _shown(listed, others, photos, intact, table, opts, review, walk)
+    metrics = (review_metrics(items, listed, others, photos, intact, table, opts, review, walk)
+               if review is not None else None)
+    identical = (json.dumps([listed, others, photos, intact, run.get("assembly_walk")], sort_keys=True) == before
                  and json.dumps(run.get("drafted_items"), sort_keys=True) == stored)
     drafted = [str(i.get("part")) for i in listed if i.get("part")]
-    rows = [{k: copy.deepcopy(it.get(k)) for k in ROW_FIELDS} for it in items]
+    fields = ROW_FIELDS + (REVIEW_ROW_FIELDS if review is not None else ())
+    if walking is not None:
+        fields += tuple(f for f in WALK_ROW_FIELDS if f not in fields)
+    rows = [{k: copy.deepcopy(it.get(k)) for k in fields} for it in items]
     block = bench.score_links(case["parts"], drafted, [o["part"] for o in others], rows, inside=inside)
     block.update(zone_joined=len(joins), suggestions_from=others_from, damage_list_identical=identical)
-    return {"case": run.get("case"), "parts": bench.score_parts(case["parts"], drafted), "drafted_parts": drafted,
-            "suggested": [o["part"] for o in others], "links": block, "link_suggestions": rows,
-            "joins": {k: v["linked_from"] for k, v in sorted(joins.items())}}
+    out = {"case": run.get("case"), "parts": bench.score_parts(case["parts"], drafted), "drafted_parts": drafted,
+           "suggested": [o["part"] for o in others], "links": block, "link_suggestions": rows,
+           "joins": {k: v["linked_from"] for k, v in sorted(joins.items())}}
+    if metrics is not None:
+        out["review"] = metrics
+    if walking is not None:
+        out["walk"] = walk_metrics(items, walk)
+    return out
 
 
-def replay(sources: list[tuple[str, dict]], key: dict[str, dict], table: dict, opts: links.Options) -> tuple[list, list]:
+def replay(sources: list[tuple[str, dict]], key: dict[str, dict], table: dict, opts: links.Options,
+           review=None, walking=None) -> tuple[list, list]:
     """(replayed case-runs, sources' notes) over the files in order. Each
     file's repetitions are 4-case runs, numbered on across the files (rep),
     with the file and its own number kept (source, source_rep)."""
@@ -308,7 +434,7 @@ def replay(sources: list[tuple[str, dict]], key: dict[str, dict], table: dict, o
             if not bench.run_ok(r):
                 skipped.append({"case": r.get("case"), "rep": rep, "why": (r.get("error") or "no list")[:200]})
                 continue
-            out = replay_run(r, case, table, opts, inside)
+            out = replay_run(r, case, table, opts, inside, review, walking_for(walking, doc))
             out.update(rep=number[rep], source=name, source_rep=rep)
             runs.append(out)
         notes.append({"file": name, "label": doc.get("label"), "runs": len(stored), "replayed": len(stored) - len(skipped),
@@ -356,11 +482,38 @@ def group_lines(runs: list[dict]) -> list[str]:
     return out[:-1]
 
 
+def review_lines(runs: list[dict]) -> list[str]:
+    """The review metrics (K4) per case-run: strip-down block, cap hits,
+    items per group."""
+    rows = [["case", "rep", "shown", "folded", "strip-down shown", "cap cut s+l", "cap cut strip", "cap hit",
+             "group cut", "groups", "most in a group"]]
+    for r in runs:
+        m = r.get("review") or {}
+        rows.append([str(r.get("case")), str(r.get("rep")), str(r["links"]["shown"]), str(m.get("folded", 0)),
+                     str(m.get("stripdown_shown", 0)), str(m.get("cap_cut_seen_likely", 0)),
+                     str(m.get("cap_cut_stripdown", 0)), "yes" if m.get("cap_hit") else "no",
+                     str(m.get("group_cut", 0)), str(m.get("groups", 0)), str(m.get("group_max", 0))])
+    hits = sum(1 for r in runs if (r.get("review") or {}).get("cap_hit"))
+    return _cells(rows) + [f"cap hit in {hits} of {len(runs)} case-run(s)"]
+
+
+def review_summary(runs: list[dict]) -> dict:
+    """The review metrics summed over the case-runs (and the most per group)."""
+    ms = [r.get("review") or {} for r in runs]
+    total = {k: sum(int(m.get(k) or 0) for m in ms) for k in ("folded", "stripdown_shown", "cap_cut_seen_likely",
+                                                                 "cap_cut_stripdown", "group_cut", "groups")}
+    total.update(case_runs=len(ms), cap_hits=sum(1 for m in ms if m.get("cap_hit")),
+                 group_max=max((int(m.get("group_max") or 0) for m in ms), default=0),
+                 folded_max=max((int(m.get("folded") or 0) for m in ms), default=0))
+    return total
+
+
 def variant_lines(name: str, entry: dict) -> list[str]:
     s = entry["summary"]
     total = s["total"]
     shown = [r["links"]["shown"] for r in entry["runs"]]
-    head = "frozen L1 knobs (the headline)" if name == "default" else \
+    head = ("frozen L1 knobs (the headline)" if "review" not in entry else
+            "frozen knobs with the review flags above (K4: not the L1 headline)") if name == "default" else \
         f"pre-registered, sensitivity only: {', '.join(f'{k} {v}' for k, v in VARIANTS[name].items())}"
     out = [f"== variant {name}: {head}",
            f"   {len(entry['runs'])} case-run(s), {len(s['complete_reps'])} complete 4-case run(s); links shown per "
@@ -372,6 +525,9 @@ def variant_lines(name: str, entry: dict) -> list[str]:
                    f"{bench._fmt(total.get('lz_recall'))} -> +links {bench._fmt(total.get('lzl_recall'))}, inside "
                    f"{bench._fmt(total.get('lz_inside_recall'))} -> {bench._fmt(total.get('lzl_inside_recall'))}")
     out += ["", *summary_lines(s), "", *group_lines(entry["runs"])]
+    if "review" in entry:
+        out += ["", "   review screen (K4): " + ", ".join(f"{k} {v}" for k, v in entry["review"].items()), "",
+                *review_lines(entry["runs"])]
     return out
 
 
@@ -391,7 +547,114 @@ def parse_args(argv=None) -> argparse.Namespace:
                                                 "the built-in L1 values")
     ap.add_argument("--not-frozen-ok", action="store_true",
                     help="replay a table or knobs that are not the freeze's (every number labelled so)")
-    return ap.parse_args(argv)
+    k4 = ap.add_argument_group("the car map's review screen (K4); any of these adds the review metrics")
+    k4.add_argument("--car-map", metavar="PATH|from-l1|off",
+                    help="build from this car map's table and facts ('from-l1': L1 converted; 'off': L1)")
+    k4.add_argument("--car-map-names", action="store_true",
+                    help="the car map's table with its own part names (N1, intake_car_map_names on); needs --car-map")
+    k4.add_argument("--links-order", choices=config.LINKS_ORDERS, help="intake_links_order (default table)")
+    k4.add_argument("--assembly-max", type=int, metavar="N", help="intake_links_assembly_max (default 4)")
+    k4.add_argument("--stripdown-cap", choices=config.STRIPDOWN_CAPS, help="intake_links_stripdown_cap (default in)")
+    k4.add_argument("--stripdown-max", type=int, metavar="N", help="intake_links_stripdown_max (default 12)")
+    wk = ap.add_argument_group("the assembly walk (K3b): a run stored with its walk is replayed with it")
+    wk.add_argument("--no-walk", action="store_true", help="replay the same reads without their stored walks")
+    wk.add_argument("--walk-raise", choices=config.WALK_RAISES,
+                    help="intake_walk_raise for the stored walks (default: what the file recorded, else one)")
+    wk.add_argument("--link-hops", type=int, choices=config.LINK_HOPS,
+                    help="intake_link_hops for the stored walks (default: what the file recorded, else 1)")
+    args = ap.parse_args(argv)
+    for name in ("assembly_max", "stripdown_max"):
+        value = getattr(args, name)
+        if value is not None:
+            try:
+                setattr(args, name, config.normal_count(value, f"--{name.replace('_', '-')}"))
+            except ValueError as exc:
+                ap.error(str(exc))
+    return args
+
+
+def walking_for(walking: dict | None, doc: dict) -> dict | None:
+    """The walk knobs for one stored file: --walk-raise / --link-hops, else
+    what the file recorded (ai_settings), else one / 1."""
+    if walking is None:
+        return None
+    recorded = doc.get("ai_settings") if isinstance(doc.get("ai_settings"), dict) else {}
+    raise_mode = walking["raise_flag"] or recorded.get("intake_walk_raise") or "one"
+    hops = walking["hops_flag"] or recorded.get("intake_link_hops") or 1
+    return {**walking, "raise": raise_mode, "hops": int(hops)}
+
+
+def walk_setup(args: argparse.Namespace, sources: list[tuple[str, dict]], review: dict | None) -> dict | None:
+    """The stored walks' replay setup, or None (no run keeps a walk, or
+    --no-walk): the walk's map index -- the --car-map map's when it has
+    signs, else the app's car map's -- and the flags. Exits 2 on a walk
+    flag with nothing to act on, or no map with signs to read the walks
+    against."""
+    flags = args.walk_raise is not None or args.link_hops is not None
+    stored = sum(1 for _, doc in sources for r in (doc.get("runs") or doc.get("results") or [])
+                 if isinstance(r, dict) and isinstance(r.get("assembly_walk"), dict) and r["assembly_walk"])
+    if args.no_walk:
+        if flags:
+            print("replay_links: --no-walk with --walk-raise / --link-hops: one or the other", file=sys.stderr)
+            sys.exit(2)
+        return None
+    if not stored:
+        if flags:
+            print("replay_links: --walk-raise / --link-hops: no stored run keeps an assembly walk", file=sys.stderr)
+            sys.exit(2)
+        return None
+    from app.intake import assembly_walk, car_map
+
+    cm = (review or {}).get("map")
+    index = assembly_walk.index_for(cm) if isinstance(cm, dict) else None
+    where = review.get("car_map") if index is not None else None
+    if index is None:
+        index, where = assembly_walk.index_for(car_map.MAP), "app/intake/car_map.json"
+    if index is None:
+        print("replay_links: the stored walks need a car map with signs (--car-map PATH, or "
+              "app/intake/car_map.json); none loaded", file=sys.stderr)
+        sys.exit(2)
+    versions = sorted({str((doc.get("ai_settings") or {}).get("car_map_version")) for _, doc in sources
+                       if isinstance(doc.get("ai_settings"), dict) and (doc.get("ai_settings") or {}).get("car_map_version")})
+    return {"module": assembly_walk, "index": index, "map": where, "version": index.version,
+            "raise_flag": args.walk_raise, "hops_flag": args.link_hops, "runs_with_walk": stored,
+            "recorded_versions": versions}
+
+
+def review_setup(args: argparse.Namespace) -> tuple[dict | None, dict | None, dict]:
+    """(the review dict replay_run takes -- None when no K4 flag was given,
+    the table to build from -- None: L1 --, the Options changes). Exits 2
+    when --car-map names a map that doesn't load or compile."""
+    change = {opt: getattr(args, flag) for flag, opt in REVIEW_FLAGS if getattr(args, flag) is not None}
+    if args.car_map_names and args.car_map in (None, "off"):
+        print("replay_links: --car-map-names names a car map's linked parts; give --car-map too", file=sys.stderr)
+        sys.exit(2)
+    if args.car_map is None and not change:
+        return None, None, {}
+    review: dict = {"car_map": "off", "info": None, "map": None, "module": None, "names": False}
+    table = None
+    if args.car_map not in (None, "off"):
+        from app.intake import car_map
+
+        if args.car_map == "from-l1":
+            cm, where = car_map.from_l1(links.TABLE), "from-l1 (L1 converted)"
+            sha = None
+        else:
+            path = Path(args.car_map)
+            cm, where, sha = car_map.load(path), str(path), car_map.sha256_lf(path)
+        if cm is None:
+            print(f"replay_links: the car map {args.car_map} doesn't load (see the log)", file=sys.stderr)
+            sys.exit(2)
+        compiled = car_map.links_table(cm, names=bool(args.car_map_names))
+        problems = links.validate_table(compiled)
+        if problems:
+            print(f"replay_links: the car map's table fails the check: {problems[0]}", file=sys.stderr)
+            sys.exit(2)
+        table = compiled
+        review.update(car_map=where, version=cm.get("version"), sha256_lf=sha, links=len(compiled["links"]),
+                      info=car_map.review_lookup(cm), map=cm, module=car_map,
+                      map_frozen=car_map.frozen_as(cm.get("version"), sha), names=bool(args.car_map_names))
+    return review, table, change
 
 
 def main(argv=None) -> int:
@@ -416,28 +679,69 @@ def main(argv=None) -> int:
     if "all" in asked:
         asked = set(VARIANTS)
     names = ["default"] + [name for name in VARIANTS if name in asked and name != "default"]
+    review, review_table, change = review_setup(args)
+    table = review_table if review_table is not None else links.TABLE
+    walking = walk_setup(args, sources, review)
     entries = {}
     notes = []
     for name in names:
-        opts = frozen_options(**VARIANTS[name])
-        runs, notes = replay(sources, key, links.TABLE, opts)
-        entries[name] = {"options": {k: list(v) if isinstance(v, tuple) else v for k, v in opts.__dict__.items()},
-                         "runs": runs, "summary": bench.summarize(runs)}
+        opts = frozen_options(**VARIANTS[name], **change)
+        runs, notes = replay(sources, key, table, opts, review, walking)
+        # Today's options block holds the seven contract 10 knobs: the K4
+        # four join it only when a K4 flag was given.
+        shown_opts = {k: list(v) if isinstance(v, tuple) else v for k, v in opts.__dict__.items()
+                      if review is not None or k not in K4_OPTIONS}
+        entries[name] = {"options": shown_opts, "runs": runs, "summary": bench.summarize(runs)}
+        if review is not None:
+            entries[name]["review"] = review_summary(runs)
     identical = all(r["links"]["damage_list_identical"] for e in entries.values() for r in e["runs"])
     loaded = sorted(m for m in sys.modules if blocked(m))
     doc = {
         "kind": "replay_links", "label": args.label or (args.out.stem if args.out else "replay_links"),
         "git_ref": args.ref, "key": args.key.name, "sources": notes,
-        "table": freeze, "frozen": freeze["ok"], "knobs": FROZEN_KNOBS,
+        "table": freeze, "frozen": freeze["ok"] and review_table is None, "knobs": FROZEN_KNOBS,
         "guard": dict(GUARD, loaded_after=loaded), "gemini_calls": 0,
         "variants_preregistered": list(VARIANTS), "damage_list_identical": identical,
         "runs": entries["default"]["runs"], "summary": entries["default"]["summary"],
         "options": entries["default"]["options"],
         "variants": {n: e for n, e in entries.items() if n != "default"},
     }
+    if walking is not None:
+        ws = [r.get("walk") or {} for r in entries["default"]["runs"]]
+        doc["walk"] = {"map": walking["map"], "version": walking["version"],
+                       "recorded_versions": walking["recorded_versions"],
+                       "flags": {"walk_raise": args.walk_raise, "link_hops": args.link_hops},
+                       "runs_with_walk": walking["runs_with_walk"],
+                       "summary": {"case_runs_walked": sum(1 for w in ws if w.get("used")),
+                                   "yes": sum(int(w.get("yes") or 0) for w in ws),
+                                   "signs_yes_items": sum(int(w.get("signs_yes_items") or 0) for w in ws),
+                                   "hop2": sum(int(w.get("hop2") or 0) for w in ws)}}
+    if review is not None:
+        doc["review_screen"] = {
+            "car_map": review["car_map"], "version": review.get("version"), "sha256_lf": review.get("sha256_lf"),
+            "map_frozen": review.get("map_frozen"), "names": review.get("names", False),
+            "links": review.get("links"), "flags": {flag: getattr(args, flag) for flag, _ in REVIEW_FLAGS},
+            "summary": entries["default"]["review"]}
     print(f"REPLAY linked parts: table {freeze['version']} "
-          f"({'frozen' if freeze['ok'] else 'NOT FROZEN'}), 0 Gemini calls (guard on), "
+          f"({'frozen' if freeze['ok'] else 'NOT FROZEN'}"
+          f"{'; the car map built instead, see below' if review_table is not None else ''}), 0 Gemini calls (guard on), "
           f"{len(sources)} file(s), damage list {'identical' if identical else 'CHANGED'}")
+    if review is not None:
+        flags = ", ".join(f"{flag.replace('_', '-')} {getattr(args, flag)}" for flag, _ in REVIEW_FLAGS
+                          if getattr(args, flag) is not None)
+        frozen = {True: ", the frozen file (K1-freeze.md)", False: ", NOT the frozen file of that version",
+                  None: ""}[review.get("map_frozen")]
+        print(f"   review screen (K4): car map {review['car_map']}"
+              + (f" ({review.get('version')}, {review.get('links')} links, sha256 LF {review.get('sha256_lf')}{frozen})"
+                 if review["car_map"] != "off" else "") + (f"; {flags}" if flags else ""))
+    if walking is not None:
+        w = doc["walk"]
+        stale = [v for v in w["recorded_versions"] if v != w["version"]]
+        print(f"   assembly walk: {w['runs_with_walk']} stored run(s) with a walk, read against {w['map']} "
+              f"({w['version']}); raise {args.walk_raise or 'as recorded'}, hops {args.link_hops or 'as recorded'}; "
+              f"{w['summary']['case_runs_walked']} case-run(s) walked, {w['summary']['signs_yes_items']} part(s) "
+              f"with a yes sign, {w['summary']['hop2']} second hop(s)"
+              + (f"; WARNING: the files' walks were asked from map {', '.join(stale)}" if stale else ""))
     for note in notes:
         print(f"   {note['file']} ({note['label']}): {note['replayed']}/{note['runs']} case-runs replayed, "
               f"4-case runs {note['reps']}" + (f"; skipped {len(note['skipped'])}: "

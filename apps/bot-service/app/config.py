@@ -497,13 +497,61 @@ class Settings(BaseSettings):
     # pipeline -- the same sort, reading, zone reads and suggestions. Off:
     # the bot drafts from them as it does today.
     telegram_full_detection: bool = False
+    # The car map (plans/2026-11-18-car-knowledge/K1-design.md;
+    # intake/car_map.py): which link table the linked parts are built from.
+    # "off": L1 (intake/link_table.json) as it is, byte for byte. "shadow":
+    # L1 shown, the car map's table worked out beside it for the AI draft.
+    # "on": the car map's table shown (L1 when the map can't be used).
+    # car_map.link_tables reads it: second_look._store, the re-link after
+    # a hand-add (reports/suggestions.relinked) and the linked check's
+    # areas (ai/link_check._plan) build from the table it names (K4).
+    intake_car_map: str = "off"
+    # The car map's own part names (taxonomy.CAR_MAP_PARTS: a bumper's
+    # absorber and brackets, a door's lock, hinges and handle ...). "off":
+    # the car map's table leaves out every relation that names one (today's
+    # linked parts) and the part pickers offer today's list. "on": its
+    # linked parts may name them (car_map.table_for_links) and GET
+    # /taxonomy tells the dashboard to offer them. Never in a Gemini enum of
+    # the reads either way; a case that already holds one keeps it valid
+    # and printed when this is turned off.
+    intake_car_map_names: str = "off"
+    # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
+    # each zone read also answers short yes/no signs about the damaged
+    # anchor panels of the car map (car_map.MAP; none with signs: the walk
+    # is skipped) inside the same call, kept as ai_draft["assembly_walk"],
+    # and the linked parts use them. "off": every zone request and linked
+    # part as before.
+    intake_assembly_walk: str = "off"
+    # How far a "yes" sign lifts a listed part's hit level: "one" step above
+    # its own words at most, or "full" (up to the sign's level). Never lower.
+    intake_walk_raise: str = "one"
+    # 2: a car map chain's second hop (anchor -> part -> part) when a sign
+    # that unlocks it says yes; at most 4 such parts a case. 1: one hop.
+    intake_link_hops: int = 1
+    # The car map's review screen (K1-design.md 5b, 6; intake/links.Options):
+    # how the linked parts are ordered and capped. Every default is today's
+    # order and caps, byte for byte.
+    # "table": inside a bucket by kind of link, hit and table order (L1);
+    # "prior": a relation's prior rank first (1 listed most often .. 5; a
+    # relation with none counts as 3) -- only the car map has priors.
+    intake_links_order: str = "table"
+    # Linked parts per group and bucket: a group is an assembly with the
+    # car map "on" (one per side for a door), else the listed part (L1's 4).
+    intake_links_assembly_max: int = 4
+    # "in": the strip-down bucket counts in intake_links_max (L1); "out":
+    # it is its own folded block on the Review step ("Check at strip-down
+    # (N)"), at most intake_links_stripdown_max, never counted in the 12.
+    # A second hop's part (hop 2) goes there unless a photo shows it.
+    intake_links_stripdown_cap: str = "in"
+    intake_links_stripdown_max: int = 12
 
     @field_validator("intake_links")
     @classmethod
     def _links_mode(cls, value):
         return normal_links_mode(value)
 
-    @field_validator("intake_links_max", "intake_link_check_max_calls")
+    @field_validator("intake_links_max", "intake_link_check_max_calls", "intake_links_assembly_max",
+                     "intake_links_stripdown_max")
     @classmethod
     def _links_counts(cls, value, info):
         return normal_count(value, info.field_name)
@@ -542,6 +590,133 @@ class Settings(BaseSettings):
     @classmethod
     def _thinking_level_link(cls, value):
         return normal_thinking_levels(value)
+
+    @field_validator("intake_car_map")
+    @classmethod
+    def _car_map(cls, value):
+        return normal_car_map_mode(value)
+
+    @field_validator("intake_car_map_names")
+    @classmethod
+    def _car_map_names(cls, value):
+        return normal_car_map_names(value)
+
+    @field_validator("intake_assembly_walk")
+    @classmethod
+    def _assembly_walk(cls, value):
+        return normal_walk_mode(value)
+
+    @field_validator("intake_walk_raise")
+    @classmethod
+    def _walk_raise(cls, value):
+        return normal_walk_raise(value)
+
+    @field_validator("intake_link_hops", mode="before")
+    @classmethod
+    def _link_hops(cls, value):
+        return normal_link_hops(value)
+
+    # Light-model detection (plans/2026-11-18-light-detection/P-prompts.md):
+    # instruction packs (ai/prompt_packs.py, ai/packs/*.txt) and prompt
+    # versions, one switch per benchmark experiment (P's ids in brackets).
+    # Every default is today's: the requests are byte for byte what they
+    # were (scripts/test_light_packs.py). scripts/benchmark_intake.py has a
+    # flag for each; set one here only once its experiment has won.
+    #
+    # The main read (ai/extraction.draft_report -- the Telegram bot's
+    # drafts too, which share it): packs, any of orient (R1: today's sides
+    # rule replaced by orient-v1), cues and small (R2: added after it).
+    intake_read_packs: str = ""
+    # "v1": today's prompt. "v2" (R3): P's layout -- evidence rules for
+    # identifiers only, the damage list last with a walk A-E, the packs in
+    # it, and a last text part after the photos.
+    intake_read_prompt: str = "v1"
+    # v2 only (R4): the description's first sentence names where the car was
+    # hit, and point_of_impact and the final check agree with it.
+    intake_read_anchor: bool = False
+    # The zone reads (ai/zone_read.py): packs, any of small (Z1: this zone's
+    # rows), intact (Z2: when a part may be called intact, the same words on
+    # the schema's checked_intact, and a part in both lists kept out of
+    # intact), orient and cues (Z3).
+    intake_zone_packs: str = ""
+    # Z5: the end zones (front, rear) also say which half of the photo each
+    # find is in, and code works out its side from it; a side the model
+    # named that disagrees becomes the "(side undetermined)" name.
+    intake_zone_photo_half: bool = False
+    # The sort (ai/triage.py): "v2" today's; "v3" (S2) with orient-v1 and
+    # small parts named. A sort made by another version is never served from
+    # the benchmark's sort cache (triage.sort_prompt_version). S1 is
+    # gemini_thinking_level_sort: at "high" a batch's try gets 90 s, not 60.
+    intake_sort_prompt: str = "v2"
+    # The linked check (ai/link_check.py). L1 is gemini_thinking_level_link:
+    # at "high" a call's time box is 60 s, not 30. "L1": the frozen skill
+    # files (ai/skills/); "L2": ai/skills-L2/ (worked examples, and an unseen
+    # part never "no" for that alone).
+    intake_link_skill: str = "L1"
+    # "v1": today's base prompt; "v2": P's (work in order: the parents' hit,
+    # then each candidate). P's L2 arm is skill L2 with prompt v2.
+    intake_link_prompt: str = "v1"
+    # L3 (needs intake_link_skill L2): the skill's "Signs of hidden damage"
+    # answered in a `signs` field before the candidates (the .signs.md
+    # skills); kept on the linked check's CheckRun only, never used yet.
+    intake_link_signs: bool = False
+    # L4: "candidates_first" (today) or "photos_first": the closed list
+    # moves after the photos, as the last text part.
+    intake_link_order: str = "candidates_first"
+
+    @field_validator("intake_read_packs")
+    @classmethod
+    def _read_packs(cls, value):
+        return normal_packs(value, READ_PACKS, "intake_read_packs")
+
+    @field_validator("intake_zone_packs")
+    @classmethod
+    def _zone_packs(cls, value):
+        return normal_packs(value, ZONE_PACKS, "intake_zone_packs")
+
+    @field_validator("intake_read_prompt")
+    @classmethod
+    def _read_prompt(cls, value):
+        return _one_of(value, READ_PROMPTS, "intake_read_prompt")
+
+    @field_validator("intake_sort_prompt")
+    @classmethod
+    def _sort_prompt(cls, value):
+        return _one_of(value, SORT_PROMPTS, "intake_sort_prompt")
+
+    @field_validator("intake_link_skill")
+    @classmethod
+    def _link_skill(cls, value):
+        return normal_link_skill(value)
+
+    @field_validator("intake_link_prompt")
+    @classmethod
+    def _link_prompt(cls, value):
+        return _one_of(value, LINK_PROMPTS, "intake_link_prompt")
+
+    @field_validator("intake_link_order")
+    @classmethod
+    def _link_order(cls, value):
+        return _one_of(value, LINK_ORDERS, "intake_link_order")
+
+    @model_validator(mode="after")
+    def _light_switches_that_act(self):
+        # A switch that would change nothing is a typo by another name.
+        problem = light_conflict(self.intake_read_prompt, self.intake_read_anchor, self.intake_link_skill,
+                                 self.intake_link_signs)
+        if problem:
+            raise ValueError(problem)
+        return self
+
+    @field_validator("intake_links_order")
+    @classmethod
+    def _links_order(cls, value):
+        return normal_links_order(value)
+
+    @field_validator("intake_links_stripdown_cap")
+    @classmethod
+    def _links_stripdown_cap(cls, value):
+        return normal_stripdown_cap(value)
 
 
 READ_MODES = ("single", "zones")
@@ -690,6 +865,109 @@ def normal_count(value, name: str = "the count") -> int:
         raise ValueError(f"{name} {value!r}: a whole number, 0 or more")
     return count
 # (end of Contract 10)
+
+
+# The car map's switch (intake/car_map.py), parsed as Contract 10's are.
+CAR_MAP_MODES = ("off", "shadow", "on")
+
+
+def normal_car_map_mode(value) -> str:
+    """intake_car_map written the one way; None or blank is "off"."""
+    return _one_of(value, CAR_MAP_MODES, "intake_car_map")
+
+
+CAR_MAP_NAMES = ("off", "on")
+
+
+def normal_car_map_names(value) -> str:
+    """intake_car_map_names written the one way; None or blank is "off"."""
+    return _one_of(value, CAR_MAP_NAMES, "intake_car_map_names")
+
+
+# The assembly walk's switches (intake/assembly_walk.py), parsed the same way.
+WALK_MODES = ("off", "on")
+WALK_RAISES = ("one", "full")
+LINK_HOPS = (1, 2)
+
+
+def normal_walk_mode(value) -> str:
+    """intake_assembly_walk written the one way; None or blank is "off"."""
+    return _one_of(value, WALK_MODES, "intake_assembly_walk")
+
+
+def normal_walk_raise(value) -> str:
+    """intake_walk_raise written the one way; None or blank is "one"."""
+    return _one_of(value, WALK_RAISES, "intake_walk_raise")
+
+
+def normal_link_hops(value) -> int:
+    """intake_link_hops as 1 or 2; None or blank is 1."""
+    text = "" if value is None else str(value).strip()
+    if isinstance(value, bool) or text not in ("",) + tuple(str(h) for h in LINK_HOPS):
+        raise ValueError(f"intake_link_hops {value!r}: use 1 or 2")
+    return int(text or LINK_HOPS[0])
+
+# Light-model detection's parsers (P-prompts.md), as contract 10's: each
+# raises ValueError, so a typo stops the app at start-up; the benchmark
+# checks its flags with them.
+READ_PACKS = ("orient", "cues", "small")
+ZONE_PACKS = ("orient", "cues", "small", "intact")
+READ_PROMPTS = ("v1", "v2")
+SORT_PROMPTS = ("v2", "v3")
+LINK_SKILLS = ("L1", "L2")
+LINK_PROMPTS = ("v1", "v2")
+LINK_ORDERS = ("candidates_first", "photos_first")
+
+
+def pack_list(text: str | None, choices: tuple = ZONE_PACKS, name: str = "the packs") -> list[str]:
+    """A packs setting as its packs, once each, in `choices` order (so
+    "small, orient" and "orient,small" are one setting). Raises ValueError
+    on a pack it can't take."""
+    named = {entry.lower() for entry in _entries(text)}
+    unknown = sorted(named - set(choices))
+    if unknown:
+        raise ValueError(f"{name} {', '.join(unknown)}: use any of {', '.join(choices)}")
+    return [pack for pack in choices if pack in named]
+
+
+def normal_packs(value, choices: tuple, name: str) -> str:
+    """A packs setting written the one way, "orient,small"; blank (None
+    too) is none -- today's prompt."""
+    return ",".join(pack_list(str(value or ""), choices, name))
+
+
+def normal_link_skill(value) -> str:
+    """intake_link_skill written the one way ("L1", "L2"); blank is L1."""
+    skill = str(value or "").strip().upper() or LINK_SKILLS[0]
+    if skill not in LINK_SKILLS:
+        raise ValueError(f"intake_link_skill {value!r}: use one of {', '.join(LINK_SKILLS)}")
+    return skill
+
+
+def light_conflict(read_prompt: str, read_anchor: bool, link_skill: str, link_signs: bool) -> str | None:
+    """Why two light-model settings can't go together, or None."""
+    if read_anchor and read_prompt != "v2":
+        return "intake_read_anchor is part of read prompt v2: set intake_read_prompt v2 too"
+    if link_signs and link_skill != "L2":
+        return "intake_link_signs uses the L2 skills' signs files: set intake_link_skill L2 too"
+    return None
+# (end of light-model detection)
+
+
+# The car map's review screen (K4): the order inside a bucket, and where
+# the strip-down bucket is counted.
+LINKS_ORDERS = ("table", "prior")
+STRIPDOWN_CAPS = ("in", "out")
+
+
+def normal_links_order(value) -> str:
+    """intake_links_order written the one way; None or blank is "table"."""
+    return _one_of(value, LINKS_ORDERS, "intake_links_order")
+
+
+def normal_stripdown_cap(value) -> str:
+    """intake_links_stripdown_cap written the one way; None or blank is "in"."""
+    return _one_of(value, STRIPDOWN_CAPS, "intake_links_stripdown_cap")
 
 
 # Each model setting written the one way, None when blank (unset). Raise

@@ -104,6 +104,7 @@ from app.reports.taxonomy import (
     CANONICAL_DAMAGE_TYPES,
     CANONICAL_PARTS,
     CANONICAL_SEVERITIES,
+    CAR_MAP_PARTS,
     FIRM_CONDITION_COMMON,
     FIRM_CONDITION_TOKENS,
     FIRM_REMARKS,
@@ -114,6 +115,7 @@ from app.reports.taxonomy import (
     clean_part_name,
     damage_type_from_tokens,
     firm_condition,
+    known_part,
     parse_condition,
 )
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft, SignOffInfo
@@ -1280,11 +1282,14 @@ _PHOTO_REF = re.compile(r"P(\d{2,3})")
 def _damage_item_fields(sent: dict, r: Report) -> dict:
     """The sent fields checked against the taxonomy, so a damage item never
     carries a part or condition the Annex A, the 3D model and the
-    analytics don't know. 400 says which value was refused."""
+    analytics don't know. 400 says which value was refused. A part is a
+    canonical or a car map one (taxonomy.known_part) whatever
+    settings.intake_car_map_names says: the setting decides what the
+    pickers offer, and a case holding a car map part stays editable."""
     out: dict = {}
     if "part" in sent:
         part = (sent["part"] or "").strip()
-        if part not in CANONICAL_PARTS:
+        if not known_part(part):
             raise HTTPException(status_code=400, detail=f"'{part}' isn't a part on the list.")
         out["part"] = part
     if "other_part_name" in sent:
@@ -1487,7 +1492,7 @@ def add_damage_item(report_id: str, body: DamageItemAddRequest, user: CurrentUse
         # those new ones alone, as the wizard's autosave answers them
         # (review L7: no decision in it to put back).
         before_look = data.get("second_look")
-        relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item])
+        relinked = suggestions.with_relinks({**data, "damage_summary": damage_summary}, [item], r.ai_draft)
         if relinked is not None:
             data["second_look"] = relinked
         out = _save_damage_items(db, user, r, data, damage_summary, "damage_item_added", item_source(item))
@@ -1561,7 +1566,8 @@ def decide_case_suggestion(
         if _is_signed_off(r):
             raise ApiError(409, "Report is signed off and locked. Reopen it before editing.", "signed_off")
         try:
-            done = suggestions.decide(r.data or {}, body.key, body.action, body.looked, user, where="case")
+            done = suggestions.decide(r.data or {}, body.key, body.action, body.looked, user, where="case",
+                                      ai_draft=r.ai_draft)
         except suggestions.UnknownSuggestion:
             raise ApiError(404, UNKNOWN_SUGGESTION, "unknown_suggestion")
         data = done.data
@@ -2533,7 +2539,9 @@ def get_taxonomy(scope: Scope = None, user: CurrentUser = Depends(current_user))
     db = SessionLocal()
     try:
         reports = _scoped(db.query(Report), user, scope).filter(Report.status != "intake").all()
-        canonical = set(CANONICAL_PARTS)
+        # The car map's names count as parts, not legacy terms, whatever the
+        # setting (a case may hold one added while it was on).
+        canonical = set(CANONICAL_PARTS) | set(CAR_MAP_PARTS)
         part_usage: dict[str, int] = {}
         legacy_usage: dict[str, int] = {}
         type_usage: dict[str, int] = {}
@@ -2550,6 +2558,12 @@ def get_taxonomy(scope: Scope = None, user: CurrentUser = Depends(current_user))
 
         return {
             "parts": CANONICAL_PARTS,
+            # The car map's own part names (taxonomy.CAR_MAP_PARTS) and
+            # whether to offer them (settings.intake_car_map_names "on"):
+            # the dashboard's part pickers add them only then, and always
+            # show a case's own part, one of these included.
+            "car_map_parts": CAR_MAP_PARTS,
+            "car_map_names": settings.intake_car_map_names == "on",
             "damage_types": CANONICAL_DAMAGE_TYPES,
             "severities": CANONICAL_SEVERITIES,
             # The firm's Annex A wording (taxonomy.py): the words a

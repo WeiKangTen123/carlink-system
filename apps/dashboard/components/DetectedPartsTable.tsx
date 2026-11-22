@@ -24,6 +24,7 @@ import { isSideUndetermined } from "@/lib/vehicleZones";
 import { STRIP_DOWN_CHIP, needsStripDownChip } from "@/lib/findings";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
+import { isCarMapPart, partsToPick } from "@/lib/partsList";
 import { severityClass } from "@/lib/caseFields";
 import { ConditionPicker } from "./ConditionPicker";
 import { ReviewBadge } from "./ReviewBadge";
@@ -142,7 +143,9 @@ export function DetectedPartsTable({
       cancelled = true;
     };
   }, []);
-  const parts = taxonomy?.parts || [];
+  // The car map's names join the list only while the server offers them
+  // (lib/partsList.ts); a row holding one shows it either way.
+  const parts = useMemo(() => partsToPick(taxonomy), [taxonomy]);
   const words = useMemo(() => conditionWordsOf(taxonomy), [taxonomy]);
 
   // By the rows' source_part (damageItemSource): a named Other's lines are
@@ -404,7 +407,11 @@ export function DetectedPartsTable({
                             aria-label={`Part ${badgeNumber}`}
                             onChange={(e) => changePart(idx, item, e.target.value)}
                           >
-                            {!inVocabulary && <option value={item.part}>{item.part} (as recorded)</option>}
+                            {!inVocabulary && (
+                              <option value={item.part}>
+                                {isCarMapPart(taxonomy, item.part) ? item.part : `${item.part} (as recorded)`}
+                              </option>
+                            )}
                             {parts.map((p) => (
                               <option key={p} value={p}>
                                 {p}

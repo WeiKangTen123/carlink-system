@@ -40,6 +40,11 @@ How a listed part (the parent) becomes linked suggestions (build):
      opens_with > behind > crush; the harder-hit parent first; then list
      and table order. At most MAX_PER_PARENT per parent in each bucket,
      then Options.max_items in all (outside second_look.MAX_SUGGESTIONS).
+     The car map's review screen (K4, Options.order / assembly_max /
+     stripdown_cap / stripdown_max, defaults = the above): a relation's
+     prior rank after the bucket; the per-parent cap per assembly when the
+     caller passes the map's facts (info); the strip-down bucket as its
+     own folded block outside max_items.
 Each item's reason is the table's own words (never the AI's), its evidence
 the parent's best photo by "link" with no box (and the sorter's photos by
 "sort" for a seen one), its link_rule "<table version>:<link id>".
@@ -47,6 +52,17 @@ the parent's best photo by "link" with no box (and the sorter's photos by
 settings.intake_links ("off" by default) switches it all; the callers
 (ai/second_look._store, reports/suggestions.decide) read it, not this
 module, so the benchmark's replay can run build with any Options.
+
+The assembly walk (K1-design.md 5a; settings.intake_assembly_walk, off by
+default): with `walk` (an assembly_walk.Walk -- the zone reads' yes/no
+signs and the map they came from), a yes sign lifts its panel's hit level
+(step 1, before the end bonus; assembly_walk.raise_levels), a relation's
+position on the parent gates it against where the walk saw the hit (step
+2, only ever removing), a yes sign pointing at a strip-down relation makes
+it likely and is kept in signs_yes (step 5), and with intake_link_hops 2 a
+chain the walk unlocked adds its second hop (_hop2: at most
+assembly_walk.MAX_HOP2 a case, hop 2, via the middle part, its link_rule
+"<version>:<chain id>"). Without a walk -- the default -- none of it runs.
 """
 import hashlib
 import json
@@ -58,6 +74,7 @@ from pathlib import Path
 from app.ai import evidence
 # HIT_LEVELS and LINK_TYPES (config) are the links' names here too.
 from app.config import HIT_LEVELS, LINK_TYPES, link_types, settings  # noqa: F401
+from app.intake import assembly_walk
 from app.parts.prefill import item_key
 from app.reports.taxonomy import (
     CANONICAL_DAMAGE_TYPES,
@@ -66,9 +83,11 @@ from app.reports.taxonomy import (
     FIRM_CONDITION_TOKENS,
     FIRM_REMARKS,
     FIRM_WHOLE_CONDITIONS,
+    KNOWN_PARTS,
     OTHER_PART,
     UNDETERMINED_SUFFIX,
     condition_tokens_of,
+    known_part,
     split_side,
     unsided_part,
 )
@@ -93,6 +112,9 @@ BUCKETS = ("seen", "likely", "strip_down")
 # attached parts ahead of the beam behind it, so one cap over all of them
 # would never show the beam.
 MAX_PER_PARENT = 4
+# Options.order "prior": a relation with no prior rank (1 listed most
+# often .. 5) sorts as this middle one (K1-design.md 5b).
+PRIOR_NONE = 3
 # Catalogue diagram names on one linked part (SecondLookItem.oem).
 MAX_OEM = 3
 # Sorter photos a seen linked part names (its seen_in).
@@ -107,6 +129,9 @@ CATALOGUE_LINK = {"type": "attached", "min_hit": "medium", "hidden": False, "str
 _RANK = {level: n for n, level in enumerate(HIT_LEVELS)}
 _TYPE_RANK = {kind: n for n, kind in enumerate(LINK_TYPES)}
 _BUCKET_RANK = {bucket: n for n, bucket in enumerate(BUCKETS)}
+# A second hop's place in its bucket: after every first hop, past any type
+# rank (Options.order "table") and any prior rank 1..5 ("prior").
+_HOP2_RANK = len(_TYPE_RANK) + 5 + 1
 _FIELDS = ("id", "parent", "child", "type", "side", "min_hit", "hidden", "strip_down", "area", "reason")
 _DIGITS3 = re.compile(r"\d{3,}")
 
@@ -161,6 +186,13 @@ REAR_END = frozenset({
     "Rear Floor Panel", "Rear Subframe", "Suspension - Rear", "Exhaust System", "Fuel Tank", "Parking Sensor",
     "Reversing Camera",
 })
+# The car map's names (taxonomy.CAR_MAP_PARTS) at each end; the doors' are
+# at neither. Only a case holding one of them meets these.
+FRONT_END |= {"Front Bumper Absorber", "Front Bumper Bracket", "Front Parking Sensor", "Fog Lamp Cover",
+              "Radiator Support", "Radiator Fan", "Bonnet Hinge", "Bonnet Latch", "Bonnet Insulator"}
+REAR_END |= {"Rear Bumper Absorber", "Rear Bumper Bracket", "Rear Parking Sensor", "Boot Lid Striker", "Boot Lid Strut",
+             "Rear Number Plate Lamp", "Boot Lid Garnish", "Boot Lid Spoiler", "Rear Wiper Motor",
+             "High Mount Stop Lamp", "Fuel Filler Flap"}
 # A structural part listed at an end: the hit went past the outer panels.
 STRUCTURAL = {
     "front": frozenset({"Front Bumper Beam", "Front Subframe", "Underbody / Chassis"}),
@@ -175,7 +207,14 @@ END_CROWD = 3
 class Options:
     """What build works to: settings.intake_links_* (see options), passed
     in so that build stays pure and the benchmark's replay can set its
-    own."""
+    own. The last four are the car map's review screen (K4; their
+    defaults are today's order and caps, byte for byte): order "table" or
+    "prior" (a relation's prior rank inside a bucket, None counting as
+    PRIOR_NONE); assembly_max linked parts per group per bucket -- a group
+    is the assembly when the relation info names one, else the listed part
+    (L1's MAX_PER_PARENT); stripdown_cap "in" (strip-down counts in
+    max_items, L1) or "out" (its own folded block of at most
+    stripdown_max, outside max_items)."""
     mode: str = "off"
     max_items: int = 12
     types: tuple[str, ...] = LINK_TYPES
@@ -183,14 +222,23 @@ class Options:
     unknown_hit: str = "medium"
     intact: str = "demote"
     catalogue: bool = False
+    order: str = "table"
+    assembly_max: int = MAX_PER_PARENT
+    stripdown_cap: str = "in"
+    stripdown_max: int = 12
 
 
 def options(source=None) -> Options:
-    """Options from the settings, or from anything with the same names."""
+    """Options from the settings, or from anything with the same names
+    (the K4 four may be missing there: their defaults then)."""
     s = source if source is not None else settings
     return Options(mode=s.intake_links, max_items=s.intake_links_max, types=tuple(link_types(s.intake_links_types)),
                    side=s.intake_links_side, unknown_hit=s.intake_links_unknown_hit, intact=s.intake_links_intact,
-                   catalogue=bool(s.intake_links_catalogue))
+                   catalogue=bool(s.intake_links_catalogue),
+                   order=getattr(s, "intake_links_order", Options.order),
+                   assembly_max=getattr(s, "intake_links_assembly_max", Options.assembly_max),
+                   stripdown_cap=getattr(s, "intake_links_stripdown_cap", Options.stripdown_cap),
+                   stripdown_max=getattr(s, "intake_links_stripdown_max", Options.stripdown_max))
 
 
 # ------------------------------------------------------------ the table
@@ -207,9 +255,9 @@ def _expand(name: str) -> list[tuple[str, str | None]]:
 def validate_table(table) -> list[str]:
     """What is wrong with a link table (contract10.md section 4.3), as
     plain lines; [] when nothing is. Every parent and child, {side}
-    expanded, is a canonical part (not a "(side undetermined)" name, not
-    Other); ids and parent/child pairs are unique; the side field matches
-    where {side} is; types, sides, levels, areas and trigger words are the
+    expanded, is a canonical or car map part (taxonomy.KNOWN_PARTS; not a
+    "(side undetermined)" name, not Other); ids and parent/child pairs are
+    unique; the side field matches where {side} is; types, sides, levels, areas and trigger words are the
     known ones; hidden / strip_down are true or false; a reason is at most
     MAX_REASON characters with no number of three or more digits. Total:
     a value of any JSON type anywhere is a line here, never an exception
@@ -222,7 +270,7 @@ def validate_table(table) -> list[str]:
     links = table.get("links")
     if not isinstance(links, list):
         return errors + ["no list of links"]
-    canonical = set(CANONICAL_PARTS)
+    canonical = set(KNOWN_PARTS)
     ids, pairs = set(), set()
     for n, link in enumerate(links):
         where = f"link {n}"
@@ -394,7 +442,7 @@ def covers(part: str) -> list[str]:
     undetermined)" name, or for an undetermined name every sided one."""
     family = unsided_part(part) or part
     if part.endswith(UNDETERMINED_SUFFIX):
-        return [p for p in CANONICAL_PARTS if (unsided_part(p) or p) == family]
+        return [p for p in KNOWN_PARTS if (unsided_part(p) or p) == family]
     return [part] if family == part else [part, family]
 
 
@@ -453,6 +501,48 @@ class _Ctx:
     photos: list
     intact: dict
     neighbours: dict | None
+    # The assembly walk (assembly_walk.Walk), None when off.
+    walk: object = None
+    # The car map's facts on a link, by its link_rule (the car map module's
+    # review_info, through the caller -- this module never imports it), or
+    # None: L1 alone, and no item gets the group fields.
+    info: object = None
+
+
+# What the relation info may put on a linked part (SecondLookItem, K4).
+INFO_FIELDS = ("assembly", "assembly_name", "prior", "hop", "via", "fitted", "fitted_note")
+
+
+def _info_of(link_rule: str, parent_part: str, ctx: "_Ctx") -> dict:
+    """The review screen's fields for one linked part from ctx.info, {} for
+    none (no info, a rule it doesn't know, or any error: a bad answer never
+    fails a build). The group: the assembly, one per side of the car when
+    the assembly is a sided one ("front-door.left") -- the left and right
+    front doors are two groups, as L1's two parents are."""
+    if ctx.info is None:
+        return {}
+    try:
+        meta = ctx.info(link_rule)
+    except Exception:
+        logger.warning("Linked parts: no car map facts for %s this time", link_rule, exc_info=True)
+        return {}
+    if not isinstance(meta, dict) or not isinstance(meta.get("assembly"), str) or not meta["assembly"]:
+        return {}
+    group = meta["assembly"]
+    side = split_side(parent_part)[1] if meta.get("sided") else None
+    if side in ("Left", "Right"):
+        group = f"{group}.{side.lower()}"
+    out = {"assembly": group, "assembly_name": meta.get("assembly_name") or None}
+    prior = meta.get("prior")
+    out["prior"] = prior if isinstance(prior, int) and not isinstance(prior, bool) and 1 <= prior <= 5 else None
+    hop = meta.get("hop")
+    out["hop"] = hop if hop in (1, 2) else None
+    for name in ("via", "fitted_note"):
+        if isinstance(meta.get(name), str) and meta[name].strip():
+            out[name] = meta[name].strip()
+    if meta.get("fitted") == "if_fitted":
+        out["fitted"] = "if_fitted"
+    return out
 
 
 def _end_crush(listed: list[dict], levels: list[str], photos: list) -> set[str]:
@@ -621,7 +711,7 @@ def _candidates(parents: list[int], ctx: _Ctx, table: dict) -> list[dict]:
     for n in parents:
         parent = ctx.listed[n]
         part = str(parent.get("part") or "")
-        if part not in CANONICAL_PARTS or part == OTHER_PART:
+        if not known_part(part) or part == OTHER_PART:
             continue
         level, words = ctx.levels[n], set(_tokens(parent))
         pairs = _parent_links(parent, table_links)
@@ -633,28 +723,139 @@ def _candidates(parents: list[int], ctx: _Ctx, table: dict) -> list[dict]:
                 continue
             if _RANK[level] < _RANK[link["min_hit"]] and not words & set(link.get("trigger_tokens") or []):
                 continue
+            if ctx.walk is not None and not assembly_walk.position_ok(ctx.walk, part, link["id"], ctx.version):
+                continue
             named = _child(link, parent, parent_side, ctx)
             if named is None:
                 continue
             child, side_from = named
             seen = _seen_photos(child, ctx)
             bucket = bucket_of(link, bool(seen))
+            signs_yes = []
+            if ctx.walk is not None:
+                bucket, signs_yes = assembly_walk.lift(ctx.walk, part, link["id"], ctx.version, bucket)
             entries = [evidence.entry(r, evidence.SORT) for r in seen]
             entries += [evidence.entry(photo, "link")] if photo else []
             oem = list(link.get("oem") or [])
             if ctx.opts.catalogue:
                 oem += [" ".join(str(f.get("diagram") or "").split())[:60] for f in (ctx.neighbours or {}).get(part) or []
                         if isinstance(f, dict) and isinstance(f.get("part"), str) and _twins(child, f["part"])]
+            rule = f"{ctx.version}:{link['id']}"
+            meta = _info_of(rule, part, ctx)
+            order = (_BUCKET_RANK[bucket], _TYPE_RANK[link["type"]], -_RANK[level], n, t_index)
+            if ctx.opts.order == "prior":
+                # K1-design.md 5b: bucket, prior, type, -hit, parent, table.
+                prior = meta.get("prior")
+                order = order[:1] + (prior if prior is not None else PRIOR_NONE,) + order[1:]
             out.append({
                 "key": item_key({"part": child}) or child, "part": child, "source": "link",
                 "linked_from": [item_key(parent) or part], "link_type": link["type"],
-                "link_rule": f"{ctx.version}:{link['id']}", "hit": level, "bucket": bucket,
+                "link_rule": rule, "hit": level, "bucket": bucket,
                 "hidden": bool(link["hidden"]), "needs_strip_down": bool(link["strip_down"]),
                 "side_from": side_from, "intact_in": [], "oem": list(dict.fromkeys(o for o in oem if o))[:MAX_OEM],
                 "reason": evidence.clean_reason(link["reason"]), "photo_reference": seen[0] if seen else None,
                 "seen_in": seen, "evidence": evidence.order_evidence(entries, seen[0] if seen else None),
                 "covers": covers(child), "confidence": None,
-                "_order": (_BUCKET_RANK[bucket], _TYPE_RANK[link["type"]], -_RANK[level], n, t_index),
+                **meta,
+                "_order": order,
+            })
+            if signs_yes:
+                out[-1]["signs_yes"] = signs_yes
+    return out
+
+
+def _hop2_child(then: dict, middle: dict, anchor: dict, ctx: _Ctx) -> tuple[str, str | None] | None:
+    """(the end part's name, side_from) of a second hop through `middle`
+    (a first-hop candidate): "same" takes the middle part's side only when
+    that side came from a firm rule (it has a side_from); "impact" as at
+    the first hop, at the middle part's end (else the anchor's); otherwise
+    the "(side undetermined)" name. Never from the walk."""
+    child, kind = then["child"], then["side"]
+    if SIDE not in child:
+        return child, None
+    side = split_side(middle["part"])[1]
+    if kind == "same" and side in ("Left", "Right") and middle.get("side_from"):
+        return child.replace(SIDE, side), middle["side_from"]
+    if kind == "impact":
+        found, side_from = _impact_side(end_of(middle["part"]) or end_of(str(anchor.get("part") or "")), ctx)
+        if found:
+            return child.replace(SIDE, found), side_from
+    undetermined = unsided_part(child.replace(SIDE, "Left"))
+    return (undetermined, None) if undetermined else None
+
+
+def _hop2(found: list[dict], ctx: _Ctx, table: dict) -> list[dict]:
+    """K1 S4 (intake_link_hops 2): the second hops the walk unlocked, as
+    candidates beside `found` (the first hops). A chain fires when its
+    `first` relation gave a candidate that is not listed or dismissed (nor
+    dropped as intact), a sign that unlocks it about the anchor said yes,
+    and the anchor's level reaches the chain's min_hit. The item comes from
+    `then` with the middle part as its parent: strip_down unless a sorter
+    photo shows it, hop 2, via the middle part, linked_from the anchor, the
+    chain's rule and reason, the unlocking signs in signs_yes. Never a
+    third hop (a second hop is never a `first`), never a part a first hop
+    already gives, at most walk.hop2_max a case."""
+    walk = ctx.walk
+    chains = assembly_walk.chains(walk, ctx.version)
+    if not chains:
+        return []
+    by_id = {link["id"]: link for link in table.get("links") or []
+             if isinstance(link, dict) and isinstance(link.get("id"), str)}
+    anchors = {item_key(it) or str(it["part"]): n for n, it in enumerate(ctx.listed)}
+    out: list[dict] = []
+    for chain in chains:
+        first, then = by_id.get(chain["first"]), by_id.get(chain["then"])
+        if first is None or then is None or then["type"] not in ctx.opts.types:
+            continue
+        for middle in found:
+            if middle["link_rule"] != f"{ctx.version}:{first['id']}" or len(out) >= walk.hop2_max:
+                continue
+            if set(middle["covers"]) & ctx.listed_names or middle["key"] in ctx.skip or middle["part"] in ctx.skip:
+                continue
+            if ctx.opts.intact == "drop" and intact_in(middle["part"], ctx.intact):
+                continue
+            n = anchors.get(middle["linked_from"][0])
+            if n is None or _RANK[ctx.levels[n]] < _RANK[chain["min_hit"]]:
+                continue
+            anchor = ctx.listed[n]
+            signs = assembly_walk.unlocked(walk, str(anchor.get("part") or ""), chain["id"])
+            if not signs:
+                continue
+            named = _hop2_child(then, middle, anchor, ctx)
+            if named is None:
+                continue
+            child, side_from = named
+            key = item_key({"part": child}) or child
+            if set(covers(child)) & ctx.listed_names or child in ctx.skip or key in ctx.skip:
+                continue
+            if any(_twins(child, other["part"]) for other in found + out):
+                continue
+            seen = _seen_photos(child, ctx)
+            bucket = "seen" if seen else "strip_down"
+            photo = _parent_photo(anchor, ctx)
+            entries = [evidence.entry(r, evidence.SORT) for r in seen]
+            entries += [evidence.entry(photo, "link")] if photo else []
+            rule = f"{ctx.version}:{chain['id']}"
+            # The Review step's group (K4): the chain's facts (the car map's
+            # review_lookup knows chain rules: the first relation's assembly,
+            # sided by the anchor as its first hop is, no prior, the end
+            # part's "if fitted"); {} without the map's facts.
+            meta = _info_of(rule, str(anchor.get("part") or ""), ctx)
+            out.append({
+                "key": key, "part": child, "source": "link",
+                "linked_from": [middle["linked_from"][0]], "link_type": then["type"],
+                "link_rule": rule, "hit": ctx.levels[n], "bucket": bucket,
+                "hidden": bool(then["hidden"]), "needs_strip_down": bool(then["strip_down"]),
+                "side_from": side_from, "intact_in": [], "oem": [],
+                "reason": evidence.clean_reason(chain["reason"]), "photo_reference": seen[0] if seen else None,
+                "seen_in": seen, "evidence": evidence.order_evidence(entries, seen[0] if seen else None),
+                "covers": covers(child), "confidence": None,
+                **meta,
+                "hop": 2, "via": middle["part"], "signs_yes": signs,
+                # After every first hop of its bucket (whatever the order:
+                # past every type rank and every prior), in its middle
+                # part's order.
+                "_order": (_BUCKET_RANK[bucket], _HOP2_RANK) + tuple(middle["_order"][1:]),
             })
     return out
 
@@ -672,8 +873,66 @@ def _join(kept: dict, other: dict) -> None:
             kept[name] = other[name]
 
 
-def _build(parents: list[int], ctx: _Ctx, table: dict) -> tuple[list[dict], dict[str, dict]]:
+def group_of(item: dict) -> str:
+    """The Review step's group of a linked part, which its per-group cap
+    counts in: its assembly (with the car map's facts), else the first
+    listed part it hangs off (L1)."""
+    group = item.get("assembly")
+    if isinstance(group, str) and group:
+        return group
+    parents = item.get("linked_from") or [""]
+    return str(parents[0])
+
+
+def _strip_block(item: dict) -> bool:
+    """A linked part for the strip-down block: in the strip-down bucket, or
+    a second hop's (hop 2) that no photo shows (K1-design.md 5b: always
+    there unless a photo shows it)."""
+    return item.get("bucket") == "strip_down" or (item.get("hop") == 2 and item.get("bucket") != "seen")
+
+
+def cap_slot(item: dict) -> tuple[str, str]:
+    """The per-group cap's slot of a linked part: (its group, its bucket),
+    the strip-down block's parts as "strip_down" -- and a second hop's
+    (hop 2) in a slot of its own, "hop2": it sorts after every first hop
+    of its bucket, so sharing the anchor group's strip-down slot it would
+    never show on the heavy hits that open it (I3). At most
+    assembly_walk.MAX_HOP2 a case all the same."""
+    if item.get("hop") == 2:
+        return group_of(item), "hop2"
+    return group_of(item), "strip_down" if _strip_block(item) else str(item.get("bucket"))
+
+
+def _cap(kept: list[dict], opts: Options, counted: dict | None = None) -> list[dict]:
+    """The linked parts shown, in order, from `kept` (sorted already): at
+    most opts.assembly_max per group (group_of) and bucket (cap_slot: the
+    strip-down block's as strip-down, a second hop's in its own slot) --
+    then opts.max_items in all; with
+    stripdown_cap "out", the strip-down block (_strip_block) apart, after
+    the others, at most opts.stripdown_max, never counted in max_items,
+    each marked folded. counted: the per-(group, bucket) counts already shown
+    (for_parent: the open ones of the same groups)."""
+    per: dict[tuple[str, str], int] = dict(counted or {})
+    out_block = opts.stripdown_cap == "out"
+    shown, folded = [], []
+    for it in kept:
+        block = _strip_block(it)
+        slot = cap_slot(it)
+        if per.get(slot, 0) < opts.assembly_max:
+            per[slot] = per.get(slot, 0) + 1
+            (folded if out_block and block else shown).append(it)
+    shown = shown[:max(0, opts.max_items)]
+    folded = folded[:max(0, opts.stripdown_max)]
+    for it in folded:
+        it["folded"] = True
+    return shown + folded
+
+
+def _build(parents: list[int], ctx: _Ctx, table: dict, counted: dict | None = None
+           ) -> tuple[list[dict], dict[str, dict]]:
     found = sorted(_candidates(parents, ctx, table), key=lambda c: c["_order"])
+    if ctx.walk is not None:
+        found = sorted(found + _hop2(found, ctx, table), key=lambda c: c["_order"])
     items: list[dict] = []
     joins: dict[str, dict] = {}
     for cand in found:
@@ -701,23 +960,19 @@ def _build(parents: list[int], ctx: _Ctx, table: dict) -> tuple[list[dict], dict
             continue
         kept.append(it)
     kept.sort(key=lambda it: (bool(it["intact_in"]),) + it["_order"])
-    per: dict[tuple[str, str], int] = {}
-    shown = []
-    for it in kept:
-        slot = (it["linked_from"][0], it["bucket"])
-        if per.get(slot, 0) < MAX_PER_PARENT:
-            per[slot] = per.get(slot, 0) + 1
-            shown.append(it)
-    shown = shown[:max(0, ctx.opts.max_items)]
+    shown = _cap(kept, ctx.opts, counted)
     for it in shown:
         del it["_order"]
     return shown, joins
 
 
-def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighbours) -> _Ctx:
+def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighbours, walk=None,
+             info=None) -> _Ctx:
     listed = [it for it in listed or [] if isinstance(it, dict) and it.get("part")]
     photos = list(photos or [])
     levels = [hit_of(it) or opts.unknown_hit for it in listed]
+    if walk is not None:
+        levels = assembly_walk.raise_levels(walk, listed, levels)
     crushed = _end_crush(listed, levels, photos)
     levels = ["crush" if lvl == "heavy" and end_of(str(it["part"])) in crushed else lvl
               for it, lvl in zip(listed, levels)]
@@ -725,43 +980,69 @@ def _context(listed, others, photos, zone_intact, table, opts, dismissed, neighb
                 listed_names={str(it["part"]) for it in listed}, skip={str(k) for k in dismissed or () if k},
                 others=[o for o in others or [] if isinstance(o, dict) and o.get("part")], photos=photos,
                 intact=zone_intact if isinstance(zone_intact, dict) else {},
-                neighbours=neighbours if isinstance(neighbours, dict) else None)
+                neighbours=neighbours if isinstance(neighbours, dict) else None, walk=walk,
+                info=info if callable(info) else None)
+
+
+def levels_of(listed: list[dict], photos: list, opts: Options, walk=None) -> dict[str, str]:
+    """{a listed part's key: how hard it was hit} as build sees it (hit_of,
+    Options.unknown_hit, the walk's yes signs, the end bonus): for the car
+    map's "also check" words (the car map module's also_check), which look
+    at the relations build never saw."""
+    ctx = _context(listed, (), photos, {}, {}, opts, (), None, walk=walk)
+    out: dict[str, str] = {}
+    for it, level in zip(ctx.listed, ctx.levels):
+        out.setdefault(item_key(it) or str(it["part"]), level)
+    return out
 
 
 def build_all(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-              opts: Options, *, dismissed=(), neighbours: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
+              opts: Options, *, dismissed=(), neighbours: dict | None = None, info=None,
+              walk=None) -> tuple[list[dict], dict[str, dict]]:
     """(the linked-part suggestions, the joins). The suggestions are what
     build returns. The joins are the links whose part another suggestion
     is already (zone_suggestions: a zone read's, the second look's), by
     that suggestion's key: {"linked_from", "link_type", "link_rule",
-    "hit"} for the caller to put on it, so the part shows once."""
+    "hit"} for the caller to put on it, so the part shows once. walk: the
+    assembly walk (assembly_walk.Walk), None for today's build."""
     if not table or not isinstance(table.get("links"), list):
         return [], {}
-    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours)
+    ctx = _context(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed, neighbours, walk=walk,
+                   info=info)
     return _build(list(range(len(ctx.listed))), ctx, table)
 
 
 def build(listed: list[dict], zone_suggestions: list[dict], photos: list, zone_intact: dict, table: dict | None,
-          opts: Options, *, dismissed=(), neighbours: dict | None = None) -> list[dict]:
+          opts: Options, *, dismissed=(), neighbours: dict | None = None, info=None, walk=None) -> list[dict]:
     """The linked-part suggestions for one reading, as SecondLookItem dicts
-    (source "link"), at most opts.max_items, in the order shown (see the
-    module's docstring). listed: the damage list's items; zone_suggestions:
-    the other suggestions (a part one of them is gets no item of its own);
-    photos: the case's photos (IntakePhoto rows, or a stored run's dicts);
-    zone_intact: ai_draft["zone_intact"]; dismissed: the keys a person
-    marked Not damaged; neighbours: catalogue.diagram_neighbours' answer,
-    used when opts.catalogue."""
+    (source "link"), at most opts.max_items (and, with stripdown_cap "out",
+    the folded strip-down block after them, at most opts.stripdown_max),
+    in the order shown (see the module's docstring). listed: the damage
+    list's items; zone_suggestions: the other suggestions (a part one of
+    them is gets no item of its own); photos: the case's photos
+    (IntakePhoto rows, or a stored run's dicts); zone_intact:
+    ai_draft["zone_intact"]; dismissed: the keys a person marked Not
+    damaged; neighbours: catalogue.diagram_neighbours' answer, used when
+    opts.catalogue; info: link_rule -> the car map's facts on that link
+    (the car map module's review_info), which puts the group fields on
+    each item and groups the per-group cap by assembly -- None: L1, as
+    before; walk: the assembly walk (None: off)."""
     return build_all(listed, zone_suggestions, photos, zone_intact, table, opts, dismissed=dismissed,
-                     neighbours=neighbours)[0]
+                     neighbours=neighbours, info=info, walk=walk)[0]
 
 
 def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: Options, *,
-               zone_intact: dict | None = None, neighbours: dict | None = None) -> list[dict]:
+               zone_intact: dict | None = None, neighbours: dict | None = None, info=None,
+               walk=None) -> list[dict]:
     """The new linked parts of one listed part -- the re-link after a person
     adds it: build from that part alone, against the case as it is (`data`,
     the part on its list or not yet): what is listed, every suggestion
     there already (open or decided), the dismissed. At most the room
-    opts.max_items leaves beside the open linked parts."""
+    opts.max_items leaves beside the open linked parts; with stripdown_cap
+    "out", the folded ones by the room opts.stripdown_max leaves beside the
+    open folded ones. With the car map's facts (info), an assembly's open
+    linked parts count in its per-group cap. walk: the assembly walk; its
+    second hops count the case's open ones against MAX_HOP2."""
     if not table or not isinstance(table.get("links"), list) or not isinstance(item, dict) or not item.get("part"):
         return []
     data = data if isinstance(data, dict) else {}
@@ -772,10 +1053,24 @@ def for_parent(item: dict, data: dict, photos: list, table: dict | None, opts: O
     look = data.get("second_look") if isinstance(data.get("second_look"), dict) else {}
     existing = [it for it in look.get("items") or [] if isinstance(it, dict) and it.get("part")]
     dismissed = {k for k in look.get("dismissed") or [] if isinstance(k, str)}
-    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, neighbours)
+    if walk is not None:
+        open_hop2 = sum(1 for it in existing if it.get("source") == "link" and it.get("hop") == 2
+                        and str(it.get("key") or it["part"]) not in dismissed)
+        walk = assembly_walk.with_room(walk, open_hop2)
+    ctx = _context(listed, existing, photos, zone_intact, table, opts, dismissed, neighbours, walk=walk, info=info)
     mine = next(n for n, it in enumerate(ctx.listed) if it is item or item_key(it) == key)
-    items, _ = _build([mine], ctx, table)
     open_links = [it for it in existing if it.get("source") == "link"
                   and str(it.get("key") or it["part"]) not in dismissed
                   and not set(it.get("covers") or covers(str(it["part"]))) & ctx.listed_names]
-    return items[:max(0, opts.max_items - len(open_links))]
+    counted: dict[tuple[str, str], int] = {}
+    if ctx.info is not None:
+        for it in open_links:
+            if isinstance(it.get("assembly"), str) and it["assembly"]:
+                slot = cap_slot(it)
+                counted[slot] = counted.get(slot, 0) + 1
+    items, _ = _build([mine], ctx, table, counted)
+    if opts.stripdown_cap != "out":
+        return items[:max(0, opts.max_items - len(open_links))]
+    room = max(0, opts.max_items - sum(1 for it in open_links if not it.get("folded")))
+    fold_room = max(0, opts.stripdown_max - sum(1 for it in open_links if it.get("folded")))
+    return [it for it in items if not it.get("folded")][:room] + [it for it in items if it.get("folded")][:fold_room]
