@@ -9,9 +9,11 @@
 #   production's api + telegram-bot and staging's api (+ its bot when on)
 #
 # Production: up to 12 requests a minute, never waits for staging.
-# Staging: a slot only while the window would hold at most 6 requests, at
-# most 4 a minute; none for the rest of the Pacific day once staging has
-# sent 300, production 400, or a model has fewer than 300 left.
+# Staging: a slot only while the window would hold at most 6 requests, and
+# at most 2 a minute of its own (the 14-a-minute budget minus production's
+# 12, so both together never pass 14 in any minute); none for the rest of
+# the Pacific day once staging has sent 300, production 400, or a model has
+# fewer than 300 left.
 #
 # Added by infra/deploy.sh (and infra/compose.sh) whenever the host folder
 # exists -- for production too, once it does; staging refuses to deploy
@@ -24,7 +26,9 @@
 x-ai-shared-env: &ai-shared-env
   - GEMINI_SHARED_QUOTA_DIR=/app/ai-shared
   - GEMINI_QUOTA_DAY_LIMITS=${GEMINI_QUOTA_DAY_LIMITS:-gemini-3.5-flash-lite=500,gemini-3.1-flash-lite=500}
-  - GEMINI_STAGING_MAX_PER_MINUTE=${GEMINI_STAGING_MAX_PER_MINUTE:-4}
+  - GEMINI_STAGING_MAX_PER_MINUTE=${GEMINI_STAGING_MAX_PER_MINUTE:-3}
+  - GEMINI_QUOTA_MINUTE_BUDGET=${GEMINI_QUOTA_MINUTE_BUDGET:-14}
+  - GEMINI_QUOTA_PROD_PER_MINUTE=${GEMINI_QUOTA_PROD_PER_MINUTE:-12}
   - GEMINI_STAGING_WINDOW_SHARE=${GEMINI_STAGING_WINDOW_SHARE:-6}
   - GEMINI_STAGING_DAY_MAX=${GEMINI_STAGING_DAY_MAX:-300}
   - GEMINI_STAGING_MODEL_RESERVE=${GEMINI_STAGING_MODEL_RESERVE:-300}

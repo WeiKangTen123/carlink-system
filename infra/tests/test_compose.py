@@ -114,6 +114,7 @@ SHARED_FILE = "infra/docker-compose.ai-shared.yml"
 STAGING_FILE = "infra/docker-compose.staging.yml"
 SHARED_MOUNT = "bind:/opt/carlink-ai-shared:/app/ai-shared"
 LANE_VARS = {"GEMINI_SHARED_QUOTA_DIR", "GEMINI_QUOTA_DAY_LIMITS", "GEMINI_STAGING_MAX_PER_MINUTE",
+             "GEMINI_QUOTA_MINUTE_BUDGET", "GEMINI_QUOTA_PROD_PER_MINUTE",
              "GEMINI_STAGING_WINDOW_SHARE", "GEMINI_STAGING_DAY_MAX", "GEMINI_STAGING_MODEL_RESERVE",
              "GEMINI_STAGING_PROD_BUSY"}
 

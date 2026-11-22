@@ -254,9 +254,20 @@ class Settings(BaseSettings):
     gemini_quota_lane: str = "prod"
     # Staging takes a slot only while the shared window, with its slot,
     # holds at most gemini_staging_window_share requests (both lanes), and at
-    # most gemini_staging_max_per_minute of its own.
-    gemini_staging_max_per_minute: int = 4
+    # most its per-minute cap of its own: gemini_staging_max_per_minute, and
+    # never more than gemini_quota_minute_budget - gemini_quota_prod_per_minute
+    # (review M6), so the two lanes together never send more than the budget
+    # in any 60 s -- production at its full cap included. Defaults: 14 - 12 =
+    # 2 a minute for staging.
+    gemini_staging_max_per_minute: int = 3
     gemini_staging_window_share: int = 6
+    # Most requests both stacks together may send in any 60 s on the one
+    # key (under Google's ~15 a minute per model), and production's own cap
+    # as both stacks reckon it: the production lane never takes more than
+    # this either. Keep it equal to production's
+    # gemini_max_requests_per_minute.
+    gemini_quota_minute_budget: int = 14
+    gemini_quota_prod_per_minute: int = 12
     # Staging sends nothing more until the next reset (midnight Pacific)
     # once it has sent gemini_staging_day_max requests today, production has
     # sent gemini_staging_prod_busy, or -- per model -- fewer than
@@ -336,6 +347,7 @@ class Settings(BaseSettings):
         return ",".join(f"{m}={n}" for m, n in day_limits(value).items())
 
     @field_validator("gemini_staging_max_per_minute", "gemini_staging_window_share", "gemini_staging_day_max",
+                     "gemini_quota_minute_budget", "gemini_quota_prod_per_minute",
                      "gemini_staging_prod_busy", "gemini_staging_model_reserve")
     @classmethod
     def _quota_counts(cls, value):

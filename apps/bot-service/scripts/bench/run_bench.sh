@@ -23,7 +23,7 @@
 #
 # Staging (plans/2026-11-22-enhance-staging, Phase 3): production and staging
 # share ONE Gemini key, so a benchmark runs in the STAGING LANE of the shared
-# quota guard (app/ai/quota_guard.py): at most 4 requests a minute, only
+# quota guard (app/ai/quota_guard.py): at most 2 requests a minute, only
 # while production keeps 6 of the minute free, and none once staging has sent
 # 300 that day, production 400, or a light model has fewer than 300 left. It
 # is sandbox work: it runs inside a container but only ever on its scratch

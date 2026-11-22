@@ -24,12 +24,13 @@ the key):
 
 Lanes (settings.gemini_quota_lane):
 
-    prod      up to gemini_max_requests_per_minute (12) of its OWN requests in
+    prod      up to gemini_max_requests_per_minute -- and never more than
+              gemini_quota_prod_per_minute -- (12) of its OWN requests in
               any 60 s, spaced gemini_min_call_interval_seconds apart; never
               waits for staging. Its base pipeline is never cut.
-    staging   a slot only while the window, with its slot, holds at most
+    staging   a slot only while the window, WITH its slot, holds at most
               gemini_staging_window_share (6) requests of both lanes, and at
-              most gemini_staging_max_per_minute (4) of its own; and nothing
+              most staging_minute_cap() (2) of its own; and nothing
               more until the next reset (midnight Pacific) once
                 - staging has sent gemini_staging_day_max (300) today, or
                 - production has sent gemini_staging_prod_busy (400) today, or
@@ -444,6 +445,25 @@ def model_limit(model: str | None, fingerprint: str | None = None) -> int | None
     return day_limits(settings.gemini_quota_day_limits).get(model)
 
 
+def prod_minute_cap() -> int:
+    """The production lane's own requests in any 60 s."""
+    return max(1, min(settings.gemini_max_requests_per_minute, settings.gemini_quota_prod_per_minute))
+
+
+def staging_minute_cap() -> int:
+    """The staging lane's own requests in any 60 s (review M6): its setting,
+    the stack's pace, and what the minute budget leaves when production uses
+    its whole cap. Why the two lanes together never exceed the budget in any
+    60 s: before taking a slot at time t, each lane counts its own stamps in
+    (t - 60, t] and takes one only while that count is below its cap, so no
+    60-s interval holds more than prod_minute_cap() production requests
+    (the interval's last production stamp saw all the others in its own
+    window) nor more than this many of staging's -- and the sum of the two
+    caps is at most gemini_quota_minute_budget. 0 = staging sends nothing."""
+    room = settings.gemini_quota_minute_budget - prod_minute_cap()
+    return max(0, min(settings.gemini_max_requests_per_minute, settings.gemini_staging_max_per_minute, room))
+
+
 def staging_stop(counts: dict, model: str | None, limit: int | None) -> str | None:
     """Why the staging lane may not send a request to `model` today, given
     today's counts; None when it may."""
@@ -453,8 +473,8 @@ def staging_stop(counts: dict, model: str | None, limit: int | None) -> str | No
     if totals["prod"] >= settings.gemini_staging_prod_busy:
         return (f"production has sent {totals['prod']} requests today; staging stops at "
                 f"{settings.gemini_staging_prod_busy}")
-    if settings.gemini_staging_max_per_minute <= 0 or settings.gemini_staging_window_share <= 0:
-        return "staging's share of the per-minute window is 0"
+    if staging_minute_cap() <= 0 or settings.gemini_staging_window_share <= 0:
+        return "staging's share of the per-minute window is 0 (gemini_quota_minute_budget leaves no room)"
     if model:
         if limit is None:
             return f"no known daily limit for {model} (gemini_quota_day_limits): it stays production's"
@@ -471,7 +491,7 @@ def _slot_wait(stamps: list[list], me: str, now: float, *, spacing: bool = True)
     gap = max(0.0, settings.gemini_min_call_interval_seconds) if spacing else 0.0
     if me == "prod":
         mine = sorted(t for t, ln in stamps if ln == "prod")
-        limit = max(1, settings.gemini_max_requests_per_minute)
+        limit = prod_minute_cap()
         if len(mine) >= limit:
             return max(0.05, WINDOW_SECONDS - (now - mine[len(mine) - limit]))
         if mine and gap > 0:
@@ -479,7 +499,7 @@ def _slot_wait(stamps: list[list], me: str, now: float, *, spacing: bool = True)
         return 0.0
     every = sorted(t for t, _ in stamps)
     mine = sorted(t for t, ln in stamps if ln == "staging")
-    own_limit = max(1, min(settings.gemini_max_requests_per_minute, settings.gemini_staging_max_per_minute))
+    own_limit = max(1, staging_minute_cap())
     share = max(1, settings.gemini_staging_window_share)
     waits = [0.0]
     if len(mine) >= own_limit:
@@ -602,8 +622,9 @@ def summary(key_labels: dict[str, str] | None = None) -> dict:
         "day": today(),
         "day_resets_at": allowance.iso(allowance.next_reset()),
         "limits": {
-            "prod_per_minute": settings.gemini_max_requests_per_minute,
-            "staging_per_minute": settings.gemini_staging_max_per_minute,
+            "minute_budget": settings.gemini_quota_minute_budget,
+            "prod_per_minute": prod_minute_cap(),
+            "staging_per_minute": staging_minute_cap(),
             "staging_window_share": settings.gemini_staging_window_share,
             "staging_day_max": settings.gemini_staging_day_max,
             "staging_stops_when_prod_sent": settings.gemini_staging_prod_busy,

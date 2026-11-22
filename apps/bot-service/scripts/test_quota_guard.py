@@ -88,7 +88,8 @@ DEFAULTS = {name: getattr(settings, name) for name in (
     "gemini_shared_quota_dir", "gemini_quota_lane", "gemini_max_requests_per_minute",
     "gemini_min_call_interval_seconds", "gemini_staging_max_per_minute", "gemini_staging_window_share",
     "gemini_staging_day_max", "gemini_staging_prod_busy", "gemini_staging_model_reserve",
-    "gemini_quota_day_limits", "gemini_quota_tier_model")}
+    "gemini_quota_day_limits", "gemini_quota_tier_model", "gemini_quota_minute_budget",
+    "gemini_quota_prod_per_minute")}
 
 
 def configure(**values) -> None:
@@ -257,12 +258,13 @@ def staging_lane() -> None:
     root = new_shared()
     configure(gemini_quota_lane="staging", gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0)
     clock = use_clock()
-    for _ in range(4):
+    for _ in range(2):
         rate_limit.acquire(KEY, model=LITE5)
-    check(clock.slept == [], "4 staging requests in a minute without waiting")
+    check(clock.slept == [] and quota_guard.staging_minute_cap() == 2,
+          "2 staging requests in a minute without waiting (14 budget - production's 12)")
     rate_limit.acquire(KEY, model=LITE5)
-    check(len(clock.slept) == 1 and clock.slept[0] >= 59.0, "the 5th waits: at most 4 a minute", repr(clock.slept))
-    check(day_file(root)["counts"] == {LITE5: {"staging": 5}}, "counted in the staging lane", repr(day_file(root)))
+    check(len(clock.slept) == 1 and clock.slept[0] >= 59.0, "the 3rd waits: at most 2 a minute", repr(clock.slept))
+    check(day_file(root)["counts"] == {LITE5: {"staging": 3}}, "counted in the staging lane", repr(day_file(root)))
 
     configure(gemini_quota_lane="staging", gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=6.0)
     clock = use_clock()
@@ -361,6 +363,8 @@ os.environ["GEMINI_QUOTA_LANE"] = sys.argv[4]
 os.environ["GEMINI_MAX_REQUESTS_PER_MINUTE"] = "100000"
 os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "0"
 os.environ["GEMINI_STAGING_MAX_PER_MINUTE"] = "100000"
+os.environ["GEMINI_QUOTA_MINUTE_BUDGET"] = "300000"
+os.environ["GEMINI_QUOTA_PROD_PER_MINUTE"] = "100000"
 os.environ["GEMINI_STAGING_WINDOW_SHARE"] = "100000"
 os.environ["GEMINI_STAGING_DAY_MAX"] = "100000"
 os.environ["GEMINI_STAGING_PROD_BUSY"] = "100000"
@@ -379,7 +383,7 @@ def concurrent_writers() -> None:
     print("\n6. concurrent writers")
     root = new_shared()
     configure(gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0,
-              gemini_max_requests_per_minute=100000)
+              gemini_max_requests_per_minute=100000, gemini_quota_prod_per_minute=100000)
     quota_guard._now = time.time
     quota_guard._sleep = time.sleep
     allowance._clock = lambda: datetime.now(timezone.utc)
@@ -813,9 +817,53 @@ def hostile_shared_folder() -> None:
     allowance.clear()
 
 
+def minute_budget() -> None:
+    print("\n14. both lanes together: never more than 14 in any 60 s (review M6)")
+    import random
+    rng = random.Random(20261122)
+    root = new_shared()
+    clock = use_clock()
+    sent: list[tuple[float, str]] = []
+    waited_on_staging = []
+    for i in range(1500):
+        me = "prod" if rng.random() < 0.6 else "staging"
+        configure(gemini_quota_lane=me, gemini_shared_quota_dir=str(root), gemini_min_call_interval_seconds=0.0,
+                  gemini_staging_day_max=100000, gemini_staging_prod_busy=100000, gemini_staging_model_reserve=0,
+                  gemini_quota_day_limits="gemini-3.5-flash-lite=1000000")
+        if me == "prod":
+            # How long prod would wait counting only its own stamps.
+            own = [t for t, ln in sent if ln == "prod" and clock.t - 60 < t <= clock.t]
+            expect = 0.0 if len(own) < 12 else 60 - (clock.t - sorted(own)[len(own) - 12])
+        before = clock.t
+        rate_limit.acquire(KEY, model=LITE5)
+        sent.append((clock.t, me))
+        if me == "prod" and clock.t - before > expect + 0.01:
+            waited_on_staging.append(clock.t - before)
+        clock.t += rng.choice([0.0, 0.0, 0.5, 1, 3, 7, 20])
+    times = sorted(sent)
+    worst = {"all": 0, "prod": 0, "staging": 0}
+    j = 0
+    for k, (t, _) in enumerate(times):
+        while times[j][0] <= t - 60:
+            j += 1
+        window = times[j:k + 1]
+        worst["all"] = max(worst["all"], len(window))
+        for ln in ("prod", "staging"):
+            worst[ln] = max(worst[ln], sum(1 for _, x in window if x == ln))
+    check(worst["all"] <= 14, f"1,500 random requests: at most {worst['all']} in any 60 s (budget 14)", repr(worst))
+    check(worst["prod"] <= 12 and worst["staging"] <= 2, f"production at most {worst['prod']}, staging {worst['staging']}")
+    check(worst["prod"] == 12, "production still gets its whole 12 a minute")
+    check(not waited_on_staging, "production never waited because of staging", repr(waited_on_staging[:3]))
+    configure(gemini_quota_lane="staging", gemini_quota_minute_budget=12)
+    check(quota_guard.staging_minute_cap() == 0 and quota_guard.staging_stop({}, LITE5, 500),
+          "a budget that leaves no room: staging sends nothing")
+    configure(gemini_max_requests_per_minute=20, gemini_quota_prod_per_minute=12)
+    check(quota_guard.prod_minute_cap() == 12, "production's lane is held to the cap the budget assumes")
+
+
 SECTIONS = [defaults_unchanged, prod_lane, staging_lane, day_rollover, missing_folder, concurrent_writers,
             call_structured_lanes, allowance_moves, tiers_and_summary, settings_refuse_typos, slot_deadlines,
-            stuck_staging_lock, hostile_shared_folder]
+            stuck_staging_lock, hostile_shared_folder, minute_budget]
 
 
 def main() -> int:

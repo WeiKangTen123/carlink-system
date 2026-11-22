@@ -75,7 +75,7 @@ The benchmark inputs (`cases/`, `key.json`, `reports/`) are copied into the
 staging api container's `/tmp/bench` (0700) from `~/carlink-bench`, as for
 production before (`run_bench.sh` prints the commands when they are
 missing; a container recreate empties `/tmp`). Its runs count in staging's
-share of the key: 4 a minute, 300 a day (bench included), none while
+share of the key: 2 a minute, 300 a day (bench included), none while
 production is busy (400+ that day).
 
 ### Staging (the dress rehearsal)
@@ -163,7 +163,7 @@ per lane) and the "day used up" memory in one host folder,
 | Lane | Rule |
 |---|---|
 | production | up to 12 requests a minute of its own, 4 s apart; never waits for staging; its base pipeline is never cut |
-| staging (app and benchmark) | a request only while the minute's window, with it, holds at most 6 (production keeps 6 free) and at most 4 of staging's own; nothing more until the reset (midnight Pacific = 16:00 Malaysia time, 15:00 in US summer) once staging has sent 300 that day, production 400, or a model has fewer than 300 left; never a model with no known daily limit (the strong model's 20 stay production's) |
+| staging (app and benchmark) | a request only while the minute's window, with it, holds at most 6 and at most 2 of staging's own (the 14-a-minute budget for both stacks minus production's 12, so the two never pass 14 in any minute); nothing more until the reset (midnight Pacific = 16:00 Malaysia time, 15:00 in US summer) once staging has sent 300 that day, production 400, or a model has fewer than 300 left; never a model with no known daily limit (the strong model's 20 stay production's) |
 
 Every request sent is counted, busy (503) answers and retries included.
 Production's extras tier for later features (`quota_guard.extras_tier()`):
