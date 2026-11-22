@@ -5,6 +5,7 @@ import { redirect, unstable_rethrow } from "next/navigation";
 import { isPublicPage } from "./publicPages";
 import type { Review } from "./review";
 import { CATALOGUE_OFF, normalizeCatalogue, type CatalogueJob, type CatalogueRef, type CatalogueState, type CatalogueSuggestion } from "./catalogue";
+import { seg } from "./apiPath";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -527,7 +528,7 @@ export type UserPatch = ProfileFields &
 export type UpdatedUser = UserAccount & { moved?: number };
 
 export async function updateUser(id: string, patch: UserPatch): Promise<UpdatedUser> {
-  const res = await apiFetch(`${API_BASE_URL}/users/${id}`, {
+  const res = await apiFetch(`${API_BASE_URL}/users/${seg(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -641,7 +642,7 @@ export async function deleteMyAiKey(): Promise<void> {
 
 /** Admin: remove someone's own AI key (a leaver, or a key being misused). */
 export async function deleteUserAiKey(id: string): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/users/${id}/ai-key`, { method: "DELETE" }, { timeoutMs: 8000 });
+  const res = await apiFetch(`${API_BASE_URL}/users/${seg(id)}/ai-key`, { method: "DELETE" }, { timeoutMs: 8000 });
   if (!res.ok) throw await apiError(res, "Failed to remove their AI key");
 }
 
@@ -725,7 +726,7 @@ export async function disconnectMyTelegram(): Promise<void> {
 
 /** Admin: disconnect someone's Telegram (a lost phone, a leaver). */
 export async function disconnectUserTelegram(id: string): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/users/${id}/telegram`, { method: "DELETE" }, { timeoutMs: 8000 });
+  const res = await apiFetch(`${API_BASE_URL}/users/${seg(id)}/telegram`, { method: "DELETE" }, { timeoutMs: 8000 });
   if (!res.ok) throw await apiError(res, "Failed to disconnect their Telegram");
 }
 
@@ -803,7 +804,7 @@ export async function createAccountLink(fields: {
 }
 
 export async function revokeAccountLink(id: string): Promise<AccountLinkRow> {
-  const res = await apiFetch(`${API_BASE_URL}/account-links/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/account-links/${seg(id)}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to cancel the link");
   return res.json();
 }
@@ -811,7 +812,7 @@ export async function revokeAccountLink(id: string): Promise<AccountLinkRow> {
 /** A one-time link for the user to choose a new password ("Reset
  * password" in Settings). */
 export async function createResetLink(userId: string, expiresHours: LinkLifetime = 24): Promise<IssuedLink> {
-  const res = await apiFetch(`${API_BASE_URL}/users/${userId}/reset-link`, {
+  const res = await apiFetch(`${API_BASE_URL}/users/${seg(userId)}/reset-link`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ expires_hours: expiresHours }),
@@ -2038,7 +2039,7 @@ export async function firmWideScope(): Promise<CaseScope | undefined> {
 /** Null when there is no such case, and equally when it isn't one the
  * signed-in user may open: the API answers both with the same 404. */
 export async function getReport(id: string): Promise<ReportDetail | null> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}`, { cache: "no-store" }, { timeoutMs: 8000 });
   // Resilient 404 handling: return null so Next.js notFound() renders the branded 404 page instead of a 500 error
   if (res.status === 404) return null;
   if (!res.ok) throw await apiError(res, `Failed to load case ${id}`);
@@ -2050,7 +2051,7 @@ export async function getReport(id: string): Promise<ReportDetail | null> {
 /** Admin: give a case to someone, or (null) make it Unassigned. Refused
  * for a disabled account (owner_inactive) and for a draft (owner_draft). */
 export async function setCaseOwner(reportId: string, ownerId: string | null): Promise<{ owner: Owner | null }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/owner`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/owner`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner_id: ownerId }),
@@ -2090,7 +2091,7 @@ export async function reassignCases(
 export async function uploadReportPhotos(reportId: string, photos: File[]): Promise<{ temp_photo_paths: string[] }> {
   const formData = new FormData();
   for (const photo of photos) formData.append("photos", photo);
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/upload-photos`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/upload-photos`, {
     method: "POST",
     body: formData,
   });
@@ -2108,7 +2109,7 @@ export async function updateReport(
   payload: Partial<ReportData>,
   tempPhotoPaths: string[] = []
 ): Promise<{ id: string; status: string; pdf_url: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ draft: payload, temp_photo_paths: tempPhotoPaths }),
@@ -2172,7 +2173,7 @@ export type DamageItemsResponse = {
 };
 
 export async function patchDamageItem(reportId: string, itemIndex: number, patch: DamageItemPatch): Promise<DamageItemsResponse> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/damage-items/${seg(itemIndex)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -2184,7 +2185,7 @@ export async function patchDamageItem(reportId: string, itemIndex: number, patch
 /** POST /reports/{id}/damage-items: a part the surveyor adds by hand
  * (appended, verified). */
 export async function addDamageItem(reportId: string, body: NewDamageItem): Promise<DamageItemsResponse> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/damage-items`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2196,7 +2197,7 @@ export async function addDamageItem(reportId: string, body: NewDamageItem): Prom
 /** DELETE /reports/{id}/damage-items/{i}: the part is remembered as
  * dismissed, so a later detection doesn't bring it back. */
 export async function removeDamageItem(reportId: string, itemIndex: number): Promise<DamageItemsResponse> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/damage-items/${itemIndex}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/damage-items/${seg(itemIndex)}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to remove the part");
   return res.json();
 }
@@ -2205,7 +2206,7 @@ export async function removeDamageItem(reportId: string, itemIndex: number): Pro
  * case's suggestion (contract9.md section 4.4). The server stamps who and
  * when; a signed-off case answers 409 "signed_off". */
 export async function decideReportSuggestion(reportId: string, body: DecideRequest): Promise<CaseDecideResult> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/suggestions`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/suggestions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2215,7 +2216,7 @@ export async function decideReportSuggestion(reportId: string, body: DecideReque
 }
 
 export async function reopenReport(id: string): Promise<{ id: string; status: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/reopen`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}/reopen`, { method: "POST" });
   if (!res.ok) throw await apiError(res, "Failed to reopen report");
   return res.json();
 }
@@ -2257,7 +2258,7 @@ export async function signOffReport(
   id: string,
   payload: SignOffRequest = {}
 ): Promise<{ id: string; status: string; pdf_url: string; sign_off?: SignOffInfo }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/sign-off`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}/sign-off`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2285,7 +2286,7 @@ export type CheckedRequest = { set?: Record<string, { na?: boolean }>; clear?: s
 export type CheckedResponse = { checked?: Record<string, CheckedMark>; review?: Review | null };
 
 export async function saveReportChecked(reportId: string, body: CheckedRequest): Promise<CheckedResponse> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/checked`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/checked`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2295,7 +2296,7 @@ export async function saveReportChecked(reportId: string, body: CheckedRequest):
 }
 
 export async function renderReportPdf(id: string): Promise<{ id: string; status: string; pdf_url: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/render-pdf`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}/render-pdf`, {
     method: "POST",
   });
   if (!res.ok) throw await apiError(res, "Failed to render PDF");
@@ -2547,14 +2548,14 @@ export async function countInbox(): Promise<InboxCount> {
 /** Null for 404: no such report, not a public one (inbox_gone), or not one
  * this account may open. */
 export async function getInboxItem(id: string): Promise<InboxDetail | null> {
-  const res = await apiFetch(`${API_BASE_URL}/inbox/${encodeURIComponent(id)}`, { cache: "no-store" }, { timeoutMs: 8000 });
+  const res = await apiFetch(`${API_BASE_URL}/inbox/${seg(id)}`, { cache: "no-store" }, { timeoutMs: 8000 });
   if (res.status === 404) return null;
   if (!res.ok) throw await apiError(res, "Failed to load the report");
   return res.json();
 }
 
 async function inboxPost<T>(id: string, action: string, body: unknown, fallback: string): Promise<T> {
-  const res = await apiFetch(`${API_BASE_URL}/inbox/${encodeURIComponent(id)}/${action}`, {
+  const res = await apiFetch(`${API_BASE_URL}/inbox/${seg(id)}/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
@@ -2640,7 +2641,7 @@ export type AnnexSuggestions = {
 };
 
 export async function getAnnexSuggestions(reportId: string): Promise<AnnexSuggestions> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
   if (!res.ok) throw await apiError(res, "Failed to load suggested lines");
   return res.json();
 }
@@ -2648,7 +2649,7 @@ export async function getAnnexSuggestions(reportId: string): Promise<AnnexSugges
 /** Gemini's lines for parts no past case covers: names and quantities only,
  * no prices. Spends AI quota, so only on the surveyor's click. */
 export async function askAiAnnexSuggestions(reportId: string, parts: string[]): Promise<{ groups: AnnexSuggestionGroup[] }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-suggestions/ai`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-suggestions/ai`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parts }),
@@ -2665,7 +2666,7 @@ export async function saveAnnexA(
   reportId: string,
   items: AnnexAPartItem[]
 ): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-a`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
@@ -2681,7 +2682,7 @@ export async function saveAnnexA(
 export async function prefillAnnexA(
   reportId: string
 ): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; filled: number; unpriced: number }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-a/prefill`, { method: "POST" }, { timeoutMs: 30000 });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a/prefill`, { method: "POST" }, { timeoutMs: 30000 });
   if (!res.ok) throw await apiError(res, "Failed to fill prices from past cases");
   return res.json();
 }
@@ -2693,7 +2694,7 @@ export async function saveAnnexB(
   reportId: string,
   items: AnnexBLabourItem[]
 ): Promise<{ annex_b: AnnexBInfo; annex_c: AnnexCInfo }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-b`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-b`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
@@ -2707,7 +2708,7 @@ export async function saveAnnexB(
 export type AnnexCRequest = { agreed_lump_sum?: number | null; repair_days?: number | null };
 
 export async function saveAnnexC(reportId: string, body: AnnexCRequest): Promise<{ annex_c: AnnexCInfo }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/annex-c`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-c`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2718,7 +2719,7 @@ export async function saveAnnexC(reportId: string, body: AnnexCRequest): Promise
 
 /** The Annex B lines past reports wrote for this vehicle, with usual prices. */
 export async function getLabourSuggestions(reportId: string): Promise<LabourSuggestions> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/labour-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/labour-suggestions`, { cache: "no-store" }, { timeoutMs: 15000 });
   if (!res.ok) throw await apiError(res, "Failed to load the usual labour lines");
   return res.json();
 }
@@ -2726,7 +2727,7 @@ export async function getLabourSuggestions(reportId: string): Promise<LabourSugg
 /** Saves the Cover Page fields (PUT /reports/{id}/cover-page). Only the
  * keys sent change; null clears a value. 409 once signed off. */
 export async function saveCoverPage(reportId: string, body: CoverPageRequest): Promise<CoverPageResponse> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/cover-page`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/cover-page`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2746,7 +2747,7 @@ export async function saveCoverPage(reportId: string, body: CoverPageRequest): P
  * through a server action: see components/inbox/useInboxCount.ts. A 404 --
  * an API from before the look-up -- is the same as off. */
 export async function getCatalogue(reportId: string): Promise<CatalogueState> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue`, { cache: "no-store" }, { timeoutMs: 8000 });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/catalogue`, { cache: "no-store" }, { timeoutMs: 8000 });
   if (res.status === 404) return CATALOGUE_OFF;
   if (!res.ok) throw await apiError(res, "Failed to load the catalogue look-up");
   return normalizeCatalogue(await res.json());
@@ -2756,7 +2757,7 @@ export async function getCatalogue(reportId: string): Promise<CatalogueState> {
  * car from the case's make, model and year; a key: the car the surveyor
  * picked under "Change car". 409 job_open, 400 no_make_model / no_parts. */
 export async function requestCatalogueLookup(reportId: string, vehicleKey: string | null): Promise<{ job: CatalogueJob }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/lookup`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/catalogue/lookup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vehicle_key: vehicleKey }),
@@ -2767,7 +2768,7 @@ export async function requestCatalogueLookup(reportId: string, vehicleKey: strin
 
 /** Cancels the case's waiting or running look-up. */
 export async function cancelCatalogueLookup(reportId: string): Promise<{ job: CatalogueJob }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/cancel`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/catalogue/cancel`, { method: "POST" });
   if (!res.ok) throw await apiError(res, "Couldn't cancel the catalogue look-up");
   return res.json();
 }
@@ -2779,7 +2780,7 @@ export async function decideCatalogueSuggestion(
   suggestionId: number,
   action: "reject" | "undo"
 ): Promise<{ suggestion: CatalogueSuggestion }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${reportId}/catalogue/suggestions/${suggestionId}`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/catalogue/suggestions/${seg(suggestionId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
@@ -2814,10 +2815,10 @@ async function putChecked(path: string, set: CheckedSet, clear: string[]): Promi
 }
 
 /** PUT /reports/{id}/checked: confirm `set`, take back `clear`. */
-export const confirmFields = (reportId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/reports/${reportId}/checked`, set, clear);
+export const confirmFields = (reportId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/reports/${seg(reportId)}/checked`, set, clear);
 
 /** PUT /intake/{id}/checked, the same for a draft. */
-export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/intake/${draftId}/checked`, set, clear);
+export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: string[] = []) => putChecked(`/intake/${seg(draftId)}/checked`, set, clear);
 
 /** One imported past report. */
 export type PastReportCase = {
@@ -2887,7 +2888,7 @@ export async function importPastReports(files: File[]): Promise<{ results: PastR
 
 /** Admin only. Removes every line imported from that report. */
 export async function deletePastReport(ref: string): Promise<{ ok: boolean; lines: number }> {
-  const res = await apiFetch(`${API_BASE_URL}/parts-history/${encodeURIComponent(ref)}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/parts-history/${seg(ref)}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to remove the report");
   return res.json();
 }
@@ -3080,12 +3081,12 @@ export async function addLlmKey(apiKey: string, label?: string): Promise<LlmKey>
 }
 
 export async function deleteLlmKey(id: string): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/setup/llm-keys/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/setup/llm-keys/${seg(id)}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to remove key (${res.status})`);
 }
 
 export async function testService(service: string): Promise<{ ok: boolean; message: string }> {
-  const res = await apiFetch(`${API_BASE_URL}/setup/test/${service}`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE_URL}/setup/test/${seg(service)}`, { method: "POST" });
   if (!res.ok) throw new Error(`Test failed (${res.status})`);
   return res.json();
 }
@@ -3218,7 +3219,7 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 }
 
 export async function deleteReport(id: string): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to delete report");
 }
 
@@ -3230,7 +3231,7 @@ export function fileUrl(path: string): string {
 }
 
 export async function aiEnrichReport(id: string): Promise<{ id: string; status: string; data: ReportData }> {
-  const res = await apiFetch(`${API_BASE_URL}/reports/${id}/ai-enrich`, {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(id)}/ai-enrich`, {
     method: "POST",
   });
   if (!res.ok) throw await apiError(res, "Fill derived fields failed");
