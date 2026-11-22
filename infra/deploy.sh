@@ -22,12 +22,14 @@
 # infra/ being the project folder): see tools/parts_mcp/README.md.
 #
 # It backs up first (infra/backup.sh) and refuses to deploy when it can't:
-# backups not configured, or the backup or its upload failed. Only
+# the local database copy failed, or an offsite bucket is configured
+# (BACKUP_BUCKET) and its upload failed. With no bucket configured the local
+# copy is enough. Only
 #
 #   ./deploy.sh --no-backup
 #
-# deploys without one (a brand-new server with no database yet, or a bucket
-# you are fixing), with a loud warning.
+# deploys without one (a brand-new server with no database yet), with a loud
+# warning.
 #
 # ==============================================================================
 
@@ -78,14 +80,10 @@ cd "$APP_DIR"
 # Back up the database and case files before changing anything (see
 # infra/backup.sh; the nightly cron runs the same script). A deploy that
 # adds tables or columns can't be undone without one, so no backup, no
-# deploy: missing credentials used to only warn, and a server ran for weeks
-# with no offsite copy. backup.sh fails when the upload fails too.
+# deploy. backup.sh exits 0 only once a checked local copy exists (and, when
+# BACKUP_BUCKET is set, the upload worked too).
 if [ "$NO_BACKUP" = 1 ]; then
     echo "⚠️⚠️⚠️  --no-backup: DEPLOYING WITHOUT A BACKUP. If this deploy goes wrong, the database cannot be put back. ⚠️⚠️⚠️"
-elif ! sudo test -f /root/.carlink-backup/hmac.env; then
-    echo "❌ Backups are not configured on this server (no /root/.carlink-backup/hmac.env, see infra/backup.sh) -- not deploying."
-    echo "   Set them up, or deploy anyway with: ./deploy.sh --no-backup"
-    exit 1
 else
     echo "💾 Backing up before deploy..."
     sudo bash infra/backup.sh || {

@@ -348,6 +348,36 @@ def error_lines(*words) -> list[str]:
     return [line for line in LOG_LINES if "app.ai.secretbox ERROR" in line and all(w in line for w in words)]
 
 
+_READ_DB_FILES = (
+    "import pathlib, sys\n"
+    "folder = pathlib.Path(sys.argv[1])\n"
+    "sys.stdout.buffer.write(b''.join(p.read_bytes() for p in sorted(folder.iterdir())\n"
+    "                                  if p.is_file() and p.name.startswith('test.db')))\n"
+)
+
+
+def sqlite_file_bytes() -> bytes:
+    """test.db, -wal and -shm as raw bytes, read by a CHILD process.
+
+    Never open() them in this process: on Linux SQLite's locks are POSIX
+    (fcntl) locks, which belong to the process, and closing ANY descriptor
+    of a file drops every lock the process holds on it. The next process to
+    open the database (the `secretbox` CLI below) then thinks it is alone:
+    it rebuilds the WAL index and, closing last, checkpoints and deletes the
+    -wal under this process's open connections -- some of which go on
+    reading the old WAL (the CLI's reset half visible here), and later
+    writes get lost. Windows locks are per handle, so this only showed on
+    Linux (CI). https://www.sqlite.org/howtocorrupt.html section 2.2."""
+    out = subprocess.run([sys.executable, "-c", _READ_DB_FILES, str(_tmp)], capture_output=True, timeout=60)
+    if out.returncode != 0:
+        raise RuntimeError(f"reading the SQLite files failed: {out.stderr.decode(errors='replace')[-500:]}")
+    # A read that came back empty would make every "not in the files" check
+    # pass for nothing: the canary's row name must be in there.
+    if secretbox.CANARY_KEY.encode() not in out.stdout:
+        raise RuntimeError(f"the SQLite files read back without the canary row ({len(out.stdout)} bytes)")
+    return out.stdout
+
+
 W = type("World", (), {})()
 
 
@@ -508,7 +538,7 @@ def put_and_get() -> None:
     print("  never in the database file")
     with engine.begin() as conn:
         conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
-    blobs = b"".join(p.read_bytes() for p in _tmp.iterdir() if p.name.startswith("test.db"))
+    blobs = sqlite_file_bytes()
     leaked = [k for k in SENT_KEYS if k.encode() in blobs]
     check(not leaked, "no key sent so far is anywhere in the SQLite files (db, -wal, -shm)", f"{len(leaked)} found")
     check(not any(k[4:24].encode() in blobs for k in (key, key2)), "not even 20 characters of one")
@@ -1406,7 +1436,7 @@ def nothing_leaked() -> None:
     check(not any(body.startswith("Internal Server Error") for body in RESPONSES), "no response was a 500")
     with engine.begin() as conn:
         conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
-    blobs = b"".join(p.read_bytes() for p in _tmp.iterdir() if p.is_file() and p.name.startswith("test.db"))
+    blobs = sqlite_file_bytes()
     leaks = [k for k in SENT_KEYS - getattr(W, "stored_plain", set()) if k.encode() in blobs]
     check(not leaks, "no own key is in the SQLite files at the end", f"{len(leaks)} found")
 

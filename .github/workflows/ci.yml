@@ -1,0 +1,110 @@
+# CI for every pull request to master and every push to master.
+#
+# No secrets are used at all: this repo is public, its logs are public, and a
+# pull request from a fork could try to print them. Tests run on fakes
+# (scripts/run_ci_tests.py removes any key variable and points outside traffic
+# at a dead proxy); AI accuracy is measured on the server, not here.
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The PR's merge commit and its first parent (the base), or the
+          # pushed commit and the one before it.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Block private data, keys and benchmark outputs
+        # HEAD^1 = the base branch for a PR's merge commit, the previous
+        # master for a push (merges arrive as one commit on master).
+        run: bash .github/scripts/guard.sh HEAD^1 HEAD
+
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/bot-service
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history: test_carmap_int, test_carmap_review and
+          # test_case_access read files at older commits (git show/archive
+          # 99aaa85, f4b1a66), which a shallow clone doesn't have.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          # The api image's version (apps/bot-service/Dockerfile: python:3.11-slim).
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/bot-service/requirements.txt
+      - name: Install requirements
+        run: python -m pip install -r requirements.txt
+      - name: Install Chromium for PDF rendering (as the api image does)
+        # test_pdf_safety renders real PDFs (escaping, no network fetches)
+        # and fails without a browser; the other tests tolerate either.
+        run: python -m playwright install --with-deps chromium
+      - name: Run scripts/test_*.py and check_*.py (minus scripts/ci_skip.txt)
+        run: python scripts/run_ci_tests.py --timeout 600
+
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          # The dashboard image's version (apps/dashboard/Dockerfile: node:20-alpine).
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Build
+        # The build args production uses (infra/docker-compose.prod.yml).
+        env:
+          NEXT_PUBLIC_API_BASE_URL: /api
+          NEXT_PUBLIC_FILES_BASE_URL: ""
+        run: npx next build
+      # The check scripts import lib/*.ts directly (type stripping), which
+      # needs Node 22.18+; Node 24 here.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Node checks (scripts/check-*.mjs)
+        run: |
+          status=0
+          for f in scripts/check-*.mjs; do
+            echo "::group::$f"
+            if node "$f"; then echo "PASS $f"; else echo "::error::$f failed"; status=1; fi
+            echo "::endgroup::"
+          done
+          exit $status
