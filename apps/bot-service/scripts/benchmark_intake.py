@@ -2325,8 +2325,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         geo_log = (session.ai_draft or {}).get("side_geometry") if isinstance(session.ai_draft, dict) else None
         if isinstance(geo_log, list):
             # E7: each side the sort's geometry changed in the side resolver.
-            out["side_geometry"] = [dict(e, photo=label_of.get(e.get("photo"), e.get("photo")))
-                                    for e in geo_log if isinstance(e, dict)]
+            out["side_geometry"] = [relabel_refs(e, label_of) for e in geo_log if isinstance(e, dict)]
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
         # Contract 8 D2: what each zone call sent and saw, from the run log's

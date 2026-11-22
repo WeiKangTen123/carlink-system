@@ -1508,8 +1508,9 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
     photo's own area side it leaves the item undetermined, as any opposing
     clue does); "tiebreak": it is placed only where the rules above place
     nothing. geometry_log, when given, gets one entry for each item whose
-    outcome the geometry changed: {"part", "photo", "was", "now",
-    "geometry"} (was / now the side placed, None for none). None / "off":
+    outcome the geometry changed: {"part", "photo_reference", "was",
+    "now", "geometry"} (was / now the side placed, None for none; filing
+    relabels the photo, filing.AI_DRAFT_PHOTO_LISTS). None / "off":
     as before."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
@@ -1572,7 +1573,7 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
             else:
                 side = geometry.resolve(side, geo, geometry_mode)
             if side != was and geometry_log is not None:
-                geometry_log.append({"part": part, "photo": f"@{photo_id}", "was": was, "now": side,
+                geometry_log.append({"part": part, "photo_reference": f"@{photo_id}", "was": was, "now": side,
                                      "geometry": geo})
         name = sided_part(part, side, _AREA_END.get(own)) if side else None
         if name is None:

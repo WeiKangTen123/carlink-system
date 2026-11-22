@@ -582,7 +582,8 @@ def e7_units() -> None:
     check(place("a", None, None)[0] == "Left Rear Quarter Panel", "today: the photo's own area places it (left)")
     got, log = place("a", "vote", {"a": "Right"})
     check(got == "Rear Quarter Panel (side undetermined)" and log == [
-        {"part": "Rear Quarter Panel (side undetermined)", "photo": "@a", "was": "Left", "now": None, "geometry": "Right"}],
+        {"part": "Rear Quarter Panel (side undetermined)", "photo_reference": "@a", "was": "Left", "now": None,
+         "geometry": "Right"}],
           "vote: the geometry against the photo's own area leaves it undetermined, and says so", (got, log))
     check(place("a", "vote", {"a": "Left"})[0] == "Left Rear Quarter Panel" and place("a", "vote", {"a": "Left"})[1] == [],
           "vote: agreeing changes nothing (no log)")
@@ -593,6 +594,12 @@ def e7_units() -> None:
           "tiebreak: where today's rules place nothing (a rear photo, no clue), the geometry side", (got, log))
     got_vote, _ = place("c", "vote", {"c": "Right"}, part="Tail Lamp (side undetermined)")
     check(got_vote == "Right Tail Lamp", "vote: as the only clue, a majority of one places it", got_vote)
+    from app.reports.filing import relabel_ai_draft
+
+    filed = relabel_ai_draft({"side_geometry": [{"part": "x", "photo_reference": "@c", "was": None, "now": "Right"}]},
+                             {"c": 4})
+    check(filed["side_geometry"][0]["photo_reference"] == "P05", "filing relabels the resolver's log (P-numbers)",
+          filed)
 
 
 def e7_sort_request() -> None:
