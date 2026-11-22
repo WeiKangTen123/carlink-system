@@ -84,18 +84,27 @@ production is busy (400+ that day).
 bash /opt/carlink-staging/infra/deploy.sh --env staging --ref <commit|branch>
 ```
 
-It refuses before changing anything when: the project would be `infra`;
-`infra/.env` lacks `CARLINK_NAME=carlink_staging` / `NGINX_PORT=8081` / the
-key, or isn't 0600; the clone is production's or has local edits; the
-Telegram (or worker) token is production's; the shared AI folder is missing
-or production doesn't mount it. It prints the flags that differ from
-production's (gate D), checks out the commit (detached), builds, restarts
-nginx, closes signups, runs the smoke checks and writes
-`/opt/carlink-staging/.deployed` (what production's tree check reads).
+Compose always runs with a clean environment: nothing exported in your
+shell (a token, a port, a container prefix, a project) reaches either
+stack; each takes its values from its own `infra/.env`. Never `export
+TELEGRAM_BOT_TOKEN=...` for staging work -- it is ignored anyway, and the
+rendered-config check refuses production's token in staging's `.env`.
+
+It refuses before changing anything when: `infra/.env` lacks
+`CARLINK_NAME=carlink_staging` / `NGINX_PORT=8081` / the key, or isn't 0600;
+the clone is production's or has local edits; the shared AI folder is
+missing or production doesn't mount it; or the RENDERED config (`docker
+compose config`) isn't staging's -- project, container names, the one port,
+volumes, the AI lane, staging's address, and no Telegram or worker token of
+production's. It prints the flags that differ from production's (gate D),
+checks out the commit (detached), checks the rendered config again, builds
+(a failed build puts the old checkout back), starts, restarts nginx, closes
+signups, runs the smoke checks and writes `/opt/carlink-staging/.deployed`
+(what production's tree check reads).
 
 | # | Staging checklist | Who | Pass when |
 |---|---|---|---|
-| S | Smoke on staging: health, 401s signed out, worker route 404, `/login`, containers running with 0 restarts, logs clean, no token in a log, signups closed, the public address asks for the staging password | `deploy.sh` (again any time: `--smoke-only`; after 5 minutes for restarts) | `smoke: PASS` |
+| S | Smoke on staging: health, 401s signed out, worker route 404, `/login`, containers running and not restarted since the deploy, logs clean since `up`, no token in a log, signups closed, https asks for the staging password, production still mounts the shared AI folder | `deploy.sh` (again any time: `--smoke-only`; after 5 minutes for restarts) | `smoke: PASS` -- don't use staging (no password, no trial) until the https address answers 401 |
 | C1 | Sign in; Settings pages open | owner | works |
 | C2 | New case: upload photos (the seed's placeholders via `--images-out`, or a non-customer photo set), detection, edit parts, file, sign off | owner | works, nothing odd |
 | C3 | PDF and Excel download | owner | open and look right |
@@ -117,9 +126,13 @@ Then the owner writes **"go"**.
    out M (detached), builds, restarts nginx, runs the smoke checks on 8080,
    writes `/opt/carlink-system/.deployed` and a line in
    `~/carlink-deploy.log`.
-3. Switch the flags on in production's `infra/.env` last (then
-   `bash infra/compose.sh prod up -d`), and smoke again
-   (`deploy.sh --env prod --smoke-only`).
+3. Switch the flags on in production's `infra/.env` last, then
+   `bash /opt/carlink-staging/infra/compose.sh prod up -d` -- it checks the
+   rendered config, recreates what changed AND restarts `carlink_nginx`
+   afterwards (recreated containers get new addresses; without the restart
+   nginx answers 502, as on 2026-10-20) -- and smoke again
+   (`deploy.sh --env prod --smoke-only`). Never a bare `docker compose` for
+   this.
 
 Exit 2 from deploy.sh = deployed, but a smoke check failed: look at the
 output, then `--smoke-only` again or roll back.
@@ -142,14 +155,29 @@ output, then `--smoke-only` again or roll back.
 bash /opt/carlink-staging/infra/compose.sh staging ps
 bash /opt/carlink-staging/infra/compose.sh staging logs --tail 50 api
 bash /opt/carlink-staging/infra/compose.sh staging stop      # stays stopped, even after a reboot
-bash /opt/carlink-staging/infra/compose.sh staging up -d     # again, same commit
+bash /opt/carlink-staging/infra/compose.sh staging up -d     # again, same commit (nginx restarted after)
 bash /opt/carlink-staging/infra/deploy.sh --env staging --smoke-only
 docker exec carlink_staging_api python scripts/seed_staging.py   # missing seed data back
+docker exec carlink_staging_api cat /tmp/seed-staging-passwords.txt   # new seed passwords (then rm it)
+bash /opt/carlink-staging/infra/compose.sh prod ps | logs ... # production: read-only verbs, up/restart/start, exec
 ```
 
-Never a bare `docker compose -f infra/docker-compose.prod.yml ...` in the
-staging clone: without `-p` and the staging override that is production's
-project. `compose.sh` (and `deploy.sh`) always pass both.
+Never a bare `docker compose -f infra/docker-compose.prod.yml ...`: in the
+staging clone, without `-p` and the staging override, that is production's
+project; in production's, without `docker-compose.ai-shared.yml`, production
+silently drops the shared AI folder (staging's smoke then fails). And a bare
+`up` never restarts nginx. `compose.sh` (and `deploy.sh`) always pass the
+right project and files, in a clean environment. For production
+`compose.sh` takes only ps logs config top images port events exec stats up
+restart start version ls -- never down / rm / kill / stop / volume / build,
+nor -v / --volumes / -V / --build (`down -v` would delete the live data).
+
+**Whose scripts run where (one-owner repo, accepted):** `deploy.sh
+--fast-lane` runs the release's own `backup.sh` as root with no staging run
+behind it, and `compose.sh prod` from the staging clone is the staged
+pull request's copy of `deploy.sh` acting on production. Both are fine while
+only the owner and the lead push to this repo; run production's commands
+from a clone at a reviewed commit when in doubt.
 
 ### The shared AI quota (one Gemini key, owner decision 22 Nov)
 
@@ -162,12 +190,29 @@ per lane) and the "day used up" memory in one host folder,
 
 | Lane | Rule |
 |---|---|
-| production | up to 12 requests a minute of its own, 4 s apart; never waits for staging; its base pipeline is never cut |
+| production | up to 12 requests a minute of its own (`GEMINI_QUOTA_PROD_PER_MINUTE`), 4 s apart; never waits for staging; its base pipeline is never cut |
 | staging (app and benchmark) | a request only while the minute's window, with it, holds at most 6 and at most 2 of staging's own (the 14-a-minute budget for both stacks minus production's 12, so the two never pass 14 in any minute); nothing more until the reset (midnight Pacific = 16:00 Malaysia time, 15:00 in US summer) once staging has sent 300 that day, production 400, or a model has fewer than 300 left; never a model with no known daily limit (the strong model's 20 stay production's) |
 
 Every request sent is counted, busy (503) answers and retries included.
 Production's extras tier for later features (`quota_guard.extras_tier()`):
 RICH above 50% of the 3.5-lite day left, NORMAL 25-50%, LEAN below.
+
+The folder is written by both stacks, and staging runs code under test as
+root, so production treats it as untrusted: no lock there is waited for more
+than 2 s (then production uses its own window, staging is refused, the day
+memory reads "nothing remembered"); no symlink is followed (a planted one is
+refused or replaced, never written through); temp files have random names.
+The files are versioned (`v1-<key tag>.json`): **a pull request that changes
+`quota_guard.py` or `allowance.py`'s files must use new names** (`v2-...`),
+or while it is staged the two stacks would rewrite each other's history.
+
+Once the folder exists, production behaves a little differently (accepted):
+a busy (503) or per-minute-429 retry takes a slot like any request, so it
+counts toward the 12 a minute and waits for the 4 s spacing; each process
+merges its own "day used up" memory into the shared one on first use. The
+guard pools requests per API key, while Google pools them per Google Cloud
+project: two company keys in one project are not counted together (today
+there is one).
 
 Today's counts: Settings needs no change -- an admin's `GET /api/system/info`
 has `ai_quota` (per key by label, per model per lane, what's left, whether
@@ -194,6 +239,13 @@ annotated order. In short:
    `grep`).
 5. **sudo**: the host nginx site `host-nginx/carlink-staging.conf`, the
    htpasswd file, `certbot --nginx -d carlink-staging.34-16-92-98.sslip.io`.
+   A site that fails `nginx -t` and stays in `sites-enabled` breaks the next
+   reload (a certbot renewal) or reboot for **Solv and Xero too**, so every
+   `nginx -t` has its undo:
+   `sudo nginx -t || sudo rm /etc/nginx/sites-enabled/carlink-staging` --
+   after linking the site, and again after certbot. Don't use staging until
+   `https://carlink-staging.34-16-92-98.sslip.io/` answers 401 (until then
+   the password would go over plain http).
 6. `bash infra/deploy.sh --env staging --ref <commit>` (the very first time,
    before production runs the guard: `--allow-unshared-prod`), then
    `docker exec carlink_staging_api python scripts/seed_staging.py`.
