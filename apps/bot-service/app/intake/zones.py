@@ -603,6 +603,12 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 walk: dict | None = None,
                 cancel: threading.Event | None = None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
+    if cancel is not None:
+        # B2's cancel also stops a zone call in flight at its current model
+        # (no next model, no "all busy" round): the run ends sooner.
+        from app.ai.second_look import _ChainUntil
+
+        models = _ChainUntil(models, cancel)
     grid = grid_on()
     asked = evidence_mode()
     light = light_options()

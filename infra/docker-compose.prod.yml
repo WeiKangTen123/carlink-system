@@ -129,6 +129,7 @@ x-bot-service: &bot-service
     # B9): the main read and the zone reads at once, the linked check's calls
     # at once, sort workers, keeping the sorter's label on a regroup, and a
     # rescue sort. Defaults are config.py's: today's behaviour byte for byte.
+    # INTAKE_PARALLEL_READS acts only with INTAKE_MAIN_READ_FALLBACK=zones.
     - INTAKE_PARALLEL_READS=${INTAKE_PARALLEL_READS:-off}
     - INTAKE_LINK_CHECK_PARALLEL=${INTAKE_LINK_CHECK_PARALLEL:-off}
     - INTAKE_SORT_WORKERS=${INTAKE_SORT_WORKERS:-3}

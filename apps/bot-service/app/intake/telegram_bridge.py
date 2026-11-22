@@ -85,6 +85,11 @@ class Outcome:
     parts: list = field(default_factory=list)  # the damage list's items
     suggestions: list = field(default_factory=list)  # the open second-look items
     vehicle: dict = field(default_factory=dict)
+    # F1 (settings.intake_main_read_fallback): the notice of a list made
+    # from the zone reads because the main read failed (pipeline.
+    # read_notice), else None. The chat says it instead of "Finished
+    # reading".
+    read_notice: Optional[str] = None
 
 
 # ----------------------------------------------------------------- the draft
@@ -350,6 +355,7 @@ def outcome(report_id: str) -> Outcome:
             parts=[it for it in data.get("damage_summary") or [] if isinstance(it, dict)],
             suggestions=open_items,
             vehicle=data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {},
+            read_notice=pipeline.read_notice(session.ai_draft) if state == "ready" else None,
         )
     finally:
         db.close()

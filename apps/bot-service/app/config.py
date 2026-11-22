@@ -453,9 +453,12 @@ class Settings(BaseSettings):
     intake_main_read_fallback: str = "off"
     # B2 (R-batching): zone mode's zone reads start beside the main read
     # instead of after it -- they need only the sort (intake/pipeline.
-    # ParallelZones). The same calls, through the same rate limiter; with
-    # F1 on, a failed main read finds the zone answers already there.
-    # "off": one after the other, as before.
+    # ParallelZones). The same calls, through the same rate limiter. It acts
+    # ONLY together with intake_main_read_fallback "zones" (the review's
+    # M4): then a failed main read uses the zone answers already paid for;
+    # without F1 they would be thrown away and paid for again on Retry, so
+    # the reads stay one after the other. "off": one after the other, as
+    # before.
     intake_parallel_reads: str = "off"
 
     @field_validator("intake_main_read_fallback")

@@ -46,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.ai import allowance, check, evidence, link_check, runs, second_look
+from app.ai.extraction import _model_chain as main_read_chain
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
@@ -815,7 +816,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
 
-    def read_once():
+    def read_once(**limits):
         return draft_report(
             notes,
             [path for _, _, path in inputs],
@@ -824,6 +825,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             timeout=120.0,
             actor=actor,
             **extra,
+            **limits,
         )
 
     # The zone reads made before the merge below rather than in it
@@ -836,25 +838,38 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     early_intact: dict[str, list[str]] = {}
     early_walk: dict | None = None
     zone_started: float | None = None
+    # B2 only with F1 "zones" (the review's M4): a failed main read then
+    # uses the zone answers already paid for, instead of throwing them away.
     parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact) if (
-        zone_mode and zone_jobs and parallel_reads_on()) else None
+        zone_mode and zone_jobs and parallel_reads_on() and main_read_fallback_on()) else None
     if parallel is not None:
         early_walk, zone_started = parallel.walk, parallel.started
     tries_before = len(run.attempts.snapshot())
+    first_error: Exception | None = None
     try:
         draft = read_once()
-        if parallel is not None:
-            parallel.progress.main_done()
     except Exception as exc:
         if not (main_read_fallback_on() and fallback_worthy(exc, run.attempts.snapshot()[tries_before:])):
             if parallel is not None:
-                # Never left running past the run's end: no new zone call,
-                # and the ones in flight are waited for (their progress
-                # would otherwise write "reading" over the failure).
+                # Never left running past the run's end: the failure is shown
+                # at once, no new zone call starts and the ones in flight
+                # stop at their model (zones' cancel), and they are waited
+                # for -- the run stays reserved until then, so Retry can't
+                # overlap them.
+                parallel.progress.close()
+                _set_stage(report_id, "failed", error=_friendly_error(exc),
+                           error_code=exc.code if isinstance(exc, AiUnavailable) else None,
+                           error_by=actor.user_id)
                 parallel.cancel()
             raise
+        first_error, draft = exc, None
+    else:
+        if parallel is not None:
+            parallel.progress.main_done()
+    if first_error is not None:
         logger.warning("Reading %s: the overall read failed (%s); %s, then once more", report_id,
-                       type(exc).__name__, "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
+                       type(first_error).__name__,
+                       "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
         if parallel is not None:
             early_reads = parallel.result()
         elif zone_mode and zone_jobs:
@@ -868,24 +883,28 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         found_some = any(found for _, found in early_reads or [])
         # The lead's rule (22 Nov): the second try only while the run is
         # inside the zone stage's time box (zones.TIME_BOX from when the
-        # zone reads started; with none, from when the reading began).
-        if time.monotonic() - (zone_started or read_started) >= zones.TIME_BOX:
+        # zone reads started; with none, from when the reading began), and
+        # (the review's M3) it must end inside it: that box as its
+        # deadline, at most one request per model of the chain, no "all
+        # busy" round.
+        box_end = (zone_started or read_started) + zones.TIME_BOX
+        if time.monotonic() >= box_end:
             if not found_some:
-                raise
+                raise first_error
             logger.warning("Reading %s: past the zone stage's time box, no second try; the list is the zone "
                            "reads' finds", report_id)
-            draft = None
         else:
             try:
-                draft = read_once()
-                if parallel is not None:
-                    parallel.progress.main_done()
+                draft = read_once(deadline=box_end, max_tries=max(1, len(main_read_chain())))
             except Exception as again:
                 if not found_some:
                     raise
                 logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
                                report_id, type(again).__name__)
                 draft = None
+            else:
+                if parallel is not None:
+                    parallel.progress.main_done()
     if parallel is not None and early_reads is None:
         # The overall reading answered: the zone reads, as they finish.
         early_reads = parallel.result()
@@ -954,9 +973,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             zone_draft["assembly_walk"] = walked
         if draft is None:
             # F1: no overall reading, so no option B: the zone reads' finds
-            # are the list, each a "Check" row (below), with the notice
-            # GET /intake/{id} shows (read_notice).
-            zone_draft["main_read"] = dict(MAIN_READ_FALLBACK)
+            # go on the list (below, with the last reading's own list), each
+            # a "Check" row, with the notice GET /intake/{id} shows
+            # (read_notice).
+            zone_draft["main_read"] = fallback_notice(previous_ai)
         elif zones.suggest_zone_only():
             # Option B: the list is what the overall reading found; the rest
             # are suggestions. resolve_sides and the agreement rule below
@@ -969,6 +989,16 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         evidence.finish(data.get("damage_summary") or [], zone_draft.get("zone_suggestions") or [], facts)
     except Exception:
         logger.exception("Reading %s: couldn't settle the evidence; the reading stands", report_id)
+    # F1 on a re-read (the review's H1): the last reading's own list stays,
+    # as it was, and the zone reads' finds it hasn't got are added, each a
+    # "Check" row. A person's ticked rows stay too (merge_redraft).
+    previous_rows: list[dict] = []
+    if draft is None:
+        previous_rows = previous_list(previous_ai)
+        data["damage_summary"] = with_zone_finds(previous_rows, data.get("damage_summary") or [])
+        # The main read read nothing (the review's L1): the run log's
+        # reading sent no photo, and read_photo_ids stays as it was.
+        run.photos_sent = []
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -995,16 +1025,13 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # other_side for a suggestion; off, resolve_sides is called as
             # before.
             other_side: list[dict] | None = [] if keep_other_side_on() else None
+            # F1: the last reading's own rows were placed by their reading.
+            kept_as_they_were = {str(it.get("part")) for it in previous_rows}
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
-                                                   keep_undetermined=checked | disputed,
+                                                   keep_undetermined=checked | disputed | kept_as_they_were,
                                                    **({"other_side": other_side} if other_side is not None else {}))
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
-            if draft is None:
-                # F1: every zone find on the list is for a person to check.
-                for item in data["damage_summary"]:
-                    if not item.get("human_verified"):
-                        item["ai_confidence"] = "Low"
             if other_side:
                 zone_draft.setdefault("zone_suggestions", []).extend(
                     zones.other_side_suggestion(item) for item in other_side)
@@ -1023,7 +1050,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # transaction), not as it was when the run started.
         report.data = merge_redraft(current, session.ai_draft, data)
         session.ai_draft = {**data, **zone_draft} if zone_draft else data
-        session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
+        if draft is not None:
+            session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
         db.commit()
     finally:
         db.close()
@@ -1043,8 +1071,50 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
 # /intake/{id}'s read_notice is its note). Nothing found by the zone reads:
 # the run fails as before.
 
-MAIN_READ_FAILED_NOTE = "The overall read failed. This list is from the area reads. Press Re-read."
+MAIN_READ_FAILED_NOTE = ("The overall read failed because Google was busy. This list comes from the area reads "
+                         "only. Press Re-read when ready.")
+# A re-read's (the review's H1): the last reading's list is kept.
+MAIN_READ_FAILED_REREAD_NOTE = ("The overall read failed because Google was busy. The list keeps the last read's "
+                                "parts and adds what the area reads found, marked Check. Press Re-read when ready.")
 MAIN_READ_FALLBACK = {"status": "failed", "fallback": "zones", "note": MAIN_READ_FAILED_NOTE}
+
+
+def fallback_notice(previous_ai: dict | None) -> dict:
+    """ai_draft["main_read"] of an F1 list: MAIN_READ_FALLBACK, its note the
+    re-read's when the last reading left a list."""
+    out = dict(MAIN_READ_FALLBACK)
+    if previous_list(previous_ai):
+        out["note"] = MAIN_READ_FAILED_REREAD_NOTE
+    return out
+
+
+def previous_list(previous_ai: dict | None) -> list[dict]:
+    """The last reading's own damage list (copies), [] on a first read."""
+    rows = previous_ai.get("damage_summary") if isinstance(previous_ai, dict) else None
+    return [copy.deepcopy(it) for it in rows or [] if isinstance(it, dict) and it.get("part")]
+
+
+def _same_part(item: dict, rows: list[dict]) -> bool:
+    """Whether `rows` has item's part already: a named "Other / Not Listed"
+    by its name (item_key), any other part by its names (a sided name and
+    its "(side undetermined)" twin are one part: second_look.is_listed)."""
+    from app.ai.second_look import is_listed
+    from app.reports.taxonomy import OTHER_PART
+
+    if item_key(item) in {item_key(row) for row in rows}:
+        return True
+    part = str(item.get("part") or "")
+    return part != OTHER_PART and is_listed(part, {str(row.get("part") or "") for row in rows})
+
+
+def with_zone_finds(previous_rows: list[dict], zone_rows: list[dict]) -> list[dict]:
+    """F1's list: the last reading's own rows as they were, then each zone
+    find whose part isn't among them, as a "Check" row (Low)."""
+    out = list(previous_rows)
+    for row in zone_rows:
+        if not _same_part(row, out):
+            out.append({**row, "ai_confidence": "Low"})
+    return out
 
 
 def main_read_fallback_on() -> bool:
@@ -1109,8 +1179,14 @@ class ReadProgress:
         self.closed = False
 
     def _write(self) -> None:
-        if not self.closed:
+        if self.closed:
+            return
+        try:
             _set_stage(self.report_id, "reading", min(self.total, self._main + self._zones), self.total)
+        except Exception:
+            # Only the bar (the review's L2): a busy database here must never
+            # count as the main read failing.
+            logger.warning("Reading %s: couldn't show progress", self.report_id, exc_info=True)
 
     def main_done(self) -> None:
         with self._lock:
@@ -1157,9 +1233,12 @@ class ParallelZones:
             return []
 
     def cancel(self) -> None:
+        """No new zone call, the ones in flight stopped at their model
+        (zones' cancel), their progress closed first -- nothing writes
+        "reading" again -- then waited for."""
+        self.progress.close()
         self._stop.set()
         self.result()
-        self.progress.close()
 
 
 def fallback_draft(previous: dict | None) -> dict:
