@@ -30,6 +30,13 @@ delayed, never dropped, and never fail for being early.
 
 The key itself is never written to disk -- files are named by a hash of it,
 so a window file leaks nothing if read.
+
+Two stacks, one key (2026-11-22)
+--------------------------------
+With settings.gemini_shared_quota_dir set and mounted, production and
+staging share ONE window (and a per-day count) in that folder instead, with
+a lane each: ai/quota_guard.py. Without it -- the default -- everything
+below runs exactly as before.
 """
 import hashlib
 import json
@@ -40,6 +47,7 @@ import threading
 import time
 from pathlib import Path
 
+from app.ai import quota_guard
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -130,6 +138,15 @@ def estimate_wait(api_key: str | None = None) -> float:
     Used to warn a reporter that their draft is queued, rather than leaving
     them watching a silent "Drafting your report..." for most of a minute.
     """
+    guard = quota_guard.mode()
+    if guard != "local":
+        # The shared window (this lane's share of it); nothing to wait for
+        # when the staging lane may not send at all.
+        try:
+            return quota_guard.estimate_wait(api_key) if guard == "shared" else 0.0
+        except Exception as exc:
+            logger.warning("Shared AI quota: couldn't estimate the wait (%s)", type(exc).__name__)
+            return 0.0
     limit = max(1, settings.gemini_max_requests_per_minute)
     now = time.monotonic()
     path = _window_file(api_key)
@@ -143,13 +160,53 @@ def estimate_wait(api_key: str | None = None) -> float:
             _release(handle)
 
 
-def acquire(api_key: str | None = None) -> float:
+def acquire(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None) -> float:
     """Claims one slot, waiting for the window if it's full.
 
     Returns how long it waited, for logging. The sleep happens with the file
     lock RELEASED -- holding it across a sleep would block every other
     process for the whole wait and turn a rate limit into a queue of one.
+
+    model, fingerprint: the request's model and the key's fingerprint, for
+    the shared quota guard's day counts and staging rules (quota_guard
+    .acquire), which take over when the shared folder is there -- or when
+    this is the staging lane, which then refuses (quota_guard.LaneRefused,
+    nothing sent). Unused otherwise: the window below, as always.
     """
+    if quota_guard.mode() != "local":
+        return _guarded(api_key, model, fingerprint)
+    return _acquire_local(api_key)
+
+
+def acquire_retry(api_key: str | None = None, *, model: str | None = None, fingerprint: str | None = None) -> float:
+    """The slot for asking the same model again (a busy model's one retry,
+    or a per-minute 429's). Without the shared folder a retry takes no slot,
+    as always: 0, nothing done. With it, every request sent is in the shared
+    window and today's count, so the retry takes one like any request."""
+    if quota_guard.mode() == "local":
+        return 0.0
+    return _guarded(api_key, model, fingerprint)
+
+
+def _guarded(api_key: str | None, model: str | None, fingerprint: str | None) -> float:
+    """quota_guard.acquire. Its refusals (LaneRefused) go to the caller.
+    Any other failure of the shared folder (a full disk, a lost mount) must
+    not stop production's AI: the production lane falls back to its own
+    window and says so; the staging lane is refused."""
+    try:
+        return quota_guard.acquire(api_key, model=model, fingerprint=fingerprint)
+    except quota_guard.LaneRefused:
+        raise
+    except Exception as exc:
+        if quota_guard.lane() == "staging":
+            raise quota_guard.LaneRefused(model, f"the shared quota folder failed: {type(exc).__name__}") from None
+        logger.warning("Shared AI quota failed (%s); this request uses this stack's own window", type(exc).__name__)
+        return _acquire_local(api_key)
+
+
+def _acquire_local(api_key: str | None) -> float:
+    """The window in this stack's own STORAGE_DIR/.ratelimit (before the
+    shared quota guard, the only one)."""
     limit = max(1, settings.gemini_max_requests_per_minute)
     spacing = max(0.0, settings.gemini_min_call_interval_seconds)
     path = _window_file(api_key)

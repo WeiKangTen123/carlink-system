@@ -32,6 +32,12 @@ the key's fingerprint (AiKey.fingerprint).
 Nothing here may break an AI call: a file that can't be read or written is
 logged and treated as "nothing remembered", which is the behaviour from
 before this module.
+
+Two stacks, one key (2026-11-22): with the shared quota folder there
+(ai/quota_guard.py, settings.gemini_shared_quota_dir), the store is
+<folder>/allowance/days.json instead, so production and staging skip the
+same spent models. The first time it is used, this stack's own store is
+copied into it. Without the folder, the store stays where it always was.
 """
 import hashlib
 import json
@@ -127,10 +133,39 @@ def _entry(fingerprint: str, model: str) -> str:
     return f"{_tag(fingerprint)}|{model}"
 
 
-def _path() -> Path:
+def _local_path() -> Path:
     d = Path(settings.storage_dir) / ".allowance"
     d.mkdir(parents=True, exist_ok=True)
     return d / "days.json"
+
+
+def _path() -> Path:
+    """The store: in the shared quota folder when it is there, else this
+    stack's own (ai/quota_guard.shared_dir)."""
+    from app.ai import quota_guard  # it imports this module
+
+    shared = quota_guard.shared_dir()
+    if shared is None:
+        return _local_path()
+    d = shared / "allowance"
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return d / "days.json"
+
+
+def _seed_shared(path: Path) -> None:
+    """A shared store used for the first time starts from this stack's own
+    store, so what it already learned isn't asked of Google again. Called
+    holding the shared store's lock."""
+    if path.exists():
+        return
+    local = _local_path()
+    if local == path or not local.exists():
+        return
+    try:
+        _write(path, _read(local))
+        logger.info("Day allowance: this stack's store copied into the shared quota folder")
+    except Exception as exc:
+        logger.warning("Day allowance: couldn't copy this stack's store to the shared folder (%s)", type(exc).__name__)
 
 
 @contextmanager
@@ -148,6 +183,8 @@ def _locked() -> Iterator[Path]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             except (ImportError, OSError):
                 pass  # Windows (tests): one process, _local_lock is enough
+            if path != _local_path():
+                _seed_shared(path)
             yield path
         finally:
             try:
