@@ -462,17 +462,23 @@ def f1_main_read_fallback() -> None:
         listed = data.get("damage_summary") or []
         check(state["stage"] == "ready" and state["error"] is None, "both tries busy: ready, not failed",
               (state["stage"], state["error"]))
-        check(asked["draft"] == 2 * per_call and asked["zone"] == clean["zone"],
-              "the main read tried twice, each zone read once", dict(asked))
+        second = len(pipeline.main_read_chain())
+        check(asked["draft"] == per_call + second and asked["zone"] == clean["zone"],
+              "the main read tried twice -- the second try at most one request per model of the chain, no busy "
+              "round (the review's M3) -- each zone read once", dict(asked))
         check(sorted(it["part"] for it in listed) == ["Left Tail Lamp", "Rear Bumper"]
               and all(it.get("ai_confidence") == "Low" for it in listed)
               and all(it.get("found_by") == ["zone:rear"] for it in listed),
               "the list is the zone reads' finds, each a Check row found by its zone read",
               [(it["part"], it.get("ai_confidence"), it.get("found_by")) for it in listed])
         check(state.get("read_notice") == pipeline.MAIN_READ_FAILED_NOTE
-              and pipeline.MAIN_READ_FAILED_NOTE == "The overall read failed. This list is from the area reads. "
-                                                   "Press Re-read.",
-              "GET /intake/{id} says so (read_notice)", state.get("read_notice"))
+              and pipeline.MAIN_READ_FAILED_NOTE == "The overall read failed because Google was busy. This list "
+                                                   "comes from the area reads only. Press Re-read when ready.",
+              "GET /intake/{id} says so (read_notice), in plain words", state.get("read_notice"))
+        run_rows = [r for r in t._run_rows(rid) if r["kind"] == "read"]
+        check(session.read_photo_ids == [] and run_rows and run_rows[0]["photos_sent"] == [],
+              "a first read's fallback: no photo counted as read by the main read (read_photo_ids, run log)",
+              (session.read_photo_ids, [r["photos_sent"] for r in run_rows]))
         check(session.ai_draft.get("main_read") == pipeline.MAIN_READ_FALLBACK
               and "overall" not in session.ai_draft.get("zone_reads")
               and session.ai_draft.get("zone_suggestions") in (None, [])
@@ -510,15 +516,74 @@ def f1_main_read_fallback() -> None:
     # (c) the zone reads find nothing: failed as before.
     with a_case(dict(on), {"draft": busy_draft(), "zone": no_zone_damage}) as (client, rid, pids, uid, state):
         asked = kinds()
-    check(state["stage"] == "failed" and asked["draft"] == 2 * per_call and asked["zone"] > 0
-          and "busy" in (state["error"] or "").lower(),
+    check(state["stage"] == "failed" and asked["draft"] == per_call + len(pipeline.main_read_chain())
+          and asked["zone"] > 0 and "busy" in (state["error"] or "").lower(),
           "zone reads find nothing: the run fails as before (after the second try)", (state["stage"], dict(asked)))
 
     # (d) single mode: no zone reads; one more try, then failed.
     with a_case({"intake_main_read_fallback": "zones"}, {"draft": busy_draft()}) as (client, rid, pids, uid, state):
         asked = kinds()
-    check(state["stage"] == "failed" and asked["draft"] == 2 * per_call and asked["zone"] == 0,
+    check(state["stage"] == "failed" and asked["draft"] == per_call + len(pipeline.main_read_chain())
+          and asked["zone"] == 0,
           "single mode: tried once more, then the run fails", (state["stage"], dict(asked)))
+
+    # (g) the review's H1: F1 on a RE-READ keeps the last read's list --
+    # nothing the main read found is lost, a person's tick stays -- and adds
+    # the zone finds as Check rows. (The reviewer's probe_f1_reread.py.)
+    with a_case(dict(on)) as (client, rid, pids, uid, state):
+        before = {it["part"]: it for it in t.db_row(Report, rid).data.get("damage_summary") or []}
+        read_ids = t.db_row(IntakeSession, rid).read_photo_ids
+        data = client.get(f"/intake/{rid}").json()["data"]
+        for item in data["damage_summary"]:
+            if item["part"] == "Left Rear Door":
+                item["human_verified"] = True
+        assert client.put(f"/intake/{rid}/data", json={"data": data}).status_code == 200
+        with fakes({"draft": busy_draft()}):
+            t.REQUESTS.clear()
+            r = client.post(f"/intake/{rid}/process", json={"mode": "read"})
+            again = t.wait_done(client, rid) if r.status_code == 200 else {"stage": r.status_code}
+        after = {it["part"]: it for it in t.db_row(Report, rid).data.get("damage_summary") or []}
+        session = t.db_row(IntakeSession, rid)
+        db = SessionLocal()
+        try:
+            from app.ai import runs as run_log
+
+            last = run_log.last_read(db, rid, len(pids))
+        finally:
+            db.close()
+    check(again["stage"] == "ready" and set(before) <= set(after)
+          and all(after[p].get("ai_confidence") == before[p].get("ai_confidence") for p in ("Boot Lid", "Rear Bumper"))
+          and after["Left Rear Door"].get("human_verified"),
+          "re-read, main read busy twice: every row of the last read stays as it was, the ticked one too",
+          {p: (before.get(p, {}).get("ai_confidence"), after.get(p, {}).get("ai_confidence")) for p in set(before) | set(after)})
+    added = set(after) - set(before)
+    check(added == {"Left Tail Lamp"} and after["Left Tail Lamp"].get("ai_confidence") == "Low",
+          "... and the zone read's own find is added as a Check row", sorted(added))
+    check(again.get("read_notice") == pipeline.MAIN_READ_FAILED_REREAD_NOTE
+          and "keeps the last read's parts" in pipeline.MAIN_READ_FAILED_REREAD_NOTE,
+          "... with the re-read's notice", again.get("read_notice"))
+    check(session.read_photo_ids == read_ids and last and last.get("photos_read") == 0,
+          "... read_photo_ids as the last good read left them; the run log's reading sent no photo (L1)",
+          (len(session.read_photo_ids or []), last))
+
+    # (h) the second try ends inside the zone stage's time box (M3's deadline).
+    def slow_after_zone(kwargs, labels):
+        import time as _time
+
+        if any(t.kind_of(r) == "zone" for r in t.REQUESTS):
+            _time.sleep(0.25)
+        raise Busy()
+    old_box = zones_module.TIME_BOX
+    zones_module.TIME_BOX = 1.2
+    try:
+        with a_case(dict(on), {"draft": slow_after_zone, "zone": slow_zone(0.6)}) as (client, rid, pids, uid, state):
+            asked = kinds()
+    finally:
+        zones_module.TIME_BOX = old_box
+    second_try = asked["draft"] - per_call
+    check(state["stage"] == "ready" and 1 <= second_try < len(pipeline.main_read_chain()),
+          "the second try stops at the zone stage's time box (deadline), fewer requests than the chain allows",
+          (state["stage"], second_try))
 
     # (e) the lead's narrowing (22 Nov): a refusal that is not "busy" (a
     # 400) never falls back -- no zone read, no second try.
@@ -698,6 +763,24 @@ def f5_end_to_end() -> None:
               "filed: the cut list kept, its photos as P-numbers", (r.status_code, t.refs_in(filed.get("second_look"))))
         check(t.sign_off(client, rid).status_code == 200, "and signed off with a cut list on it")
 
+    # The review's L7: at most MAX_CUT cut items stored; the counts count all.
+    old_cut = second_look.MAX_CUT
+    second_look.MAX_CUT = 2
+    try:
+        with a_case(dict(CAPPED, intake_keep_cut="on")) as (client, rid, pids, uid, state):
+            look = look_of(rid)
+            total = sum((look.get("cut_counts") or {}).values())
+            first = (look.get("cut") or [None])[0]
+            r = client.post(f"/intake/{rid}/suggestions", json={"key": first["key"], "action": "dismiss"}) if first else None
+            after = look_of(rid)
+    finally:
+        second_look.MAX_CUT = old_cut
+    check(len(look.get("cut") or []) == 2 and total > 2,
+          "the stored cut list is capped (MAX_CUT), cut_counts still counts every cut one", (len(look.get("cut") or []),
+                                                                                              look.get("cut_counts")))
+    check(r is not None and r.status_code == 200 and sum((after.get("cut_counts") or {}).values()) == total - 1,
+          "a decision on a cut one takes exactly one off the counts", after.get("cut_counts"))
+
     # the suggestions' own cap (second_look.MAX_SUGGESTIONS)
     old_max = second_look.MAX_SUGGESTIONS
     second_look.MAX_SUGGESTIONS = 0
@@ -798,6 +881,17 @@ def f6_hidden_no() -> None:
     check(link_check.apply(copy.deepcopy(items), results, set()) == link_check.apply(copy.deepcopy(items), results,
                                                                                        set(), hidden_rule="keep")
           and link_check.hidden_no() == "keep", "the setting's default is keep")
+    # The review's L8: the model's own "no" kept beside the code's verdict.
+    beam = next(it for it in told if it["key"] == "beam")
+    plate = next(it for it in told if it["key"] == "plate")
+    check(beam["link_check"].get("model_verdict") == "no" and "model_verdict" not in plate["link_check"]
+          and not any("model_verdict" in it.get("link_check", {}) for it in keep),
+          "the hidden part's record keeps the model's own \"no\" (model_verdict); nothing new at keep")
+    from app.reports.schema import LinkCheck
+
+    check("model_verdict" not in LinkCheck(verdict="no").model_dump()
+          and LinkCheck(verdict="cannot_tell", model_verdict="no").model_dump()["model_verdict"] == "no",
+          "LinkCheck dumps model_verdict only when set (a record without the rule saves as before)")
 
     def beam_verdict(values):
         with a_case(values, {"link": beam_no}) as (client, rid, pids, uid, state):

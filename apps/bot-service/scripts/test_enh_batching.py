@@ -182,6 +182,7 @@ from app import config  # noqa: E402
 from app.ai import link_check, rate_limit, structured, triage  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake import pipeline  # noqa: E402
+from app.intake import telegram_bridge as bridge  # noqa: E402
 from app.reports import accuracy, db as db_module  # noqa: E402
 
 ROOT = HERE.parent
@@ -355,8 +356,10 @@ def b2_parallel_reads() -> None:
                                       key=lambda r: json.dumps(r, sort_keys=True))}
         return out, list(overlap)
 
-    on = dict(LINKS, intake_parallel_reads="on")
+    # B2 acts only with F1 "zones" (the review's M4).
+    on = dict(LINKS, intake_parallel_reads="on", intake_main_read_fallback="zones")
     serial, serial_overlap = artefacts(dict(LINKS))
+    alone, alone_overlap = artefacts(dict(LINKS, intake_parallel_reads="on"))
     seen = []
     real_set_stage = pipeline._set_stage
 
@@ -370,8 +373,9 @@ def b2_parallel_reads() -> None:
         parallel, parallel_overlap = artefacts(on)
     finally:
         pipeline._set_stage = real_set_stage
-    check(serial_overlap == [False] and parallel_overlap == [True],
-          "off: the zone reads after the main read; on: started beside it", (serial_overlap, parallel_overlap))
+    check(serial_overlap == [False] and parallel_overlap == [True] and alone_overlap == [False] and alone == serial,
+          "off: the zone reads after the main read; on with F1: started beside it; on without F1: as off (M4)",
+          (serial_overlap, parallel_overlap, alone_overlap))
     check(parallel == serial, "on: the same requests, list, suggestions, linked parts and AI draft as off",
           _first_diff(parallel, serial))
     totals = {total for _, total in seen[1:]}
@@ -379,30 +383,65 @@ def b2_parallel_reads() -> None:
     check(len(totals) == 1 and dones == sorted(dones) and max(dones) == max(totals),
           "the progress counts up to 1 + the zone calls, never back", seen)
 
-    # The main read failing, F1 off: the zone reads are cancelled and waited for.
-    with fx.a_case(dict(on), {"draft": fx.busy_draft()}) as (client, rid, pids, uid, state):
-        time.sleep(0.5)
+    # The main read failing in a way F1 doesn't fall back for (a 400), the
+    # rear zone still reading: the failure is shown at once (L3), the zone
+    # reads are cancelled and waited for -- the run stays reserved -- and
+    # nothing writes "reading" over the failure.
+    with fx.a_case(dict(on), {"draft": fx.refused_draft, "zone": fx.slow_zone(1.5)}) as (
+            client, rid, pids, uid, state):
+        still_running = pipeline.is_running(rid)
+        end = time.time() + 30
+        while pipeline.is_running(rid) and time.time() < end:
+            time.sleep(0.1)
+        time.sleep(0.3)
         later = client.get(f"/intake/{rid}").json()
         zone_runs = [r for r in t._run_rows(rid) if r["kind"] == "read_zones"]
-        asked = kinds()
-    check(state["stage"] == "failed" and later["stage"] == "failed" and not pipeline.is_running(rid)
-          and zone_runs and all(r["status"] != "running" for r in zone_runs),
-          "main read failing (F1 off): failed, and stays failed -- the zone run finished before the failure",
-          (state["stage"], later["stage"], [r["status"] for r in zone_runs], dict(asked)))
+    check(state["stage"] == "failed" and still_running and later["stage"] == "failed"
+          and not pipeline.is_running(rid) and zone_runs and all(r["status"] != "running" for r in zone_runs),
+          "a main read failing without fallback: shown failed at once while the zone reads finish (still reserved), "
+          "stays failed, the zone run closed",
+          (state["stage"], still_running, later["stage"], [r["status"] for r in zone_runs]))
+
+    # L2: a progress write that fails is never the main read failing.
+    progress = pipeline.ReadProgress("no-such-draft", 2)
+    real_set_stage = pipeline._set_stage
+
+    def broken(*a, **kw):
+        raise RuntimeError("database is locked")
+    pipeline._set_stage = broken
+    try:
+        progress.main_done()
+        progress.zone_done(1)
+        survived = True
+    except Exception:
+        survived = False
+    finally:
+        pipeline._set_stage = real_set_stage
+    check(survived, "a failing progress write (database locked) never raises from main_done / zone_done (L2)")
 
     # F1 on: the zone answers are already there; never asked twice.
-    with fx.a_case(dict(on, intake_main_read_fallback="zones"), {"draft": fx.busy_draft()}) as (
-            client, rid, pids, uid, state):
+    with fx.a_case(dict(on), {"draft": fx.busy_draft()}) as (client, rid, pids, uid, state):
         asked = kinds()
         listed = [it["part"] for it in t.db_row(Report, rid).data.get("damage_summary") or []]
+        outcome = bridge.outcome(rid)
     with fx.a_case(dict(ZONES)) as (client, _rid, _pids, _uid, _state):
         clean = kinds()
     with fx.a_case(dict(ZONES), {"draft": fx.busy_draft()}) as (client, _rid, _pids, _uid, _state):
         per_call = kinds()["draft"]
     check(state["stage"] == "ready" and state.get("read_notice") and asked["zone"] == clean["zone"]
-          and asked["draft"] == 2 * per_call and sorted(listed) == ["Left Tail Lamp", "Rear Bumper"],
+          and asked["draft"] == per_call + len(pipeline.main_read_chain())
+          and sorted(listed) == ["Left Tail Lamp", "Rear Bumper"],
           "with F1: both tries busy -> the zone list; the zone reads asked once", (dict(asked), listed))
-    with fx.a_case(dict(on, intake_main_read_fallback="zones"), {"draft": busy_first(per_call)}) as (
+    # M2: the Telegram summary says so instead of "Finished reading".
+    from types import SimpleNamespace
+
+    from app.channels import telegram as tg
+
+    text = tg._detection_text(outcome, "https://carlink.test/x", SimpleNamespace(filing_label=None, label="Tester"))
+    check(outcome.read_notice == pipeline.MAIN_READ_FAILED_NOTE and text.startswith("⚠️ The overall read failed")
+          and "Finished reading" not in text and "Re-read" in text,
+          "the Telegram summary gives the notice, never \"Finished reading\" (M2)", text[:200])
+    with fx.a_case(dict(on), {"draft": busy_first(per_call)}) as (
             client, rid, pids, uid, state):
         asked = kinds()
     check(state["stage"] == "ready" and not state.get("read_notice") and asked["zone"] == clean["zone"]
@@ -461,8 +500,56 @@ def b3_link_check_parallel() -> None:
           and all(it.get("linked_from") == ["Left Rear Door"] for it in checked),
           "on, the rear call busy: the other area's answers kept, the note says so", (run, [it["part"] for it in checked]))
     s_items, s_run, s_asked, _ = look(dict(LINKS), {"draft": two_area_draft, "link": rear_busy})
+    deadline_probe()
     print(f"         (off, the same failure: {s_run.get('status')}, {s_run.get('note')!r}, "
           f"{sum(1 for it in s_items or [] if it.get('link_check'))} answered)")
+
+
+def deadline_probe() -> None:
+    """The review's M1 (its probe_b3_deadline.py, scaled): three areas,
+    the real call_structured and rate limiter, a 2.5 s box, 1 s spacing,
+    1.2 s calls. Every area's box used to start at once, so the third spent
+    it queueing for its slot and timed out; now at most 2 calls are in
+    flight and the second starts one spacing later."""
+    from app.ai.keys import AiActor
+
+    lock = threading.Lock()
+    live = {"now": 0, "max": 0}
+
+    def slow_link(kwargs, labels):
+        with lock:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+        time.sleep(1.2)
+        with lock:
+            live["now"] -= 1
+        return {"answers": []}
+
+    saved = (link_check.TIME_BOX, link_check.TIMEOUT, link_check.build_input, link_check.system_prompt,
+             structured.acquire, t.ANSWERS["link"])
+    link_check.TIME_BOX = link_check.TIMEOUT = 2.5
+    link_check.build_input = lambda group, order="candidates_first": [{"type": "text", "text": "x"}]
+    link_check.system_prompt = lambda *a, **k: "x"
+    structured.acquire = rate_limit.acquire
+    t.ANSWERS["link"] = slow_link
+    actor = AiActor(user_id=None, channel="cli", cli=True)
+    groups = [link_check.Group(area=a, skill=a, candidates=[link_check.Candidate(ref="C1", key=f"k-{a}", line=a)])
+              for a in ("rear", "left", "front")]
+    plan = link_check.Plan(groups=groups, total=3)
+    results = {}
+    try:
+        with t.Settings(gemini_min_call_interval_seconds=1.0, gemini_max_requests_per_minute=12):
+            for mode in ("off", "on"):
+                time.sleep(1.1)  # past the last request's spacing
+                live.update(now=0, max=0)
+                with t.Settings(intake_link_check_parallel=mode):
+                    outcome, _ = link_check._ask_all("probe-m1", actor, plan)
+                results[mode] = (outcome["status"], outcome.get("note"), live["max"])
+    finally:
+        (link_check.TIME_BOX, link_check.TIMEOUT, link_check.build_input, link_check.system_prompt,
+         structured.acquire, t.ANSWERS["link"]) = saved
+    check(results["off"][:2] == ("ok", None) and results["on"][:2] == ("ok", None) and results["on"][2] == 2,
+          "three areas through the real limiter: all answered off and on; on, at most 2 in flight (M1)", results)
 
 
 # ------------------------------------------------------------- 4. B4
@@ -622,6 +709,41 @@ def b9_rescue() -> None:
           and (sort_run["photos_sent"].get("rescue") or {}).get("failed") is True,
           "the rescue call failing: the run goes on, the photos as sorted", sort_run["photos_sent"])
 
+    # L5: the likeliest first before the cut at 12 -- skipped, unusable,
+    # "other" with no damage, then interior / document / third party / scene.
+    many = [("interior", "interior", None, False)] * 20 + [("damage", "rear", "Rear Bumper", True)] * 4
+    skipped_once: list[int] = []
+
+    def skip_p22(kwargs, labels):
+        out = t._sort_answer(labels)
+        if "P22" in labels and not skipped_once:
+            skipped_once.append(1)
+            out["photos"] = [p for p in out["photos"] if p["label"] != "P22"]
+        return out
+    with big_case(many), fx.a_case(dict(ZONES, intake_sort_rescue="on"), {"sort": skip_p22}) as (
+            client, rid, pids, uid, state):
+        asked = rescue_requests()
+    labels = t._labels(asked[0]["input"]) if asked else []
+    check(len(labels) == 12 and "P22" in labels and labels == sorted(labels),
+          "more than 12 candidates: the skipped photo (P22, after 20 interior ones) is among the 12, sent in camera "
+          "order (L5)", labels)
+
+    # B5 with a rescued photo: its regroup counts against the rescue sort.
+    with t.Settings(**dict(ZONES, intake_sort_rescue="on", intake_keep_sort_label="on")),             fx.fakes({"rescue": rescue_answer({"P09": "rear"})}, interior), TestClient(t._app()) as client:
+        sign_in(client, role="admin", may_sign_off=True)
+        rid, pids = t.new_draft(client)
+        t.read(client, rid)
+        assert client.patch(f"/intake/{rid}/photos/{pids[8]}", json={"kind": "interior"}).status_code == 200
+        ai_kind = t.db_row(IntakePhoto, pids[8]).ai_kind
+        st = client.get(f"/intake/{rid}").json()
+        assert client.post(f"/intake/{rid}/finalize", json={"data": st["data"]}).status_code == 200
+        t.sign_off(client, rid)
+        regroups = (t.db_row(AiAccuracy, rid).metrics or {}).get("regroups")
+    check(ai_kind == "rescue:damage" and regroups == {"photos": 10, "moved": 0, "pairs": {"rescue:damage>interior": 1},
+                                                      "rescue_moved": 1},
+          "a rescued photo regrouped: kept as the rescue's label, counted as rescue_moved, not the sorter's (L5)",
+          (ai_kind, regroups))
+
     class P:
         def __init__(self, **kw):
             self.__dict__.update(dict(excluded=False, kind_source="ai", kind="damage", quality="good",
@@ -631,6 +753,9 @@ def b9_rescue() -> None:
         {"kind": "third_party"}, {"kind": "scene"}, {"kind": "other", "shows_damage": False},
         {"kind": "other", "shows_damage": True}, {"kind": "log_card"}, {"kind": "interior", "excluded": True},
         {"kind": "interior", "kind_source": "surveyor"})]
+    ranks = [pipeline.rescue_rank(P(**kw)) for kw in ({"kind": None}, {"quality": "unusable"},
+                                                       {"kind": "other", "shows_damage": False}, {"kind": "interior"})]
+    check(ranks == [0, 1, 2, 3], "rescue_rank: skipped, unusable, other, then the rest", ranks)
     check(rules == [False, True, True, True, True, True, True, True, False, False, False, False],
           "rescue_candidate: skipped, unusable, interior/document/third_party/scene, other with no damage; never "
           "a fact photo, an excluded one or a person's regroup", rules)
