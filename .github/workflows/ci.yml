@@ -65,6 +65,14 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Run scripts/test_*.py and check_*.py (minus scripts/ci_skip.txt)
         run: python scripts/run_ci_tests.py --timeout 600
+      - name: Infra checks (production's compose render, deploy.sh, migration check; no Docker)
+        # PyYAML for the compose render only (not an app requirement);
+        # shellcheck is on the runner image.
+        run: |
+          python -m pip install pyyaml
+          python ../../infra/tests/test_compose.py
+          python ../../infra/tests/test_deploy.py
+          python ../../infra/tests/test_migration_check.py
 
   dashboard:
     name: dashboard

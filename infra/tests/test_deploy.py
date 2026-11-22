@@ -65,6 +65,7 @@ case "$1" in
         printf '{"at": "%s", "reports": 3, "local_path": "/root/.carlink-backup/local/carlink-x.db", "uploaded": false, "bucket": null}' \
           "${MOCK_BACKUP_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; exit 0 ;;
       *list-users*) echo "1 owner@example.com admin"; exit 0 ;;
+      *GEMINI_SHARED_QUOTA_DIR*) exit "${MOCK_CONTAINER_SHARED:-0}" ;;
       *) exit 0 ;;
     esac ;;
   inspect)
@@ -73,6 +74,7 @@ case "$1" in
     exit 0 ;;
   logs) [ -n "${MOCK_LOGS:-}" ] && printf '%s\n' "$MOCK_LOGS"; exit 0 ;;
   run) exit "${MOCK_NGINX_T_EXIT:-0}" ;;
+  ps) echo "${MOCK_PS:-carlink_staging_api}"; exit 0 ;;
   *) exit 0 ;;
 esac
 ''',
@@ -102,7 +104,13 @@ esac
     "flock": '#!/bin/bash\nexit 0\n',
     "id": '#!/bin/bash\ncase "${1:-}" in -u) echo "${MOCK_UID:-1000}" ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac\n',
     "stat": '#!/bin/bash\necho "${MOCK_PERMS:-600}"\n',
-    "df": '#!/bin/bash\nprintf "Use%%\\n 20%%\\n"\n',
+    "df": r'''#!/bin/bash
+if [[ "$*" == *-Pk* ]]; then
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 100000000 1000 90000000 1%% /\n'
+else
+    printf 'Use%%\n 20%%\n'
+fi
+''',
     "sleep": '#!/bin/bash\nexit 0\n',
 }
 
@@ -118,8 +126,9 @@ class World:
             p.chmod(0o755)
         self.infra = self.tmp / "script"
         self.infra.mkdir()
-        for name in ("deploy.sh", "compose.sh"):
+        for name in ("deploy.sh", "compose.sh", "../apps/bot-service/scripts/bench/run_bench.sh"):
             text = (REPO / "infra" / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+            name = Path(name).name
             (self.infra / name).write_text(text, encoding="utf-8", newline="\n")
         self.log = self.tmp / "calls.log"
         self.home = self.tmp / "home"
@@ -431,6 +440,33 @@ def compose_wrapper(w: World) -> None:
     check(code == 2, "no arguments: the usage")
 
 
+def bench_lane(w: World) -> None:
+    print("\n8. run_bench.sh runs in the staging lane")
+    # A benchmark harness in the throwaway repo, so run_bench gets to the run.
+    work = w.tmp / "work"
+    w.git("checkout", "-q", "feat/x", cwd=work)
+    target = work / "apps" / "bot-service" / "scripts"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "benchmark_intake.py").write_text("# --sort-cache\n")
+    w.git("add", "-A", cwd=work)
+    w.git("commit", "-q", "-m", "bench harness", cwd=work)
+    w.git("push", "-q", "origin", "feat/x", cwd=work)
+    bench = {"BENCH_CONTAINER": "carlink_staging_api", "BENCH_REPO": str(w.staging)}
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_LANE="fast", **bench)
+    check(code == 1 and "BENCH_LANE: staging (the default) or prod" in out, "an unknown lane: refused", out)
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", MOCK_CONTAINER_SHARED="1", **bench)
+    check(code == 1 and "no shared AI quota folder" in out, "the staging lane without the shared folder: refused", out)
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", **bench)
+    calls = w.calls()
+    check("AI lane staging" in out and "-e GEMINI_QUOTA_LANE=staging" in calls and "carlink_staging_api" in calls,
+          "by default the run is in the staging lane, in the named container", out + calls)
+    check("BENCHMARK_SCRATCH=1" in calls and "run.db" in calls and "/tmp/bench/lane-test" in calls,
+          "on its scratch database under /tmp/bench (sandbox work), never the stack's own", calls)
+    code, out = w.run("run_bench.sh", "lane-test", "feat/x", BENCH_LANE="prod", MOCK_CONTAINER_SHARED="1", **bench)
+    check("-e GEMINI_QUOTA_LANE=prod" in w.calls(), "BENCH_LANE=prod: the old behaviour, no shared folder needed",
+          out + w.calls())
+
+
 def static_checks() -> None:
     print("\n0. bash -n, shellcheck")
     for name in ("deploy.sh", "compose.sh", "migration_check.sh"):
@@ -464,7 +500,8 @@ BASH = find_bash()
 def main() -> int:
     static_checks()
     w = World()
-    for section in (options, staging_refusals, staging_deploy, prod_checks, prod_deploy, smoke_failures, compose_wrapper):
+    for section in (options, staging_refusals, staging_deploy, prod_checks, prod_deploy, smoke_failures, compose_wrapper,
+                    bench_lane):
         try:
             section(w)
         except Exception as exc:

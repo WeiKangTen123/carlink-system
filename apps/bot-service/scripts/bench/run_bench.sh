@@ -21,6 +21,19 @@
 # /app/storage/.ratelimit, so its calls count in the same 12-per-minute
 # window as the live app's (app/ai/rate_limit.py) instead of bypassing it.
 #
+# Staging (plans/2026-11-22-enhance-staging, Phase 3): production and staging
+# share ONE Gemini key, so a benchmark runs in the STAGING LANE of the shared
+# quota guard (app/ai/quota_guard.py): at most 4 requests a minute, only
+# while production keeps 6 of the minute free, and none once staging has sent
+# 300 that day, production 400, or a light model has fewer than 300 left. It
+# is sandbox work: it runs inside a container but only ever on its scratch
+# database and storage under /tmp/bench (never the stack's own data).
+#   BENCH_CONTAINER=carlink_staging_api BENCH_REPO=/opt/carlink-staging bash run_bench.sh LABEL REF ...
+# BENCH_LANE=staging (the default) needs the shared folder mounted in the
+# container (GEMINI_SHARED_QUOTA_DIR): the script refuses otherwise.
+# BENCH_LANE=prod runs as before the guard (production's lane) -- only for a
+# container without the guard, and never beside live use.
+#
 # PII (photos, key.json, reports, results, logs) stays in ~/carlink-bench
 # (0700) and the container's /tmp/bench (0700); none of it goes into git.
 # See scripts/bench/README.md.
@@ -56,6 +69,7 @@ shift 2
 
 REPO=${BENCH_REPO:-/opt/carlink-system}
 CONTAINER=${BENCH_CONTAINER:-carlink_api}
+LANE=${BENCH_LANE:-staging}
 HOME_DIR=${BENCH_HOME:-$HOME/carlink-bench}
 HARNESS_REF=${BENCH_HARNESS_REF:-}
 SCRIPT=${BENCH_SCRIPT:-benchmark_intake}
@@ -86,6 +100,10 @@ for ref in "$GIT_REF" ${HARNESS_REF:+"$HARNESS_REF"}; do
     [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$ref" != *..* ]] || die "'$ref' is not a branch, tag or commit name"
 done
 [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || die "BENCH_MIN_FREE_GB must be a whole number"
+case "$LANE" in
+    staging | prod) ;;
+    *) die "BENCH_LANE: staging (the default) or prod" ;;
+esac
 
 [ "$(id -u)" -ne 0 ] || die "run as user weika, not root (the files in $HOME_DIR must stay theirs)"
 for tool in docker git tar flock df awk; do
@@ -103,6 +121,12 @@ flock -n 9 || die "another run_bench.sh is running"
 
 running=$(docker ps --filter "name=^${CONTAINER}\$" --format '{{.Names}}')
 [ "$running" = "$CONTAINER" ] || die "container $CONTAINER is not running"
+# The staging lane sends nothing without the shared quota folder (it can't
+# see production's use of the one key): stop here rather than fail every call.
+if [ "$LANE" = staging ]; then
+    docker exec "$CONTAINER" sh -c 'test -n "${GEMINI_SHARED_QUOTA_DIR:-}" && test -d "$GEMINI_SHARED_QUOTA_DIR"' ||
+        die "$CONTAINER has no shared AI quota folder (GEMINI_SHARED_QUOTA_DIR), so the staging lane can't send. Use the staging stack (BENCH_CONTAINER=carlink_staging_api BENCH_REPO=/opt/carlink-staging), or BENCH_LANE=prod in a container without the guard."
+fi
 
 docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || docker_root=/
 [ -n "$docker_root" ] || docker_root=/
@@ -171,7 +195,7 @@ stop_bench() {
 trap 'stop_bench; exit 130' INT TERM
 
 LOG="$HOME_DIR/$LABEL.log"
-echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT); log $LOG"
+echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT) in $CONTAINER, AI lane $LANE; log $LOG"
 # The replay reads no reports and sorts nothing: only the photos and the key.
 # The linked parts' replay not even the photos.
 if [ "$SCRIPT" = benchmark_intake ]; then
@@ -184,6 +208,7 @@ fi
 set +e
 docker exec \
     -e BENCHMARK_SCRATCH=1 \
+    -e "GEMINI_QUOTA_LANE=$LANE" \
     -e "DATABASE_URL=sqlite:///$B/$LABEL/run.db" \
     -e "STORAGE_DIR=$B/$LABEL/storage" \
     -e PYTHONIOENCODING=utf-8 \
