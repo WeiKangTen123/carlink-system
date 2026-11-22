@@ -530,6 +530,22 @@ def read_and_merge(
     walk, when given, is filled with the zone reads' assembly walk merged
     (assembly_walk.merge_all, photos as "@<photo id>"; ai_draft[
     "assembly_walk"]); left empty when no zone read walked."""
+    reads = zone_reads(report_id, actor, jobs, progress, intact, walk)
+    return merged_with(report_id, items, reads)
+
+
+def zone_reads(
+    report_id: str,
+    actor: AiActor,
+    jobs: list[ZoneJob],
+    progress: Callable[[int], None] | None = None,
+    intact: dict[str, list[str]] | None = None,
+    walk: dict | None = None,
+) -> list[tuple[str, list[dict]]]:
+    """read_and_merge's calls alone: each zone read that answered as (read
+    name, items), intact and walk filled as there. Never raises: [] when
+    nothing answered. F1 (settings.intake_main_read_fallback) calls it
+    before the overall reading's second try, then merged_with."""
     seen_intact: dict[str, list[str]] = {}
     seen_walk: dict = {}
     try:
@@ -541,6 +557,13 @@ def read_and_merge(
         intact.update(seen_intact)
     if walk is not None:
         walk.update(seen_walk)
+    return reads
+
+
+def merged_with(report_id: str, items: list[dict], reads: list[tuple[str, list[dict]]]
+                ) -> tuple[list[dict], set[str], list[str]]:
+    """read_and_merge's merge alone: (items, disputed names, the reads that
+    answered). Never raises: the overall reading's items stand."""
     answered = [OVERALL] + [name for name, _ in reads]
     try:
         merged, disputed = merge_reads(items, reads)

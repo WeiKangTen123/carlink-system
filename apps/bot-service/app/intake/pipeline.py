@@ -34,6 +34,7 @@ Contract 9, evidence: each finding -- list item or suggestion -- keeps
 which photos show it, where, and in the AI's words (ai/evidence.py),
 settled against the case's photos once the reads are in (_read_into).
 """
+import copy
 import logging
 import re
 import threading
@@ -56,6 +57,7 @@ from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.reports.review import TEMPLATE_DEFAULTS, keep_checked, same_value, value_at
+from app.reports.schema import SecurityIncidentDraft
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -675,6 +677,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if session is None:
             run.aborted = "draft_gone"
             return  # draft deleted mid-run
+        # F1: the last reading's own facts, for a list from the zone reads
+        # alone (fallback_draft). Read only.
+        previous_ai = session.ai_draft if isinstance(session.ai_draft, dict) else {}
         photos = ordered_photos(db, report_id)
         labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
         selected = [p for p in select_for_reading(photos) if Path(p.path).exists()]
@@ -716,16 +721,53 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
         closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
-    draft = draft_report(
-        notes,
-        [path for _, _, path in inputs],
-        photo_labels=[label for label, _, _ in inputs],
-        photo_hints=hints,
-        timeout=120.0,
-        actor=actor,
-        **extra,
-    )
-    data = draft.model_dump()
+
+    def read_once():
+        return draft_report(
+            notes,
+            [path for _, _, path in inputs],
+            photo_labels=[label for label, _, _ in inputs],
+            photo_hints=hints,
+            timeout=120.0,
+            actor=actor,
+            **extra,
+        )
+
+    # F1 (settings.intake_main_read_fallback "zones"): when the overall
+    # reading fails, the zone reads -- which don't need it -- run now
+    # (early_reads), then it is tried once more; failing again, the zone
+    # reads' finds are the list (draft None). Off: its failure fails the
+    # run, as before.
+    early_reads: list[tuple[str, list[dict]]] | None = None
+    early_intact: dict[str, list[str]] = {}
+    early_walk: dict | None = None
+    try:
+        draft = read_once()
+    except Exception as exc:
+        if not (main_read_fallback_on() and fallback_worthy(exc)):
+            raise
+        logger.warning("Reading %s: the overall read failed (%s); %s, then once more", report_id,
+                       type(exc).__name__, "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
+        if zone_mode and zone_jobs:
+            early_walk = {} if zones.walk_index() is not None else None
+            early_reads = zones.zone_reads(
+                report_id, actor, zone_jobs,
+                progress=lambda done: _set_stage(report_id, "reading", done, 1 + len(zone_jobs)),
+                intact=early_intact, walk=early_walk,
+            )
+        try:
+            draft = read_once()
+        except Exception as again:
+            if not any(found for _, found in early_reads or []):
+                raise
+            logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
+                           report_id, type(again).__name__)
+            draft = None
+
+    if draft is None:
+        data = fallback_draft(previous_ai)
+    else:
+        data = draft.model_dump()
 
     # Photo references are stored as "@<photo id>" until finalize, because
     # P-numbers shift whenever a photo is deleted or added before then.
@@ -754,17 +796,26 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     zone_draft: dict = {}
     if zone_mode:
         total = 1 + len(zone_jobs)
-        if zone_jobs:
-            _set_stage(report_id, "reading", 1, total)
-        intact: dict[str, list[str]] = {}
-        # The assembly walk (settings.intake_assembly_walk): only while on
-        # with a map that has signs; off, read_and_merge is called as before.
-        walked: dict | None = {} if zones.walk_index() is not None else None
-        data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
-            report_id, actor, data.get("damage_summary") or [], zone_jobs,
-            progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
-            intact=intact, **({"walk": walked} if walked is not None else {}),
-        )
+        if early_reads is not None:
+            # F1: the zone reads ran before the overall reading's second try.
+            intact, walked = early_intact, early_walk
+            data["damage_summary"], disputed, zone_reads = zones.merged_with(
+                report_id, data.get("damage_summary") or [], early_reads)
+            if draft is None:
+                # The overall reading never answered.
+                zone_reads = [read for read in zone_reads if read != zones.OVERALL]
+        else:
+            if zone_jobs:
+                _set_stage(report_id, "reading", 1, total)
+            intact: dict[str, list[str]] = {}
+            # The assembly walk (settings.intake_assembly_walk): only while on
+            # with a map that has signs; off, read_and_merge is called as before.
+            walked: dict | None = {} if zones.walk_index() is not None else None
+            data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
+                report_id, actor, data.get("damage_summary") or [], zone_jobs,
+                progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
+                intact=intact, **({"walk": walked} if walked is not None else {}),
+            )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
         zone_draft["zone_reads"] = zone_reads
@@ -775,7 +826,12 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # K3b: the zone reads' yes/no signs about their damaged anchor
             # panels, for the linked parts (assembly_walk.from_settings).
             zone_draft["assembly_walk"] = walked
-        if zones.suggest_zone_only():
+        if draft is None:
+            # F1: no overall reading, so no option B: the zone reads' finds
+            # are the list, each a "Check" row (below), with the notice
+            # GET /intake/{id} shows (read_notice).
+            zone_draft["main_read"] = dict(MAIN_READ_FALLBACK)
+        elif zones.suggest_zone_only():
             # Option B: the list is what the overall reading found; the rest
             # are suggestions. resolve_sides and the agreement rule below
             # then see the list only.
@@ -812,6 +868,11 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                                                    keep_undetermined=checked | disputed)
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
+            if draft is None:
+                # F1: every zone find on the list is for a person to check.
+                for item in data["damage_summary"]:
+                    if not item.get("human_verified"):
+                        item["ai_confidence"] = "Low"
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
         if zone_draft.get("zone_suggestions"):
@@ -834,6 +895,59 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     # The reading is saved: the case's first parts-catalogue look-up, if it
     # qualifies (catalogue.maybe_auto_lookup never raises; off by default).
     catalogue.maybe_auto_lookup(report_id)
+
+
+# ---------------------------------------------------- F1: main read fallback
+#
+# plans/2026-11-22-enhance-staging F1 (owner decision 9). One failed main
+# read -- both light models busy -- used to stop the run before the zone
+# reads, which don't need it. settings.intake_main_read_fallback "zones":
+# the zone reads run, the main read is tried once more, and if it fails
+# again the zone reads' finds are the list, every row "Check" (Low), with
+# IntakeSession.ai_draft["main_read"] = MAIN_READ_FALLBACK (GET
+# /intake/{id}'s read_notice is its note). Nothing found by the zone reads:
+# the run fails as before.
+
+MAIN_READ_FAILED_NOTE = "The overall read failed. This list is from the area reads. Press Re-read."
+MAIN_READ_FALLBACK = {"status": "failed", "fallback": "zones", "note": MAIN_READ_FAILED_NOTE}
+
+
+def main_read_fallback_on() -> bool:
+    return getattr(settings, "intake_main_read_fallback", "off") == "zones"
+
+
+def fallback_worthy(exc: BaseException) -> bool:
+    """A main read failure the fallback is for: every model of the chain
+    failed (busy, the day's allowance, a timeout: call_structured's "All
+    Gemini fallback models ... failed", DayUsedUp among them), or the
+    person's AI wasn't available (AiUnavailable). Not a photo removed
+    mid-run or nothing to read."""
+    if isinstance(exc, AiUnavailable):
+        return True
+    return isinstance(exc, RuntimeError) and "fallback models" in str(exc)
+
+
+def fallback_draft(previous: dict | None) -> dict:
+    """The AI draft of a reading whose main read failed twice: an empty
+    draft (SecurityIncidentDraft's fields), the description, facts and
+    people taken from the last reading's AI draft when there was one -- so
+    merge_redraft keeps the form as it is -- and no damage list: the zone
+    reads' finds go there."""
+    base = SecurityIncidentDraft(description="").model_dump()
+    previous = previous if isinstance(previous, dict) else {}
+    for key in base:
+        if key in previous and key not in ("damage_summary", "damaged_parts"):
+            base[key] = copy.deepcopy(previous[key])
+    base["damage_summary"], base["damaged_parts"] = [], []
+    return base
+
+
+def read_notice(ai_draft) -> str | None:
+    """GET /intake/{id}'s read_notice: the note of an F1 list, else None."""
+    look = ai_draft.get("main_read") if isinstance(ai_draft, dict) else None
+    if not isinstance(look, dict) or look.get("status") != "failed":
+        return None
+    return str(look.get("note") or MAIN_READ_FAILED_NOTE)
 
 
 # ---------------------------------------------------------- side resolver

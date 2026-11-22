@@ -232,7 +232,12 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         # done by a backup model because the main one's free day was used
         # up (ai/runs.read_by): the review step says so. Else None.
         "read_by": run_log.read_by(db, report.id),
-        "photos": [serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
+        # F1 (settings.intake_main_read_fallback): "The overall read failed.
+        # This list is from the area reads. Press Re-read." when the newest
+        # reading's list came from the zone reads alone (ai_draft
+        # ["main_read"]); else None.
+        "read_notice": pipeline.read_notice(session.ai_draft),
+        "photos":[serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
         "data": report.data or {},
         "limits": {"max_photos": MAX_PHOTOS_PER_CASE, "max_photo_bytes": MAX_PHOTO_SIZE_BYTES},
         **owners.access_fields(db, report, user),
