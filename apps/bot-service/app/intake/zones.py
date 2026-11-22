@@ -559,15 +559,21 @@ def zone_reads(
     progress: Callable[[int], None] | None = None,
     intact: dict[str, list[str]] | None = None,
     walk: dict | None = None,
+    *,
+    cancel: threading.Event | None = None,
 ) -> list[tuple[str, list[dict]]]:
     """read_and_merge's calls alone: each zone read that answered as (read
     name, items), intact and walk filled as there. Never raises: [] when
     nothing answered. F1 (settings.intake_main_read_fallback) calls it
-    before the overall reading's second try, then merged_with."""
+    before the overall reading's second try, and B2 (settings.
+    intake_parallel_reads) beside the overall reading, then merged_with.
+    cancel (B2): once set, no zone call starts (each left "skipped",
+    "cancelled"); the ones in flight finish."""
     seen_intact: dict[str, list[str]] = {}
     seen_walk: dict = {}
     try:
-        reads = _read_zones(report_id, actor, jobs, progress, seen_intact, seen_walk) if jobs else []
+        extra = {"cancel": cancel} if cancel is not None else {}
+        reads = _read_zones(report_id, actor, jobs, progress, seen_intact, seen_walk, **extra) if jobs else []
     except Exception:
         logger.exception("Zone reading for %s failed; the overall reading stands", report_id)
         reads, seen_intact, seen_walk = [], {}, {}
@@ -594,7 +600,8 @@ def merged_with(report_id: str, items: list[dict], reads: list[tuple[str, list[d
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 progress: Callable[[int], None] | None,
                 intact: dict[str, list[str]] | None = None,
-                walk: dict | None = None) -> list[tuple[str, list[dict]]]:
+                walk: dict | None = None,
+                cancel: threading.Event | None = None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
     grid = grid_on()
     asked = evidence_mode()
@@ -613,6 +620,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         try:
             if stop.is_set():
                 entry.update(status="skipped", note="no AI allowance left")
+                return
+            if cancel is not None and cancel.is_set():
+                entry.update(status="skipped", note="cancelled")
                 return
             if time.monotonic() - started > TIME_BOX:
                 entry.update(status="skipped", note="out of time")

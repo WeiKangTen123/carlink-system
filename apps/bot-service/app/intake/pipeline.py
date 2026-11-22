@@ -734,24 +734,38 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             **extra,
         )
 
-    # F1 (settings.intake_main_read_fallback "zones"): when the overall
-    # reading fails, the zone reads -- which don't need it -- run now
-    # (early_reads), then it is tried once more; failing again, the zone
-    # reads' finds are the list (draft None). Off: its failure fails the
-    # run, as before.
+    # The zone reads made before the merge below rather than in it
+    # (early_reads): B2 (settings.intake_parallel_reads "on") starts them
+    # beside the overall reading -- they need only the sort -- and F1
+    # (settings.intake_main_read_fallback "zones") makes them when the
+    # overall reading failed. Both off: none, and the zone reads run after
+    # the overall reading, as before.
     early_reads: list[tuple[str, list[dict]]] | None = None
     early_intact: dict[str, list[str]] = {}
     early_walk: dict | None = None
     zone_started: float | None = None
+    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact) if (
+        zone_mode and zone_jobs and parallel_reads_on()) else None
+    if parallel is not None:
+        early_walk, zone_started = parallel.walk, parallel.started
     tries_before = len(run.attempts.snapshot())
     try:
         draft = read_once()
+        if parallel is not None:
+            parallel.progress.main_done()
     except Exception as exc:
         if not (main_read_fallback_on() and fallback_worthy(exc, run.attempts.snapshot()[tries_before:])):
+            if parallel is not None:
+                # Never left running past the run's end: no new zone call,
+                # and the ones in flight are waited for (their progress
+                # would otherwise write "reading" over the failure).
+                parallel.cancel()
             raise
         logger.warning("Reading %s: the overall read failed (%s); %s, then once more", report_id,
                        type(exc).__name__, "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
-        if zone_mode and zone_jobs:
+        if parallel is not None:
+            early_reads = parallel.result()
+        elif zone_mode and zone_jobs:
             early_walk = {} if zones.walk_index() is not None else None
             zone_started = time.monotonic()
             early_reads = zones.zone_reads(
@@ -772,12 +786,17 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         else:
             try:
                 draft = read_once()
+                if parallel is not None:
+                    parallel.progress.main_done()
             except Exception as again:
                 if not found_some:
                     raise
                 logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
                                report_id, type(again).__name__)
                 draft = None
+    if parallel is not None and early_reads is None:
+        # The overall reading answered: the zone reads, as they finish.
+        early_reads = parallel.result()
 
     if draft is None:
         data = fallback_draft(previous_ai)
@@ -959,6 +978,96 @@ def fallback_worthy(exc: BaseException, tries: list[dict] | None = None) -> bool
         return False
     sent = [a for a in tries or [] if isinstance(a, dict) and a.get("outcome") != "day_spent"]
     return bool(sent) and all(a.get("busy") or a.get("outcome") == "timeout" for a in sent)
+
+
+# ------------------------------------------------- B2: the reads at once
+#
+# plans/2026-11-22-enhance-staging R-batching B2 (settings.
+# intake_parallel_reads "on"): the zone reads need only the sort, so they
+# start beside the overall reading instead of after it -- the same calls,
+# through the same rate limiter and busy handling (call_structured), the
+# zone stage's own run of the log and its time box. Thread safety: the
+# zone reads run on a thread of their own (and its pool) with their own
+# database sessions -- the run log's rows (runs.recorded) and the progress
+# (_set_stage, each its own session) -- and touch no session or row object
+# of the reading's; their answers are read only once that thread is done
+# (result), before the reading saves. The progress of both goes through
+# one lock (ReadProgress), so it only ever counts up. A reading that fails
+# (and doesn't fall back) cancels them: no new zone call starts, and the
+# ones in flight are waited for, so nothing writes "reading" over the
+# failure and Retry can't overlap them.
+
+
+def parallel_reads_on() -> bool:
+    """B2: settings.intake_parallel_reads is "on"."""
+    return getattr(settings, "intake_parallel_reads", "off") == "on"
+
+
+class ReadProgress:
+    """The reading's progress with the zone reads running beside it: 1 for
+    the overall reading plus 1 per zone call, written under one lock so two
+    threads' counts never step back."""
+
+    def __init__(self, report_id: str, zone_calls: int):
+        self.report_id = report_id
+        self.total = 1 + zone_calls
+        self._lock = threading.Lock()
+        self._main = 0
+        self._zones = 0
+        self.closed = False
+
+    def _write(self) -> None:
+        if not self.closed:
+            _set_stage(self.report_id, "reading", min(self.total, self._main + self._zones), self.total)
+
+    def main_done(self) -> None:
+        with self._lock:
+            self._main = 1
+            self._write()
+
+    def zone_done(self, done: int) -> None:
+        with self._lock:
+            self._zones = max(self._zones, done)
+            self._write()
+
+    def close(self) -> None:
+        with self._lock:
+            self.closed = True
+
+
+class ParallelZones:
+    """The zone reads of one reading, started at once on a thread of their
+    own (B2). result() waits for them: zones.zone_reads' answer, `intact`
+    and `walk` filled. cancel() stops new zone calls and waits for those in
+    flight."""
+
+    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict):
+        self.report_id = report_id
+        self.walk: dict | None = {} if zones.walk_index() is not None else None
+        self.progress = ReadProgress(report_id, len(jobs))
+        self._stop = threading.Event()
+        self.started = time.monotonic()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"zones-{report_id}")
+        self._future = self._pool.submit(zones.zone_reads, report_id, actor, jobs, self.progress.zone_done, intact,
+                                         self.walk, cancel=self._stop)
+        self._pool.shutdown(wait=False)
+
+    @classmethod
+    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict) -> "ParallelZones":
+        logger.info("Reading %s: %d zone read(s) started beside the overall reading", report_id, len(jobs))
+        return cls(report_id, actor, jobs, intact)
+
+    def result(self) -> list[tuple[str, list[dict]]]:
+        try:
+            return self._future.result()
+        except Exception:  # zone_reads never raises; in case it ever does
+            logger.exception("Reading %s: the zone reads beside it failed", self.report_id)
+            return []
+
+    def cancel(self) -> None:
+        self._stop.set()
+        self.result()
+        self.progress.close()
 
 
 def fallback_draft(previous: dict | None) -> dict:
