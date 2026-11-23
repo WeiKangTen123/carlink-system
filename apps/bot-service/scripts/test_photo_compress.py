@@ -21,7 +21,15 @@ offline, no AI call, only synthetic photos made here with Pillow.
   5. on, the other ways in: save_photo (filed cases: POST /reports, case
      edits, WhatsApp, the staff bot's filing), public Telegram reports
      (intake/public._store_photos) and staff Telegram full detection
-     (intake/telegram_bridge.store_photos).
+     (intake/telegram_bridge.store_photos);
+  6. when each intake photo was taken (owner decision D7: the date, no
+     location; storage/files.photo_taken_at, IntakePhoto.taken_at_local /
+     taken_at): the columns added to an old database; DateTimeOriginal,
+     else DateTimeDigitized, else DateTime, UTC only with the camera's own
+     offset; garbage, unset, pre-2000 and future dates, no EXIF, PNG,
+     corrupt: None; HEIC when this Pillow can write one; the website upload
+     with the switch on (date kept on the row, no EXIF in the file) and off;
+     a staff Telegram draft's rows.
 
     python scripts/test_photo_compress.py
 """
@@ -32,6 +40,7 @@ import os
 import sys
 import tempfile
 import traceback
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -56,12 +65,15 @@ from app.api.main import app  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.intake import public, telegram_bridge  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
-from app.reports.models import IntakePhoto, gen_id  # noqa: E402
+from app.reports.models import IntakePhoto, User, gen_id  # noqa: E402
 from app.storage import files  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
 
 ORIENTATION = 0x0112
 GPS_IFD = 0x8825
+EXIF_IFD = 0x8769
+DATE_ORIGINAL, DATE_DIGITIZED, DATE_TIME = 0x9003, 0x9004, 0x0132
+OFFSET_ORIGINAL, OFFSET_TIME = 0x9011, 0x9010
 SRC = _tmp / "sources"
 SRC.mkdir(parents=True, exist_ok=True)
 
@@ -122,10 +134,12 @@ def _srgb_profile() -> bytes | None:
 SRGB = _srgb_profile()
 
 
-def camera_jpeg(name: str, *, size=(1500, 1000), quality=98, orientation=6, gps=True, icc=True) -> Path:
+def camera_jpeg(name: str, *, size=(1500, 1000), quality=98, orientation=6, gps=True, icc=True,
+                taken: dict | None = None, ifd0: dict | None = None) -> Path:
     """A camera-like JPEG: a left-to-right gradient (so a wrong turn shows)
     over noise (so it compresses like a photo, not a flat colour), saved at
-    `quality`, with EXIF Orientation and a made-up GPS position."""
+    `quality`, with EXIF Orientation and a made-up GPS position. taken: tags
+    of the Exif sub-IFD (DateTimeOriginal...); ifd0: more main-IFD tags."""
     w, h = size
     grad = Image.linear_gradient("L").rotate(90, expand=True).resize((w, h))  # dark left, light right
     noise = Image.effect_noise((w, h), 40)
@@ -138,6 +152,10 @@ def camera_jpeg(name: str, *, size=(1500, 1000), quality=98, orientation=6, gps=
         exif[ORIENTATION] = orientation
     if gps:
         exif[GPS_IFD] = {1: "N", 2: (3.0, 8.0, 30.0), 3: "E", 4: (101.0, 41.0, 10.0)}
+    if taken:
+        exif[EXIF_IFD] = dict(taken)
+    for tag, value in (ifd0 or {}).items():
+        exif[tag] = value
     options = {"quality": quality, "exif": exif.tobytes()}
     if icc and SRGB:
         options["icc_profile"] = SRGB
@@ -448,6 +466,145 @@ def other_entries_section() -> None:
               "staff Telegram draft: sha256 the sent bytes', preview made, no temp file")
 
 
+# ------------------------------------------------------------- 6. when it was taken (D7)
+
+LOCAL = datetime(2026, 11, 20, 9, 15, 30)
+LOCAL_TEXT = "2026:11:20 09:15:30"
+
+
+def taken_section() -> None:
+    from sqlalchemy import inspect, text
+
+    from app.reports import db as db_module
+
+    # The columns: listed for the start-up upgrade, and added to an old table.
+    wanted = [("intake_photos", "taken_at_local", "DATETIME"), ("intake_photos", "taken_at", "DATETIME")]
+    check(all(w in db_module._ADDED_COLUMNS for w in wanted)
+          and hasattr(IntakePhoto, "taken_at_local") and hasattr(IntakePhoto, "taken_at"),
+          "IntakePhoto.taken_at_local and .taken_at, both in db._ADDED_COLUMNS")
+    db_module.init_db()
+    with db_module.engine.begin() as conn:
+        conn.execute(text("ALTER TABLE intake_photos DROP COLUMN taken_at_local"))
+        conn.execute(text("ALTER TABLE intake_photos DROP COLUMN taken_at"))
+    columns = {c["name"] for c in inspect(db_module.engine).get_columns("intake_photos")}
+    gone = not ({"taken_at_local", "taken_at"} & columns)
+    db_module.init_db()
+    columns = {c["name"] for c in inspect(db_module.engine).get_columns("intake_photos")}
+    check(gone and {"taken_at_local", "taken_at"} <= columns,
+          "a database without them: init_db adds both (old rows stay valid, NULL)")
+
+    # photo_taken_at on its own.
+    def read(name, **kw):
+        return files.photo_taken_at(camera_jpeg(name, size=(160, 120), **kw))
+
+    got = read("t-original.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT})
+    check(got == (LOCAL, None), "DateTimeOriginal, no offset: the camera's clock, no UTC (no zone guessed)", got)
+    got = read("t-offset.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00"})
+    check(got == (LOCAL, LOCAL - timedelta(hours=8)), "with OffsetTimeOriginal +08:00: UTC is 8 hours earlier", got)
+    got = read("t-west.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "-05:30"})
+    check(got == (LOCAL, LOCAL + timedelta(hours=5, minutes=30)), "a -05:30 offset: UTC later", got)
+    got = read("t-digitized.jpg", taken={DATE_DIGITIZED: LOCAL_TEXT})
+    check(got == (LOCAL, None), "only DateTimeDigitized: used", got)
+    got = read("t-datetime.jpg", ifd0={DATE_TIME: LOCAL_TEXT}, taken={OFFSET_TIME: "+08:00"})
+    check(got == (LOCAL, LOCAL - timedelta(hours=8)), "only DateTime, with its OffsetTime: used", got)
+    got = read("t-both.jpg", ifd0={DATE_TIME: "2026:11:22 18:00:00"},
+               taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00", OFFSET_TIME: "+00:00"})
+    check(got == (LOCAL, LOCAL - timedelta(hours=8)),
+          "DateTimeOriginal wins over DateTime (an editor's save time), with its own offset", got)
+    got = read("t-bad-offset.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+8"})
+    check(got == (LOCAL, None), "an offset that isn't one: the local time, no UTC", got)
+    got = read("t-far-offset.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+15:00"})
+    check(got == (LOCAL, None), "an offset no place on Earth has: no UTC", got)
+    future = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y:%m:%d %H:%M:%S")
+    for name, tags, what in (
+        ("t-garbage.jpg", {DATE_ORIGINAL: "not a date at all"}, "a garbage date"),
+        ("t-zero.jpg", {DATE_ORIGINAL: "0000:00:00 00:00:00"}, "an unset date (all zeros)"),
+        ("t-month13.jpg", {DATE_ORIGINAL: "2026:13:40 25:61:61"}, "a date that doesn't exist"),
+        ("t-1999.jpg", {DATE_ORIGINAL: "1999:12:31 23:59:59"}, "a date before 2000 (a clock never set)"),
+        ("t-future.jpg", {DATE_ORIGINAL: future}, "a date 3 days ahead"),
+    ):
+        got = read(name, taken=tags)
+        check(got is None, f"{what}: None", got)
+    got = read("t-bad-first.jpg", taken={DATE_ORIGINAL: "1980:01:01 00:00:00"}, ifd0={DATE_TIME: LOCAL_TEXT})
+    check(got is None, "a wrong DateTimeOriginal is not replaced by DateTime (the first date decides)", got)
+    check(files.photo_taken_at(plain_jpeg("t-none.jpg")) is None, "no EXIF: None")
+    png = SRC / "t.png"
+    Image.new("RGB", (40, 30), "red").save(png, "PNG")
+    corrupt = SRC / "t-corrupt.jpg"
+    corrupt.write_bytes(b"\xff\xd8\xff\xe0 nothing here " * 50)
+    check(files.photo_taken_at(png) is None and files.photo_taken_at(corrupt) is None
+          and files.photo_taken_at(SRC / "missing.jpg") is None,
+          "a PNG, a corrupt file, a missing file: None, no exception")
+    heic = SRC / "t.heic"
+    try:
+        exif = Image.Exif()
+        exif[EXIF_IFD] = {DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00"}
+        Image.new("RGB", (64, 48), (200, 10, 10)).save(heic, "HEIF", exif=exif.tobytes())
+    except Exception as exc:
+        print(f"    skip HEIC: this Pillow can't write one here ({type(exc).__name__})")
+    else:
+        got = files.photo_taken_at(heic)
+        check(got == (LOCAL, LOCAL - timedelta(hours=8)), "an iPhone HEIC: read the same way (pillow-heif)", got)
+
+    # The website upload, the switch on and off.
+    def upload(client, rid, path):
+        r = client.post(f"/intake/{rid}/photos", files={"file": (path.name, path.read_bytes(), "image/jpeg")})
+        need(r.status_code == 200 and "photo" in r.json(), f"{path.name} uploaded", r.text)
+        return stored_row(r.json()["photo"]["id"])
+
+    with TestClient(app) as client:
+        sign_in(client)
+        rid = client.post("/intake").json()["id"]
+        with compress("on"):
+            row = upload(client, rid, camera_jpeg("u-taken.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT}))
+            check(row.taken_at_local == LOCAL and row.taken_at is None,
+                  "switch on, DateTimeOriginal + GPS: the row has the camera's time (no offset: no UTC)",
+                  (row.taken_at_local, row.taken_at))
+            check(no_metadata(row.path), "... and the stored file has no EXIF, no GPS, no date")
+            row = upload(client, rid, camera_jpeg("u-offset.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT,
+                                                                         OFFSET_ORIGINAL: "+08:00"}))
+            check(row.taken_at_local == LOCAL and row.taken_at == LOCAL - timedelta(hours=8) and no_metadata(row.path),
+                  "with OffsetTimeOriginal: UTC too; the stored file has no EXIF", (row.taken_at_local, row.taken_at))
+            row = upload(client, rid, plain_jpeg("u-none.jpg"))
+            check(row.taken_at_local is None and row.taken_at is None, "no EXIF: both None")
+            row = upload(client, rid, camera_jpeg("u-garbage.jpg", taken={DATE_ORIGINAL: "yesterday-ish"}))
+            check(row.taken_at_local is None and row.taken_at is None, "a garbage date: both None")
+        with compress("off"):
+            row = upload(client, rid, camera_jpeg("u-off.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT,
+                                                                      OFFSET_ORIGINAL: "+08:00"}))
+            check(row.taken_at_local == LOCAL and row.taken_at == LOCAL - timedelta(hours=8),
+                  "switch off: recorded all the same", (row.taken_at_local, row.taken_at))
+            check(gps_of(row.path) != {}, "... and the file is stored as sent (EXIF kept, as before)")
+        state = client.get(f"/intake/{rid}")
+        check(state.status_code == 200 and len(state.json().get("photos") or []) == 5,
+              "the draft still loads with its 5 photos", state.status_code)
+
+    # Staff Telegram full detection: the same, onto the draft's rows.
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.role == "admin").first()
+        admin_id = admin.id
+    finally:
+        db.close()
+    with compress("on"):
+        src = camera_jpeg("tg-taken.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00"})
+        sent = [str(src), str(plain_jpeg("tg-none.jpg"))]
+        created = telegram_bridge.create_draft(external_id="1001", photo_paths=sent, facts={}, notes="",
+                                               who=lambda s: (s.get(User, admin_id), None))
+    need(created.report_id and created.photos == 2, "staff Telegram draft made", created)
+    db = SessionLocal()
+    try:
+        rows = (db.query(IntakePhoto).filter(IntakePhoto.report_id == created.report_id)
+                .order_by(IntakePhoto.position).all())
+        taken = [(r.taken_at_local, r.taken_at) for r in rows]
+        paths = [r.path for r in rows]
+    finally:
+        db.close()
+    check(taken == [(LOCAL, LOCAL - timedelta(hours=8)), (None, None)],
+          "staff Telegram draft: the photo sent as a file keeps its date on the row; one with no EXIF has none", taken)
+    check(all(no_metadata(p) for p in paths), "... and its stored files have no EXIF")
+
+
 def main() -> int:
     for name, fn in (
         ("0. the setting: default, choices, compose", settings_section),
@@ -456,6 +613,7 @@ def main() -> int:
         ("3. on: files left alone", left_alone_section),
         ("4. on: the website upload", upload_section),
         ("5. on: save_photo, public Telegram reports, staff Telegram drafts", other_entries_section),
+        ("6. when each intake photo was taken (D7)", taken_section),
     ):
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")

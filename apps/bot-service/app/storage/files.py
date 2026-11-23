@@ -1,9 +1,11 @@
 import logging
 import os
+import re
 import shutil
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 from app.config import settings
 
@@ -46,6 +48,20 @@ _COMPRESS_SUFFIXES = (".jpg", ".jpeg")
 # MPO: a phone JPEG carrying more than one picture (depth map, a second
 # lens) -- Pillow names it apart. Only its main picture is kept.
 _COMPRESS_FORMATS = ("JPEG", "MPO")
+
+# When a photo was taken, from its EXIF (photo_taken_at): each date tag with
+# the offset tag that belongs to it (EXIF 2.31) and the IFD it is in -- None
+# the main one, else the Exif sub-IFD. The first that reads as a date wins.
+_EXIF_IFD = 0x8769
+_TAKEN_TAGS = (
+    (0x9003, 0x9011, _EXIF_IFD),  # DateTimeOriginal, OffsetTimeOriginal
+    (0x9004, 0x9012, _EXIF_IFD),  # DateTimeDigitized, OffsetTimeDigitized
+    (0x0132, 0x9010, None),       # DateTime, OffsetTime
+)
+_EXIF_DATE = re.compile(r"(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+_EXIF_OFFSET = re.compile(r"([+-])(\d{2}):(\d{2})")
+# A date before this is a camera whose clock was never set.
+EARLIEST_TAKEN = datetime(2000, 1, 1)
 
 
 class UnsafePath(ValueError):
@@ -201,6 +217,84 @@ def generate_preview(photo_path: str) -> str | None:
         return str(dest)
     except Exception as exc:
         logger.warning("Could not generate preview for %s: %s", photo_path, exc)
+        return None
+
+
+class TakenAt(NamedTuple):
+    """When a photo was taken, by its EXIF (photo_taken_at).
+
+    local: the camera's own clock as it wrote it -- naive, in whatever zone
+    the phone was set to (a phone in Malaysia: UTC+8), NOT UTC. The date a
+    surveyor would call the day of the photo.
+    utc: the same moment in UTC (naive, like every DateTime column here),
+    only when the camera wrote its offset (OffsetTimeOriginal and kin);
+    None otherwise -- no zone is guessed."""
+    local: datetime
+    utc: Optional[datetime]
+
+
+def _exif_text(value) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("ascii", "ignore")
+    return str(value or "").strip().strip("\x00").strip()
+
+
+def _exif_datetime(value) -> datetime | None:
+    """"2026:11:23 14:05:09" (EXIF's form; "-" in the date tolerated), or
+    None: blank, "0000:00:00 00:00:00" (unset) or not a date."""
+    match = _EXIF_DATE.match(_exif_text(value))
+    if not match:
+        return None
+    try:
+        return datetime(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None
+
+
+def _exif_offset(value) -> timedelta | None:
+    """"+08:00" as a timedelta, or None: absent or not an offset on Earth."""
+    match = _EXIF_OFFSET.fullmatch(_exif_text(value))
+    if not match:
+        return None
+    sign, hours, minutes = match.group(1), int(match.group(2)), int(match.group(3))
+    if hours > 14 or minutes > 59:
+        return None
+    offset = timedelta(hours=hours, minutes=minutes)
+    return -offset if sign == "-" else offset
+
+
+def photo_taken_at(photo_path) -> TakenAt | None:
+    """When the photo was taken (TakenAt), from its EXIF: DateTimeOriginal,
+    else DateTimeDigitized, else DateTime -- the first that reads as a
+    date, with its own offset tag when the camera wrote one. Only the date
+    is read; nothing else of the EXIF (GPS included) goes anywhere.
+
+    Read from the original as uploaded, before compress_original drops the
+    EXIF. None: no EXIF date (a screenshot, a photo sent through an app
+    that strips it, a PNG), a date before EARLIEST_TAKEN (a clock never
+    set) or more than a day ahead of now, or a file Pillow can't read.
+    HEIC too, through pillow-heif, when it carries EXIF. Never raises."""
+    try:
+        from PIL import Image
+
+        with Image.open(photo_path) as im:
+            exif = im.getexif()
+            sub = exif.get_ifd(_EXIF_IFD)
+        for date_tag, offset_tag, ifd in _TAKEN_TAGS:
+            local = _exif_datetime((sub if ifd else exif).get(date_tag))
+            if local is None:
+                continue
+            # The first date found decides: one that makes no sense means
+            # the camera's clock is wrong, and the next tag (DateTime is
+            # often when an editor last saved it) would not be better.
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            if not EARLIEST_TAKEN <= local <= now + timedelta(days=1):
+                return None
+            offset = _exif_offset(sub.get(offset_tag))
+            return TakenAt(local=local, utc=local - offset if offset is not None else None)
+        return None
+    except Exception as exc:
+        logger.warning("Could not read when %s was taken: %s", Path(str(photo_path)).name, exc)
         return None
 
 

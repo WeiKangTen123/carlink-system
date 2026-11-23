@@ -59,7 +59,13 @@ from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id,
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import RenderBusy, render_pdf
-from app.storage.files import compress_original, generate_preview, generate_thumbnail, report_pdf_path
+from app.storage.files import (
+    compress_original,
+    generate_preview,
+    generate_thumbnail,
+    photo_taken_at,
+    report_pdf_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +398,10 @@ def upload_intake_photo(
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=f"'{file.filename}' isn't a readable photo.")
 
+        # When it was taken (owner decision D7: the date, no location), read
+        # from the file as sent -- before compress_original drops its EXIF,
+        # whatever that switch says.
+        taken = photo_taken_at(dest)
         # settings.photo_store_compress: the stored original re-saved smaller,
         # before its thumbnail and preview are made from it. sha256 stays the
         # UPLOADED bytes' hash, so the same file dropped again is still found
@@ -409,6 +419,8 @@ def upload_intake_photo(
             path=str(dest),
             sha256=sha,
             size_bytes=size,
+            taken_at_local=taken.local if taken else None,
+            taken_at=taken.utc if taken else None,
         )
         db.add(photo)
         try:
