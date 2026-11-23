@@ -154,6 +154,11 @@ x-bot-service: &bot-service
     - INTAKE_SIDE_GEOMETRY=${INTAKE_SIDE_GEOMETRY:-off}
     - INTAKE_ZONE_WRONG_END=${INTAKE_ZONE_WRONG_END:-drop}
     - INTAKE_LINK_CHECK_MAX_CALLS=${INTAKE_LINK_CHECK_MAX_CALLS:-2}
+    # Photo storage (owner, 23 Nov 2026; app/config.py photo_store_compress):
+    # "on" re-saves each JPEG original at quality 85, same pixel size, its
+    # EXIF (GPS included) dropped. Both containers store photos (the bot:
+    # Telegram reports). Default is config.py's: "off", stored as uploaded.
+    - PHOTO_STORE_COMPRESS=${PHOTO_STORE_COMPRESS:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

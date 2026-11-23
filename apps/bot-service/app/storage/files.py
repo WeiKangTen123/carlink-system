@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,15 @@ PREVIEW_QUALITY = 82
 # 65-photo report 117MB (~1.8MB per photo). JPEG at the same size is ~250KB.
 PDF_IMAGE_MAX_EDGE = 1600
 PDF_IMAGE_QUALITY = 80
+
+# The stored original's JPEG quality with settings.photo_store_compress "on"
+# (compress_original). Owner, 23 Nov 2026: camera originals at ~q95+ came
+# out ~77% smaller at 85, same pixel size, with no visible difference.
+PHOTO_STORE_QUALITY = 85
+_COMPRESS_SUFFIXES = (".jpg", ".jpeg")
+# MPO: a phone JPEG carrying more than one picture (depth map, a second
+# lens) -- Pillow names it apart. Only its main picture is kept.
+_COMPRESS_FORMATS = ("JPEG", "MPO")
 
 
 class UnsafePath(ValueError):
@@ -194,11 +204,71 @@ def generate_preview(photo_path: str) -> str | None:
         return None
 
 
+def compress_original(photo_path: str) -> int | None:
+    """With settings.photo_store_compress "on", re-saves a JPEG original in
+    place at PHOTO_STORE_QUALITY, the same pixel size (close-ups are cut
+    from it, intake/crops.py): its EXIF rotation baked into the pixels
+    (ImageOps.exif_transpose, as the thumbnail and preview already do) and
+    no EXIF, XMP or comment written -- the phone's GPS position goes with
+    them; its colour profile (ICC) kept. Call it once, right after an
+    original is written and checked, before its thumbnail and preview.
+    Returns the new size in bytes.
+
+    None, and the file left byte for byte as it was: the setting is off; not
+    a .jpg/.jpeg name; not a JPEG inside (Pillow's format); a file that
+    can't be opened or decoded; or the re-save is no smaller and there was
+    no EXIF to drop. Never raises (a stored photo matters more than a
+    smaller one): written beside the original and moved into place
+    (os.replace), so a failure leaves the original whole and no temp file."""
+    if getattr(settings, "photo_store_compress", "off") != "on":
+        return None
+    path = Path(photo_path)
+    if path.suffix.lower() not in _COMPRESS_SUFFIXES:
+        return None
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        from PIL import Image, ImageOps
+
+        before = path.stat().st_size
+        with Image.open(path) as im:
+            if im.format not in _COMPRESS_FORMATS:
+                return None
+            had_exif = bool(im.info.get("exif"))
+            icc_profile = im.info.get("icc_profile")
+            out = ImageOps.exif_transpose(im)
+            if out.mode not in ("RGB", "L"):
+                out = out.convert("RGB")
+                # The profile described the old colours (CMYK, say).
+                icc_profile = None
+            # Nothing of the original's metadata rides along: Pillow writes
+            # a JPEG comment from info, and future versions may write more.
+            out.info = {}
+            options = {"quality": PHOTO_STORE_QUALITY, "optimize": True, "progressive": True}
+            if icc_profile:
+                options["icc_profile"] = icc_profile
+            out.save(tmp, "JPEG", **options)
+        after = tmp.stat().st_size
+        if after >= before and not had_exif:
+            return None
+        os.replace(tmp, path)
+        return after
+    except Exception as exc:
+        logger.warning("Could not compress %s: %s", photo_path, exc)
+        return None
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", tmp, exc)
+
+
 def save_photo(incident_id: str, source_path: str, index: int) -> str:
     d = incident_dir(incident_id)
     ext = Path(source_path).suffix or ".jpg"
     dest = d / "photos" / f"photo_{index:02d}{ext}"
     shutil.copy(source_path, dest)
+    # Before the thumbnail and preview, which are made from the stored file.
+    compress_original(str(dest))
     generate_thumbnail(str(dest))
     generate_preview(str(dest))
     return str(dest)

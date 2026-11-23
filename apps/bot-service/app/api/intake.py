@@ -59,7 +59,7 @@ from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id,
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import RenderBusy, render_pdf
-from app.storage.files import generate_preview, generate_thumbnail, report_pdf_path
+from app.storage.files import compress_original, generate_preview, generate_thumbnail, report_pdf_path
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +392,13 @@ def upload_intake_photo(
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=f"'{file.filename}' isn't a readable photo.")
 
+        # settings.photo_store_compress: the stored original re-saved smaller,
+        # before its thumbnail and preview are made from it. sha256 stays the
+        # UPLOADED bytes' hash, so the same file dropped again is still found
+        # above; size_bytes is what is stored (the draft's storage limit).
+        stored_size = compress_original(str(dest))
+        if stored_size is not None:
+            size = stored_size
         generate_thumbnail(str(dest))
         generate_preview(str(dest))
         photo = IntakePhoto(

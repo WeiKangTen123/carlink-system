@@ -40,7 +40,7 @@ from app.reports import review
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id
 from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
-from app.storage.files import disk_space_low, generate_preview, generate_thumbnail
+from app.storage.files import compress_original, disk_space_low, generate_preview, generate_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,12 @@ def store_photos(report_id: str, photo_paths) -> tuple[list[dict], int]:
             dest.unlink(missing_ok=True)
             skipped += sha not in seen  # a repeat isn't a photo lost
             continue
+        # settings.photo_store_compress, as a website upload: re-saved
+        # smaller before the thumbnail and preview; sha256 stays the sent
+        # bytes' hash, size is what is stored.
+        stored_size = compress_original(str(dest))
+        if stored_size is not None:
+            size = stored_size
         generate_thumbnail(str(dest))
         generate_preview(str(dest))
         seen.add(sha)

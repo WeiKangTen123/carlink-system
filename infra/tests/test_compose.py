@@ -71,6 +71,11 @@ EXPECTED_PROD_NEW_ENV = {
     "INTAKE_SIDE_GEOMETRY": "off",
     "INTAKE_ZONE_WRONG_END": "drop",
     "INTAKE_LINK_CHECK_MAX_CALLS": "2",
+    # Photo storage (owner, 23 Nov 2026): the stored JPEG originals re-saved
+    # smaller (app/config.py photo_store_compress), added the same way --
+    # only as ADDED, only at config.py's default "off" (scripts/
+    # test_photo_compress.py checks that default), on api and telegram-bot.
+    "PHOTO_STORE_COMPRESS": "off",
 }
 NEW_ENV_SERVICES = ("api", "telegram-bot")
 

@@ -278,6 +278,16 @@ class Settings(BaseSettings):
     run_background_cleanup: bool = False
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     storage_dir: str = str(DEFAULT_STORAGE_DIR)
+    # Owner, 23 Nov 2026: each JPEG photo's original is re-saved once, as it
+    # is stored, at JPEG quality 85 with the same pixel size
+    # (storage/files.compress_original) -- camera originals came in at
+    # ~2.6 MB (q95+), measured ~77% smaller with no visible difference --
+    # its EXIF rotation baked into the pixels and its EXIF (the phone's GPS
+    # position among it) dropped. Same pixels: close-ups are cut from the
+    # original (intake/crops.py); the AI reads the 1600px preview
+    # (intake/photos.ai_input_path), made from the stored file as before.
+    # "off": stored as uploaded, byte for byte, as before.
+    photo_store_compress: str = "off"
     # Holds ai-keys.secret, which seals people's own AI keys (ai/secretbox.py).
     # Its own volume in production (/app/secrets: the api writes, the bot
     # only reads), never under storage_dir, which /files serves and the
@@ -472,7 +482,7 @@ class Settings(BaseSettings):
         return value
 
     @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
-                     "intake_keep_sort_label")
+                     "intake_keep_sort_label", "photo_store_compress")
     @classmethod
     def _off_on(cls, value, info):
         return _one_of(value, OFF_ON, info.field_name)
