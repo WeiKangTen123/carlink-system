@@ -34,6 +34,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from app.ai import keys as own_keys
+from app.ai import quota_guard
 from app.ai import runs as run_log
 from app.ai import secretbox
 from app.ai.extraction import draft_report
@@ -2327,9 +2328,27 @@ def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
             # What infra/backup.sh last recorded, or None when no backup
             # has been recorded here (Settings > Company shows it in red).
             "last_backup": _last_backup(),
+            # The shared quota guard (production and staging on one key,
+            # ai/quota_guard.py): this stack's lane, and today's requests per
+            # model and lane on each key, by label; None if unreadable.
+            "ai_quota": _ai_quota(),
         }
     finally:
         db.close()
+
+
+def _ai_quota() -> dict | None:
+    """System info's ai_quota: quota_guard.summary with the company keys
+    named by their labels ("company #1", never a key), and production's
+    extras tier. Never fails system info."""
+    try:
+        labels = {quota_guard.key_tag(key.rate_limit_id): key.label for key in own_keys.company_keys()}
+        state = quota_guard.summary(labels)
+        state["extras"] = quota_guard.extras_state()
+        return state
+    except Exception:
+        logger.exception("System info: couldn't read the shared AI quota")
+        return None
 
 
 # Written by infra/backup.sh into the data volume, which is STORAGE_DIR in

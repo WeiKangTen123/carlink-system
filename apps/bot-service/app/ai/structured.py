@@ -30,7 +30,16 @@ from app.ai.keys import (
     resolve_keys,
     scrub,
 )
-from app.ai.rate_limit import acquire, is_rate_limit_error, retry_after_seconds
+from app.ai import quota_guard
+from app.ai.quota_guard import LaneRefused
+from app.ai.rate_limit import (
+    SlotDeadline,
+    acquire,
+    acquire_retry,
+    is_rate_limit_error,
+    retry_after_seconds,
+    slot_deadline,
+)
 from app.config import ANY, image_resolutions, read_tools_by_model, settings, thinking_levels
 
 logger = logging.getLogger(__name__)
@@ -341,7 +350,22 @@ def call_structured(
             # gate ran once before these loops, so a draft that fell through
             # the chain fired up to five requests back-to-back -- which is
             # what tripped the quota during testing.
-            waited = acquire(key.rate_limit_id)
+            try:
+                # Past the call's deadline, no slot is taken (and nothing
+                # sent): SlotDeadline. None: no limit, as always.
+                with slot_deadline(deadline):
+                    waited = _slot(key, model_id)
+            except SlotDeadline:
+                stopped = True
+                break
+            except LaneRefused as exc:
+                # The staging lane's share of the one shared key is used up
+                # (ai/quota_guard.py): skipped with nothing sent, like a
+                # spent day -- no fault of the key.
+                _lane_refused(key, model_id, exc)
+                verdicts.append(None)
+                last_error = exc
+                continue
             if no_more():
                 # The wait for a slot ran past the deadline.
                 stopped = True
@@ -356,6 +380,25 @@ def call_structured(
             # model is pointless: it draws on the same per-key quota and
             # 429s too. (A day's 429 is not retried: see below.)
             for attempt in (1, 2):
+                if attempt == 2:
+                    # With the shared quota folder every request sent takes
+                    # a slot, a retry too (0 and nothing done without it, as
+                    # before: rate_limit.acquire_retry).
+                    try:
+                        with slot_deadline(deadline):
+                            extra_wait = _retry_slot(key, model_id)
+                    except SlotDeadline:
+                        stopped = True
+                        break
+                    except LaneRefused as exc:
+                        _lane_refused(key, model_id, exc)
+                        last_error = exc
+                        break
+                    if extra_wait > 0:
+                        waited += extra_wait
+                        if no_more():
+                            stopped = True
+                            break
                 started = time.monotonic()
                 interaction = None
                 tries += 1
@@ -442,6 +485,10 @@ def call_structured(
                         model_id, key.label, runs.scrub_error(str(exc), (key.value,)),
                     )
                     break
+            if stopped:
+                # The retry's slot would come past the deadline (shared
+                # quota folder only): no more requests in this call.
+                break
             verdicts.append(verdict)
             if verdict == "invalid":
                 break  # Google refused the key itself: no other model will take it
@@ -630,8 +677,36 @@ def _tool_tokens(interaction) -> int | None:
     return _count(getattr(usage, "total_tool_use_tokens", None)) if usage is not None else None
 
 
+def _slot(key, model_id: str) -> float:
+    """The rate-limit slot for one request. Without the shared quota folder,
+    acquire(key) exactly as before; with it (or in the staging lane), the
+    model and the key's fingerprint go too, for the day counts and the
+    staging rules (ai/quota_guard.py)."""
+    if quota_guard.mode() == "local":
+        return acquire(key.rate_limit_id)
+    return acquire(key.rate_limit_id, model=model_id, fingerprint=key.fingerprint)
+
+
+def _retry_slot(key, model_id: str) -> float:
+    """The slot for asking the same model again: none without the shared
+    folder (0, as before), one with it (rate_limit.acquire_retry)."""
+    if quota_guard.mode() == "local":
+        return 0.0
+    return acquire_retry(key.rate_limit_id, model=model_id, fingerprint=key.fingerprint)
+
+
+def _lane_refused(key, model_id: str, exc: LaneRefused) -> None:
+    """A request the shared quota guard's staging lane may not send
+    (ai/quota_guard.py): logged, and noted in the run log as a try not sent
+    ("day_spent", like a model whose free day is used up, so the run log
+    and the benchmark count it as never sent), with the guard's reason."""
+    logger.info("Gemini model %r not asked on %s: %s", model_id, key.label, exc.why)
+    _note_attempt(key, model_id, "day_spent", 0.0, time.monotonic(), None,
+                  spent_until=allowance.next_reset(), lane_stop=exc.why)
+
+
 def _note_attempt(key, model_id: str, outcome: str, waited, started: float, interaction, *, spent_until=None,
-                  busy: bool = False) -> None:
+                  busy: bool = False, lane_stop: str | None = None) -> None:
     """One try for the run log (ai/runs.py). Never raises: a log that can't
     be kept must not turn an answer into a failure. waited: seconds spent
     before the try was sent (a rate-limit slot, or the delay a 429 asked
@@ -654,6 +729,9 @@ def _note_attempt(key, model_id: str, outcome: str, waited, started: float, inte
             attempt["spent_until"] = allowance.iso(spent_until)
         if busy:
             attempt["busy"] = True
+        # Why the shared quota guard's staging lane didn't send it.
+        if lane_stop:
+            attempt["lane_stop"] = lane_stop
         # The prompt version and packs of a call made with a light-model
         # switch on (runs.prompt_tag); none otherwise.
         tag = runs.current_prompt_tag()

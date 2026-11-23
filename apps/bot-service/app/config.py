@@ -100,8 +100,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     # Where people open Carlink in a browser, for links sent outside the
     # dashboard: the Telegram bot's "open your case" and "connect first"
-    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml.
-    public_base_url: str = "https://carlink.34-45-253-162.sslip.io"
+    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml
+    # (from each stack's infra/.env); the default is production's address.
+    public_base_url: str = "https://carlink.34-16-92-98.sslip.io"
     gemini_api_key: str = ""
     # Ordered by real capability, not just cost -- confirmed live:
     # gemini-3-flash-preview is the only one of these that has actually
@@ -301,6 +302,53 @@ class Settings(BaseSettings):
     # tier's 20/min for gemini-3-flash, because one draft can spend several
     # requests walking the fallback chain.
     gemini_max_requests_per_minute: int = 12
+    # The shared quota guard (ai/quota_guard.py; plans/2026-11-22 "B1"):
+    # production and staging on ONE Gemini key -- one daily allowance per
+    # model and one per-minute window for both, since Google's limits are per
+    # Google Cloud project. Blank (the default): off -- the window and the
+    # "day used up" memory stay in this stack's STORAGE_DIR (.ratelimit,
+    # .allowance) and every request is exactly as before. Set to the folder
+    # infra/docker-compose.ai-shared.yml mounts (/app/ai-shared): both stacks
+    # keep the window, a per-day request count per model and lane, and the
+    # day memory there. A set folder that isn't there (not mounted yet) falls
+    # back to the old files, so production keeps working.
+    gemini_shared_quota_dir: str = ""
+    # This stack's lane in the shared window. "prod": up to
+    # gemini_max_requests_per_minute, never waiting for staging. "staging":
+    # the limits below, and nothing sent at all without the shared folder.
+    gemini_quota_lane: str = "prod"
+    # Staging takes a slot only while the shared window, with its slot,
+    # holds at most gemini_staging_window_share requests (both lanes), and at
+    # most its per-minute cap of its own: gemini_staging_max_per_minute, and
+    # never more than gemini_quota_minute_budget - gemini_quota_prod_per_minute
+    # (review M6), so the two lanes together never send more than the budget
+    # in any 60 s -- production at its full cap included. Defaults: 14 - 12 =
+    # 2 a minute for staging.
+    gemini_staging_max_per_minute: int = 3
+    gemini_staging_window_share: int = 6
+    # Most requests both stacks together may send in any 60 s on the one
+    # key (under Google's ~15 a minute per model), and production's own cap
+    # as both stacks reckon it: the production lane never takes more than
+    # this either. Keep it equal to production's
+    # gemini_max_requests_per_minute.
+    gemini_quota_minute_budget: int = 14
+    gemini_quota_prod_per_minute: int = 12
+    # Staging sends nothing more until the next reset (midnight Pacific)
+    # once it has sent gemini_staging_day_max requests today, production has
+    # sent gemini_staging_prod_busy, or -- per model -- fewer than
+    # gemini_staging_model_reserve of the model's day are left.
+    gemini_staging_day_max: int = 300
+    gemini_staging_prod_busy: int = 400
+    gemini_staging_model_reserve: int = 300
+    # Requests a day per model on the free tier, for the reserve above and
+    # the extras tiers (quota_guard.extras_tier): "model=N,model=N". A limit
+    # Google itself stated in a 429 (ai/allowance.py) wins. Staging never
+    # uses a model with no known limit (the strong model's 20 a day stays
+    # production's).
+    gemini_quota_day_limits: str = "gemini-3.5-flash-lite=500,gemini-3.1-flash-lite=500"
+    # The model whose day left sets production's extras tier (RICH > 50%
+    # left, NORMAL 25-50%, LEAN < 25%; the base pipeline is never cut).
+    gemini_quota_tier_model: str = "gemini-3.5-flash-lite"
     # Dashboard sign-in (app/auth). A session ends after this long without
     # use, and in any case this many days after signing in.
     auth_session_idle_hours: float = 12
@@ -349,6 +397,28 @@ class Settings(BaseSettings):
     # either way; the AI accuracy record (app/reports/accuracy.py) is kept
     # either way.
     learn_from_signed_off: bool = True
+
+    # The shared quota guard's settings: a typo stops the app at start-up --
+    # a staging stack that quietly ran in the production lane would take
+    # production's share of the one key.
+    @field_validator("gemini_quota_lane")
+    @classmethod
+    def _quota_lane(cls, value):
+        return _one_of(value, QUOTA_LANES, "gemini_quota_lane")
+
+    @field_validator("gemini_quota_day_limits")
+    @classmethod
+    def _quota_day_limits(cls, value):
+        return ",".join(f"{m}={n}" for m, n in day_limits(value).items())
+
+    @field_validator("gemini_staging_max_per_minute", "gemini_staging_window_share", "gemini_staging_day_max",
+                     "gemini_quota_minute_budget", "gemini_quota_prod_per_minute",
+                     "gemini_staging_prod_busy", "gemini_staging_model_reserve")
+    @classmethod
+    def _quota_counts(cls, value):
+        if value < 0:
+            raise ValueError("the gemini_staging_* limits: 0 or more")
+        return value
 
     # A typo in one of the model settings stops the app at start-up rather
     # than being sent to Gemini (a 400 on every call) or silently ignored.
@@ -938,6 +1008,24 @@ def normal_chain(value, name: str = "the chain") -> str:
     if not models:
         raise ValueError(f"{name}: at least one model name")
     return ",".join(models)
+
+
+# The shared quota guard's lanes (ai/quota_guard.py); the first is the default.
+QUOTA_LANES = ("prod", "staging")
+
+
+def day_limits(text: str | None) -> dict[str, int]:
+    """gemini_quota_day_limits as {model: requests a day}: "gemini-3.5-flash-
+    lite=500,gemini-3.1-flash-lite=500". {} when blank. Raises ValueError on
+    an entry that isn't model=N with N a whole number, 0 or more."""
+    out: dict[str, int] = {}
+    for entry in _entries(text):
+        model, sep, number = entry.rpartition("=")
+        model, number = model.strip(), number.strip()
+        if not sep or not model or not number.isdigit():
+            raise ValueError(f"gemini_quota_day_limits {entry!r}: write it as model=N, e.g. gemini-3.5-flash-lite=500")
+        out[model] = int(number)
+    return out
 
 
 def _one_of(value, choices: tuple, name: str) -> str:

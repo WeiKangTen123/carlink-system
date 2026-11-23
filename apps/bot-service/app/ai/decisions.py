@@ -49,6 +49,8 @@ import httpx
 
 from app.ai import allowance, runs
 from app.ai.keys import AiActor, last4, record_result, resolve_keys
+from app.ai import quota_guard
+from app.ai.quota_guard import LaneRefused
 from app.ai.rate_limit import acquire
 from app.ai.structured import _create_within, _input_size
 from app.config import settings
@@ -144,7 +146,17 @@ def decide(*, purpose: str = PURPOSE, input_parts: list[dict], questions: dict[s
             continue
         if left <= 0:
             raise DecisionFailed("timeout", f"no answer within {budget:.0f}s")
-        waited = acquire(key.rate_limit_id)
+        try:
+            # As call_structured: the old call without the shared folder.
+            waited = (acquire(key.rate_limit_id) if quota_guard.mode() == "local"
+                      else acquire(key.rate_limit_id, model=model, fingerprint=key.fingerprint))
+        except LaneRefused as refused:
+            # The staging lane's share of the shared key is used up
+            # (ai/quota_guard.py): nothing sent, as a spent day.
+            logger.info("Decisions API not asked on %s: %s", key.label, refused.why)
+            _note(key, model, "day_spent", 0.0, time.monotonic(), spent_until=allowance.next_reset())
+            last = _TryFailed("day_spent", "day_spent")
+            continue
         started = time.monotonic()
         try:
             answers, tokens = _post(key, payload, list(questions), left)

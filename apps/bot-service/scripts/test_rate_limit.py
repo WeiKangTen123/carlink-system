@@ -8,6 +8,8 @@ subprocesses here.
 
     python3 scripts/test_rate_limit.py
 """
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -95,6 +97,55 @@ def main() -> int:
         check("recovers from a corrupt window", True)
     except Exception as e:
         check("recovers from a corrupt window", False, str(e))
+
+    print("\n  a window file from before a reboot (review H3)")
+    # Before H3 the stamps were time.monotonic(), which starts again at every
+    # boot: one stamp from a box up 10 days made the next call sleep ~10 days.
+    os.environ["GEMINI_MIN_CALL_INTERVAL_SECONDS"] = "4"
+    os.environ["GEMINI_MAX_REQUESTS_PER_MINUTE"] = "12"
+    rate_limit.settings = Settings()
+    path = rate_limit._window_file("reboot-key")
+    now = time.time()
+    ten_days = 10 * 86400
+    # Stamps the old clock wrote ahead of today's wall time (a clock that
+    # went back), and old monotonic numbers (seconds since an earlier boot).
+    path.write_text(json.dumps([now + ten_days] * 12 + [864000.5, 3.2]))
+    slept: list[float] = []
+    real_sleep = rate_limit.time.sleep
+    rate_limit.time.sleep = slept.append
+    try:
+        waited = rate_limit.acquire("reboot-key")
+    finally:
+        rate_limit.time.sleep = real_sleep
+    check("the next call doesn't wait for stamps from before a reboot", waited == 0 and slept == [],
+          f"(waited {waited}, slept {slept})")
+    kept = json.loads(path.read_text())
+    check("they are dropped from the file; the new stamp is wall-clock time",
+          len(kept) == 1 and abs(kept[0] - time.time()) < 5, repr(kept))
+    est = rate_limit.estimate_wait("reboot-key")
+    check("estimate_wait agrees with acquire (the 4 s spacing after that call)", 0 < est <= 4.0, f"({est})")
+    # A full window of stamps just inside the 1 s slack: the wait is capped at
+    # the window (a fake clock that the fake sleep moves on).
+    fake = [time.time()]
+    path.write_text(json.dumps([fake[0] + 0.5] * 12))
+    slept.clear()
+    real_clock = rate_limit._clock
+    rate_limit._clock = lambda: fake[0]
+
+    def fake_sleep(s):
+        slept.append(s)
+        fake[0] += s
+
+    rate_limit.time.sleep = fake_sleep
+    try:
+        rate_limit.acquire("reboot-key")
+    finally:
+        rate_limit.time.sleep = real_sleep
+        rate_limit._clock = real_clock
+    check("no single wait is longer than the window (60 s)", slept and max(slept) <= 60.0 and len(slept) <= 3,
+          repr(slept))
+    old_name = hashlib.sha256(b"reboot-key").hexdigest()[:16] + ".json"
+    check("the file name is no longer the plain sha256 of the key", path.name != old_name, path.name)
 
     print()
     if FAILURES:
