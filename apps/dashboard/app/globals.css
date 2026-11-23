@@ -2320,7 +2320,10 @@ a:hover {
   border-color: var(--accent-primary);
 }
 
-/* The wizard: the map stays in view beside the cover page. */
+/* The wizard: the map stays in view beside the cover page. The parts list
+   and the suggestions scroll up UNDER it, so its background must be solid:
+   .dmap's --surface-card is 85% opaque, and the text below showed through
+   (owner, 23 Nov 2026). scripts/check-dmap-sticky.mjs guards this. */
 @media (min-width: 1100px) {
   .dmap-intake {
     position: sticky;
@@ -2328,6 +2331,7 @@ a:hover {
     z-index: 5;
     max-height: calc(100vh - 24px);
     overflow-y: auto;
+    background: var(--surface-card-solid);
   }
 }
 
