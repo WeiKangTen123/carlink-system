@@ -1087,7 +1087,14 @@ def discard_section() -> None:
             ok = st in (404, 409) and not left
         elif st == 200 and sd != 200:
             wins["take"] += 1
-            ok = sd == 409 and code_of(rd) == "inbox_changed" and set(left) == set(ALL_FOUR) and report_row(x).get("owner_id") == b.id
+            # The discard lost one of two ways, by thread timing alone: it read
+            # the row before the take landed and its write found it changed
+            # (409 inbox_changed), or the take had landed before it read the
+            # row -- a taken report is then only its taker's or an admin's to
+            # discard (403 not_allowed, permissions.can_discard).
+            refused = ((sd == 409 and code_of(rd) == "inbox_changed")
+                       or (sd == 403 and code_of(rd) == "not_allowed"))
+            ok = refused and set(left) == set(ALL_FOUR) and report_row(x).get("owner_id") == b.id
         else:
             ok = False
         check(ok, f"round {i + 1}: discard {sd}, take {st} -> exactly one wins, and the rows agree", f"left {left}")
