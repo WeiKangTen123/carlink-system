@@ -1,0 +1,69 @@
+{
+  "_about": "Phase 1 F: what each damaged-parts row prints as on Annex A (lib/reviewChecks.ts printsAs). Made-up makes and plates, no customer data. scripts/check-review-checks.mjs checks printsAs gives `prints` from the `taxonomy` excerpt; bot-service scripts/test_prints_as.py checks the excerpt is GET /taxonomy's and that filing each vehicle's items (as staff without the price book) prints exactly these lines.",
+  "taxonomy": {
+    "firm_part_names": {
+      "Rear Bumper": "Rear bumper fascia",
+      "Boot Lid": "Boot lid assy",
+      "Boot Lid Lock": "Boot lid lock",
+      "Left Tail Lamp": "Tail lamp LH",
+      "Right Tail Lamp": "Tail lamp RH",
+      "Right Front Door": "Front door assy RH",
+      "Underbody / Chassis": "Chassis frame member",
+      "Boot Floor Board": "Spare tyre panel top board",
+      "Other / Not Listed": "Other part (to be named)",
+      "Parking Sensor": "Reverse sensor"
+    },
+    "firm_part_names_hatch": {
+      "Rear Bumper": "Rear bumper fascia",
+      "Boot Lid": "Tail gate assy",
+      "Boot Lid Lock": "Tail gate lock",
+      "Left Tail Lamp": "Tail lamp LH",
+      "Right Tail Lamp": "Tail lamp RH",
+      "Right Front Door": "Front door assy RH",
+      "Underbody / Chassis": "Chassis frame member",
+      "Boot Floor Board": "Rear floor panel board",
+      "Other / Not Listed": "Other part (to be named)",
+      "Parking Sensor": "Reverse sensor"
+    },
+    "model_body_types": {
+      "vezel": "SUV",
+      "civic": "Sedan"
+    },
+    "body_types": ["Sedan", "Hatchback", "SUV", "MPV", "Van", "Pickup", "Coupe", "Wagon", "Other"]
+  },
+  "vehicles": [
+    {
+      "vehicle": { "plate_number": "TESTPA1", "make": "Alphamotors", "model": "Vezel" },
+      "items": [
+        { "item": { "part": "Boot Lid", "condition": "Bent" }, "prints": "Tail gate assy" },
+        { "item": { "part": "Boot Lid Lock", "condition": "Jammed" }, "prints": "Tail gate lock" },
+        { "item": { "part": "Rear Bumper", "condition": "Deformed/cut", "human_verified": true }, "prints": "Rear bumper fascia" },
+        { "item": { "part": "Left Tail Lamp", "condition": "Cracked", "side_inferred": true }, "prints": "Tail lamp", "note": "unsided" },
+        { "item": { "part": "Other / Not Listed", "other_part_name": "left rear air vent", "condition": "Necessary" }, "prints": "Rear air vent LH" },
+        { "item": { "part": "Other / Not Listed", "condition": "Necessary" }, "prints": "Other part (to be named)", "note": "unnamed" },
+        { "item": { "part": "", "condition": "Bent" }, "prints": null, "note": "left_out" }
+      ]
+    },
+    {
+      "vehicle": { "plate_number": "TESTPA2", "make": "Alphamotors", "model": "Civic", "body_type": "SUV" },
+      "items": [
+        { "item": { "part": "Boot Lid", "condition": "Bent" }, "prints": "Boot lid assy" },
+        { "item": { "part": "Right Tail Lamp", "condition": "Cracked", "human_verified": true }, "prints": "Tail lamp RH" },
+        { "item": { "part": "Right Front Door", "condition": "Dented", "side_inferred": true, "human_verified": true }, "prints": "Front door assy RH" },
+        { "item": { "part": "Boot Floor Board", "condition": "Buckled" }, "prints": "Spare tyre panel top board" }
+      ]
+    },
+    {
+      "vehicle": { "plate_number": "TESTPA3", "make": "Betamotors", "model": "Runabout", "body_type": "Hatchback" },
+      "items": [
+        { "item": { "part": "Boot Floor Board", "condition": "Buckled" }, "prints": "Rear floor panel board" },
+        { "item": { "part": "Parking Sensor", "condition": "Faulty" }, "prints": "Reverse sensor" },
+        { "item": { "part": "Underbody / Chassis", "condition": "Bent" }, "prints": "Chassis frame member" }
+      ]
+    },
+    {
+      "vehicle": { "plate_number": "TESTPA4", "make": "Betamotors", "model": "Runabout" },
+      "items": [{ "item": { "part": "Boot Lid", "condition": "Dented" }, "prints": "Boot lid assy" }]
+    }
+  ]
+}
