@@ -1,5 +1,10 @@
 version: '3.8'
 
+# Container names: ${CARLINK_NAME:-carlink}_<service>. Production leaves
+# CARLINK_NAME unset (carlink_api, carlink_nginx, ... as always); a staging
+# stack sets CARLINK_NAME=carlink_staging and runs as its own compose project
+# (infra/docker-compose.staging.yml, infra/README.md "Staging").
+
 # Both telegram-bot and api are the SAME image (apps/bot-service) with a
 # different startup command -- they share one Docker volume for photos/PDFs
 # and the SQLite database, since they're really one application split into
@@ -25,10 +30,13 @@ x-bot-service: &bot-service
   logging: *default-logging
   environment:
     - GEMINI_API_KEY=${GEMINI_API_KEY:?GEMINI_API_KEY must be set}
-    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+    # Optional here (a staging stack runs without a bot); infra/deploy.sh
+    # still refuses a production deploy without it.
+    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
     # Where people open Carlink (app/config.py public_base_url): the bot's
-    # case links and "connect first" message. Both api and bot get it.
-    - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-45-253-162.sslip.io}
+    # case links and "connect first" message. Both api and bot get it. Set
+    # it in each stack's infra/.env; the default is production's address.
+    - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://carlink.34-16-92-98.sslip.io}
     # Kept in sync with config.py's default -- see the comment there for
     # why this order (bbox-capable models first, -lite models as the
     # always-available fallback) and why antigravity was dropped (no
@@ -114,13 +122,45 @@ x-bot-service: &bot-service
     # offered in the part pickers and named by the car map's linked parts.
     # Off by default; both containers read it (the bot runs the pipeline).
     - INTAKE_CAR_MAP_NAMES=${INTAKE_CAR_MAP_NAMES:-off}
+    # The detection fixes (plans/2026-11-22-enhance-staging section 2, F1-F7):
+    # a failed main read falls back to the zone reads, what the caps cut is
+    # kept (folded), a placed side-undetermined find on another photo stays
+    # as an "Other side?" suggestion, the linked check's "no" on a hidden
+    # part, and one more sort batch for skipped photos. Defaults are
+    # config.py's: today's behaviour, requests and saved drafts byte for byte.
+    - INTAKE_MAIN_READ_FALLBACK=${INTAKE_MAIN_READ_FALLBACK:-off}
+    - INTAKE_KEEP_CUT=${INTAKE_KEEP_CUT:-off}
+    - INTAKE_KEEP_OTHER_SIDE=${INTAKE_KEEP_OTHER_SIDE:-off}
+    - INTAKE_LINK_HIDDEN_NO=${INTAKE_LINK_HIDDEN_NO:-keep}
+    - INTAKE_SORT_RETRY_SKIPPED=${INTAKE_SORT_RETRY_SKIPPED:-off}
+    # The batching items (plans/2026-11-22-enhance-staging/R-batching.md B2-B5,
+    # B9): the main read and the zone reads at once, the linked check's calls
+    # at once, sort workers, keeping the sorter's label on a regroup, and a
+    # rescue sort. Defaults are config.py's: today's behaviour byte for byte.
+    # INTAKE_PARALLEL_READS acts only with INTAKE_MAIN_READ_FALLBACK=zones.
+    - INTAKE_PARALLEL_READS=${INTAKE_PARALLEL_READS:-off}
+    - INTAKE_LINK_CHECK_PARALLEL=${INTAKE_LINK_CHECK_PARALLEL:-off}
+    - INTAKE_SORT_WORKERS=${INTAKE_SORT_WORKERS:-3}
+    - INTAKE_KEEP_SORT_LABEL=${INTAKE_KEEP_SORT_LABEL:-off}
+    - INTAKE_SORT_RESCUE=${INTAKE_SORT_RESCUE:-off}
+    # Wave 2's accuracy switches (plans/2026-11-22-enhance-staging 3c): more
+    # photos for the main read (E12; blank = 32) and its own photo size
+    # (E12b; blank = as the other reads), the side worked out from the
+    # sort's geometry (E7), a "wrong end" zone read's finds (E11), the
+    # linked check's areas (E9a). Defaults are config.py's: today's
+    # behaviour byte for byte.
+    - INTAKE_MAX_READ_PHOTOS=${INTAKE_MAX_READ_PHOTOS:-}
+    - GEMINI_IMAGE_RESOLUTION_MAIN_READ=${GEMINI_IMAGE_RESOLUTION_MAIN_READ:-}
+    - INTAKE_SIDE_GEOMETRY=${INTAKE_SIDE_GEOMETRY:-off}
+    - INTAKE_ZONE_WRONG_END=${INTAKE_ZONE_WRONG_END:-drop}
+    - INTAKE_LINK_CHECK_MAX_CALLS=${INTAKE_LINK_CHECK_MAX_CALLS:-2}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 
 services:
   telegram-bot:
     <<: *bot-service
-    container_name: carlink_telegram_bot
+    container_name: ${CARLINK_NAME:-carlink}_telegram_bot
     command: ["python", "-m", "app.main", "--bot-only"]
     volumes:
       - bot_data:/app/storage
@@ -130,7 +170,7 @@ services:
 
   api:
     <<: *bot-service
-    container_name: carlink_api
+    container_name: ${CARLINK_NAME:-carlink}_api
     command: ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - bot_data:/app/storage
@@ -155,7 +195,7 @@ services:
         # API container's port directly. See lib/api.ts for why.
         - NEXT_PUBLIC_API_BASE_URL=/api
         - NEXT_PUBLIC_FILES_BASE_URL=
-    container_name: carlink_dashboard
+    container_name: ${CARLINK_NAME:-carlink}_dashboard
     restart: always
     logging: *default-logging
     # Not published to the host either -- same reasoning as api's port,
@@ -170,7 +210,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    container_name: carlink_nginx
+    container_name: ${CARLINK_NAME:-carlink}_nginx
     restart: always
     logging: *default-logging
     ports:
@@ -200,7 +240,7 @@ services:
     build:
       context: ../tools/parts_mcp
       dockerfile: Dockerfile
-    container_name: carlink_parts_worker
+    container_name: ${CARLINK_NAME:-carlink}_parts_worker
     restart: unless-stopped
     logging: *default-logging
     environment:

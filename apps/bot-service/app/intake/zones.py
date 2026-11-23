@@ -78,7 +78,7 @@ from typing import Callable
 
 from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
-from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_of, other_side_listed
+from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_for, covers_of, other_side_note
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import ZONE_PACKS, chain, pack_list, settings
 from app.intake import assembly_walk
@@ -166,6 +166,80 @@ def walk_index() -> "assembly_walk.MapIndex | None":
 def suggest_zone_only() -> bool:
     """Option B: zone-only finds are suggestions (settings.intake_zone_only)."""
     return getattr(settings, "intake_zone_only", "suggest") == "suggest"
+
+
+# ------------------------------------------------------------ Wave 2
+
+
+def wrong_end_mode() -> str:
+    """E11: settings.intake_zone_wrong_end -- "drop" (today), "shadow" or
+    "keep"."""
+    mode = getattr(settings, "intake_zone_wrong_end", "drop") or "drop"
+    return mode if mode in ("drop", "shadow", "keep") else "drop"
+
+
+@dataclass
+class ZoneExtras:
+    """Wave 2's options for the zone reads (plans/2026-11-22-enhance-staging
+    3c), made only when one is on (extras_for) -- at the defaults no zone
+    function is handed one, and every call is as before.
+
+    E7: geometry_mode ("vote" / "tiebreak"; "shadow": logged only) and
+    photo_sides ({photo id: "Left" / "Right"}, intake/geometry.photo_sides):
+    a side zone's side_seen is reconciled with its photos' geometry side
+    when they are unanimous, else each find with its own photo's (the
+    review's M4; zone_read.parse_answer).
+    E11: wrong_end_mode ("shadow" / "keep") -- an end zone that sees the
+    other end has its finds parsed apart; _read_zones files them in
+    wrong_end ({"zone:rear": {"seen": "front", "items": [... photos as
+    "@<photo id>"]}}) and in the zone's run-log entry."""
+    geometry_mode: str = "off"
+    photo_sides: dict = field(default_factory=dict)
+    wrong_end_mode: str = "drop"
+    wrong_end: dict = field(default_factory=dict)
+
+
+def extras_for(photos) -> "ZoneExtras | None":
+    """The reading's ZoneExtras from the settings and its photos (IntakePhoto
+    rows), or None when every Wave 2 zone option is at its default."""
+    from app.intake import geometry
+
+    how, end = geometry.mode(), wrong_end_mode()
+    if how == "off" and end == "drop":
+        return None
+    return ZoneExtras(geometry_mode=how, photo_sides=geometry.photo_sides(photos) if how != "off" else {},
+                      wrong_end_mode=end)
+
+
+def _zone_sides(job, extras) -> dict[str, str]:
+    """E7: {label: its photo's geometry side} for a job's photos that have
+    one."""
+    return {label: extras.photo_sides[pid] for label, pid, _, _ in job.photos if pid in extras.photo_sides}
+
+
+def _zone_geometry(job, extras) -> tuple | None:
+    """E7, for read_zone: (the side the zone's photos' geometry names when
+    they are unanimous, else None; the mode; {label: each photo's geometry
+    side}) -- None for an end or close zone, or with the geometry off or in
+    shadow (asked, not used)."""
+    from app.intake.geometry import ACTING, unanimous
+
+    if extras is None or extras.geometry_mode not in ACTING or job.zone not in SIDE_ZONES:
+        return None
+    sides = _zone_sides(job, extras)
+    return unanimous(sides.values()), extras.geometry_mode, sides
+
+
+def _extra_kwargs(job, extras) -> dict:
+    """read_zone's Wave 2 arguments for this job, only those on ({} at the
+    defaults: read_zone called as before)."""
+    out: dict = {}
+    geo = _zone_geometry(job, extras)
+    if geo is not None:
+        out["geometry"] = geo
+    if extras is not None and extras.wrong_end_mode != "drop":
+        out["wrong_end"] = extras.wrong_end_mode
+    return out
 
 
 # ------------------------------------------------------------ zoning
@@ -481,8 +555,26 @@ def name_suggestions(suggestions: list[dict], listed: list[dict], db, vehicle: d
     parts = {str(it.get("part") or "") for it in listed if isinstance(it, dict)}
     for suggestion in suggestions:
         suggestion["name"] = row_name(db, suggestion["part"], vehicle or {})
-        suggestion["other_side_listed"] = other_side_listed(suggestion["part"], parts)
+        suggestion["other_side_listed"] = other_side_note(suggestion, parts)
     return suggestions
+
+
+OTHER_SIDE = "other_side"
+
+
+def other_side_suggestion(item: dict) -> dict:
+    """F3 (settings.intake_keep_other_side): a list item the side resolver
+    placed on a side already listed, from another photo (resolve_sides'
+    other_side: the item, still "(side undetermined)", with other_side_of
+    the listed name), as a suggestion -- "Other side? Tail Lamp (side
+    undetermined)": source "other_side", Low, its covers without the listed
+    name (second_look.covers_for), other_side_listed that name (the Review
+    step's "Check this isn't the same damage on the other side")."""
+    out = as_suggestion(item)
+    out.update(source=OTHER_SIDE, confidence="Low", other_side_of=item["other_side_of"],
+               covers=covers_for({**out, "other_side_of": item["other_side_of"]}),
+               other_side_listed=item["other_side_of"])
+    return out
 
 
 def apply_agreement(items: list[dict]) -> list[dict]:
@@ -514,6 +606,8 @@ def read_and_merge(
     progress: Callable[[int], None] | None = None,
     intact: dict[str, list[str]] | None = None,
     walk: dict | None = None,
+    *,
+    extras: ZoneExtras | None = None,
 ) -> tuple[list[dict], set[str], list[str]]:
     """The zone stage, for pipeline._read_into once the overall reading has
     answered: one call per job, then merge_reads. items: the overall
@@ -529,11 +623,39 @@ def read_and_merge(
 
     walk, when given, is filled with the zone reads' assembly walk merged
     (assembly_walk.merge_all, photos as "@<photo id>"; ai_draft[
-    "assembly_walk"]); left empty when no zone read walked."""
+    "assembly_walk"]); left empty when no zone read walked.
+
+    extras (Wave 2, ZoneExtras): passed on to zone_reads only when given."""
+    reads = zone_reads(report_id, actor, jobs, progress, intact, walk, **({"extras": extras} if extras else {}))
+    return merged_with(report_id, items, reads)
+
+
+def zone_reads(
+    report_id: str,
+    actor: AiActor,
+    jobs: list[ZoneJob],
+    progress: Callable[[int], None] | None = None,
+    intact: dict[str, list[str]] | None = None,
+    walk: dict | None = None,
+    *,
+    cancel: threading.Event | None = None,
+    extras: ZoneExtras | None = None,
+) -> list[tuple[str, list[dict]]]:
+    """read_and_merge's calls alone: each zone read that answered as (read
+    name, items), intact and walk filled as there. Never raises: [] when
+    nothing answered. F1 (settings.intake_main_read_fallback) calls it
+    before the overall reading's second try, and B2 (settings.
+    intake_parallel_reads) beside the overall reading, then merged_with.
+    cancel (B2): once set, no zone call starts (each left "skipped",
+    "cancelled"); the ones in flight finish. extras (Wave 2): the zone
+    reads' E7 / E11 options, its wrong_end filled (ZoneExtras)."""
     seen_intact: dict[str, list[str]] = {}
     seen_walk: dict = {}
     try:
-        reads = _read_zones(report_id, actor, jobs, progress, seen_intact, seen_walk) if jobs else []
+        extra = {"cancel": cancel} if cancel is not None else {}
+        if extras is not None:
+            extra["extras"] = extras
+        reads = _read_zones(report_id, actor, jobs, progress, seen_intact, seen_walk, **extra) if jobs else []
     except Exception:
         logger.exception("Zone reading for %s failed; the overall reading stands", report_id)
         reads, seen_intact, seen_walk = [], {}, {}
@@ -541,6 +663,13 @@ def read_and_merge(
         intact.update(seen_intact)
     if walk is not None:
         walk.update(seen_walk)
+    return reads
+
+
+def merged_with(report_id: str, items: list[dict], reads: list[tuple[str, list[dict]]]
+                ) -> tuple[list[dict], set[str], list[str]]:
+    """read_and_merge's merge alone: (items, disputed names, the reads that
+    answered). Never raises: the overall reading's items stand."""
     answered = [OVERALL] + [name for name, _ in reads]
     try:
         merged, disputed = merge_reads(items, reads)
@@ -553,8 +682,16 @@ def read_and_merge(
 def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 progress: Callable[[int], None] | None,
                 intact: dict[str, list[str]] | None = None,
-                walk: dict | None = None) -> list[tuple[str, list[dict]]]:
+                walk: dict | None = None,
+                cancel: threading.Event | None = None,
+                extras: ZoneExtras | None = None) -> list[tuple[str, list[dict]]]:
     models = zone_chain()
+    if cancel is not None:
+        # B2's cancel also stops a zone call in flight at its current model
+        # (no next model, no "all busy" round): the run ends sooner.
+        from app.ai.second_look import _ChainUntil
+
+        models = _ChainUntil(models, cancel)
     grid = grid_on()
     asked = evidence_mode()
     light = light_options()
@@ -573,6 +710,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             if stop.is_set():
                 entry.update(status="skipped", note="no AI allowance left")
                 return
+            if cancel is not None and cancel.is_set():
+                entry.update(status="skipped", note="cancelled")
+                return
             if time.monotonic() - started > TIME_BOX:
                 entry.update(status="skipped", note="out of time")
                 return
@@ -581,7 +721,8 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 # error code, then added to the stage's one run.
                 with runs.collecting(attempts):
                     answer = read_zone(job.zone, [(label, path, kind) for label, _, path, kind in job.photos],
-                                       actor=actor, models=models, grid=grid, evidence_mode=asked, **light)
+                                       actor=actor, models=models, grid=grid, evidence_mode=asked, **light,
+                                       **_extra_kwargs(job, extras))
             except Exception as exc:
                 error = exc
                 # The person's AI going away, or the day's allowance used up
@@ -594,6 +735,19 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             entry.update(status="ok", side_seen=answer.side_seen, found=len(answer.items), intact=answer.intact)
             if answer.note:
                 entry["note"] = answer.note
+            if extras is not None and extras.geometry_mode != "off" and job.zone in SIDE_ZONES:
+                # E7: the side zone's geometry, as the run log keeps it (in
+                # shadow too: what it would have said, nothing applied).
+                from app.intake.geometry import tally, unanimous
+
+                sides = _zone_sides(job, extras)
+                entry["geometry"] = {"mode": extras.geometry_mode, "side": unanimous(sides.values()),
+                                     "votes": tally(sides.values()), "model": answer.side_model or answer.side_seen,
+                                     "per_find": answer.per_find}
+            if extras is not None and extras.wrong_end_mode != "drop" and answer.note:
+                # E11: what the end zone that saw the other end found.
+                entry["wrong_end"] = {"mode": extras.wrong_end_mode,
+                                      "parts": [str(it.get("part")) for it in answer.wrong_end_items]}
             if "walk" in light:
                 # The assembly walk, short: each panel's hit_at and yes signs.
                 entry["walk"] = assembly_walk.log_entry(answer.walk)
@@ -644,20 +798,14 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         label_to_id = {label: pid for label, pid, _, _ in job.photos}
         if answer.walk:
             walks.append((f"zone:{job.zone}", answer.walk, label_to_id))
-        found = []
-        for item in answer.items:
-            item = dict(item)
-            photo_id = label_to_id.get(item.get("photo_reference") or "")
-            item["photo_reference"] = f"@{photo_id}" if photo_id else None
-            if not photo_id:
-                item["grid_cells"] = []
-            # Its evidence by photo id too; an entry on a label not sent goes.
-            item["evidence"] = [{**e, "photo": f"@{label_to_id[e['photo']]}"}
-                                for e in item.get("evidence") or [] if label_to_id.get(e.get("photo") or "")]
-            found.append(item)
+        found = [_by_photo_id(item, label_to_id) for item in answer.items]
         reads.append((f"zone:{job.zone}", found))
         if intact is not None:
             intact[f"zone:{job.zone}"] = list(answer.intact)
+        if extras is not None and answer.wrong_end_items:
+            # E11: its finds apart, photos by id as the reads' are.
+            extras.wrong_end[f"zone:{job.zone}"] = {
+                "seen": answer.side_seen, "items": [_by_photo_id(it, label_to_id) for it in answer.wrong_end_items]}
     if walk is not None and walks:
         try:
             walk.update(assembly_walk.merge_all([(read, assembly_walk.with_photo_ids(found, ids))
@@ -665,6 +813,50 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         except Exception:  # never the reason the zone reads are lost
             logger.exception("Zone reading for %s: couldn't merge the assembly walk; none kept", report_id)
     return reads
+
+
+def _by_photo_id(item: dict, label_to_id: dict[str, str]) -> dict:
+    """A zone read's item (a copy) with its photo as "@<photo id>": a label
+    not sent becomes None (and its grid cells go), and an evidence entry on
+    a label not sent goes."""
+    item = dict(item)
+    photo_id = label_to_id.get(item.get("photo_reference") or "")
+    item["photo_reference"] = f"@{photo_id}" if photo_id else None
+    if not photo_id:
+        item["grid_cells"] = []
+    # Its evidence by photo id too; an entry on a label not sent goes.
+    item["evidence"] = [{**e, "photo": f"@{label_to_id[e['photo']]}"}
+                        for e in item.get("evidence") or [] if label_to_id.get(e.get("photo") or "")]
+    return item
+
+
+def wrong_end_suggestions(wrong_end: dict) -> list[dict]:
+    """E11 "keep": each find of an end zone that saw the other end (ZoneExtras.
+    wrong_end) as a zone suggestion (as_suggestion: source "zone", found by
+    that read, its photo, reason and evidence) with wrong_end_note -- "The
+    rear read thought these photos show the front." -- never merged with
+    the reads (it neither credits nor disputes a list part) and never on
+    the list. The review's M5: its side was worked out by a read wrong about
+    which end it saw (or the part is of the wrong end), so it goes by its
+    "(side undetermined)" name, and Low whatever the model said;
+    second_look._store ranks it after every other suggestion and drops it
+    behind a twin a read genuinely found (the note stays on it alone). A
+    part listed or dismissed goes, as any suggestion."""
+    from app.ai.zone_read import wrong_end_note
+
+    out = []
+    for read, block in wrong_end.items():
+        zone = read.split(":", 1)[-1]
+        for item in block.get("items") or []:
+            if not item.get("part"):
+                continue
+            part = str(item["part"])
+            found = {**item, "part": unsided_part(part) or part, "ai_confidence": "Low", "found_by": [read],
+                     "seen_in": [item["photo_reference"]] if item.get("photo_reference") else []}
+            suggestion = as_suggestion(found)
+            suggestion["wrong_end_note"] = wrong_end_note(zone, str(block.get("seen") or ""))
+            out.append(suggestion)
+    return out
 
 
 def intact_of(ai_draft) -> dict[str, list[str]]:

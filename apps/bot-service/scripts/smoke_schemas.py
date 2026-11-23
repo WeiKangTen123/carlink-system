@@ -380,7 +380,7 @@ def main() -> int:
         for name, spec in schemas.items():
             print(f"\n{name} schema: {len(json.dumps(spec['schema']))} characters")
             for model in spec.get("models") or models:
-                acquire(key.rate_limit_id)
+                acquire(key.rate_limit_id, model=model, fingerprint=key.fingerprint)
                 sent = request(name, spec, model, args.resolution)
                 try:
                     interaction = _create_within(

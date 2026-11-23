@@ -1,0 +1,15 @@
+# Code owners: GitHub asks them to review a PR that touches these paths.
+# The last matching line wins. A review is only REQUIRED once the ruleset on
+# master asks for code-owner review (that needs a second, machine account
+# for the Claude sessions; one account cannot approve its own PR).
+
+*                         @WeiKangTen123
+
+# Deploy, backups and server config.
+/infra/                   @WeiKangTen123
+
+# CI, Dependabot, PR template, this file.
+/.github/                 @WeiKangTen123
+
+# The AI: prompts, models, keys and quotas (changes need the AI benchmark gate).
+/apps/bot-service/app/ai/ @WeiKangTen123

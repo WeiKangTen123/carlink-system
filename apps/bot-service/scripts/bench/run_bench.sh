@@ -21,6 +21,23 @@
 # /app/storage/.ratelimit, so its calls count in the same 12-per-minute
 # window as the live app's (app/ai/rate_limit.py) instead of bypassing it.
 #
+# Staging (plans/2026-11-22-enhance-staging, Phase 3): production and staging
+# share ONE Gemini key, so a benchmark runs in the STAGING LANE of the shared
+# quota guard (app/ai/quota_guard.py): at most 2 requests a minute, only
+# while production keeps 6 of the minute free, and none once staging has sent
+# 300 that day, production 400, or a light model has fewer than 300 left. It
+# is sandbox work: it runs inside a container but only ever on its scratch
+# database and storage under /tmp/bench (never the stack's own data).
+#   bash run_bench.sh LABEL REF ...       # carlink_staging_api, /opt/carlink-staging
+# Since review M5 those are the DEFAULTS (BENCH_CONTAINER, BENCH_REPO).
+# BENCH_LANE=staging (the default) needs the shared folder mounted in the
+# container (GEMINI_SHARED_QUOTA_DIR): the script refuses otherwise.
+# Production's container (BENCH_CONTAINER=carlink_api: the live storage and
+# secrets mounted, no memory cap) and BENCH_LANE=prod where the shared guard
+# is on (production's 12 a minute and its whole day for a benchmark) are
+# refused unless the FIRST option says so, with the reason:
+#   bash run_bench.sh --allow-prod-bench "<why>" LABEL REF ...
+#
 # PII (photos, key.json, reports, results, logs) stays in ~/carlink-bench
 # (0700) and the container's /tmp/bench (0700); none of it goes into git.
 # See scripts/bench/README.md.
@@ -37,10 +54,17 @@
 #   BENCH_SCRIPT=replay_links bash run_bench.sh c10-replay-lite1 GIT_REF /tmp/bench/out/c9-base-35.json /tmp/bench/out/l3-lite.json --variant all
 # It needs no container (any venv with the app's requirements runs it);
 # here it runs on the server's copies of the result files.
+#
+# Wave 2 (plans/2026-11-22-enhance-staging 3c, E9): BENCH_SCRIPT=
+# replay_link_check runs scripts/bench/replay_link_check.py -- the linked
+# check alone, LIVE (its calls only, through the rate limiter), on a stored
+# result's reads -- the first option being that result's path in the
+# container, then the arm's flags:
+#   BENCH_SCRIPT=replay_link_check bash run_bench.sh w2-lc-e9a GIT_REF /tmp/bench/out/STORED.json --link-check-max-calls 3
 set -euo pipefail
 
 usage() {
-    echo "usage: bash run_bench.sh LABEL GIT_REF [benchmark_intake.py options, e.g. --repeat 3 --only NAME]" >&2
+    echo "usage: bash run_bench.sh [--allow-prod-bench \"<why>\"] LABEL GIT_REF [benchmark_intake.py options, e.g. --repeat 3 --only NAME]" >&2
     exit 2
 }
 
@@ -49,13 +73,20 @@ die() {
     exit 1
 }
 
+ALLOW_PROD=
+if [ "${1:-}" = --allow-prod-bench ]; then
+    [ "$#" -ge 2 ] && [ -n "${2// /}" ] || die "--allow-prod-bench needs the reason, in quotes"
+    ALLOW_PROD=$2
+    shift 2
+fi
 [ "$#" -ge 2 ] || usage
 LABEL=$1
 GIT_REF=$2
 shift 2
 
-REPO=${BENCH_REPO:-/opt/carlink-system}
-CONTAINER=${BENCH_CONTAINER:-carlink_api}
+REPO=${BENCH_REPO:-/opt/carlink-staging}
+CONTAINER=${BENCH_CONTAINER:-carlink_staging_api}
+LANE=${BENCH_LANE:-staging}
 HOME_DIR=${BENCH_HOME:-$HOME/carlink-bench}
 HARNESS_REF=${BENCH_HARNESS_REF:-}
 SCRIPT=${BENCH_SCRIPT:-benchmark_intake}
@@ -63,7 +94,8 @@ case "$SCRIPT" in
     benchmark_intake) SCRIPT_PATH=scripts/benchmark_intake.py ;;
     replay_check) SCRIPT_PATH=scripts/bench/replay_check.py ;;
     replay_links) SCRIPT_PATH=scripts/bench/replay_links.py ;;
-    *) die "BENCH_SCRIPT: benchmark_intake (the default), replay_check or replay_links" ;;
+    replay_link_check) SCRIPT_PATH=scripts/bench/replay_link_check.py ;;
+    *) die "BENCH_SCRIPT: benchmark_intake (the default), replay_check, replay_links or replay_link_check" ;;
 esac
 # The app refuses uploads below 3 GB free (settings.min_free_disk_gb); a
 # run copies every case's photos into the container's /tmp.
@@ -86,6 +118,13 @@ for ref in "$GIT_REF" ${HARNESS_REF:+"$HARNESS_REF"}; do
     [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$ref" != *..* ]] || die "'$ref' is not a branch, tag or commit name"
 done
 [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || die "BENCH_MIN_FREE_GB must be a whole number"
+case "$LANE" in
+    staging | prod) ;;
+    *) die "BENCH_LANE: staging (the default) or prod" ;;
+esac
+if [ "$CONTAINER" = carlink_api ] && [ -z "$ALLOW_PROD" ]; then
+    die "carlink_api is PRODUCTION's container (live storage and secrets, no memory cap). Benchmarks run in staging (the default, carlink_staging_api), or: bash run_bench.sh --allow-prod-bench \"<why>\" ..."
+fi
 
 [ "$(id -u)" -ne 0 ] || die "run as user weika, not root (the files in $HOME_DIR must stay theirs)"
 for tool in docker git tar flock df awk; do
@@ -103,6 +142,19 @@ flock -n 9 || die "another run_bench.sh is running"
 
 running=$(docker ps --filter "name=^${CONTAINER}\$" --format '{{.Names}}')
 [ "$running" = "$CONTAINER" ] || die "container $CONTAINER is not running"
+# The staging lane sends nothing without the shared quota folder (it can't
+# see production's use of the one key): stop here rather than fail every call.
+guarded=0
+docker exec "$CONTAINER" sh -c 'test -n "${GEMINI_SHARED_QUOTA_DIR:-}" && test -d "$GEMINI_SHARED_QUOTA_DIR"' && guarded=1
+if [ "$LANE" = staging ] && [ "$guarded" = 0 ]; then
+    die "$CONTAINER has no shared AI quota folder (GEMINI_SHARED_QUOTA_DIR), so the staging lane can't send. Use the staging stack (the default)."
+fi
+# Review M5: production's lane where the guard is on would spend production's
+# 12 a minute and its day on a benchmark.
+if [ "$LANE" = prod ] && [ "$guarded" = 1 ] && [ -z "$ALLOW_PROD" ]; then
+    die "BENCH_LANE=prod in $CONTAINER, where the shared quota guard is on, takes production's share of the one key. Use the staging lane (the default), or: bash run_bench.sh --allow-prod-bench \"<why>\" ..."
+fi
+[ -z "$ALLOW_PROD" ] || echo "run_bench: --allow-prod-bench: $ALLOW_PROD" >&2
 
 docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || docker_root=/
 [ -n "$docker_root" ] || docker_root=/
@@ -171,7 +223,7 @@ stop_bench() {
 trap 'stop_bench; exit 130' INT TERM
 
 LOG="$HOME_DIR/$LABEL.log"
-echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT); log $LOG"
+echo "run_bench: $LABEL = $REF_NOTE ($SCRIPT) in $CONTAINER, AI lane $LANE; log $LOG"
 # The replay reads no reports and sorts nothing: only the photos and the key.
 # The linked parts' replay not even the photos.
 if [ "$SCRIPT" = benchmark_intake ]; then
@@ -184,6 +236,7 @@ fi
 set +e
 docker exec \
     -e BENCHMARK_SCRATCH=1 \
+    -e "GEMINI_QUOTA_LANE=$LANE" \
     -e "DATABASE_URL=sqlite:///$B/$LABEL/run.db" \
     -e "STORAGE_DIR=$B/$LABEL/storage" \
     -e PYTHONIOENCODING=utf-8 \
@@ -206,6 +259,9 @@ if docker exec "$CONTAINER" test -f "$B/out/$LABEL.json"; then
     if [ "$SCRIPT" = benchmark_intake ]; then
         echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BEFORE.json $HOME_DIR/out/$LABEL.json"
     elif [ "$SCRIPT" = replay_links ]; then
+        echo "gate:      python3 $CODE/apps/bot-service/scripts/bench/gate.py --suggestions $HOME_DIR/out/$LABEL.json"
+    elif [ "$SCRIPT" = replay_link_check ]; then
+        echo "compare:   python3 $CODE/apps/bot-service/scripts/bench/compare.py $HOME_DIR/out/BASE.json $HOME_DIR/out/$LABEL.json --all"
         echo "gate:      python3 $CODE/apps/bot-service/scripts/bench/gate.py --suggestions $HOME_DIR/out/$LABEL.json"
     else
         echo "sweep:     python3 $CODE/apps/bot-service/scripts/bench/replay_check.py --sweep $HOME_DIR/out/$LABEL.json"

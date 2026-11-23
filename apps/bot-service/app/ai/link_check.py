@@ -50,6 +50,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -677,14 +678,32 @@ def _is_no(item: dict) -> bool:
     return isinstance(check, dict) and check.get("verdict") == "no"
 
 
-def apply(items: list[dict], results: dict[str, dict], skip: set[str]) -> list[dict]:
+def hidden_no() -> str:
+    """settings.intake_link_hidden_no (F6): "keep" (today) or "cannot_tell"."""
+    return getattr(settings, "intake_link_hidden_no", "keep") or "keep"
+
+
+def hidden_verdict(verdict: str, item: dict, rule: str = "keep") -> str:
+    """F6 (plans/2026-11-22-enhance-staging), a code rule like code_verdict's
+    cue rule: with rule "cannot_tell", a "no" on a part the table marks
+    hidden (SecondLookItem.hidden: a beam, a regulator -- no photo can show
+    it, so "no" says only that it isn't in view) becomes "cannot_tell", and
+    the part keeps its place instead of going last. "keep": as it is."""
+    if rule == "cannot_tell" and verdict == "no" and item.get("hidden"):
+        return "cannot_tell"
+    return verdict
+
+
+def apply(items: list[dict], results: dict[str, dict], skip: set[str], hidden_rule: str | None = None) -> list[dict]:
     """The answers on these items (copies), by key: link_check, the bucket
     the verdict gives, a "seen" photo joined to the evidence (one entry per
     photo, a boxed one over a boxless one: evidence.join). Then each open
     linked part answered "no" goes after the other open linked parts --
     last in its group, whatever the grouping -- the rest keeping their
     places. Never an item more or less; `skip` (keys a person settled) and
-    anything not a linked part left exactly as they are."""
+    anything not a linked part left exactly as they are. hidden_rule: F6's
+    hidden_verdict rule, settings.intake_link_hidden_no when None."""
+    rule = hidden_no() if hidden_rule is None else hidden_rule
     out: list[dict] = []
     open_at: list[int] = []
     for it in items:
@@ -694,6 +713,12 @@ def apply(items: list[dict], results: dict[str, dict], skip: set[str]) -> list[d
         got = results.get(key) if is_open else None
         if got is not None:
             it["link_check"] = dict(got["link_check"])
+            if rule != "keep":
+                said = it["link_check"].get("verdict")
+                it["link_check"]["verdict"] = hidden_verdict(said, it, rule)
+                if it["link_check"]["verdict"] != said:
+                    # The model's own word, beside the code's (the review's L8).
+                    it["link_check"]["model_verdict"] = said
             bucket = BUCKET_OF.get(got["link_check"]["verdict"])
             if bucket:
                 it["bucket"] = bucket
@@ -760,10 +785,17 @@ def _all_busy(attempts: list[dict]) -> bool:
     return bool(tried) and all(a.get("busy") for a in tried)
 
 
+def parallel_on() -> bool:
+    """B3: settings.intake_link_check_parallel is "on"."""
+    return getattr(settings, "intake_link_check_parallel", "off") == "on"
+
+
 def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str, dict]]:
     """(the CheckRun, {item key: its answer}) for one draft, as one run of
     the log. A failed call ends the step; the areas answered before it are
-    kept."""
+    kept. B3 (parallel_on, more than one area): _ask_parallel instead."""
+    if parallel_on() and len(plan.groups) > 1:
+        return _ask_parallel(report_id, actor, plan)
     results: dict[str, dict] = {}
     answered: list[Group] = []
     calls = 0
@@ -808,6 +840,105 @@ def _ask_all(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str
         return _check_run("skipped", NOTE_NO_ALLOWANCE, calls=calls), {}
     except Exception as exc:
         if failure is None:  # not a call's failure: the run log's, or ours
+            logger.warning("Linked check for %s failed: %s", report_id, runs.scrub_error(f"{type(exc).__name__}: {exc}"))
+        return _check_run("failed", NOTE_BUSY if failure and failure[0] == "busy" else NOTE_FAILED, calls=calls), {}
+    notes = []
+    if len(answered) < plan.total:
+        notes.append(NOTE_PART.format(done=len(answered), total=plan.total))
+    if failure is not None:
+        notes.append({"skipped": NOTE_NO_ALLOWANCE, "busy": NOTE_BUSY}.get(failure[0], NOTE_FAILED))
+    extra = {"signs": signs} if signs_on else {}
+    return _check_run("ok", " ".join(notes) or None, by="lite", model=models[0] if models else None, calls=calls,
+                      **extra), results
+
+
+# A failure's rank when several areas failed at once (B3): the one the
+# CheckRun names. The person's AI going away says what to fix.
+_FAILURE_RANK = {"skipped": 0, "busy": 1, "failed": 2}
+# B3: at most this many areas' calls in flight (the review's M1). Each
+# area's time box starts when its call starts, so a wider pool would spend
+# the later areas' boxes waiting for the rate limiter's slots.
+PARALLEL_WORKERS = 2
+
+
+def _ask_parallel(report_id: str, actor: AiActor, plan: Plan) -> tuple[dict, dict[str, dict]]:
+    """B3 (settings.intake_link_check_parallel "on"): _ask_all with every
+    area's call at the same time, each standing alone -- an area whose call
+    fails is left out, the others' answers are kept. Each call keeps its
+    tries apart (its model is read from its own), then adds them to the
+    step's one run. Through the same rate limiter and busy handling as
+    one after the other (ask, call_structured). The answers, the photos
+    sent and the CheckRun are put together in the plan's order, so with
+    every call answering they are what _ask_all gives."""
+    signs_on = skill_choice()[1]
+    groups = list(plan.groups)
+    outcomes: list[tuple | None] = [None] * len(groups)
+    workers = min(PARALLEL_WORKERS, len(groups))
+    # The rate limiter's gap between two requests (rate_limit.acquire): the
+    # second call starts that much later, so its 30 s box starts about when
+    # its slot comes, not while it queues behind the first (the review's
+    # M1). A call after those waits for a worker, and starts its box then.
+    spacing = max(0.0, float(getattr(settings, "gemini_min_call_interval_seconds", 0.0) or 0.0))
+
+    def one(i: int, group: Group, run: runs.Run) -> None:
+        if 0 < i < workers and spacing:
+            time.sleep(i * spacing)
+        attempts = runs.Attempts()
+        said: list[dict] = []
+        try:
+            got = ask(group, actor, attempts, said if signs_on else None)
+            outcomes[i] = ("ok", got, said)
+        except AiUnavailable as exc:
+            outcomes[i] = ("skipped", exc, None)
+        except Exception as exc:
+            outcomes[i] = ("busy" if _all_busy(attempts.snapshot()) else "failed", exc, None)
+            logger.warning("Linked check for %s: the %s call failed (%s)", report_id, group.area,
+                           runs.scrub_error(f"{type(exc).__name__}: {exc}"))
+        finally:
+            tries, size = attempts.drain()
+            for attempt in tries:
+                run.attempts.add(attempt)
+            if size is not None:
+                run.attempts.add_input(size)
+
+    results: dict[str, dict] = {}
+    answered: list[Group] = []
+    failure: tuple[str, BaseException] | None = None
+    models: list[str] = []
+    signs: dict[str, list[dict]] = {}
+    calls = len(groups)
+    try:
+        with runs.recorded(report_id, runs.LINK_CHECK_KIND, actor) as run:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"link-{report_id}") as pool:
+                futures = [pool.submit(one, i, group, run) for i, group in enumerate(groups)]
+            for future in futures:
+                if future.exception() is not None:
+                    logger.error("Linked check for %s: a worker failed", report_id, exc_info=future.exception())
+            sent: dict[str, str] = {}
+            for group, outcome in zip(groups, outcomes):
+                for p in group.photos:
+                    sent.setdefault(p.label, p.photo_id)
+                if outcome is None:
+                    continue
+                if outcome[0] != "ok":
+                    if failure is None or _FAILURE_RANK[outcome[0]] < _FAILURE_RANK[failure[0]]:
+                        failure = (outcome[0], outcome[1])
+                    continue
+                got, said = outcome[1], outcome[2]
+                answered.append(group)
+                results.update(got)
+                if signs_on:
+                    signs[group.area] = said
+                models += [r["link_check"]["model"] for r in got.values() if r["link_check"].get("model")]
+            run.photos_sent = [f"@{sent[label]}" for label in sorted(sent, key=lambda lb: int(lb[1:]))]
+            run.parts_found = sum(1 for r in results.values() if r["link_check"]["verdict"] == "seen")
+            if not answered and failure is not None:
+                raise failure[1]
+    except AiUnavailable as exc:
+        logger.info("Linked check for %s skipped: %s", report_id, exc.code)
+        return _check_run("skipped", NOTE_NO_ALLOWANCE, calls=calls), {}
+    except Exception as exc:
+        if failure is None:
             logger.warning("Linked check for %s failed: %s", report_id, runs.scrub_error(f"{type(exc).__name__}: {exc}"))
         return _check_run("failed", NOTE_BUSY if failure and failure[0] == "busy" else NOTE_FAILED, calls=calls), {}
     notes = []

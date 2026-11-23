@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import uuid
@@ -33,6 +34,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from app.ai import keys as own_keys
+from app.ai import quota_guard
 from app.ai import runs as run_log
 from app.ai import secretbox
 from app.ai.extraction import draft_report
@@ -944,14 +946,23 @@ def _checked_temp_paths(paths: list[str], user: CurrentUser) -> list[str]:
     Only the caller's own uploads (_temp_prefix) pass, or anyone could move
     someone else's photos -- a Telegram draft's, say -- into their case.
     """
-    root = tmp_dir().resolve()
+    root = os.path.realpath(tmp_dir())
     prefix = _temp_prefix(user)
     checked: list[str] = []
     for raw in paths:
-        resolved = Path(raw).resolve()
-        if resolved.parent != root or not resolved.name.startswith(prefix):
+        # Symlinks and ".." worked out first, then checked: inside tmp...
+        try:
+            if "\x00" in raw:
+                raise ValueError("NUL in a path")
+            resolved = os.path.realpath(raw)
+        except (TypeError, ValueError, OSError):
             raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
-        checked.append(str(resolved))
+        if not resolved.startswith(root + os.sep):
+            raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
+        # ...directly, not in a folder below it, and one of this person's.
+        if os.path.dirname(resolved) != root or not os.path.basename(resolved).startswith(prefix):
+            raise HTTPException(status_code=400, detail="Invalid temporary photo reference.")
+        checked.append(resolved)
     return checked
 
 
@@ -2317,9 +2328,27 @@ def get_system_info(admin: CurrentUser = Depends(require_admin)) -> dict:
             # What infra/backup.sh last recorded, or None when no backup
             # has been recorded here (Settings > Company shows it in red).
             "last_backup": _last_backup(),
+            # The shared quota guard (production and staging on one key,
+            # ai/quota_guard.py): this stack's lane, and today's requests per
+            # model and lane on each key, by label; None if unreadable.
+            "ai_quota": _ai_quota(),
         }
     finally:
         db.close()
+
+
+def _ai_quota() -> dict | None:
+    """System info's ai_quota: quota_guard.summary with the company keys
+    named by their labels ("company #1", never a key), and production's
+    extras tier. Never fails system info."""
+    try:
+        labels = {quota_guard.key_tag(key.rate_limit_id): key.label for key in own_keys.company_keys()}
+        state = quota_guard.summary(labels)
+        state["extras"] = quota_guard.extras_state()
+        return state
+    except Exception:
+        logger.exception("System info: couldn't read the shared AI quota")
+        return None
 
 
 # Written by infra/backup.sh into the data volume, which is STORAGE_DIR in

@@ -191,6 +191,19 @@ class IntakePhoto(Base):
     # asked, no damage seen, or a box that made no sense.
     damage_box: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     kind_source: Mapped[str] = mapped_column(String, default="ai")
+    # B5 (settings.intake_keep_sort_label "on"; plans/2026-11-22-enhance-
+    # staging R-batching): the sorter's own kind, kept when a person first
+    # regroups the photo (api/intake.update_intake_photo), for the
+    # AI-accuracy record's regroup counts. None: never regrouped, regrouped
+    # with the setting off, or the sorter never sorted it. (Added after the
+    # table shipped: see db._ADDED_COLUMNS.)
+    ai_kind: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # E7 (settings.intake_side_geometry not "off"; plans/2026-11-22-enhance-
+    # staging 3c): what the sort said of the photo's geometry -- {"view",
+    # "angle", "wheel", "side" (intake/geometry.photo_side), "rhd_check"} --
+    # for the side worked out in code. None: the sort wasn't asked. (Added
+    # after the table shipped: see db._ADDED_COLUMNS.)
+    geometry: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Kept in the case file but never sent to the AI.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

@@ -32,6 +32,17 @@ the key's fingerprint (AiKey.fingerprint).
 Nothing here may break an AI call: a file that can't be read or written is
 logged and treated as "nothing remembered", which is the behaviour from
 before this module.
+
+Two stacks, one key (2026-11-22): with the shared quota folder there
+(ai/quota_guard.py, settings.gemini_shared_quota_dir), the store is
+<folder>/allowance/days.json instead, so production and staging skip the
+same spent models. The first time a process uses it, this stack's own
+store is merged into it (review L13: whichever stack came first). Without
+the folder, the store stays where it always was, handled as before. The
+shared store is handled as quota_guard handles its files (review M1, M2):
+a lock waited for LOCK_TIMEOUT_SECONDS at most, no symlink followed, temp
+files with random names -- and when it can't be used, "nothing
+remembered", as for an unreadable file.
 """
 import hashlib
 import json
@@ -127,18 +138,80 @@ def _entry(fingerprint: str, model: str) -> str:
     return f"{_tag(fingerprint)}|{model}"
 
 
-def _path() -> Path:
+# The shared store's folder in the quota folder (the stack's own is
+# ".allowance" in STORAGE_DIR).
+SHARED_FOLDER = "allowance"
+# Whether this process has merged its own store into the shared one yet.
+_merged_local = False
+
+
+def _local_path() -> Path:
     d = Path(settings.storage_dir) / ".allowance"
     d.mkdir(parents=True, exist_ok=True)
     return d / "days.json"
+
+
+def _path() -> Path:
+    """The store: in the shared quota folder when it is there, else this
+    stack's own (ai/quota_guard.shared_dir)."""
+    from app.ai import quota_guard  # it imports this module
+
+    shared = quota_guard.shared_dir()
+    if shared is None:
+        return _local_path()
+    return quota_guard.safe_dir(shared, SHARED_FOLDER) / "days.json"
+
+
+def _is_shared(path: Path) -> bool:
+    return path.parent.name == SHARED_FOLDER
+
+
+def _merge_local(path: Path) -> None:
+    """Once per process: this stack's own store merged into the shared one
+    (a spent day kept until the later reset; a limit Google stated kept when
+    the shared store has none), so what either stack learned before the
+    folder existed isn't asked of Google again -- whichever came first.
+    Called holding the shared store's lock."""
+    global _merged_local
+    if _merged_local:
+        return
+    _merged_local = True
+    local = _local_path()
+    if not local.exists():
+        return
+    try:
+        mine, shared = _read(local), _read(path)
+        now = _clock().timestamp()
+        changed = False
+        for k, v in mine["spent"].items():
+            if v > now and v > shared["spent"].get(k, 0):
+                shared["spent"][k] = v
+                changed = True
+        for k, v in mine["limits"].items():
+            if k not in shared["limits"]:
+                shared["limits"][k] = v
+                changed = True
+        if changed:
+            _write(path, shared)
+            logger.info("Day allowance: this stack's store merged into the shared quota folder")
+    except Exception as exc:
+        logger.warning("Day allowance: couldn't merge this stack's store into the shared folder (%s)", type(exc).__name__)
 
 
 @contextmanager
 def _locked() -> Iterator[Path]:
     """The store's path, held exclusively: this process's threads by
     _local_lock, other processes by flock on a separate .lock file (locking
-    the data file itself would stop os.replace on Windows)."""
+    the data file itself would stop os.replace on Windows). The shared
+    store: quota_guard.held -- bounded, never through a symlink."""
     path = _path()
+    if _is_shared(path):
+        from app.ai import quota_guard
+
+        with quota_guard.held(path.with_suffix(".lock"), _local_lock):
+            _merge_local(path)
+            yield path
+        return
     with _local_lock:
         handle = open(path.with_suffix(".lock"), "a+")
         try:
@@ -162,7 +235,12 @@ def _locked() -> Iterator[Path]:
 def _read(path: Path) -> dict:
     """{"spent": {entry: reset as epoch seconds}, "limits": {entry: N}}."""
     try:
-        raw = path.read_text(encoding="utf-8").strip()
+        if _is_shared(path):
+            from app.ai import quota_guard
+
+            raw = (quota_guard.safe_read_text(path) or "").strip()
+        else:
+            raw = path.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw else {}
     except FileNotFoundError:
         data = {}
@@ -180,6 +258,11 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, data: dict) -> None:
+    if _is_shared(path):
+        from app.ai import quota_guard
+
+        quota_guard.safe_write_text(path, json.dumps(data))
+        return
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
     os.replace(tmp, path)  # atomic: a reader never sees half a file

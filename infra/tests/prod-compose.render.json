@@ -1,0 +1,239 @@
+{
+  "name": "infra",
+  "networks": {
+    "infra_default": {}
+  },
+  "services": {
+    "api": {
+      "build": {
+        "context": "<repo>/apps/bot-service",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "python",
+        "-m",
+        "uvicorn",
+        "app.api.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "container_name": "carlink_api",
+      "environment": {
+        "CATALOGUE_ENABLED": "false",
+        "CATALOGUE_WORKER_TOKEN": "",
+        "DATABASE_URL": "sqlite:////app/storage/carlink.db",
+        "GEMINI_API_KEY": "placeholder-gemini-key",
+        "GEMINI_MODEL_CHAIN": "gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "GEMINI_THINKING_LEVEL_LINK": "",
+        "GEMINI_THINKING_LEVEL_SORT": "",
+        "INTAKE_ASSEMBLY_WALK": "off",
+        "INTAKE_CAR_MAP": "off",
+        "INTAKE_CAR_MAP_NAMES": "off",
+        "INTAKE_CHECK_MODE": "off",
+        "INTAKE_LINKS": "off",
+        "INTAKE_LINKS_ASSEMBLY_MAX": "4",
+        "INTAKE_LINKS_CATALOGUE": "false",
+        "INTAKE_LINKS_MAX": "12",
+        "INTAKE_LINKS_ORDER": "table",
+        "INTAKE_LINKS_STRIPDOWN_CAP": "in",
+        "INTAKE_LINKS_STRIPDOWN_MAX": "12",
+        "INTAKE_LINK_CHECK": "off",
+        "INTAKE_LINK_HOPS": "1",
+        "INTAKE_LINK_ORDER": "candidates_first",
+        "INTAKE_LINK_PROMPT": "v1",
+        "INTAKE_LINK_SIGNS": "false",
+        "INTAKE_LINK_SKILL": "L1",
+        "INTAKE_READ_ANCHOR": "false",
+        "INTAKE_READ_MODE": "single",
+        "INTAKE_READ_PACKS": "",
+        "INTAKE_READ_PROMPT": "v1",
+        "INTAKE_SORT_PROMPT": "v2",
+        "INTAKE_WALK_RAISE": "one",
+        "INTAKE_ZONE_EVIDENCE": "off",
+        "INTAKE_ZONE_ONLY": "suggest",
+        "INTAKE_ZONE_PACKS": "",
+        "INTAKE_ZONE_PHOTO_HALF": "false",
+        "PUBLIC_BASE_URL": "https://carlink.34-45-253-162.sslip.io",
+        "RUN_BACKGROUND_CLEANUP": "true",
+        "SECRETS_DIR": "/app/secrets",
+        "STORAGE_DIR": "/app/storage",
+        "TELEGRAM_BOT_TOKEN": "placeholder-bot-token",
+        "TELEGRAM_FULL_DETECTION": "false"
+      },
+      "image": "infra-api",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "restart": "always",
+      "volumes": [
+        "volume:infra_bot_data:/app/storage",
+        "bind:<repo>/apps/bot-service/app:/app/app",
+        "volume:infra_ai_secrets:/app/secrets"
+      ]
+    },
+    "dashboard": {
+      "build": {
+        "args": {
+          "NEXT_PUBLIC_API_BASE_URL": "/api",
+          "NEXT_PUBLIC_FILES_BASE_URL": ""
+        },
+        "context": "<repo>/apps/dashboard",
+        "dockerfile": "Dockerfile"
+      },
+      "container_name": "carlink_dashboard",
+      "depends_on": [
+        "api"
+      ],
+      "environment": {
+        "API_INTERNAL_URL": "http://api:8000"
+      },
+      "image": "infra-dashboard",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "restart": "always"
+    },
+    "nginx": {
+      "container_name": "carlink_nginx",
+      "depends_on": [
+        "api",
+        "dashboard"
+      ],
+      "image": "nginx:alpine",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "ports": [
+        "127.0.0.1:8080:80"
+      ],
+      "restart": "always",
+      "volumes": [
+        "bind:<repo>/infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+      ]
+    },
+    "parts-worker": {
+      "build": {
+        "context": "<repo>/tools/parts_mcp",
+        "dockerfile": "Dockerfile"
+      },
+      "container_name": "carlink_parts_worker",
+      "depends_on": [
+        "api"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "512M"
+          }
+        }
+      },
+      "environment": {
+        "CARLINK_API_BASE": "http://api:8000",
+        "CATALOGUE_WORKER_TOKEN": "",
+        "PARTS_MCP_DATA_DIR": "/data",
+        "PARTS_MCP_LOG_FILE": "off",
+        "WORKER_NAME": "server"
+      },
+      "image": "infra-parts-worker",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "restart": "unless-stopped",
+      "volumes": [
+        "volume:infra_parts_data:/data"
+      ]
+    },
+    "telegram-bot": {
+      "build": {
+        "context": "<repo>/apps/bot-service",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "python",
+        "-m",
+        "app.main",
+        "--bot-only"
+      ],
+      "container_name": "carlink_telegram_bot",
+      "environment": {
+        "CATALOGUE_ENABLED": "false",
+        "CATALOGUE_WORKER_TOKEN": "",
+        "DATABASE_URL": "sqlite:////app/storage/carlink.db",
+        "GEMINI_API_KEY": "placeholder-gemini-key",
+        "GEMINI_MODEL_CHAIN": "gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "GEMINI_THINKING_LEVEL_LINK": "",
+        "GEMINI_THINKING_LEVEL_SORT": "",
+        "INTAKE_ASSEMBLY_WALK": "off",
+        "INTAKE_CAR_MAP": "off",
+        "INTAKE_CAR_MAP_NAMES": "off",
+        "INTAKE_CHECK_MODE": "off",
+        "INTAKE_LINKS": "off",
+        "INTAKE_LINKS_ASSEMBLY_MAX": "4",
+        "INTAKE_LINKS_CATALOGUE": "false",
+        "INTAKE_LINKS_MAX": "12",
+        "INTAKE_LINKS_ORDER": "table",
+        "INTAKE_LINKS_STRIPDOWN_CAP": "in",
+        "INTAKE_LINKS_STRIPDOWN_MAX": "12",
+        "INTAKE_LINK_CHECK": "off",
+        "INTAKE_LINK_HOPS": "1",
+        "INTAKE_LINK_ORDER": "candidates_first",
+        "INTAKE_LINK_PROMPT": "v1",
+        "INTAKE_LINK_SIGNS": "false",
+        "INTAKE_LINK_SKILL": "L1",
+        "INTAKE_READ_ANCHOR": "false",
+        "INTAKE_READ_MODE": "single",
+        "INTAKE_READ_PACKS": "",
+        "INTAKE_READ_PROMPT": "v1",
+        "INTAKE_SORT_PROMPT": "v2",
+        "INTAKE_WALK_RAISE": "one",
+        "INTAKE_ZONE_EVIDENCE": "off",
+        "INTAKE_ZONE_ONLY": "suggest",
+        "INTAKE_ZONE_PACKS": "",
+        "INTAKE_ZONE_PHOTO_HALF": "false",
+        "PUBLIC_BASE_URL": "https://carlink.34-45-253-162.sslip.io",
+        "RUN_BACKGROUND_CLEANUP": "true",
+        "SECRETS_DIR": "/app/secrets",
+        "STORAGE_DIR": "/app/storage",
+        "TELEGRAM_BOT_TOKEN": "placeholder-bot-token",
+        "TELEGRAM_FULL_DETECTION": "false"
+      },
+      "image": "infra-telegram-bot",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "restart": "always",
+      "volumes": [
+        "volume:infra_bot_data:/app/storage",
+        "bind:<repo>/apps/bot-service/app:/app/app",
+        "volume:infra_ai_secrets:/app/secrets:ro"
+      ]
+    }
+  },
+  "volumes": {
+    "infra_ai_secrets": {},
+    "infra_bot_data": {},
+    "infra_parts_data": {}
+  }
+}

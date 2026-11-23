@@ -80,11 +80,20 @@ def check_upgrade() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE IF NOT EXISTS access_requests (id VARCHAR PRIMARY KEY, email VARCHAR)"))
     db = SessionLocal()
+    # One second apart, oldest first: the backfill names the oldest account
+    # first (created_at, then the random id), and four rows added in one
+    # flush can share a clock tick (Windows, Python 3.11), which made the
+    # "weikangten" vs "weikangten2" check below a coin toss.
+    start = utc_now() - timedelta(minutes=1)
     db.add_all([
-        User(email="weikangten@gmail.com", name="Wei Kang", role="admin", password_hash="!"),
-        User(email="weikangten@other.example", name="Another Wei Kang", role="surveyor", password_hash="!"),
-        User(email="a@b.example", name="Short", role="surveyor", password_hash="!"),
-        User(email="admin@corp.example", name="Reserved", role="surveyor", password_hash="!"),
+        User(email="weikangten@gmail.com", name="Wei Kang", role="admin", password_hash="!",
+             created_at=start),
+        User(email="weikangten@other.example", name="Another Wei Kang", role="surveyor", password_hash="!",
+             created_at=start + timedelta(seconds=1)),
+        User(email="a@b.example", name="Short", role="surveyor", password_hash="!",
+             created_at=start + timedelta(seconds=2)),
+        User(email="admin@corp.example", name="Reserved", role="surveyor", password_hash="!",
+             created_at=start + timedelta(seconds=3)),
     ])
     db.commit()
     db.close()

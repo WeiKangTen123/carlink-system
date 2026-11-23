@@ -365,6 +365,16 @@ def _model_chain() -> list[str]:
     return [m.strip() for m in settings.gemini_model_chain.split(",") if m.strip()]
 
 
+def main_read_resolution() -> str | None:
+    """E12b (plans/2026-11-22-enhance-staging 3c): settings.
+    gemini_image_resolution_main_read, the main read's own photo resolution
+    table in place of gemini_image_resolution ("*=medium": 560 tokens a
+    photo, so 64 photos cost the image tokens 32 do at Gemini's default,
+    high); None when unset. Only a photo with a kind takes it: the Telegram
+    bot's drafts are sent as before."""
+    return getattr(settings, "gemini_image_resolution_main_read", None) or None
+
+
 # ------------------------------------------------- the sorter's hints
 #
 # Dashboard intake sorts every photo first (ai/triage.py), and the reader
@@ -497,6 +507,9 @@ def _build_input(
     closeups += [None] * (len(photo_paths) - len(closeups))
     if any(closeups):
         parts.append({"type": "text", "text": CLOSE_UP_NOTE})
+    # E12b: the main read's own resolution table, only when it is set; unset,
+    # every image is built exactly as before.
+    sized = {"resolutions": main_read_resolution()} if main_read_resolution() else {}
     for i, path in enumerate(photo_paths, start=1):
         # Labeled so the model can honestly attribute a damage_summary item to
         # the specific photo it actually saw it in (photo_reference), matching
@@ -510,13 +523,18 @@ def _build_input(
         # The sorter's kind picks the image's resolution
         # (settings.gemini_image_resolution); no kind -- the bots, a photo
         # never sorted -- sends it at Gemini's default, as before.
-        parts.append(image_part(path, kind=(hints[i - 1] or {}).get("kind")))
+        kind = (hints[i - 1] or {}).get("kind")
+        if sized and hints[i - 1] is not None and not kind:
+            # E12b (the review's L3): an intake photo the sort didn't sort
+            # takes the table's "unsorted" (else "*") entry too.
+            kind = "unsorted"
+        parts.append(image_part(path, kind=kind, **sized))
         # The close-up has a label part of its own, after the photo: the
         # photo's own "Photo P07:" stays exactly that, and the model still
         # cites P07. Its photo's kind, so it gets the same resolution.
         if closeups[i - 1]:
             parts.append({"type": "text", "text": f"Close-up of photo {label}:"})
-            parts.append(image_part(closeups[i - 1], kind=(hints[i - 1] or {}).get("kind")))
+            parts.append(image_part(closeups[i - 1], kind=kind, **sized))
     if tail:
         parts.append({"type": "text", "text": tail})
     return parts
@@ -681,6 +699,8 @@ def draft_report(
     actor: AiActor,
     photo_hints: list[dict | None] | None = None,
     photo_crops: list[str | None] | None = None,
+    deadline: float | None = None,
+    max_tries: int | None = None,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
@@ -688,10 +708,17 @@ def draft_report(
     call, where the bot's few photos fit comfortably in 45s. actor: who
     pays (structured.call_structured). photo_hints: what the sorter saw in
     each photo (dashboard intake; photo_hint). photo_crops: a close-up to
-    send after each photo, or None (_build_input)."""
+    send after each photo, or None (_build_input). deadline (a
+    time.monotonic() time) and max_tries: call_structured's, passed only
+    when given -- F1's second try (intake/pipeline), which must end inside
+    the zone stage's time box and make no "all busy" round."""
     # Contract 8 D1: passed only when set, so call_structured is called
     # exactly as before otherwise.
     extra = {"tools_note": ZOOM_NOTE} if settings.gemini_read_zoom_hint else {}
+    if deadline is not None:
+        extra["deadline"] = deadline
+    if max_tries is not None:
+        extra["max_tries"] = max_tries
     # The light-model switches (read once: a setting changed mid-call must
     # not mix two prompts); at their defaults SYSTEM_PROMPT, no tail, no tag.
     packs, version = read_packs(), read_prompt_version()

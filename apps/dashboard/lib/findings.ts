@@ -53,9 +53,11 @@ export type Finding = {
   confidence: string | null;
   check: SuggestionCheck | null;
   otherSideListed: string | null;
+  /** Wave 2 E11: the "wrong end" zone read's note, on its suggestion only. */
+  wrongEndNote?: string | null;
   /** Contract 10: "link", a part tied to a listed one by the link table
    * (SecondLookItem.source). */
-  source: "list" | "zone" | "kit" | "nearby" | "link";
+  source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side";
   /** The Condition in the firm's words ("Cracked"), else the AI's damage
    * type; for the cards and the viewer. Optional: added by the evidence UI. */
   condition?: string | null;
@@ -361,7 +363,9 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
     shown.add(key);
     const source = s.source ?? "nearby";
     // Where a suggestion with no stored evidence came from, for its photo.
-    const fallbackBy = source === "zone" ? s.found_by?.[0] || "overall" : source;
+    // F3's "Other side?" ones were found by the reads too (never an
+    // "other_side read").
+    const fallbackBy = source === "zone" || source === "other_side" ? s.found_by?.[0] || "overall" : source;
     const evidence = evidenceFrom(s.evidence, s.photo_reference, null, s.seen_in, s.confidence, fallbackBy, fallbackBy);
     // Contract 10: a linked part's reason is the link table's (the code's
     // words), and the listed part's photo ("link") is not a photo it was
@@ -374,7 +378,8 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       index: null,
       partKey: key,
       part: s.part,
-      name: s.name || otherName(s) || s.part,
+      // F3: "Other side? Tail Lamp (side undetermined)".
+      name: source === "other_side" ? `Other side? ${s.name || s.part}` : s.name || otherName(s) || s.part,
       status: isDismissed ? "dismissed" : "suggestion",
       reason: isLink ? null : (s.reason ?? null),
       evidence,
@@ -383,6 +388,7 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       confidence: s.confidence ?? null,
       check: s.check ?? null,
       otherSideListed: s.other_side_listed ?? null,
+      ...(s.wrong_end_note ? { wrongEndNote: s.wrong_end_note } : {}),
       source,
       condition: s.condition || s.damage_type || null,
       ...linkFields(s),
@@ -462,6 +468,11 @@ export function codeReason(f: Finding): string {
           : "Listed by the AI";
   } else if (reads.length) {
     why = `Found by the ${joined(reads)} read${reads.length > 1 ? "s" : ""}`;
+  } else if (f.source === "other_side") {
+    // F3: placed on a side the list already has, from another photo.
+    why = f.otherSideListed
+      ? `Seen on another photo than the listed ${f.otherSideListed}: it may be the other side`
+      : "Seen on another photo than the listed part: it may be the other side";
   } else if (f.source === "kit") {
     why = "Often damaged with a part found here (past cases)";
   } else {

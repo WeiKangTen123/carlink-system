@@ -125,6 +125,25 @@ and sha256 (LF); each linked part then keeps its group fields (assembly,
 prior, hop, fitted, also_check, folded) and "links" counts the folded
 strip-down block.
 
+Wave 2 (plans/2026-11-22-enhance-staging 3c), one flag per arm, each off
+by default (a run without them writes what it wrote before them, but for
+the new metrics below): --max-read 40 (E12a; 1-64) and
+--image-resolution-main-read '*=medium' with --max-read 48..64 (E12b: the
+main read's own photo size), --side-geometry vote|tiebreak (E7: the sort
+answers each photo's view and steering wheel, code works out the side; its
+own sort-cache folder, and each sorted photo keeps its "geometry"),
+--zone-wrong-end shadow|keep (E11; needs --read-mode zones),
+--link-check-max-calls 3 (E9a), --link-models CHAIN (B8's linked check;
+the sort's is --triage-models). E9b is --link-skill L2, E10
+--thinking-level-sort low. Every run also keeps "sorter_counts" (E10: the
+photos the sorter called unusable, interior, third_party, other, or left
+unsorted), and the metrics count them (sort_*), the end zones that saw the
+other end (zone_other_end) and their finds (wrong_end_items,
+wrong_end_sugg), the sides the geometry changed (geo_zone_changed,
+geo_side_changed; "side_geometry" lists the resolver's), and the linked
+check's verdicts by truth (lcv_*). scripts/bench/replay_link_check.py runs
+the linked check alone on stored runs (E9's arms on identical reads).
+
 Next to the strict parts score, "parts_fair" gives half a part for a
 neighbouring panel on the same side, does not count an "Other / Not Listed"
 item named like a key part's surveyor line as extra, and flags drafted
@@ -188,6 +207,51 @@ FITTING_CONDITIONS = frozenset({"necessary", "serviceable"})
 SORT_FIELDS = ("kind", "area", "quality", "shows_damage", "part", "note")
 REFUSAL = ("Refusing to run: give --scratch DIR, or set BENCHMARK_SCRATCH=1 with DATABASE_URL and STORAGE_DIR "
            "pointing at scratch locations.")
+# Where a live stack keeps its database and files (infra/docker-compose.prod.yml:
+# STORAGE_DIR=/app/storage, DATABASE_URL=sqlite:////app/storage/carlink.db)
+# and the app's own defaults (app/config.py DEFAULT_DB_PATH /
+# DEFAULT_STORAGE_DIR): never scratch (Wave 2 review L6).
+LIVE_STORAGE_DIRS = ("/app/storage", str(BOT_DIR / "storage"))
+LIVE_DATABASES = (str(BOT_DIR / "carlink.db"),)
+
+
+def _path_within(path: str, roots) -> bool:
+    """Whether `path` is one of `roots` or inside one (resolved, so "/app/
+    storage/../storage" is caught)."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return True
+    for root in roots:
+        try:
+            base = Path(root).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if target == base or base in target.parents:
+            return True
+    return False
+
+
+def scratch_problem(env=None) -> str | None:
+    """Why this process may not write a scratch database and storage, or
+    None: BENCHMARK_SCRATCH=1, and DATABASE_URL (a sqlite file) and
+    STORAGE_DIR both set, neither the live stack's (LIVE_STORAGE_DIRS,
+    LIVE_DATABASES: inside the api container they are set to the live ones,
+    so being set is not enough) nor the app's defaults. --scratch DIR sets
+    all three."""
+    env = os.environ if env is None else env
+    if env.get("BENCHMARK_SCRATCH") != "1":
+        return REFUSAL
+    db, storage = (env.get("DATABASE_URL") or "").strip(), (env.get("STORAGE_DIR") or "").strip()
+    if not db or not storage:
+        return REFUSAL
+    if not db.startswith("sqlite:///"):
+        return f"{REFUSAL} (DATABASE_URL must be a sqlite file in a scratch folder)"
+    db_path = db[len("sqlite:///"):]
+    if (_path_within(storage, LIVE_STORAGE_DIRS) or _path_within(db_path, LIVE_STORAGE_DIRS)
+            or _path_within(db_path, LIVE_DATABASES)):
+        return f"{REFUSAL} (DATABASE_URL / STORAGE_DIR point at the live stack's or the app's own)"
+    return None
 OTHER_PART = "Other / Not Listed"
 
 log = logging.getLogger("benchmark")
@@ -1153,6 +1217,25 @@ def run_metrics(run: dict) -> dict:
                                    and z.get("side_seen") in ("left", "right") and z.get("side_seen") != z.get("zone"))
         m["zone_other_end"] = sum(1 for z in zones if z.get("zone") in ("front", "rear")
                                   and z.get("side_seen") in ("front", "rear") and z.get("side_seen") != z.get("zone"))
+    if zones is not None:
+        # Wave 2 E11: the finds of the end zones that saw the other end
+        # (shadow / keep: the zone's wrong_end entry); E7: the side zones whose
+        # side the sort's geometry changed.
+        ends = [z.get("wrong_end") for z in zones if isinstance(z.get("wrong_end"), dict)]
+        if ends:
+            m["wrong_end_items"] = sum(len(e.get("parts") or []) for e in ends)
+        geo = [z for z in zones if isinstance(z.get("geometry"), dict)]
+        if geo:
+            m["geo_zones"] = len(geo)
+            m["geo_zone_changed"] = sum(1 for z in geo if z["geometry"].get("model") != z.get("side_seen"))
+    if isinstance(run.get("side_geometry"), list):
+        m["geo_side_changed"] = len(run["side_geometry"])
+    wrong_end_sugg = [r for r in run.get("suggestions") or [] if isinstance(r, dict) and r.get("wrong_end_note")]
+    if wrong_end_sugg:
+        m["wrong_end_sugg"] = len(wrong_end_sugg)
+        m["wrong_end_sugg_real"] = sum(1 for r in wrong_end_sugg if r.get("truth") == "real")
+    m.update(sorter_count_metrics(run))
+    m.update(link_check_metrics(run.get("link_suggestions")))
     found_by = [i.get("found_by") for i in run.get("drafted_items") or [] if i.get("found_by")]
     if found_by:
         m["zone_only_parts"] = sum(1 for f in found_by if "overall" not in f)
@@ -1209,6 +1292,53 @@ def run_metrics(run: dict) -> dict:
         m["total_s"] = round(sum(m.get(k) or 0 for k in ("sort_s", "read_s", "look_s", "recheck_s")), 1)
     m = {k: v for k, v in m.items() if v is not None}
     return with_ratios(m)
+
+
+# Wave 2 E10: the photos the sorter set aside, per run -- unusable (a
+# quality), interior / third_party / other (kinds) and unsorted (no kind).
+SORTER_SET_ASIDE = ("unusable", "interior", "third_party", "other", "unsorted")
+
+
+def sorter_counts(sorted_photos) -> dict:
+    """{what: photos} of a run's sorted_photos: SORTER_SET_ASIDE's."""
+    rows = [p for p in sorted_photos or [] if isinstance(p, dict)]
+    out = {"unusable": sum(1 for p in rows if p.get("quality") == "unusable"),
+           "unsorted": sum(1 for p in rows if not p.get("kind"))}
+    for kind in ("interior", "third_party", "other"):
+        out[kind] = sum(1 for p in rows if p.get("kind") == kind)
+    return {k: out[k] for k in SORTER_SET_ASIDE}
+
+
+def sorter_count_metrics(run: dict) -> dict:
+    """sorter_counts as run metrics ("sort_unusable"...), from the run's
+    sorted_photos -- older files too; {} for a run without them."""
+    if not isinstance(run.get("sorted_photos"), list):
+        return {}
+    return {f"sort_{k}": v for k, v in sorter_counts(run["sorted_photos"]).items()}
+
+
+# The linked check's verdicts (ai/link_check.VERDICTS), repeated so scoring
+# loads without the app; test_enh_wave2 checks them against the app's.
+LINK_VERDICTS = ("seen", "likely", "strip_down", "no", "cannot_tell")
+
+
+def link_check_metrics(rows) -> dict:
+    """Wave 2 E9: what the linked check said of a run's linked parts, by
+    their truth (score_links' "truth": real, or wrong = wrong_side / extra):
+    lcv_answered / lcv_unanswered, and lcv_<real|wrong>_<verdict> for each
+    of LINK_VERDICTS. {} when no linked part carries an answer (the check
+    off, or a run from before it)."""
+    rows = [r for r in rows or [] if isinstance(r, dict)]
+    answered = [r for r in rows if isinstance(r.get("link_check"), dict) and r["link_check"].get("verdict")]
+    if not answered:
+        return {}
+    m = {"lcv_answered": len(answered), "lcv_unanswered": len(rows) - len(answered)}
+    for group in ("real", "wrong"):
+        for verdict in LINK_VERDICTS:
+            m[f"lcv_{group}_{verdict}"] = sum(
+                1 for r in answered if r["link_check"]["verdict"] == verdict
+                and (r.get("truth") == "real") == (group == "real") and r.get("truth") is not None)
+    return m
 
 
 def with_ratios(m: dict) -> dict:
@@ -1663,9 +1793,12 @@ def sort_cache_dir(root: Path) -> tuple[Path, dict]:
 
 def _sort_fields() -> tuple:
     """SORT_FIELDS, and the damage box while the sort makes one (contract 8
-    D1), whose sorts have a cache folder of their own (sort_cache_dir)."""
+    D1), and the geometry while it answers that (E7), whose sorts have a
+    cache folder of their own (sort_cache_dir)."""
     box_on = getattr(_app().triage, "damage_box_on", None)
-    return SORT_FIELDS + ("damage_box",) if callable(box_on) and box_on() else SORT_FIELDS
+    geometry_on = getattr(_app().triage, "geometry_on", None)
+    fields = SORT_FIELDS + ("damage_box",) if callable(box_on) and box_on() else SORT_FIELDS
+    return fields + ("geometry",) if callable(geometry_on) and geometry_on() else fields
 
 
 def apply_sort_cache(report_id: str, cache: Path) -> int:
@@ -1904,6 +2037,9 @@ _SUGGESTION_FIELDS = ("key", "part", "name", "other_part_name", "source", "confi
 # answer. A zone suggestion joined to a link carries the link fields too.
 _LINK_SUGGESTION_FIELDS = ("severity", "condition_tokens", "remarks", "linked_from", "link_type", "link_rule", "hit",
                            "bucket", "hidden", "needs_strip_down", "side_from", "intact_in", "link_check")
+# Wave 2 E11, only with intake_zone_wrong_end "keep": a "wrong end" zone
+# read's suggestion's note.
+_WAVE2_SUGGESTION_FIELDS = ("wrong_end_note",)
 # The assembly walk, only while it acts: a second hop's hop and middle part,
 # and the yes signs that lifted a linked part or opened its chain.
 _WALK_SUGGESTION_FIELDS = ("hop", "via", "signs_yes")
@@ -2135,12 +2271,17 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         out["damage_photos_read"] = f"{len([p for p in damage_photos if p.id in read_ids])}/{len(damage_photos)}"
         # The sorter's box too while it makes one (contract 8 D1).
         boxes = "damage_box" in _sort_fields()
+        # E7: each photo's geometry while the sort answers it.
+        geometry = "geometry" in _sort_fields()
         out["sorted_photos"] = [
             {"n": i + 1, "file": p.original_name, "kind": p.kind, "area": p.area, "quality": p.quality,
              "damage": p.shows_damage, "part": p.part, "read": p.id in read_ids, "note": p.note,
-             **({"box": p.damage_box} if boxes else {})}
+             **({"box": p.damage_box} if boxes else {}),
+             **({"geometry": getattr(p, "geometry", None)} if geometry else {})}
             for i, p in enumerate(photos)
         ]
+        # E10 (Wave 2): what the sorter set aside, per run.
+        out["sorter_counts"] = sorter_counts(out["sorted_photos"])
         items = [item for item in data.get("damage_summary") or [] if isinstance(item, dict)]
         drafted = [item.get("part") for item in items]
         label_of = {f"@{p.id}": f"P{i + 1:02d}" for i, p in enumerate(photos)}
@@ -2165,6 +2306,9 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             fields += _WALK_SUGGESTION_FIELDS
         if review_on(A.settings):
             fields += tuple(f for f in _CARMAP_SUGGESTION_FIELDS if f not in fields)
+        if getattr(A.settings, "intake_zone_wrong_end", "drop") == "keep":
+            # E11: a "wrong end" zone read's suggestion keeps its note.
+            fields += _WAVE2_SUGGESTION_FIELDS
         link_items: list = []
         if look and mode != "off":
             look = dict(look)
@@ -2223,6 +2367,10 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         if walk_on(A.settings):
             # The assembly walk as the zone reads merged it, photos by label.
             out["assembly_walk"] = walk_rows((session.ai_draft or {}).get("assembly_walk"), label_of)
+        geo_log = (session.ai_draft or {}).get("side_geometry") if isinstance(session.ai_draft, dict) else None
+        if isinstance(geo_log, list):
+            # E7: each side the sort's geometry changed in the side resolver.
+            out["side_geometry"] = [relabel_refs(e, label_of) for e in geo_log if isinstance(e, dict)]
         out["vehicle"] = score_vehicle(case["vehicle"], data.get("vehicle_info") or {})
         out["sorter"] = sorter_quality(case["parts"], out["sorted_photos"])
         # Contract 8 D2: what each zone call sent and saw, from the run log's
@@ -2784,6 +2932,27 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--keep-reads", action="store_true",
                     help="keep the overall reading's raw damage items, side_from_sorter's changes and each zone "
                          "read's items as merged (wraps the app's functions in this harness only; no extra call)")
+    # Wave 2 (plans/2026-11-22-enhance-staging 3c): one flag per arm, each off
+    # by default. E12a is --max-read 40, E10 --thinking-level-sort low, B8
+    # --triage-models (and --link-models), E9b --link-skill L2.
+    ap.add_argument("--image-resolution-main-read", metavar="SPEC",
+                    help="E12b: the main read's own photo resolution, written like --image-resolution, e.g. "
+                         "'*=medium' with --max-read 64 (settings.gemini_image_resolution_main_read; the zone "
+                         "reads keep theirs)")
+    ap.add_argument("--side-geometry", metavar="MODE",
+                    help="E7: the sort also answers each photo's view and steering wheel and code works out the "
+                         "side: 'vote' or 'tiebreak' ('off': today) (settings.intake_side_geometry; its own "
+                         "sort-cache folder)")
+    ap.add_argument("--zone-wrong-end", metavar="MODE",
+                    help="E11: an end zone read that says its photos show the other end -- 'drop' (today), "
+                         "'shadow' (logged only) or 'keep' (suggestions with a note) (settings.intake_zone_wrong_end); "
+                         "needs --read-mode zones")
+    ap.add_argument("--link-check-max-calls", type=_positive, metavar="N",
+                    help="E9a: the linked check's calls a case, one per area (settings.intake_link_check_max_calls; "
+                         "default 2); needs --link-check lite")
+    ap.add_argument("--link-models", type=_chain, metavar="CHAIN",
+                    help="B8: the linked check's model chain (settings.gemini_link_chain; default the two lites); "
+                         "needs --link-check lite")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2809,6 +2978,9 @@ WALK_ARGS = {"assembly_walk": False, "walk_raise": None, "link_hops": None}
 # The car map's and the Review step's flags (K4) at their defaults: likewise.
 CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "assembly_max": None,
                "stripdown_cap": None, "stripdown_max": None}
+# Wave 2's flags at their defaults: likewise.
+WAVE2_ARGS = {"image_resolution_main_read": None, "side_geometry": None, "zone_wrong_end": None,
+              "link_check_max_calls": None, "link_models": None}
 
 
 def _now() -> str:
@@ -2893,6 +3065,50 @@ def model_settings(args: argparse.Namespace) -> dict:
     out.update(light_settings(args, config, zones_on, out))
     out.update(walk_settings(args, config, zones_on, out))
     out.update(carmap_settings(args, config, out))
+    out.update(wave2_settings(args, config, zones_on, out, PHOTO_KINDS))
+    return out
+
+
+def wave2_settings(args: argparse.Namespace, config, zones_on: bool, given: dict, kinds=()) -> dict:
+    """Wave 2's flags (plans/2026-11-22-enhance-staging 3c) as {Settings
+    field: value}. Exits on a value config refuses, or a flag that would
+    change nothing: --zone-wrong-end without zone reads, --link-check-max-calls
+    / --link-models without the linked check. --max-read is checked here too
+    (1 to config.MAX_READ_PHOTOS_LIMIT); main sets it."""
+    out: dict = {}
+
+    def norm(flag: str, fn):
+        try:
+            return fn(getattr(args, flag))
+        except ValueError as exc:
+            sys.exit(f"--{flag.replace('_', '-')}: {exc}")
+
+    if getattr(args, "max_read", None) is not None:
+        norm("max_read", config.normal_max_read_photos)
+    if getattr(args, "image_resolution_main_read", None) is not None:
+        spec = norm("image_resolution_main_read", config.normal_image_resolutions)
+        unknown = set(config.image_resolutions(spec)) - set(kinds) - {"unsorted", config.ANY}
+        if kinds and unknown:
+            sys.exit(f"--image-resolution-main-read: no such photo kind {sorted(unknown)}")
+        out["gemini_image_resolution_main_read"] = spec
+    if getattr(args, "side_geometry", None) is not None:
+        out["intake_side_geometry"] = norm("side_geometry",
+                                           lambda v: config._one_of(v, config.SIDE_GEOMETRY, "the mode"))
+    if getattr(args, "zone_wrong_end", None) is not None:
+        if not zones_on:
+            sys.exit("--zone-wrong-end: what an end zone read's finds do; give --read-mode zones too")
+        out["intake_zone_wrong_end"] = norm("zone_wrong_end",
+                                            lambda v: config._one_of(v, config.ZONE_WRONG_END, "the mode"))
+    check_on = given.get("intake_link_check", config.settings.intake_link_check) != "off"
+    if getattr(args, "link_check_max_calls", None) is not None:
+        if not check_on:
+            sys.exit("--link-check-max-calls: the linked check's calls; give --link-check lite too")
+        out["intake_link_check_max_calls"] = norm("link_check_max_calls",
+                                                  lambda v: config.normal_count(v, "the calls"))
+    if getattr(args, "link_models", None) is not None:
+        if not check_on:
+            sys.exit("--link-models: the linked check's models; give --link-check lite too")
+        out["gemini_link_chain"] = norm("link_models", lambda v: config.normal_chain(v, "--link-models"))
     return out
 
 
@@ -3232,6 +3448,27 @@ def ai_settings(settings) -> dict:
             out["thinking_level_link"] = getattr(settings, "gemini_thinking_level_link", None)
     out.update(light_ai_settings(settings))
     out.update(walk_ai_settings(settings))
+    out.update(wave2_ai_settings(settings))
+    return out
+
+
+def wave2_ai_settings(settings) -> dict:
+    """Wave 2's settings while they act, so a run without them reads as
+    before: the main read's photos and their size (E12), the side worked
+    out from the sort's geometry (E7), the wrong-end zones (E11, zone
+    mode). E9a's calls and B8's link chain are in the linked check's block
+    above; E10's sort thinking is thinking_level_sort; B8's sort chain is
+    "models"."""
+    out = {}
+    if getattr(settings, "intake_max_read_photos", None):
+        out["intake_max_read_photos"] = settings.intake_max_read_photos
+    if getattr(settings, "gemini_image_resolution_main_read", None):
+        out["image_resolution_main_read"] = settings.gemini_image_resolution_main_read
+    if getattr(settings, "intake_side_geometry", "off") != "off":
+        out["intake_side_geometry"] = settings.intake_side_geometry
+    if (getattr(settings, "intake_read_mode", "single") == "zones"
+            and getattr(settings, "intake_zone_wrong_end", "drop") != "drop"):
+        out["intake_zone_wrong_end"] = settings.intake_zone_wrong_end
     return out
 
 
@@ -3386,8 +3623,9 @@ def main(argv=None) -> int:
         sys.exit(f"needs {', '.join(missing)} (or --rescore FILE)")
     if args.scratch:
         _use_scratch(args.scratch)
-    if os.environ.get("BENCHMARK_SCRATCH") != "1":
-        sys.exit(REFUSAL)
+    problem = scratch_problem()
+    if problem:
+        sys.exit(problem)
     A = _app()
     for field, value in model_settings(args).items():
         setattr(A.settings, field, value)
@@ -3449,7 +3687,8 @@ def main(argv=None) -> int:
         "git_ref": args.ref,
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
                  if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])
-                 and not (k in WALK_ARGS and v == WALK_ARGS[k]) and not (k in CARMAP_ARGS and v == CARMAP_ARGS[k])},
+                 and not (k in WALK_ARGS and v == WALK_ARGS[k]) and not (k in CARMAP_ARGS and v == CARMAP_ARGS[k])
+                 and not (k in WAVE2_ARGS and v == WAVE2_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),
@@ -3578,6 +3817,8 @@ def rescore(args: argparse.Namespace) -> int:
     if args.out is not None and args.out.resolve() == args.rescore.resolve():
         sys.exit("--rescore: --out must be another file; the stored result is kept as it is")
     annex = args.reports is not None and (args.scratch is not None or os.environ.get("BENCHMARK_SCRATCH") == "1")
+    if annex and args.scratch is None and scratch_problem():
+        sys.exit(scratch_problem())
     if annex and args.scratch is not None:
         _use_scratch(args.scratch)  # before anything imports the app's database
     doc = json.loads(args.rescore.read_text(encoding="utf-8"))

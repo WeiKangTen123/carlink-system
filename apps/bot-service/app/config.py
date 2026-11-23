@@ -100,8 +100,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     # Where people open Carlink in a browser, for links sent outside the
     # dashboard: the Telegram bot's "open your case" and "connect first"
-    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml.
-    public_base_url: str = "https://carlink.34-45-253-162.sslip.io"
+    # messages. No trailing slash needed. Set in infra/docker-compose.prod.yml
+    # (from each stack's infra/.env); the default is production's address.
+    public_base_url: str = "https://carlink.34-16-92-98.sslip.io"
     gemini_api_key: str = ""
     # Ordered by real capability, not just cost -- confirmed live:
     # gemini-3-flash-preview is the only one of these that has actually
@@ -191,6 +192,31 @@ class Settings(BaseSettings):
     # the sort's prompt and schema, so sorts made with it are cached apart
     # (triage.sort_prompt_version).
     intake_sort_damage_box: bool = False
+    # F7 (plans/2026-11-22-enhance-staging): the photos a sorting batch
+    # skipped -- a batch answered for at least half its photos, so the rest
+    # stayed unsorted and got no zone read -- go into ONE more small batch
+    # at the end (at most BATCH_SIZE photos; +0-1 call, only when it
+    # happens). "off": they stay unsorted, as before.
+    intake_sort_retry_skipped: str = "off"
+    # B4 (plans/2026-11-22-enhance-staging R-batching): sorting batches in
+    # flight at once (intake/pipeline._sort), 1 to 5. 3: as before. 5 sorts
+    # a 60-photo case in one wave; the requests still go through the rate
+    # limiter (ai/rate_limit.acquire: at least gemini_min_call_interval_
+    # seconds apart, at most gemini_max_requests_per_minute a minute).
+    intake_sort_workers: int = 3
+    # B9: one more sort call at thinking "low" (ai/triage.rescue_photos) for
+    # the photos about to drop out of every read -- called unusable,
+    # interior, document, third_party or scene, "other" with no damage, or
+    # skipped by a batch -- asking only whether each shows damage on the
+    # insured car and where; a "yes" puts it back as a damage photo, so the
+    # zone reads see it. +0-1 call, only when such photos exist. "off":
+    # none, as before.
+    intake_sort_rescue: str = "off"
+    # B5: when a person regroups a photo, the sorter's own kind is kept
+    # (IntakePhoto.ai_kind; data["photo_index"][i]["ai_kind"] once filed),
+    # and the AI-accuracy record counts the regroups at sign-off. "off":
+    # the sorter's kind is overwritten and nothing is counted, as before.
+    intake_keep_sort_label: str = "off"
     # Right after a photo the sorter boxed, the reading gets a close-up of
     # that box cut from the largest copy of the photo we keep
     # (intake/crops.py), as "Close-up of photo P07:" and the image. At most
@@ -199,14 +225,54 @@ class Settings(BaseSettings):
     intake_read_crops: bool = False
     intake_read_crops_max: int = 8
     # How many photos one intake reading sends (intake/pipeline.read_limit);
-    # unset: pipeline.MAX_READ_PHOTOS (32).
+    # unset: pipeline.MAX_READ_PHOTOS (32). E12 (plans/2026-11-22-enhance-
+    # staging 3c, Wave 2): 40 at today's image size, or 48-64 with
+    # gemini_image_resolution_main_read below at medium -- the same image
+    # tokens as 32 at Gemini's default. 1 to MAX_READ_PHOTOS_LIMIT; the
+    # photos are picked in the same priority order (pipeline.
+    # select_for_reading), and above 32 a request never grows past
+    # pipeline.READ_BYTES_BUDGET.
     intake_max_read_photos: int | None = None
+    # E12b: the main read's own photo resolution, written like
+    # gemini_image_resolution ("*=medium", or per photo kind). Set, it
+    # replaces gemini_image_resolution on the main read's photos only (the
+    # zone reads keep theirs); the Telegram bot's drafts, whose photos have
+    # no kind, are sent as before. Unset (the default): as before.
+    gemini_image_resolution_main_read: str | None = None
+    # E7 (Wave 2): the side worked out in code. The sort also says per photo
+    # which part of the car it looks at (view), which way the car's front
+    # points (its existing angle) and where the steering wheel shows;
+    # intake/geometry.py turns that into the car's left or right (right-hand
+    # drive) for whole-side views, takes a majority over the photos of one
+    # area, and uses it where code decides a side from the reads: the side
+    # zone reads' side_seen (zones) and the side resolver (pipeline.
+    # resolve_sides). "vote": one more vote; "tiebreak": only where today's
+    # rule leaves the side undetermined; "shadow": the sort is asked and the
+    # geometry stored as for those two (the same sort cache), nothing uses
+    # it. "off": the sort is asked nothing new -- its request byte for byte
+    # as before -- and no side changes.
+    intake_side_geometry: str = "off"
+    # E11 (Wave 2): an end zone read (front, rear) whose photos it says show
+    # the OTHER end. "drop": its finds are dropped, as before. "shadow": the
+    # run log also keeps what "keep" would add (zones' entry wrong_end);
+    # nothing else changes. "keep": its finds become suggestions with the
+    # note "The rear read thought these photos show the front." -- never on
+    # the list.
+    intake_zone_wrong_end: str = "drop"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
     # side_from_sorter). Off: the reader's side stands, as before.
     # Off: measured on the light reader (2026-11-10) it added no parts and
     # made sides worse when the sorter's own side was wrong.
     intake_side_from_sorter: bool = False
+    # F3 (plans/2026-11-22-enhance-staging): the side resolver
+    # (intake/pipeline.resolve_sides) drops a "(side undetermined)" find it
+    # places on a side whose name is already listed. "on": when that find
+    # is on a different photo from the listed part, it is kept as a
+    # suggestion instead (source "other_side", other_side_of the listed
+    # name: "Other side? Tail Lamp (side undetermined)") -- two lamps on two
+    # photos no longer become one. "off": dropped, as before.
+    intake_keep_other_side: str = "off"
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
@@ -236,6 +302,53 @@ class Settings(BaseSettings):
     # tier's 20/min for gemini-3-flash, because one draft can spend several
     # requests walking the fallback chain.
     gemini_max_requests_per_minute: int = 12
+    # The shared quota guard (ai/quota_guard.py; plans/2026-11-22 "B1"):
+    # production and staging on ONE Gemini key -- one daily allowance per
+    # model and one per-minute window for both, since Google's limits are per
+    # Google Cloud project. Blank (the default): off -- the window and the
+    # "day used up" memory stay in this stack's STORAGE_DIR (.ratelimit,
+    # .allowance) and every request is exactly as before. Set to the folder
+    # infra/docker-compose.ai-shared.yml mounts (/app/ai-shared): both stacks
+    # keep the window, a per-day request count per model and lane, and the
+    # day memory there. A set folder that isn't there (not mounted yet) falls
+    # back to the old files, so production keeps working.
+    gemini_shared_quota_dir: str = ""
+    # This stack's lane in the shared window. "prod": up to
+    # gemini_max_requests_per_minute, never waiting for staging. "staging":
+    # the limits below, and nothing sent at all without the shared folder.
+    gemini_quota_lane: str = "prod"
+    # Staging takes a slot only while the shared window, with its slot,
+    # holds at most gemini_staging_window_share requests (both lanes), and at
+    # most its per-minute cap of its own: gemini_staging_max_per_minute, and
+    # never more than gemini_quota_minute_budget - gemini_quota_prod_per_minute
+    # (review M6), so the two lanes together never send more than the budget
+    # in any 60 s -- production at its full cap included. Defaults: 14 - 12 =
+    # 2 a minute for staging.
+    gemini_staging_max_per_minute: int = 3
+    gemini_staging_window_share: int = 6
+    # Most requests both stacks together may send in any 60 s on the one
+    # key (under Google's ~15 a minute per model), and production's own cap
+    # as both stacks reckon it: the production lane never takes more than
+    # this either. Keep it equal to production's
+    # gemini_max_requests_per_minute.
+    gemini_quota_minute_budget: int = 14
+    gemini_quota_prod_per_minute: int = 12
+    # Staging sends nothing more until the next reset (midnight Pacific)
+    # once it has sent gemini_staging_day_max requests today, production has
+    # sent gemini_staging_prod_busy, or -- per model -- fewer than
+    # gemini_staging_model_reserve of the model's day are left.
+    gemini_staging_day_max: int = 300
+    gemini_staging_prod_busy: int = 400
+    gemini_staging_model_reserve: int = 300
+    # Requests a day per model on the free tier, for the reserve above and
+    # the extras tiers (quota_guard.extras_tier): "model=N,model=N". A limit
+    # Google itself stated in a 429 (ai/allowance.py) wins. Staging never
+    # uses a model with no known limit (the strong model's 20 a day stays
+    # production's).
+    gemini_quota_day_limits: str = "gemini-3.5-flash-lite=500,gemini-3.1-flash-lite=500"
+    # The model whose day left sets production's extras tier (RICH > 50%
+    # left, NORMAL 25-50%, LEAN < 25%; the base pipeline is never cut).
+    gemini_quota_tier_model: str = "gemini-3.5-flash-lite"
     # Dashboard sign-in (app/auth). A session ends after this long without
     # use, and in any case this many days after signing in.
     auth_session_idle_hours: float = 12
@@ -285,6 +398,28 @@ class Settings(BaseSettings):
     # either way.
     learn_from_signed_off: bool = True
 
+    # The shared quota guard's settings: a typo stops the app at start-up --
+    # a staging stack that quietly ran in the production lane would take
+    # production's share of the one key.
+    @field_validator("gemini_quota_lane")
+    @classmethod
+    def _quota_lane(cls, value):
+        return _one_of(value, QUOTA_LANES, "gemini_quota_lane")
+
+    @field_validator("gemini_quota_day_limits")
+    @classmethod
+    def _quota_day_limits(cls, value):
+        return ",".join(f"{m}={n}" for m, n in day_limits(value).items())
+
+    @field_validator("gemini_staging_max_per_minute", "gemini_staging_window_share", "gemini_staging_day_max",
+                     "gemini_quota_minute_budget", "gemini_quota_prod_per_minute",
+                     "gemini_staging_prod_busy", "gemini_staging_model_reserve")
+    @classmethod
+    def _quota_counts(cls, value):
+        if value < 0:
+            raise ValueError("the gemini_staging_* limits: 0 or more")
+        return value
+
     # A typo in one of the model settings stops the app at start-up rather
     # than being sent to Gemini (a 400 on every call) or silently ignored.
     @field_validator("gemini_thinking_level_read", "gemini_thinking_level_sort", "gemini_thinking_level_second_look")
@@ -292,10 +427,26 @@ class Settings(BaseSettings):
     def _thinking_level(cls, value):
         return normal_thinking_levels(value)
 
-    @field_validator("gemini_image_resolution")
+    @field_validator("gemini_image_resolution", "gemini_image_resolution_main_read")
     @classmethod
     def _image_resolution(cls, value):
         return normal_image_resolutions(value)
+
+    # E12: blank is unset (32); 1 to MAX_READ_PHOTOS_LIMIT.
+    @field_validator("intake_max_read_photos", mode="before")
+    @classmethod
+    def _max_read_photos(cls, value):
+        return normal_max_read_photos(value)
+
+    @field_validator("intake_side_geometry")
+    @classmethod
+    def _side_geometry(cls, value):
+        return _one_of(value, SIDE_GEOMETRY, "intake_side_geometry")
+
+    @field_validator("intake_zone_wrong_end")
+    @classmethod
+    def _zone_wrong_end(cls, value):
+        return _one_of(value, ZONE_WRONG_END, "intake_zone_wrong_end")
 
     @field_validator("gemini_read_tools")
     @classmethod
@@ -319,6 +470,25 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError("intake_read_crops_max: 0 or more")
         return value
+
+    @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
+                     "intake_keep_sort_label")
+    @classmethod
+    def _off_on(cls, value, info):
+        return _one_of(value, OFF_ON, info.field_name)
+
+    @field_validator("intake_sort_workers", mode="before")
+    @classmethod
+    def _sort_workers(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 3
+        try:
+            workers = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"intake_sort_workers {value!r}: a whole number, 1 to {MAX_SORT_WORKERS}") from None
+        if not 1 <= workers <= MAX_SORT_WORKERS:
+            raise ValueError(f"intake_sort_workers {value!r}: 1 to {MAX_SORT_WORKERS}")
+        return workers
 
     # Contract 8 D2: reading the car one area at a time (intake/zones.py).
     # "single": the one overall reading, as before. "zones": after it, one
@@ -390,6 +560,34 @@ class Settings(BaseSettings):
     # R4's offline sweep.
     intake_check_yes: float = 0.7
     intake_check_no: float = 0.3
+    # F1 (plans/2026-11-22-enhance-staging, owner decision 9): when the
+    # main read fails (every model busy, out of allowance, the person's AI
+    # unavailable) -- "zones": the zone reads still run (zone mode), then
+    # the main read is tried once more; if it fails again, the zone reads'
+    # finds become the list as "Check" (Low) rows, with a notice ("The
+    # overall read failed. This list is from the area reads. Press
+    # Re-read."; IntakeSession.ai_draft["main_read"], GET /intake/{id}'s
+    # read_notice). "off": the run fails ("Retry"), as before.
+    intake_main_read_fallback: str = "off"
+    # B2 (R-batching): zone mode's zone reads start beside the main read
+    # instead of after it -- they need only the sort (intake/pipeline.
+    # ParallelZones). The same calls, through the same rate limiter. It acts
+    # ONLY together with intake_main_read_fallback "zones" (the review's
+    # M4): then a failed main read uses the zone answers already paid for;
+    # without F1 they would be thrown away and paid for again on Retry, so
+    # the reads stay one after the other. "off": one after the other, as
+    # before.
+    intake_parallel_reads: str = "off"
+
+    @field_validator("intake_main_read_fallback")
+    @classmethod
+    def _main_read_fallback(cls, value):
+        return _one_of(value, MAIN_READ_FALLBACKS, "intake_main_read_fallback")
+
+    @field_validator("intake_parallel_reads")
+    @classmethod
+    def _parallel_reads(cls, value):
+        return _one_of(value, OFF_ON, "intake_parallel_reads")
 
     @field_validator("gemini_zone_chain", "gemini_check_chain")
     @classmethod
@@ -544,6 +742,34 @@ class Settings(BaseSettings):
     # A second hop's part (hop 2) goes there unless a photo shows it.
     intake_links_stripdown_cap: str = "in"
     intake_links_stripdown_max: int = 12
+    # F2 + F5 (plans/2026-11-22-enhance-staging): what the caps cut -- the
+    # suggestions past second_look.MAX_SUGGESTIONS, the linked parts past
+    # intake_links_assembly_max a group or intake_links_max (and the
+    # strip-down block's max), a linked part dropped because a zone read
+    # called it intact -- is kept beside the suggestions, never shown or
+    # printed until the Review step folds it in "More (N)":
+    # data["second_look"]["cut"] (each with cut_reason "limit" or
+    # "intact") and ["cut_counts"]. "off": cut and gone, as before.
+    intake_keep_cut: str = "off"
+    # F6: the linked check's "no" on a part the table marks hidden (a beam,
+    # a regulator: no photo can show it) becomes "cannot_tell", as the cue
+    # rule does for a seen with nothing to point at. "keep": as before.
+    intake_link_hidden_no: str = "keep"
+    # B3 (R-batching): the linked check's calls (one per area, at most
+    # intake_link_check_max_calls) at the same time, each area standing
+    # alone -- one failed call no longer ends the step for the others.
+    # "off": one after the other, a failure ending the step, as before.
+    intake_link_check_parallel: str = "off"
+
+    @field_validator("intake_keep_cut", "intake_link_check_parallel")
+    @classmethod
+    def _keep_cut(cls, value, info):
+        return _one_of(value, OFF_ON, info.field_name)
+
+    @field_validator("intake_link_hidden_no")
+    @classmethod
+    def _link_hidden_no(cls, value):
+        return _one_of(value, LINK_HIDDEN_NO, "intake_link_hidden_no")
 
     @field_validator("intake_links")
     @classmethod
@@ -720,6 +946,35 @@ class Settings(BaseSettings):
 
 
 READ_MODES = ("single", "zones")
+# plans/2026-11-22-enhance-staging's fixes: the first of each is the
+# default, today's behaviour.
+OFF_ON = ("off", "on")
+MAIN_READ_FALLBACKS = ("off", "zones")
+LINK_HIDDEN_NO = ("keep", "cannot_tell")
+# B4: at most this many sorting batches at once (5 batch starts still sit
+# under the 12-a-minute limit; the limiter spaces them).
+MAX_SORT_WORKERS = 5
+# Wave 2 (plans/2026-11-22-enhance-staging 3c): the first of each is the
+# default, today's behaviour. E7, E11.
+SIDE_GEOMETRY = ("off", "shadow", "vote", "tiebreak")
+ZONE_WRONG_END = ("drop", "shadow", "keep")
+# E12: the most photos one reading may send (64 at medium is 32 at high's
+# image tokens).
+MAX_READ_PHOTOS_LIMIT = 64
+
+
+def normal_max_read_photos(value) -> int | None:
+    """intake_max_read_photos: None (unset: 32) when blank, else a whole
+    number 1 to MAX_READ_PHOTOS_LIMIT. Raises ValueError otherwise."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        count = int(str(value).strip())
+    except ValueError:
+        raise ValueError(f"intake_max_read_photos {value!r}: a whole number, 1 to {MAX_READ_PHOTOS_LIMIT}") from None
+    if isinstance(value, bool) or not 1 <= count <= MAX_READ_PHOTOS_LIMIT:
+        raise ValueError(f"intake_max_read_photos {value!r}: 1 to {MAX_READ_PHOTOS_LIMIT}")
+    return count
 
 
 def normal_read_mode(value) -> str:
@@ -753,6 +1008,24 @@ def normal_chain(value, name: str = "the chain") -> str:
     if not models:
         raise ValueError(f"{name}: at least one model name")
     return ",".join(models)
+
+
+# The shared quota guard's lanes (ai/quota_guard.py); the first is the default.
+QUOTA_LANES = ("prod", "staging")
+
+
+def day_limits(text: str | None) -> dict[str, int]:
+    """gemini_quota_day_limits as {model: requests a day}: "gemini-3.5-flash-
+    lite=500,gemini-3.1-flash-lite=500". {} when blank. Raises ValueError on
+    an entry that isn't model=N with N a whole number, 0 or more."""
+    out: dict[str, int] = {}
+    for entry in _entries(text):
+        model, sep, number = entry.rpartition("=")
+        model, number = model.strip(), number.strip()
+        if not sep or not model or not number.isdigit():
+            raise ValueError(f"gemini_quota_day_limits {entry!r}: write it as model=N, e.g. gemini-3.5-flash-lite=500")
+        out[model] = int(number)
+    return out
 
 
 def _one_of(value, choices: tuple, name: str) -> str:

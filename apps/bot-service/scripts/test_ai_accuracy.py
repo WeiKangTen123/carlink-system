@@ -226,11 +226,22 @@ def new_case(owner_id: str | None, data: dict, ai: dict | None, *, status: str =
         db.close()
 
 
+# The last run's started_at (add_run).
+_LAST_RUN_AT = [datetime.min.replace(tzinfo=timezone.utc)]
+
+
 def add_run(report_id: str, model: str, kind: str = "read", status: str = "ok") -> None:
+    # Each run starts strictly after the one before: two runs added in the
+    # same clock tick (Windows' clock can move in ~16 ms steps) would tie,
+    # and reading_models breaks a tie by the random run id, so the model
+    # order the checks expect ("light" read first, then "strong") would be a
+    # coin toss.
+    started = max(datetime.now(timezone.utc), _LAST_RUN_AT[0] + timedelta(milliseconds=1))
+    _LAST_RUN_AT[0] = started
     db = SessionLocal()
     try:
         db.add(AiRun(report_id=report_id, kind=kind, channel="dashboard", status=status, model_used=model,
-                     started_at=datetime.now(timezone.utc)))
+                     started_at=started))
         db.commit()
     finally:
         db.close()

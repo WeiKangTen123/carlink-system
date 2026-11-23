@@ -59,6 +59,9 @@ type Props = {
   onChange: (update: (d: ReportData) => ReportData) => void;
   photos: IntakePhoto[];
   readPhotoIds: string[];
+  /** F1: GET /intake/{id}'s read_notice -- the main read failed and the
+   * list comes from the area reads. Shown as a banner; null: none. */
+  readNotice?: string | null;
   taxonomy: Taxonomy;
   aiSkipped: boolean;
   /** What the AI last read for the cover fields, when the API sent it
@@ -133,6 +136,7 @@ export function ReviewStep({
   onChange,
   photos,
   readPhotoIds,
+  readNotice,
   taxonomy,
   aiSkipped,
   aiRead,
@@ -488,6 +492,12 @@ export function ReviewStep({
   return (
     <div className="intake-review-layout">
       <div className="intake-col">
+        {readNotice && (
+          <div className="intake-alert danger" role="alert">
+            <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+            <span style={{ flex: "1 1 260px", minWidth: 0 }}>{readNotice}</span>
+          </div>
+        )}
         <ReadByNotice readPhotoIds={readPhotoIds} />
         <section className="card intake-panel">
           <div className="intake-panel-head">

@@ -104,8 +104,11 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.scratch:
         _use_scratch(args.scratch)
-    if os.environ.get("BENCHMARK_SCRATCH") != "1" or not os.environ.get("DATABASE_URL") or not os.environ.get("STORAGE_DIR"):
-        sys.exit(REFUSAL)
+    from benchmark_intake import scratch_problem
+
+    problem = scratch_problem()
+    if problem:
+        sys.exit(problem)
     if not args.case.is_dir():
         sys.exit(f"--case: not a folder: {args.case}")
     if _inside(args.out, REPO_DIR):

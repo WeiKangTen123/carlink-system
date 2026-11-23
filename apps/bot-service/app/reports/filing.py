@@ -45,7 +45,10 @@ PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
 # 8's seen_in, contract 9's evidence), the parts only zone reads found
 # (contract 9), the linked parts kept in shadow mode (contract 10) and the
 # car map's in its shadow mode (K4).
-AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions", "car_map_suggestions")
+AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions", "car_map_suggestions",
+                        # Wave 2 E7 (settings.intake_side_geometry): the side
+                        # resolver's changes (pipeline.resolve_sides).
+                        "side_geometry")
 
 
 def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
@@ -105,6 +108,11 @@ def photo_index_for(photo_kinds: list[dict] | None, ai_draft: dict | None, read_
         for entry, p in zip(index, photo_kinds or []):
             if (p or {}).get("id") in read_ids:
                 entry["read"] = True
+    for entry, p in zip(index, photo_kinds or []):
+        # B5: the sorter's own kind of a photo a person regrouped
+        # (IntakePhoto.ai_kind), only where there is one.
+        if isinstance(p, dict) and p.get("ai_kind"):
+            entry["ai_kind"] = p["ai_kind"]
     unsorted = {entry["label"]: entry for entry in index if entry["kind"] is None}
     for item in (ai_draft or {}).get("damage_summary") or []:
         entry = unsorted.get(item.get("photo_reference"))
