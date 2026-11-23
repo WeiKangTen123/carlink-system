@@ -8,8 +8,10 @@
    TELEGRAM_BOT_TOKEN set, every other variable at its default) is compared
    with prod-compose.render.json, the render of master's file (5ee5e03) taken
    before the staging work. Only the differences in EXPECTED_PROD_CHANGES may
-   appear, each with its reason. With PUBLIC_BASE_URL set (as a server's
-   infra/.env may set it), there must be none at all. A deliberate change to
+   appear, each with its reason, plus the release's new switch lines
+   (EXPECTED_PROD_NEW_ENV), each added at config.py's default. With
+   PUBLIC_BASE_URL set (as a server's infra/.env may set it), only those
+   added switch lines. A deliberate change to
    production's compose updates the snapshot (or this list) in the same pull
    request, so the reviewer sees exactly what production will get.
 2. THE SHARED AI FOLDER OVERRIDE (docker-compose.ai-shared.yml) on top of
@@ -46,6 +48,50 @@ EXPECTED_PROD_CHANGES = {
 }
 LIVE_URL = "https://carlink.34-16-92-98.sslip.io"
 
+# Release 1 (int/release-1): the switches of PR #38 (detection fixes F1-F7,
+# batching B2-B5/B9) and Wave 2 (E7, E9a, E11, E12) are passed through the
+# shared x-bot-service block, so api and telegram-bot each get these lines,
+# added at config.py's defaults = today's behaviour (test_enh_fixes,
+# test_enh_batching and test_enh_wave2 section 0 check each default against
+# config.py). They may appear only as ADDED, with exactly these values; a
+# server's infra/.env that sets one gets its own value, as for any variable.
+EXPECTED_PROD_NEW_ENV = {
+    "INTAKE_MAIN_READ_FALLBACK": "off",
+    "INTAKE_KEEP_CUT": "off",
+    "INTAKE_KEEP_OTHER_SIDE": "off",
+    "INTAKE_LINK_HIDDEN_NO": "keep",
+    "INTAKE_SORT_RETRY_SKIPPED": "off",
+    "INTAKE_PARALLEL_READS": "off",
+    "INTAKE_LINK_CHECK_PARALLEL": "off",
+    "INTAKE_SORT_WORKERS": "3",
+    "INTAKE_KEEP_SORT_LABEL": "off",
+    "INTAKE_SORT_RESCUE": "off",
+    "INTAKE_MAX_READ_PHOTOS": "",
+    "GEMINI_IMAGE_RESOLUTION_MAIN_READ": "",
+    "INTAKE_SIDE_GEOMETRY": "off",
+    "INTAKE_ZONE_WRONG_END": "drop",
+    "INTAKE_LINK_CHECK_MAX_CALLS": "2",
+}
+NEW_ENV_SERVICES = ("api", "telegram-bot")
+
+
+def _new_switch(difference) -> bool:
+    """One of the release's new switch lines, added at its default."""
+    path, before, after = difference
+    for svc in NEW_ENV_SERVICES:
+        prefix = f"services.{svc}.environment."
+        if path.startswith(prefix):
+            name = path[len(prefix):]
+            return (name in EXPECTED_PROD_NEW_ENV and before == "<absent>"
+                    and after == EXPECTED_PROD_NEW_ENV[name])
+    return False
+
+
+def _check_new_switches(found, label: str) -> None:
+    added = {d[0] for d in found if _new_switch(d)}
+    want = {f"services.{svc}.environment.{name}" for svc in NEW_ENV_SERVICES for name in EXPECTED_PROD_NEW_ENV}
+    check(added == want, label, f"missing {sorted(want - added)}")
+
 
 def check(cond, label: str, detail: str = "") -> bool:
     if cond:
@@ -71,9 +117,12 @@ def prod_unchanged() -> None:
     env = dict(cr.PROD_ENV_DEFAULTS)
     after = render([cr.PROD_FILE], env)
     found = cr.diff(snapshot, after)
-    unexpected = [d for d in found if d[0] not in EXPECTED_PROD_CHANGES]
-    check(not unexpected, "with the prod env defaults, nothing differs but the expected PUBLIC_BASE_URL default",
+    unexpected = [d for d in found if d[0] not in EXPECTED_PROD_CHANGES and not _new_switch(d)]
+    check(not unexpected, "with the prod env defaults, nothing differs but the expected PUBLIC_BASE_URL default"
+          " (and the release's new switch lines, added at their defaults)",
           "; ".join(f"{p}: {b!r} -> {a!r}" for p, b, a in unexpected))
+    _check_new_switches(found, f"api and telegram-bot each get the {len(EXPECTED_PROD_NEW_ENV)} new switch lines,"
+                               " at their defaults (off / keep / drop / 3 / 2 / blank)")
     for path in EXPECTED_PROD_CHANGES:
         got = dict((p, a) for p, _, a in found).get(path)
         check(got == LIVE_URL, f"{path} defaults to the live address", repr(got))
@@ -95,8 +144,10 @@ def prod_unchanged() -> None:
     before_full = cr.render([(cr.PROD_FILE, _snapshot_source())], full) if _snapshot_source() else None
     if before_full is not None:
         found = cr.diff(before_full, render([cr.PROD_FILE], full))
-        check(not found, "with a full infra/.env (PUBLIC_BASE_URL set), production renders exactly as before",
-              repr(found[:3]))
+        others = [d for d in found if not _new_switch(d)]
+        check(not others, "with a full infra/.env (PUBLIC_BASE_URL set), production renders exactly as before"
+              " (but the release's new switch lines at their defaults)", repr(others[:3]))
+        _check_new_switches(found, "with a full infra/.env: the same new switch lines, nothing else")
     else:
         print("    skip the full-.env comparison: no git history here (the snapshot check above still ran)")
 
