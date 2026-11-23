@@ -681,6 +681,8 @@ def draft_report(
     actor: AiActor,
     photo_hints: list[dict | None] | None = None,
     photo_crops: list[str | None] | None = None,
+    deadline: float | None = None,
+    max_tries: int | None = None,
 ) -> SecurityIncidentDraft:
     """photo_labels overrides the default P01, P02... numbering, for callers
     sending a subset of a larger case (dashboard intake). timeout is per
@@ -688,10 +690,17 @@ def draft_report(
     call, where the bot's few photos fit comfortably in 45s. actor: who
     pays (structured.call_structured). photo_hints: what the sorter saw in
     each photo (dashboard intake; photo_hint). photo_crops: a close-up to
-    send after each photo, or None (_build_input)."""
+    send after each photo, or None (_build_input). deadline (a
+    time.monotonic() time) and max_tries: call_structured's, passed only
+    when given -- F1's second try (intake/pipeline), which must end inside
+    the zone stage's time box and make no "all busy" round."""
     # Contract 8 D1: passed only when set, so call_structured is called
     # exactly as before otherwise.
     extra = {"tools_note": ZOOM_NOTE} if settings.gemini_read_zoom_hint else {}
+    if deadline is not None:
+        extra["deadline"] = deadline
+    if max_tries is not None:
+        extra["max_tries"] = max_tries
     # The light-model switches (read once: a setting changed mid-call must
     # not mix two prompts); at their defaults SYSTEM_PROMPT, no tail, no tag.
     packs, version = read_packs(), read_prompt_version()

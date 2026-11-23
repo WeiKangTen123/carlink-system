@@ -34,6 +34,7 @@ Contract 9, evidence: each finding -- list item or suggestion -- keeps
 which photos show it, where, and in the AI's words (ai/evidence.py),
 settled against the case's photos once the reads are in (_read_into).
 """
+import copy
 import logging
 import re
 import threading
@@ -45,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.ai import allowance, check, evidence, link_check, runs, second_look
+from app.ai.extraction import _model_chain as main_read_chain
 from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
@@ -56,6 +58,7 @@ from app.parts.prefill import item_key
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.reports.review import TEMPLATE_DEFAULTS, keep_checked, same_value, value_at
+from app.reports.schema import SecurityIncidentDraft
 from app.reports.taxonomy import UNDETERMINED_SUFFIX, body_type_for, sided_part, split_side, unsided_part
 
 logger = logging.getLogger(__name__)
@@ -378,6 +381,9 @@ def _sort(report_id: str, actor: AiActor) -> None:
     done = 0
     sent = 0
     done_lock = threading.Lock()
+    # F7 (settings.intake_sort_retry_skipped "on"): the photos a batch's
+    # answer left out, for one more batch at the end. None while off.
+    skipped: list[tuple[str, str, str]] | None = [] if sort_retry_on() else None
 
     def sort_batch(batch: list[tuple[str, str, str]], actor: AiActor, attempts: runs.Attempts) -> None:
         nonlocal done, sent
@@ -393,11 +399,14 @@ def _sort(report_id: str, actor: AiActor) -> None:
             result = triage_photos([(label, path) for label, _, path in batch], actor=actor)
         db = SessionLocal()
         try:
-            for label, photo_id, _ in batch:
+            for label, photo_id, path in batch:
                 found = result.get(label)
                 photo = db.get(IntakePhoto, photo_id)
                 # Deleted mid-run, or regrouped by the surveyor meanwhile.
                 if not found or photo is None or photo.kind_source == "surveyor":
+                    if skipped is not None and not found and photo is not None and photo.kind_source != "surveyor":
+                        with done_lock:
+                            skipped.append((label, photo_id, path))
                     continue
                 photo.kind = found["kind"]
                 photo.area = found["area"]
@@ -429,7 +438,7 @@ def _sort(report_id: str, actor: AiActor) -> None:
         # The actor (and the run's collector) go to each worker as
         # arguments: a pool thread sees nothing of the thread that
         # submitted to it.
-        with ThreadPoolExecutor(max_workers=SORT_WORKERS, thread_name_prefix=f"sort-{report_id}") as pool:
+        with ThreadPoolExecutor(max_workers=sort_workers(), thread_name_prefix=f"sort-{report_id}") as pool:
             futures = [pool.submit(sort_batch, batch, actor, run.attempts) for batch in batches]
         run.photos_sent = {"count": sent}
         # A failed batch fails the run, but every batch that finished stays
@@ -439,6 +448,138 @@ def _sort(report_id: str, actor: AiActor) -> None:
         failures = [future.exception() for future in futures if future.exception()]
         if failures:
             raise next((e for e in failures if isinstance(e, AiUnavailable)), failures[0])
+        if skipped:
+            # F7: one more small batch, in camera order, at most BATCH_SIZE
+            # photos -- one call. It never fails the run: a photo it can't
+            # sort stays unsorted, as it would have.
+            order = {photo_id: i for i, (_, photo_id, _) in enumerate(todo)}
+            again = sorted(skipped, key=lambda item: order.get(item[1], 0))[:BATCH_SIZE]
+            logger.info("Sorting %s: %d skipped photo(s) sent again", report_id, len(again))
+            try:
+                sort_batch(again, actor, run.attempts)
+            except Exception as exc:
+                logger.warning("Sorting %s: the skipped photos stay unsorted (%s)", report_id, type(exc).__name__)
+            run.photos_sent = {"count": sent}
+        if sort_rescue_on():
+            # B9: one more short call for the photos no read would see.
+            rescue = _rescue_sort(report_id, actor, todo)
+            if rescue is not None:
+                run.photos_sent = {"count": sent + rescue["asked"], "rescue": rescue}
+
+
+def sort_retry_on() -> bool:
+    """F7: settings.intake_sort_retry_skipped is "on"."""
+    return getattr(settings, "intake_sort_retry_skipped", "off") == "on"
+
+
+def sort_rescue_on() -> bool:
+    """B9: settings.intake_sort_rescue is "on"."""
+    return getattr(settings, "intake_sort_rescue", "off") == "on"
+
+
+# B9: the sorter's kinds whose photos no zone read sees and the main read
+# only takes when slots are left (zones.NO_ZONE_KINDS) -- the paperwork the
+# main read needs (log card, VIN plate, police report, odometer) is not
+# among them.
+RESCUE_KINDS = frozenset({"interior", "document", "third_party", "scene"})
+
+
+# B9: the rescue sort's mark at the start of a photo's note; api/intake's
+# regroup (B5) reads it, so a rescued photo's regroup counts against the
+# rescue sort, not the sorter.
+RESCUE_NOTE_PREFIX = "Rescue sort:"
+
+
+def rescue_rank(photo) -> int:
+    """B9's order before the cut at BATCH_SIZE (the review's L5): the photos
+    likeliest to hide damage first -- unsorted (a batch skipped it),
+    unusable, "other" with no damage seen -- then interior, document, third
+    party and scene."""
+    if photo.kind is None:
+        return 0
+    if photo.quality == "unusable":
+        return 1
+    if photo.kind == "other":
+        return 2
+    return 3
+
+
+def rescue_candidate(photo) -> bool:
+    """B9: a photo the sort left where no read would look for damage --
+    unsorted (a batch skipped it), unusable, one of RESCUE_KINDS, or "other"
+    with no damage seen. Never an excluded photo or one a person regrouped."""
+    if photo.excluded or photo.kind_source == "surveyor":
+        return False
+    if photo.kind is None or photo.quality == "unusable" or photo.kind in RESCUE_KINDS:
+        return True
+    return photo.kind == "other" and not photo.shows_damage
+
+
+def _rescue_sort(report_id: str, actor: AiActor, todo: list[tuple[str, str, str]]) -> dict | None:
+    """B9, on the sort run's thread (its tries go to that run): the photos
+    sorted in this run that rescue_candidate picks, in camera order, at most
+    BATCH_SIZE, in one triage.rescue_photos call; each it says shows damage
+    on the insured car becomes a damage photo of the area it names (an
+    unusable one "blurry", the first kind in its note). Never fails the
+    sort: None when there was nothing to ask, else {"asked", "rescued"} (and
+    "failed" when the call failed)."""
+    from app.ai.triage import rescue_photos
+
+    db = SessionLocal()
+    try:
+        ranked = []
+        for n, (label, photo_id, path) in enumerate(todo):
+            photo = db.get(IntakePhoto, photo_id)
+            if photo is not None and Path(path).exists() and rescue_candidate(photo):
+                ranked.append((rescue_rank(photo), n, (label, photo_id, path)))
+        # The likeliest first (rescue_rank), at most BATCH_SIZE, then sent
+        # in camera order.
+        chosen = sorted(sorted(ranked)[:BATCH_SIZE], key=lambda r: r[1])
+        asked = [entry for _, _, entry in chosen]
+    finally:
+        db.close()
+    if not asked:
+        return None
+    logger.info("Sorting %s: %d photo(s) no read would see sent to the rescue sort", report_id, len(asked))
+    try:
+        answers = rescue_photos([(label, path) for label, _, path in asked], actor=actor)
+    except Exception as exc:
+        logger.warning("Sorting %s: the rescue sort failed (%s); the photos stay as sorted", report_id,
+                       type(exc).__name__)
+        return {"asked": len(asked), "rescued": 0, "failed": True}
+    rescued = 0
+    db = SessionLocal()
+    try:
+        for label, photo_id, _ in asked:
+            answer = answers.get(label)
+            photo = db.get(IntakePhoto, photo_id)
+            if not answer or not answer["damage"] or photo is None or not rescue_candidate(photo):
+                continue
+            was = (photo.kind or "unsorted") + (", unusable" if photo.quality == "unusable" else "")
+            if photo.kind == "third_party":
+                photo.part = None  # the other vehicle's part, not ours
+            photo.kind = "damage"
+            photo.shows_damage = True
+            photo.area = answer["area"] or (photo.area if photo.area != "interior" else None)
+            photo.quality = "blurry" if photo.quality == "unusable" else (photo.quality or "good")
+            photo.note = f"{RESCUE_NOTE_PREFIX} damage on the insured car (first sorted: {was})"
+            rescued += 1
+        db.commit()
+    finally:
+        db.close()
+    logger.info("Sorting %s: the rescue sort put %d of %d photo(s) back", report_id, rescued, len(asked))
+    return {"asked": len(asked), "rescued": rescued}
+
+
+def sort_workers() -> int:
+    """B4: sorting batches in flight at once -- settings.intake_sort_workers
+    (1 to config.MAX_SORT_WORKERS), else SORT_WORKERS. Each batch's request
+    still waits for the rate limiter (rate_limit.acquire), so five starts
+    arrive spaced and under the per-minute limit."""
+    from app.config import MAX_SORT_WORKERS
+
+    value = getattr(settings, "intake_sort_workers", SORT_WORKERS)
+    return value if isinstance(value, int) and 1 <= value <= MAX_SORT_WORKERS else SORT_WORKERS
 
 
 def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
@@ -642,6 +783,7 @@ def _read(report_id: str, actor: AiActor, kind: str = "read") -> None:
 
 
 def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
+    read_started = time.monotonic()
     _set_stage(report_id, "reading", 0, 1)
     # Contract 8 D2: read once, so a reading is all one mode.
     zone_mode = zones.zones_on()
@@ -652,6 +794,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if session is None:
             run.aborted = "draft_gone"
             return  # draft deleted mid-run
+        # F1: the last reading's own facts, for a list from the zone reads
+        # alone (fallback_draft). Read only.
+        previous_ai = session.ai_draft if isinstance(session.ai_draft, dict) else {}
         photos = ordered_photos(db, report_id)
         labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
         selected = [p for p in select_for_reading(photos) if Path(p.path).exists()]
@@ -693,16 +838,104 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
         closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
-    draft = draft_report(
-        notes,
-        [path for _, _, path in inputs],
-        photo_labels=[label for label, _, _ in inputs],
-        photo_hints=hints,
-        timeout=120.0,
-        actor=actor,
-        **extra,
-    )
-    data = draft.model_dump()
+
+    def read_once(**limits):
+        return draft_report(
+            notes,
+            [path for _, _, path in inputs],
+            photo_labels=[label for label, _, _ in inputs],
+            photo_hints=hints,
+            timeout=120.0,
+            actor=actor,
+            **extra,
+            **limits,
+        )
+
+    # The zone reads made before the merge below rather than in it
+    # (early_reads): B2 (settings.intake_parallel_reads "on") starts them
+    # beside the overall reading -- they need only the sort -- and F1
+    # (settings.intake_main_read_fallback "zones") makes them when the
+    # overall reading failed. Both off: none, and the zone reads run after
+    # the overall reading, as before.
+    early_reads: list[tuple[str, list[dict]]] | None = None
+    early_intact: dict[str, list[str]] = {}
+    early_walk: dict | None = None
+    zone_started: float | None = None
+    # B2 only with F1 "zones" (the review's M4): a failed main read then
+    # uses the zone answers already paid for, instead of throwing them away.
+    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact) if (
+        zone_mode and zone_jobs and parallel_reads_on() and main_read_fallback_on()) else None
+    if parallel is not None:
+        early_walk, zone_started = parallel.walk, parallel.started
+    tries_before = len(run.attempts.snapshot())
+    first_error: Exception | None = None
+    try:
+        draft = read_once()
+    except Exception as exc:
+        if not (main_read_fallback_on() and fallback_worthy(exc, run.attempts.snapshot()[tries_before:])):
+            if parallel is not None:
+                # Never left running past the run's end: the failure is shown
+                # at once, no new zone call starts and the ones in flight
+                # stop at their model (zones' cancel), and they are waited
+                # for -- the run stays reserved until then, so Retry can't
+                # overlap them.
+                parallel.progress.close()
+                _set_stage(report_id, "failed", error=_friendly_error(exc),
+                           error_code=exc.code if isinstance(exc, AiUnavailable) else None,
+                           error_by=actor.user_id)
+                parallel.cancel()
+            raise
+        first_error, draft = exc, None
+    else:
+        if parallel is not None:
+            parallel.progress.main_done()
+    if first_error is not None:
+        logger.warning("Reading %s: the overall read failed (%s); %s, then once more", report_id,
+                       type(first_error).__name__,
+                       "the zone reads first" if zone_mode and zone_jobs else "no zone reads")
+        if parallel is not None:
+            early_reads = parallel.result()
+        elif zone_mode and zone_jobs:
+            early_walk = {} if zones.walk_index() is not None else None
+            zone_started = time.monotonic()
+            early_reads = zones.zone_reads(
+                report_id, actor, zone_jobs,
+                progress=lambda done: _set_stage(report_id, "reading", done, 1 + len(zone_jobs)),
+                intact=early_intact, walk=early_walk,
+            )
+        found_some = any(found for _, found in early_reads or [])
+        # The lead's rule (22 Nov): the second try only while the run is
+        # inside the zone stage's time box (zones.TIME_BOX from when the
+        # zone reads started; with none, from when the reading began), and
+        # (the review's M3) it must end inside it: that box as its
+        # deadline, at most one request per model of the chain, no "all
+        # busy" round.
+        box_end = (zone_started or read_started) + zones.TIME_BOX
+        if time.monotonic() >= box_end:
+            if not found_some:
+                raise first_error
+            logger.warning("Reading %s: past the zone stage's time box, no second try; the list is the zone "
+                           "reads' finds", report_id)
+        else:
+            try:
+                draft = read_once(deadline=box_end, max_tries=max(1, len(main_read_chain())))
+            except Exception as again:
+                if not found_some:
+                    raise
+                logger.warning("Reading %s: the overall read failed again (%s); the list is the zone reads' finds",
+                               report_id, type(again).__name__)
+                draft = None
+            else:
+                if parallel is not None:
+                    parallel.progress.main_done()
+    if parallel is not None and early_reads is None:
+        # The overall reading answered: the zone reads, as they finish.
+        early_reads = parallel.result()
+
+    if draft is None:
+        data = fallback_draft(previous_ai)
+    else:
+        data = draft.model_dump()
 
     # Photo references are stored as "@<photo id>" until finalize, because
     # P-numbers shift whenever a photo is deleted or added before then.
@@ -731,17 +964,26 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     zone_draft: dict = {}
     if zone_mode:
         total = 1 + len(zone_jobs)
-        if zone_jobs:
-            _set_stage(report_id, "reading", 1, total)
-        intact: dict[str, list[str]] = {}
-        # The assembly walk (settings.intake_assembly_walk): only while on
-        # with a map that has signs; off, read_and_merge is called as before.
-        walked: dict | None = {} if zones.walk_index() is not None else None
-        data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
-            report_id, actor, data.get("damage_summary") or [], zone_jobs,
-            progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
-            intact=intact, **({"walk": walked} if walked is not None else {}),
-        )
+        if early_reads is not None:
+            # F1: the zone reads ran before the overall reading's second try.
+            intact, walked = early_intact, early_walk
+            data["damage_summary"], disputed, zone_reads = zones.merged_with(
+                report_id, data.get("damage_summary") or [], early_reads)
+            if draft is None:
+                # The overall reading never answered.
+                zone_reads = [read for read in zone_reads if read != zones.OVERALL]
+        else:
+            if zone_jobs:
+                _set_stage(report_id, "reading", 1, total)
+            intact: dict[str, list[str]] = {}
+            # The assembly walk (settings.intake_assembly_walk): only while on
+            # with a map that has signs; off, read_and_merge is called as before.
+            walked: dict | None = {} if zones.walk_index() is not None else None
+            data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
+                report_id, actor, data.get("damage_summary") or [], zone_jobs,
+                progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
+                intact=intact, **({"walk": walked} if walked is not None else {}),
+            )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
         zone_draft["zone_reads"] = zone_reads
@@ -752,7 +994,13 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # K3b: the zone reads' yes/no signs about their damaged anchor
             # panels, for the linked parts (assembly_walk.from_settings).
             zone_draft["assembly_walk"] = walked
-        if zones.suggest_zone_only():
+        if draft is None:
+            # F1: no overall reading, so no option B: the zone reads' finds
+            # go on the list (below, with the last reading's own list), each
+            # a "Check" row, with the notice GET /intake/{id} shows
+            # (read_notice).
+            zone_draft["main_read"] = fallback_notice(previous_ai)
+        elif zones.suggest_zone_only():
             # Option B: the list is what the overall reading found; the rest
             # are suggestions. resolve_sides and the agreement rule below
             # then see the list only.
@@ -764,6 +1012,16 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         evidence.finish(data.get("damage_summary") or [], zone_draft.get("zone_suggestions") or [], facts)
     except Exception:
         logger.exception("Reading %s: couldn't settle the evidence; the reading stands", report_id)
+    # F1 on a re-read (the review's H1): the last reading's own list stays,
+    # as it was, and the zone reads' finds it hasn't got are added, each a
+    # "Check" row. A person's ticked rows stay too (merge_redraft).
+    previous_rows: list[dict] = []
+    if draft is None:
+        previous_rows = previous_list(previous_ai)
+        data["damage_summary"] = with_zone_finds(previous_rows, data.get("damage_summary") or [])
+        # The main read read nothing (the review's L1): the run log's
+        # reading sent no photo, and read_photo_ids stays as it was.
+        run.photos_sent = []
     run.parts_found = len(data.get("damage_summary") or [])
 
     vehicle = data.get("vehicle_info")
@@ -785,10 +1043,21 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             checked = {it.get("part") for it in (current.get("damage_summary") or []) if it.get("human_verified")}
             # A side the reads disputed (zones.merge_reads) isn't placed from
             # the sorter's areas either: they are where wrong sides came from.
+            # F3 (settings.intake_keep_other_side "on"): a placed find whose
+            # name is listed already, on another photo, comes back in
+            # other_side for a suggestion; off, resolve_sides is called as
+            # before.
+            other_side: list[dict] | None = [] if keep_other_side_on() else None
+            # F1: the last reading's own rows were placed by their reading.
+            kept_as_they_were = {str(it.get("part")) for it in previous_rows}
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
-                                                   keep_undetermined=checked | disputed)
+                                                   keep_undetermined=checked | disputed | kept_as_they_were,
+                                                   **({"other_side": other_side} if other_side is not None else {}))
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
+            if other_side:
+                zone_draft.setdefault("zone_suggestions", []).extend(
+                    zones.other_side_suggestion(item) for item in other_side)
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
         if zone_draft.get("zone_suggestions"):
@@ -804,13 +1073,223 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         # transaction), not as it was when the run started.
         report.data = merge_redraft(current, session.ai_draft, data)
         session.ai_draft = {**data, **zone_draft} if zone_draft else data
-        session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
+        if draft is not None:
+            session.read_photo_ids = [photo_id for _, photo_id, _ in inputs]
         db.commit()
     finally:
         db.close()
     # The reading is saved: the case's first parts-catalogue look-up, if it
     # qualifies (catalogue.maybe_auto_lookup never raises; off by default).
     catalogue.maybe_auto_lookup(report_id)
+
+
+# ---------------------------------------------------- F1: main read fallback
+#
+# plans/2026-11-22-enhance-staging F1 (owner decision 9). One failed main
+# read -- both light models busy -- used to stop the run before the zone
+# reads, which don't need it. settings.intake_main_read_fallback "zones":
+# the zone reads run, the main read is tried once more, and if it fails
+# again the zone reads' finds are the list, every row "Check" (Low), with
+# IntakeSession.ai_draft["main_read"] = MAIN_READ_FALLBACK (GET
+# /intake/{id}'s read_notice is its note). Nothing found by the zone reads:
+# the run fails as before.
+
+MAIN_READ_FAILED_NOTE = ("The overall read failed because Google was busy. This list comes from the area reads "
+                         "only. Press Re-read when ready.")
+# A re-read's (the review's H1): the last reading's list is kept.
+MAIN_READ_FAILED_REREAD_NOTE = ("The overall read failed because Google was busy. The list keeps the last read's "
+                                "parts and adds what the area reads found, marked Check. Press Re-read when ready.")
+MAIN_READ_FALLBACK = {"status": "failed", "fallback": "zones", "note": MAIN_READ_FAILED_NOTE}
+
+
+def fallback_notice(previous_ai: dict | None) -> dict:
+    """ai_draft["main_read"] of an F1 list: MAIN_READ_FALLBACK, its note the
+    re-read's when the last reading left a list."""
+    out = dict(MAIN_READ_FALLBACK)
+    if previous_list(previous_ai):
+        out["note"] = MAIN_READ_FAILED_REREAD_NOTE
+    return out
+
+
+def previous_list(previous_ai: dict | None) -> list[dict]:
+    """The last reading's own damage list (copies), [] on a first read."""
+    rows = previous_ai.get("damage_summary") if isinstance(previous_ai, dict) else None
+    return [copy.deepcopy(it) for it in rows or [] if isinstance(it, dict) and it.get("part")]
+
+
+def _same_part(item: dict, rows: list[dict]) -> bool:
+    """Whether `rows` has item's part already: a named "Other / Not Listed"
+    by its name (item_key), any other part by its names (a sided name and
+    its "(side undetermined)" twin are one part: second_look.is_listed)."""
+    from app.ai.second_look import is_listed
+    from app.reports.taxonomy import OTHER_PART
+
+    if item_key(item) in {item_key(row) for row in rows}:
+        return True
+    part = str(item.get("part") or "")
+    return part != OTHER_PART and is_listed(part, {str(row.get("part") or "") for row in rows})
+
+
+def with_zone_finds(previous_rows: list[dict], zone_rows: list[dict]) -> list[dict]:
+    """F1's list: the last reading's own rows as they were, then each zone
+    find whose part isn't among them, as a "Check" row (Low)."""
+    out = list(previous_rows)
+    for row in zone_rows:
+        if not _same_part(row, out):
+            out.append({**row, "ai_confidence": "Low"})
+    return out
+
+
+def main_read_fallback_on() -> bool:
+    return getattr(settings, "intake_main_read_fallback", "off") == "zones"
+
+
+def fallback_worthy(exc: BaseException, tries: list[dict] | None = None) -> bool:
+    """A main read failure the fallback is for (the lead, 22 Nov): Google
+    busy (503) or out of time -- what a few minutes, or the zone reads' own
+    smaller calls, may get past. Our TimeoutError (a deadline), or
+    call_structured's "All Gemini fallback models ... failed" when every
+    try it sent (`tries`: that call's attempts; a model skipped for its
+    spent day is not a try) was busy or a timeout. Never for the person's
+    AI being unavailable (AiUnavailable: a refused, invalid or unticked
+    key), a spent daily allowance (DayUsedUp, a per-day 429), a request
+    Google refused (400, 403) or a bad answer -- the zone reads would fail
+    the same way -- nor for a photo removed mid-run or nothing to read."""
+    if isinstance(exc, AiUnavailable) or allowance.day_spent_error(exc):
+        return False
+    if isinstance(exc, TimeoutError):
+        return True
+    if not (isinstance(exc, RuntimeError) and "fallback models" in str(exc)):
+        return False
+    sent = [a for a in tries or [] if isinstance(a, dict) and a.get("outcome") != "day_spent"]
+    return bool(sent) and all(a.get("busy") or a.get("outcome") == "timeout" for a in sent)
+
+
+# ------------------------------------------------- B2: the reads at once
+#
+# plans/2026-11-22-enhance-staging R-batching B2 (settings.
+# intake_parallel_reads "on"): the zone reads need only the sort, so they
+# start beside the overall reading instead of after it -- the same calls,
+# through the same rate limiter and busy handling (call_structured), the
+# zone stage's own run of the log and its time box. Thread safety: the
+# zone reads run on a thread of their own (and its pool) with their own
+# database sessions -- the run log's rows (runs.recorded) and the progress
+# (_set_stage, each its own session) -- and touch no session or row object
+# of the reading's; their answers are read only once that thread is done
+# (result), before the reading saves. The progress of both goes through
+# one lock (ReadProgress), so it only ever counts up. A reading that fails
+# (and doesn't fall back) cancels them: no new zone call starts, and the
+# ones in flight are waited for, so nothing writes "reading" over the
+# failure and Retry can't overlap them.
+
+
+def parallel_reads_on() -> bool:
+    """B2: settings.intake_parallel_reads is "on"."""
+    return getattr(settings, "intake_parallel_reads", "off") == "on"
+
+
+class ReadProgress:
+    """The reading's progress with the zone reads running beside it: 1 for
+    the overall reading plus 1 per zone call, written under one lock so two
+    threads' counts never step back."""
+
+    def __init__(self, report_id: str, zone_calls: int):
+        self.report_id = report_id
+        self.total = 1 + zone_calls
+        self._lock = threading.Lock()
+        self._main = 0
+        self._zones = 0
+        self.closed = False
+
+    def _write(self) -> None:
+        if self.closed:
+            return
+        try:
+            _set_stage(self.report_id, "reading", min(self.total, self._main + self._zones), self.total)
+        except Exception:
+            # Only the bar (the review's L2): a busy database here must never
+            # count as the main read failing.
+            logger.warning("Reading %s: couldn't show progress", self.report_id, exc_info=True)
+
+    def main_done(self) -> None:
+        with self._lock:
+            self._main = 1
+            self._write()
+
+    def zone_done(self, done: int) -> None:
+        with self._lock:
+            self._zones = max(self._zones, done)
+            self._write()
+
+    def close(self) -> None:
+        with self._lock:
+            self.closed = True
+
+
+class ParallelZones:
+    """The zone reads of one reading, started at once on a thread of their
+    own (B2). result() waits for them: zones.zone_reads' answer, `intact`
+    and `walk` filled. cancel() stops new zone calls and waits for those in
+    flight."""
+
+    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict):
+        self.report_id = report_id
+        self.walk: dict | None = {} if zones.walk_index() is not None else None
+        self.progress = ReadProgress(report_id, len(jobs))
+        self._stop = threading.Event()
+        self.started = time.monotonic()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"zones-{report_id}")
+        self._future = self._pool.submit(zones.zone_reads, report_id, actor, jobs, self.progress.zone_done, intact,
+                                         self.walk, cancel=self._stop)
+        self._pool.shutdown(wait=False)
+
+    @classmethod
+    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict) -> "ParallelZones":
+        logger.info("Reading %s: %d zone read(s) started beside the overall reading", report_id, len(jobs))
+        return cls(report_id, actor, jobs, intact)
+
+    def result(self) -> list[tuple[str, list[dict]]]:
+        try:
+            return self._future.result()
+        except Exception:  # zone_reads never raises; in case it ever does
+            logger.exception("Reading %s: the zone reads beside it failed", self.report_id)
+            return []
+
+    def cancel(self) -> None:
+        """No new zone call, the ones in flight stopped at their model
+        (zones' cancel), their progress closed first -- nothing writes
+        "reading" again -- then waited for."""
+        self.progress.close()
+        self._stop.set()
+        self.result()
+
+
+def fallback_draft(previous: dict | None) -> dict:
+    """The AI draft of a reading whose main read failed twice: an empty
+    draft (SecurityIncidentDraft's fields), the description, facts and
+    people taken from the last reading's AI draft when there was one -- so
+    merge_redraft keeps the form as it is -- and no damage list: the zone
+    reads' finds go there."""
+    base = SecurityIncidentDraft(description="").model_dump()
+    previous = previous if isinstance(previous, dict) else {}
+    for key in base:
+        if key in previous and key not in ("damage_summary", "damaged_parts"):
+            base[key] = copy.deepcopy(previous[key])
+    base["damage_summary"], base["damaged_parts"] = [], []
+    return base
+
+
+def read_notice(ai_draft) -> str | None:
+    """GET /intake/{id}'s read_notice: the note of an F1 list, else None."""
+    look = ai_draft.get("main_read") if isinstance(ai_draft, dict) else None
+    if not isinstance(look, dict) or look.get("status") != "failed":
+        return None
+    return str(look.get("note") or MAIN_READ_FAILED_NOTE)
+
+
+def keep_other_side_on() -> bool:
+    """F3: settings.intake_keep_other_side is "on"."""
+    return getattr(settings, "intake_keep_other_side", "off") == "on"
 
 
 # ---------------------------------------------------------- side resolver
@@ -893,8 +1372,14 @@ def side_from_sorter(items: list[dict], sorter_parts: dict[str, str]) -> list[di
     return items
 
 
+def _photos_of(item: dict) -> set[str]:
+    """The photos an item was seen in: its photo_reference and seen_in."""
+    refs = [item.get("photo_reference")] + list(item.get("seen_in") or [])
+    return {r for r in refs if isinstance(r, str) and r}
+
+
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
-                  keep_undetermined=frozenset()) -> list[dict]:
+                  keep_undetermined=frozenset(), other_side: list[dict] | None = None) -> list[dict]:
     """The damage items with each "(side undetermined)" part placed on a
     side where the clues agree. photo_areas: every photo of the case in
     camera order as (photo id, area) -- voting_areas; items reference photos
@@ -915,7 +1400,15 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
     placed, a wheel needs its photo to say front or rear). The placed item
     becomes the sided name with ai_confidence Low and side_inferred True;
     when that name is already listed, it is dropped instead (the reader
-    found it already)."""
+    found it already).
+
+    other_side (F3, settings.intake_keep_other_side): when a list is given,
+    a dropped item none of whose photos the listed one was seen in (its
+    photo_reference and seen_in, against the listed item's) is added to it
+    instead, as it was with other_side_of = the listed name -- two lamps
+    on two photos may be both lamps (pipeline makes it an "Other side?"
+    suggestion). On a photo the listed one was seen in it is the same find,
+    dropped as before."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
 
@@ -944,6 +1437,11 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
         return out
 
     names = {item.get("part") for item in items}
+    # F3: where each name on the list was seen (only with other_side).
+    seen_at: dict[str, set[str]] = {}
+    if other_side is not None:
+        for item in items:
+            seen_at.setdefault(item.get("part"), set()).update(_photos_of(item))
     out: list[dict] = []
     for item in items:
         part = item.get("part") or ""
@@ -972,6 +1470,10 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
         elif name not in names:
             names.add(name)
             out.append({**item, "part": name, "ai_confidence": "Low", "side_inferred": True})
+            if other_side is not None:
+                seen_at.setdefault(name, set()).update(_photos_of(item))
+        elif other_side is not None and not _photos_of(item) & seen_at.get(name, set()):
+            other_side.append({**item, "other_side_of": name})
     return out
 
 

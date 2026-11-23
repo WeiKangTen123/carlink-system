@@ -994,8 +994,12 @@ export type SecondLookItem = {
   confidence: string | null;
   /** "kit": past cases of the same make had it with a part found here;
    * "nearby": next to a part found here; "zone": only a zone read found it;
-   * "link": tied to a listed part (contract 10, the fields at the end). */
-  source: "kit" | "nearby" | "zone" | "link" | null;
+   * "link": tied to a listed part (contract 10, the fields at the end);
+   * "other_side": a find the side resolver placed on a side already listed,
+   * from another photo -- it may be the other side's (F3, other_side_of). */
+  source: "kit" | "nearby" | "zone" | "link" | "other_side" | null;
+  /** F3: the listed part an "Other side?" suggestion was placed on. */
+  other_side_of?: string | null;
   /** Damage-list names that mean the part is listed already. */
   covers: string[];
   reason: string | null;
@@ -1875,7 +1879,7 @@ export type AiAccuracySuggestionCounts = { shown: number; added: number; dismiss
 export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   /** Added after opening the evidence viewer on it. */
   looked_first: number;
-  by_source: Partial<Record<"zone" | "kit" | "nearby" | "link", AiAccuracySuggestionCounts>>;
+  by_source: Partial<Record<"zone" | "kit" | "nearby" | "link" | "other_side", AiAccuracySuggestionCounts>>;
   /** By read: "zone:front", "zone:rear"... */
   by_read: Record<string, AiAccuracySuggestionCounts>;
   by_check: Partial<Record<"yes" | "no" | "unsure" | "none", AiAccuracySuggestionCounts>>;

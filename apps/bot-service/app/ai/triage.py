@@ -354,3 +354,91 @@ def triage_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str,
             actor=actor,
             timeout=sort_timeout(),
         )
+
+
+# ------------------------------------------------------------ B9: the rescue sort
+#
+# plans/2026-11-22-enhance-staging R-batching B9 (settings.intake_sort_rescue
+# "on"): the photos the sort set aside so that no read would see them --
+# unusable, interior, document, third_party or scene, "other" with no
+# damage, or left unsorted by a batch (intake/pipeline.rescue_candidates)
+# -- get ONE more short call, at thinking "low" (structured.FIXED_THINKING),
+# asking only: does it show damage on the insured car, and which area? A
+# "yes" puts the photo back as a damage photo of that area, so the zone
+# reads and the main read see it. Never another question about the photo.
+
+RESCUE_PURPOSE = "photo rescue"
+RESCUE_KEY = "looked_again"
+RESCUE_AREAS = [a for a in AREAS if a != "interior"] + ["unclear"]
+RESCUE_PROMPT = (
+    "You look again at evidence photos for a Singapore motor insurance loss adjuster. A first sort set these photos "
+    "aside: it thought them unusable, or the cabin, paperwork, the scene, the other party's vehicle, or showing no "
+    "damage. Each photo is labelled (for example P07). For each one, answer two things only.\n"
+    "- insured_damage: yes when damage on the INSURED vehicle (the car the claim is for, not another vehicle) can "
+    "actually be seen in the photo -- a dent, crack, scrape, broken or displaced part, also with the boot, bonnet "
+    "or a door open; no when it can't, or when you are not sure.\n"
+    "- area: which part of the insured vehicle the photo shows -- front, rear, left, right, a corner (front-left, "
+    "front-right, rear-left, rear-right), roof or underbody, with sides as below; unclear when it can't be told.\n"
+    + _SIDES
+)
+
+
+def rescue_schema(labels: list[str]) -> dict:
+    """The rescue sort's answer: one entry per photo, its label from the
+    ones sent."""
+    return {
+        "type": "object",
+        "properties": {
+            RESCUE_KEY: {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "enum": list(labels)},
+                        "insured_damage": {"type": "string", "enum": ["yes", "no"]},
+                        "area": {"type": "string", "enum": RESCUE_AREAS},
+                    },
+                    "required": ["label", "insured_damage", "area"],
+                },
+            },
+        },
+        "required": [RESCUE_KEY],
+    }
+
+
+def parse_rescue(raw: str, labels: list[str]) -> dict[str, dict]:
+    """{label: {"damage": bool, "area": str | None}} for the labels sent;
+    anything else in the answer left out. A label missing is not rescued."""
+    data = json.loads(raw)
+    out: dict[str, dict] = {}
+    for item in (data.get(RESCUE_KEY) if isinstance(data, dict) else None) or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip().upper()
+        if label not in labels or label in out:
+            continue
+        area = item.get("area")
+        out[label] = {"damage": item.get("insured_damage") == "yes",
+                      "area": area if area in AREAS and area != "interior" else None}
+    return out
+
+
+def rescue_photos(photos: list[tuple[str, str]], *, actor: AiActor) -> dict[str, dict]:
+    """The rescue sort of (label, image path) pairs for actor (who pays):
+    {label: {"damage", "area"}}. One call on the sort's chain, thinking
+    "low"; raises as call_structured does."""
+    labels = [label for label, _ in photos]
+    parts: list[dict] = [{"type": "text", "text": f"{len(photos)} photos follow."}]
+    for label, path in photos:
+        parts.append({"type": "text", "text": f"Photo {label}:"})
+        parts.append(image_part(path))
+    return call_structured(
+        purpose=RESCUE_PURPOSE,
+        system_instruction=RESCUE_PROMPT,
+        input_parts=parts,
+        schema=rescue_schema(labels),
+        parse=lambda raw: parse_rescue(raw, labels),
+        models=_triage_chain(),
+        actor=actor,
+        timeout=SORT_TIMEOUT,
+    )

@@ -45,7 +45,7 @@ from app.auth.deps import require_admin
 from app.config import settings
 from app.parts.history import family_and_side, normalise_item
 from app.parts.learn import learned_cases
-from app.reports.accuracy import ANNEX_COUNTS, DAMAGE_COUNTS, FIELD_COUNTS, sum_suggestions
+from app.reports.accuracy import ANNEX_COUNTS, DAMAGE_COUNTS, FIELD_COUNTS, sum_regroups, sum_suggestions
 from app.reports.db import SessionLocal
 from app.reports.models import AiAccuracy, Report, iso_utc
 from app.reports.taxonomy import OTHER_PART
@@ -116,6 +116,8 @@ def _summed(metrics: list[dict]) -> dict:
         "fields": {key: fields[key] for key in FIELD_COUNTS},
         "rates": rates,
         "suggestions": sum_suggestions(metrics),
+        # B5: only once some case counts regroups (the setting off: absent).
+        **({"regroups": regroups} if (regroups := sum_regroups(metrics)) is not None else {}),
     }
 
 

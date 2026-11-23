@@ -1605,6 +1605,14 @@ async def _watch_detection(chat_id: str, report_id: str, target, user: Linked) -
 
 def _detection_text(result, link: str, user: Linked) -> str:
     """The chat's answer once the run has ended (telegram_bridge.Outcome)."""
+    if result.state == "ready" and getattr(result, "read_notice", None):
+        # F1: the list came from the area reads -- never "Finished reading".
+        return (
+            f"⚠️ {result.read_notice}\n"
+            f"👤 Draft for {user.filing_label or user.label}\n\n"
+            f"{summarize_detection(result)}\n\n"
+            f"Open the draft to check it, then Re-read when ready:\n{link}"
+        )
     if result.state == "ready":
         return (
             f"✅ Finished reading your {result.photos} photo{'' if result.photos == 1 else 's'}.\n"

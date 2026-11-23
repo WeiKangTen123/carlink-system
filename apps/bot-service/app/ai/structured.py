@@ -140,6 +140,12 @@ CALL_KINDS["check"] = "check"
 CALL_KINDS["link"] = "link"
 # A kind of call that takes another kind's thinking level setting.
 THINKING_OF = {"zone": "read"}
+# B9 (R-batching): the rescue sort of the photos about to drop out of every
+# read (ai/triage.rescue_photos) always thinks at "low" -- a call that only
+# runs with settings.intake_sort_rescue "on".
+CALL_KINDS["photo rescue"] = "rescue"
+# Kinds with a fixed thinking level, used when no setting names one.
+FIXED_THINKING = {"rescue": "low"}
 
 
 def request_settings(purpose: str, model_id: str) -> dict:
@@ -154,7 +160,7 @@ def request_settings(purpose: str, model_id: str) -> dict:
         return {}
     extra: dict = {}
     levels = thinking_levels(getattr(settings, f"gemini_thinking_level_{THINKING_OF.get(kind, kind)}", None))
-    level = levels.get(model_id) or levels.get(ANY)
+    level = levels.get(model_id) or levels.get(ANY) or FIXED_THINKING.get(kind)
     if level:
         extra["generation_config"] = {"thinking_level": level}
     if kind == "read":

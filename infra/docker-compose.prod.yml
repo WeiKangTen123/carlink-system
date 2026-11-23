@@ -114,6 +114,27 @@ x-bot-service: &bot-service
     # offered in the part pickers and named by the car map's linked parts.
     # Off by default; both containers read it (the bot runs the pipeline).
     - INTAKE_CAR_MAP_NAMES=${INTAKE_CAR_MAP_NAMES:-off}
+    # The detection fixes (plans/2026-11-22-enhance-staging section 2, F1-F7):
+    # a failed main read falls back to the zone reads, what the caps cut is
+    # kept (folded), a placed side-undetermined find on another photo stays
+    # as an "Other side?" suggestion, the linked check's "no" on a hidden
+    # part, and one more sort batch for skipped photos. Defaults are
+    # config.py's: today's behaviour, requests and saved drafts byte for byte.
+    - INTAKE_MAIN_READ_FALLBACK=${INTAKE_MAIN_READ_FALLBACK:-off}
+    - INTAKE_KEEP_CUT=${INTAKE_KEEP_CUT:-off}
+    - INTAKE_KEEP_OTHER_SIDE=${INTAKE_KEEP_OTHER_SIDE:-off}
+    - INTAKE_LINK_HIDDEN_NO=${INTAKE_LINK_HIDDEN_NO:-keep}
+    - INTAKE_SORT_RETRY_SKIPPED=${INTAKE_SORT_RETRY_SKIPPED:-off}
+    # The batching items (plans/2026-11-22-enhance-staging/R-batching.md B2-B5,
+    # B9): the main read and the zone reads at once, the linked check's calls
+    # at once, sort workers, keeping the sorter's label on a regroup, and a
+    # rescue sort. Defaults are config.py's: today's behaviour byte for byte.
+    # INTAKE_PARALLEL_READS acts only with INTAKE_MAIN_READ_FALLBACK=zones.
+    - INTAKE_PARALLEL_READS=${INTAKE_PARALLEL_READS:-off}
+    - INTAKE_LINK_CHECK_PARALLEL=${INTAKE_LINK_CHECK_PARALLEL:-off}
+    - INTAKE_SORT_WORKERS=${INTAKE_SORT_WORKERS:-3}
+    - INTAKE_KEEP_SORT_LABEL=${INTAKE_KEEP_SORT_LABEL:-off}
+    - INTAKE_SORT_RESCUE=${INTAKE_SORT_RESCUE:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

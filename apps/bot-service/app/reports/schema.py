@@ -189,6 +189,15 @@ class LinkCheck(BaseModel):
     model: Optional[str] = None
     # Its words, cleaned (evidence.clean_reason), at most 160 characters.
     reason: Optional[str] = None
+    # F6 (settings.intake_link_hidden_no "cannot_tell"; the review's L8):
+    # the model's own verdict when a code rule changed it ("no" on a hidden
+    # part, now "cannot_tell"). Not in a dump while None, so a check made
+    # without the rule saves what it did before.
+    model_verdict: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _without_unset_model_verdict(self, handler):
+        return _without_defaults(handler(self), {"model_verdict": None})
 
 
 # Each linked-part field with its default, per model: what
@@ -202,6 +211,12 @@ LINK_SUGGESTION_DEFAULTS = {
     "fitted_note": None, "signs_yes": [], "also_check": [], "folded": False,
 }
 LINK_LOOK_DEFAULTS = {"link_run": None}
+# plans/2026-11-22-enhance-staging's fixes, the same way: left out of a dump
+# while at their default, so a draft made with the fixes off saves what it
+# did before them (read them with .get()). F3: other_side_of; F2/F5:
+# cut_reason on a cut item, and SecondLook.cut / cut_counts.
+FIX_SUGGESTION_DEFAULTS = {"other_side_of": None, "cut_reason": None}
+FIX_LOOK_DEFAULTS = {"cut": [], "cut_counts": {}}
 
 
 def _without_defaults(dumped, defaults: dict):
@@ -713,10 +728,21 @@ class SecondLookItem(BaseModel):
     signs_yes: list[SignYes] = Field(default_factory=list)
     also_check: list[str] = Field(default_factory=list)
     folded: bool = False
+    # plans/2026-11-22-enhance-staging, code-set, not in a dump while None.
+    # other_side_of (F3, source "other_side"): the listed sided part this
+    # "(side undetermined)" find was placed on -- seen on another photo, so
+    # it may be the other side's ("Other side? Tail Lamp (side
+    # undetermined)"); its covers leave that name out, so the listed part
+    # doesn't hide it. cut_reason (F2/F5, on SecondLook.cut's items only):
+    # why a cap cut it -- "limit" (a cap: second_look.MAX_SUGGESTIONS, the
+    # linked parts' per-group or overall max) or "intact" (a zone read
+    # called it not damaged: demoted, then cut, or dropped).
+    other_side_of: Optional[str] = None
+    cut_reason: Optional[str] = None
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):
-        return _without_defaults(handler(self), LINK_SUGGESTION_DEFAULTS)
+        return _without_defaults(handler(self), {**LINK_SUGGESTION_DEFAULTS, **FIX_SUGGESTION_DEFAULTS})
 
 
 # SecondLook.decisions kept per case.
@@ -752,6 +778,15 @@ class SecondLook(BaseModel):
     # Contract 10: what the linked check did this read (status, model,
     # note, seconds, calls); not in a dump while None.
     link_run: Optional[CheckRun] = None
+    # F2/F5 (settings.intake_keep_cut "on"; plans/2026-11-22-enhance-
+    # staging): what the caps cut this read, surest first as they were
+    # sorted, each a suggestion as items holds it plus its cut_reason --
+    # for the Review step's folded "More (N)" block. Never in items, never
+    # printed; a person's add or dismiss on one moves it into items
+    # (reports/suggestions.decide). cut_counts: {reason: how many} of cut
+    # as stored. Neither in a dump while empty.
+    cut: list[SecondLookItem] = Field(default_factory=list)
+    cut_counts: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("decisions")
     @classmethod
@@ -761,7 +796,7 @@ class SecondLook(BaseModel):
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):
-        return _without_defaults(handler(self), LINK_LOOK_DEFAULTS)
+        return _without_defaults(handler(self), {**LINK_LOOK_DEFAULTS, **FIX_LOOK_DEFAULTS})
 
 
 class SecurityIncidentDraft(BaseModel):
