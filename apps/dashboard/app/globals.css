@@ -66,6 +66,8 @@
   --ai-box-text: #38bdf8;
 
   --nav-bg: rgba(8, 11, 18, 0.85);
+  /* The sticky top bar: solid, so the page never shows through it. */
+  --nav-bg-solid: #080b12;
   --nav-text: #f8fafc;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
@@ -157,6 +159,7 @@
   --ai-box-text: #0369a1;
 
   --nav-bg: rgba(255, 255, 255, 0.9);
+  --nav-bg-solid: #ffffff;
   --nav-text: #0f172a;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
@@ -352,9 +355,9 @@ a:hover {
   align-items: center;
   gap: 20px;
   padding: 12px 28px;
-  background: var(--nav-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* Solid (owner, 23 Nov 2026): the page scrolling under the see-through
+     bar showed as faint text behind it. scripts/check-dmap-sticky.mjs. */
+  background: var(--nav-bg-solid);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -2320,16 +2323,19 @@ a:hover {
   border-color: var(--accent-primary);
 }
 
-/* The wizard: the map stays in view beside the cover page. The parts list
-   and the suggestions scroll up UNDER it, so its background must be solid:
-   .dmap's --surface-card is 85% opaque, and the text below showed through
-   (owner, 23 Nov 2026). scripts/check-dmap-sticky.mjs guards this. */
+/* The wizard: the map stays in view beside the cover page and the lists.
+   It is alone in its column (.intake-area-map), so nothing scrolls under
+   it; its background is solid all the same (.dmap's --surface-card is 85%
+   opaque). Its height fits between the top bar (72px, the later rule's
+   `top`) and the Review step's sticky footer (~88px), so its bottom is never
+   hidden behind the footer; a short window scrolls inside it.
+   scripts/check-dmap-sticky.mjs guards all of this (owner, 23 Nov 2026). */
 @media (min-width: 1100px) {
   .dmap-intake {
     position: sticky;
     top: 12px;
     z-index: 5;
-    max-height: calc(100vh - 24px);
+    max-height: calc(100vh - 72px - 88px);
     overflow-y: auto;
     background: var(--surface-card-solid);
   }
@@ -5639,12 +5645,36 @@ button.intake-tile:hover {
   margin: 0;
 }
 
-/* Step 3: review */
+/* Step 3: review. Wide screens: the cover page and, under it, the lists
+   (damaged parts, suggestions, photos by part) on the left; the 3D map
+   ALONE on the right, pinned (.dmap-intake) the whole way down. Nothing
+   shares the map's column, so nothing can scroll under it (owner, 23 Nov
+   2026: the lists used to slide under the pinned map). Narrow screens
+   (the 1100px rule below): cover page, map, lists. */
 .intake-review-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "cover map"
+    "lists map"
+    "footer footer";
   gap: 16px;
   align-items: start;
+}
+.intake-area-cover {
+  grid-area: cover;
+}
+.intake-area-lists {
+  grid-area: lists;
+}
+/* As tall as both rows (not just the map), so the sticky map inside has
+   the whole page to stay pinned over. */
+.intake-area-map {
+  grid-area: map;
+  align-self: stretch;
+}
+.intake-review-layout > .intake-review-footer {
+  grid-area: footer;
 }
 
 .intake-col {
@@ -5804,6 +5834,13 @@ button.intake-tile:hover {
   .intake-review-layout,
   .intake-parties-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .intake-review-layout {
+    grid-template-areas:
+      "cover"
+      "map"
+      "lists"
+      "footer";
   }
 }
 

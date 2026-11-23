@@ -428,18 +428,28 @@ export function ReviewStep({
     setViewer({ mode: key.startsWith("sug:") ? "suggestions" : "listed", startKey: key, startPhoto: photo ?? null });
   }, []);
 
-  // The map sits at the top of this column; [Map] / [Show on 3D] bring it
-  // into view with the finding selected. An empty marker before it, not a
-  // wrapper, so the map's own sticky position still works.
+  // The map has a column of its own (the right one on wide screens, pinned
+  // there beside the lists; between the cover page and the lists on narrow
+  // ones). [Map] / [Show on 3D] select the finding and bring the map into
+  // view only when it isn't already: on a wide screen it is, so the page no
+  // longer jumps back up from the suggestions. An empty marker before the
+  // map, not a wrapper, so the map's own sticky position still works.
   const mapAnchor = useRef<HTMLDivElement>(null);
+  const revealMap = useCallback(() => {
+    const anchor = mapAnchor.current;
+    if (!anchor) return;
+    const r = anchor.parentElement?.querySelector<HTMLElement>("[data-damage-map]")?.getBoundingClientRect();
+    if (r && r.top >= 0 && r.bottom <= window.innerHeight) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    anchor.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  }, []);
   const showOnMap = useCallback(
     (key: string) => {
       setViewer(null);
       setSelection({ kind: "finding", key });
-      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      mapAnchor.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      revealMap();
     },
-    [setSelection]
+    [setSelection, revealMap]
   );
   // PhotosByPart's [Map] hands over a whole selection (a part's zone or a
   // finding), not just a finding key.
@@ -448,10 +458,9 @@ export function ReviewStep({
       if (s?.kind === "finding") return showOnMap(s.key);
       setViewer(null);
       setSelection(s);
-      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      mapAnchor.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      revealMap();
     },
-    [setSelection, showOnMap]
+    [setSelection, showOnMap, revealMap]
   );
 
   // A list item picked on the map: its row comes into view and flashes.
@@ -490,8 +499,13 @@ export function ReviewStep({
   const hoverKey = hover?.kind === "finding" ? hover.key : null;
 
   return (
+    // Three areas (globals.css "Step 3: review"): wide screens put the cover
+    // page and, under it, the lists on the left, and the map ALONE on the
+    // right, pinned the whole way down -- nothing can scroll under it (owner,
+    // 23 Nov 2026: the lists used to slide under the pinned map). Narrow
+    // screens: cover page, map, lists, in this source order.
     <div className="intake-review-layout">
-      <div className="intake-col">
+      <div className="intake-col intake-area-cover">
         {readNotice && (
           <div className="intake-alert danger" role="alert">
             <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
@@ -554,7 +568,7 @@ export function ReviewStep({
         </section>
       </div>
 
-      <div className="intake-col">
+      <div className="intake-col intake-area-map">
         <div ref={mapAnchor} className="ev-map-anchor" aria-hidden="true" />
         <DamageMapPanel
           surface="intake"
@@ -572,7 +586,9 @@ export function ReviewStep({
           onDecide={decideFromMap}
           onAddDamage={addForZone}
         />
+      </div>
 
+      <div className="intake-col intake-area-lists">
         <section className="card intake-panel">
           <div className="intake-panel-head">
             <h2>Damaged parts ({damage.length})</h2>
