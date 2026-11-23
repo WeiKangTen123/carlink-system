@@ -55,7 +55,7 @@ jobs:
           # 99aaa85, f4b1a66), which a shallow clone doesn't have.
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           # The api image's version (apps/bot-service/Dockerfile: python:3.11-slim).
           python-version: "3.11"
