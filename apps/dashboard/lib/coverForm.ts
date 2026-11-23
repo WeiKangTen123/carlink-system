@@ -72,6 +72,11 @@ export const USUAL_STATIC_CHECK: Partial<CoverForm> = {
   general_condition: "Good",
 };
 
+/** The note the firm prints under 5 POINT OF IMPACT, filled in on a new
+ * draft as a usual value ("check" until confirmed; bot-service
+ * app/reports/review.py POINT_OF_IMPACT_NOTE) and offered in its list. */
+export const POINT_OF_IMPACT_NOTE = "See Annex(es) and Motor Accident Reports";
+
 export function coverFormFrom(d: CoverSource): CoverForm {
   const c = d.cover_page || {};
   const v = d.vehicle_info || {};
@@ -216,7 +221,14 @@ export function coverRequestFrom(form: CoverForm, baseline: CoverForm, tyres?: T
 export type AiRead = {
   vehicle_info?: Record<string, string | number | null | undefined> | null;
   incident_datetime?: string | null;
+  /** The AI's own static-check / transmission words that have no firm
+   * word with their meaning ({paintwork_condition: "Scratched"}): never
+   * printed, shown beside the field. Only when there are any. */
+  notes?: Record<string, string> | null;
 } | null;
+
+/** AiRead.notes by form key. */
+export type AiNotes = Partial<Record<CoverFormKey, string>>;
 
 /** A field the AI read -> the photo it came from ("P03"), or null when the
  * draft can't say which photo. Keys are CoverForm keys. */
@@ -224,10 +236,18 @@ export type AiReadTags = Partial<Record<CoverFormKey, string | null>>;
 
 /** The AI's values as the form would show them, so a tag only shows while
  * the field still says what the AI said. */
-export function aiReadFrom(aiRead: AiRead | undefined, photos: Record<string, string> | null | undefined): { tags: AiReadTags; values: Partial<CoverForm> } {
+export function aiReadFrom(
+  aiRead: AiRead | undefined,
+  photos: Record<string, string> | null | undefined,
+): { tags: AiReadTags; values: Partial<CoverForm>; notes: AiNotes } {
   const tags: AiReadTags = {};
   const values: Partial<CoverForm> = {};
-  if (!aiRead) return { tags, values };
+  const notes: AiNotes = {};
+  if (!aiRead) return { tags, values, notes };
+  for (const key of VEHICLE_KEYS) {
+    const note = aiRead.notes?.[key];
+    if (typeof note === "string" && note.trim()) notes[key] = note.trim();
+  }
   const vehicle = aiRead.vehicle_info || {};
   for (const key of VEHICLE_KEYS) {
     const v = text(vehicle[key]);
@@ -240,5 +260,5 @@ export function aiReadFrom(aiRead: AiRead | undefined, photos: Record<string, st
     values.incident_datetime = when;
     tags.incident_datetime = photos?.incident_datetime || null;
   }
-  return { tags, values };
+  return { tags, values, notes };
 }

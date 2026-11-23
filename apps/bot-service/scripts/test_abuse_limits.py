@@ -77,7 +77,7 @@ from app.reports.models import AuditEntry, ChatLink, Report, gen_id  # noqa: E40
 from app.reports.owners import TICKS  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.storage import files as storage_files  # noqa: E402
-from auth_helpers import sign_in  # noqa: E402
+from auth_helpers import mark_must_haves_na, sign_in  # noqa: E402
 
 BASE = "https://carlink.test"
 BANNER = "Prepared by an unverified user, not issued by Carlink Consultancy"
@@ -297,6 +297,8 @@ def main() -> int:
         staff = person(name="Stu Staff", may_sign_off=True, sees_all_cases=True)
         outsider = person(name="Otto Outside")
         case_id = new_case(outsider)
+        # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+        mark_must_haves_na(staff.c, case_id)
         RENDERED.clear()
         r = staff.c.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 200 and RENDERED and BANNER not in RENDERED[-1], r.text

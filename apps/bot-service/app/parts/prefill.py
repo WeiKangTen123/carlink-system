@@ -463,7 +463,8 @@ def _sided_namer(db: Session | None, part: dict, vehicle: dict):
         names: dict[str, str] = {}
         if db is not None:
             make, model = vehicle.get("make"), vehicle.get("model")
-            suggestion = suggest(db, make=make, model=model, damaged_parts=[part["part"]], existing_items=[])
+            suggestion = suggest(db, make=make, model=model, damaged_parts=[part["part"]], existing_items=[],
+                                 body_type=vehicle.get("body_type"))
             for group in suggestion["groups"]:
                 if group["reason"] == "damaged" and _scope_of(group, suggestion) != "all imported cases":
                     for ln in group["lines"]:
@@ -491,7 +492,8 @@ def _other_rows(db: Session | None, part: dict, vehicle: dict, price_book: bool)
     family_part = canonical_part(name) if price_book and db is not None else None
     if family_part:
         make, model = vehicle.get("make"), vehicle.get("model")
-        suggestion = suggest(db, make=make, model=model, damaged_parts=[family_part], existing_items=[], unsided=True)
+        suggestion = suggest(db, make=make, model=model, damaged_parts=[family_part], existing_items=[], unsided=True,
+                             body_type=vehicle.get("body_type"))
         group = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
         line = _matching_line(name, group["lines"]) if group and _scope_of(group, suggestion) != "all imported cases" else None
         if line is not None:
@@ -636,7 +638,7 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             # "Right Tail Lamp") each get their own lines; lines already
             # typed into this Annex A are not repeated.
             suggestion = suggest(db, make=make, model=model, damaged_parts=[name], existing_items=existing,
-                                 unsided=part["unsided"])
+                                 unsided=part["unsided"], body_type=vehicle.get("body_type"))
             found = next((g for g in suggestion["groups"] if g["reason"] == "damaged" and g["lines"]), None)
             # Another make's prices are no estimate for this car: with no
             # same-make history the part stays unpriced (the suggestions

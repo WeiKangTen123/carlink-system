@@ -25,6 +25,7 @@ from app.ai.evidence import clean_box
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import READ_PACKS, pack_list, settings
+from app.reports.firm_words import apply_firm_words
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
     BODY_TYPES,
@@ -686,7 +687,11 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     draft = _strip_placeholder_people(draft)
     draft = _sanitize_damage_summary(draft)
     draft = _backfill_damage_summary(draft)
-    return _firm_condition(draft)
+    draft = _firm_condition(draft)
+    # The static check and transmission in the firm's words ("CVT" ->
+    # "Automatic"); a word with no same-meaning firm word is kept as a note
+    # (draft.ai_words), not printed.
+    return apply_firm_words(draft)
 
 
 def draft_report(

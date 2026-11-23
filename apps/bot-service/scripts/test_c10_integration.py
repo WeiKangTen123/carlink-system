@@ -338,8 +338,45 @@ def runs_of(rid: str) -> list[AiRun]:
         db.close()
 
 
+# Phase 1 (2026-11-23, scripts/test_p1_report_checks.py): sign-off needs
+# each must-have fact filled in or marked N/A. A scenario leaves most
+# blank, so sign_off marks those N/A first (auth_helpers.mark_must_haves_na:
+# none on a tree from before the list), and _without_p1 takes the marks out
+# again -- with Phase 1's other additions to every case -- before a case is
+# compared with master's.
+P1_MARKED: set[str] = set()
+P1_NOTE = "See Annex(es) and Motor Accident Reports"
+P1_NOTE_KEY = "cover_page.point_of_impact_note"
+
+
 def sign_off(client, rid: str):
+    from auth_helpers import mark_must_haves_na
+
+    P1_MARKED.update(mark_must_haves_na(client, rid))
     return client.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
+
+
+def _without_p1(o):
+    """o without what Phase 1 adds to every case: the AI's own words kept
+    as a note (ai_words), the firm's usual point-of-impact note filled in
+    (and listed in template_fields), and the N/A marks sign_off put on the
+    must-have facts. Nothing else is touched."""
+    if isinstance(o, dict):
+        o = {k: _without_p1(v) for k, v in o.items() if k != "ai_words"}
+        cover = o.get("cover_page")
+        if isinstance(cover, dict) and cover.get("point_of_impact_note") == P1_NOTE:
+            o["cover_page"] = {**cover, "point_of_impact_note": None}
+        listed = o.get("template_fields")
+        if isinstance(listed, list) and P1_NOTE_KEY in listed:
+            o["template_fields"] = [k for k in listed if k != P1_NOTE_KEY]
+        marks = o.get("checked")
+        if isinstance(marks, dict) and P1_MARKED & set(marks):
+            rest = {k: v for k, v in marks.items() if not (k in P1_MARKED and isinstance(v, dict) and v.get("na"))}
+            o["checked"] = rest or None
+        return o
+    if isinstance(o, (list, tuple)):
+        return [_without_p1(v) for v in o]
+    return o
 
 
 def refs_in(obj) -> list[str]:
@@ -812,7 +849,10 @@ _DURATIONS = {"seconds", "ms", "waited_s", "signature_hash"}
 def normalised(obj, ids: dict[str, str]):
     """obj as JSON with the run's ids as placeholders, times as "<t>", the
     durations as null and image bytes as their sha256: what is the same on
-    every run of the same case."""
+    every run of the same case. Phase 1's additions are left out
+    (_without_p1)."""
+    obj = _without_p1(obj)
+
     def walk(o):
         if isinstance(o, dict):
             out = {}

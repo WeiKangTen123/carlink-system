@@ -291,9 +291,12 @@
     {{ row('Workshop', ins.workshop_assigned, cp.workshop_address) }}
     {{ row('Accident date', report.incident_datetime) }}
     {{ row('Date of survey', cp.date_of_survey) }}
-    {{ row('Date of dismantle parts', cp.date_of_dismantle) }}
-    {{ row('Date of before painting', cp.date_before_painting) }}
-    {{ row('Date of after painting', cp.date_after_painting) }}
+    {#- The optional dates only when recorded: the firm leaves an unused
+        one out (2 of its 4 reports) rather than printing "Not recorded",
+        and so does the Excel export (xlsx_export.OPTIONAL_DATE_ROWS). -#}
+    {% for label, value in [('Date of dismantle parts', cp.date_of_dismantle), ('Date of before painting', cp.date_before_painting), ('Date of after painting', cp.date_after_painting)] %}
+    {% if value and (value | string | trim) %}{{ row(label, value) }}{% endif %}
+    {% endfor %}
 
     <tr class="sec"><td class="n">2</td><td colspan="6">DETAILS OF VEHICLE</td></tr>
     {{ row('Registration No.', v.plate_number) }}

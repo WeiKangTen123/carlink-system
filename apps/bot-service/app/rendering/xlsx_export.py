@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 NUMBER_FORMAT = "#,##0.00"
 PERCENT_FORMAT = "0%"
+
+# Cover Page section 1's optional dates (label, cover_page key): printed
+# only when recorded, in the PDF (templates/security_incident.html) and
+# here alike -- the firm leaves an unused one out rather than writing
+# "Not recorded" (R-report gap 11).
+OPTIONAL_DATE_ROWS = (
+    ("Date of dismantle parts", "date_of_dismantle"),
+    ("Date of before painting", "date_before_painting"),
+    ("Date of after painting", "date_after_painting"),
+)
 FONT_NAME = "Arial"
 # The letter's lines, as the firm wraps them by hand in column B.
 LETTER_WIDTH = 100
@@ -151,9 +161,11 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
     line("Workshop", insurance.get("workshop_assigned"), *_lines(cover.get("workshop_address")))
     line("Accident date", report.get("incident_datetime"))
     line("Date of survey", cover.get("date_of_survey"))
-    line("Date of dismantle parts", cover.get("date_of_dismantle"))
-    line("Date of before painting", cover.get("date_before_painting"))
-    line("Date of after painting", cover.get("date_after_painting"))
+    # The optional dates only when recorded: the firm leaves the line out
+    # otherwise (2 of its 4 reports), and so does the PDF.
+    for label, key in OPTIONAL_DATE_ROWS:
+        if _text(cover.get(key)):
+            line(label, cover.get(key))
     s.skip()
 
     section(2, "DETAILS OF VEHICLE")

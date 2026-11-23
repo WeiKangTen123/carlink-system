@@ -1,10 +1,13 @@
 "use client";
 
-import React, { useId } from "react";
+import React, { useId, useMemo } from "react";
 import { CLAIM_TYPE_OPTIONS } from "@/lib/api";
-import { USUAL_STATIC_CHECK, type AiReadTags, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
+import { coverChecks, tyreChecks, type DamagedPart } from "@/lib/coverChecks";
+import { POINT_OF_IMPACT_NOTE, USUAL_STATIC_CHECK, type AiNotes, type AiReadTags, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
 import { COVER_REVIEW_KEYS, TYRES_REVIEW_KEY, type FieldView, type ReviewAction } from "@/lib/fieldReview";
 import { FieldReviewControls } from "./FieldReviewControls";
+
+const NO_PARTS: DamagedPart[] = [];
 
 /** The Cover Page's six sections, with the firm's labels and in its order,
  * as a controlled form. Used by the case page's Cover tab and by the intake
@@ -22,6 +25,8 @@ export function CoverPageFields({
   review,
   onReview,
   reviewBusy,
+  damage,
+  aiNotes,
 }: {
   value: CoverForm;
   onChange: (patch: Partial<CoverForm>) => void;
@@ -48,6 +53,14 @@ export function CoverPageFields({
    * badges show without buttons. */
   onReview?: (key: string, action: ReviewAction) => void;
   reviewBusy?: boolean;
+  /** The case's damaged parts, for the soft check of the point of impact
+   * against where they are (lib/coverChecks.ts). Left out, that one check
+   * is skipped; the others need only the form. */
+  damage?: DamagedPart[] | null;
+  /** The AI's own static-check / transmission words that have no firm
+   * word with their meaning (GET .../ai_read.notes, aiReadFrom): shown
+   * under the field, never printed. */
+  aiNotes?: AiNotes;
 }) {
   // The datalists are shared by every input of the form; the ids are made
   // unique so two forms on one page (the wizard beside a case) don't clash.
@@ -55,6 +68,18 @@ export function CoverPageFields({
   const claimTypesId = `${uid}-claim-types`;
   const seeAnnexId = `${uid}-see-annex`;
   const goodNilId = `${uid}-good-nil`;
+  const impactNoteId = `${uid}-impact-note`;
+  // Soft checks (never a block): worked out from the form as typed, so a
+  // tag goes as soon as the value is fixed. Not on a form nobody may change
+  // (a signed-off case); still while a save is on its way (no flicker).
+  const showChecks = !disabled || Boolean(onReview);
+  const checks = useMemo(() => (showChecks ? coverChecks(value, damage ?? NO_PARTS) : {}), [value, damage, showChecks]);
+  const tyreWarnings = tyreChecks(checks);
+  // The AI's own word, while the field doesn't already say it.
+  const noteFor = (key: CoverFormKey): string | undefined => {
+    const note = aiNotes?.[key];
+    return note && note.toLowerCase() !== value[key].trim().toLowerCase() ? note : undefined;
+  };
 
   const set = (key: CoverFormKey) => (v: string) => onChange({ [key]: v } as Partial<CoverForm>);
   const tag = (key: CoverFormKey): string | null => {
@@ -78,6 +103,9 @@ export function CoverPageFields({
       hint={extra.hint}
       list={extra.list}
       wide={extra.wide}
+      reviewKey={COVER_REVIEW_KEYS[key]}
+      checks={checks[key]}
+      note={noteFor(key)}
       {...reviewProps(key)}
     />
   );
@@ -97,6 +125,9 @@ export function CoverPageFields({
         <option value="Good" />
         <option value="Nil" />
       </datalist>
+      <datalist id={impactNoteId}>
+        <option value={POINT_OF_IMPACT_NOTE} />
+      </datalist>
 
       <div className="cover-form-section">1 &nbsp;Reference</div>
       <CoverField
@@ -104,6 +135,7 @@ export function CoverPageFields({
         value={value.report_id}
         onChange={set("report_id")}
         disabled={disabled || !ourRefEditable}
+        reviewKey={COVER_REVIEW_KEYS.report_id}
         {...reviewProps("report_id")}
         onReview={disabled || !ourRefEditable ? undefined : onReview}
         hint={
@@ -244,12 +276,20 @@ export function CoverPageFields({
           </table>
         </div>
         <span className="cover-field-hint">Printed per axle as 7mm/Dunlop | 7mm/Dunlop | 215/60 R16.</span>
+        {tyreWarnings.length > 0 && (
+          <span className="p1b-check-text" role="note">
+            <span className="p1b-check-tag" aria-hidden>
+              check
+            </span>{" "}
+            {tyreWarnings.join(" · ")}
+          </span>
+        )}
       </div>
 
       <div className="cover-form-section">5 &nbsp;Point of impact</div>
       {sketch && <div className="cover-field wide">{sketch}</div>}
       {field("point_of_impact", "Point of impact", { hint: "e.g. Rear centre" })}
-      {field("point_of_impact_note", "Note printed under 5", { hint: "The firm writes: See Annex(es) and Motor Accident Reports" })}
+      {field("point_of_impact_note", "Note printed under 5", { hint: `The firm writes: ${POINT_OF_IMPACT_NOTE}`, list: impactNoteId })}
 
       <div className="cover-form-section">6 &nbsp;Remark</div>
       <div className="cover-field wide" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
@@ -275,6 +315,9 @@ function CoverField({
   photo,
   onReview,
   reviewBusy,
+  reviewKey,
+  checks,
+  note,
 }: {
   label: string;
   value: string;
@@ -291,17 +334,46 @@ function CoverField({
   photo?: string | null;
   onReview?: (key: string, action: ReviewAction) => void;
   reviewBusy?: boolean;
+  /** The field's review key, on the element as data-review-key: the
+   * sign-off box's "Go to it" finds the field by it. */
+  reviewKey?: string;
+  /** Soft checks (lib/coverChecks.ts): a "check" tag and their words. */
+  checks?: string[];
+  /** The AI's own word, when it had no firm word with its meaning. */
+  note?: string | null;
 }) {
   // The label points at the input by id: the Confirm / N/A buttons inside
   // it would otherwise be what it labels.
   const id = useId();
+  const warnings = checks ?? [];
+  const warned = warnings.length > 0;
+  // On the sign-off's must-have list and still blank (not marked N/A).
+  const forSignOff = Boolean(view?.mustHave && view.blank && view.state !== "na");
+  const inline = Boolean(view) || warned || forSignOff;
+  const describedBy = [view && view.state !== "none" ? `${id}-review` : "", warned ? `${id}-checks` : "", note ? `${id}-note` : ""]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <label className={`cover-field${wide ? " wide" : ""}`} htmlFor={`${id}-input`}>
-      <span className={view ? "cover-field-head" : undefined}>
-        {view ? <span>{label}</span> : label}
+    <label className={`cover-field${wide ? " wide" : ""}`} htmlFor={`${id}-input`} data-review-key={reviewKey}>
+      <span className={inline ? "cover-field-head" : undefined}>
+        {inline ? <span>{label}</span> : label}
         {aiTag && (
           <span className="cover-ai-tag" title="Read by the AI from the photos. Check it against the vehicle.">
             {aiTag}
+          </span>
+        )}
+        {(warned || forSignOff) && (
+          <span className="p1b-tags">
+            {forSignOff && (
+              <span className="p1b-required-tag" title="Needed before sign-off: fill it in, or mark it N/A if it doesn't apply.">
+                for sign-off
+              </span>
+            )}
+            {warned && (
+              <span className="p1b-check-tag" title={warnings.join("; ")}>
+                check
+              </span>
+            )}
           </span>
         )}
         {view && <FieldReviewControls view={view} label={label} photo={photo} onReview={onReview} busy={reviewBusy} id={`${id}-review`} />}
@@ -313,10 +385,21 @@ function CoverField({
         list={list}
         placeholder="Not recorded"
         disabled={disabled}
-        aria-label={view ? label : undefined}
-        aria-describedby={view && view.state !== "none" ? `${id}-review` : undefined}
+        aria-label={inline ? label : undefined}
+        aria-describedby={describedBy || undefined}
         onChange={(e) => onChange(e.target.value)}
       />
+      {warned && (
+        <span className="p1b-check-text" id={`${id}-checks`}>
+          {warnings.join(" · ")}
+        </span>
+      )}
+      {note && (
+        <span className="p1b-ai-note" id={`${id}-note`}>
+          The AI read &quot;{note}&quot;, not one of the firm&apos;s words, so it isn&apos;t printed. Write the firm&apos;s word, or keep the usual
+          one.
+        </span>
+      )}
       {hint && <span className="cover-field-hint">{hint}</span>}
     </label>
   );

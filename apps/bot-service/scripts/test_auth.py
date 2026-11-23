@@ -153,6 +153,10 @@ def main() -> int:
         r = pat.post(f"/reports/{case_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
         assert admin.patch(f"/users/{pat_id}", json={"may_sign_off": True}).status_code == 200
+        # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+        from auth_helpers import mark_must_haves_na
+
+        mark_must_haves_na(pat, case_id)
         r = pat.post(f"/reports/{case_id}/sign-off", json={
             "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True, "open_items_ack": True,
             "signature_data_url": "http://169.254.169.254/latest/meta-data/",
@@ -198,9 +202,11 @@ def main() -> int:
 
         history = pat.get(f"/reports/{case_id}").json()["history"]
         actions = [(h["action"], h["user_name"]) for h in history]
-        assert actions == [("created", "Pat Surveyor (@pat)"), ("edited", "Pat Surveyor (@pat)"), ("signed_off", "Pat Surveyor (@pat)"), ("reopened", "Pat Surveyor (@pat)")], actions
+        # "fields_confirmed": the must-have facts marked N/A before signing off (review.MUST_HAVE).
+        assert actions == [("created", "Pat Surveyor (@pat)"), ("edited", "Pat Surveyor (@pat)"), ("fields_confirmed", "Pat Surveyor (@pat)"),
+                           ("signed_off", "Pat Surveyor (@pat)"), ("reopened", "Pat Surveyor (@pat)")], actions
         # The account email, then what the field review still had open (contract 7).
-        assert history[2]["detail"].startswith("pat@example.com; ") and "open" in history[2]["detail"], history[2]["detail"]
+        assert history[3]["detail"].startswith("pat@example.com; ") and "open" in history[3]["detail"], history[3]["detail"]
         ok("history: created, edited (two saves = one entry), signed off (with the account email and what was open), reopened")
 
         for rid in (forged_id, forged_draft):

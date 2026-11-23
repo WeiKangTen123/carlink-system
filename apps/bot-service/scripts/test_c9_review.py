@@ -285,8 +285,12 @@ def put_report_races() -> None:
 
 
 def sign_off_race() -> None:
+    from auth_helpers import mark_must_haves_na
+
     rid = W.rid
     body = {"terms_accepted": True, "open_items_ack": True}
+    # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+    mark_must_haves_na(W.admin, rid)
     with meanwhile(main_api, "_render_after_change", decide_as(W.owner, "reports", rid, "Left Tail Lamp", "add"),
                    wait=RENDER_WAIT) as race:
         r = W.admin.post(f"/reports/{rid}/sign-off", json=body)

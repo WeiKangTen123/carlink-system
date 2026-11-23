@@ -703,6 +703,95 @@ def _same_model(a: str | None, b: str | None) -> bool:
     return bool(key) and key == _model_key(b)
 
 
+# ------------------------------------------- another model's lines (R 2.8)
+#
+# A case whose model has no past cases of its own takes the make's (and a
+# part its model's cases never had, the make's for that part). Those lines
+# are another model's: a Jazz's tailgate kit came out of a Vezel's and a
+# Civic's reports together -- "Tail gate emblem VEZEL", "Boot lid emblem
+# CIVIC", and both a tail gate and a boot lid (R-report section 2.8, owner
+# Phase 1, 23 Nov 2026). Such a line is now left out when it names another
+# model or is an emblem (a model's or variant's lettering: "Boot lid emblem
+# 1.6"; a "badge" is the make's logo and stays), and worded for this car's
+# body: a hatchback, SUV or MPV's "Tail gate ...", a sedan's "Boot lid ...".
+# The case's own model's lines are never touched.
+
+_EMBLEM = re.compile(r"\bemblems?\b", re.I)
+_BOOT_LID = re.compile(r"\bboot ?lid\b", re.I)
+_TAIL_GATE = re.compile(r"\btail ?gate\b", re.I)
+
+
+def _model_words(text: str) -> set[str]:
+    """The model keys a line's words could be (_model_key's form): each
+    word, and each two words run together ("HR V" -> "hrv"), as its twin."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    found = set(words) | {a + b for a, b in zip(words, words[1:])}
+    return {_MODEL_TWINS.get(w, w) for w in found}
+
+
+def _swap_word(text: str, pattern: re.Pattern, word: str) -> str:
+    """Every match of `pattern` as `word` ("tail gate"), capitalised where
+    the match was ("Boot lid assy" -> "Tail gate assy")."""
+    return pattern.sub(lambda m: word.capitalize() if m.group(0)[:1].isupper() else word, text)
+
+
+def kit_wording(item: str, *, line_model: str | None, model: str | None, body: str | None,
+                model_keys: set[str]) -> str | None:
+    """How a past line reads on this case's Annex A: as it is when the
+    line is this model's own; else None to leave it out (it names another
+    model -- one of `model_keys`, the models the history knows, or the
+    line's own -- or it is an emblem), or worded for this car's body
+    (taxonomy.body_class: "hatch" -> "Tail gate ...", "sedan" -> "Boot lid
+    ...", None -> as written)."""
+    if _same_model(line_model, model):
+        return item
+    own = _model_key(model)
+    others = ({key for key in model_keys if key} | {_model_key(line_model)}) - {own, ""}
+    # A key of 3+ characters that isn't a bare number ("1.6", "2" would hit
+    # quantities and engine sizes, which the emblem rule covers).
+    others = {key for key in others if len(key) >= 3 and not key.isdigit()}
+    if _EMBLEM.search(item) or _model_words(item) & others:
+        return None
+    if body == "hatch":
+        return _swap_word(item, _BOOT_LID, "tail gate")
+    if body == "sedan":
+        return _swap_word(item, _TAIL_GATE, "boot lid")
+    return item
+
+
+class _Worded:
+    """A past line as this case's kit reads it (kit_wording): its own
+    wording and key, everything else the line's. A stand-in, never the
+    database row itself, so nothing reworded here can be flushed back."""
+    __slots__ = ("_line", "item", "item_key")
+
+    def __init__(self, line, item: str):
+        self._line = line
+        self.item = item
+        self.item_key = normalise_item(item)
+
+    def __getattr__(self, name):
+        return getattr(self._line, name)
+
+
+def lines_for_car(lines: list, make: str | None, model: str | None, body_type: str | None = None) -> list:
+    """The past lines as a kit for this car (kit_wording): its own model's
+    as they are, every other model's reworded for its body or left out.
+    body_type: the case's recorded one; the catalogue's wins
+    (taxonomy.body_type_for)."""
+    from app.reports.taxonomy import body_class, body_type_for
+
+    body = body_class(body_type_for(make, model, body_type))
+    model_keys = {_model_key(ln.model) for ln in lines if getattr(ln, "model", None)}
+    out = []
+    for ln in lines:
+        item = kit_wording(ln.item or "", line_model=ln.model, model=model, body=body, model_keys=model_keys)
+        if item is None:
+            continue
+        out.append(ln if item == ln.item else _Worded(ln, item))
+    return out
+
+
 def _unit_price(line: PastAnnexLine) -> float | None:
     """What one unit was adjusted to. None for a line not paid for -- kept
     (Serviceable, 100% disallowed) or never priced."""
@@ -720,6 +809,7 @@ def suggest(
     existing_items: list[str],
     exclude_ref: str | None = None,
     unsided: bool = False,
+    body_type: str | None = None,
 ) -> dict:
     """Annex A lines past cases wrote for these damaged parts.
 
@@ -735,10 +825,15 @@ def suggest(
     unsided: nobody has established the parts' sides (prefill.
     side_unconfirmed), so no line keeps a LH / RH; the end stays, which a
     "(side undetermined)" name loses ("Left Rear Wheel" -> the rear rims).
+    Another model's lines (any scope but the case's own model) are worded
+    for this car's body or left out (lines_for_car: no other model's name
+    or emblem, no boot lid on a hatchback); body_type: the case's
+    recorded one, the catalogue's wins.
     """
     lines = past_lines(db)
     if exclude_ref:
         lines = [ln for ln in lines if ln.case_ref != exclude_ref]
+    lines = lines_for_car(lines, make, model, body_type)
     scope_label, pool = "all imported cases", lines
     by_model = [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)]
     by_make = [ln for ln in lines if _same(ln.make, make)]
@@ -923,7 +1018,9 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     family, side = family_and_side(canon)
     if family in _COARSE_FAMILIES:
         return None
-    lines = [ln for ln in past_lines(db) if _line_family(ln) == family]
+    # Another model's wording as this car's (lines_for_car): no other
+    # model's name, a hatchback's tail gate.
+    lines = [ln for ln in lines_for_car(past_lines(db), make, model) if _line_family(ln) == family]
     scopes = (
         [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
         [ln for ln in lines if _same(ln.make, make)],

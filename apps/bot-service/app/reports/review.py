@@ -7,7 +7,8 @@ said it rightly stays blank ("na"), or there is nothing to show ("none").
 GET /reports/{id} and GET /intake/{id} send review_state()'s answer as
 `review`; the dashboard's lib/review.ts types it (Review) and shows each
 state with <ReviewBadge>. Sign-off warns while anything is open
-(api/main.sign_off_report).
+(api/main.sign_off_report), and refuses while a MUST_HAVE fact is neither
+filled in nor marked N/A (owner, 23 Nov 2026).
 
 The measured basis (4 real cases, 89 runs): the AI reads the plate and the
 make reliably, the model nearly always; colour, chassis/VIN and the
@@ -90,8 +91,30 @@ PARTIES_KEYS = (
     "police_report.officer_name", "police_report.date_reported",
 )
 
-# Guess fields a case can't go without: empty is "needs", not "none".
-NEEDED_GUESSES = ("insurance_details.insurer_name", "insurance_details.claim_type")
+# Guess fields a case can't go without: empty is "needs", not "none". The
+# workshop and the point of impact are on the sign-off list (MUST_HAVE).
+NEEDED_GUESSES = (
+    "insurance_details.insurer_name", "insurance_details.claim_type",
+    "insurance_details.workshop_assigned", "vehicle_info.point_of_impact",
+)
+
+# What every report the firm sends must state (owner, 23 Nov 2026, D1/D2):
+# each filled in, or marked N/A by a person (data.checked {na: true}),
+# before anyone -- admins too -- may sign off (api/main.sign_off_report
+# refuses: 409 must_have). Filing a draft stays allowed. (label, keys) in
+# the cover form's order; Make & Model is two fields printed as one line.
+MUST_HAVE: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Our Ref", ("report_id",)),
+    ("Date of request", ("cover_page.date_of_request",)),
+    ("Requested by", ("cover_page.requested_by",)),
+    ("Type of claim", ("insurance_details.claim_type",)),
+    ("Workshop", ("insurance_details.workshop_assigned",)),
+    ("Date of survey", ("cover_page.date_of_survey",)),
+    ("Registration No.", ("vehicle_info.plate_number",)),
+    ("Make & Model", ("vehicle_info.make", "vehicle_info.model")),
+    ("Point of impact", ("vehicle_info.point_of_impact",)),
+)
+MUST_HAVE_KEYS = frozenset(key for _, keys in MUST_HAVE for key in keys)
 
 # The Annex keys a person may confirm or mark N/A, with the rule a form
 # judges them by while editing. "annex_b" {na: true} is "No labour"; a
@@ -102,7 +125,10 @@ CHECKABLE_KEYS = frozenset(FIELD_RULES) | frozenset(ANNEX_RULES)
 
 # The firm's usual static-check wording: the same on all four past reports'
 # cover pages (example_case CL*.xls, Cover Page section 3), as the cover
-# form's "Use the firm's usual values" button already offers it.
+# form's "Use the firm's usual values" button already offers it. And the
+# note the firm prints under 5 POINT OF IMPACT (R-report gap 16): an
+# optional field, so emptied it is "none", never "needs".
+POINT_OF_IMPACT_NOTE = "See Annex(es) and Motor Accident Reports"
 TEMPLATE_DEFAULTS: dict[str, str] = {
     "vehicle_info.steering_condition": "see annex(es)",
     "vehicle_info.brakes_condition": "see annex(es)",
@@ -110,6 +136,7 @@ TEMPLATE_DEFAULTS: dict[str, str] = {
     "vehicle_info.paintwork_condition": "Good",
     "cover_page.modification": "Nil",
     "cover_page.general_condition": "Good",
+    "cover_page.point_of_impact_note": POINT_OF_IMPACT_NOTE,
 }
 
 STATES = ("ai", "check", "needs", "you", "na", "none")
@@ -466,7 +493,39 @@ def review_state(report_data: dict | None, ai_draft: dict | None, photo_index: l
         "annex_a": annex_a,
         "counts": counts,
         "open": needs + check,
+        # The sign-off's must-have list, and what of it is still missing
+        # (none once signed off: nothing more is asked of the case).
+        "must_have": [{"label": label, "keys": list(keys)} for label, keys in MUST_HAVE],
+        "before_sign_off": [] if signed_off else missing_before_sign_off(data),
     }
+
+
+# ------------------------------------------------------- before sign-off
+
+
+def missing_before_sign_off(data: dict | None) -> list[dict]:
+    """The MUST_HAVE items neither filled in nor marked N/A, in order:
+    [{label, keys}], keys being the ones still open ("Make & Model" may
+    miss only its model). An N/A counts only while the field is blank --
+    a value given since is the value."""
+    data = data if isinstance(data, dict) else {}
+    checked = checked_of(data)
+    out = []
+    for label, keys in MUST_HAVE:
+        open_keys = [key for key in keys if is_blank(value_at(data, key)) and not _na(checked.get(key))]
+        if open_keys:
+            out.append({"label": label, "keys": open_keys})
+    return out
+
+
+def must_have_message(missing: list[dict]) -> str:
+    """"3 things before sign-off: Requested by, Workshop, Date of survey.
+    ..." for the sign-off's refusal."""
+    n = len(missing)
+    names = ", ".join(m["label"] for m in missing)
+    return (f"{n} thing{'s' if n != 1 else ''} before sign-off: {names}. Fill {'each' if n != 1 else 'it'} in on "
+            f"the Cover page, or mark {'it' if n == 1 else 'each'} N/A there if it doesn't apply. "
+            "This applies to every account, admins too.")
 
 
 def list_counts(review: dict) -> tuple[int, int]:
