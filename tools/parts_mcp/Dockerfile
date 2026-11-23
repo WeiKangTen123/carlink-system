@@ -6,7 +6,7 @@
 # the only container that contacts a parts site. Its page cache and catalogue
 # store live in /data, a named volume, so a car looked up once costs nothing
 # the next time, across rebuilds.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
