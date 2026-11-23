@@ -6,7 +6,7 @@ the Solv and Xero apps) runs two Carlink stacks, each from its own clone:
 | Stack | Clone | Compose project | Containers | Port | Address |
 |---|---|---|---|---|---|
 | production | `/opt/carlink-system` | `infra` | `carlink_api`, `carlink_dashboard`, `carlink_nginx`, `carlink_telegram_bot`, `carlink_parts_worker` | 127.0.0.1:8080 | https://carlink.34-16-92-98.sslip.io |
-| staging | `/opt/carlink-staging` | `carlink-staging` | `carlink_staging_api`, `_dashboard`, `_nginx` (+ `_telegram_bot`, `_parts_worker` only on request) | 127.0.0.1:8081 | https://carlink-staging.34-16-92-98.sslip.io (basic auth) |
+| staging | `/opt/carlink-staging` | `carlink-staging` | `carlink_staging_api`, `_dashboard`, `_nginx` (+ `_telegram_bot`, `_parts_worker` only on request) | 127.0.0.1:8081 | https://carlink-staging.34-16-92-98.sslip.io (the app's sign-in; signups off; noindex) |
 
 | File | What |
 |---|---|
@@ -104,7 +104,7 @@ signups, runs the smoke checks and writes `/opt/carlink-staging/.deployed`
 
 | # | Staging checklist | Who | Pass when |
 |---|---|---|---|
-| S | Smoke on staging: health, 401s signed out, worker route 404, `/login`, containers running and not restarted since the deploy, logs clean since `up`, no token in a log, signups closed, https asks for the staging password, production still mounts the shared AI folder | `deploy.sh` (again any time: `--smoke-only`; after 5 minutes for restarts) | `smoke: PASS` -- don't use staging (no password, no trial) until the https address answers 401 |
+| S | Smoke on staging: health, 401s signed out, worker route 404, `/login`, containers running and not restarted since the deploy, logs clean since `up`, no token in a log, signups closed, https serves `/login` with a robots.txt that keeps search engines out, production still mounts the shared AI folder | `deploy.sh` (again any time: `--smoke-only`; after 5 minutes for restarts) | `smoke: PASS` -- don't use staging (no trial) until the https address serves `/login` |
 | C1 | Sign in; Settings pages open | owner | works |
 | C2 | New case: upload photos (the seed's placeholders via `--images-out`, or a non-customer photo set), detection, edit parts, file, sign off | owner | works, nothing odd |
 | C3 | PDF and Excel download | owner | open and look right |
@@ -237,15 +237,15 @@ annotated order. In short:
    the running production container through a pipe (never on screen or in a
    command line); production's flag lines appended (the example file has the
    `grep`).
-5. **sudo**: the host nginx site `host-nginx/carlink-staging.conf`, the
-   htpasswd file, `certbot --nginx -d carlink-staging.34-16-92-98.sslip.io`.
+5. **sudo**: the host nginx site `host-nginx/carlink-staging.conf` (no
+   basic auth since 23 Nov: the owner chose one sign-in page), `certbot --nginx -d carlink-staging.34-16-92-98.sslip.io`.
    A site that fails `nginx -t` and stays in `sites-enabled` breaks the next
    reload (a certbot renewal) or reboot for **Solv and Xero too**, so every
    `nginx -t` has its undo:
    `sudo nginx -t || sudo rm /etc/nginx/sites-enabled/carlink-staging` --
    after linking the site, and again after certbot. Don't use staging until
-   `https://carlink-staging.34-16-92-98.sslip.io/` answers 401 (until then
-   the password would go over plain http).
+   `https://carlink-staging.34-16-92-98.sslip.io/login` answers 200 over
+   https (until then a password would go over plain http).
 6. `bash infra/deploy.sh --env staging --ref <commit>` (the very first time,
    before production runs the guard: `--allow-unshared-prod`), then
    `docker exec carlink_staging_api python scripts/seed_staging.py`.

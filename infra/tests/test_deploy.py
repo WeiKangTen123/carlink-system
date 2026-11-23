@@ -102,6 +102,8 @@ case "$url" in
   */api/health) code=200; body='{"status":"ok"}' ;;
   */api/auth/me | */api/reports | */api/system/info) code=401; body='{"detail":"Not signed in."}' ;;
   */api/catalogue-worker/claim) code=404; body= ;;
+  https://*/login) code=${MOCK_PUBLIC_CODE:-200}; body='<html>' ;;
+  https://*/robots.txt) code=200; body=${MOCK_ROBOTS-$'User-agent: *\nDisallow: /'} ;;
   */login) code=200; body='<html>' ;;
   */api/auth/signup) code=200; body=${MOCK_SIGNUP:-'{"open":false}'} ;;
   https://*) code=${MOCK_PUBLIC_CODE:-401}; body= ;;
@@ -541,9 +543,19 @@ def smoke_failures(w: World) -> None:
           "restart counts from before the deploy don't fail it (the baseline is kept in .deployed)", out)
     code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_STATE="true 4")
     check(code == 1 and "restarts 4 (was 3 after the deploy)" in out, "... a restart after it does", out)
-    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_PUBLIC_CODE="200")
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only")
+    check(code == 0 and "/login 200 over https; its robots.txt keeps search engines out" in out,
+          "the public address reaching staging's sign-in page, no pop-up (owner, 23 Nov): passes", out)
+    calls = w.calls()
+    check("curl https://carlink-staging.34-16-92-98.sslip.io/login" in calls
+          and "curl https://carlink-staging.34-16-92-98.sslip.io/robots.txt" in calls,
+          "... checked on the public https address: /login and robots.txt", calls)
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_PUBLIC_CODE="502")
+    check(code == 1 and "/login answered '502'" in out and "don't use staging until it is" in out,
+          "the public address not reaching the sign-in page fails the staging smoke (review L9)", out)
+    code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_ROBOTS="")
     check(code == 1 and "don't use staging until it is" in out,
-          "the public address not asking for the password fails the staging smoke (review L9)", out)
+          "no robots.txt that keeps search engines out fails it too (not through the staging host site)", out)
     code, out = w.run("deploy.sh", "--env", "staging", "--smoke-only", MOCK_PROD_MOUNTS="/app/storage /app/app")
     check(code == 1 and "doesn't mount the shared AI folder" in out,
           "production no longer mounting the shared folder fails the staging smoke (review L14)", out)
