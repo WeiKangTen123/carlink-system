@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,10 +38,29 @@ PDF_IMAGE_MAX_EDGE = 1600
 PDF_IMAGE_QUALITY = 80
 
 
+class UnsafePath(ValueError):
+    """A path built from a request value that would leave its folder."""
+
+
+def confined_path(base, *parts: str) -> Path:
+    """base/parts..., refused (UnsafePath) unless it ends up strictly inside
+    base once "." and ".." are worked out. For folders named after a value
+    from a request (a case id, a chat id): case ids are made by the server
+    (models.gen_id) and every route checks one against the database before
+    it gets here, so this only makes that rule explicit where the path is
+    built. For a plain id the result reads exactly as base / id."""
+    root = os.path.normpath(os.fspath(base))
+    full = os.path.normpath(os.path.join(root, *parts))
+    if not full.startswith(root.rstrip(os.sep) + os.sep):
+        raise UnsafePath(f"{parts!r} leaves {root}")
+    return Path(full)
+
+
 def incident_dir(incident_id: str) -> Path:
     """incidents/{year}/{month}/{incident_id}/ -- matches docs/proposal.md section G."""
     now = datetime.now(timezone.utc)
-    d = Path(settings.storage_dir) / "incidents" / f"{now.year:04d}" / f"{now.month:02d}" / incident_id
+    month = Path(settings.storage_dir) / "incidents" / f"{now.year:04d}" / f"{now.month:02d}"
+    d = confined_path(month, incident_id)
     (d / "photos").mkdir(parents=True, exist_ok=True)
     return d
 

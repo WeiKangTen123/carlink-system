@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.reports.models import IntakePhoto
 from app.storage.files import (
+    UnsafePath,
+    confined_path,
     incident_dir,
     pdf_image_path_for,
     preview_path_for,
@@ -23,13 +25,17 @@ def intake_dir(report_id: str) -> Path:
     finalizing a draft is a single rmtree. Deliberately not incident_dir(),
     which is keyed on the current month and would split a draft whose
     uploads straddle a month boundary across two folders."""
-    d = Path(settings.storage_dir) / "intake" / report_id
+    d = confined_path(Path(settings.storage_dir) / "intake", report_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def remove_intake_dir(report_id: str) -> None:
-    d = Path(settings.storage_dir) / "intake" / report_id
+    try:
+        d = confined_path(Path(settings.storage_dir) / "intake", report_id)
+    except UnsafePath:
+        # Never the intake folder itself ("") or anything outside it.
+        return
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
 

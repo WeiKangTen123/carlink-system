@@ -13,7 +13,10 @@ storage bucket (Phase 1, see docs/proposal.md section E) or a tunnel for
 local testing.
 """
 import asyncio
+import ipaddress
 import logging
+import re
+import socket
 
 from fastapi import APIRouter, Request, Response
 
@@ -29,7 +32,7 @@ from app.reports.db import SessionLocal
 from app.reports.filing import file_case_data
 from app.reports.models import Report
 from app.rendering.renderer import render_pdf
-from app.storage.files import report_pdf_path, save_photo, tmp_dir
+from app.storage.files import confined_path, report_pdf_path, save_photo, tmp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +55,15 @@ _NO_AI_MESSAGE = "Sorry, AI drafting isn't available over WhatsApp yet. Please f
 # media only from Twilio's API host, and no bigger than a dashboard photo.
 # Twilio's own SDK isn't installed, so X-Twilio-Signature isn't checked;
 # do that before turning this path on.
-MEDIA_HOSTS = {"api.twilio.com"}
+MEDIA_HOST = "api.twilio.com"
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
+# What Twilio's MediaUrl{n} looks like after https://api.twilio.com: the
+# account (AC...), message (MM..., or SM...) and media (ME...) ids.
+_MEDIA_PATH = re.compile(
+    r"/2010-04-01/Accounts/(AC[0-9a-fA-F]{32})/Messages/([A-Z]{2}[0-9a-fA-F]{32})/Media/(ME[0-9a-fA-F]{32})"
+)
+# Twilio answers a media URL with a redirect to its CDN.
+MAX_REDIRECTS = 3
 
 
 def _draft(description: str, session):
@@ -73,36 +83,91 @@ def _twiml(*messages: str) -> Response:
     return Response(content=xml, media_type="application/xml")
 
 
-def _media_url_ok(url: str) -> bool:
-    """Only Twilio's own media URLs (https://api.twilio.com/...): a
-    MediaUrl is whatever the request says, and _download_media sends the
-    Twilio account's SID and token with it."""
+def _media_url(url: str) -> str | None:
+    """The Twilio media URL to fetch, rebuilt here from the ids in the one
+    the request names -- or None unless that is exactly
+    https://api.twilio.com/2010-04-01/Accounts/AC.../Messages/MM.../Media/ME...
+    (no other host, port, user info, query or fragment). A MediaUrl is
+    whatever the request says, and _download_media sends the Twilio
+    account's SID and token with it."""
     try:
         parsed = httpx.URL(url)
     except Exception:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.host != MEDIA_HOST
+        or parsed.port not in (None, 443)
+        or parsed.userinfo
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    match = _MEDIA_PATH.fullmatch(parsed.path)
+    if not match:
+        return None
+    account, message, media = match.groups()
+    return f"https://{MEDIA_HOST}/2010-04-01/Accounts/{account}/Messages/{message}/Media/{media}"
+
+
+def _public_host(host: str) -> bool:
+    """Whether every address host resolves to is a public one: Twilio's
+    redirect may go to its CDN, never into this server's own network (the
+    other containers, the cloud metadata address)."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
         return False
-    return parsed.scheme == "https" and parsed.host in MEDIA_HOSTS and parsed.port in (None, 443)
+    try:
+        addresses = {ipaddress.ip_address(str(info[4][0]).split("%")[0]) for info in infos}
+    except ValueError:
+        return False
+    return bool(addresses) and all(a.is_global for a in addresses)
+
+
+async def _redirect_ok(url: httpx.URL) -> bool:
+    if url.scheme != "https" or url.port not in (None, 443) or not url.host:
+        return False
+    return await asyncio.to_thread(_public_host, url.host)
+
+
+def _media_file_name(chat_id: str, index: int) -> str:
+    """whatsapp:+6591234567, photo 0 -> whatsapp_+6591234567_0.jpg: one
+    plain file name in tmp, whatever the request's From says."""
+    return f"{re.sub(r'[^A-Za-z0-9+_-]', '_', chat_id)}_{index}.jpg"
 
 
 async def _download_media(chat_id: str, url: str, index: int) -> str:
     """One photo from Twilio, at most MAX_MEDIA_BYTES. Raises ValueError for
-    a URL that isn't Twilio's or a file that's too big (nothing kept).
-    Twilio answers with a redirect to its CDN; httpx drops the credentials
-    when a redirect leaves the host they were sent to."""
-    if not _media_url_ok(url):
+    a URL that isn't Twilio's, a redirect anywhere but a public https host,
+    or a file that's too big (nothing kept). The account's credentials go
+    only to Twilio's API host, never to where it redirects."""
+    target = _media_url(url)
+    if target is None:
         raise ValueError("not a Twilio media URL")
-    dest = tmp_dir() / f"{chat_id.replace(':', '_')}_{index}.jpg"
+    dest = confined_path(tmp_dir(), _media_file_name(chat_id, index))
     auth = (settings.twilio_account_sid, settings.twilio_auth_token)
     size = 0
-    async with httpx.AsyncClient(follow_redirects=True, max_redirects=3, timeout=30.0) as client:
-        async with client.stream("GET", url, auth=auth) as resp:
-            resp.raise_for_status()
-            with open(dest, "wb") as out:
-                async for chunk in resp.aiter_bytes():
-                    size += len(chunk)
-                    if size > MAX_MEDIA_BYTES:
-                        break
-                    out.write(chunk)
+    next_url = httpx.URL(target)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client:
+        for _hop in range(MAX_REDIRECTS + 1):
+            hop_auth = auth if next_url.host == MEDIA_HOST else None
+            async with client.stream("GET", next_url, auth=hop_auth) as resp:
+                if resp.is_redirect:
+                    next_url = resp.url.join(resp.headers.get("location") or "")
+                    if not await _redirect_ok(next_url):
+                        raise ValueError("redirect to a host that isn't public https")
+                    continue
+                resp.raise_for_status()
+                with open(dest, "wb") as out:
+                    async for chunk in resp.aiter_bytes():
+                        size += len(chunk)
+                        if size > MAX_MEDIA_BYTES:
+                            break
+                        out.write(chunk)
+                break
+        else:
+            raise ValueError("too many redirects")
     if size > MAX_MEDIA_BYTES:
         dest.unlink(missing_ok=True)
         raise ValueError("media over the size limit")
@@ -193,7 +258,7 @@ async def whatsapp_webhook(request: Request) -> Response:
             return _twiml(
                 "✅ Report saved to Carlink System!\n\n"
                 f"🖥️ Loss Adjuster Studio:\n"
-                f"https://carlink.34-45-253-162.sslip.io/reports/{report_id}\n\n"
+                f"{settings.public_base_url.rstrip('/')}/reports/{report_id}\n\n"
                 "Send /new or a photo to file another report."
             )
         session.pending_edits.append(body)
