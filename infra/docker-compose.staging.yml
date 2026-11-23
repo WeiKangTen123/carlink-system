@@ -15,7 +15,7 @@
 #     volumes (carlink-staging_*) and network -- production's project is
 #     "infra" and its volumes infra_* hold the live data;
 #   - nginx on 127.0.0.1:8081 (NGINX_PORT in its infra/.env; host nginx site
-#     host-nginx/carlink-staging.conf adds HTTPS, basic auth and noindex);
+#     host-nginx/carlink-staging.conf adds HTTPS and noindex);
 #   - memory and CPU caps (about 3 GB if everything ran at once), and
 #     oom_score_adj 500, so if memory ever runs out the kernel stops staging
 #     before production, Solv or Xero;

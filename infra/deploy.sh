@@ -528,12 +528,16 @@ smoke() {
         else
             smoke_fail "signups are not closed on staging (${body:-no answer}): docker exec ${NAME}_api python scripts/seed_staging.py --close-signups-only"
         fi
-        # Review L9: until https asks for the password, don't use staging.
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/" || true)
-        if [ "$code" = 401 ]; then
-            smoke_ok "$URL asks for the staging password (401)"
+        # Review L9, changed by the owner on 23 Nov: no basic-auth pop-up. The
+        # app's own sign-in guards staging, and signups are closed (checked
+        # above). https must reach staging's sign-in page through the host
+        # site, whose robots.txt keeps search engines out.
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/login" || true)
+        robots=$(curl -s --max-time 10 "$URL/robots.txt" || true)
+        if [ "$code" = 200 ] && [[ "$robots" == *"Disallow: /"* ]]; then
+            smoke_ok "$URL/login 200 over https; its robots.txt keeps search engines out"
         else
-            smoke_fail "$URL answered '$code', not 401: the host nginx site with basic auth and https isn't in place -- don't use staging until it is (README first setup, step 6)"
+            smoke_fail "$URL/login answered '$code' (robots.txt: '${robots:0:40}'): the host nginx site with https isn't in place -- don't use staging until it is (README first setup, step 5)"
         fi
         # Review L14: production must still count its AI use in the shared folder.
         mounts=$(docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' carlink_api 2>/dev/null || true)
