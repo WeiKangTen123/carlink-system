@@ -54,6 +54,12 @@ KEY_METRICS = (
     "link_shown", "link_real", "link_wrong_side", "link_extra", "link_wrong", "link_wrong_per_real", "link_strip_wrong",
     "link_hidden_shown", "lz_found", "lzl_found", "lz_recall", "lzl_recall", "lz_inside_found", "lzl_inside_found",
     "lz_inside_recall", "lzl_inside_recall", "lzl_hidden_recall", "lchk_calls", "lchk_s",
+    # Wave 2 (plans/2026-11-22-enhance-staging 3c): the sorter's set-aside
+    # photos (E10), the wrong-end zones (E11), the geometry's sides (E7), the
+    # linked check's verdicts by truth (E9; replay_link_check.py too).
+    *(f"sort_{k}" for k in bench.SORTER_SET_ASIDE), "zone_other_end", "wrong_end_items", "wrong_end_sugg",
+    "wrong_end_sugg_real", "geo_zones", "geo_zone_changed", "geo_side_changed", "zone_side_flips",
+    "lcv_answered", "lcv_unanswered", *(f"lcv_{g}_{v}" for g in ("real", "wrong") for v in bench.LINK_VERDICTS),
 )
 HIGHER_IS_BETTER = {
     "found", "visible_found", "facts_ok", "visible_recall", "checklist_found", "checklist_visible_found",
@@ -68,6 +74,7 @@ HIGHER_IS_BETTER = {
     "chk_real_kept_rate", "chk_wrong_no_rate",
     "link_real", "lz_found", "lzl_found", "lz_recall", "lzl_recall", "lz_inside_found", "lzl_inside_found",
     "lz_inside_recall", "lzl_inside_recall", "lzl_hidden_recall",
+    "wrong_end_sugg_real", "lcv_answered", "lcv_real_seen", "lcv_real_likely", "lcv_wrong_no",
 }
 LOWER_IS_BETTER = {
     "extra", "wrong_side", "side_undetermined", "checklist_extra", "sort_s", "read_s", "calls", "attempts",
@@ -77,6 +84,7 @@ LOWER_IS_BETTER = {
     *(f"zone_{zone}_extra" for zone in bench.ZONES),
     "sug_wrong", "dec_s", "recheck_s", "n_503",
     "link_wrong_side", "link_extra", "link_wrong", "link_wrong_per_real", "link_strip_wrong", "lchk_calls", "lchk_s",
+    "sort_unusable", "sort_unsorted", "lcv_unanswered", "lcv_real_no", "lcv_wrong_seen", "lcv_wrong_likely",
 }
 # In neither: annex_price_diff, annex_price_diff_rate and annex_adjusted_diff
 # are signed, and closer to 0 is better whichever way they move.

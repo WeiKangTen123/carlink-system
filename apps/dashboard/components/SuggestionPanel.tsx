@@ -278,6 +278,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
             The list already has {f.otherSideListed}. Check this isn&apos;t the same damage on the other side.
           </div>
         )}
+        {f.wrongEndNote && <div className="sg-note">{f.wrongEndNote}</div>}
         <div className="sg-card-foot">
           {slides.length > 0 && (
             <div className="sg-thumbs">

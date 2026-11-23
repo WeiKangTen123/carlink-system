@@ -135,6 +135,17 @@ x-bot-service: &bot-service
     - INTAKE_SORT_WORKERS=${INTAKE_SORT_WORKERS:-3}
     - INTAKE_KEEP_SORT_LABEL=${INTAKE_KEEP_SORT_LABEL:-off}
     - INTAKE_SORT_RESCUE=${INTAKE_SORT_RESCUE:-off}
+    # Wave 2's accuracy switches (plans/2026-11-22-enhance-staging 3c): more
+    # photos for the main read (E12; blank = 32) and its own photo size
+    # (E12b; blank = as the other reads), the side worked out from the
+    # sort's geometry (E7), a "wrong end" zone read's finds (E11), the
+    # linked check's areas (E9a). Defaults are config.py's: today's
+    # behaviour byte for byte.
+    - INTAKE_MAX_READ_PHOTOS=${INTAKE_MAX_READ_PHOTOS:-}
+    - GEMINI_IMAGE_RESOLUTION_MAIN_READ=${GEMINI_IMAGE_RESOLUTION_MAIN_READ:-}
+    - INTAKE_SIDE_GEOMETRY=${INTAKE_SIDE_GEOMETRY:-off}
+    - INTAKE_ZONE_WRONG_END=${INTAKE_ZONE_WRONG_END:-drop}
+    - INTAKE_LINK_CHECK_MAX_CALLS=${INTAKE_LINK_CHECK_MAX_CALLS:-2}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

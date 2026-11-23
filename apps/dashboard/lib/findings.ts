@@ -53,6 +53,8 @@ export type Finding = {
   confidence: string | null;
   check: SuggestionCheck | null;
   otherSideListed: string | null;
+  /** Wave 2 E11: the "wrong end" zone read's note, on its suggestion only. */
+  wrongEndNote?: string | null;
   /** Contract 10: "link", a part tied to a listed one by the link table
    * (SecondLookItem.source). */
   source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side";
@@ -386,6 +388,7 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       confidence: s.confidence ?? null,
       check: s.check ?? null,
       otherSideListed: s.other_side_listed ?? null,
+      ...(s.wrong_end_note ? { wrongEndNote: s.wrong_end_note } : {}),
       source,
       condition: s.condition || s.damage_type || null,
       ...linkFields(s),

@@ -82,6 +82,9 @@ _ADDED_COLUMNS = [
     # The sorter's own kind of a photo a person regrouped
     # (models.IntakePhoto.ai_kind, R-batching B5).
     ("intake_photos", "ai_kind", "VARCHAR"),
+    # The sort's geometry of a photo, for E7's side worked out in code
+    # (models.IntakePhoto.geometry, plans/2026-11-22-enhance-staging 3c).
+    ("intake_photos", "geometry", "JSON"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

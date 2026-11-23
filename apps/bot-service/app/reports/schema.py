@@ -217,6 +217,9 @@ LINK_LOOK_DEFAULTS = {"link_run": None}
 # cut_reason on a cut item, and SecondLook.cut / cut_counts.
 FIX_SUGGESTION_DEFAULTS = {"other_side_of": None, "cut_reason": None}
 FIX_LOOK_DEFAULTS = {"cut": [], "cut_counts": {}}
+# Wave 2 (plans/2026-11-22-enhance-staging 3c), the same way. E11:
+# wrong_end_note on a "wrong end" zone read's suggestion.
+WAVE2_SUGGESTION_DEFAULTS = {"wrong_end_note": None}
 
 
 def _without_defaults(dumped, defaults: dict):
@@ -739,10 +742,16 @@ class SecondLookItem(BaseModel):
     # called it not damaged: demoted, then cut, or dropped).
     other_side_of: Optional[str] = None
     cut_reason: Optional[str] = None
+    # Wave 2 E11 (settings.intake_zone_wrong_end "keep"), code-set, not in a
+    # dump while None: a find of an end zone read whose photos it said show
+    # the other end -- "The rear read thought these photos show the front."
+    # (zone_read.wrong_end_note); the Review step shows it as a note.
+    wrong_end_note: Optional[str] = None
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):
-        return _without_defaults(handler(self), {**LINK_SUGGESTION_DEFAULTS, **FIX_SUGGESTION_DEFAULTS})
+        return _without_defaults(handler(self), {**LINK_SUGGESTION_DEFAULTS, **FIX_SUGGESTION_DEFAULTS,
+                                                 **WAVE2_SUGGESTION_DEFAULTS})
 
 
 # SecondLook.decisions kept per case.

@@ -82,7 +82,7 @@ mimetypes.add_type("image/webp", ".webp")
 mimetypes.add_type("image/heic", ".heic")
 
 
-def image_part(path: str, kind: str | None = None) -> dict:
+def image_part(path: str, kind: str | None = None, resolutions: str | None = None) -> dict:
     """An inline image input for client.interactions.create.
 
     kind: the photo's kind as the sorter filed it (ai/triage.PHOTO_KINDS),
@@ -90,6 +90,9 @@ def image_part(path: str, kind: str | None = None) -> dict:
     carries the resolution settings.gemini_image_resolution names for that
     kind (image_resolution). None -- sorting, the second look, the bot,
     which know no kinds -- sends the image as before, at Gemini's default.
+    resolutions: another table written like that setting, used in its
+    place (E12b: the main read's settings.gemini_image_resolution_main_read);
+    None: the setting's.
     """
     media_type, _ = mimetypes.guess_type(path)
     part = {
@@ -97,22 +100,23 @@ def image_part(path: str, kind: str | None = None) -> dict:
         "data": base64.b64encode(Path(path).read_bytes()).decode("utf-8"),
         "mime_type": media_type or "image/jpeg",
     }
-    resolution = image_resolution(kind)
+    resolution = image_resolution(kind, resolutions)
     if resolution:
         part["resolution"] = resolution
     return part
 
 
-def image_resolution(kind: str | None) -> str | None:
+def image_resolution(kind: str | None, resolutions: str | None = None) -> str | None:
     """The "resolution" for a reading-call photo of this kind: its entry in
-    settings.gemini_image_resolution, else the "*" entry, else None (no key
-    sent: Gemini's default, "high" on Gemini 3). Per image because the
-    Interactions API has no request-wide media resolution, and per kind
-    because a close-up of a dent wants the detail an overview doesn't --
-    ultra_high is 2240 tokens a photo against 1120, on a 32-photo call."""
+    settings.gemini_image_resolution (or in `resolutions`, when given), else
+    the "*" entry, else None (no key sent: Gemini's default, "high" on
+    Gemini 3). Per image because the Interactions API has no request-wide
+    media resolution, and per kind because a close-up of a dent wants the
+    detail an overview doesn't -- ultra_high is 2240 tokens a photo against
+    1120, on a 32-photo call."""
     if kind is None:
         return None
-    table = image_resolutions(settings.gemini_image_resolution)
+    table = image_resolutions(settings.gemini_image_resolution if resolutions is None else resolutions)
     return table.get(kind) or table.get(ANY)
 
 

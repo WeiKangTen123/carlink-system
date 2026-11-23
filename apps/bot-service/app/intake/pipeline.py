@@ -51,7 +51,7 @@ from app.ai.extraction import draft_report
 from app.ai.keys import AiActor, AiUnavailable, scrub
 from app.ai.triage import BATCH_SIZE, clean_box, triage_photos
 from app.config import settings
-from app.intake import crops, zones
+from app.intake import crops, geometry, zones
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts import catalogue
 from app.parts.prefill import item_key
@@ -143,6 +143,26 @@ UNSORTED_BUDGET = 4
 # 120-second reading timeout. The default of the intake_max_read_photos
 # setting (read_limit): 40 is ~10.7MB, still one request.
 MAX_READ_PHOTOS = 32
+# E12 (plans/2026-11-22-enhance-staging 3c): with intake_max_read_photos
+# above MAX_READ_PHOTOS, the photos past today's first 32 are added only
+# while the request stays under this many bytes (the photos and close-ups as
+# sent, base64): Gemini takes at most 20 MB in one inline request, the prompt
+# and the notes included, and 64 previews of ~200 KB would pass it. The
+# first 32 are picked exactly as today, whatever their size; a later photo
+# that would pass the budget is skipped and the next one tried (the review's
+# M2). At 32 or fewer photos nothing is counted -- the choice is as before.
+READ_BYTES_BUDGET = 18_000_000
+# The review's M3: with settings.intake_read_crops, each close-up the read
+# may send (intake_read_crops_max) is counted at this many bytes before the
+# extra photos are picked -- a 1600 px JPEG at quality 85 (crops.MAX_EDGE,
+# QUALITY) is ~0.3-0.8 MB as base64 -- and the close-ups made are measured
+# again after (fit_crops).
+CROP_RESERVE_BYTES = 800_000
+# The review's L5: the main read's try waits READ_TIMEOUT, plus this much for
+# each photo past MAX_READ_PHOTOS, at most READ_TIMEOUT_MAX.
+READ_TIMEOUT = 120.0
+READ_TIMEOUT_PER_EXTRA = 1.5
+READ_TIMEOUT_MAX = 180.0
 # Kinds whose photo still counts as damage evidence when it shows damage and
 # names the damaged part (e.g. a boot photo the sorter called interior).
 # An "other" photo showing damage counts with no part too: the sorter can't
@@ -418,6 +438,10 @@ def _sort(report_id: str, actor: AiActor) -> None:
                 # (settings.intake_sort_damage_box).
                 if "damage_box" in found:
                     photo.damage_box = found["damage_box"]
+                # E7: only a sort asked for the geometry says anything of it
+                # (settings.intake_side_geometry).
+                if "geometry" in found:
+                    photo.geometry = found["geometry"]
             with done_lock:
                 done += len(batch)
                 progress = done
@@ -681,12 +705,129 @@ def _top_up_order(
     )
 
 
-def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
+def _file_bytes(path) -> int:
+    """A file as base64 sends it; 0 when it is gone."""
+    try:
+        return (Path(path).stat().st_size + 2) // 3 * 4
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
+def _sent_bytes(photo: IntakePhoto) -> int:
+    """What one photo adds to the reading's request: its AI input (the 1600
+    px preview, else the original) as base64. 0 when the file is gone (it
+    can't be sent anyway)."""
+    try:
+        return _file_bytes(ai_input_path(photo.path))
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
+def read_bytes_budget() -> int:
+    """E12's budget for the photos (READ_BYTES_BUDGET), less the close-ups'
+    reserve while settings.intake_read_crops is on (the review's M3)."""
+    reserve = 0
+    if getattr(settings, "intake_read_crops", False):
+        reserve = max(0, int(getattr(settings, "intake_read_crops_max", 0) or 0)) * CROP_RESERVE_BYTES
+    return max(0, READ_BYTES_BUDGET - reserve)
+
+
+def read_timeout(photos: int) -> float:
+    """The main read's try timeout for this many photos: READ_TIMEOUT up to
+    MAX_READ_PHOTOS (as before), then READ_TIMEOUT_PER_EXTRA more for each
+    photo past it, at most READ_TIMEOUT_MAX (the review's L5)."""
+    extra = max(0, photos - MAX_READ_PHOTOS)
+    return min(READ_TIMEOUT_MAX, READ_TIMEOUT + READ_TIMEOUT_PER_EXTRA * extra) if extra else READ_TIMEOUT
+
+
+def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = False) -> list[IntakePhoto]:
     """The photos the drafting call sees, in case order: up to read_limit(),
     every slot filled while usable photos are left (_top_up_order). Excluded
     and unusable photos never go; blurry ones only after sharp ones of the
-    same kind."""
+    same kind.
+
+    The priority order the slots fill in (E12 documents it; a higher
+    intake_max_read_photos only takes further down the same order):
+      1. fact photos by FACT_BUDGET -- log card 3, VIN plate 1, police
+         report 3, odometer 1, document 2, the other party's car 2, tyre 1
+         (at most 13; sharp before blurry, spread over the camera order);
+      2. OVERVIEW_BUDGET (3) overviews, one per area in turn;
+      3. damage evidence (_is_damage_evidence: damage close-ups, and
+         interior / "other" photos showing damage) in _damage_order --
+         every damaged part one photo before any part a second, the groups
+         showing damage first -- taking every slot but the unsorted ones';
+      4. up to UNSORTED_BUDGET (4) unsorted photos, spread;
+      5. slots still left: _top_up_order (the rest of the damage, other car
+         photos showing damage, overviews, unsorted, tyre / interior /
+         other, then the other party's car, the scene and paperwork).
+    Above MAX_READ_PHOTOS (E12, the review's M2): the first MAX_READ_PHOTOS
+    are exactly today's (_priority_pick at 32, whatever their size); the
+    rest follow the order a pick of read_limit() photos takes (step 3 then
+    takes further down the same damage order), then any usable photo left,
+    each only while the request stays within read_bytes_budget() -- one that
+    would pass it is skipped and the next tried (_extra_photos). At 32 or
+    fewer nothing is measured.
+    priority_order: the chosen photos in the order they were taken (for the
+    tests and the benchmark's notes), not in case order."""
     cap = read_limit()
+    chosen = _priority_pick(photos, min(cap, MAX_READ_PHOTOS))
+    if cap > MAX_READ_PHOTOS:
+        chosen = chosen + _extra_photos(photos, chosen, cap)
+    if priority_order:
+        return chosen
+    order = {p.id: i for i, p in enumerate(photos)}
+    return sorted(chosen, key=lambda p: order[p.id])
+
+
+def _extra_photos(photos: list[IntakePhoto], first: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
+    """E12: the photos past today's first ones, up to cap in all: in the
+    order a pick of `cap` photos takes them, then every other usable photo
+    in an unlimited pick's order; one that would take the request past
+    read_bytes_budget() is skipped (logged), never ending the choice."""
+    budget = read_bytes_budget()
+    spent = sum(_sent_bytes(p) for p in first)
+    taken = {p.id for p in first}
+    out: list[IntakePhoto] = []
+    skipped = 0
+    for p in _priority_pick(photos, cap) + _priority_pick(photos, len(photos)):
+        if len(first) + len(out) >= cap:
+            break
+        if p.id in taken:
+            continue
+        taken.add(p.id)
+        size = _sent_bytes(p)
+        if spent + size > budget:
+            skipped += 1
+            continue
+        spent += size
+        out.append(p)
+    if skipped:
+        logger.warning("Reading: %d photo(s) left out of the %d-photo read to stay under %.1f MB (%d taken, %.1f MB)",
+                       skipped, cap, budget / 1e6, len(first) + len(out), spent / 1e6)
+    return out
+
+
+def fit_crops(photo_bytes: int, made: dict[str, str]) -> dict[str, str]:
+    """E12 with close-ups (the review's M3): the close-ups `made` (best
+    first) that keep the request -- photo_bytes of photos, then each
+    close-up as sent -- within READ_BYTES_BUDGET; the rest are left out."""
+    out: dict[str, str] = {}
+    total = photo_bytes
+    for photo_id, path in made.items():
+        size = _file_bytes(path)
+        if total + size > READ_BYTES_BUDGET:
+            continue
+        total += size
+        out[photo_id] = path
+    if len(out) < len(made):
+        logger.warning("Reading: %d close-up(s) left out to stay under %.1f MB", len(made) - len(out),
+                       READ_BYTES_BUDGET / 1e6)
+    return out
+
+
+def _priority_pick(photos: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
+    """select_for_reading's choice of at most `cap` photos, in the priority
+    order they are taken (its docstring), nothing measured."""
     usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
     for p in usable:
@@ -718,9 +859,7 @@ def select_for_reading(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     take(unsorted, UNSORTED_BUDGET)
     # Room left over (a case with few damage photos): every other photo.
     take(_top_up_order(usable, by_kind, damage_pool, unsorted), cap)
-
-    order = {p.id: i for i, p in enumerate(photos)}
-    return sorted(chosen, key=lambda p: order[p.id])
+    return chosen
 
 
 # Contract 8 D1: the photos a close-up may be cut from -- the insured car's
@@ -813,12 +952,19 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if zone_mode:
             # The areas to read one at a time, from every photo of the case.
             zone_jobs = zones.jobs_for(photos, labels)
+        # Wave 2 (plans/2026-11-22-enhance-staging 3c): the zone reads' E7 /
+        # E11 options, None at the defaults; E7's side of each photo's area
+        # group for the side resolver, None while off.
+        extras = zones.extras_for(photos) if zone_mode else None
+        geo_mode = geometry.mode()
+        side_groups = geometry.area_sides(photos) if geo_mode in geometry.ACTING else None
         # Contract 8 D1: close-ups beside the photos the sorter boxed. Off:
         # no box is read and the request is as before.
         with_crops = bool(getattr(settings, "intake_read_crops", False))
         candidates = crop_candidates(selected) if with_crops else []
     finally:
         db.close()
+    with_extras = {"extras": extras} if extras is not None else {}
 
     # The photos as the model was told them ("Photo P03:"); renumbered to
     # the case's at filing (runs.relabel_last_read).
@@ -835,6 +981,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     closeups: set[str] = set()
     if with_crops:
         made = read_crops(candidates, settings.intake_read_crops_max)
+        if read_limit() > MAX_READ_PHOTOS:
+            # E12 (the review's M3): the close-ups made count in the budget.
+            made = fit_crops(sum(_file_bytes(path) for _, _, path in inputs), made)
         extra["photo_crops"] = [made.get(photo_id) for _, photo_id, _ in inputs]
         closeups = set(made)
         logger.info("Reading %s: %d close-up(s) of %d boxed photo(s)", report_id, len(made), len(candidates))
@@ -845,7 +994,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             [path for _, _, path in inputs],
             photo_labels=[label for label, _, _ in inputs],
             photo_hints=hints,
-            timeout=120.0,
+            # The review's L5: 120 s as before, more for a read past 32 photos.
+            timeout=read_timeout(len(inputs)),
             actor=actor,
             **extra,
             **limits,
@@ -863,7 +1013,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     zone_started: float | None = None
     # B2 only with F1 "zones" (the review's M4): a failed main read then
     # uses the zone answers already paid for, instead of throwing them away.
-    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact) if (
+    parallel = ParallelZones.start(report_id, actor, zone_jobs, early_intact, **with_extras) if (
         zone_mode and zone_jobs and parallel_reads_on() and main_read_fallback_on()) else None
     if parallel is not None:
         early_walk, zone_started = parallel.walk, parallel.started
@@ -901,7 +1051,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             early_reads = zones.zone_reads(
                 report_id, actor, zone_jobs,
                 progress=lambda done: _set_stage(report_id, "reading", done, 1 + len(zone_jobs)),
-                intact=early_intact, walk=early_walk,
+                intact=early_intact, walk=early_walk, **with_extras,
             )
         found_some = any(found for _, found in early_reads or [])
         # The lead's rule (22 Nov): the second try only while the run is
@@ -982,7 +1132,7 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             data["damage_summary"], disputed, zone_reads = zones.read_and_merge(
                 report_id, actor, data.get("damage_summary") or [], zone_jobs,
                 progress=lambda done: _set_stage(report_id, "reading", 1 + done, total),
-                intact=intact, **({"walk": walked} if walked is not None else {}),
+                intact=intact, **({"walk": walked} if walked is not None else {}), **with_extras,
             )
         # Contract 9: kept beside the AI draft, never in Report.data
         # (second_look._store reads them).
@@ -1005,6 +1155,10 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # are suggestions. resolve_sides and the agreement rule below
             # then see the list only.
             data["damage_summary"], zone_draft["zone_suggestions"] = zones.split_suggestions(data["damage_summary"])
+        if extras is not None and extras.wrong_end_mode == "keep" and extras.wrong_end:
+            # E11 "keep": the finds of an end zone read that saw the other
+            # end, as suggestions with their note -- never on the list.
+            zone_draft.setdefault("zone_suggestions", []).extend(zones.wrong_end_suggestions(extras.wrong_end))
     try:
         # Each finding's evidence against the photos: frames, boxes on raw
         # originals dropped, the sorter's boxes, best first. Code only; the
@@ -1050,9 +1204,19 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             other_side: list[dict] | None = [] if keep_other_side_on() else None
             # F1: the last reading's own rows were placed by their reading.
             kept_as_they_were = {str(it.get("part")) for it in previous_rows}
+            # E7 (settings.intake_side_geometry): each photo's area group's
+            # side by the sort's geometry, as a vote or a tie-break, and what
+            # it changed, kept beside the AI draft (side_geometry); off,
+            # resolve_sides is called as before.
+            geo_log: list[dict] = []
+            geo_args = ({"geo_sides": side_groups or {}, "geometry_mode": geo_mode, "geometry_log": geo_log}
+                        if geo_mode in geometry.ACTING else {})
             data["damage_summary"] = resolve_sides(data["damage_summary"], photo_areas,
                                                    keep_undetermined=checked | disputed | kept_as_they_were,
-                                                   **({"other_side": other_side} if other_side is not None else {}))
+                                                   **({"other_side": other_side} if other_side is not None else {}),
+                                                   **geo_args)
+            if geo_mode in geometry.ACTING:
+                zone_draft["side_geometry"] = geo_log
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
             if other_side:
@@ -1232,21 +1396,22 @@ class ParallelZones:
     and `walk` filled. cancel() stops new zone calls and waits for those in
     flight."""
 
-    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict):
+    def __init__(self, report_id: str, actor: AiActor, jobs: list, intact: dict, extras=None):
         self.report_id = report_id
         self.walk: dict | None = {} if zones.walk_index() is not None else None
         self.progress = ReadProgress(report_id, len(jobs))
         self._stop = threading.Event()
         self.started = time.monotonic()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"zones-{report_id}")
+        # Wave 2's zone options (zones.ZoneExtras), passed only when given.
         self._future = self._pool.submit(zones.zone_reads, report_id, actor, jobs, self.progress.zone_done, intact,
-                                         self.walk, cancel=self._stop)
+                                         self.walk, cancel=self._stop, **({"extras": extras} if extras else {}))
         self._pool.shutdown(wait=False)
 
     @classmethod
-    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict) -> "ParallelZones":
+    def start(cls, report_id: str, actor: AiActor, jobs: list, intact: dict, extras=None) -> "ParallelZones":
         logger.info("Reading %s: %d zone read(s) started beside the overall reading", report_id, len(jobs))
-        return cls(report_id, actor, jobs, intact)
+        return cls(report_id, actor, jobs, intact, extras)
 
     def result(self) -> list[tuple[str, list[dict]]]:
         try:
@@ -1378,8 +1543,19 @@ def _photos_of(item: dict) -> set[str]:
     return {r for r in refs if isinstance(r, str) and r}
 
 
+def _placed_side(own_side: str | None, others: Counter) -> str | None:
+    """resolve_sides' rule: the photo's own area side when no clue opposes
+    it, else (no own side) a clear majority of the clues (_clear_side)."""
+    if own_side:
+        opposite = "Right" if own_side == "Left" else "Left"
+        return own_side if others[opposite] == 0 else None
+    return _clear_side(others)
+
+
 def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
-                  keep_undetermined=frozenset(), other_side: list[dict] | None = None) -> list[dict]:
+                  keep_undetermined=frozenset(), other_side: list[dict] | None = None,
+                  geo_sides: dict[str, str] | None = None, geometry_mode: str = "off",
+                  geometry_log: list[dict] | None = None) -> list[dict]:
     """The damage items with each "(side undetermined)" part placed on a
     side where the clues agree. photo_areas: every photo of the case in
     camera order as (photo id, area) -- voting_areas; items reference photos
@@ -1408,7 +1584,19 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
     instead, as it was with other_side_of = the listed name -- two lamps
     on two photos may be both lamps (pipeline makes it an "Other side?"
     suggestion). On a photo the listed one was seen in it is the same find,
-    dropped as before."""
+    dropped as before.
+
+    geo_sides (E7, settings.intake_side_geometry; intake/geometry.py):
+    {photo id: the side of its sorter-area group by the sort's geometry}
+    (geometry.area_sides) and geometry_mode -- "vote": that side is one
+    more clue in `others` for an item on that photo (so against the
+    photo's own area side it leaves the item undetermined, as any opposing
+    clue does); "tiebreak": it is placed only where the rules above place
+    nothing. geometry_log, when given, gets one entry for each item whose
+    outcome the geometry changed: {"part", "photo_reference", "was",
+    "now", "geometry"} (was / now the side placed, None for none; filing
+    relabels the photo, filing.AI_DRAFT_PHOTO_LISTS). None / "off":
+    as before."""
     position = {photo_id: i for i, (photo_id, _) in enumerate(photo_areas)}
     area_of = dict(photo_areas)
 
@@ -1459,11 +1647,19 @@ def resolve_sides(items: list[dict], photo_areas: list[tuple[str, str | None]],
             if zone and other_zone == zone:
                 others[side] += 1
         own_side = _AREA_SIDE.get(own)
-        if own_side:
-            opposite = "Right" if own_side == "Left" else "Left"
-            side = own_side if others[opposite] == 0 else None
-        else:
-            side = _clear_side(others)
+        geo = (geo_sides or {}).get(photo_id) if geometry_mode in ("vote", "tiebreak") else None
+        side = _placed_side(own_side, others)
+        if geo:
+            # E7: the area group's geometry side, by the mode.
+            was = side
+            if geometry_mode == "vote":
+                others[geo] += 1
+                side = _placed_side(own_side, others)
+            else:
+                side = geometry.resolve(side, geo, geometry_mode)
+            if side != was and geometry_log is not None:
+                geometry_log.append({"part": part, "photo_reference": f"@{photo_id}", "was": was, "now": side,
+                                     "geometry": geo})
         name = sided_part(part, side, _AREA_END.get(own)) if side else None
         if name is None:
             out.append(item)
