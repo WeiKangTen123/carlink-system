@@ -74,10 +74,20 @@ else
     [ -n "$FILE" ] || die "no local copy in $LOCAL_DIR (make one: sudo bash /opt/carlink-system/infra/backup.sh)"
 fi
 
+# The image a container runs, or a failure. For a missing container `docker
+# inspect -f` still prints an empty line on stdout (and exits 1); that line must
+# not end up in front of the next container's image name (it made the image
+# "\ninfra-api" before staging's first deploy: "invalid reference format").
+image_of() {
+    local img
+    img=$(docker inspect -f '{{.Config.Image}}' "$1" 2>/dev/null) || return 1
+    [ -n "$img" ] || return 1
+    printf '%s' "$img"
+}
+
 IMAGE=${CARLINK_MIGRATION_IMAGE:-}
 if [ -z "$IMAGE" ]; then
-    IMAGE=$(docker inspect -f '{{.Config.Image}}' carlink_staging_api 2>/dev/null ||
-            docker inspect -f '{{.Config.Image}}' carlink_api 2>/dev/null) ||
+    IMAGE=$(image_of carlink_staging_api || image_of carlink_api) ||
         die "no carlink_staging_api or carlink_api to take the image from; set CARLINK_MIGRATION_IMAGE"
 fi
 

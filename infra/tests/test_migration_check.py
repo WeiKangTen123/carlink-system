@@ -44,7 +44,13 @@ args = sys.argv[1:]
 log.write("docker " + " ".join(args) + "\n")
 log.flush()
 if args[:1] == ["inspect"]:
-    print("carlink-staging-api:test")
+    name = args[-1]
+    if name in os.environ.get("MOCK_INSPECT_MISSING", "").split(","):
+        # Real docker: an empty line on stdout for the missing object, the error on stderr, exit 1.
+        print("")
+        print(f"Error: No such object: {name}", file=sys.stderr)
+        sys.exit(1)
+    print("infra-api" if name == "carlink_api" else "carlink-staging-api:test")
     sys.exit(0)
 if args[:2] == ["volume", "create"]:
     (vols / args[-1]).mkdir(parents=True)
@@ -246,7 +252,20 @@ def main() -> int:
     check(code != 0 and "PASS" not in out, "a damaged copy: not a pass", out[-400:])
     check(list(vols.iterdir()) == [], "... and its volume is removed too")
 
-    print("\n4. restore_test.sh (D1's) says why when there is no backup folder (review L1)")
+    print("\n4. the image before staging's first deploy (no carlink_staging_api yet)")
+    code, out = run(copy.as_posix(), MOCK_INSPECT_MISSING="carlink_staging_api")
+    calls = log.read_text()
+    runs = [line for line in calls.splitlines() if line.startswith("docker run")]
+    check(code == 0 and "migration-check: PASS" in out, "PASS with production's image name", out[-600:])
+    check("image infra-api" in out and "image \n" not in out, "the image is printed as 'infra-api', no blank line first",
+          out[:400])
+    check(len(runs) >= 6 and all(" infra-api " in line for line in runs) and "\ninfra-api" not in calls,
+          "every run uses exactly 'infra-api' (the missing container's empty line is dropped)", calls)
+    check(list(vols.iterdir()) == [], "... and its volume is removed")
+    code, out = run(copy.as_posix(), MOCK_INSPECT_MISSING="carlink_staging_api,carlink_api")
+    check(code == 1 and "no carlink_staging_api or carlink_api" in out, "neither container: refused, says why", out)
+
+    print("\n5. restore_test.sh (D1's) says why when there is no backup folder (review L1)")
     restore = repo / "infra" / "restore_test.sh"
     restore.write_text((REPO / "infra" / "restore_test.sh").read_text(encoding="utf-8").replace("\r\n", "\n"),
                        encoding="utf-8", newline="\n")
