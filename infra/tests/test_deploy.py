@@ -218,7 +218,8 @@ class World:
         if text is None:
             text = ("COMPOSE_PROJECT_NAME=carlink-staging\nCARLINK_NAME=carlink_staging\nNGINX_PORT=8081\n"
                     "PUBLIC_BASE_URL=https://carlink-staging.34-16-92-98.sslip.io\n"
-                    f"GEMINI_API_KEY={GEMINI}\nTELEGRAM_BOT_TOKEN=\nCOMPOSE_PROFILES=\nINTAKE_LINKS=on\n")
+                    f"GEMINI_API_KEY={GEMINI}\nTELEGRAM_BOT_TOKEN=\nCOMPOSE_PROFILES=\nINTAKE_LINKS=on\n"
+                    "PHOTO_STORE_COMPRESS=on\n")
         (self.staging if which == "staging" else self.prod).joinpath("infra", ".env").write_text(text, encoding="utf-8")
 
     def run(self, script: str, *args, **mock) -> tuple[int, str]:
@@ -303,6 +304,8 @@ def staging_refusals(w: World) -> None:
           "a good staging .env passes the dry run; nothing checked out", out)
     check("flags that differ from production" in out and "> INTAKE_LINKS=on" in out,
           "the dry run lists the flags that differ from production's (gate D)", out)
+    check("> PHOTO_STORE_COMPRESS=on" in out,
+          "... including the photo storage switch (PHOTO_*, owner 23 Nov)", out)
     check("-p carlink-staging -f infra/docker-compose.prod.yml -f infra/docker-compose.staging.yml "
           "-f infra/docker-compose.ai-shared.yml" in out, "... and names staging's project and three files", out)
     cases = [
