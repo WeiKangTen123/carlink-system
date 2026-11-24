@@ -204,6 +204,22 @@ class IntakePhoto(Base):
     # for the side worked out in code. None: the sort wasn't asked. (Added
     # after the table shipped: see db._ADDED_COLUMNS.)
     geometry: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # When the photo was taken, by its EXIF, read from the original as sent
+    # before settings.photo_store_compress drops the EXIF (owner decision
+    # D7, 23 Nov 2026: keep the date taken, no location) --
+    # storage/files.photo_taken_at. Website uploads and staff Telegram
+    # drafts. For a later "Date of survey" suggestion a person checks,
+    # never filled in silently. Two columns, so neither means two things:
+    # taken_at_local: the camera's clock, naive, in the zone the phone was
+    # set to (UTC+8 in Malaysia) -- NOT UTC, so never through iso_utc. Its
+    # date is the day the photo was taken there.
+    # taken_at: the same moment in UTC (naive, like every DateTime column
+    # here), only when the camera wrote its offset (OffsetTimeOriginal...);
+    # None otherwise, rather than a guessed zone.
+    # Both None: no usable EXIF date. (Added after the table shipped: see
+    # db._ADDED_COLUMNS.)
+    taken_at_local: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    taken_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # Kept in the case file but never sent to the AI.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

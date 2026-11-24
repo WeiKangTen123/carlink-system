@@ -80,6 +80,7 @@ from app.reports.owners import _vetted, assigned_detail, owner_dict, owners_by_i
 from app.reports.review import apply_template_defaults
 from app.reports.schema import SecurityIncidentDraft, VehicleInfo
 from app.storage.files import (
+    compress_original,
     disk_space_low,
     generate_preview,
     generate_thumbnail,
@@ -668,13 +669,19 @@ def _store_photos(report_id: str, photo_paths) -> list[dict]:
             dest.unlink(missing_ok=True)
             continue
         # verify() passes a cut-off JPEG; making these decodes all of it.
+        # Made from the file AS SENT, before it is compressed, so the AI's
+        # preview is the same whatever settings.photo_store_compress says.
         if generate_thumbnail(str(dest)) is None or generate_preview(str(dest)) is None:
             for path in (dest, thumbnail_path_for(str(dest)), preview_path_for(str(dest))):
                 path.unlink(missing_ok=True)
             continue
+        # settings.photo_store_compress: then re-saved smaller. sha256 stays
+        # the sent bytes' hash; the caps above count the sent sizes, as before.
+        stored_size = compress_original(str(dest))
         seen.add(sha)
         total += size
-        kept.append({"id": photo_id, "path": str(dest), "sha256": sha, "size": size, "ext": ext})
+        kept.append({"id": photo_id, "path": str(dest), "sha256": sha,
+                     "size": size if stored_size is None else stored_size, "ext": ext})
     return kept
 
 

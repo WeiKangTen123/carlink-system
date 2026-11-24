@@ -640,7 +640,7 @@ if [ "$ENV_NAME" = staging ]; then
     # with KEY / TOKEN / SECRET / PASS are left out, and anything shaped like
     # a Google key or a bot token is masked.
     flag_lines() {
-        grep -E '^(GEMINI_|INTAKE_|TELEGRAM_FULL_DETECTION|CATALOGUE_ENABLED)' "$1" 2>/dev/null |
+        grep -E '^(GEMINI_|INTAKE_|TELEGRAM_FULL_DETECTION|CATALOGUE_ENABLED|PHOTO_)' "$1" 2>/dev/null |
             grep -vE '^[A-Z0-9_]*(KEY|TOKEN|SECRET|PASS)[A-Z0-9_]*=' |
             sed -E "s/$GKEY_RE/<key>/g; s/$TOKEN_RE/<token>/g" | sort || true
     }
