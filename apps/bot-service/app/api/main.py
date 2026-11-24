@@ -46,6 +46,7 @@ from app.api.ai_keys import router as ai_keys_router
 from app.api.ai_runs import router as ai_usage_router
 from app.api.annexes import router as annexes_router
 from app.api.catalogue import router as catalogue_router
+from app.api.library import router as library_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
 from app.api.parts import own_prices_for_case, price_book_for_case, router as parts_router, settle_sent_lines
@@ -199,6 +200,7 @@ app.include_router(auth_router)
 app.include_router(signup_router)
 app.include_router(parts_router)
 app.include_router(annexes_router)
+app.include_router(library_router)
 app.include_router(intake_router)
 app.include_router(ai_keys_router)
 app.include_router(telegram_link_router)

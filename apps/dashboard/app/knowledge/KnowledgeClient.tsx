@@ -5,6 +5,7 @@ import { Wrench, Zap, Car, Boxes, History, Users } from "lucide-react";
 import type { PartsHistory, Taxonomy } from "@/lib/api";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { getPartsHistoryAction } from "./actions";
+import { PartsLibraryTab } from "./PartsLibraryTab";
 import { PartsHistoryTab } from "./PartsHistoryTab";
 import { AllUserPricesTab } from "./AllUserPricesTab";
 
@@ -28,7 +29,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.
   // everyone. Admins only: the API refuses anyone else, and the tab isn't
   // shown to them.
   { id: "user_prices", label: "All users' prices", icon: Users, adminOnly: true },
-  { id: "parts", label: "Vehicle Parts & 3D", icon: Wrench },
+  { id: "parts", label: "Parts library", icon: Wrench },
   { id: "damage", label: "Damage Types", icon: Zap },
   { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
 ];
@@ -157,6 +158,7 @@ export function KnowledgeClient({
 
       {/* TAB 2: VEHICLE PARTS & 3D */}
       {tab === "parts" && (
+        <PartsLibraryTab>
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           <div className="card-glass">
             <div className="card-header">
@@ -217,6 +219,7 @@ export function KnowledgeClient({
             )}
           </div>
         </div>
+        </PartsLibraryTab>
       )}
 
       {/* TAB 3: DAMAGE TYPES */}

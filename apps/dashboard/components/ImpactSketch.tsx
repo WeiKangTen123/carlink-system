@@ -12,11 +12,12 @@ import { resolveZones } from "@/lib/vehicleZones";
  * disagree about which panel a part sits on. Front at the top; the car's
  * left (LH) on the viewer's left, as when looking down on it. */
 
-type Shape = { x: number; y: number; w: number; h: number; r?: number; label: string };
+export type Shape = { x: number; y: number; w: number; h: number; r?: number; label: string };
 
 // viewBox 0 0 200 400. Doors and door glass share one shape per door: the
-// sketch has no room to tell them apart and both mean "that door".
-const ZONE_SHAPES: Record<string, Shape> = {
+// sketch has no room to tell them apart and both mean "that door". Also the
+// Knowledge page's parts library diagram (app/knowledge/PartsLibraryTab.tsx).
+export const ZONE_SHAPES: Record<string, Shape> = {
   front_bumper: { x: 44, y: 28, w: 112, h: 22, r: 10, label: "Front bumper" },
   front_grill: { x: 80, y: 34, w: 40, h: 12, r: 3, label: "Front grille" },
   l_headlamp: { x: 50, y: 32, w: 24, h: 13, r: 4, label: "Left headlamp" },
@@ -49,7 +50,7 @@ const ZONE_SHAPES: Record<string, Shape> = {
 };
 
 // Drawn behind the shaded zones so the car reads as a car when nothing is shaded.
-const OUTLINE_KEYS = [
+export const OUTLINE_KEYS = [
   "front_bumper", "bonnet", "windscreen", "roof", "rear_glass", "tailgate", "rear_bumper",
   "l_fender", "r_fender", "l_door_front", "r_door_front", "l_door_rear", "r_door_rear",
   "l_mirror", "r_mirror", "l_wheel_front", "r_wheel_front", "l_wheel_rear", "r_wheel_rear",
