@@ -401,6 +401,11 @@ def compress_original(photo_path: str) -> int | None:
             # Both from the header: nothing is decoded yet.
             if im.format not in _COMPRESS_FORMATS:
                 return None
+            # A CMYK (or YCCK) JPEG would shift colour when turned into RGB
+            # without colour management (review L5): rare from a phone, so it
+            # is stored as sent.
+            if im.mode in ("CMYK", "YCbCrK"):
+                return None
             if im.width * im.height > PHOTO_COMPRESS_MAX_PIXELS:
                 logger.info("Stored %s as sent: %dx%d is over the %d-pixel limit for compressing",
                             path.name, im.width, im.height, PHOTO_COMPRESS_MAX_PIXELS)

@@ -394,8 +394,11 @@ def left_alone_section() -> None:
     buf = io.BytesIO()
     Image.new("RGB", (200, 100), (10, 120, 200)).save(buf, "WEBP")
     webp_as_jpeg.write_bytes(buf.getvalue())
+    cmyk = folder / "cmyk.jpg"
+    Image.effect_noise((900, 600), 40).convert("CMYK").save(cmyk, "JPEG", quality=98)
 
     cases = (
+        (cmyk, "a CMYK JPEG (would shift colour without colour management; review L5)"),
         (real_png, "a .png"),
         (png_as_jpg, "a PNG under a .jpg name"),
         (webp_as_jpeg, "a WebP under a .jpeg name"),
