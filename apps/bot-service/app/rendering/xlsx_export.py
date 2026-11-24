@@ -26,6 +26,9 @@ from app.rendering.renderer import (
 
 logger = logging.getLogger(__name__)
 
+# What a must-have fact a person marked N/A prints as (review.na_must_haves),
+# as in the PDF.
+NA = "N/A"
 NUMBER_FORMAT = "#,##0.00"
 PERCENT_FORMAT = "0%"
 
@@ -107,6 +110,12 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
     vehicle = report.get("vehicle_info") or {}
     insurance = report.get("insurance_details") or {}
     cover = report.get("cover_page") or {}
+    na = view.get("na") or ()
+
+    def must(value, key: str):
+        """A must-have fact: "N/A" when a person marked it so and left it
+        blank (view["na"], as the PDF), else the value -- blank stays blank."""
+        return NA if key in na else value
 
     # Letterhead: name, address, Tel on row 1 and Fax on row 3 as in the
     # firm's file. The numbers are text so a narrow column can't show them
@@ -123,7 +132,8 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
         # pass as the firm's.
         s.put(5, 2, "Prepared by an unverified user, not issued by Carlink Consultancy", bold=True)
     s.put(7, 2, "ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT", bold=True)
-    s.put(8, 2, f"Our Ref: {view['our_ref']}" if view["our_ref"] else "Our Ref: (to be issued)", bold=True)
+    our_ref = view["our_ref"] or must(None, "report_id") or "(to be issued)"
+    s.put(8, 2, f"Our Ref: {our_ref}", bold=True)
     s.row = 9
 
     def section(number: int, title: str) -> None:
@@ -155,12 +165,13 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
         s.row += 1
 
     section(1, "REFERENCE")
-    line("Date of request", cover.get("date_of_request"))
-    line("Requested by", cover.get("requested_by"), cover.get("requested_by_address"))
-    line("Type of claim", insurance.get("claim_type"))
-    line("Workshop", insurance.get("workshop_assigned"), *_lines(cover.get("workshop_address")))
+    line("Date of request", must(cover.get("date_of_request"), "cover_page.date_of_request"))
+    line("Requested by", must(cover.get("requested_by"), "cover_page.requested_by"), cover.get("requested_by_address"))
+    line("Type of claim", must(insurance.get("claim_type"), "insurance_details.claim_type"))
+    line("Workshop", must(insurance.get("workshop_assigned"), "insurance_details.workshop_assigned"),
+         *_lines(cover.get("workshop_address")))
     line("Accident date", report.get("incident_datetime"))
-    line("Date of survey", cover.get("date_of_survey"))
+    line("Date of survey", must(cover.get("date_of_survey"), "cover_page.date_of_survey"))
     # The optional dates only when recorded: the firm leaves the line out
     # otherwise (2 of its 4 reports), and so does the PDF.
     for label, key in OPTIONAL_DATE_ROWS:
@@ -169,8 +180,9 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
     s.skip()
 
     section(2, "DETAILS OF VEHICLE")
-    line("Registration No.", vehicle.get("plate_number"))
-    line("Make & Model", view["make_model"])
+    line("Registration No.", must(vehicle.get("plate_number"), "vehicle_info.plate_number"))
+    both_na = "vehicle_info.make" in na and "vehicle_info.model" in na
+    line("Make & Model", NA if both_na else view["make_model"])
     line("Date of registration", vehicle.get("date_of_registration"))
     line("Engine No.", vehicle.get("engine_number"))
     line("Chassis No.", vehicle.get("vin"))
@@ -202,7 +214,7 @@ def _cover_sheet(ws, report: dict, view: dict, org: str, unverified: bool) -> No
 
     section(5, "POINT OF IMPACT")
     s.skip()
-    for text in (vehicle.get("point_of_impact"), cover.get("point_of_impact_note")):
+    for text in (must(vehicle.get("point_of_impact"), "vehicle_info.point_of_impact"), cover.get("point_of_impact_note")):
         if _text(text):
             s.put(s.row, 3, _text(text))
             s.merge(s.row, 3, 8)
@@ -219,7 +231,7 @@ def _annex_a_sheet(ws, view: dict) -> None:
     s = _Sheet(ws)
     _widths(ws, {"A": 2, "B": 6, "C": 44, "D": 20, "E": 12, "F": 7, "G": 13, "H": 9, "I": 15})
     s.put(1, 2, "Annex A : Assessment / Adjustment on Spare Parts", bold=True, size=11)
-    s.put(3, 3, view["plate"], bold=True)
+    s.put(3, 3, _plate(view), bold=True)
     headers = ["Item", "Vehicle Parts Description", "Condition", "Remarks", "Qty", "W/shop Est. ($)", "Disc (%)", "Adjusted Cost ($)"]
     for offset, label in enumerate(headers):
         s.put(4, 2 + offset, label, bold=True, align="center", wrap=True, border=True)
@@ -262,7 +274,7 @@ def _annex_b_sheet(ws, view: dict) -> None:
     s = _Sheet(ws)
     _widths(ws, {"A": 2, "B": 6, "C": 72, "D": 18, "E": 18})
     s.put(1, 2, "Annex B : Adjustment on Labour and Spray Painting", bold=True, size=11)
-    s.put(3, 3, view["plate"], bold=True)
+    s.put(3, 3, _plate(view), bold=True)
     for offset, label in enumerate(["Item", "Job Description", "Workshop Est. ($)", "Adjusted Cost ($)"]):
         s.put(4, 2 + offset, label, bold=True, align="center", wrap=True, border=True)
     s.row = 6
@@ -310,7 +322,7 @@ def _annex_c_sheet(ws, view: dict, org: str) -> None:
     s = _Sheet(ws)
     _widths(ws, {"A": 2, "B": 110})
     s.put(1, 2, org.upper(), bold=True, size=11)
-    s.put(3, 2, view["plate"], bold=True)
+    s.put(3, 2, _plate(view), bold=True)
     s.put(4, 2, "Annex C: Recommendation", bold=True)
     s.row = 7
 
@@ -352,6 +364,11 @@ def _annex_c_sheet(ws, view: dict, org: str) -> None:
             s.put(s.row + 2, 2, view["qualifications"])
     else:
         s.put(s.row, 2, "DRAFT - not signed off", bold=True)
+
+
+def _plate(view: dict) -> str:
+    """The plate an Annex sheet heads with: "N/A" when marked so, as the PDF."""
+    return view["plate"] or (NA if "vehicle_info.plate_number" in (view.get("na") or ()) else "")
 
 
 def _text(value) -> str:

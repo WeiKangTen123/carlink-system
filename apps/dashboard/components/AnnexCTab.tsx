@@ -100,14 +100,22 @@ function goToCoverField(reportId: string, key: string, onOpenTab?: (tab: OpenTab
     return;
   }
   onOpenTab("cover");
-  // The tab may only mount now: look for the field once it has drawn.
-  window.setTimeout(() => {
-    const field = document.querySelector<HTMLElement>(`[data-review-key="${key.replace(/"/g, "")}"]`);
-    if (!field) return;
+  // The tab may only mount now, and a slow render takes longer than one
+  // look: look for the field on each frame, for up to about a second.
+  const selector = `[data-review-key="${key.replace(/"/g, "")}"]`;
+  let frames = 0;
+  const look = () => {
+    const field = document.querySelector<HTMLElement>(selector);
+    if (!field) {
+      frames += 1;
+      if (frames < 60) window.requestAnimationFrame(look);
+      return;
+    }
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     field.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     field.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
-  }, 80);
+  };
+  window.requestAnimationFrame(look);
 }
 
 /** The sign-off's must-have list (owner, 23 Nov 2026): the facts every

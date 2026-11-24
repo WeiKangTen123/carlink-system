@@ -13,15 +13,23 @@ Checked:
     review says must_have and before_sign_off; filing a draft never asks;
     a blank workshop or point of impact is "needs";
   - another model's lines in the past-case kit (history.lines_for_car,
-    R-report 2.8): no other model's name or emblem, tail gate vs boot lid
-    by body type, the model's own lines untouched -- in suggest() and in
-    the Annex A sync, on made-up past lines;
+    R-report 2.8, review M6): only a line naming another model of the
+    case's make is left out (whole words, two-word models, no make names,
+    no ordinary words like "step" / "fit" / "new" unless an emblem's
+    capitals), the case's own model and twins untouched also when typed
+    with the make, tail gate vs boot lid by body type (unknown: as
+    written) -- in suggest() and in the Annex A sync, on made-up lines;
   - the optional dates (dismantle, before / after painting) left out of
     the PDF and the Excel workbook when empty, printed when recorded;
+  - a must-have fact marked N/A and left blank prints "N/A" in the PDF and
+    the Excel workbook (not "Not recorded" / "(to be issued)"); unmarked
+    blanks print as before;
   - the point-of-impact note as a usual value (template, "check");
-  - the AI's static-check / transmission words in the firm's words
-    (firm_words), the others kept as a note (ai_words, ai_read.notes), on
-    a reading parsed offline;
+  - INTAKE_FIRM_WORDS (default off): off, a reading parsed offline is
+    saved byte for byte as master's; on, the static-check / transmission
+    words in the firm's words by meaning, a finding or unclear word kept as
+    the AI wrote it (never blank, never "Good") and still to check, the
+    AI's own word kept as a note (ai_words, ai_read.notes);
   - Necessary and Serviceable in the one-click condition list, and a
     person's word order kept ("Torn/cracked") through PATCH damage-items,
     the wizard's save and Annex A.
@@ -34,6 +42,7 @@ Offline and self-contained: a temporary database, the PDF render captured
 before Chromium, Gemini refused. Every value is made up (plates like
 "TEST 1234"); the past lines use the firm's part wording only.
 """
+import contextlib
 import copy
 import html as html_lib
 import json
@@ -96,16 +105,20 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app.api.intake as intake_api  # noqa: E402
 import app.api.main as main  # noqa: E402
 import app.rendering.renderer as renderer  # noqa: E402
+from app import config  # noqa: E402
 from app.ai.extraction import _parse_draft  # noqa: E402
 from app.auth.core import SESSION_COOKIE, create_session  # noqa: E402
+from app.config import settings  # noqa: E402
 from app.intake.pipeline import merge_redraft  # noqa: E402
-from app.parts.history import PastCase, PastLine, import_case, kit_wording, lines_for_car, past_lines, suggest  # noqa: E402
+from app.parts.history import (  # noqa: E402
+    PastCase, PastLine, import_case, kit_wording, lines_for_car, other_models, past_lines, suggest,
+)
 from app.parts.prefill import sync_annex_a  # noqa: E402
 from app.rendering.xlsx_export import render_xlsx  # noqa: E402
 from app.reports import firm_words, review  # noqa: E402
 from app.reports.db import SessionLocal, init_db  # noqa: E402
 from app.reports.filing import ai_read_for, file_case_data  # noqa: E402
-from app.reports.models import PastAnnexLine, PastLabourLine, Report, User, gen_id  # noqa: E402
+from app.reports.models import AuditEntry, PastAnnexLine, PastLabourLine, Report, User, gen_id  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.reports.taxonomy import FIRM_CONDITION_COMMON, FIRM_WHOLE_CONDITIONS, parse_condition  # noqa: E402
 
@@ -196,6 +209,15 @@ def new_case(owner_id: str | None, data: dict | None = None, status: str = "conf
         db.add(r)
         db.commit()
         return r.id
+    finally:
+        db.close()
+
+
+def history(report_id: str) -> list[tuple[str, str]]:
+    db = SessionLocal()
+    try:
+        return [(e.action, e.detail or "") for e in
+                db.query(AuditEntry).filter(AuditEntry.report_id == report_id).order_by(AuditEntry.id)]
     finally:
         db.close()
 
@@ -303,6 +325,8 @@ def sign_off_block() -> None:
                                                           "cover_page.date_of_survey": {"na": True}}})
     check(r.status_code == 200 and [m["label"] for m in r.json()["review"]["before_sign_off"]] == ["Requested by"],
           "N/A on a guess field and an office field: one thing left", brief(r))
+    check(("fields_confirmed", "confirmed 2 fields (N/A: Workshop, Date of survey)") in history(some),
+          "the history names the must-haves marked N/A (review L4)", repr(history(some)))
     r = W.s.put(f"/reports/{some}/cover-page", json={"cover_page": {"requested_by": "Requester Two"}})
     check(r.status_code == 200, "Requested by typed on the cover page", brief(r))
     r = W.s.post(f"/reports/{some}/sign-off", json={"terms_accepted": True})
@@ -400,44 +424,116 @@ def _kit(model, body_type=None, make="Honda") -> list[str]:
         db.close()
 
 
+def _probe(item, model, make="Honda") -> SimpleNamespace:
+    """A past line as lines_for_car reads one (made-up wording)."""
+    return SimpleNamespace(item=item, model=model, make=make, item_key=item.lower())
+
+
+# The fresh-eyes review's probe (M6): a history whose models include
+# ordinary words (Step, Fit, New), one typed with the make ("Honda Civic"),
+# another make's model (Toyota Yaris), and twins (HR-V / Vezel, Jazz / Fit).
+PROBE = [
+    _probe("Tail gate emblem VEZEL", "Vezel"), _probe("Tail gate garnish VEZEL", "Vezel 1.5X"),
+    _probe("Tail gate emblem HR-V", "HR-V"), _probe("Boot lid emblem CIVIC", "Civic"),
+    _probe("Front bumper re-fit clips", "Civic"), _probe("Side step LH", "Odyssey"),
+    _probe("Front grille Honda badge", "Honda Civic"), _probe("Rear bumper (new type)", "New"),
+    _probe("Rear bumper", "Step"), _probe("Tail gate assy", "Step WGN"), _probe("Rear bumper fit clip", "Fit"),
+    _probe("Tail gate emblem FIT", "Fit"), _probe("Rear bumper garnish YARIS", "Civic"),
+    _probe("Tail gate emblem YARIS", "Yaris", make="Toyota"), _probe("Boot lid emblem 1.6", "Civic"),
+    _probe("Boot lid assy", "Civic"),
+]
+
+
+def _worded(case_make, case_model, item, line_model, body=None):
+    return kit_wording(item, line_model=line_model, model=case_model, body=body,
+                       others=other_models(PROBE, case_make, case_model))
+
+
 def kit_filter() -> None:
-    keys = {"vezel", "civic"}
-    check(kit_wording("Tail gate emblem VEZEL", line_model="Vezel", model="Vezel 1.5X", body="hatch", model_keys=keys)
-          == "Tail gate emblem VEZEL", "the model's own line: as it is (emblem and all)")
-    check(kit_wording("Tail gate emblem VEZEL", line_model="HR-V", model="Vezel", body="hatch", model_keys=keys)
-          == "Tail gate emblem VEZEL", "...its twin's too (HR-V is a Vezel)")
-    check(kit_wording("Tail gate garnish VEZEL", line_model="Vezel", model="Jazz", body="hatch", model_keys=keys) is None,
-          "another model's name: left out")
-    check(kit_wording('Tail gate emblem "VEZEL"', line_model="Vezel", model="Jazz", body="hatch", model_keys=keys) is None,
-          "another model's emblem: left out")
-    check(kit_wording("Boot lid emblem 1.6", line_model="Civic", model="Jazz", body="hatch", model_keys=keys) is None,
-          "an emblem naming no model (a variant's): left out")
-    check(kit_wording("Boot lid badge", line_model="Civic", model="Jazz", body="hatch", model_keys=keys) == "Tail gate badge",
-          "a badge (the make's logo) stays, worded for a hatchback")
-    check(kit_wording("Tail gate hinges", line_model="Vezel", model="City", body="sedan", model_keys=keys) == "Boot lid hinges",
+    jazz_others = other_models(PROBE, "Honda", "Jazz")
+    check(("vezel",) in jazz_others and ("civic",) in jazz_others and ("step", "wgn") in jazz_others,
+          "the make's other models: Vezel (and its twin HR-V as one), Civic, Step WGN as two words", repr(sorted(jazz_others)))
+    check(("fit",) not in jazz_others and ("jazz",) not in jazz_others,
+          "...never the case's own model or its twin (Jazz is a Fit)", repr(sorted(jazz_others)))
+    check(("honda",) not in jazz_others and ("yaris",) not in jazz_others,
+          "...never a make's name ('Honda Civic' is a Civic), never another make's model (Toyota Yaris)",
+          repr(sorted(jazz_others)))
+
+    # The review's probe lines: ordinary words that are also a model's name somewhere.
+    kept = [("Side step LH", "Odyssey"), ("Front bumper re-fit clips", "Civic"),
+            ("Front grille Honda badge", "Honda Civic"), ("Rear bumper (new type)", "New")]
+    for case_model in ("Freed", "City", "Jazz"):
+        wrong = [(item, _worded("Honda", case_model, item, line)) for item, line in kept
+                 if _worded("Honda", case_model, item, line) != item]
+        check(not wrong, f"a {case_model}: 'Side step LH', 'Front bumper re-fit clips', 'Front grille Honda badge',"
+                         " 'Rear bumper (new type)' are kept as written", repr(wrong))
+    check(_worded("Honda", "City", "Rear bumper fit clip", "Fit") == "Rear bumper fit clip",
+          "'fit' in lower case is a word, not the Fit")
+
+    check(_worded("Honda", "Jazz", "Tail gate emblem VEZEL", "Vezel", "hatch") is None,
+          "a Jazz: 'Tail gate emblem VEZEL' is another model's: left out")
+    check(_worded("Honda", "Jazz", "Tail gate garnish VEZEL", "Vezel 1.5X", "hatch") is None
+          and _worded("Honda", "Jazz", "Tail gate emblem HR-V", "HR-V", "hatch") is None,
+          "...so are 'Tail gate garnish VEZEL' and the twin's 'Tail gate emblem HR-V'")
+    check(_worded("Honda", "Jazz", 'Tail gate emblem "vezel"', "Vezel", "hatch") is None,
+          "any letter case, in quotes too")
+    check(_worded("Honda", "Jazz", "Tail gate emblem STEP WGN", "Odyssey", "hatch") is None
+          and _worded("Honda", "Jazz", "Tail gate emblem STEPWGN", "Odyssey", "hatch") is None,
+          "a two-word model: the two words together, or run into one")
+    check(_worded("Honda", "City", "Tail gate emblem FIT", "Fit", "sedan") is None,
+          "an emblem in capitals naming an ordinary-word model (FIT) on a City: left out")
+    check(_worded("Honda", "Jazz", "Tail gate emblem FIT", "Fit", "hatch") == "Tail gate emblem FIT",
+          "...but on a Jazz it is its own twin's line: as it is")
+
+    for case_model in ("Vezel", "Honda Vezel", "HONDA VEZEL 1.5X", "HR-V"):
+        mine = [ln.item for ln in lines_for_car(PROBE, "Honda", case_model)]
+        check({"Tail gate emblem VEZEL", "Tail gate garnish VEZEL", "Tail gate emblem HR-V"} <= set(mine)
+              and "Boot lid emblem CIVIC" not in mine,
+              f"a '{case_model}' case keeps its own Vezel / HR-V lines and leaves the Civic's emblem out", repr(mine))
+    jazz = [ln.item for ln in lines_for_car(PROBE, "Honda", "Jazz")]
+    check("Rear bumper garnish YARIS" in jazz and "Tail gate emblem YARIS" in jazz,
+          "another make's model names (Toyota Yaris) don't affect a Honda", repr(jazz))
+    check("Tail gate emblem 1.6" in jazz and "Tail gate assy" in jazz,
+          "an emblem naming no model (a variant's '1.6') is kept, worded for the hatchback", repr(jazz))
+    check(kit_wording("Front tyre x1", line_model="Civic", model="Jazz", body="hatch", others=frozenset({("x1",)}))
+          == "Front tyre x1", "a word under 3 characters (or a number) is never a model name")
+
+    nothing = [ln.item for ln in lines_for_car(PROBE, "Honda", None)]
+    check(nothing == [ln.item for ln in PROBE], "no model recorded: nothing left out by name (any might be its own)",
+          repr(nothing))
+    check(len(lines_for_car(PROBE, None, "Jazz")) == len(PROBE), "no make recorded: nothing left out by name either")
+    freed = [ln.item for ln in lines_for_car(PROBE, "Honda", "Freed")]
+    check("Boot lid assy" in freed and "Tail gate assy" in freed,
+          "a body nobody knows (a Freed, none recorded): tail gate / boot lid as written", repr(freed))
+    stated = [ln.item for ln in lines_for_car(PROBE, "Honda", "Freed", "MPV")]
+    check("Boot lid assy" not in stated and stated.count("Tail gate assy") == 2,
+          "...recorded as an MPV: a tail gate", repr(stated))
+    check(kit_wording("Tail gate hinges", line_model="Vezel", model="City", body="sedan") == "Boot lid hinges",
           "a sedan: tail gate -> boot lid")
-    check(kit_wording("Rear bumper clips", line_model="Civic", model="Jazz", body=None, model_keys=keys) == "Rear bumper clips",
-          "unknown body: the wording as written")
-    check(kit_wording("Front tyre x2", line_model="Civic", model="Jazz", body="hatch", model_keys={"x2", "2"}) == "Front tyre x2",
-          "a quantity is never a model name")
+    check(kit_wording("Boot lid badge", line_model="Civic", model="Jazz", body="hatch") == "Tail gate badge",
+          "a badge (the make's logo) stays, worded for a hatchback")
 
     _reimport(SUV_CASE, SEDAN_CASE)
     jazz = _kit("Jazz")
-    check(jazz and not any(re.search(r"vezel|civic|emblem|boot lid", n, re.I) for n in jazz),
-          "a Jazz (hatchback, no past cases): no other model's name, no emblem, no boot lid", repr(jazz))
+    check(jazz and not any(re.search(r"vezel|civic|boot lid", n, re.I) for n in jazz),
+          "a Jazz (hatchback, no past cases): no other model's name, no boot lid", repr(jazz))
     check("Tail gate assy" in jazz and "Tail gate hinges" in jazz and "Tail gate badge" in jazz
           and sum(1 for n in jazz if n.lower().endswith("assy")) == 1,
           "...one tail gate assy (the two models' panels as one line), hinges and badge", repr(jazz))
     city = _kit("City")
-    check(city and not any(re.search(r"vezel|civic|emblem|tail ?gate", n, re.I) for n in city)
+    check(city and not any(re.search(r"vezel|civic|tail ?gate", n, re.I) for n in city)
           and "Boot lid assy" in city and "Boot lid hinges" in city and "Boot lid badge" in city,
-          "a City (sedan): boot lid wording, no tail gate, no names or emblems", repr(city))
+          "a City (sedan): boot lid wording, no tail gate, no other model's name", repr(city))
     vezel = _kit("Vezel")
     check("Tail gate emblem VEZEL" in vezel and "Tail gate garnish VEZEL" in vezel and not any("Boot lid" in n for n in vezel),
           "a Vezel: its own model's lines as they are, no Civic line", repr(vezel))
+    typed = _kit("Honda Vezel")
+    check("Tail gate emblem VEZEL" in typed and "Tail gate garnish VEZEL" in typed
+          and not any(re.search(r"civic", n, re.I) for n in typed),
+          "a 'Honda Vezel' (typed with the make): its own lines as they are", repr(typed))
     unknown = _kit(None)
-    check(unknown and not any(re.search(r"vezel|civic|emblem", n, re.I) for n in unknown),
-          "no model recorded: no model's name or emblem either", repr(unknown))
+    check(unknown and any("VEZEL" in n for n in unknown) and any("CIVIC" in n for n in unknown),
+          "no model recorded: nothing left out by name", repr(unknown))
     stated = _kit("Modelx", body_type="Hatchback")
     check("Tail gate assy" in stated and not any("Boot lid" in n for n in stated),
           "a model the catalogue doesn't know: the recorded body type decides", repr(stated))
@@ -456,7 +552,7 @@ def kit_filter() -> None:
     finally:
         db.rollback()
         db.close()
-    check(rows and not any(re.search(r"vezel|civic|emblem|boot lid", n, re.I) for n in rows)
+    check(rows and not any(re.search(r"vezel|civic|boot lid", n, re.I) for n in rows)
           and sum(1 for n in rows if n.lower().startswith("tail gate assy")) == 1,
           "Annex A for the Jazz: priced kit rows without another model's lines, one tail gate", repr(rows))
     _reimport()
@@ -516,43 +612,239 @@ def optional_dates() -> None:
           "section 1 prints no 'Not recorded' when its facts are there")
 
 
+def _na_marks(*keys) -> dict:
+    return {key: {"by": "Admin", "by_id": "x", "at": "t", "na": True} for key in keys}
+
+
+def _workbook(report: dict):
+    import openpyxl
+
+    path = _tmp / f"export-{gen_id()[:6]}.xlsx"
+    render_xlsx(copy.deepcopy(report), str(path), report_id="unsaved", unverified=False)
+    return openpyxl.load_workbook(path)
+
+
+def _impact_lines(text: str) -> str:
+    return text.split("POINT OF IMPACT", 1)[1].split(" 6 REMARK", 1)[0].strip()
+
+
+# Each must-have row as the PDF and the Excel cover label it.
+MUST_ROWS = ("Date of request", "Requested by", "Type of claim", "Workshop", "Date of survey", "Registration No.",
+             "Make & Model")
+
+
+def na_prints() -> None:
+    # Every must-have blank and marked N/A (what an admin does to get past 409 must_have).
+    report = review.apply_template_defaults(blank())
+    report["cover_page"]["point_of_impact_note"] = None
+    report["checked"] = _na_marks(*sorted(review.MUST_HAVE_KEYS))
+    check(review.na_must_haves(report) == review.MUST_HAVE_KEYS, "na_must_haves: every must-have key marked N/A and blank")
+    text = _text(_render_html(copy.deepcopy(report)))
+    wrong = [label for label in MUST_ROWS if f"{label} : N/A" not in text]
+    check(not wrong, "PDF: each must-have row marked N/A prints 'N/A'", repr(wrong))
+    check("Our Ref: N/A" in text and "(to be issued)" not in text, "PDF: 'Our Ref: N/A', not '(to be issued)'")
+    check(_impact_lines(text) == "N/A", "PDF: the point of impact prints 'N/A'", _impact_lines(text))
+    check("Not recorded" not in text.split("Accident date", 1)[0] and "Not recorded" not in text.split("DETAILS OF VEHICLE", 1)[1]
+          .split("Date of registration", 1)[0], "PDF: no 'Not recorded' on those rows")
+    check("Annex A : Assessment / Adjustment on Spare Parts N/A" in text
+          and "Annex B : Adjustment on Labour and Spray Painting N/A" in text,
+          "PDF: the annex pages head with the plate's 'N/A'")
+
+    book = _workbook(report)
+    labels = _cover_labels(report)
+    wrong = {label: labels.get(label) for label in MUST_ROWS if labels.get(label) != "N/A"}
+    check(not wrong, "Excel: each must-have cell marked N/A says 'N/A'", repr(wrong))
+    cover = book["Cover Page"]
+    check(cover.cell(8, 2).value == "Our Ref: N/A", "Excel: 'Our Ref: N/A'", repr(cover.cell(8, 2).value))
+    cells = [cover.cell(r, 3).value for r in range(1, cover.max_row + 1)]
+    impact = cells[cells.index("POINT OF IMPACT") + 2] if "POINT OF IMPACT" in cells else None
+    check(impact == "N/A", "Excel: the point of impact says 'N/A'", repr(impact))
+    check(book["Annex A"].cell(3, 3).value == "N/A" and book["Annex B"].cell(3, 3).value == "N/A"
+          and book["Annex C"].cell(3, 2).value == "N/A", "Excel: the annex sheets head with 'N/A' too")
+
+    # The same blanks, nobody marked them: printed as before.
+    unmarked = copy.deepcopy(report)
+    unmarked["checked"] = None
+    text = _text(_render_html(copy.deepcopy(unmarked)))
+    wrong = [label for label in MUST_ROWS if f"{label} : Not recorded" not in text]
+    check(not wrong and "Our Ref: (to be issued)" in text and _impact_lines(text) == "Not recorded" and " N/A" not in text,
+          "PDF: unmarked blanks still print 'Not recorded' / '(to be issued)'", repr(wrong))
+    labels = _cover_labels(unmarked)
+    book = _workbook(unmarked)
+    check(all(labels.get(label) is None for label in MUST_ROWS) and book["Cover Page"].cell(8, 2).value == "Our Ref: (to be issued)"
+          and book["Annex A"].cell(3, 3).value is None,
+          "Excel: unmarked blanks stay blank, as before", repr({label: labels.get(label) for label in MUST_ROWS}))
+
+    # A value given after the N/A is the value; half of Make & Model N/A.
+    mixed = with_values(copy.deepcopy(report), {"insurance_details.workshop_assigned": "Workshop One",
+                                                "vehicle_info.make": "Makeone"})
+    mixed["checked"] = _na_marks("insurance_details.workshop_assigned", "vehicle_info.model", "cover_page.requested_by")
+    text = _text(_render_html(copy.deepcopy(mixed)))
+    check("Workshop : Workshop One" in text and "Make & Model : Makeone" in text and "Requested by : N/A" in text
+          and "Date of request : Not recorded" in text,
+          "PDF: a value given since prints itself; Make with the model N/A prints the make; the rest as marked")
+    half = copy.deepcopy(report)
+    half["checked"] = _na_marks("vehicle_info.make")
+    text = _text(_render_html(half))
+    check("Make & Model : Not recorded" in text, "PDF: only the make N/A, the model blank: still 'Not recorded'")
+    labels = _cover_labels(mixed)
+    check(labels.get("Workshop") == "Workshop One" and labels.get("Make & Model") == "Makeone"
+          and labels.get("Requested by") == "N/A" and labels.get("Date of request") is None,
+          "Excel: the same", repr(labels))
+
+
 # ------------------------------------------------------------ the words
+
+
+def _reading(**vehicle) -> str:
+    """A made-up reading as the model's JSON (no code-only fields)."""
+    raw = blank()
+    raw["vehicle_info"].update(plate_number="TEST 1234", **vehicle)
+    raw["damage_summary"] = [{"part": "Rear Bumper", "damage_type": "Dent", "condition_tokens": ["Dented"],
+                              "severity": "Moderate", "remarks": "Replace"}]
+    raw = {k: v for k, v in raw.items() if k not in ("cover_page", "checked", "template_fields", "second_look", "ai_words")}
+    return json.dumps(raw)
+
+
+def _master_parse(raw_output: str) -> dict:
+    """origin/master's (641b857) _parse_draft, step by step: what a reading
+    saved before Phase 1."""
+    from app.ai import extraction
+
+    draft = SecurityIncidentDraft.model_validate_json(raw_output)
+    draft.report_id = None
+    draft = extraction._strip_placeholder_people(draft)
+    draft = extraction._sanitize_damage_summary(draft)
+    draft = extraction._backfill_damage_summary(draft)
+    return extraction._firm_condition(draft).model_dump()
+
+
+# Representative readings: the words the drafting schema offers, and some
+# it doesn't (free text).
+READINGS = [
+    dict(transmission="CVT", steering_condition="Operable", brakes_condition="Impaired", paintwork_condition="Resprayed"),
+    dict(transmission="6-Speed Automatic", steering_condition="Good", brakes_condition="Operable", paintwork_condition="fair"),
+    dict(transmission="Semi-automatic", steering_condition="Damaged", brakes_condition="see annex(es)",
+         paintwork_condition="Original"),
+    dict(transmission="5-speed manual", steering_condition="Faulty", brakes_condition="Not working",
+         paintwork_condition="Scratched"),
+    dict(transmission=None, steering_condition=None, brakes_condition="", paintwork_condition="Good"),
+]
+
+
+@contextlib.contextmanager
+def firm_words_switch(value: str):
+    before = settings.intake_firm_words
+    settings.intake_firm_words = value
+    try:
+        yield
+    finally:
+        settings.intake_firm_words = before
+
+
+def firm_words_setting() -> None:
+    check(config.Settings().intake_firm_words == "off" and settings.intake_firm_words == "off",
+          "INTAKE_FIRM_WORDS defaults to off, and this process runs at it")
+    check(config.Settings(intake_firm_words="ON").intake_firm_words == "on"
+          and config.Settings(intake_firm_words="").intake_firm_words == "off", "written off / on, any case; blank is off")
+    try:
+        config.Settings(intake_firm_words="maybe")
+        check(False, "a typo is refused")
+    except Exception:
+        check(True, "a typo is refused")
+    compose = (ROOT.parent.parent / "infra" / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    anchor, services = compose.index("x-bot-service: &bot-service"), compose.index("\nservices:")
+    lines = [ln for ln in compose.splitlines() if ln.startswith("    - INTAKE_FIRM_WORDS=")]
+    check(lines == ["    - INTAKE_FIRM_WORDS=${INTAKE_FIRM_WORDS:-off}"]
+          and anchor < compose.find("- INTAKE_FIRM_WORDS=") < services,
+          "docker-compose.prod.yml: once, in the shared block, at config's default (off)", repr(lines))
+
+
+def firm_words_off() -> None:
+    with firm_words_switch("off"):
+        for vehicle in READINGS:
+            raw = _reading(**vehicle)
+            got = _parse_draft(raw).model_dump()
+            want = _master_parse(raw)
+            check(json.dumps(got, sort_keys=True) == json.dumps(want, sort_keys=True) and "ai_words" not in got,
+                  f"off: {vehicle['transmission']!r} / {vehicle['paintwork_condition']!r} -- the reading saved as master's,"
+                  " byte for byte (no ai_words key)")
+            v = got["vehicle_info"]
+            check(all(v[k] == w for k, w in vehicle.items() if isinstance(w, str) and w.strip()),
+                  "...each word as the AI wrote it", repr(v))
+        injected = json.loads(_reading(transmission="CVT"))
+        injected["ai_words"] = {"transmission": "made up by the model"}
+        check("ai_words" not in _parse_draft(json.dumps(injected)).model_dump(), "the model can't write ai_words itself")
+        draft = _parse_draft(_reading(**READINGS[0])).model_dump()
+        merged = merge_redraft(review.apply_template_defaults(blank()), None, draft)
+        check(merged["vehicle_info"]["paintwork_condition"] == "Resprayed"
+              and merged["vehicle_info"]["brakes_condition"] == "Impaired",
+              "off: a new draft read -- the AI's 'Resprayed' / 'Impaired' replace the usual wording, as before",
+              repr(merged["vehicle_info"]))
 
 
 def ai_words() -> None:
     cases = [
-        ("transmission", "CVT", "Automatic", None), ("transmission", "Auto", "Automatic", None),
-        ("transmission", "A/T", "Automatic", None), ("transmission", "e-CVT", "Automatic", None),
-        ("transmission", "Automatic (CVT)", "Automatic", None), ("transmission", "M/T", "Manual", None),
-        ("transmission", "Semi-automatic", None, "Semi-automatic"),
-        ("steering_condition", "Operable", "Good", None), ("brakes_condition", "operable", "Good", None),
+        # Transmission, by meaning.
+        ("transmission", "CVT", "Automatic", "CVT"), ("transmission", "Auto", "Automatic", "Auto"),
+        ("transmission", "A/T", "Automatic", "A/T"), ("transmission", "A / T", "Automatic", "A / T"),
+        ("transmission", "e-CVT", "Automatic", "e-CVT"), ("transmission", "Automatic (CVT)", "Automatic", "Automatic (CVT)"),
+        ("transmission", "6-Speed Automatic", "Automatic", "6-Speed Automatic"),
+        ("transmission", "Automatic (6-speed)", "Automatic", "Automatic (6-speed)"),
+        ("transmission", "Automatic CVT transmission", "Automatic", "Automatic CVT transmission"),
+        ("transmission", "Continuously Variable Transmission", "Automatic", "Continuously Variable Transmission"),
+        ("transmission", "Automatic / CVT", "Automatic", "Automatic / CVT"), ("transmission", "DCT", "Automatic", "DCT"),
+        ("transmission", "AMT", "Automatic", "AMT"), ("transmission", "6AT", "Automatic", "6AT"),
+        ("transmission", "Automatic with manual mode", "Automatic", "Automatic with manual mode"),
+        ("transmission", "Automatic", "Automatic", None),
+        ("transmission", "5-speed manual", "Manual", "5-speed manual"), ("transmission", "Manual (MT)", "Manual", "Manual (MT)"),
+        ("transmission", "MT", "Manual", "MT"), ("transmission", "M/T", "Manual", "M/T"), ("transmission", "Manual", "Manual", None),
+        # Unclear: the AI's own word stays, as a note too.
+        ("transmission", "Semi-automatic", "Semi-automatic", "Semi-automatic"),
+        ("transmission", "Automatic or manual", "Automatic or manual", "Automatic or manual"),
+        ("transmission", "Unknown", "Unknown", "Unknown"),
+        # Static check: plainly positive -> Good; a finding stays as written.
+        ("steering_condition", "Operable", "Good", "Operable"), ("brakes_condition", "operable", "Good", "operable"),
+        ("steering_condition", "In good working order", "Good", "In good working order"),
         ("steering_condition", "see annex(es)", "see annex(es)", None),
-        ("steering_condition", "Impaired", None, "Impaired"), ("brakes_condition", "Damaged", None, "Damaged"),
-        ("paintwork_condition", "Good", "Good", None), ("paintwork_condition", "Scratched", None, "Scratched"),
-        ("paintwork_condition", "Original", None, "Original"), ("paintwork_condition", "Resprayed", None, "Resprayed"),
+        ("brakes_condition", "See Annexes", "see annex(es)", "See Annexes"),
+        ("steering_condition", "Impaired", "Impaired", "Impaired"), ("brakes_condition", "Damaged", "Damaged", "Damaged"),
+        ("brakes_condition", "Faulty", "Faulty", "Faulty"), ("steering_condition", "Not working", "Not working", "Not working"),
+        ("steering_condition", "in operable", "in operable", "in operable"),
+        ("steering_condition", "In-operable", "In-operable", "In-operable"),
+        ("paintwork_condition", "Good", "Good", None), ("paintwork_condition", "good condition", "Good", "good condition"),
+        ("paintwork_condition", "Scratched", "Scratched", "Scratched"), ("paintwork_condition", "Resprayed", "Resprayed", "Resprayed"),
+        ("paintwork_condition", "Faded", "Faded", "Faded"), ("paintwork_condition", "Original", "Original", "Original"),
+        ("paintwork_condition", "Fair", "Fair", "Fair"), ("paintwork_condition", "Good, but scratched", "Good, but scratched",
+                                                          "Good, but scratched"),
+        # Other fields and blanks: untouched.
         ("color", "Pearl White", "Pearl White", None), ("transmission", None, None, None), ("transmission", "  ", "  ", None),
     ]
-    wrong = [(f, v, firm_words.firm_word(f, v)) for f, v, want, note in cases if firm_words.firm_word(f, v) != (want, note)]
-    check(not wrong, "firm_word: the same meaning mapped, the rest kept as a note, other fields untouched", repr(wrong))
+    wrong = [(f, v, firm_words.firm_word(f, v), (want, note)) for f, v, want, note in cases
+             if firm_words.firm_word(f, v) != (want, note)]
+    check(not wrong, "firm_word: by meaning; a finding or an unclear word kept as written (never blank, never Good);"
+                     " the AI's word as a note", repr(wrong))
+    check(all(firm_words.firm_word(f, v)[0] not in (None, "") for f, v, _, _ in cases if isinstance(v, str) and v.strip()),
+          "no word is ever blanked")
     vehicle, notes = firm_words.firm_vehicle_words({"transmission": "CVT", "paintwork_condition": "Scratched", "make": "Makeone"})
-    check(vehicle == {"transmission": "Automatic", "paintwork_condition": None, "make": "Makeone"}
-          and notes == {"paintwork_condition": "Scratched"}, "firm_vehicle_words on a dict", repr((vehicle, notes)))
+    check(vehicle == {"transmission": "Automatic", "paintwork_condition": "Scratched", "make": "Makeone"}
+          and notes == {"transmission": "CVT", "paintwork_condition": "Scratched"}, "firm_vehicle_words on a dict",
+          repr((vehicle, notes)))
 
-    raw = blank()
-    raw["vehicle_info"].update(transmission="CVT", steering_condition="Operable", brakes_condition="Impaired",
-                               paintwork_condition="Scratched", plate_number="TEST 1234")
-    raw = {k: v for k, v in raw.items() if k not in ("cover_page", "checked", "template_fields", "second_look", "ai_words")}
-    draft = _parse_draft(json.dumps(raw)).model_dump()
+    with firm_words_switch("on"):
+        draft = _parse_draft(_reading(**READINGS[0])).model_dump()
     v = draft["vehicle_info"]
-    check(v["transmission"] == "Automatic" and v["steering_condition"] == "Good" and v["brakes_condition"] is None
-          and v["paintwork_condition"] is None and v["plate_number"] == "TEST 1234",
-          "a reading parsed offline (_parse_draft): firm words, the unsure ones empty", repr(v))
-    check(draft["ai_words"] == {"brakes_condition": "Impaired", "paintwork_condition": "Scratched"},
+    check(v["transmission"] == "Automatic" and v["steering_condition"] == "Good" and v["brakes_condition"] == "Impaired"
+          and v["paintwork_condition"] == "Resprayed" and v["plate_number"] == "TEST 1234",
+          "on: a reading parsed offline (_parse_draft) -- firm words by meaning, the findings as the AI wrote them",
+          repr(v))
+    check(draft["ai_words"] == {"transmission": "CVT", "steering_condition": "Operable", "brakes_condition": "Impaired",
+                                "paintwork_condition": "Resprayed"},
           "...and the AI's own words kept as ai_words", repr(draft["ai_words"]))
     check("ai_words" not in json.dumps(SecurityIncidentDraft.model_json_schema()), "ai_words is not in the schema the AI sees")
     read, _ = ai_read_for(draft, [])
-    check(read["notes"] == {"brakes_condition": "Impaired", "paintwork_condition": "Scratched"}
-          and read["vehicle_info"]["transmission"] == "Automatic", "ai_read: the notes beside the firm's words",
+    check(read["notes"]["transmission"] == "CVT" and read["notes"]["paintwork_condition"] == "Resprayed"
+          and read["vehicle_info"]["transmission"] == "Automatic", "ai_read: the notes beside the fields",
           repr(read.get("notes")))
     plain, _ = ai_read_for(with_values(blank(), {"vehicle_info.transmission": "Automatic"}), [])
     check("notes" not in plain, "ai_read: no notes key when there are none")
@@ -560,13 +852,20 @@ def ai_words() -> None:
     current = review.apply_template_defaults(blank())
     merged = merge_redraft(current, None, draft)
     mv = merged["vehicle_info"]
-    check(mv["paintwork_condition"] == "Good" and mv["brakes_condition"] == "see annex(es)" and mv["steering_condition"] == "Good"
+    check(mv["paintwork_condition"] == "Resprayed" and mv["brakes_condition"] == "Impaired" and mv["steering_condition"] == "Good"
           and mv["transmission"] == "Automatic",
-          "a new draft read: the usual wording stays where the AI's word wasn't the firm's", repr(mv))
+          "on: a new draft read -- a finding replaces the usual wording (never printed as 'Good')", repr(mv))
     rv = review.review_state(merged, draft, [], signed_off=False)
-    check(rv["fields"]["vehicle_info.paintwork_condition"]["state"] == "check"
-          and rv["fields"]["vehicle_info.transmission"]["state"] == "check",
-          "...each still to check")
+    states = {k: rv["fields"][f"vehicle_info.{k}"]["state"] for k in firm_words.MAPPED_FIELDS}
+    check(set(states.values()) == {"check"}, "...each an open item to check, none 'none'", repr(states))
+    with firm_words_switch("on"):
+        unclear = _parse_draft(_reading(transmission="Semi-automatic", paintwork_condition=None)).model_dump()
+    rv = review.review_state(merge_redraft(review.apply_template_defaults(blank()), None, unclear), unclear, [], False)
+    check(unclear["vehicle_info"]["transmission"] == "Semi-automatic"
+          and rv["fields"]["vehicle_info.transmission"]["state"] == "check"
+          and rv["fields"]["vehicle_info.paintwork_condition"]["state"] == "check",
+          "on: an unclear transmission stays as the AI wrote it, to check (was 'Not recorded' and 'none');"
+          " an empty paintwork keeps the usual 'Good', to check", repr(rv["fields"]["vehicle_info.transmission"]))
 
 
 # ------------------------------------------------------- conditions
@@ -621,7 +920,10 @@ def main_() -> int:
         ("filing never asks; the impact note", filing_never_asks),
         ("another model's kit lines (R-report 2.8)", kit_filter),
         ("optional dates left out of the PDF and Excel", optional_dates),
-        ("the AI's words in the firm's words", ai_words),
+        ("a must-have marked N/A prints N/A (PDF and Excel)", na_prints),
+        ("INTAKE_FIRM_WORDS: the switch", firm_words_setting),
+        ("INTAKE_FIRM_WORDS off: every reading as master's", firm_words_off),
+        ("INTAKE_FIRM_WORDS on: the AI's words in the firm's words", ai_words),
         ("conditions: one click, the person's order", conditions),
         ("no AI", no_ai),
     ):

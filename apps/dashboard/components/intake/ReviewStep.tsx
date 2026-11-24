@@ -646,6 +646,11 @@ export function ReviewStep({
             showUsualValues
             review={coverReview}
             onReview={(key, action) => reviewFields([key], action)}
+            // As the case page's Cover tab: the AI's own word beside a
+            // field (ai_read.notes) and the point of impact checked against
+            // the damaged parts. No sketch here: the map has its own column.
+            damage={damage}
+            aiNotes={ai.notes}
           />
         </section>
 

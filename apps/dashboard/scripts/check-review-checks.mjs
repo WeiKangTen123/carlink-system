@@ -274,6 +274,20 @@ check("ReviewStep: the checks are wired in (map add, add warnings, undo, prints 
   assert.match(tsx, /reviewRowState\(item\)/);
 });
 
+check("ReviewStep: the cover form gets the AI's own words (aiNotes) and the damaged parts (impact check), as the Cover tab", () => {
+  const tsx = source("../components/intake/ReviewStep.tsx");
+  const start = tsx.indexOf("<CoverPageFields");
+  const form = tsx.slice(start, tsx.indexOf("/>", start));
+  assert.ok(start > 0, "ReviewStep renders CoverPageFields");
+  assert.match(form, /aiNotes=\{ai\.notes\}/);
+  assert.match(form, /damage=\{damage\}/);
+  // The map stays alone in its column: no sketch in the wizard's cover form.
+  assert.doesNotMatch(form, /sketch=/);
+  const tab = source("../components/CoverTab.tsx");
+  assert.match(tab, /aiNotes=\{ai\.notes\}/);
+  assert.match(tab, /damage=\{damageEntries\}/);
+});
+
 check("IntakeWizard: File case runs the check first; [Go to it] goes back to the Review step at that row", () => {
   const tsx = source("../components/intake/IntakeWizard.tsx");
   assert.match(tsx, /onFinalize=\{requestFinalize\}/);

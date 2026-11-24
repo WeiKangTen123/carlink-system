@@ -602,8 +602,13 @@ def checked_change(stored: dict | None, body: CheckedChange, user: CurrentUser) 
         raise ApiError(403, "Only staff can confirm Our Ref.", "not_allowed")
     checked = review.changed_checked(review.checked_of(stored), {k: v.na for k, v in body.set.items()}, body.clear, user)
     n, m = len(body.set), len(body.clear)
+    # Which must-have facts were marked N/A (review.MUST_HAVE: what gets a
+    # case past sign-off's 409 must_have), by their labels, so the history
+    # says so (review L4).
+    labels = {key: label for label, keys in review.MUST_HAVE for key in keys}
+    na = list(dict.fromkeys(labels[key] for key, mark in body.set.items() if mark.na and key in labels))
     detail = ", ".join(p for p in (
-        f"confirmed {n} field{'s' if n != 1 else ''}" if n else "",
+        f"confirmed {n} field{'s' if n != 1 else ''}" + (f" (N/A: {', '.join(na)})" if na else "") if n else "",
         f"unconfirmed {m} field{'s' if m != 1 else ''}" if m else "",
     ) if p)
     return checked, detail

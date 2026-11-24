@@ -71,6 +71,10 @@ EXPECTED_PROD_NEW_ENV = {
     "INTAKE_SIDE_GEOMETRY": "off",
     "INTAKE_ZONE_WRONG_END": "drop",
     "INTAKE_LINK_CHECK_MAX_CALLS": "2",
+    # Phase 1 (report checks): the AI's words in the firm's words
+    # (app/reports/firm_words.py), off = every reading as before
+    # (test_p1_report_checks checks the default against config.py).
+    "INTAKE_FIRM_WORDS": "off",
 }
 NEW_ENV_SERVICES = ("api", "telegram-bot")
 

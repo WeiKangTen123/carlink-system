@@ -896,11 +896,13 @@ class SecurityIncidentDraft(BaseModel):
     # stored as a browser sent it.
     checked: SkipJsonSchema[Optional[dict]] = None
     template_fields: SkipJsonSchema[Optional[list[str]]] = None
-    # The AI's own static-check / transmission words that have no
-    # same-meaning firm word ({"paintwork_condition": "Scratched"}): a note
-    # beside the field, never printed (app/reports/firm_words.py maps the
-    # rest after each reading). Out of the schema like checked: code writes
-    # it, never the model.
+    # The AI's own static-check / transmission words, with INTAKE_FIRM_WORDS
+    # on: the ones the firm's words replaced and the ones kept for a person
+    # ({"transmission": "CVT", "paintwork_condition": "Resprayed"}), a note
+    # beside the field, never printed (app/reports/firm_words.py). Out of
+    # the schema like checked: code writes it, never the model. Left out of
+    # a dump while None (_without_unset_ai_words), so with the switch off a
+    # reading saves byte for byte what it did before.
     ai_words: SkipJsonSchema[Optional[dict]] = None
     bola_assessment: Optional[BolaLiabilityAssessment] = Field(default_factory=BolaLiabilityAssessment)
     reported_to_authorities: bool = False
@@ -910,5 +912,9 @@ class SecurityIncidentDraft(BaseModel):
         None,
         description="Anything relevant the reporter mentioned that doesn't fit the fields above.",
     )
+
+    @model_serializer(mode="wrap")
+    def _without_unset_ai_words(self, handler):
+        return _without_defaults(handler(self), {"ai_words": None})
 
 

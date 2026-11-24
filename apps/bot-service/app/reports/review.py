@@ -518,6 +518,16 @@ def missing_before_sign_off(data: dict | None) -> list[dict]:
     return out
 
 
+def na_must_haves(data: dict | None) -> frozenset[str]:
+    """The MUST_HAVE keys a person marked N/A that are still blank: the
+    PDF and the Excel export print "N/A" for them (review M5), never "Not
+    recorded" / "(to be issued)" -- the report says the fact doesn't apply
+    rather than that it is missing. A value given since prints as itself."""
+    data = data if isinstance(data, dict) else {}
+    checked = checked_of(data)
+    return frozenset(key for key in MUST_HAVE_KEYS if _na(checked.get(key)) and is_blank(value_at(data, key)))
+
+
 def must_have_message(missing: list[dict]) -> str:
     """"3 things before sign-off: Requested by, Workshop, Date of survey.
     ..." for the sign-off's refusal."""

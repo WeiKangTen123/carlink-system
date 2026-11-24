@@ -688,10 +688,16 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     draft = _sanitize_damage_summary(draft)
     draft = _backfill_damage_summary(draft)
     draft = _firm_condition(draft)
-    # The static check and transmission in the firm's words ("CVT" ->
-    # "Automatic"); a word with no same-meaning firm word is kept as a note
-    # (draft.ai_words), not printed.
-    return apply_firm_words(draft)
+    # Never the model's: only apply_firm_words writes the AI's own words.
+    draft.ai_words = None
+    # INTAKE_FIRM_WORDS (default off: the reading as before, byte for
+    # byte). On: the static check and transmission in the firm's words by
+    # meaning ("6-Speed Automatic" -> "Automatic"), a finding ("Resprayed")
+    # or an unclear word kept as the AI wrote it -- never blanked, never
+    # "Good" -- and the AI's own word kept as a note (draft.ai_words).
+    if settings.intake_firm_words == "on":
+        draft = apply_firm_words(draft)
+    return draft
 
 
 def draft_report(
