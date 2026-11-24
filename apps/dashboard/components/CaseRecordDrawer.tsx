@@ -112,7 +112,22 @@ const HISTORY_LABELS: Record<string, string> = {
   // The five tabs and their saves (PR #21 and the 5-tab studio).
   cover_page_edited: "Cover page saved",
   annex_a_edited: "Annex A saved",
-  annex_a_prefilled: "Annex A priced from past cases",
+  // Detail: "3 row(s) priced from past cases, 1 unpriced", or "... from
+  // your own prices" (Stage 1: anyone who may edit the case may fill).
+  annex_a_prefilled: "Annex A prices filled in",
+  // Stage 1, "My prices" and price safety (S1-contract.md). Detail: "2
+  // prices confirmed (5 line(s))" -- on the case.
+  annex_a_prices_confirmed: "Annex A prices confirmed",
+  // A person's own prices and the admins' book decisions: kept in the
+  // history with who and when, never on a case (detail: the car and the
+  // line, and the prices).
+  my_price_changed: "Own price changed",
+  my_price_deleted: "Own price deleted",
+  my_price_undone: "Own price change undone",
+  book_price_decided: "Price book decision",
+  // The one-time step that took the plates out of the price book (owner
+  // K0); detail: how many lines, never a plate.
+  price_book_plates_dropped: "Plates removed from the price book",
   annex_b_edited: "Annex B saved",
   annex_c_edited: "Annex C saved",
   damage_item_edited: "Damaged part edited",

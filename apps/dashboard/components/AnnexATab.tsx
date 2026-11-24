@@ -45,7 +45,7 @@ import {
 import { ReviewBadge } from "./ReviewBadge";
 import { ReviewConfirmButton } from "./ReviewConfirmButton";
 import { annexAConfirmable, annexAState, annexATally, annexATallyText, confirmRow, isPastCasePrice } from "@/lib/reviewRows";
-import { confirmAllLabel, isPriceUnconfirmed, priceTag, typedPricePatch } from "@/lib/prices";
+import { confirmAllLabel, confirmedText, isPriceUnconfirmed, prefillNoteText, priceTag, typedPricePatch } from "@/lib/prices";
 import { LockedNote, SavedNote, UnsavedNote, fieldInputStyle } from "./SaveNotes";
 import { PriceSourceTag, RememberedPricesToast, useConfirmAllPrices, type PriceToastState } from "./PriceSource";
 
@@ -419,12 +419,17 @@ export function AnnexATab({
     if (annexADirty && !(await saveDraft())) return;
     setPrefillNote(null);
     const res = await confirmPrices.confirmAll();
-    if ("ok" in res) setPrefillNote(`${unconfirmedCount} price${unconfirmedCount === 1 ? "" : "s"} confirmed.`);
+    // The API's count of the prices that were waiting (the page's own when
+    // an older answer has none).
+    if ("ok" in res) setPrefillNote(confirmedText(res.confirmed, unconfirmedCount));
   };
 
   // POST /reports/{id}/annex-a/prefill works on the table as saved and saves
   // the result: rows a person priced stay, prefilled and unpriced rows are
-  // priced from past cases of this make and model.
+  // priced from the person's own prices and, for price-book staff, past
+  // cases of this make and model (Stage 1). A refusal (403: the price book
+  // can't go into this case, and it isn't the person's own) shows in plain
+  // words under the table.
   const handlePrefill = async () => {
     if (annexALocked) return;
     if (annexADirty && !confirm("Filling prices uses Annex A as last saved, so your unsaved changes would be lost. Continue?")) return;
@@ -439,14 +444,7 @@ export function AnnexATab({
     }
     store.applySaved("annexA", res);
     router.refresh();
-    const n = res.filled;
-    setPrefillNote(
-      n === 0
-        ? "No prices found in past cases for the unpriced lines."
-        : `${n} line${n === 1 ? "" : "s"} priced from past cases${
-            res.unpriced ? `; ${res.unpriced} still ${res.unpriced === 1 ? "has" : "have"} no price` : ""
-          }.`
-    );
+    setPrefillNote(prefillNoteText(res.filled, res.unpriced, res.annex_a?.items || []));
   };
 
   const annexAColumns = readOnly ? 8 : 10;
@@ -789,20 +787,26 @@ export function AnnexATab({
                 <CheckCheck style={{ width: 13, height: 13 }} /> {confirmPrices.busy ? "Confirming…" : confirmAllLabel(unconfirmedCount)}
               </button>
             )}
-            {/* Past-case prices are the firm's price book (admins and
-                "see all cases" staff); the API refuses anyone else. */}
-            {canViewAllCases(user) && (
-              <button
-                type="button"
-                className="btn-secondary-modern"
-                style={{ fontSize: 11, padding: "5px 12px" }}
-                disabled={annexALocked}
-                title="Prices the unpriced and prefilled lines from past cases of this make and model; lines you priced stay."
-                onClick={() => void handlePrefill()}
-              >
-                <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> {prefillBusy ? "Filling prices…" : "Fill prices from past cases"}
-              </button>
-            )}
+            {/* Stage 1: for everyone who may edit the case -- their own
+                prices first; past-case prices are the firm's price book
+                (admins and "see all cases" staff), which the API adds only
+                where the case's owner may see it too (else 403, said in
+                plain words under the table). */}
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 12px" }}
+              disabled={annexALocked}
+              title={
+                canViewAllCases(user)
+                  ? "Prices the unpriced and prefilled lines from your own prices, then past cases of this make and model; lines you priced stay."
+                  : "Prices the unpriced and prefilled lines from your own prices for this make and model (Settings → My prices); lines you priced stay."
+              }
+              onClick={() => void handlePrefill()}
+            >
+              <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />{" "}
+              {prefillBusy ? "Filling prices…" : canViewAllCases(user) ? "Fill prices from past cases" : "Fill in my prices"}
+            </button>
             {/* The parts-catalogue look-up (POST /reports/{id}/catalogue/
                 lookup): the catalogue worker reads the makers' catalogues;
                 the results show in the panel under Suggested lines. Hidden

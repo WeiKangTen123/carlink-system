@@ -93,14 +93,16 @@ export function RememberedPricesToast({ toast, onClose }: { toast: PriceToastSta
 }
 
 /** "Confirm all prices" (POST /reports/{id}/annex-a/confirm-prices) on the
- * case's Annex A as saved: the lines that come back replace the table and
- * its baseline, and the case is fetched again. The caller makes sure there
- * are no unsaved Annex A changes first. */
+ * case's Annex A as saved: the API's answer {annex_a, annex_c, confirmed}
+ * replaces the table, its baseline and Annex C as the Annex A save's does,
+ * and the case is fetched again. confirmed: how many prices were waiting
+ * (null when not sent). The caller makes sure there are no unsaved Annex A
+ * changes first. */
 export function useConfirmAllPrices(reportId: string, store: CaseStore) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
-  const confirmAll = async (): Promise<{ ok: true } | { error: string }> => {
+  const confirmAll = async (): Promise<{ ok: true; confirmed: number | null } | { error: string }> => {
     setBusy(true);
     store.setStatus("annexA", "saving");
     let res: Awaited<ReturnType<typeof confirmAnnexAPricesAction>>;
@@ -114,17 +116,21 @@ export function useConfirmAllPrices(reportId: string, store: CaseStore) {
       store.setStatus("annexA", "error", res.error);
       return { error: res.error };
     }
-    if (res.items) {
+    const annexC = res.annex_c ? { annex_c: res.annex_c } : {};
+    if (res.annex_a) {
+      // The API's Annex A as it is: its lines and the totals it worked out.
+      store.applySaved("annexA", { annex_a: res.annex_a, ...annexC });
+    } else if (res.items) {
       const totals = sumRows(res.items);
       store.applySaved("annexA", {
         annex_a: { items: res.items, total_workshop_est: totals.est, total_adjusted_cost: totals.adj },
-        ...(res.annex_c ? { annex_c: res.annex_c } : {}),
+        ...annexC,
       });
     } else {
       store.setStatus("annexA", "saved");
     }
     router.refresh();
-    return { ok: true };
+    return { ok: true, confirmed: res.confirmed };
   };
 
   return { busy, confirmAll };

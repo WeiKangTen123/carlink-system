@@ -18,7 +18,7 @@
  *
  * Pure (no React, no fetching), so scripts/check-prices-ui.mjs can check
  * it with Node alone. Type imports only: Node strips them. */
-import type { AnnexAPartItem, AnnexCInfo } from "./api";
+import type { AnnexAInfo, AnnexAPartItem, AnnexCInfo } from "./api";
 import type { MustHaveItem } from "./review";
 
 // ---- Types ---------------------------------------------------------------------
@@ -356,17 +356,30 @@ export function undoneText(list: ReadonlyArray<RememberedPrice>, failed: number)
 
 // ---- Confirm all prices ---------------------------------------------------------------
 
-/** The lines POST annex-a/confirm-prices answered with -- as annex_a
- * ({annex_a: {items}}), `lines`, `items`, or the list itself -- or null
- * when the answer holds no lines (then the page is fetched again). */
-export function confirmedLinesFrom(body: unknown): { items: AnnexAPartItem[] | null; annex_c: AnnexCInfo | null } {
+/** What POST annex-a/confirm-prices answered: the API sends {annex_a,
+ * annex_c, confirmed} -- Annex A as the Annex A save answers it (its lines
+ * and the totals it worked out), Annex C, and how many prices were waiting.
+ * annex_a: that whole Annex A, to put on the page as it is (null when the
+ * answer has none); items: its lines -- or, from another shape, `lines`,
+ * `items` or the list itself -- null when the answer holds no lines (then
+ * the page is fetched again); confirmed: null when not sent. */
+export function confirmedLinesFrom(body: unknown): {
+  annex_a: AnnexAInfo | null;
+  items: AnnexAPartItem[] | null;
+  annex_c: AnnexCInfo | null;
+  confirmed: number | null;
+} {
   const looksLikeLines = (v: unknown): v is AnnexAPartItem[] =>
     Array.isArray(v) && v.every((x) => isObj(x) && typeof x.part_name === "string");
   let items: AnnexAPartItem[] | null = null;
+  let annexA: AnnexAInfo | null = null;
   if (looksLikeLines(body)) items = body;
   else if (isObj(body)) {
-    const annexA = isObj(body.annex_a) ? body.annex_a.items : undefined;
-    for (const candidate of [annexA, body.lines, body.items]) {
+    const a = isObj(body.annex_a) ? body.annex_a : null;
+    if (a && looksLikeLines(a.items) && num(a.total_workshop_est) != null && num(a.total_adjusted_cost) != null) {
+      annexA = a as unknown as AnnexAInfo;
+    }
+    for (const candidate of [a?.items, body.lines, body.items]) {
       if (looksLikeLines(candidate)) {
         items = candidate;
         break;
@@ -374,7 +387,57 @@ export function confirmedLinesFrom(body: unknown): { items: AnnexAPartItem[] | n
     }
   }
   const annexC = isObj(body) && isObj(body.annex_c) ? (body.annex_c as unknown as AnnexCInfo) : null;
-  return { items, annex_c: annexC };
+  const sent = isObj(body) ? num(body.confirmed) : null;
+  return { annex_a: annexA, items, annex_c: annexC, confirmed: sent != null && sent >= 0 ? Math.floor(sent) : null };
+}
+
+/** "3 prices confirmed." after Confirm all prices: the API's count when it
+ * sent one, else the count the page had. */
+export function confirmedText(confirmed: number | null, counted: number): string {
+  const n = confirmed ?? counted;
+  return n === 0 ? "Every price is confirmed." : `${n} price${n === 1 ? "" : "s"} confirmed.`;
+}
+
+// ---- Fill prices --------------------------------------------------------------------------
+
+/** "Fill prices" (POST annex-a/prefill) refused (403): the firm's price
+ * book never goes into a case whose owner may not see it, and a person's
+ * own prices only into their own cases (or ones the book may go into) --
+ * an admin on a self-signup's case, say. Said plainly, with what to do. */
+export const PREFILL_REFUSED =
+  "Prices can't be filled in on this case: your own prices only go into your own cases, and past-case prices only into cases whose owner may see the price book. Type the workshop's prices instead.";
+
+/** The words for a refused "Fill prices": PREFILL_REFUSED for the API's
+ * price-book 403 (its words name the price book, or it sent none); null
+ * for anything else -- another 403 (the case can't be changed at all) or
+ * another status keeps the API's own words. */
+export function prefillRefusal(status: number, detail: string | null | undefined): string | null {
+  if (status !== 403) return null;
+  const said = (detail || "").trim();
+  return !said || /price book/i.test(said) ? PREFILL_REFUSED : null;
+}
+
+/** What "Fill prices" says after it ran: how many lines it priced and
+ * where from -- the person's own prices, the price book (an approved or a
+ * past-case price) -- and how many still have no price. filled / unpriced:
+ * the API's counts; items: the Annex A it answered, read for the sources
+ * (an older server has none: "from past cases", as before). */
+export function prefillNoteText(
+  filled: number,
+  unpriced: number,
+  items: ReadonlyArray<Partial<PriceFacts> & Pick<AnnexAPartItem, "workshop_est" | "prefilled">>
+): string {
+  const rest = unpriced > 0 ? `; ${unpriced} still ${unpriced === 1 ? "has" : "have"} no price` : "";
+  if (filled <= 0) return "No prices found for the unpriced lines, in your own prices or past cases.";
+  let mine = 0;
+  let book = 0;
+  for (const it of items) {
+    if (!it.prefilled || !(Number(it.workshop_est) > 0)) continue;
+    if (it.price_source === "mine") mine += 1;
+    else if (it.price_source === "approved" || it.price_source === "book") book += 1;
+  }
+  const where = mine && book ? ` (${mine} from your own prices, ${book} from the price book)` : mine ? " from your own prices" : " from past cases";
+  return `${filled} line${filled === 1 ? "" : "s"} priced${where}${rest}.`;
 }
 
 // ---- The sign-off's 409 ------------------------------------------------------------------

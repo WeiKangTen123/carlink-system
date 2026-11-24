@@ -12,6 +12,7 @@ import {
   normalizeMyPrices,
   normalizePriceDifferences,
   parseRemembered,
+  prefillRefusal,
   signOffBlock,
   signOffBlockMessage,
   type MyPrice,
@@ -1334,8 +1335,9 @@ export type AnnexAPartItem = {
    * book's median of >=2 cases), "typed", "ai", "catalogue"; null: none. */
   price_source?: PriceSource | null;
   /** False until a person confirms a mine/approved/book price; the
-   * sign-off refuses while any is false (409 prices_unconfirmed). */
-  price_confirmed?: boolean;
+   * sign-off refuses while any is false (409 prices_unconfirmed). Null (or
+   * left out) on a line with no price to confirm: counts as confirmed. */
+  price_confirmed?: boolean | null;
   /** The book's (or the approved) price per unit, for comparison. */
   book_price?: number | null;
   /** ISO date of the source: the newest past line used, the person's
@@ -2751,24 +2753,34 @@ export async function saveAnnexA(
 }
 
 /** "Confirm all prices" (POST /reports/{id}/annex-a/confirm-prices): every
- * Annex A line's price confirmed, audited. The lines come back (items null
- * when the answer holds none the page can use: the caller fetches the case
- * again). 409 once signed off. */
-export async function confirmAnnexAPrices(reportId: string): Promise<{ items: AnnexAPartItem[] | null; annex_c: AnnexCInfo | null }> {
+ * Annex A line's price confirmed, audited. The API answers {annex_a,
+ * annex_c, confirmed} as the Annex A save does: annex_a (lines and totals)
+ * and annex_c go on the page as they are (lib/prices.ts confirmedLinesFrom;
+ * items null when the answer holds no lines the page can use: the caller
+ * fetches the case again). 409 once signed off. */
+export async function confirmAnnexAPrices(reportId: string): Promise<ReturnType<typeof confirmedLinesFrom>> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a/confirm-prices`, { method: "POST" });
   if (!res.ok) throw await apiError(res, "Failed to confirm the prices");
   return confirmedLinesFrom(await res.json().catch(() => null));
 }
 
-/** Fills the workshop estimates on Annex A from past cases of the same
- * make and model (POST /reports/{id}/annex-a/prefill). Rows a person
- * priced are kept; prefilled and unpriced rows are replaced. The whole
- * table comes back, saved. */
+/** "Fill prices" (POST /reports/{id}/annex-a/prefill): the unpriced rows
+ * priced -- this person's own prices first (everyone who may edit the case,
+ * Stage 1), then for price-book staff an approved or the book's price.
+ * Rows a person priced are kept; prefilled and unpriced rows are replaced.
+ * The whole table comes back, saved. A 403 (the price book can't go into
+ * this case and it isn't the person's own -- an admin on a self-signup's
+ * case) comes back in plain words (lib/prices.ts prefillRefusal). */
 export async function prefillAnnexA(
   reportId: string
 ): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; filled: number; unpriced: number }> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a/prefill`, { method: "POST" }, { timeoutMs: 30000 });
-  if (!res.ok) throw await apiError(res, "Failed to fill prices from past cases");
+  if (res.status === 403) {
+    const err = await apiError(res, "Failed to fill prices");
+    const friendly = prefillRefusal(err.status, err.detail);
+    throw friendly ? new ApiError(friendly, err.status, err.code, err.detail) : err;
+  }
+  if (!res.ok) throw await apiError(res, "Failed to fill prices");
   return res.json();
 }
 

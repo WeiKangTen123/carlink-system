@@ -12,7 +12,7 @@
  * Pure (no React, no fetching), so the rules can be checked on their own. */
 import type { AnnexAPartItem, AnnexBLabourItem, AnnexCInfo, DamageSummaryItem } from "./api";
 import type { FieldReview, Review, ReviewState } from "./review";
-import { isPriceUnconfirmed } from "./prices";
+import { GATED_SOURCES, isPriceUnconfirmed } from "./prices";
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -56,13 +56,30 @@ const hasPrice = (row: Pick<AnnexAPartItem, "workshop_est">) => Number(row.works
 /** "Serviceable" (the part is kept): a line that rightly has no price. */
 export const isServiceable = (row: Pick<AnnexAPartItem, "condition">) => (row.condition || "").trim().toLowerCase() === "serviceable";
 
+/** Stage 1: the state of a priced line whose price was filled in for the
+ * person (price_source mine / approved / book) and that carries
+ * price_confirmed -- that field's, as the API reads it (review.annex_a_
+ * state): "you" once confirmed, even while prefilled is still set ("Confirm
+ * all prices" leaves it), "check" until then. Null for any other line
+ * (an old case, a typed price, no price): judged as before. */
+function filledPriceState(row: AnnexAFacts): "you" | "check" | null {
+  if (!hasPrice(row) || row.price_confirmed == null) return null;
+  if (typeof row.price_source !== "string" || !GATED_SOURCES.includes(row.price_source)) return null;
+  return row.price_confirmed ? "you" : "check";
+}
+
 /** A price filled from past cases (POST annex-a/prefill) that nobody has
  * typed over or confirmed: "Check · from 3 past cases". Owner decision 2:
  * it may be signed off, but it shows as check, not as priced. A person
  * changing only the row's Condition leaves the price the past cases' --
- * still check. */
+ * still check. Stage 1, as the API: of the prices filled in for the
+ * person, only the book's (price_source "book") is a past-case price, and
+ * only until it is confirmed. */
 export function isPastCasePrice(row: AnnexAFacts): boolean {
-  return Boolean(row.prefilled) && hasPrice(row) && !row.stale;
+  if (row.stale) return false;
+  const filled = filledPriceState(row);
+  if (filled) return filled === "check" && row.price_source === "book";
+  return Boolean(row.prefilled) && hasPrice(row);
 }
 
 /** An Annex A row: "none" for a line with no description (left out on
@@ -74,13 +91,16 @@ export function isPastCasePrice(row: AnnexAFacts): boolean {
  * the API reads them (prefill.origin_of): an estimate nobody prefilled is
  * a person's. Stage 1: a price filled in for the person (their own, an
  * approved one, the book's) is "check" until confirmed (price_confirmed),
- * whatever its origin; a line without the field never is. */
+ * whatever its origin, and "you" once confirmed, even with prefilled still
+ * set (as the API's review.annex_a_state); a line without the field is
+ * judged as before. */
 export function annexAState(row: AnnexAFacts): ReviewState {
   if (!(row.part_name || "").trim()) return "none";
   if (row.stale) return "check";
   if (!hasPrice(row) && !isServiceable(row)) return "needs";
+  const filled = filledPriceState(row);
+  if (filled) return filled;
   if (isPastCasePrice(row)) return "check";
-  if (hasPrice(row) && isPriceUnconfirmed(row)) return "check";
   const origin = row.origin || (row.prefilled ? "history" : hasPrice(row) ? "typed" : "detection");
   return origin === "typed" ? "you" : "check";
 }

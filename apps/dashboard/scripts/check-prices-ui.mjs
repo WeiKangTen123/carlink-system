@@ -210,6 +210,44 @@ check("old cases: a line with none of the new fields has no tag, isn't unconfirm
   assert.deepEqual(P.typedPricePatch(old), {}, "typing a price on an old line adds nothing new");
 });
 
+check("an unpriced machine row (no price fields at all, as the API writes it): no tag, confirmed, needs a price", () => {
+  // prefill._rows_for: a row the book can't price carries none of the five
+  // fields; the save's no_price_fields() writes them as null.
+  const bare = line({ workshop_est: 0, adjusted_cost: 0, prefilled: true, origin: "detection", condition: "" });
+  const nulls = { ...bare, price_source: null, price_confirmed: null, book_price: null, price_date: null, price_cases: null };
+  for (const row of [bare, nulls]) {
+    assert.equal(P.priceTag(row, NOW), null);
+    assert.equal(P.isPriceUnconfirmed(row), false);
+    assert.deepEqual(P.unconfirmedPriceLines([row]), []);
+    assert.deepEqual(P.typedPricePatch(row), {});
+    assert.equal(RR.annexAState(row), "needs");
+    assert.equal(RR.isPastCasePrice(row), false);
+    assert.deepEqual(RR.confirmRow(row), { prefilled: false, origin: "typed" }, "no price_confirmed added");
+  }
+});
+
+check('a line from a single past case: listed, unpriced, no "book" tag, nothing to confirm', () => {
+  // prefill._rows_for: fewer than 2 distinct cases -> workshop_est 0 and no
+  // price fields, the usual price kept as a reference only.
+  const one = line({
+    part_name: "Rear bumper bracket",
+    workshop_est: 0,
+    adjusted_cost: 0,
+    prefilled: true,
+    origin: "history",
+    suggested_from: "1 past case (Honda Vezel)",
+    usual_unit_price: 120,
+  });
+  assert.equal(P.priceTag(one, NOW), null);
+  assert.equal(P.isPriceUnconfirmed(one), false);
+  assert.deepEqual(P.unconfirmedPriceLines([one]), []);
+  assert.equal(RR.annexAState(one), "needs");
+  assert.equal(RR.isPastCasePrice(one), false, "no price: not a past-case price to check");
+  assert.equal(P.prefillNoteText(0, 1, [one]), "No prices found for the unpriced lines, in your own prices or past cases.");
+  const t = RR.annexATally([one, line({ origin: "typed" })]);
+  assert.deepEqual(t, { needsPrice: 1, pastPrice: 0, check: 0, you: 1 });
+});
+
 check("isPriceUnconfirmed: only mine / approved / book with price_confirmed false", () => {
   for (const s of ["mine", "approved", "book"]) {
     assert.equal(P.isPriceUnconfirmed({ price_source: s, price_confirmed: false }), true, s);
@@ -265,6 +303,26 @@ check("review: an old line is judged as before (typed -> you; prefilled -> check
   assert.equal(RR.annexAState(line({ workshop_est: 0, price_source: "book", price_confirmed: false })), "needs", "no price: needs, as before");
 });
 
+check("review as the API's (review.annex_a_state): a filled price is check until confirmed, then you -- prefilled or not", () => {
+  // As the machine fills it (prices._filled / prefill._rows_for): prefilled
+  // true, origin history, price_confirmed false.
+  const filled = (source, over = {}) => line({ prefilled: true, origin: "history", price_source: source, price_confirmed: false, ...over });
+  for (const s of ["mine", "approved", "book"]) {
+    const row = filled(s);
+    assert.equal(RR.annexAState(row), "check", s);
+    assert.equal(RR.isPastCasePrice(row), s === "book", `${s}: only the book's is a past-case price`);
+    assert.equal(RR.annexAConfirmable(row), true, s);
+    // "Confirm all prices" sets price_confirmed and leaves prefilled set.
+    const confirmed = { ...row, price_confirmed: true };
+    assert.equal(RR.annexAState(confirmed), "you", `${s} confirmed: you`);
+    assert.equal(RR.isPastCasePrice(confirmed), false, `${s} confirmed: no longer a past-case price`);
+    assert.equal(RR.annexAConfirmable(confirmed), false, `${s} confirmed: nothing to confirm`);
+  }
+  const t = RR.annexATally([filled("book"), filled("mine"), filled("book", { price_confirmed: true }), line({ prefilled: true, origin: "history" })]);
+  assert.deepEqual(t, { needsPrice: 0, pastPrice: 2, check: 1, you: 1 }, "an old prefilled line is a past-case price, as before");
+  assert.equal(RR.annexAState(filled("book", { stale: true, price_confirmed: true })), "check", "stale first, as the API");
+});
+
 check("unsaved check: a confirm or a changed source is a change to save; the same line twice isn't", () => {
   const a = line({ price_source: "book", price_confirmed: false });
   assert.equal(AR.annexSignature([a]), AR.annexSignature([{ ...a }]));
@@ -305,15 +363,53 @@ check("toast's Undo: back to the price before, or no longer remembered; failures
 
 // ---- Confirm all prices ---------------------------------------------------------------------------
 
-check("confirm-prices' answer: annex_a.items, lines, items or the list; anything else -> null (fetch again)", () => {
+check("confirm-prices' answer as the API sends it: {annex_a, annex_c, confirmed} -- the whole Annex A, its totals included", () => {
   const items = [line({ price_source: "mine", price_confirmed: true })];
-  assert.deepEqual(P.confirmedLinesFrom({ annex_a: { items }, annex_c: { total: 1 } }), { items, annex_c: { total: 1 } });
+  const annexA = { items, total_workshop_est: 400, total_adjusted_cost: 320 };
+  const annexC = { workshop_total: 400, adjusted_total: 320 };
+  assert.deepEqual(P.confirmedLinesFrom({ annex_a: annexA, annex_c: annexC, confirmed: 2 }), { annex_a: annexA, items, annex_c: annexC, confirmed: 2 });
+  assert.equal(P.confirmedLinesFrom({ annex_a: annexA, annex_c: annexC, confirmed: 0 }).confirmed, 0);
+  assert.equal(P.confirmedText(2, 5), "2 prices confirmed.", "the API's count first");
+  assert.equal(P.confirmedText(1, 5), "1 price confirmed.");
+  assert.equal(P.confirmedText(null, 3), "3 prices confirmed.", "the page's count when the API sent none");
+  assert.equal(P.confirmedText(0, 0), "Every price is confirmed.");
+});
+
+check("confirm-prices' answer, other shapes: annex_a.items, lines, items or the list; anything else -> null (fetch again)", () => {
+  const items = [line({ price_source: "mine", price_confirmed: true })];
+  const none = { annex_a: null, items: null, annex_c: null, confirmed: null };
+  assert.deepEqual(P.confirmedLinesFrom({ annex_a: { items }, annex_c: { total: 1 } }), { ...none, items, annex_c: { total: 1 } }, "no totals: the lines only");
   assert.deepEqual(P.confirmedLinesFrom({ lines: items }).items, items);
   assert.deepEqual(P.confirmedLinesFrom({ items }).items, items);
   assert.deepEqual(P.confirmedLinesFrom(items).items, items);
-  assert.deepEqual(P.confirmedLinesFrom({ ok: true }), { items: null, annex_c: null });
+  assert.deepEqual(P.confirmedLinesFrom({ ok: true }), none);
   assert.deepEqual(P.confirmedLinesFrom({ lines: [{ index: 0, wording: "x" }] }).items, null, "lines that aren't Annex A lines");
-  assert.deepEqual(P.confirmedLinesFrom(null), { items: null, annex_c: null });
+  assert.deepEqual(P.confirmedLinesFrom({ annex_a: { items: [{ index: 0 }], total_workshop_est: 1, total_adjusted_cost: 1 } }).annex_a, null);
+  assert.equal(P.confirmedLinesFrom({ confirmed: -1 }).confirmed, null);
+  assert.equal(P.confirmedLinesFrom({ confirmed: "2" }).confirmed, null);
+  assert.deepEqual(P.confirmedLinesFrom(null), none);
+});
+
+// ---- Fill prices --------------------------------------------------------------------------------
+
+check("Fill prices refused (403, the price book can't go into this case): plain words; other refusals keep the API's", () => {
+  const book = 'Prices from past cases are the firm\'s price book: for admins and "see all cases" staff.';
+  assert.equal(P.prefillRefusal(403, book), P.PREFILL_REFUSED);
+  assert.equal(P.prefillRefusal(403, null), P.PREFILL_REFUSED);
+  assert.equal(P.prefillRefusal(403, "You can see this case, but you can't change it."), null);
+  assert.equal(P.prefillRefusal(409, book), null);
+  assert.match(P.PREFILL_REFUSED, /your own prices only go into your own cases/);
+  assert.match(P.PREFILL_REFUSED, /Type the workshop's prices instead/);
+});
+
+check("Fill prices' note: how many lines, from your own prices and/or the price book, how many still unpriced", () => {
+  const filled = (source) => line({ prefilled: true, origin: "history", price_source: source, price_confirmed: false });
+  const unpriced = line({ part_name: "Clips", workshop_est: 0, prefilled: true, origin: "history" });
+  assert.equal(P.prefillNoteText(2, 1, [filled("mine"), filled("mine"), unpriced]), "2 lines priced from your own prices; 1 still has no price.");
+  assert.equal(P.prefillNoteText(3, 0, [filled("mine"), filled("book"), filled("approved")]), "3 lines priced (1 from your own prices, 2 from the price book).");
+  assert.equal(P.prefillNoteText(1, 2, [filled("book"), unpriced, unpriced]), "1 line priced from past cases; 2 still have no price.");
+  assert.equal(P.prefillNoteText(2, 0, [line({ prefilled: true }), line({ prefilled: true })]), "2 lines priced from past cases.", "an older server: as before");
+  assert.equal(P.prefillNoteText(0, 3, []), "No prices found for the unpriced lines, in your own prices or past cases.");
 });
 
 // ---- The sign-off's 409 ------------------------------------------------------------------------------
@@ -345,6 +441,34 @@ check("409 with both in one answer: missing and lines, whichever code leads", ()
     assert.deepEqual([...b.codes].sort(), ["must_have", "prices_unconfirmed"], JSON.stringify(code));
     assert.equal(P.signOffBlockMessage({ ...b, detail: null }), "1 thing before sign-off: Workshop. 1 price to confirm on Annex A.");
   }
+});
+
+check("409 as the API sends it: code must_have with both lists, lines non-empty -> the price lines show", () => {
+  // api/main.py sign_off_report: one 409, code "must_have" when facts are
+  // missing, and ALWAYS both `missing` and `lines`.
+  const b = P.signOffBlock({ detail: "1 thing ... 1 price ...", code: "must_have", missing: MISSING, lines: LINES });
+  assert.deepEqual(b.missing, MISSING);
+  assert.deepEqual(b.prices, LINES, "the unconfirmed price lines, whatever the code");
+  assert.ok(b.codes.includes("prices_unconfirmed") && b.codes.includes("must_have"));
+  assert.equal(P.signOffBlockMessage(b), "1 thing ... 1 price ...");
+  const onlyLines = P.signOffBlock({ detail: "x", code: "must_have", missing: [], lines: LINES });
+  assert.deepEqual(onlyLines.prices, LINES, "must_have with no facts missing but lines: still shown");
+  assert.deepEqual(onlyLines.missing, []);
+});
+
+check("409 as the API sends it: code must_have with lines [] -> no price lines, the must-haves as before", () => {
+  const b = P.signOffBlock({ detail: "1 thing before sign-off: Workshop.", code: "must_have", missing: MISSING, lines: [] });
+  assert.deepEqual(b.codes, ["must_have"]);
+  assert.deepEqual(b.missing, MISSING);
+  assert.deepEqual(b.prices, []);
+  assert.equal(P.signOffBlockMessage(b), "1 thing before sign-off: Workshop.");
+});
+
+check("409 as the API sends it: code prices_unconfirmed with missing [] and the lines", () => {
+  const b = P.signOffBlock({ detail: "1 price ...", code: "prices_unconfirmed", missing: [], lines: LINES });
+  assert.deepEqual(b.codes, ["prices_unconfirmed"]);
+  assert.deepEqual(b.missing, []);
+  assert.deepEqual(b.prices, LINES);
 });
 
 check("409 inside detail (HTTPException(detail={...})) reads the same", () => {
@@ -474,6 +598,39 @@ check("lib/api.ts: the Stage 1 routes, each id through seg()", () => {
   assert.match(api, /signOffBlock\(body\)/);
 });
 
+check("Confirm all prices puts the API's annex_a / annex_c on the page as they are; the note uses its count", () => {
+  const hook = source("../components/PriceSource.tsx");
+  assert.match(hook, /if \(res\.annex_a\) \{[\s\S]{0,200}store\.applySaved\("annexA", \{ annex_a: res\.annex_a, \.\.\.annexC \}\)/);
+  assert.match(hook, /return \{ ok: true, confirmed: res\.confirmed \}/);
+  const tsx = source("../components/AnnexATab.tsx");
+  assert.match(tsx, /confirmedText\(res\.confirmed, unconfirmedCount\)/);
+});
+
+check("Fill prices: shown to everyone who may edit Annex A, not only price-book staff; a 403 in plain words", () => {
+  const tsx = source("../components/AnnexATab.tsx");
+  const at = tsx.indexOf("onClick={() => void handlePrefill()}");
+  assert.ok(at > 0, "the Fill prices button");
+  const before = tsx.slice(Math.max(0, tsx.lastIndexOf("{!readOnly && (", at)), at);
+  assert.doesNotMatch(before, /\{canViewAllCases\(user\) && \(/, "no staff-only gate around the button");
+  assert.match(tsx, /prefillNoteText\(res\.filled, res\.unpriced, res\.annex_a\?\.items \|\| \[\]\)/);
+  const api = source("../lib/api.ts");
+  assert.match(api, /annex-a\/prefill`[\s\S]{0,200}res\.status === 403[\s\S]{0,200}prefillRefusal\(err\.status, err\.detail\)/);
+});
+
+check("case history: plain-English labels for the Stage 1 actions", () => {
+  const tsx = source("../components/CaseRecordDrawer.tsx");
+  for (const action of [
+    "annex_a_prices_confirmed",
+    "my_price_changed",
+    "my_price_deleted",
+    "my_price_undone",
+    "book_price_decided",
+    "price_book_plates_dropped",
+  ]) {
+    assert.match(tsx, new RegExp(`\\n\\s*${action}: "[A-Z][^"]+",`), action);
+  }
+});
+
 check("Annex A tab: the tag under each price, Confirm all prices (N), the toast after a save", () => {
   const tsx = source("../components/AnnexATab.tsx");
   assert.match(tsx, /<PriceSourceTag row=\{item\} \/>/);
@@ -493,8 +650,12 @@ check("sign-off box: the price lines and [Confirm all prices] beside Phase 1's m
   assert.match(tsx, /unconfirmedPriceLines\(store\.annexABaseline\)/);
   assert.match(tsx, /res\.mustHave \|\| res\.unconfirmedPrices/);
   assert.match(tsx, /missing\.length > 0 \|\| pricesToConfirm\.length > 0/);
+  // The API's lines go on the box whatever the code (must_have or
+  // prices_unconfirmed): from the 409 to the error, the action and the box.
+  assert.match(tsx, /setRefusedPrices\(\{ base: store\.annexABaseline, lines: res\.unconfirmedPrices \?\? \[\] \}\)/);
+  assert.match(source("../lib/api.ts"), /new MustHaveError\(signOffBlockMessage\(block\), block\.missing, block\.prices, code\)/);
   const actions = source("../app/reports/actions.ts");
-  assert.match(actions, /unconfirmedPrices: err\.unconfirmedPrices/);
+  assert.match(actions, /if \(err instanceof MustHaveError\) return \{ error: err\.message, mustHave: err\.missing, unconfirmedPrices: err\.unconfirmedPrices \}/);
 });
 
 check("Settings: My prices for every account, beside My settings; the admin tabs only for admins", () => {

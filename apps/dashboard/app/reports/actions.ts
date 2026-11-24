@@ -362,11 +362,15 @@ export async function saveAnnexAAction(
 }
 
 /** "Confirm all prices" (Stage 1): every Annex A line's price confirmed
- * (POST annex-a/confirm-prices). The lines as confirmed (items null when the
- * answer held none: the caller fetches the case again), or the error. */
+ * (POST annex-a/confirm-prices). The API's Annex A and Annex C as confirmed
+ * and how many were waiting (items null when the answer held no lines: the
+ * caller fetches the case again), or the error. */
 export async function confirmAnnexAPricesAction(
   reportId: string
-): Promise<{ items: AnnexAPartItem[] | null; annex_c: AnnexCInfo | null } | { error: string }> {
+): Promise<
+  | { annex_a: AnnexAInfo | null; items: AnnexAPartItem[] | null; annex_c: AnnexCInfo | null; confirmed: number | null }
+  | { error: string }
+> {
   try {
     const result = await confirmAnnexAPrices(reportId);
     revalidatePath(`/reports/${reportId}`);
