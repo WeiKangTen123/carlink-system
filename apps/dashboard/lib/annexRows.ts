@@ -70,7 +70,9 @@ export function inSections<T extends { is_net_item: boolean }>(rows: T[]): T[] {
 /** What a save would change -- to tell whether anything is unsaved. A
  * catalogue row put on a line (or unlinked) counts: its suggestion and part
  * number, which is all of it a save can change (the API writes the rest
- * from the stored row). */
+ * from the stored row). The price's source and confirm (Stage 1) count
+ * too: a [✓] Confirm is a change to save, and a case fetched again after
+ * "Confirm all prices" must replace the rows it confirmed. */
 export function annexSignature(items: AnnexAPartItem[]): string {
   return JSON.stringify(
     inSections(items).map((it) => [
@@ -91,6 +93,8 @@ export function annexSignature(items: AnnexAPartItem[]): string {
       Boolean(it.stale),
       it.catalogue_ref?.suggestion_id ?? null,
       it.catalogue_ref?.part_number ?? null,
+      it.price_source ?? null,
+      it.price_confirmed ?? null,
     ])
   );
 }

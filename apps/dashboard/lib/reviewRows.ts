@@ -12,6 +12,7 @@
  * Pure (no React, no fetching), so the rules can be checked on their own. */
 import type { AnnexAPartItem, AnnexBLabourItem, AnnexCInfo, DamageSummaryItem } from "./api";
 import type { FieldReview, Review, ReviewState } from "./review";
+import { isPriceUnconfirmed } from "./prices";
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -48,7 +49,7 @@ export function damageTally(items: DamageFacts[]): { you: number; ai: number; ch
 
 // ---- Annex A -----------------------------------------------------------------
 
-type AnnexAFacts = Pick<AnnexAPartItem, "part_name" | "condition" | "workshop_est" | "prefilled" | "origin" | "stale">;
+type AnnexAFacts = Pick<AnnexAPartItem, "part_name" | "condition" | "workshop_est" | "prefilled" | "origin" | "stale" | "price_source" | "price_confirmed">;
 
 const hasPrice = (row: Pick<AnnexAPartItem, "workshop_est">) => Number(row.workshop_est) > 0;
 
@@ -71,12 +72,15 @@ export function isPastCasePrice(row: AnnexAFacts): boolean {
  * suggestion, lookup) nobody confirmed; "you" once a person typed or
  * confirmed it (origin "typed"). Rows from before origins existed read as
  * the API reads them (prefill.origin_of): an estimate nobody prefilled is
- * a person's. */
+ * a person's. Stage 1: a price filled in for the person (their own, an
+ * approved one, the book's) is "check" until confirmed (price_confirmed),
+ * whatever its origin; a line without the field never is. */
 export function annexAState(row: AnnexAFacts): ReviewState {
   if (!(row.part_name || "").trim()) return "none";
   if (row.stale) return "check";
   if (!hasPrice(row) && !isServiceable(row)) return "needs";
   if (isPastCasePrice(row)) return "check";
+  if (hasPrice(row) && isPriceUnconfirmed(row)) return "check";
   const origin = row.origin || (row.prefilled ? "history" : hasPrice(row) ? "typed" : "detection");
   return origin === "typed" ? "you" : "check";
 }
@@ -89,8 +93,15 @@ export function annexAConfirmable(row: AnnexAFacts): boolean {
 
 /** What Confirm does to a row: the price stays, and it is a person's now.
  * PUT annex-a keeps both (origin may only be raised: typed outranks
- * history / detection), so the next re-sync leaves the row alone. */
+ * history / detection), so the next re-sync leaves the row alone. A price
+ * filled in for the person is confirmed too (confirmRow). */
 export const CONFIRMED_ROW = { prefilled: false, origin: "typed" } as const;
+
+/** [✓] Confirm on one line: CONFIRMED_ROW, plus price_confirmed for a
+ * price that still needs it (Stage 1; nothing new on an old line). */
+export function confirmRow(row: Pick<AnnexAPartItem, "price_source" | "price_confirmed">): Partial<AnnexAPartItem> {
+  return isPriceUnconfirmed(row) ? { ...CONFIRMED_ROW, price_confirmed: true } : { ...CONFIRMED_ROW };
+}
 
 export type AnnexATally = {
   /** No price yet. */

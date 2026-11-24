@@ -21,6 +21,8 @@ import {
   getAiUsage,
   askAiAnnexSuggestions,
   saveAnnexA,
+  confirmAnnexAPrices,
+  undoMyPrice,
   prefillAnnexA,
   saveAnnexB,
   saveAnnexC,
@@ -61,6 +63,8 @@ import {
   type SignOffInfo,
   type CheckedRequest,
   type CheckedResponse,
+  type RememberedPrice,
+  type UnconfirmedPriceLine,
 } from "@/lib/api";
 import type { MustHaveItem, Review } from "@/lib/review";
 import type { CatalogueJob, CatalogueSuggestion } from "@/lib/catalogue";
@@ -177,15 +181,23 @@ export async function signOffReportAction(
     // Fields still open and no "Sign off with N items open" tick (409):
     // the count and the API's counts, so the box can offer the tick.
     if (err instanceof OpenItemsError) return { error: err.message, openItems: { open: err.open, counts: err.counts } };
-    // A must-have fact neither filled in nor marked N/A (409 must_have): which.
-    if (err instanceof MustHaveError) return { error: err.message, mustHave: err.missing };
+    // A must-have fact neither filled in nor marked N/A (409 must_have),
+    // and/or Annex A prices nobody confirmed (409 prices_unconfirmed):
+    // which, both from one answer.
+    if (err instanceof MustHaveError) return { error: err.message, mustHave: err.missing, unconfirmedPrices: err.unconfirmedPrices };
     return { error: err instanceof Error ? err.message : "Sign-off failed" };
   }
 }
 
 /** A refused sign-off; openItems when the API refused it for open fields,
- * mustHave for facts every report must state. */
-export type SignOffRefusal = { error: string; openItems?: { open: number; counts: Review["counts"] | null }; mustHave?: MustHaveItem[] };
+ * mustHave for facts every report must state, unconfirmedPrices for the
+ * Annex A prices still to confirm (Stage 1). */
+export type SignOffRefusal = {
+  error: string;
+  openItems?: { open: number; counts: Review["counts"] | null };
+  mustHave?: MustHaveItem[];
+  unconfirmedPrices?: UnconfirmedPriceLine[];
+};
 
 /** Confirms review fields, or takes a confirm back (PUT /reports/{id}/checked):
  * "No labour" on Annex B is {set: {annex_b: {na: true}}}. */
@@ -331,11 +343,13 @@ export async function askAiAnnexSuggestionsAction(
 }
 
 /** Returns the saved table as the API worked it out (numbering, adjusted
- * costs, totals), or the error -- e.g. the 409 when the case is signed off. */
+ * costs, totals), or the error -- e.g. the 409 when the case is signed off.
+ * `remembered`: the prices the save kept as the person's own (Stage 1; []
+ * from an older server). */
 export async function saveAnnexAAction(
   reportId: string,
   items: AnnexAPartItem[]
-): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo } | { error: string }> {
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; remembered: RememberedPrice[] } | { error: string }> {
   try {
     const result = await saveAnnexA(reportId, items);
     revalidatePath(`/reports/${reportId}`);
@@ -345,6 +359,43 @@ export async function saveAnnexAAction(
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to save Annex A" };
   }
+}
+
+/** "Confirm all prices" (Stage 1): every Annex A line's price confirmed
+ * (POST annex-a/confirm-prices). The lines as confirmed (items null when the
+ * answer held none: the caller fetches the case again), or the error. */
+export async function confirmAnnexAPricesAction(
+  reportId: string
+): Promise<{ items: AnnexAPartItem[] | null; annex_c: AnnexCInfo | null } | { error: string }> {
+  try {
+    const result = await confirmAnnexAPrices(reportId);
+    revalidatePath(`/reports/${reportId}`);
+    revalidatePath(`/reports/${reportId}/edit`);
+    return result;
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to confirm the prices" };
+  }
+}
+
+/** The toast's [Undo] after a save remembered prices (POST
+ * /me/prices/{id}/undo for each): how many could not be undone. */
+export async function undoMyPricesAction(ids: Array<string | number>): Promise<{ failed: number }> {
+  let failed = 0;
+  for (const id of ids.slice(0, 200)) {
+    if (typeof id !== "string" && typeof id !== "number") {
+      failed += 1;
+      continue;
+    }
+    try {
+      await undoMyPrice(id);
+    } catch (err) {
+      unstable_rethrow(err);
+      failed += 1;
+    }
+  }
+  revalidatePath("/settings/my-prices");
+  return { failed };
 }
 
 /** The AI run log summed over the last `days` days (GET /ai-usage, admins

@@ -26,8 +26,8 @@ const NAV_ITEMS = [
   { href: "/inbox", label: "Public Inbox", icon: Inbox, seeAllOnly: true },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
-  // Everyone: My settings (profile, password). Admins also get the Users
-  // and Company tabs there (app/settings/layout.tsx).
+  // Everyone: My settings (profile, password) and My prices. Admins also
+  // get the Users, Company and AI tabs there (app/settings/layout.tsx).
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
