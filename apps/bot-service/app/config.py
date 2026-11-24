@@ -282,10 +282,16 @@ class Settings(BaseSettings):
     # is stored, at JPEG quality 85 with the same pixel size
     # (storage/files.compress_original) -- camera originals came in at
     # ~2.6 MB (q95+), measured ~77% smaller with no visible difference --
-    # its EXIF rotation baked into the pixels and its EXIF (the phone's GPS
-    # position among it) dropped. Same pixels: close-ups are cut from the
-    # original (intake/crops.py); the AI reads the 1600px preview
-    # (intake/photos.ai_input_path), made from the stored file as before.
+    # its EXIF rotation baked into the pixels and of its EXIF only the date
+    # taken kept (owner decision D7): the phone's GPS position and camera
+    # details dropped. The thumbnail and the 1600px preview the AI reads
+    # (intake/photos.ai_input_path) are made from the file AS SENT, before
+    # it is compressed, so they are the same switch on or off (owner's
+    # accuracy gate, 24 Nov 2026). Still read from the compressed original:
+    # close-ups (intake/crops.py, intake_read_crops -- an accuracy run for
+    # them needs this switch on) and the PDF's images. JPEG only: HEIC
+    # (with its GPS), PNG and WebP are stored as sent. Over
+    # files.PHOTO_COMPRESS_MAX_PIXELS, or with no free slot, also as sent.
     # "off": stored as uploaded, byte for byte, as before.
     photo_store_compress: str = "off"
     # Holds ai-keys.secret, which seals people's own AI keys (ai/secretbox.py).

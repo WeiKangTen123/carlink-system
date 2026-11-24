@@ -28,8 +28,19 @@ offline, no AI call, only synthetic photos made here with Pillow.
      else DateTimeDigitized, else DateTime, UTC only with the camera's own
      offset; garbage, unset, pre-2000 and future dates, no EXIF, PNG,
      corrupt: None; HEIC when this Pillow can write one; the website upload
-     with the switch on (date kept on the row, no EXIF in the file) and off;
-     a staff Telegram draft's rows.
+     with the switch on (date kept on the row; in the file only the date)
+     and off; a staff Telegram draft's rows;
+  7. the AI's preview and the thumbnail are byte for byte the same with
+     the switch on and off, at every way in;
+  8. the review's fixes (24 Nov 2026): over PHOTO_COMPRESS_MAX_PIXELS
+     stored as sent, nothing decoded (M1); at most 2 at once, a photo with
+     no free slot in time stored as sent, slots freed after a failure (M1);
+     the turn done in place (M1); the compressed file keeps only the date
+     taken -- DateTimeOriginal, OffsetTimeOriginal, DateTimeDigitized --
+     and photo_taken_at reads the same date back (M3); no compression when
+     the thumbnail or preview failed, at each way in (L1). The bot's
+     Confirm saving photos off its event loop (M2) is checked in
+     scripts/test_telegram_full.py.
 
     python scripts/test_photo_compress.py
 """
@@ -39,9 +50,12 @@ import io
 import os
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent  # apps/bot-service
@@ -63,6 +77,7 @@ from PIL import Image, ImageChops, ImageOps, ImageStat  # noqa: E402
 from app import config  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.config import settings  # noqa: E402
+import app.api.intake as intake_api  # noqa: E402
 from app.intake import public, telegram_bridge  # noqa: E402
 from app.reports.db import SessionLocal  # noqa: E402
 from app.reports.models import IntakePhoto, User, gen_id  # noqa: E402
@@ -74,6 +89,8 @@ GPS_IFD = 0x8825
 EXIF_IFD = 0x8769
 DATE_ORIGINAL, DATE_DIGITIZED, DATE_TIME = 0x9003, 0x9004, 0x0132
 OFFSET_ORIGINAL, OFFSET_TIME = 0x9011, 0x9010
+MODEL, SERIAL = 0x0110, 0xA431
+DATE_TAGS = {DATE_ORIGINAL, OFFSET_ORIGINAL, DATE_DIGITIZED}
 SRC = _tmp / "sources"
 SRC.mkdir(parents=True, exist_ok=True)
 
@@ -188,6 +205,19 @@ def no_metadata(path) -> bool:
     with Image.open(path) as im:
         return (not im.info.get("exif") and len(im.getexif()) == 0 and not gps_of(path)
                 and b"Exif\x00\x00" not in data and not im.info.get("xmp"))
+
+
+def date_only(path) -> bool:
+    """The EXIF a compressed original may keep (owner decision D7): the Exif
+    IFD alone, holding DateTimeOriginal and at most OffsetTimeOriginal and
+    DateTimeDigitized -- no GPS, no camera details, no orientation, no
+    thumbnail (a few dozen bytes), no XMP."""
+    with Image.open(path) as im:
+        raw = im.info.get("exif") or b""
+        exif = im.getexif()
+        sub = dict(exif.get_ifd(EXIF_IFD))
+        return (set(exif) == {EXIF_IFD} and DATE_ORIGINAL in sub and set(sub) <= DATE_TAGS
+                and not gps_of(path) and len(raw) < 200 and not im.info.get("xmp"))
 
 
 def opens(path) -> bool:
@@ -607,11 +637,14 @@ def taken_section() -> None:
             check(row.taken_at_local == LOCAL and row.taken_at is None,
                   "switch on, DateTimeOriginal + GPS: the row has the camera's time (no offset: no UTC)",
                   (row.taken_at_local, row.taken_at))
-            check(no_metadata(row.path), "... and the stored file has no EXIF, no GPS, no date")
+            check(date_only(row.path) and files.photo_taken_at(row.path) == (LOCAL, None),
+                  "... and the stored file keeps only the date taken (no GPS, nothing else)")
             row = upload(client, rid, camera_jpeg("u-offset.jpg", taken={DATE_ORIGINAL: LOCAL_TEXT,
                                                                          OFFSET_ORIGINAL: "+08:00"}))
-            check(row.taken_at_local == LOCAL and row.taken_at == LOCAL - timedelta(hours=8) and no_metadata(row.path),
-                  "with OffsetTimeOriginal: UTC too; the stored file has no EXIF", (row.taken_at_local, row.taken_at))
+            check(row.taken_at_local == LOCAL and row.taken_at == LOCAL - timedelta(hours=8) and date_only(row.path)
+                  and files.photo_taken_at(row.path) == (row.taken_at_local, row.taken_at),
+                  "with OffsetTimeOriginal: UTC too; the stored file keeps only the date and offset",
+                  (row.taken_at_local, row.taken_at))
             row = upload(client, rid, plain_jpeg("u-none.jpg"))
             check(row.taken_at_local is None and row.taken_at is None, "no EXIF: both None")
             row = upload(client, rid, camera_jpeg("u-garbage.jpg", taken={DATE_ORIGINAL: "yesterday-ish"}))
@@ -649,7 +682,193 @@ def taken_section() -> None:
         db.close()
     check(taken == [(LOCAL, LOCAL - timedelta(hours=8)), (None, None)],
           "staff Telegram draft: the photo sent as a file keeps its date on the row; one with no EXIF has none", taken)
-    check(all(no_metadata(p) for p in paths), "... and its stored files have no EXIF")
+    check(date_only(paths[0]) and no_metadata(paths[1]),
+          "... and its stored files: the dated one keeps only its date, the other no EXIF at all")
+
+
+# ------------------------------------------------------------- 8. the review's fixes (24 Nov)
+
+
+def held_slots(n: int):
+    """Takes n of compress_original's slots, as other uploads would."""
+    @contextlib.contextmanager
+    def hold():
+        taken = 0
+        try:
+            for _ in range(n):
+                assert files._COMPRESS_SLOTS.acquire(timeout=5), "a slot was still held"
+                taken += 1
+            yield
+        finally:
+            for _ in range(taken):
+                files._COMPRESS_SLOTS.release()
+    return hold()
+
+
+def all_slots_free() -> bool:
+    got = 0
+    while got < files.PHOTO_COMPRESS_CONCURRENCY and files._COMPRESS_SLOTS.acquire(blocking=False):
+        got += 1
+    for _ in range(got):
+        files._COMPRESS_SLOTS.release()
+    return got == files.PHOTO_COMPRESS_CONCURRENCY
+
+
+def review_section() -> None:
+    from PIL import ImageFile
+
+    folder = _tmp / "review"
+    folder.mkdir()
+
+    def fresh(name, **kw):
+        path = folder / name
+        path.write_bytes(camera_jpeg(name, **kw).read_bytes())
+        return path
+
+    # M1: the pixel cap, from the header.
+    check(files.PHOTO_COMPRESS_MAX_PIXELS == 60_000_000 and files.PHOTO_COMPRESS_CONCURRENCY == 2
+          and 0 < files.PHOTO_COMPRESS_WAIT_SECONDS <= 120,
+          "60 megapixels at most, 2 at once, a bounded wait for a turn")
+    big = fresh("over-cap.jpg")  # 1500x1000 = 1.5 MP
+    before = big.read_bytes()
+    real_load = ImageFile.ImageFile.load
+    loads = []
+
+    def counting_load(self, *a, **kw):
+        loads.append(1)
+        return real_load(self, *a, **kw)
+
+    with compress("on"), mock.patch.object(files, "PHOTO_COMPRESS_MAX_PIXELS", 1_499_999), \
+            mock.patch.object(ImageFile.ImageFile, "load", counting_load):
+        got = files.compress_original(str(big))
+    check(got is None and big.read_bytes() == before and not loads,
+          "over the pixel cap: stored as sent, nothing decoded (the size read from the header)", (got, len(loads)))
+    with compress("on"), mock.patch.object(files, "PHOTO_COMPRESS_MAX_PIXELS", 1_500_000):
+        got = files.compress_original(str(big))
+    check(got is not None and got < len(before), "at the cap exactly: compressed", got)
+
+    # M1: at most 2 at once; no turn within the wait -> stored as sent.
+    with compress("on"), mock.patch.object(files, "PHOTO_COMPRESS_WAIT_SECONDS", 0.2):
+        one = fresh("one-slot.jpg")
+        with held_slots(1):
+            got = files.compress_original(str(one))
+        check(got is not None, "one slot taken elsewhere: the other one compresses", got)
+        both = fresh("no-slot.jpg")
+        before = both.read_bytes()
+        started = time.monotonic()
+        with held_slots(2):
+            got = files.compress_original(str(both))
+        waited = time.monotonic() - started
+        check(got is None and both.read_bytes() == before and waited < 5 and temp_files(folder) == [],
+              f"both slots taken: after the wait ({waited:.1f}s) stored as sent, no temp file", got)
+        got = files.compress_original(str(both))
+        check(got is not None, "slots free again: compressed", got)
+        corrupt = folder / "corrupt-under-cap.jpg"
+        corrupt.write_bytes(fresh("whole-for-cut.jpg", size=(400, 300)).read_bytes()[:3000])
+        check(files.compress_original(str(corrupt)) is None and all_slots_free(),
+              "a photo that fails to decode gives its slot back")
+
+    # M1: threads at once never run more than 2 re-encodes.
+    real_save = Image.Image.save
+    lock, running, peak = threading.Lock(), [0], [0]
+
+    def slow_save(self, fp, *a, **kw):
+        if str(fp).endswith(".tmp"):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.15)
+            try:
+                return real_save(self, fp, *a, **kw)
+            finally:
+                with lock:
+                    running[0] -= 1
+        return real_save(self, fp, *a, **kw)
+
+    paths = [fresh(f"burst-{i}.jpg", size=(400, 300)) for i in range(6)]
+    results: list = []
+    with compress("on"), mock.patch.object(Image.Image, "save", slow_save):
+        threads = [threading.Thread(target=lambda p=p: results.append(files.compress_original(str(p))))
+                   for p in paths]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(30)
+    check(peak[0] == 2 and len(results) == 6 and all(r is not None for r in results) and all_slots_free(),
+          "6 photos at once: at most 2 re-encoded at a time, all 6 compressed", (peak[0], results))
+
+    # M1: the turn in place, no extra full-size copy.
+    calls = []
+    real_transpose = ImageOps.exif_transpose
+
+    def spy(image, **kw):
+        calls.append(kw)
+        return real_transpose(image, **kw)
+
+    turned = fresh("in-place.jpg")
+    with compress("on"), mock.patch.object(ImageOps, "exif_transpose", spy):
+        files.compress_original(str(turned))
+    check(calls == [{"in_place": True}], "exif_transpose(in_place=True)", calls)
+    with Image.open(turned) as im:
+        check(im.size == (1000, 1500), "... and the picture is still turned upright", im.size)
+
+    # M3: only the date taken kept in the compressed file.
+    rich = {DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00", DATE_DIGITIZED: "2026:11:20 09:15:31",
+            SERIAL: "SN-123456", OFFSET_TIME: "+08:00"}
+    dated = fresh("dated.jpg", taken=rich, ifd0={MODEL: "Phone X", DATE_TIME: "2026:11:21 10:00:00"})
+    want = files.photo_taken_at(dated)
+    need(want == (LOCAL, LOCAL - timedelta(hours=8)) and gps_of(dated), "the source has a date, an offset and GPS")
+    with compress("on"):
+        got = files.compress_original(str(dated))
+    with Image.open(dated) as im:
+        exif = im.getexif()
+        sub = dict(exif.get_ifd(EXIF_IFD))
+    check(got is not None and date_only(dated)
+          and sub == {DATE_ORIGINAL: LOCAL_TEXT, OFFSET_ORIGINAL: "+08:00", DATE_DIGITIZED: "2026:11:20 09:15:31"},
+          "compressed: exactly DateTimeOriginal, OffsetTimeOriginal and DateTimeDigitized; no GPS, model, "
+          "serial, DateTime or orientation", (set(exif), sub))
+    check(files.photo_taken_at(dated) == want, "photo_taken_at reads the same date and UTC from it", want)
+    only_dt = fresh("datetime-only.jpg", ifd0={DATE_TIME: LOCAL_TEXT}, taken={OFFSET_TIME: "-05:30"})
+    want = files.photo_taken_at(only_dt)
+    with compress("on"):
+        files.compress_original(str(only_dt))
+    check(want == (LOCAL, LOCAL + timedelta(hours=5, minutes=30)) and date_only(only_dt)
+          and files.photo_taken_at(only_dt) == want,
+          "a date only in DateTime (with OffsetTime -05:30): kept as DateTimeOriginal, read back the same")
+    undated = fresh("undated.jpg", taken={DATE_ORIGINAL: "1999:01:01 00:00:00"})
+    with compress("on"):
+        files.compress_original(str(undated))
+    check(no_metadata(undated), "no sensible date: no EXIF at all")
+    with compress("on"):
+        files.compress_original(str(dated))
+    check(date_only(dated) and files.photo_taken_at(dated) == (LOCAL, LOCAL - timedelta(hours=8)),
+          "compressed again: still only the same date")
+
+    # L1: no compression when the thumbnail or the preview failed.
+    src = camera_jpeg("l1.jpg")
+    sent = src.read_bytes()
+    with compress("on"), mock.patch.object(files, "generate_preview", return_value=None):
+        stored = Path(files.save_photo(gen_id(), str(src), 1))
+    check(stored.read_bytes() == sent, "save_photo: the preview failed, so the original is stored as sent")
+    with compress("on"), mock.patch.object(files, "generate_thumbnail", return_value=None):
+        stored = Path(files.save_photo(gen_id(), str(src), 1))
+    check(stored.read_bytes() == sent, "save_photo: the thumbnail failed, so as sent")
+    with compress("on"), mock.patch.object(telegram_bridge, "generate_preview", return_value=None):
+        kept, _ = telegram_bridge.store_photos(gen_id(), [str(src)])
+    check(len(kept) == 1 and Path(kept[0]["path"]).read_bytes() == sent and kept[0]["size"] == len(sent),
+          "staff Telegram draft: the preview failed, so as sent (and its size)")
+    with compress("on"), mock.patch.object(public, "generate_preview", return_value=None):
+        kept = public._store_photos(gen_id(), [str(src)])
+    check(kept == [], "public report: a photo whose preview fails is left out, as before")
+    with compress("on"), TestClient(app) as client, \
+            mock.patch.object(intake_api, "generate_preview", return_value=None):
+        sign_in(client)
+        rid = client.post("/intake").json()["id"]
+        r = client.post(f"/intake/{rid}/photos", files={"file": ("l1.jpg", sent, "image/jpeg")})
+        need(r.status_code == 200 and "photo" in r.json(), "website upload accepted", r.text)
+        row = stored_row(r.json()["photo"]["id"])
+    check(Path(row.path).read_bytes() == sent and row.size_bytes == len(sent),
+          "website upload: the preview failed, so as sent (and its size)")
 
 
 def main() -> int:
@@ -662,6 +881,8 @@ def main() -> int:
         ("5. on: save_photo, public Telegram reports, staff Telegram drafts", other_entries_section),
         ("6. when each intake photo was taken (D7)", taken_section),
         ("7. the AI's preview is the same, switch on or off (accuracy gate)", ai_same_section),
+        ("8. the review's fixes: pixel cap, 2 at once, in place, the date kept, no preview no compress",
+         review_section),
     ):
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")

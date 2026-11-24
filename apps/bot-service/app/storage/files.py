@@ -44,6 +44,19 @@ PDF_IMAGE_QUALITY = 80
 # (compress_original). Owner, 23 Nov 2026: camera originals at ~q95+ came
 # out ~77% smaller at 85, same pixel size, with no visible difference.
 PHOTO_STORE_QUALITY = 85
+# Above this many pixels (read from the header, before anything is
+# decoded) the original is stored as sent: a 108-200 MP phone photo, or a
+# small file claiming huge dimensions, would take over a gigabyte to
+# re-encode (review M1, 24 Nov 2026). Today's phones shoot 12-50 MP.
+PHOTO_COMPRESS_MAX_PIXELS = 60_000_000
+# At most this many originals decoded and re-encoded at once in a process
+# (the api's thread pool, the bot's threads), so a burst of uploads can't
+# multiply the memory peak. A photo that waits longer than
+# PHOTO_COMPRESS_WAIT_SECONDS for a turn is stored as sent -- never a failed
+# upload, never a request held forever.
+PHOTO_COMPRESS_CONCURRENCY = 2
+PHOTO_COMPRESS_WAIT_SECONDS = 30.0
+_COMPRESS_SLOTS = threading.BoundedSemaphore(PHOTO_COMPRESS_CONCURRENCY)
 _COMPRESS_SUFFIXES = (".jpg", ".jpeg")
 # MPO: a phone JPEG carrying more than one picture (depth map, a second
 # lens) -- Pillow names it apart. Only its main picture is kept.
@@ -53,6 +66,7 @@ _COMPRESS_FORMATS = ("JPEG", "MPO")
 # the offset tag that belongs to it (EXIF 2.31) and the IFD it is in -- None
 # the main one, else the Exif sub-IFD. The first that reads as a date wins.
 _EXIF_IFD = 0x8769
+_DATE_ORIGINAL, _OFFSET_ORIGINAL, _DATE_DIGITIZED = 0x9003, 0x9011, 0x9004
 _TAKEN_TAGS = (
     (0x9003, 0x9011, _EXIF_IFD),  # DateTimeOriginal, OffsetTimeOriginal
     (0x9004, 0x9012, _EXIF_IFD),  # DateTimeDigitized, OffsetTimeDigitized
@@ -263,36 +277,83 @@ def _exif_offset(value) -> timedelta | None:
     return -offset if sign == "-" else offset
 
 
+def _sensible(when: datetime) -> bool:
+    """Not before EARLIEST_TAKEN (a clock never set), at most a day ahead."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return EARLIEST_TAKEN <= when <= now + timedelta(days=1)
+
+
+def _taken_from(exif) -> tuple[TakenAt, timedelta | None] | None:
+    """photo_taken_at's reading of an Image.Exif, with the offset it used."""
+    sub = exif.get_ifd(_EXIF_IFD)
+    for date_tag, offset_tag, ifd in _TAKEN_TAGS:
+        local = _exif_datetime((sub if ifd else exif).get(date_tag))
+        if local is None:
+            continue
+        # The first date found decides: one that makes no sense means the
+        # camera's clock is wrong, and the next tag (DateTime is often when
+        # an editor last saved it) would not be better.
+        if not _sensible(local):
+            return None
+        offset = _exif_offset(sub.get(offset_tag))
+        return TakenAt(local=local, utc=local - offset if offset is not None else None), offset
+    return None
+
+
+def _exif_stamp(when: datetime) -> str:
+    return when.strftime("%Y:%m:%d %H:%M:%S")
+
+
+def _offset_stamp(offset: timedelta) -> str:
+    minutes = int(offset.total_seconds()) // 60
+    sign = "-" if minutes < 0 else "+"
+    return f"{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+
+
+def _date_only_exif(exif) -> bytes | None:
+    """The EXIF a compressed original keeps (owner decision D7: the date
+    taken, no location): only DateTimeOriginal -- the date photo_taken_at
+    reads, wherever it found it -- its OffsetTimeOriginal when the camera
+    wrote one, and DateTimeDigitized when it makes sense. No GPS, no
+    make/model/serial, no thumbnail, no orientation (the pixels are turned
+    already), nothing else. None: no sensible date, so no EXIF at all.
+    photo_taken_at reads the same date and offset back from it."""
+    found = _taken_from(exif)
+    if found is None:
+        return None
+    taken, offset = found
+    from PIL import Image
+
+    tags = {_DATE_ORIGINAL: _exif_stamp(taken.local)}
+    if offset is not None:
+        tags[_OFFSET_ORIGINAL] = _offset_stamp(offset)
+    digitized = _exif_datetime(exif.get_ifd(_EXIF_IFD).get(_DATE_DIGITIZED))
+    if digitized is not None and _sensible(digitized):
+        tags[_DATE_DIGITIZED] = _exif_stamp(digitized)
+    kept = Image.Exif()
+    kept[_EXIF_IFD] = tags
+    return kept.tobytes()
+
+
 def photo_taken_at(photo_path) -> TakenAt | None:
     """When the photo was taken (TakenAt), from its EXIF: DateTimeOriginal,
     else DateTimeDigitized, else DateTime -- the first that reads as a
     date, with its own offset tag when the camera wrote one. Only the date
     is read; nothing else of the EXIF (GPS included) goes anywhere.
 
-    Read from the original as uploaded, before compress_original drops the
-    EXIF. None: no EXIF date (a screenshot, a photo sent through an app
-    that strips it, a PNG), a date before EARLIEST_TAKEN (a clock never
-    set) or more than a day ahead of now, or a file Pillow can't read.
-    HEIC too, through pillow-heif, when it carries EXIF. Never raises."""
+    Read from the original as uploaded; a compressed original keeps the same
+    date and offset (compress_original, _date_only_exif), so reading it
+    again gives the same answer. None: no EXIF date (a screenshot, a photo
+    sent through an app that strips it, a PNG), a date before
+    EARLIEST_TAKEN (a clock never set) or more than a day ahead of now, or
+    a file Pillow can't read. HEIC too, through pillow-heif, when it
+    carries EXIF. Never raises."""
     try:
         from PIL import Image
 
         with Image.open(photo_path) as im:
-            exif = im.getexif()
-            sub = exif.get_ifd(_EXIF_IFD)
-        for date_tag, offset_tag, ifd in _TAKEN_TAGS:
-            local = _exif_datetime((sub if ifd else exif).get(date_tag))
-            if local is None:
-                continue
-            # The first date found decides: one that makes no sense means
-            # the camera's clock is wrong, and the next tag (DateTime is
-            # often when an editor last saved it) would not be better.
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            if not EARLIEST_TAKEN <= local <= now + timedelta(days=1):
-                return None
-            offset = _exif_offset(sub.get(offset_tag))
-            return TakenAt(local=local, utc=local - offset if offset is not None else None)
-        return None
+            found = _taken_from(im.getexif())
+        return found[0] if found else None
     except Exception as exc:
         logger.warning("Could not read when %s was taken: %s", Path(str(photo_path)).name, exc)
         return None
@@ -300,20 +361,32 @@ def photo_taken_at(photo_path) -> TakenAt | None:
 
 def compress_original(photo_path: str) -> int | None:
     """With settings.photo_store_compress "on", re-saves a JPEG original in
-    place at PHOTO_STORE_QUALITY, the same pixel size (close-ups are cut
-    from it, intake/crops.py): its EXIF rotation baked into the pixels
-    (ImageOps.exif_transpose, as the thumbnail and preview already do) and
-    no EXIF, XMP or comment written -- the phone's GPS position goes with
-    them; its colour profile (ICC) kept. Call it once, right after an
-    original is written and checked, before its thumbnail and preview.
-    Returns the new size in bytes.
+    place at PHOTO_STORE_QUALITY, the same pixel size: its EXIF rotation
+    baked into the pixels (ImageOps.exif_transpose, as the thumbnail and
+    preview do), its colour profile (ICC) kept, and of its EXIF only the
+    date it was taken (_date_only_exif, owner decision D7) -- no GPS, no
+    camera details, no XMP or comment. Returns the new size in bytes.
+
+    Call it once per original, AFTER its thumbnail and preview have been
+    made from the file as sent, and only when both were made: the preview
+    is what the AI reads (intake/photos.ai_input_path), and it must be the
+    same whatever this switch says (owner's accuracy gate, 24 Nov 2026).
+    What still reads the compressed original: close-ups for the reading
+    (intake/crops.py, settings.intake_read_crops -- off in production; an
+    accuracy run for it must have this switch on), the PDF's images, and a
+    preview made later because one went missing.
+
+    JPEG only: a HEIC, PNG or WebP original is stored as sent, its EXIF --
+    a HEIC's GPS position included -- kept.
 
     None, and the file left byte for byte as it was: the setting is off; not
-    a .jpg/.jpeg name; not a JPEG inside (Pillow's format); a file that
-    can't be opened or decoded; or the re-save is no smaller and there was
-    no EXIF to drop. Never raises (a stored photo matters more than a
-    smaller one): written beside the original and moved into place
-    (os.replace), so a failure leaves the original whole and no temp file."""
+    a .jpg/.jpeg name; not a JPEG inside (Pillow's format); over
+    PHOTO_COMPRESS_MAX_PIXELS; no free slot within
+    PHOTO_COMPRESS_WAIT_SECONDS; a file that can't be opened or decoded;
+    or the re-save is no smaller and there was no metadata to drop. Never
+    raises (a stored photo matters more than a smaller one): written beside
+    the original and moved into place (os.replace), so a failure leaves the
+    original whole and no temp file."""
     if getattr(settings, "photo_store_compress", "off") != "on":
         return None
     path = Path(photo_path)
@@ -325,24 +398,45 @@ def compress_original(photo_path: str) -> int | None:
 
         before = path.stat().st_size
         with Image.open(path) as im:
+            # Both from the header: nothing is decoded yet.
             if im.format not in _COMPRESS_FORMATS:
                 return None
-            had_exif = bool(im.info.get("exif"))
-            icc_profile = im.info.get("icc_profile")
-            out = ImageOps.exif_transpose(im)
-            if out.mode not in ("RGB", "L"):
-                out = out.convert("RGB")
-                # The profile described the old colours (CMYK, say).
-                icc_profile = None
-            # Nothing of the original's metadata rides along: Pillow writes
-            # a JPEG comment from info, and future versions may write more.
-            out.info = {}
-            options = {"quality": PHOTO_STORE_QUALITY, "optimize": True, "progressive": True}
-            if icc_profile:
-                options["icc_profile"] = icc_profile
-            out.save(tmp, "JPEG", **options)
+            if im.width * im.height > PHOTO_COMPRESS_MAX_PIXELS:
+                logger.info("Stored %s as sent: %dx%d is over the %d-pixel limit for compressing",
+                            path.name, im.width, im.height, PHOTO_COMPRESS_MAX_PIXELS)
+                return None
+            if not _COMPRESS_SLOTS.acquire(timeout=PHOTO_COMPRESS_WAIT_SECONDS):
+                logger.warning("Stored %s as sent: no free compression slot within %ss",
+                               path.name, PHOTO_COMPRESS_WAIT_SECONDS)
+                return None
+            try:
+                raw_exif = im.info.get("exif") or b""
+                kept_exif = _date_only_exif(im.getexif()) if raw_exif else None
+                # Anything of the original's EXIF beyond the date we keep.
+                meta_to_drop = bool(raw_exif) and raw_exif != kept_exif
+                icc_profile = im.info.get("icc_profile")
+                # In place: no second full-size copy when there is nothing
+                # to turn (a turn still needs the turned image once).
+                ImageOps.exif_transpose(im, in_place=True)
+                out = im
+                if out.mode not in ("RGB", "L"):
+                    out = out.convert("RGB")
+                    # The profile described the old colours (CMYK, say).
+                    icc_profile = None
+                # Nothing of the original's metadata rides along but what
+                # is passed below: Pillow writes a JPEG comment from info,
+                # and future versions may write more.
+                out.info = {}
+                options = {"quality": PHOTO_STORE_QUALITY, "optimize": True, "progressive": True}
+                if icc_profile:
+                    options["icc_profile"] = icc_profile
+                if kept_exif:
+                    options["exif"] = kept_exif
+                out.save(tmp, "JPEG", **options)
+            finally:
+                _COMPRESS_SLOTS.release()
         after = tmp.stat().st_size
-        if after >= before and not had_exif:
+        if after >= before and not meta_to_drop:
             return None
         os.replace(tmp, path)
         return after
@@ -357,16 +451,22 @@ def compress_original(photo_path: str) -> int | None:
 
 
 def save_photo(incident_id: str, source_path: str, index: int) -> str:
+    """Copies a photo into the case's photos/ folder as photo_NN, with its
+    thumbnail and preview. Blocking work (full-size decodes and, with
+    settings.photo_store_compress, a full-size re-encode): never call it
+    on an event loop -- asyncio.to_thread, as channels/telegram does."""
     d = incident_dir(incident_id)
     ext = Path(source_path).suffix or ".jpg"
     dest = d / "photos" / f"photo_{index:02d}{ext}"
     shutil.copy(source_path, dest)
     # The thumbnail and preview from the file as sent, then the original
     # compressed (settings.photo_store_compress): the preview -- what the AI
-    # reads -- is the same either way.
-    generate_thumbnail(str(dest))
-    generate_preview(str(dest))
-    compress_original(str(dest))
+    # reads -- is the same either way. Not compressed when either failed:
+    # one made later would come from the compressed file.
+    thumb = generate_thumbnail(str(dest))
+    preview = generate_preview(str(dest))
+    if thumb is not None and preview is not None:
+        compress_original(str(dest))
     return str(dest)
 
 

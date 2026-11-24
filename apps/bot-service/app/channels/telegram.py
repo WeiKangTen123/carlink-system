@@ -1747,6 +1747,12 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await draft_and_reply(update, session, combined_description(session), redrafting=True, user=user)
 
 
+def _save_photos(report_id: str, photo_paths: list[str]) -> list[str]:
+    """The chat's photos into the case as photo_01, photo_02... in order
+    (storage/files.save_photo). Blocking: run in a thread."""
+    return [save_photo(report_id, p, i) for i, p in enumerate(photo_paths, start=1)]
+
+
 async def finalize_report(update: Update, session, chat_id: str, user: Linked) -> None:
     # While this runs a second Confirm tap is answered, not saved (see
     # handle_callback). Cleared on failure too, so the user can retry.
@@ -1806,7 +1812,12 @@ async def _finalize_report(update: Update, session, chat_id: str, user: Linked) 
     # reading (flow.DraftResult), not the draft with the template merged.
     ai_draft = session.ai_draft
     data = await asyncio.to_thread(_file_draft, user.id, data, len(session.photo_paths), ai_draft, report_id)
-    stored_photos = [save_photo(report_id, p, i) for i, p in enumerate(session.photo_paths, start=1)]
+    # Off the event loop (review M2, 24 Nov 2026): each photo's thumbnail,
+    # preview and -- settings.photo_store_compress -- full-size re-save
+    # take up to seconds for a camera original sent as a file, and the bot
+    # answers nobody meanwhile. The same photos, in the same order, as the
+    # list stands now.
+    stored_photos = await asyncio.to_thread(_save_photos, report_id, list(session.photo_paths))
     pdf_path: str | None = report_pdf_path(report_id)
     try:
         # The long wait for a Chromium slot (renderer.py): the bot renders

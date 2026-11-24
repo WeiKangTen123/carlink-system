@@ -399,22 +399,23 @@ def upload_intake_photo(
             raise HTTPException(status_code=400, detail=f"'{file.filename}' isn't a readable photo.")
 
         # When it was taken (owner decision D7: the date, no location), read
-        # from the file as sent -- before compress_original drops its EXIF,
-        # whatever that switch says.
+        # from the file as sent, whatever settings.photo_store_compress says.
         taken = photo_taken_at(dest)
         # The thumbnail and the preview (what the AI reads: intake/photos.
         # ai_input_path) are made from the file AS SENT, before it is
         # compressed, so the AI sees byte-for-byte the same images whatever
         # settings.photo_store_compress says (owner's accuracy gate, 24 Nov).
-        generate_thumbnail(str(dest))
-        generate_preview(str(dest))
+        thumb = generate_thumbnail(str(dest))
+        preview = generate_preview(str(dest))
         # settings.photo_store_compress: then the stored original re-saved
-        # smaller. sha256 stays the UPLOADED bytes' hash, so the same file
-        # dropped again is still found above; size_bytes is what is stored
-        # (the draft's storage limit).
-        stored_size = compress_original(str(dest))
-        if stored_size is not None:
-            size = stored_size
+        # smaller -- only when both were made (one made later would come
+        # from the compressed file). sha256 stays the UPLOADED bytes' hash,
+        # so the same file dropped again is still found above; size_bytes
+        # is what is stored (the draft's storage limit).
+        if thumb is not None and preview is not None:
+            stored_size = compress_original(str(dest))
+            if stored_size is not None:
+                size = stored_size
         photo = IntakePhoto(
             id=photo_id,
             report_id=report_id,
