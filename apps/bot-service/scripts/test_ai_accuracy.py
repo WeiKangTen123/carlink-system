@@ -755,8 +755,12 @@ def never_from_itself() -> None:
             refs = {ln.case_ref for ln in past_lines(db)}
             check(ref in refs and learn.case_ref(W.case) not in refs,
                   f"a spreadsheet read as {ref!r} and the learned case of Our Ref \"CL 90123\" count once", sorted(refs))
-            stored_refs = {r for (r,) in db.query(PastAnnexLine.case_ref).filter(PastAnnexLine.source_file == f"{ref}.xlsx")}
-            check(stored_refs == {ref}, "the spreadsheet's reference is stored as the importer read it", stored_refs)
+            stored = {(r, f) for (r, f) in db.query(PastAnnexLine.case_ref, PastAnnexLine.source_file)
+                      .filter(PastAnnexLine.case_ref == ref)}
+            # Of the file's name only its CL reference (owner K0, Stage 1
+            # review H1: the firm writes the plate in it).
+            check(stored == {(ref, "CL 90123")}, "the spreadsheet's reference is stored as the importer read it, "
+                  "its file as the CL reference only", stored)
             db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == ref).delete()
             db.commit()
         finally:

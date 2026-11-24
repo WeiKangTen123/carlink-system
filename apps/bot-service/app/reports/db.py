@@ -302,10 +302,13 @@ def init_db() -> None:
     # import wrote under the old rules (history.refresh_lines).
     _once("past_lines_refresh_v1", history.refresh_lines)
     # Stage 1 (owner, 24 Nov 2026): each past line's origin ("import" /
-    # "carlink"), imported ones confirmed; lines learned from cases before
-    # this stay unconfirmed, so they never price a case (DB4).
+    # "carlink"), imported ones confirmed; a learned line never prices a
+    # case anyway (history.price_usable).
     _once("price_book_origin_v1", prices.mark_past_line_origins)
-    # And no plate in the price book (K0): blanked once, with one history
-    # entry giving the count -- never a plate. Irreversible; the deploy's
-    # backup has them.
-    _once("price_book_plates_v1", prices.drop_price_book_plates)
+    # And no plate in the price book (K0, Stage 1 review H1): plates blanked,
+    # file names (which the firm writes with the plate) and file-name
+    # references cut down to their CL reference -- once, with one history
+    # entry giving the counts, never a plate. Irreversible; the deploy's
+    # backup has them. (Replaces "price_book_plates_v1", which blanked the
+    # plate column only and never ran anywhere.)
+    _once("price_book_personal_v1", prices.scrub_price_book)

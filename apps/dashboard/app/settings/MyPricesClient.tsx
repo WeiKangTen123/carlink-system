@@ -23,8 +23,9 @@ const keyOf = (p: MyPrice) => String(p.id);
  * per make, model and line, from the W/shop Est. they typed on Annex A. A
  * table with search and a make / model filter; a price is changed in place
  * (PATCH /me/prices/{id}) or deleted after a confirm (DELETE, audited);
- * "old" after 12 months. Nobody else sees them; the firm's book changes only
- * when an admin approves a difference (Knowledge -> Price differences). */
+ * "old" after 12 months. Only admins see them besides the person (Knowledge
+ * -> All users' prices); the shared default changes only when an admin uses
+ * one for everyone there. */
 export function MyPricesClient({ initial, initialError }: { initial: MyPrice[] | null; initialError: string | null }) {
   const [prices, setPrices] = useState<MyPrice[] | null>(initial);
   const [loadError, setLoadError] = useState<string | null>(initialError);
@@ -133,7 +134,7 @@ export function MyPricesClient({ initial, initialError }: { initial: MyPrice[] |
             <Tags style={{ width: 16, height: 16, color: "var(--accent-primary)" }} /> My prices
           </div>
           <div className="card-subtitle">
-            Your own prices per unit, by make and model. Only you see and use them. They fill in on your next case of the same car, marked &quot;Your price&quot;, and
+            Your own prices per unit, by make and model. Only you use them (admins can see them). They fill in on your next case of the same car, marked &quot;Your price&quot;, and
             you confirm them before sign-off.
           </div>
         </div>
@@ -156,7 +157,9 @@ export function MyPricesClient({ initial, initialError }: { initial: MyPrice[] |
             When you type or change a price (W/shop Est.) on a case&apos;s Annex A and save, Carlink remembers it here as your price per unit for that make and model.
             Your next case of the same car fills it in for you, and you can undo it right after saving.
           </p>
-          <p>Only you see these. The firm&apos;s price book changes only when an admin approves a difference.</p>
+          <p>
+            They are yours: other staff never see them, admins can. The prices everyone else gets change only when an admin chooses to use one for everyone.
+          </p>
         </div>
       ) : (
         <>

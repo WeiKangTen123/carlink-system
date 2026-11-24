@@ -150,6 +150,14 @@ def main() -> int:
                             and (i.get("usual_unit_price") or 0) > 0 for i in lamp), lamp
         assert next(i for i in rows_of(out) if i["part_name"] == typed_name)["workshop_est"] == 777.0
         ok("POST appends the part, verified by the person; Annex A gains its rows from past cases; typed rows untouched")
+        # The workshop's price typed on one of the lamp's rows (as on the
+        # Annex A tab), so the DELETE below has a priced row to keep.
+        rows = [dict(i) for i in rows_of(out)]
+        lamp_row = next(i for i in rows if i["source_part"] == "Left Tail Lamp")
+        lamp_row["workshop_est"], lamp_row["origin"] = 321.0, "typed"
+        priced_lamp = lamp_row["part_name"]
+        r = surveyor.put(f"/reports/{rid}/annex-a", json={"items": rows})
+        assert r.status_code == 200, r.text
         assert surveyor.post(f"/reports/{rid}/damage-items", json={"part": "Flux Capacitor"}).status_code == 400
         assert surveyor.post(f"/reports/{rid}/damage-items", json={}).status_code == 422
         assert surveyor.post(f"/reports/{rid}/damage-items", json={"part": "Bonnet", "damage_type": "Bent"}).status_code == 400
@@ -161,10 +169,10 @@ def main() -> int:
         out = r.json()
         assert out["item"]["part"] == "Left Tail Lamp" and [d["part"] for d in out["damage_summary"]] == ["Tail Gate", "Rear Windscreen"]
         lamp = [i for i in rows_of(out) if i["source_part"] == "Left Tail Lamp"]
-        # Stage 1: the lamp's lines came in UNPRICED (one past Vezel case), and
-        # removing a part removes its unpriced rows. Priced rows staying, flagged
-        # stale, is checked above on the rear bumper.
-        assert not lamp, lamp
+        # The lamp's row a person priced stays, flagged stale; its unpriced
+        # rows (Stage 1: one past Vezel case, so they came in unpriced) go.
+        assert lamp and all(i["stale"] and i["workshop_est"] > 0 for i in lamp), lamp
+        assert [(i["part_name"], i["workshop_est"]) for i in lamp] == [(priced_lamp, 321.0)], lamp
         detail = surveyor.get(f"/reports/{rid}").json()["data"]
         assert detail["dismissed_parts"] == ["Left Tail Lamp"], detail["dismissed_parts"]
         assert surveyor.delete(f"/reports/{rid}/damage-items/5").status_code == 404

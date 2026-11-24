@@ -7,9 +7,11 @@
  *   - which lines still need confirming before sign-off;
  *   - the "Saved as your price ..." toast after a save;
  *   - the sign-off's 409 (prices_unconfirmed, Phase 1's must_have, or both);
- *   - the answers of the new routes (/me/prices, /admin/price-differences,
+ *   - the answers of the new routes (/me/prices, /admin/user-prices,
  *     annex-a/confirm-prices), read so that a field an older server leaves
- *     out never breaks a screen.
+ *     out never breaks a screen;
+ *   - the admins' "All users' prices" list: its filters, the gap to the
+ *     shared default, and the "Use this price for everyone" body.
  *
  * Every new field is optional: an old case, or a server from before Stage
  * 1, has none of them, and then nothing new shows -- no tag, no Confirm
@@ -70,34 +72,36 @@ export type MyPrice = {
   old: boolean;
 };
 
-/** A group on the admins' "Price differences" list
- * (GET /admin/price-differences): people's own prices differ from the
- * book's by more than 10%. Counts only, never names. */
-export type PriceDifference = {
+/** One person's own price on the admins' "All users' prices" list
+ * (GET /admin/user-prices; the owner's final price model, 24 Nov 2026):
+ * who, the car and the line, their price per unit, and the shared default
+ * beside it. Admins only -- the API refuses anyone else. */
+export type UserPriceRow = {
+  id: number | string;
+  user_id: string;
+  /** The person's name; null for an account that no longer exists. */
+  user_name: string | null;
   make: string;
   model_key: string;
   item_key: string;
+  /** The standard part name, where one is known ("Left Tail Lamp"). */
+  part: string | null;
+  /** The line as it prints ("Tail lamp LH"). */
   wording: string;
-  /** The book reference per unit: the active approved price, else the
-   * median of >=2 confirmed cases; null when the book has none. */
-  book_price: number | null;
-  book_cases: number | null;
-  /** The reference is an admin-approved price. */
-  approved: boolean;
-  users_count: number;
-  cases_count: number;
-  min_price: number | null;
-  max_price: number | null;
-  median_user_price: number | null;
-  last_used: string | null;
+  side: string | null;
+  unit_price: number;
+  /** The shared default per unit: an admin-promoted price, else the
+   * book's median of >=2 imported cases; null when there is none. */
+  default_price: number | null;
+  default_source: "approved" | "book" | null;
+  updated_at: string | null;
+  uses: number;
+  last_case_id: string | null;
 };
 
-/** POST /admin/price-differences/decide. */
-export type PriceDecision = {
-  make: string;
-  model_key: string;
-  item_key: string;
-  decision: "update" | "keep";
+/** POST /admin/user-prices/{id}/promote: the price everyone gets (left
+ * out: the person's own) and an optional reason. */
+export type PromoteBody = {
   unit_price?: number;
   reason?: string;
 };
@@ -557,67 +561,116 @@ export function makeModelOptions(rows: ReadonlyArray<MyPrice>, make: string): { 
   };
 }
 
-// ---- Price differences (admins) ---------------------------------------------------------------
+// ---- All users' prices (admins) ---------------------------------------------------------------
 
-/** GET /admin/price-differences' answer ({groups: [...]}, or the list
- * itself); a group without its keys is left out (it couldn't be decided). */
-export function normalizePriceDifferences(body: unknown): PriceDifference[] {
-  const list = Array.isArray(body)
-    ? body
-    : isObj(body)
-      ? ([body.groups, body.differences, body.items].find(Array.isArray) as unknown[] | undefined) ?? []
-      : [];
-  return list.flatMap((g: unknown) => {
-    if (!isObj(g)) return [];
-    const make = str(g.make);
-    const modelKey = str(g.model_key);
-    const itemKey = str(g.item_key);
-    if (!make || !itemKey) return [];
-    return [
-      {
-        make,
-        model_key: modelKey,
-        item_key: itemKey,
-        wording: str(g.wording) || itemKey,
-        book_price: num(g.book_price),
-        book_cases: num(g.book_cases),
-        approved: g.approved === true,
-        users_count: count(g.users_count),
-        cases_count: count(g.cases_count),
-        min_price: num(g.min_price),
-        max_price: num(g.max_price),
-        median_user_price: num(g.median_user_price),
-        last_used: strOrNull(g.last_used),
-      },
-    ];
+/** GET /admin/user-prices' answer ({prices: [...]}, or the list itself);
+ * a row without its id, price or keys is left out (it couldn't be
+ * promoted). Newest first, as the API sends them. */
+export function normalizeUserPrices(body: unknown): UserPriceRow[] {
+  const list = Array.isArray(body) ? body : isObj(body) && Array.isArray(body.prices) ? body.prices : [];
+  return list.flatMap((r: unknown) => {
+    const row = userPriceOf(r);
+    return row ? [row] : [];
   });
 }
 
-/** One key per group. */
-export function differenceKey(g: Pick<PriceDifference, "make" | "model_key" | "item_key">): string {
-  return `${g.make}|${g.model_key}|${g.item_key}`;
+/** POST /admin/user-prices/{id}/promote's answer: the row (or {price:
+ * row}); null when it can't be read. */
+export function normalizeUserPrice(body: unknown): UserPriceRow | null {
+  return userPriceOf(isObj(body) && isObj(body.price) ? body.price : body);
 }
 
-/** "+18%" / "-12%": the people's median against the book's price. */
-export function differencePct(g: Pick<PriceDifference, "book_price" | "median_user_price">): string | null {
-  if (g.book_price == null || g.book_price <= 0 || g.median_user_price == null) return null;
-  const pct = Math.round(((g.median_user_price - g.book_price) / g.book_price) * 100);
+function userPriceOf(r: unknown): UserPriceRow | null {
+  if (!isObj(r)) return null;
+  const id = idOf(r.id);
+  const unit = num(r.unit_price);
+  const make = str(r.make);
+  const itemKey = str(r.item_key);
+  if (id == null || unit == null || !make || !itemKey) return null;
+  const source = r.default_source === "approved" || r.default_source === "book" ? r.default_source : null;
+  const def = num(r.default_price);
+  return {
+    id,
+    user_id: str(r.user_id),
+    user_name: strOrNull(r.user_name),
+    make,
+    model_key: str(r.model_key),
+    item_key: itemKey,
+    part: strOrNull(r.part),
+    wording: str(r.wording) || itemKey,
+    side: strOrNull(r.side),
+    unit_price: unit,
+    default_price: def != null && def > 0 ? def : null,
+    default_source: def != null && def > 0 ? source : null,
+    updated_at: strOrNull(r.updated_at),
+    uses: count(r.uses),
+    last_case_id: strOrNull(r.last_case_id),
+  };
+}
+
+/** "Approved price" / "Book" / "No default": where the shared default
+ * beside a person's price comes from. */
+export function defaultSourceWord(source: UserPriceRow["default_source"]): string {
+  return source === "approved" ? "Approved price" : source === "book" ? "Book" : "No default";
+}
+
+/** "+18%" / "-12%": the person's price against the shared default; null
+ * without a default. */
+export function priceGapPct(row: Pick<UserPriceRow, "unit_price" | "default_price">): string | null {
+  if (row.default_price == null || row.default_price <= 0) return null;
+  const pct = Math.round(((row.unit_price - row.default_price) / row.default_price) * 100);
   return `${pct > 0 ? "+" : ""}${pct}%`;
 }
 
-/** The decide body for a group, or the reason it can't be sent (an
- * update needs a price above 0). The reason is trimmed; blank is left out. */
-export function decisionBody(
-  g: Pick<PriceDifference, "make" | "model_key" | "item_key">,
-  decision: "update" | "keep",
-  priceTyped: string,
-  reason: string
-): PriceDecision | { error: string } {
-  const base: PriceDecision = { make: g.make, model_key: g.model_key, item_key: g.item_key, decision };
-  const why = reason.trim();
-  if (why) base.reason = why.slice(0, 500);
-  if (decision === "keep") return base;
+/** The people in the list, for the "Person" filter: [{id, name}], by
+ * name; a removed account shows as such. */
+export function userOptions(rows: ReadonlyArray<UserPriceRow>): { id: string; name: string }[] {
+  const seen = new Map<string, string>();
+  for (const r of rows) if (r.user_id && !seen.has(r.user_id)) seen.set(r.user_id, r.user_name || "A removed account");
+  return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The screen's filters, as the list was loaded: a person (their id),
+ * make and model (any case), and search words over the wording, the
+ * standard part name, the car and the person. */
+export function filterUserPrices(
+  rows: ReadonlyArray<UserPriceRow>,
+  f: { user?: string; make?: string; model?: string; q?: string }
+): UserPriceRow[] {
+  const q = (f.q || "").trim().toLowerCase();
+  const make = (f.make || "").toLowerCase();
+  const model = (f.model || "").toLowerCase();
+  return rows.filter(
+    (r) =>
+      (!f.user || r.user_id === f.user) &&
+      (!make || r.make.toLowerCase() === make) &&
+      (!model || r.model_key.toLowerCase() === model) &&
+      (!q ||
+        [r.wording, r.part || "", r.make, r.model_key, vehicleKeyLabel(r.make, r.model_key), r.user_name || ""].some((s) =>
+          s.toLowerCase().includes(q)
+        ))
+  );
+}
+
+/** The makes and the models of one make (all makes when none is picked)
+ * in the list, sorted. */
+export function userPriceCarOptions(rows: ReadonlyArray<UserPriceRow>, make: string): { makes: string[]; models: string[] } {
+  const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return {
+    makes: uniq(rows.map((r) => r.make)),
+    models: uniq(rows.filter((r) => !make || r.make.toLowerCase() === make.toLowerCase()).map((r) => r.model_key)),
+  };
+}
+
+/** The promote body for "Use this price for everyone": the price as the
+ * admin left it (the person's own when unchanged), the reason trimmed
+ * (blank left out) -- or why it can't be sent (a price above 0). */
+export function promoteBody(row: Pick<UserPriceRow, "unit_price">, priceTyped: string, reason: string): PromoteBody | { error: string } {
   const price = parseUnitPrice(priceTyped);
-  if (price == null) return { error: "Type the price per unit to put in the book (a number above 0)." };
-  return { ...base, unit_price: price };
+  if (price == null) return { error: "Type the price per unit everyone should get (a number above 0)." };
+  const body: PromoteBody = {};
+  if (Math.abs(price - row.unit_price) >= 0.005) body.unit_price = price;
+  const why = reason.trim();
+  if (why) body.reason = why.slice(0, 500);
+  return body;
 }

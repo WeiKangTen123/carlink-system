@@ -280,7 +280,7 @@ export function PartsHistoryTab({
                 <tbody>
                   {cases.map((c) => (
                     <tr key={c.ref}>
-                      <td style={{ fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }} title={c.file || undefined}>
+                      <td style={{ fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>
                         {c.ref}
                       </td>
                       <td>{vehicleOf(c)}</td>

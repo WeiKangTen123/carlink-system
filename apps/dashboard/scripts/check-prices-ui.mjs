@@ -8,7 +8,11 @@
  *   - which lines still need confirming, and what typing a price does;
  *   - the "Saved as your price ..." toast and its Undo words;
  *   - the sign-off's 409 (prices_unconfirmed, must_have, or both at once);
- *   - the new routes' answers (My prices, Price differences, confirm-prices);
+ *   - the new routes' answers (My prices, All users' prices, confirm-prices);
+ *   - the admins' All users' prices list: filters, the gap to the shared
+ *     default, the "Use this price for everyone" body; the retired Price
+ *     differences list gone;
+ *   - Annex A line ids sent back exactly as the API gave them (review H2);
  *   - old cases and an older server: every new field missing, nothing shows,
  *     nothing blocks;
  * the review state of an unconfirmed line (lib/reviewRows.ts), the unsaved
@@ -530,53 +534,101 @@ check("My prices: the make and model options", () => {
   assert.deepEqual(P.makeModelOptions([], ""), { makes: [], models: [] });
 });
 
-// ---- Price differences (admins) ------------------------------------------------------------------------
+// ---- All users' prices (admins) ------------------------------------------------------------------------
 
-const GROUP = {
-  make: "honda",
+const ROW = {
+  id: 7,
+  user_id: "u-stella",
+  user_name: "Stella (@stella)",
+  make: "Honda",
   model_key: "vezel",
-  item_key: "rear bumper fascia",
+  item_key: "rear bumper",
+  part: "Rear Bumper",
   wording: "Rear bumper fascia",
-  book_price: 400,
-  book_cases: 6,
-  approved: false,
-  users_count: 3,
-  cases_count: 5,
-  min_price: 440,
-  max_price: 520,
-  median_user_price: 470,
-  last_used: "2026-11-20",
+  side: null,
+  unit_price: 470,
+  default_price: 400,
+  default_source: "book",
+  updated_at: "2026-11-20T08:00:00+00:00",
+  uses: 3,
+  last_case_id: "case-1",
 };
+const ROW2 = { ...ROW, id: 8, user_id: "u-una", user_name: "Una", item_key: "tail lamp", part: "Left Tail Lamp", wording: "Tail lamp LH", side: "Left", unit_price: 200, default_price: null, default_source: null };
+const ROW3 = { ...ROW, id: 9, user_name: null, user_id: "u-gone", make: "Toyota", model_key: "corolla altis", default_source: "approved", default_price: 380 };
 
-check("GET /admin/price-differences: {groups}, or the list; a group without its keys is left out", () => {
-  assert.deepEqual(P.normalizePriceDifferences({ groups: [GROUP] }), [GROUP]);
-  assert.deepEqual(P.normalizePriceDifferences([GROUP]), [GROUP]);
-  const thin = P.normalizePriceDifferences({ groups: [{ make: "honda", item_key: "boot lid" }, { make: "honda" }, { item_key: "x" }] });
+check("GET /admin/user-prices: {prices}, or the list; a row without its id, price or keys is left out", () => {
+  assert.deepEqual(P.normalizeUserPrices({ prices: [ROW, ROW2] }), [ROW, ROW2]);
+  assert.deepEqual(P.normalizeUserPrices([ROW]), [ROW]);
+  const thin = P.normalizeUserPrices({ prices: [{ id: 1, unit_price: 5, make: "Honda", item_key: "boot lid" }, { id: 2, make: "Honda", item_key: "x" }, { unit_price: 1 }] });
   assert.deepEqual(thin, [
-    { make: "honda", model_key: "", item_key: "boot lid", wording: "boot lid", book_price: null, book_cases: null, approved: false, users_count: 0, cases_count: 0, min_price: null, max_price: null, median_user_price: null, last_used: null },
+    { id: 1, user_id: "", user_name: null, make: "Honda", model_key: "", item_key: "boot lid", part: null, wording: "boot lid", side: null, unit_price: 5, default_price: null, default_source: null, updated_at: null, uses: 0, last_case_id: null },
   ]);
-  assert.deepEqual(P.normalizePriceDifferences({}), []);
+  assert.deepEqual(P.normalizeUserPrices({}), []);
+  // A source without a price is no default.
+  assert.equal(P.normalizeUserPrices([{ ...ROW, default_price: null, default_source: "book" }])[0].default_source, null);
+  assert.deepEqual(P.normalizeUserPrice({ price: ROW }), ROW);
+  assert.equal(P.normalizeUserPrice(null), null);
 });
 
-check('price differences: the gap ("+18%"), none without a book price', () => {
-  assert.equal(P.differencePct(GROUP), "+18%");
-  assert.equal(P.differencePct({ book_price: 500, median_user_price: 440 }), "-12%");
-  assert.equal(P.differencePct({ book_price: null, median_user_price: 440 }), null);
-  assert.equal(P.differenceKey(GROUP), "honda|vezel|rear bumper fascia");
+check("All users' prices: the gap to the default, the source in words", () => {
+  assert.equal(P.priceGapPct(ROW), "+18%");
+  assert.equal(P.priceGapPct({ unit_price: 352, default_price: 400 }), "-12%");
+  assert.equal(P.priceGapPct(ROW2), null);
+  assert.equal(P.defaultSourceWord("approved"), "Approved price");
+  assert.equal(P.defaultSourceWord("book"), "Book");
+  assert.equal(P.defaultSourceWord(null), "No default");
 });
 
-check("decide: Update needs a price above 0; Keep doesn't; a blank reason is left out", () => {
-  assert.deepEqual(P.decisionBody(GROUP, "update", "470", "  new supplier "), {
-    make: "honda",
-    model_key: "vezel",
-    item_key: "rear bumper fascia",
-    decision: "update",
-    unit_price: 470,
-    reason: "new supplier",
-  });
-  assert.deepEqual(P.decisionBody(GROUP, "keep", "", " "), { make: "honda", model_key: "vezel", item_key: "rear bumper fascia", decision: "keep" });
-  assert.match(P.decisionBody(GROUP, "update", "", "").error, /price per unit/);
-  assert.match(P.decisionBody(GROUP, "update", "0", "").error, /above 0/);
+check("All users' prices: the person, make / model and search filters; the options", () => {
+  const rows = [ROW, ROW2, ROW3];
+  const ids = (xs) => xs.map((x) => x.id);
+  assert.deepEqual(ids(P.filterUserPrices(rows, {})), [7, 8, 9]);
+  assert.deepEqual(ids(P.filterUserPrices(rows, { user: "u-una" })), [8]);
+  assert.deepEqual(ids(P.filterUserPrices(rows, { make: "honda" })), [7, 8]);
+  assert.deepEqual(ids(P.filterUserPrices(rows, { make: "TOYOTA", model: "Corolla Altis" })), [9]);
+  assert.deepEqual(ids(P.filterUserPrices(rows, { q: " left tail " })), [8], "the standard part name");
+  assert.deepEqual(ids(P.filterUserPrices(rows, { q: "stella" })), [7], "the person");
+  assert.deepEqual(ids(P.filterUserPrices(rows, { q: "honda vezel" })), [7, 8], "the car as shown");
+  assert.deepEqual(P.userOptions(rows), [
+    { id: "u-gone", name: "A removed account" },
+    { id: "u-stella", name: "Stella (@stella)" },
+    { id: "u-una", name: "Una" },
+  ]);
+  assert.deepEqual(P.userPriceCarOptions(rows, ""), { makes: ["Honda", "Toyota"], models: ["corolla altis", "vezel"] });
+  assert.deepEqual(P.userPriceCarOptions(rows, "honda").models, ["vezel"]);
+});
+
+check("Use this price for everyone: the person's price unless edited, a price above 0, a blank reason left out", () => {
+  assert.deepEqual(P.promoteBody(ROW, "470", " "), {});
+  assert.deepEqual(P.promoteBody(ROW, "$455.50", "  new supplier "), { unit_price: 455.5, reason: "new supplier" });
+  assert.match(P.promoteBody(ROW, "", "").error, /price per unit/);
+  assert.match(P.promoteBody(ROW, "0", "").error, /above 0/);
+  assert.equal(P.promoteBody(ROW, "470", "x".repeat(600)).reason.length, 500);
+});
+
+check("the retired Price differences list is gone from the page and the API calls", () => {
+  for (const rel of ["../lib/prices.ts", "../lib/api.ts", "../app/knowledge/KnowledgeClient.tsx", "../app/knowledge/actions.ts"]) {
+    const text = source(rel);
+    assert.doesNotMatch(text, /price-differences|PriceDifference|decidePriceDifference|"update" \| "keep"/, rel);
+  }
+  assert.ok(!existsSync(fileURLToPath(new URL("../app/knowledge/PriceDifferencesTab.tsx", import.meta.url))), "PriceDifferencesTab.tsx removed");
+});
+
+// ---- Line ids (Stage 1 review H2) ---------------------------------------------------------------------------
+
+check("Annex A line ids: sent back exactly as the API gave them, never made by the page", () => {
+  const item = { ...line(), line_id: "L0123456789ab" };
+  assert.equal(AR.fromAnnexRow(AR.toAnnexRow(item)).line_id, "L0123456789ab");
+  assert.equal("line_id" in AR.fromAnnexRow(AR.toAnnexRow(line())), false, "a line without one is sent without one");
+  assert.equal("line_id" in AR.BLANK_ANNEX_LINE, false, "a new blank line has none");
+  // Typing a price or confirming keeps it (the patches never name it).
+  assert.equal("line_id" in P.typedPricePatch({ price_source: "book", price_confirmed: false }), false);
+  const api = source("../lib/api.ts");
+  assert.match(api, /line_id\?: string \| null;/);
+  // The page never sets one: nothing in the editors writes it.
+  for (const rel of ["../components/AnnexATab.tsx", "../lib/annexRows.ts", "../lib/caseState.ts", "../lib/catalogue.ts", "../components/PriceSource.tsx"]) {
+    assert.doesNotMatch(source(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ""), /line_id\s*[:=]/, rel);
+  }
 });
 
 // ---- The screens use them (from the source) ----------------------------------------------------------------
@@ -588,8 +640,8 @@ check("lib/api.ts: the Stage 1 routes, each id through seg()", () => {
     "${API_BASE_URL}/me/prices${query}",
     "${API_BASE_URL}/me/prices/${seg(id)}",
     "${API_BASE_URL}/me/prices/${seg(id)}/undo",
-    "${API_BASE_URL}/admin/price-differences",
-    "${API_BASE_URL}/admin/price-differences/decide",
+    "${API_BASE_URL}/admin/user-prices${query}",
+    "${API_BASE_URL}/admin/user-prices/${seg(id)}/promote",
   ]) {
     assert.ok(api.includes("`" + route), route);
   }
@@ -624,8 +676,8 @@ check("case history: plain-English labels for the Stage 1 actions", () => {
     "my_price_changed",
     "my_price_deleted",
     "my_price_undone",
-    "book_price_decided",
-    "price_book_plates_dropped",
+    "book_price_promoted",
+    "price_book_personal_data_dropped",
   ]) {
     assert.match(tsx, new RegExp(`\\n\\s*${action}: "[A-Z][^"]+",`), action);
   }
@@ -668,11 +720,25 @@ check("Settings: My prices for every account, beside My settings; the admin tabs
   assert.ok(existsSync(fileURLToPath(new URL("../app/settings/my-prices/page.tsx", import.meta.url))), "app/settings/my-prices/page.tsx");
 });
 
-check("Knowledge: the Price differences tab for admins only", () => {
+check("Knowledge: the All users' prices tab for admins only, with its filters and Use this price for everyone", () => {
   const tsx = source("../app/knowledge/KnowledgeClient.tsx");
-  assert.match(tsx, /id: "price_diffs", label: "Price differences", icon: Scale, adminOnly: true/);
+  assert.match(tsx, /id: "user_prices", label: "All users' prices", icon: Users, adminOnly: true/);
   assert.match(tsx, /admin \|\| !t\.adminOnly/);
-  assert.match(tsx, /tab === "price_diffs" && admin && <PriceDifferencesTab \/>/);
+  assert.match(tsx, /tab === "user_prices" && admin && <AllUserPricesTab \/>/);
+  const tab = source("../app/knowledge/AllUserPricesTab.tsx");
+  assert.match(tab, /aria-label="Filter by person"/);
+  assert.match(tab, /aria-label="Filter by make"/);
+  assert.match(tab, /aria-label="Filter by model"/);
+  assert.match(tab, /aria-label="Search everyone's prices"/);
+  assert.match(tab, /Use this price for everyone/);
+  assert.match(tab, /promoteBody\(r, priceTyped, reason\)/);
+  assert.match(tab, /if \(!confirm\(/, "a confirm before it is used for everyone");
+  assert.match(tab, /promoteUserPriceAction\(r\.id, body\)/);
+  const actions = source("../app/knowledge/actions.ts");
+  assert.match(actions, /listUserPrices\(clean\)/);
+  assert.match(actions, /promoteUserPrice\(id, clean\)/);
+  // The Knowledge page's case list shows no file name (it held the plate).
+  assert.doesNotMatch(source("../app/knowledge/PartsHistoryTab.tsx"), /c\.file/);
 });
 
 check("globals.css: the Stage 1 block once, at the end", () => {

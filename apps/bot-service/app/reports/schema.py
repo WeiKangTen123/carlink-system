@@ -563,6 +563,11 @@ class AnnexAPartItem(BaseModel):
     price_date: SkipJsonSchema[Optional[str]] = None
     # How many distinct past cases a "book" price rests on.
     price_cases: SkipJsonSchema[Optional[int]] = None
+    # The line's own id, the server's (app/reports/annex_lines.py; Stage 1
+    # review H2): a save matches each line a page sends back to the stored
+    # line by it, never by its wording. A page sends it back unchanged; a
+    # new line has none until it is saved. Never printed.
+    line_id: SkipJsonSchema[Optional[str]] = None
 
 
 class AnnexAInfo(BaseModel):

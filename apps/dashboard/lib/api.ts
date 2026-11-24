@@ -10,20 +10,21 @@ import {
   confirmedLinesFrom,
   normalizeMyPrice,
   normalizeMyPrices,
-  normalizePriceDifferences,
+  normalizeUserPrice,
+  normalizeUserPrices,
   parseRemembered,
   prefillRefusal,
   signOffBlock,
   signOffBlockMessage,
   type MyPrice,
-  type PriceDecision,
-  type PriceDifference,
   type PriceSource,
+  type PromoteBody,
   type RememberedPrice,
   type UnconfirmedPriceLine,
+  type UserPriceRow,
 } from "./prices";
 
-export type { MyPrice, PriceDecision, PriceDifference, PriceSource, RememberedPrice, UnconfirmedPriceLine } from "./prices";
+export type { MyPrice, PriceSource, PromoteBody, RememberedPrice, UnconfirmedPriceLine, UserPriceRow } from "./prices";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -1345,6 +1346,11 @@ export type AnnexAPartItem = {
   price_date?: string | null;
   /** How many past cases a "book" price comes from. */
   price_cases?: number | null;
+  /** The line's own id, the server's (Stage 1 review H2): the Annex A save
+   * matches each line sent back to the stored one by it, never by its
+   * wording, so it is sent back UNCHANGED. A new line has none until it is
+   * saved; never set or copied by the page. */
+  line_id?: string | null;
 };
 
 export type AnnexAOrigin = "detection" | "history" | "lookup" | "typed";
@@ -2929,8 +2935,10 @@ export type PastReportCase = {
   /** ISO date of the survey, when the report gave one. */
   surveyed: string | null;
   lines: number;
-  /** Admins only; empty for everyone else. */
-  file: string;
+  /** Always empty now: the firm writes the plate in a file's name, so
+   * the price book keeps only the CL reference (Stage 1 review H1). Not
+   * shown. */
+  file?: string;
 };
 
 /** One line wording for one make and model, across the past reports. */
@@ -2995,8 +3003,9 @@ export async function deletePastReport(ref: string): Promise<{ ok: boolean; line
 // Stage 1, "My prices" (S1-contract.md): the prices a person typed on Annex
 // A, remembered per unit for them alone, keyed by make and model. Every
 // signed-in staff account has its own; the API lists and changes only the
-// caller's rows. The shared book changes only when an admin approves a
-// difference (below).
+// caller's rows. The shared default changes only when an admin uses
+// someone's price for everyone on "All users' prices" (below) -- never by
+// signing a case off.
 
 /** An older server has no /me/prices: said plainly, not as "(404)". */
 const MY_PRICES_MISSING = "My prices isn't available on this server yet.";
@@ -3039,24 +3048,35 @@ export async function undoMyPrice(id: string | number): Promise<void> {
   if (!res.ok) throw await apiError(res, "Failed to undo the price");
 }
 
-/** Admins: the groups where people's own prices differ from the book's by
- * more than 10% (GET /admin/price-differences). Counts only, no names. */
-export async function getPriceDifferences(): Promise<PriceDifference[]> {
-  const res = await apiFetch(`${API_BASE_URL}/admin/price-differences`, { cache: "no-store" }, { timeoutMs: 15000 });
-  if (res.status === 404) throw new ApiError("Price differences aren't available on this server yet.", 404, "not_found");
-  if (!res.ok) throw await apiError(res, "Failed to load the price differences");
-  return normalizePriceDifferences(await res.json());
+/** Admins: everyone's own prices, with the person's name and the shared
+ * default beside each (GET /admin/user-prices), newest first; optionally
+ * filtered (a person's id or name words, make, model, search words). */
+export async function listUserPrices(filters: { user?: string; make?: string; model?: string; q?: string } = {}): Promise<UserPriceRow[]> {
+  const params = new URLSearchParams();
+  for (const key of ["user", "make", "model", "q"] as const) {
+    const value = filters[key];
+    if (value) params.set(key, value);
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/admin/user-prices${query}`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (res.status === 404) throw new ApiError("All users' prices isn't available on this server yet.", 404, "not_found");
+  if (!res.ok) throw await apiError(res, "Failed to load everyone's prices");
+  return normalizeUserPrices(await res.json());
 }
 
-/** Admins: update the book to a price, or keep the book's price
- * (POST /admin/price-differences/decide). Audited by the API. */
-export async function decidePriceDifference(body: PriceDecision): Promise<void> {
-  const res = await apiFetch(`${API_BASE_URL}/admin/price-differences/decide`, {
+/** Admins: "Use this price for everyone" (POST /admin/user-prices/{id}/
+ * promote) -- the shared default for that make, model and line becomes
+ * the person's price, or the admin's figure. Audited by the API. The row
+ * comes back with its new default (null when it can't be read: the
+ * caller loads the list again). */
+export async function promoteUserPrice(id: string | number, body: PromoteBody): Promise<UserPriceRow | null> {
+  const res = await apiFetch(`${API_BASE_URL}/admin/user-prices/${seg(id)}/promote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw await apiError(res, "Failed to save the decision");
+  if (!res.ok) throw await apiError(res, "Failed to use the price for everyone");
+  return normalizeUserPrice(await res.json().catch(() => null));
 }
 
 /** Over the same cases as listReports(scope), with the same default and

@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Wrench, Zap, Car, Boxes, History, Scale } from "lucide-react";
+import { Wrench, Zap, Car, Boxes, History, Users } from "lucide-react";
 import type { PartsHistory, Taxonomy } from "@/lib/api";
 import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { getPartsHistoryAction } from "./actions";
 import { PartsHistoryTab } from "./PartsHistoryTab";
-import { PriceDifferencesTab } from "./PriceDifferencesTab";
+import { AllUserPricesTab } from "./AllUserPricesTab";
 
 export interface PartRow {
   part: string;
@@ -19,13 +19,15 @@ export interface PartRow {
 // made-up SKUs, prices and labour/spray rates seeded from a code constant
 // and edited in this browser's localStorage. Prices now come only from the
 // firm's own past reports.
-type Tab = "price_history" | "price_diffs" | "parts" | "damage" | "vehicles";
+type Tab = "price_history" | "user_prices" | "parts" | "damage" | "vehicles";
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }>; adminOnly?: boolean }[] = [
   { id: "price_history", label: "Parts price history", icon: History },
-  // Stage 1: people's own prices against the book's; admins decide (the API
-  // refuses anyone else, and the tab isn't shown to them).
-  { id: "price_diffs", label: "Price differences", icon: Scale, adminOnly: true },
+  // Stage 1 (the owner's final price model): everyone's own prices, with
+  // their names, beside the shared default; an admin may use one for
+  // everyone. Admins only: the API refuses anyone else, and the tab isn't
+  // shown to them.
+  { id: "user_prices", label: "All users' prices", icon: Users, adminOnly: true },
   { id: "parts", label: "Vehicle Parts & 3D", icon: Wrench },
   { id: "damage", label: "Damage Types", icon: Zap },
   { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
@@ -150,8 +152,8 @@ export function KnowledgeClient({
         <PartsHistoryTab history={history} loadError={historyError} onReload={reloadHistory} />
       )}
 
-      {/* PRICE DIFFERENCES (Stage 1, admins only): loaded when opened. */}
-      {tab === "price_diffs" && admin && <PriceDifferencesTab />}
+      {/* ALL USERS' PRICES (Stage 1, admins only): loaded when opened. */}
+      {tab === "user_prices" && admin && <AllUserPricesTab />}
 
       {/* TAB 2: VEHICLE PARTS & 3D */}
       {tab === "parts" && (

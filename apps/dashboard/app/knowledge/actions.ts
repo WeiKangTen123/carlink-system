@@ -5,11 +5,11 @@ import { unstable_rethrow } from "next/navigation";
 import {
   getPartsHistory,
   deletePastReport,
-  getPriceDifferences,
-  decidePriceDifference,
+  listUserPrices,
+  promoteUserPrice,
   type PartsHistory,
-  type PriceDecision,
-  type PriceDifference,
+  type PromoteBody,
+  type UserPriceRow,
 } from "@/lib/api";
 
 /** The parts price history from imported past reports. Importing runs
@@ -38,35 +38,48 @@ export async function deletePastReportAction(ref: string): Promise<{ lines: numb
   }
 }
 
-/** Stage 1, admins only (the API refuses anyone else): where people's own
- * prices differ from the book's by more than 10%. Counts, never names. */
-export async function getPriceDifferencesAction(): Promise<{ groups: PriceDifference[] } | { error: string }> {
+/** Stage 1, admins only (the API refuses anyone else): everyone's own
+ * prices, with the person's name and the shared default beside each. */
+export async function getUserPricesAction(
+  filters: { user?: string; make?: string; model?: string; q?: string } = {}
+): Promise<{ prices: UserPriceRow[] } | { error: string }> {
+  const clean: { user?: string; make?: string; model?: string; q?: string } = {};
+  for (const key of ["user", "make", "model", "q"] as const) {
+    const value = filters?.[key];
+    if (typeof value === "string" && value.trim()) clean[key] = value.trim().slice(0, 120);
+  }
   try {
-    return { groups: await getPriceDifferences() };
+    return { prices: await listUserPrices(clean) };
   } catch (err) {
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to load the price differences" };
+    return { error: err instanceof Error ? err.message : "Failed to load everyone's prices" };
   }
 }
 
-/** Stage 1, admins only: update the book to a price, or keep the book's.
- * Only the fields the API takes are passed on. */
-export async function decidePriceDifferenceAction(body: PriceDecision): Promise<{ ok: true } | { error: string }> {
-  if (!body || typeof body.make !== "string" || typeof body.item_key !== "string" || typeof body.model_key !== "string") {
-    return { error: "That line can't be found. Reload the list." };
+/** Stage 1, admins only: "Use this price for everyone" -- the person's
+ * price, or the figure the admin typed, becomes the shared default for that
+ * make, model and line (audited by the API). Only the fields the API takes
+ * are passed on. The row comes back with its new default (null: reload). */
+export async function promoteUserPriceAction(
+  id: string | number,
+  body: PromoteBody
+): Promise<{ row: UserPriceRow | null } | { error: string }> {
+  if ((typeof id !== "number" || !Number.isInteger(id)) && (typeof id !== "string" || !/^\d+$/.test(id))) {
+    return { error: "That price can't be found. Reload the list." };
   }
-  if (body.decision !== "update" && body.decision !== "keep") return { error: "Choose Update or Keep." };
-  const unit = body.unit_price;
-  if (body.decision === "update" && (typeof unit !== "number" || !Number.isFinite(unit) || unit <= 0)) return { error: "Type a price above 0." };
-  const clean: PriceDecision = { make: body.make, model_key: body.model_key, item_key: body.item_key, decision: body.decision };
-  if (body.decision === "update") clean.unit_price = unit;
-  if (typeof body.reason === "string" && body.reason.trim()) clean.reason = body.reason.trim().slice(0, 500);
+  const clean: PromoteBody = {};
+  const unit = body?.unit_price;
+  if (unit !== undefined) {
+    if (typeof unit !== "number" || !Number.isFinite(unit) || unit <= 0) return { error: "Type a price above 0." };
+    clean.unit_price = unit;
+  }
+  if (typeof body?.reason === "string" && body.reason.trim()) clean.reason = body.reason.trim().slice(0, 500);
   try {
-    await decidePriceDifference(clean);
+    const row = await promoteUserPrice(id, clean);
     revalidatePath("/knowledge");
-    return { ok: true };
+    return { row };
   } catch (err) {
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Failed to save the decision" };
+    return { error: err instanceof Error ? err.message : "Failed to use the price for everyone" };
   }
 }

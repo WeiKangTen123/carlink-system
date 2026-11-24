@@ -61,8 +61,8 @@ class PastLine:
     adjusted_cost: float
     # Whether a person confirmed the price (Stage 1, owner 24 Nov 2026): a
     # firm's spreadsheet is, a signed-off Carlink case's line only when its
-    # price was (learn.past_case_from). An unconfirmed line never prices a
-    # case (price_usable, DB4).
+    # price was (learn.past_case_from) -- kept as its history; a learned
+    # line never prices a case whatever it says (price_usable).
     confirmed: bool = True
 
 
@@ -208,9 +208,11 @@ def _labour_lines(rows: list[list]) -> list[PastLabour]:
     return out
 
 
-def parse_report(path: Path) -> PastCase:
+def parse_report(path: Path, name: str | None = None) -> PastCase:
     """Reads one past report spreadsheet. Raises ValueError when it isn't
-    one (no Annex A sheet, or no parts header)."""
+    one (no Annex A sheet, or no parts header). name: the file's own name
+    when `path` is a copy under another (an upload, kept in a temporary
+    file): a cover page without a reference falls back to it."""
     sheets = _rows(Path(path))
     cover = _sheet(sheets, "cover page")
     fields: dict[str, str] = {}
@@ -293,7 +295,10 @@ def parse_report(path: Path) -> PastCase:
     except ValueError:
         case.labour = []
     if not case.ref:
-        case.ref = Path(path).stem
+        # The file's name only for its CL reference ("CL 10001 TEST 123 X"
+        # -> "CL 10001"): the rest is the plate (owner K0). A name with no
+        # CL reference stays the reference, as before.
+        case.ref = reduced_ref(Path(name or path).stem)
     return case
 
 
@@ -546,17 +551,22 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
     Returns the number of Annex A lines stored; len(case.labour) is the
     labour count.
 
-    No plate is stored (owner K0, 24 Nov 2026): the CL reference says which
-    report it was. Each line's origin is "carlink" for a signed-off case
-    (learn.py, LEARNED_PREFIX) and "import" for a spreadsheet, with
-    `confirmed` its PastLine's: a spreadsheet's prices are the firm's own."""
+    No plate is stored (owner K0, 24 Nov 2026), nor the file's name, which
+    the firm writes with the plate ("CL 10001 TEST 123 X.xlsx"): only the
+    CL reference in source_name (source_ref), else nothing -- the case's
+    CL reference says which report it was. Each line's origin is "carlink"
+    for a signed-off case (learn.py, LEARNED_PREFIX) and "import" for a
+    spreadsheet, with `confirmed` its PastLine's: a spreadsheet's prices
+    are the firm's own; a Carlink case's lines are history only and never
+    price a case (price_usable)."""
     db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == case.ref).delete()
     db.query(PastLabourLine).filter(PastLabourLine.case_ref == case.ref).delete()
     origin = "carlink" if is_learned(case.ref) else "import"
+    source = source_ref(source_name)
     for job in case.labour:
         db.add(PastLabourLine(
             case_ref=case.ref,
-            source_file=source_name[:200],
+            source_file=source,
             make=case.make,
             model=case.model,
             surveyed=case.surveyed,
@@ -569,7 +579,7 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
     for line in case.lines:
         db.add(PastAnnexLine(
             case_ref=case.ref,
-            source_file=source_name[:200],
+            source_file=source,
             make=case.make,
             model=case.model,
             make_model_raw=case.make_model_raw,
@@ -616,6 +626,28 @@ def cl_ref(text: str | None) -> str:
     finds its earlier lines by the importer's own spelling)."""
     m = _CL_REF.search(text or "")
     return f"CL {m.group(1)}" if m else (text or "").strip()
+
+
+def source_ref(text: str | None) -> str:
+    """What the price book keeps of where a past case came from (owner K0,
+    Stage 1 review H1): the CL reference in it ("CL 10001" of "CL 10001
+    TEST 123 X.xlsx"), or "" -- never the rest of a file name, which the
+    firm writes with the car's plate."""
+    m = _CL_REF.search(text or "")
+    return f"CL {m.group(1)}" if m else ""
+
+
+def reduced_ref(ref: str | None) -> str:
+    """A past case's reference without what follows or precedes its CL
+    reference: "CL 10001" for "CL 10001 TEST 123 X" (a file name the
+    importer fell back to). One that is a CL reference alone stays as it was
+    written ("CL10001" as a cover page has it: a re-import finds its lines
+    by that spelling), and one with no CL reference stays too."""
+    text = (ref or "").strip()
+    m = _CL_REF.search(text)
+    if not m or m.group(0).strip() == text:
+        return text
+    return f"CL {m.group(1)}"
 
 
 # (case refs left out, only lines imported before this naive-UTC moment):
@@ -686,17 +718,19 @@ def is_learned(case_ref: str | None) -> bool:
 
 def price_usable(line) -> bool:
     """Whether a past line's price may price a case or count in a usual
-    price (owner K0 / DB4, 24 Nov 2026): a person confirmed it. A firm's
-    spreadsheet is confirmed (import_case); a line learned from a Carlink
-    case only when its price was confirmed at sign-off -- one nobody
-    confirmed (and every learned line from before Stage 1, confirmed None)
-    never is. An imported line still without the column's value (the
-    start-up step not run yet) counts as the spreadsheet it is. The line
-    itself -- its wording, its place in a kit -- is still used."""
+    price: only a firm's imported spreadsheet's (origin "import",
+    confirmed). The owner's final rule (24 Nov 2026): signing off never
+    changes the shared default -- a line learned from a Carlink case
+    (origin "carlink", LEARNED_PREFIX) is history only, confirmed or not,
+    never in the book's median, the 2-case rule or a prefill. The shared
+    default is the imported reports plus the prices an admin promoted
+    (app/parts/prices.py). An imported line still without the column's
+    value (the start-up step not run yet) counts as the spreadsheet it is.
+    The line itself -- its wording, its place in a kit -- is still used."""
+    if is_learned(getattr(line, "case_ref", None)) or getattr(line, "origin", None) == "carlink":
+        return False
     confirmed = getattr(line, "confirmed", None)
-    if confirmed is None:
-        return not is_learned(getattr(line, "case_ref", None))
-    return bool(confirmed)
+    return True if confirmed is None else bool(confirmed)
 
 
 def viewed_before() -> datetime | None:
@@ -1073,8 +1107,8 @@ def suggest(
             if key in have:
                 continue
             seen_in = sorted({g.case_ref for g in group})
-            # The lines that were paid, with a price a person confirmed
-            # (price_usable: never a learned line nobody confirmed, DB4).
+            # The lines that were paid, from the firm's imported reports
+            # (price_usable: never a line learned from a Carlink case).
             paid = [g for g in group if price_usable(g) and _unit_price(g) is not None]
             prices = [_unit_price(g) for g in paid]
             # What the workshop asked per unit, on the lines that were paid:

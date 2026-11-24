@@ -48,7 +48,7 @@ from app.api.annexes import router as annexes_router
 from app.api.catalogue import router as catalogue_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
-from app.api.parts import own_prices_for_case, price_book_for_case, router as parts_router
+from app.api.parts import own_prices_for_case, price_book_for_case, router as parts_router, settle_sent_lines
 from app.api.prices import router as prices_router
 from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
@@ -92,7 +92,7 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
-from app.reports import accuracy, owners, suggestions
+from app.reports import accuracy, annex_lines, owners, suggestions
 from app.parts import catalogue
 from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
@@ -581,7 +581,10 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             "type": r.type,
             "status": r.status,
             "channel": r.channel,
-            "data": r.data,
+            # Each Annex A line with its line_id -- a line stored before ids
+            # with the one its case's next write gives it (Stage 1 review H2,
+            # annex_lines.with_line_ids); nothing written here.
+            "data": annex_lines.with_line_ids(r.data),
             "photo_urls": photo_urls,
             "photo_thumb_urls": photo_thumb_urls,
             "photo_preview_urls": photo_preview_urls,
@@ -1005,6 +1008,12 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         # A new case has no catalogue look-up, so no line can carry one of
         # its rows: any catalogue_ref sent is taken off (never refused).
         data = catalogue.without_bad_refs(db, report_id, data)
+        # Annex A lines sent with the case: new lines, their price fields
+        # the server's (a typed price is "typed"; nothing arrives confirmed
+        # as some other source), each with its own id (Stage 1 review Low 1).
+        annex = data.get("annex_a") if isinstance(data.get("annex_a"), dict) else None
+        if annex and isinstance(annex.get("items"), list):
+            settle_sent_lines(None, [it for it in annex["items"] if isinstance(it, dict)])
     finally:
         db.close()
 
@@ -1133,6 +1142,12 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             # kept or the PDF rendered; checked again under the write lock
             # below, where the rows' statuses follow.
             items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)]
+            # The price fields are the server's, never as sent (Stage 1
+            # review Low 1): each line paired with its stored line by its
+            # line_id, its source and confirm the stored line's -- or
+            # "typed" when its estimate changed -- and no confirm here (only
+            # the Annex A save's per-line Confirm and Confirm all prices).
+            settle_sent_lines(r.data, items)
             try:
                 catalogue.checked_refs(db, r.id, items)
             except catalogue.BadCatalogueRef:

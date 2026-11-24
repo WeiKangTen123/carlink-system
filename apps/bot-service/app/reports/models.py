@@ -598,12 +598,16 @@ class PastAnnexLine(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    # The CL reference of the spreadsheet ("CL 10001"), or "": never the
+    # file's name, which the firm writes with the plate (owner K0, Stage 1
+    # review H1; history.source_ref). The start-up step
+    # price_book_personal_v1 cut the ones imported before down to it.
     source_file: Mapped[str] = mapped_column(String, default="")
     # Always "": the price book keeps no plate (owner K0, 24 Nov 2026; the
     # CL reference is enough). Nothing writes or reads it; the start-up
-    # step price_book_plates_v1 blanked the ones imported before
-    # (app/parts/prices.drop_price_book_plates). Kept as a column only
-    # because SQLite tables here are never rebuilt.
+    # step price_book_personal_v1 blanked the ones imported before
+    # (app/parts/prices.scrub_price_book). Kept as a column only because
+    # SQLite tables here are never rebuilt.
     plate: Mapped[str] = mapped_column(String, default="")
     make: Mapped[str] = mapped_column(String, default="", index=True)
     model: Mapped[str] = mapped_column(String, default="", index=True)
@@ -630,9 +634,10 @@ class PastAnnexLine(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
     # Stage 1 (owner, 24 Nov 2026): where the line came from -- "import" (a
     # firm's spreadsheet) or "carlink" (a case signed off here, app/parts/
-    # learn.py) -- and whether a person confirmed its price. Only a
-    # confirmed price prices a new case (history.price_usable, DB4); an
-    # imported report's prices are the firm's own, so confirmed. None on
+    # learn.py) -- and whether a person confirmed its price. Only an
+    # imported report's prices price a new case (history.price_usable; the
+    # owner's final model: a Carlink case's lines are history only, even
+    # confirmed); those are the firm's own, so confirmed. None on
     # rows from before: the start-up step price_book_origin_v1 sets both
     # (app/parts/prices.mark_past_line_origins). (Added after the table
     # shipped: see db._ADDED_COLUMNS.)
@@ -650,6 +655,7 @@ class PastLabourLine(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    # As PastAnnexLine.source_file: the CL reference, or "".
     source_file: Mapped[str] = mapped_column(String, default="")
     # Always "", as PastAnnexLine.plate.
     plate: Mapped[str] = mapped_column(String, default="")
@@ -670,8 +676,9 @@ class PastLabourLine(Base):
 # Owner decisions P1-P5, DB1-DB4 (24 Nov 2026; plans/2026-11-23-report-and-
 # parts/S1-contract.md). A price a person types on a case's Annex A is
 # remembered for that person only (UserPrice) and fills their next case of
-# that make and model first. The shared book changes only when an admin
-# decides on the "Price differences" list (BookPrice). Logic in
+# that make and model first. The shared default changes only when an admin
+# promotes someone's price on "All users' prices" (BookPrice; the owner's
+# final model, 24 Nov 2026) -- never by a sign-off. Logic in
 # app/parts/prices.py. New tables, made by create_all; the unique rule of
 # user_prices is an index of its own (db._ADDED_INDEXES: side may be NULL).
 
@@ -682,7 +689,9 @@ class UserPrice(Base):
     price book keys its lines: make as history.split_make_model writes it
     ("Honda"), model_key the model's normalised first word with twins
     merged (history.model_key: "HR-V" -> "vezel"), item_key / family /
-    side as past_annex_lines'. Only ever shown to its own person."""
+    side as past_annex_lines'. Shown to its own person (My prices) and to
+    admins (All users' prices, with the person's name), never to anyone
+    else."""
     __tablename__ = "user_prices"
     __table_args__ = (Index("ix_user_prices_user_id_make_model_key", "user_id", "make", "model_key"),)
 
@@ -707,15 +716,14 @@ class UserPrice(Base):
 
 
 class BookPrice(Base):
-    """An admin's decision on one line of the book (POST /admin/price-
-    differences/decide): "update" sets the book's unit price for make +
-    model_key + item_key to unit_price (step 2 of the price choice,
-    prices.choose_prices); "keep" leaves the book as it is and takes the
-    line off the list until someone's price changes again. A newer
-    "update" makes every older decision on the key inactive; a newer
-    "keep" only the older "keep"s (keeping the book's price keeps an
-    approved one too). users_count / cases_count: how many people and
-    cases were behind the users' prices when decided -- never who."""
+    """An admin-promoted price (POST /admin/user-prices/{id}/promote, "Use
+    this price for everyone"): decision "update" sets the shared default
+    unit price for make + model_key + item_key to unit_price (step 2 of the
+    price choice, prices.choose_prices); a newer one makes every older row
+    on the key inactive. "keep" rows (the retired "Price differences"
+    list) may still be in a database and are never read. users_count /
+    cases_count: 1 and the promoted price's case (0 without one) -- who it
+    came from is in the history entry (audit "book_price_promoted")."""
     __tablename__ = "book_prices"
     __table_args__ = (Index("ix_book_prices_key", "make", "model_key", "item_key"),)
 
@@ -727,8 +735,8 @@ class BookPrice(Base):
     wording: Mapped[str] = mapped_column(String, default="")
     decision: Mapped[str] = mapped_column(String, nullable=False)  # update | keep
     unit_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    # The book's reference unit price when decided (approved, else the
-    # median of 2+ confirmed cases); None when the book had none.
+    # The shared default unit price when decided (approved, else the
+    # median of 2+ imported cases); None when there was none.
     book_price_before: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     users_count: Mapped[int] = mapped_column(Integer, default=0)
     cases_count: Mapped[int] = mapped_column(Integer, default=0)

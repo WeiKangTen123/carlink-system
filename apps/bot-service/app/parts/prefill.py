@@ -38,6 +38,7 @@ from app.parts.history import (
     suggest,
 )
 from app.parts.prices import MIN_BOOK_CASES, choose_prices
+from app.reports.annex_lines import ensure_line_ids
 from app.reports.synthesize_annexes import (
     DEFAULT_DISCOUNT,
     REPAIR_CONDITION,
@@ -424,10 +425,10 @@ def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = Non
         if price and not est_unit:
             est_unit = price if nett else round(float(price) / (1.0 - DEFAULT_DISCOUNT), 2)
         cases = int(ln.get("cases") or 0)
-        # The book prices a line only from 2+ distinct past cases whose
-        # prices a person confirmed (owner K0, 24 Nov 2026; history.
-        # price_usable): a one-off or a mistyped line is listed, unpriced,
-        # never copied as the price into every later case of the car.
+        # The book prices a line only from 2+ distinct imported past cases
+        # (owner K0 and final model, 24 Nov 2026; history.price_usable:
+        # never a case signed off here): a one-off or a mistyped line is
+        # listed, unpriced, never copied into every later case of the car.
         price_cases = int(ln.get("price_from_cases") or 0)
         priced = bool(price and est_unit) and price_cases >= MIN_BOOK_CASES
         row = {
@@ -571,7 +572,11 @@ def sync_annex_a(db: Session, data: dict, price_book: bool, user_id: str | None 
     adopt = named_others[0]["source"] if len(named_others) == 1 and OTHER_PART not in damaged_keys else None
 
     kept = []
-    for row in ((data.get("annex_a") or {}).get("items") or []):
+    # Each stored line's id first, from its place in the stored list (Stage
+    # 1 review H2; annex_lines): a kept line from before ids keeps the one
+    # a page already holds for it.
+    stored = ensure_line_ids([dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)])
+    for row in stored:
         if _machine_owned(row, damaged_names):
             continue
         row = dict(row)

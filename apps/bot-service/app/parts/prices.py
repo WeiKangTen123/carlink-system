@@ -1,25 +1,31 @@
 """Stage 1: "My prices" and price safety (owner approved 24 Nov 2026;
-plans/2026-11-23-report-and-parts/S1-contract.md).
+plans/2026-11-23-report-and-parts/S1-contract.md, and the owner's final
+price model of 24 Nov 2026, which overrides the contract where they differ).
 
-The price an Annex A line gets when the machine writes it -- at filing,
-on "Fill prices" and when the damage list changes (prefill.sync_annex_a)
--- is chosen in this order (choose_prices):
+Prices are personal, tailor-made per person. The price an Annex A line
+gets when the machine writes it -- at filing, on "Fill prices" and when
+the damage list changes (prefill.sync_annex_a) -- is chosen in this order
+(choose_prices):
 
   1. this person's own price (UserPrice: same make, model key, line and
      side, or a side-less one): price_source "mine" -- for everyone (P3);
-  2. an admin-approved price (BookPrice "update", the active one for make
+  2. an admin-promoted price (BookPrice "update", the active one for make
      + model key + line): "approved" -- price-book staff only;
-  3. the book's median of confirmed past lines from 2+ distinct cases
-     (prefill._rows_for, history.price_usable): "book" -- price-book
-     staff only, as before;
+  3. the book's median of 2+ distinct IMPORTED past cases (prefill.
+     _rows_for, history.price_usable): "book" -- price-book staff only;
   4. otherwise no price: price_source None.
 
-Each such price waits for a person (price_confirmed False) until they
+Steps 2 and 3 are the shared default: the firm's imported reports plus
+the prices an admin promoted. Signing a case off never changes it: what
+learn.py keeps of a signed-off case is history only, never a price
+(history.price_usable).
+
+Each filled-in price waits for a person (price_confirmed False) until they
 type over it (the Annex A save: "typed") or press "Confirm all prices";
 sign-off refuses while any is waiting (review.unconfirmed_prices). A W/shop
 Est. a person types is remembered as that person's own price, per unit
-(remember, DB2). The shared book changes only when an admin decides on the
-"Price differences" list (differences / decide, P1).
+(remember, DB2) -- for them alone. Admins see everyone's on "All users'
+prices" (user_price_rows) and may use one for everyone (promote).
 
 Make and model are keyed as the price book keys them (price_key): the make
 as history.split_make_model writes it, the model as history.model_key
@@ -36,16 +42,20 @@ from sqlalchemy.orm import Session
 from app.parts.history import (
     LEARNED_PREFIX,
     _unit_price,
+    canonical_part,
     family_of,
+    is_learned,
     model_key,
     normalise_item,
     past_lines,
     price_usable,
+    reduced_ref,
     side_of,
+    source_ref,
     split_make_model,
     viewed_before,
 )
-from app.reports.models import BookPrice, PastAnnexLine, PastLabourLine, UserPrice, iso_utc
+from app.reports.models import BookPrice, PastAnnexLine, PastLabourLine, User, UserPrice, iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +70,6 @@ PRICE_FIELDS = ("price_source", "price_confirmed", "book_price", "price_date", "
 MIN_BOOK_CASES = 2
 # "Old" after this (P4): shown, never blocking.
 OLD_AFTER = timedelta(days=365)
-# A person's price this much off the book's is on the admins' list.
-DIFFERENCE = 0.10
 MAX_UNIT_PRICE = 10_000_000.0
 
 
@@ -115,12 +123,12 @@ def awaits_confirmation(row) -> bool:
 
 
 def learned_as_confirmed(row: dict) -> bool:
-    """Whether a signed-off line's price joins the book as confirmed
-    (learn.past_case_from; only those ever price a case, DB4). Its
+    """Whether a signed-off line's price is kept in its history as
+    confirmed (learn.past_case_from) -- history only: no learned line ever
+    prices a case (history.price_usable, the owner's final model). Its
     price_confirmed when it has one; a line from before Stage 1 by what
     the case says about it then: a past-case price nobody typed over or
-    confirmed (prefilled still true) is not -- the owner's K0, learn only
-    confirmed prices."""
+    confirmed (prefilled still true) is not."""
     value = row.get("price_confirmed")
     if value is not None:
         return bool(value)
@@ -251,6 +259,10 @@ def remember(db: Session, user_id: str | None, vehicle: dict, case_id: str | Non
         if not item or est <= 0:
             continue
         unit = round(est / qty, 2)
+        if unit <= 0:
+            # Under a cent a unit (0.01 for 10): kept as 0, it would fill the
+            # next case with an estimate of 0 still waiting (review Low 2).
+            continue
         side = side_of(wording)
         row = _same_key(db, user_id, make, key, item, side)
         if row is None:
@@ -317,10 +329,9 @@ def label(make: str, key: str, wording: str) -> str:
 
 
 def _book_lines(db: Session) -> dict[tuple[str, str, str], list]:
-    """The confirmed, paid past lines (history.price_usable) by (make
-    lowered, model key, item_key): the book the admins' list compares
-    with, as the prefill reads it (history.past_lines: a learned case only
-    while it is signed off and learning is on)."""
+    """The paid past lines of the firm's imported reports (history.
+    price_usable: never a line learned from a Carlink case) by (make
+    lowered, model key, item_key): the book as the prefill reads it."""
     out: dict[tuple[str, str, str], list] = {}
     for ln in past_lines(db):
         if not ln.make or not ln.item_key or not price_usable(ln) or _unit_price(ln) is None:
@@ -329,120 +340,138 @@ def _book_lines(db: Session) -> dict[tuple[str, str, str], list]:
     return out
 
 
-def _reference(lines: list | None) -> tuple[float | None, int, str]:
+def _reference(lines: list | None) -> tuple[float | None, int]:
     """(the book's unit W/shop Est. -- the median of est / qty over the
-    paid lines, as prefill fills it -- the distinct cases behind it, the
-    most common wording) for one line of one make and model."""
+    paid lines, as prefill fills it -- and the distinct cases behind it)
+    for one line of one make and model."""
     if not lines:
-        return None, 0, ""
+        return None, 0
     ests = [round(ln.workshop_est / (ln.qty or 1.0), 2) for ln in lines if ln.workshop_est and ln.workshop_est > 0]
-    names = [ln.item for ln in lines]
-    wording = max(sorted(set(names)), key=names.count)
     cases = len({ln.case_ref for ln in lines})
-    return (round(statistics.median(ests), 2) if ests else None), cases, wording
+    return (round(statistics.median(ests), 2) if ests else None), cases
 
 
-def _decisions(db: Session) -> tuple[dict, dict]:
-    """({key: the active "update"}, {key: when the active "keep" was
-    made}), keys as _book_lines'."""
-    approved: dict[tuple, BookPrice] = {}
-    kept: dict[tuple, datetime] = {}
-    for d in db.query(BookPrice).filter(BookPrice.active.is_(True)).order_by(BookPrice.decided_at, BookPrice.id).all():
-        key = (d.make.lower(), d.model_key, d.item_key)
-        if d.decision == "update":
-            approved[key] = d
-        elif d.decision == "keep":
-            kept[key] = _naive_utc(d.decided_at)
-    return approved, kept
-
-
-def _most_common(words: list[str]) -> str:
-    words = [w for w in words if w]
-    return max(sorted(set(words)), key=words.count) if words else ""
-
-
-def _group_counts(rows: list[UserPrice]) -> tuple[int, int]:
-    return len({u.user_id for u in rows}), len({u.last_case_id for u in rows if u.last_case_id})
-
-
-def differences(db: Session) -> list[dict]:
-    """GET /admin/price-differences: per make, model key and line, where
-    at least one person's own price is more than 10% off the book's
-    reference -- the active approved price, else the median of confirmed
-    past lines from 2+ distinct cases -- and no active "keep" decision is
-    newer than every such price. Counts and prices only: never who."""
-    groups: dict[tuple, list[UserPrice]] = {}
-    for u in db.query(UserPrice).all():
-        groups.setdefault((u.make.lower(), u.model_key, u.item_key), []).append(u)
-    if not groups:
-        return []
-    book = _book_lines(db)
-    approved, kept = _decisions(db)
-    out = []
-    for key, rows in groups.items():
-        decided = approved.get(key)
-        median, cases, _ = _reference(book.get(key))
-        reference = decided.unit_price if decided is not None else (median if cases >= MIN_BOOK_CASES else None)
-        if not reference or reference <= 0:
-            continue
-        off = [u for u in rows if abs(float(u.unit_price) - reference) > DIFFERENCE * reference]
-        if not off:
-            continue
-        keep_at = kept.get(key)
-        if keep_at is not None and all(_naive_utc(u.updated_at) <= keep_at for u in off):
-            continue
-        units = [float(u.unit_price) for u in rows]
-        users, case_count = _group_counts(rows)
-        last = max(rows, key=lambda u: _naive_utc(u.updated_at) or datetime.min)
-        out.append({
-            "make": rows[0].make,
-            "model_key": key[1],
-            "item_key": key[2],
-            "wording": _most_common([u.wording for u in rows]),
-            "book_price": round(reference, 2),
-            "book_cases": cases,
-            "approved": decided is not None,
-            "users_count": users,
-            "cases_count": case_count,
-            "min_price": round(min(units), 2),
-            "max_price": round(max(units), 2),
-            "median_user_price": round(statistics.median(units), 2),
-            "last_used": iso_utc(last.updated_at) if last.updated_at else None,
-        })
-    out.sort(key=lambda g: (-g["users_count"], -g["cases_count"], g["make"].lower(), g["model_key"], g["wording"].lower()))
+def _promoted(db: Session) -> dict[tuple[str, str, str], BookPrice]:
+    """The active admin-promoted price ("update") per (make lowered, model
+    key, item_key), the newest last."""
+    out: dict[tuple[str, str, str], BookPrice] = {}
+    q = db.query(BookPrice).filter(BookPrice.decision == "update", BookPrice.active.is_(True))
+    for d in q.order_by(BookPrice.decided_at, BookPrice.id).all():
+        out[(d.make.lower(), d.model_key, d.item_key)] = d
     return out
 
 
-def decide(db: Session, admin, *, make: str, key: str, item: str, decision: str, unit_price: float | None,
-           reason: str = "") -> BookPrice:
-    """POST /admin/price-differences/decide: one BookPrice row. "update"
-    sets the book's unit price for the line (every older decision on it
-    inactive); "keep" leaves the book as it is (older "keep"s inactive;
-    an approved price stays the book's). The caller audits and commits."""
-    make, key, item = " ".join(make.split()), key.strip().lower(), " ".join(item.split()).lower()
-    group_key = (make.lower(), key, item)
-    rows = [u for u in db.query(UserPrice).filter(func.lower(UserPrice.make) == make.lower(), UserPrice.model_key == key,
-                                                   UserPrice.item_key == item).all()]
-    approved, _ = _decisions(db)
-    decided = approved.get(group_key)
-    median, cases, book_wording = _reference(_book_lines(db).get(group_key))
-    before = decided.unit_price if decided is not None else (median if cases >= MIN_BOOK_CASES else None)
-    wording = _most_common([u.wording for u in rows]) or book_wording or item
-    older = db.query(BookPrice).filter(func.lower(BookPrice.make) == make.lower(), BookPrice.model_key == key,
-                                       BookPrice.item_key == item, BookPrice.active.is_(True))
-    if decision == "keep":
-        older = older.filter(BookPrice.decision == "keep")
+class Defaults:
+    """The shared default for any line, worked out once per request: an
+    admin-promoted price, else the book's median of 2+ distinct imported
+    cases, else none."""
+
+    def __init__(self, db: Session):
+        self._book = _book_lines(db)
+        self._promoted = _promoted(db)
+
+    def of(self, make: str, key: str, item: str) -> tuple[float | None, str | None]:
+        """(unit price, "approved" | "book") or (None, None)."""
+        group = (str(make or "").lower(), key, item)
+        decided = self._promoted.get(group)
+        if decided is not None and decided.unit_price:
+            return round(float(decided.unit_price), 2), "approved"
+        median, cases = _reference(self._book.get(group))
+        if median and cases >= MIN_BOOK_CASES:
+            return median, "book"
+        return None, None
+
+
+def user_name(user) -> str | None:
+    """How an account is named to admins (auth.core.display_name); None
+    for none."""
+    from app.auth.core import display_name
+
+    return display_name(user) if user is not None else None
+
+
+def _names(db: Session, user_ids) -> dict:
+    ids = {uid for uid in user_ids if uid}
+    if not ids:
+        return {}
+    return {u.id: user_name(u) for u in db.query(User).filter(User.id.in_(ids)).all()}
+
+
+def user_price_row(u: UserPrice, defaults: Defaults, names: dict) -> dict:
+    """One person's price as the admins' list shows it (GET /admin/user-
+    prices): who (user_name None for an account that is gone), the car and
+    the line -- part: the standard name where one is known (history.
+    canonical_part), wording: as it prints -- their unit price, and the
+    shared default beside it (default_source "approved" | "book" | None)."""
+    default, source = defaults.of(u.make, u.model_key, u.item_key)
+    return {
+        "id": u.id,
+        "user_id": u.user_id,
+        "user_name": names.get(u.user_id),
+        "make": u.make,
+        "model_key": u.model_key,
+        "item_key": u.item_key,
+        "part": canonical_part(u.wording) if u.wording else None,
+        "wording": u.wording,
+        "side": u.side,
+        "unit_price": u.unit_price,
+        "default_price": default,
+        "default_source": source,
+        "updated_at": iso_utc(u.updated_at) if u.updated_at else None,
+        "uses": u.uses,
+        "last_case_id": u.last_case_id,
+    }
+
+
+def user_price_rows(db: Session, *, user: str = "", make: str = "", model: str = "", q: str = "") -> list[dict]:
+    """GET /admin/user-prices: every person's own prices, newest first.
+    user: an account's id, or words of its name or username (any letter
+    case); make: the make, any case ("Mercedes-Benz" is "Mercedes Benz");
+    model: as typed on a case ("HR-V" finds the Vezel's); q: words in the
+    wording, the standard part name, the make or the model."""
+    query = db.query(UserPrice)
+    who = user.strip()
+    if who:
+        needle = who.lower()
+        ids = [u.id for u in db.query(User).all()
+               if u.id == who or needle in (u.name or "").lower() or needle in (u.username or "").lower()]
+        query = query.filter(UserPrice.user_id.in_(ids))
+    if make.strip():
+        wanted = split_make_model(make)[0] or " ".join(make.split())
+        query = query.filter(func.lower(UserPrice.make) == wanted.lower())
+    if model.strip():
+        query = query.filter(UserPrice.model_key == model_key(model))
+    rows = query.order_by(UserPrice.updated_at.desc(), UserPrice.id.desc()).all()
+    defaults = Defaults(db)
+    names = _names(db, [u.user_id for u in rows])
+    out = [user_price_row(u, defaults, names) for u in rows]
+    words = " ".join(q.split()).lower()
+    if words:
+        out = [r for r in out if any(words in str(r.get(k) or "").lower() for k in ("wording", "part", "make", "model_key"))]
+    return out
+
+
+def promote(db: Session, admin, row: UserPrice, unit_price: float | None, reason: str = "") -> tuple[BookPrice, float | None, str | None]:
+    """POST /admin/user-prices/{id}/promote, "Use this price for everyone":
+    the shared default for that make, model and line becomes unit_price
+    (the person's own price when None) -- a BookPrice "update", active;
+    every older row on the key inactive. Answers (the row, the default
+    before and its source). The caller audits and commits."""
+    unit = round(float(row.unit_price if unit_price is None else unit_price), 2)
+    before, source = Defaults(db).of(row.make, row.model_key, row.item_key)
+    older = db.query(BookPrice).filter(func.lower(BookPrice.make) == row.make.lower(), BookPrice.model_key == row.model_key,
+                                       BookPrice.item_key == row.item_key, BookPrice.active.is_(True))
     for d in older.all():
         d.active = False
-    users, case_count = _group_counts(rows)
-    row = BookPrice(
-        make=rows[0].make if rows else make, model_key=key, item_key=item, family=family_of(wording), wording=wording,
-        decision=decision, unit_price=round(float(unit_price), 2) if decision == "update" else None,
-        book_price_before=round(before, 2) if before else None, users_count=users, cases_count=case_count,
+    made = BookPrice(
+        make=row.make, model_key=row.model_key, item_key=row.item_key, family=row.family or family_of(row.wording or ""),
+        wording=row.wording or row.item_key, decision="update", unit_price=unit,
+        book_price_before=round(before, 2) if before else None, users_count=1, cases_count=1 if row.last_case_id else 0,
         decided_by=admin.id, decided_at=_now(), reason=(reason or "").strip()[:500], active=True,
     )
-    db.add(row)
-    return row
+    db.add(made)
+    db.flush()
+    return made, before, source
 
 
 # ----------------------------------------------------- start-up steps (db._once)
@@ -452,9 +481,9 @@ def mark_past_line_origins(db: Session) -> int:
     """upgrade:price_book_origin_v1: every past line gets its origin from
     its case reference -- "carlink:..." a signed-off Carlink case, anything
     else an imported spreadsheet -- and the imported ones are confirmed.
-    Lines learned before Stage 1 stay unconfirmed (confirmed None): nobody
-    confirmed their prices, so they never price a case (DB4). Returns the
-    lines given an origin; the caller (db._once) commits."""
+    Lines learned before Stage 1 stay unconfirmed (confirmed None); no
+    learned line ever prices a case anyway (history.price_usable). Returns
+    the lines given an origin; the caller (db._once) commits."""
     carlink = (db.query(PastAnnexLine)
                .filter(PastAnnexLine.origin.is_(None), PastAnnexLine.case_ref.startswith(LEARNED_PREFIX))
                .update({PastAnnexLine.origin: "carlink"}, synchronize_session=False))
@@ -463,17 +492,44 @@ def mark_past_line_origins(db: Session) -> int:
     return carlink + imported
 
 
-def drop_price_book_plates(db: Session) -> int:
-    """upgrade:price_book_plates_v1 (owner K0, irreversible; the deploy's
-    backup keeps the database as it was): the plate blanked on every past
-    part and labour line. One history entry says how many -- never a
-    plate. Returns the count; the caller (db._once) commits."""
+def scrub_price_book(db: Session) -> dict:
+    """upgrade:price_book_personal_v1 (owner K0, irreversible; the deploy's
+    backup keeps the database as it was; Stage 1 review H1): no plate left
+    in the price book, in either past table --
+      - plate blanked;
+      - source_file cut down to its CL reference ("CL 10001" of "CL 10001
+        TEST 123 X.xlsx", history.source_ref), or blanked when it has none:
+        the firm names its files with the plate;
+      - an imported case's reference that is a file name the importer fell
+        back to, cut down to its CL reference likewise (history.reduced_ref;
+        a reference that is a CL reference alone stays as written).
+    Idempotent: run again it finds nothing. One history entry with the
+    counts -- never a plate, a file name or a reference. Returns the counts;
+    the caller (db._once) commits."""
     from app.auth.core import audit
 
-    parts = (db.query(PastAnnexLine).filter(PastAnnexLine.plate.isnot(None), PastAnnexLine.plate != "")
-             .update({PastAnnexLine.plate: ""}, synchronize_session=False))
-    labour = (db.query(PastLabourLine).filter(PastLabourLine.plate.isnot(None), PastLabourLine.plate != "")
-              .update({PastLabourLine.plate: ""}, synchronize_session=False))
-    audit(db, None, "price_book_plates_dropped",
-          detail=f"Plates removed from the price book: {parts + labour} line(s) ({parts} part, {labour} labour).")
-    return parts + labour
+    counts = {"plate_parts": 0, "plate_labour": 0, "file_parts": 0, "file_labour": 0, "refs": 0}
+    for model, tag in ((PastAnnexLine, "parts"), (PastLabourLine, "labour")):
+        counts[f"plate_{tag}"] = (db.query(model).filter(model.plate.isnot(None), model.plate != "")
+                                  .update({model.plate: ""}, synchronize_session=False))
+        for (value,) in db.query(model.source_file).filter(model.source_file.isnot(None), model.source_file != "").distinct().all():
+            new = source_ref(value)
+            if new != value:
+                counts[f"file_{tag}"] += (db.query(model).filter(model.source_file == value)
+                                          .update({model.source_file: new}, synchronize_session=False))
+        for (value,) in db.query(model.case_ref).distinct().all():
+            if not value or is_learned(value):
+                continue
+            new = reduced_ref(value)
+            if new != value:
+                counts["refs"] += (db.query(model).filter(model.case_ref == value)
+                                   .update({model.case_ref: new}, synchronize_session=False))
+    plates = counts["plate_parts"] + counts["plate_labour"]
+    files = counts["file_parts"] + counts["file_labour"]
+    audit(db, None, "price_book_personal_data_dropped",
+          detail=(f"Plates removed from the price book: {plates} line(s) ({counts['plate_parts']} part, "
+                  f"{counts['plate_labour']} labour). File names cut to the CL reference: {files} line(s) "
+                  f"({counts['file_parts']} part, {counts['file_labour']} labour). "
+                  f"References cut to the CL reference: {counts['refs']} line(s)."))
+    logger.info("Price book: %d plate(s), %d file name(s), %d reference(s) removed", plates, files, counts["refs"])
+    return counts

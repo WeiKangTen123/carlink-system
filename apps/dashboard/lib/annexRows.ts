@@ -53,7 +53,10 @@ export function qtyFromText(text: string): { qty: number; qty_text: string | nul
 /** The row as saved: editing-only fields dropped. catalogue_ref is always
  * sent, null when the line has none: the API keeps a stored line's ref only
  * when a client leaves the field out (a page from before it), so a blank
- * line typed with a removed line's name never inherits its catalogue part. */
+ * line typed with a removed line's name never inherits its catalogue part.
+ * line_id goes back exactly as the API gave it (none on a new line): the
+ * save matches each line to the stored one by it, not by its wording
+ * (Stage 1 review H2). */
 export function fromAnnexRow(row: AnnexRow): AnnexAPartItem {
   const { _key, _qty, _est, ...item } = row;
   const parsed = { ...item, ...qtyFromText(_qty), catalogue_ref: item.catalogue_ref ?? null };

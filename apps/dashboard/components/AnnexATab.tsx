@@ -799,8 +799,8 @@ export function AnnexATab({
               disabled={annexALocked}
               title={
                 canViewAllCases(user)
-                  ? "Prices the unpriced and prefilled lines from your own prices, then past cases of this make and model; lines you priced stay."
-                  : "Prices the unpriced and prefilled lines from your own prices for this make and model (Settings → My prices); lines you priced stay."
+                  ? "Prices the unpriced lines from your own prices, then the shared prices for this make and model; lines with a price stay as they are."
+                  : "Prices the unpriced lines from your own prices for this make and model (Settings → My prices); lines with a price stay as they are."
               }
               onClick={() => void handlePrefill()}
             >

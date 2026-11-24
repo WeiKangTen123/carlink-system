@@ -263,8 +263,8 @@ DECISIONS = {
     # Contract 8 L (app/api/ai_accuracy.py; tested in scripts/test_ai_accuracy.py).
     ("GET", "/admin/ai-accuracy"): ("admin", "?since=YYYY-MM-DD; what surveyors kept of the AI's drafts, per case and month; never a plate"),
     # Stage 1 "My prices" (app/api/prices.py; tested in scripts/test_s1_prices.py).
-    ("GET", "/admin/price-differences"): ("admin", "Stage 1: people's prices >10% off the book's; counts only, never who"),
-    ("POST", "/admin/price-differences/decide"): ("admin", "Stage 1: update | keep -> book_prices row + history entry; 422 update without unit_price"),
+    ("GET", "/admin/user-prices"): ("admin", "Stage 1 final model: everyone's own prices, with names, beside the shared default"),
+    ("POST", "/admin/user-prices/{price_id}/promote"): ("admin", "Stage 1 final model: use one person's price for everyone -> book_prices row + history entry"),
     ("GET", "/me/prices"): ("self", "Stage 1: the person's own prices only (?make=&model=&q=)"),
     ("PATCH", "/me/prices/{price_id}"): ("self", "Stage 1: own row only (else 404 price_not_found)"),
     ("DELETE", "/me/prices/{price_id}"): ("self", "Stage 1: own row only; history entry with the old price (DB3)"),
@@ -542,7 +542,7 @@ def new_draft(p, photos: int = 0) -> str:
 
 def fill(path: str, **values) -> str:
     """A concrete URL for an OpenAPI path, whatever its parameters are called."""
-    defaults = {"item_index": "0", "service": "llm", "case_ref": "CL 1"}
+    defaults = {"item_index": "0", "service": "llm", "case_ref": "CL 1", "price_id": "1"}
 
     def repl(m):
         name = m.group(1)
@@ -661,8 +661,7 @@ ADMIN_BODIES = {
     ("PUT", "/signup-settings"): lambda: {"json": {"open": False}},
     ("POST", "/account-links"): lambda: {"json": {"email": "nope@example.com", "role": "admin"}},
     ("PUT", "/settings"): lambda: {"json": {"company_name": "Not Carlink"}},
-    ("POST", "/admin/price-differences/decide"): lambda: {"json": {"make": "Makeone", "model_key": "modelone",
-                                                                 "item_key": "rear bumper", "decision": "keep"}},
+    ("POST", "/admin/user-prices/{}/promote"): lambda: {"json": {"unit_price": 100, "reason": "plain user"}},
     ("POST", "/setup/llm-keys"): lambda: {"json": {"apiKey": "AIza-not-a-key"}},
 }
 
@@ -966,16 +965,16 @@ def b2_knowledge() -> None:
         db.commit()
     finally:
         db.close()
-    # Stage 1 (owner K0, 24 Nov 2026): no plate for anyone, admins too (the
-    # line above still has one, as a row from before the plate step would);
-    # file names for admins only, as before.
-    for who, p, sees_prices, sees_files in (("the admin", W.admin, True, True), ("S (sees all cases)", W.S, True, False),
-                                            ("M (may sign off only)", W.M, False, False), ("A (self-signup)", W.A, False, False)):
+    # Stage 1 (owner K0, 24 Nov 2026; review H1): no plate and no file name
+    # for anyone, admins too (the line above still has both, as a row from
+    # before the one-time step would).
+    for who, p, sees_prices in (("the admin", W.admin, True), ("S (sees all cases)", W.S, True),
+                                ("M (may sign off only)", W.M, False), ("A (self-signup)", W.A, False)):
         r = p.c.get("/parts-history")
         body, text = jd(r), r.text or ""
         need(r.status_code == 200, f"{who} opens Knowledge", brief(r))
-        check(plate not in text and (source in text) == sees_files,
-              f"{who}: no plate; file names {'shown' if sees_files else 'hidden'}", f"plate shown={plate in text}, file shown={source in text}")
+        check(plate not in text and source not in text,
+              f"{who}: no plate, no file name", f"plate shown={plate in text}, file shown={source in text}")
         lines = body.get("lines") if "lines" in body else body.get("items")
         if sees_prices:
             check(isinstance(lines, list) and any(isinstance(x, dict) and x.get("usual_unit_price") for x in lines) and not body.get("hidden"),
