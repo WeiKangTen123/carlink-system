@@ -85,6 +85,11 @@ _ADDED_COLUMNS = [
     # The sort's geometry of a photo, for E7's side worked out in code
     # (models.IntakePhoto.geometry, plans/2026-11-22-enhance-staging 3c).
     ("intake_photos", "geometry", "JSON"),
+    # When a photo was taken, by its EXIF: the camera's clock and, when the
+    # camera wrote its offset, UTC (models.IntakePhoto.taken_at_local /
+    # taken_at; owner decision D7, 23 Nov 2026).
+    ("intake_photos", "taken_at_local", "DATETIME"),
+    ("intake_photos", "taken_at", "DATETIME"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing

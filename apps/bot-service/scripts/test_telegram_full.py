@@ -324,12 +324,28 @@ async def check_off_is_today() -> None:
     assert intake_folders() == set()
     ok("off: the same four replies as before, one drafting call on the person's AI, no intake draft, no pipeline")
 
-    await tg.handle_callback(SimpleNamespace(
-        effective_user=SimpleNamespace(id=ANN_TG, username="tgann", full_name="Phone", first_name="P"),
-        effective_chat=SimpleNamespace(id=ANN_TG, type="private"),
-        effective_message=None, message=None,
-        callback_query=SimpleNamespace(data="confirm", message=FakeMessage(out), answer=mock.AsyncMock()),
-    ), None)
+    # Review M2 (photo compression, 24 Nov 2026): Confirm saves the photos
+    # (thumbnail, preview, compression) in a thread, not on the bot's loop.
+    saved: list[tuple[int, bool]] = []
+    real_save = tg.save_photo
+
+    def recording_save(report_id, path, index):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        saved.append((index, on_loop))
+        return real_save(report_id, path, index)
+
+    sent_photos = list(session.photo_paths)
+    with mock.patch.object(tg, "save_photo", recording_save):
+        await tg.handle_callback(SimpleNamespace(
+            effective_user=SimpleNamespace(id=ANN_TG, username="tgann", full_name="Phone", first_name="P"),
+            effective_chat=SimpleNamespace(id=ANN_TG, type="private"),
+            effective_message=None, message=None,
+            callback_query=SimpleNamespace(data="confirm", message=FakeMessage(out), answer=mock.AsyncMock()),
+        ), None)
     db = SessionLocal()
     try:
         filed = db.query(Report).filter(Report.owner_id == P.ann, Report.status == "confirmed").all()
@@ -339,6 +355,9 @@ async def check_off_is_today() -> None:
     assert out.texts[-1].startswith("✅ Report saved to your cases in Carlink."), out.texts[-1]
     assert str(ANN_TG) not in tg._detecting and not tg._watchers
     ok("off: Confirm files the case in the chat as before")
+    assert saved == [(i, False) for i in range(1, len(sent_photos) + 1)], saved
+    assert [Path(p).name for p in filed[0].photo_paths] == [f"photo_{i:02d}.jpg" for i in range(1, len(sent_photos) + 1)]
+    ok("Confirm saves the photos off the bot's event loop (a thread), in the same order, as photo_01...")
 
 
 async def hand_over(chat_id: int, out: Outbox, photos: int = 3, text: str = TEMPLATE_REPLY) -> None:

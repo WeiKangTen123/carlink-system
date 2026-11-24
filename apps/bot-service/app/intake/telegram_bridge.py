@@ -40,7 +40,13 @@ from app.reports import review
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id
 from app.reports.schema import CoverPageInfo, InsuranceDetails, SecurityIncidentDraft, VehicleInfo
-from app.storage.files import disk_space_low, generate_preview, generate_thumbnail
+from app.storage.files import (
+    compress_original,
+    disk_space_low,
+    generate_preview,
+    generate_thumbnail,
+    photo_taken_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +163,23 @@ def store_photos(report_id: str, photo_paths) -> tuple[list[dict], int]:
             dest.unlink(missing_ok=True)
             skipped += sha not in seen  # a repeat isn't a photo lost
             continue
-        generate_thumbnail(str(dest))
-        generate_preview(str(dest))
+        # As a website upload: when it was taken, read from the file as sent
+        # (a photo sent as a Telegram "photo" has none -- Telegram strips
+        # it; one sent as a file keeps it).
+        taken = photo_taken_at(dest)
+        # As a website upload: the thumbnail and the AI's preview from the
+        # file as sent, then settings.photo_store_compress re-saves it
+        # smaller -- only when both were made; sha256 stays the sent bytes'
+        # hash, size is what is stored.
+        thumb = generate_thumbnail(str(dest))
+        preview = generate_preview(str(dest))
+        if thumb is not None and preview is not None:
+            stored_size = compress_original(str(dest))
+            if stored_size is not None:
+                size = stored_size
         seen.add(sha)
-        kept.append({"id": photo_id, "path": str(dest), "sha256": sha, "size": size, "ext": ext})
+        kept.append({"id": photo_id, "path": str(dest), "sha256": sha, "size": size, "ext": ext,
+                     "taken_at_local": taken.local if taken else None, "taken_at": taken.utc if taken else None})
     return kept, skipped
 
 
@@ -245,6 +264,8 @@ def create_draft(*, external_id: str, photo_paths, facts: dict, notes: str,
                 path=photo["path"],
                 sha256=photo["sha256"],
                 size_bytes=photo["size"],
+                taken_at_local=photo.get("taken_at_local"),
+                taken_at=photo.get("taken_at"),
             ))
         audit(db, owner, "created", report_id, detail=CREATED_DETAIL)
         db.commit()

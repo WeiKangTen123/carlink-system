@@ -59,7 +59,13 @@ from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id,
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.taxonomy import body_type_for
 from app.rendering.renderer import RenderBusy, render_pdf
-from app.storage.files import generate_preview, generate_thumbnail, report_pdf_path
+from app.storage.files import (
+    compress_original,
+    generate_preview,
+    generate_thumbnail,
+    photo_taken_at,
+    report_pdf_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -392,8 +398,24 @@ def upload_intake_photo(
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=f"'{file.filename}' isn't a readable photo.")
 
-        generate_thumbnail(str(dest))
-        generate_preview(str(dest))
+        # When it was taken (owner decision D7: the date, no location), read
+        # from the file as sent, whatever settings.photo_store_compress says.
+        taken = photo_taken_at(dest)
+        # The thumbnail and the preview (what the AI reads: intake/photos.
+        # ai_input_path) are made from the file AS SENT, before it is
+        # compressed, so the AI sees byte-for-byte the same images whatever
+        # settings.photo_store_compress says (owner's accuracy gate, 24 Nov).
+        thumb = generate_thumbnail(str(dest))
+        preview = generate_preview(str(dest))
+        # settings.photo_store_compress: then the stored original re-saved
+        # smaller -- only when both were made (one made later would come
+        # from the compressed file). sha256 stays the UPLOADED bytes' hash,
+        # so the same file dropped again is still found above; size_bytes
+        # is what is stored (the draft's storage limit).
+        if thumb is not None and preview is not None:
+            stored_size = compress_original(str(dest))
+            if stored_size is not None:
+                size = stored_size
         photo = IntakePhoto(
             id=photo_id,
             report_id=report_id,
@@ -402,6 +424,8 @@ def upload_intake_photo(
             path=str(dest),
             sha256=sha,
             size_bytes=size,
+            taken_at_local=taken.local if taken else None,
+            taken_at=taken.utc if taken else None,
         )
         db.add(photo)
         try:

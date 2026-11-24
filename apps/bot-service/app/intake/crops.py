@@ -16,6 +16,12 @@ when it is there -- a re-read or the benchmark's repeats cut nothing twice.
 That folder is not under intake/ or incidents/, so /files never serves it
 (storage/files.case_id_for_file).
 
+With settings.photo_store_compress on, "the largest copy" is the stored
+original as compressed (JPEG quality 85, same pixels; storage/files.
+compress_original), not the file as sent -- unlike the preview, which is
+made before compressing. So an accuracy run for intake_read_crops must run
+with that switch as production will have it.
+
 Nothing here raises: a close-up that can't be made is left out and the
 reading goes on without it.
 """
