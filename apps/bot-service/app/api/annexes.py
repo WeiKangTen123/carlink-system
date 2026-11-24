@@ -259,8 +259,10 @@ def set_case_checked(report_id: str, body: CheckedChange, user: CurrentUser = De
     "annex_c.repair_days" (400 unknown_field otherwise). As every save
     here: editable_case, 409 for a draft or a signed-off case. An Annex A
     row is confirmed by PUT /annex-a instead (origin "typed", prefilled
-    false). The PDF is unchanged: nothing printed changes. Answers
-    data.checked and the new review."""
+    false). The stored PDF is not rendered again here; a must-have fact
+    marked N/A prints "N/A" from the next render (the sign-off's renders
+    it). Answers data.checked and the new review; the history names the
+    must-haves marked N/A."""
     db = SessionLocal()
     try:
         r = _editable(db, report_id)

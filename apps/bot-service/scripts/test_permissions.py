@@ -188,7 +188,7 @@ from sqlalchemy import event  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.reports.db import SessionLocal, engine  # noqa: E402
 from app.reports.models import AuditEntry, IntakeSession, PastAnnexLine  # noqa: E402
-from auth_helpers import sign_in  # noqa: E402
+from auth_helpers import mark_must_haves_na, sign_in  # noqa: E402
 
 for _name, _mod in list(sys.modules.items()):
     if _name.startswith("app.") and getattr(_mod, "sync_playwright", None) is _REAL_SYNC_PLAYWRIGHT:
@@ -587,6 +587,8 @@ def setup() -> None:
     W.A_F1 = new_case(W.A, plate="SAP1111A")
     W.A_F2 = new_case(W.A, plate="SAP2222A")
     W.A_F3 = new_case(W.A, plate="SAP3333A")
+    # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+    mark_must_haves_na(W.admin.c, W.A_F3)
     r = W.admin.c.post(f"/reports/{W.A_F3}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     need(r.status_code == 200, "the admin signs off one of A's cases", brief(r))
 
@@ -877,8 +879,10 @@ def b2_sign_off() -> None:
     check(r.status_code == 403, "S (sees all, no sign-off tick) can't sign off A's case (403)", brief(r))
     r = M.c.post(f"/reports/{a_case2}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 404, "M can't sign off a case M can't see (404)", brief(r))
+    mark_must_haves_na(M.c, m_case)
     r = M.c.post(f"/reports/{m_case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "M (may sign off) signs off M's own case", brief(r))
+    mark_must_haves_na(admin.c, a_case3)
     r = admin.c.post(f"/reports/{a_case3}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "the admin signs off A's case", brief(r))
 

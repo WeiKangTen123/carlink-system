@@ -20,10 +20,23 @@ import { ConditionPicker, conditionWordsIn } from "@/components/ConditionPicker"
 import { ReviewBadge } from "@/components/ReviewBadge";
 import { ReviewConfirmButton, ReviewUndoButton } from "@/components/ReviewConfirmButton";
 import type { Review } from "@/lib/review";
-import { damageCheckDetail, damageState } from "@/lib/reviewRows";
+import { damageCheckDetail } from "@/lib/reviewRows";
+import {
+  checkAdd,
+  filingProblems,
+  gapWords,
+  partForMapAdd,
+  printsAs,
+  removeAt,
+  restoreRemoved,
+  rowGaps,
+  rowState as reviewRowState,
+  type AddCheck,
+  type Removed,
+} from "@/lib/reviewChecks";
 import { partsToPick } from "@/lib/partsList";
 import { CoverPageFields } from "@/components/CoverPageFields";
-import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
+import { canViewAllCases, isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
 import { DOCUMENT_KINDS, PHOTO_KIND_LABELS, photoForReference, type IntakePhoto } from "@/lib/intake";
 import { applyCoverPatch, isEvidencePhoto } from "@/lib/intakeReview";
@@ -47,10 +60,12 @@ import {
 } from "@/lib/findings";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
-import { detectBodyType, zoneKeyFor } from "@/lib/vehicleZones";
+import { detectBodyType } from "@/lib/vehicleZones";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
 import { ReadByNotice } from "./ReadByNotice";
+import { AddCheckDialog } from "./ReviewCheckDialogs";
+import { UndoToast } from "./UndoToast";
 
 type Props = {
   /** The draft's id, for the suggestions' decide endpoint. */
@@ -73,9 +88,19 @@ type Props = {
   review?: Review | null;
   /** The draft as the server last sent it -- what `review` describes. */
   savedData?: ReportData | null;
+  /** Phase 1 F: a damage row to bring into view on arrival (the check
+   * before filing's [Go to it]), and what to put the cursor in; a new
+   * nonce asks again. */
+  reveal?: RevealRequest | null;
+  /** Called once `reveal` has been shown, so it isn't shown again. */
+  onRevealed?: () => void;
   onBack: () => void;
   onNext: () => void;
 };
+
+/** Which control of a damage row gets the cursor. */
+export type RowFocus = "part" | "name" | "condition";
+export type RevealRequest = { index: number; focus: RowFocus; nonce: number };
 
 /** A select that still shows a value outside its option list (an older or
  * unexpected AI answer) instead of silently snapping to blank. */
@@ -113,9 +138,18 @@ function Select({
 type ViewerState = Pick<EvidenceViewerProps, "mode" | "startKey" | "startPhoto" | "photoOrder">;
 
 /** Where to bring a damage row into view once it has rendered. */
-type Reveal = { key: string; block: ScrollLogicalPosition; focusPart: boolean };
+type Reveal = { key: string; block: ScrollLogicalPosition; focus?: RowFocus };
 
 const FLASH_MS = 2000;
+/** How long "Removed Rear Bumper · Undo" stays up (P-parts gap 6). */
+const PART_UNDO_MS = 10_000;
+
+/** The control a RowFocus names, in a damage row (the cells' data-col). */
+const FOCUS_SELECTOR: Record<RowFocus, string> = {
+  part: 'td[data-col="part"] select',
+  name: 'td[data-col="part"] input',
+  condition: 'td[data-col="condition"] select',
+};
 
 /** The tyre fields that are numbers on the draft (TyreItem.tread_depth_mm). */
 const MM_KEYS: readonly CoverFormKey[] = ["front_nearside_mm", "front_offside_mm", "rear_nearside_mm", "rear_offside_mm"];
@@ -143,6 +177,8 @@ export function ReviewStep({
   aiReadPhotos,
   review,
   savedData,
+  reveal,
+  onRevealed,
   onBack,
   onNext,
 }: Props) {
@@ -229,12 +265,12 @@ export function ReviewStep({
   const flashTimer = useRef<number | undefined>(undefined);
 
   /** Scrolls a damage row into view and outlines it for a moment. */
-  const revealRow = ({ key, block, focusPart }: Reveal): boolean => {
+  const revealRow = ({ key, block, focus }: Reveal): boolean => {
     const row = rowEls.current.get(key);
     if (!row) return false;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block });
-    if (focusPart) row.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true });
+    if (focus) (row.querySelector<HTMLElement>(FOCUS_SELECTOR[focus]) ?? row.querySelector<HTMLElement>("select"))?.focus({ preventScroll: true });
     setFlashKey(key);
     window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => setFlashKey(null), FLASH_MS);
@@ -247,7 +283,29 @@ export function ReviewStep({
     const pending = pendingReveal.current;
     if (pending && revealRow(pending)) pendingReveal.current = null;
   });
-  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
+  // The check before filing's [Go to it]: the row, once this step shows it.
+  // Found by its place in the table (data-row-key), as drawn.
+  const revealed = useRef<number | null>(null);
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  useEffect(() => {
+    if (!reveal || revealed.current === reveal.nonce) return;
+    const key = tbodyRef.current?.querySelectorAll<HTMLTableRowElement>(":scope > tr")[reveal.index]?.dataset.rowKey;
+    // A row not drawn yet: after the next render. One gone: nothing to show.
+    if (key && !revealRow({ key, block: "center", focus: reveal.focus })) return;
+    revealed.current = reveal.nonce;
+    onRevealed?.();
+  });
+  // "Removed Rear Bumper · Undo" (P-parts gap 6): the rows taken off in this
+  // undo window, the latest last; version restarts the toast's bar.
+  const [removedRows, setRemovedRows] = useState<{ entries: Removed<DamageSummaryItem>[]; version: number } | null>(null);
+  const undoTimer = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      window.clearTimeout(flashTimer.current);
+      window.clearTimeout(undoTimer.current);
+    },
+    []
+  );
 
   const sources = useMemo(
     () => photos.filter((p) => readPhotoIds.includes(p.id) && p.kind && DOCUMENT_KINDS.includes(p.kind)),
@@ -302,41 +360,74 @@ export function ReviewStep({
       ...(damage[index]?.needs_strip_down ? { needs_strip_down: false } : {}),
     });
   const removeItem = (index: number) => {
+    const item = damage[index];
+    if (!item) return;
     // Rows below move up a place: an "item:<index>" selection would point
     // at the next part.
     setSelection(null);
     setHover(null);
-    onChange((d) => ({ ...d, damage_summary: (d.damage_summary || []).filter((_, i) => i !== index) }));
+    onChange((d) => ({ ...d, damage_summary: removeAt(d.damage_summary || [], index).list }));
+    // The row itself is kept for Undo -- the same object, its AI evidence,
+    // box and fields untouched -- until the window ends.
+    setRemovedRows((r) => ({ entries: [...(r?.entries ?? []), { item, index }], version: (r?.version ?? 0) + 1 }));
+    window.clearTimeout(undoTimer.current);
+    undoTimer.current = window.setTimeout(() => setRemovedRows(null), PART_UNDO_MS);
+  };
+  const undoRemove = () => {
+    const entries = removedRows?.entries ?? [];
+    window.clearTimeout(undoTimer.current);
+    setRemovedRows(null);
+    if (!entries.length) return;
+    // Rows below move down again.
+    setSelection(null);
+    setHover(null);
+    pendingReveal.current = { key: keyFor(entries[0].item), block: "center" };
+    onChange((d) => ({ ...d, damage_summary: restoreRemoved(d.damage_summary || [], entries) }));
   };
   const pushItem = (item: DamageSummaryItem, reveal: Omit<Reveal, "key">) => {
     pendingReveal.current = { key: keyFor(item), ...reveal };
     onChange((d) => ({ ...d, damage_summary: [...(d.damage_summary || []), item] }));
   };
+  // "Rear Bumper is already row 3" / "the other side?" (P-parts 5.4): asked
+  // before a hand add, from the add row (the map's add fills it) and from
+  // Photos by part. A suggestion whose part is listed never shows (the
+  // panel hides it, lib/findings.ts) and the server never adds it twice.
+  const [addAsk, setAddAsk] = useState<{ check: NonNullable<AddCheck>; add: () => void } | null>(null);
+  const askBeforeAdd = (part: string, add: () => void) => {
+    const check = checkAdd(damage, part);
+    if (check) setAddAsk({ check, add });
+    else add();
+  };
   const addItem = () => {
-    if (!newPart) return;
-    pushItem({ part: newPart, severity: null, human_verified: true }, { block: "nearest", focusPart: false });
-    setNewPart("");
+    const part = newPart;
+    if (!part) return;
+    askBeforeAdd(part, () => {
+      pushItem({ part, severity: null, human_verified: true }, { block: "nearest" });
+      setNewPart("");
+    });
   };
   /** "Add as damage" from Photos by part. An area-only group can't say which
    * part it shows, so that row opens with its part select focused. */
   const addFromPhotos = (part: string, photoId: string) =>
-    pushItem(
-      {
-        part,
-        damage_type: null,
-        severity: null,
-        photo_reference: `@${photoId}`,
-        bbox_2d: null,
-        ai_confidence: null,
-        human_verified: true,
-      },
-      { block: "center", focusPart: !part }
+    askBeforeAdd(part, () =>
+      pushItem(
+        {
+          part,
+          damage_type: null,
+          severity: null,
+          photo_reference: `@${photoId}`,
+          bbox_2d: null,
+          ai_confidence: null,
+          human_verified: true,
+        },
+        { block: "center", focus: part ? undefined : "part" }
+      )
     );
   /** Links a photo to an item, or unlinks it. Any box was drawn on the old photo. */
   const setItemPhoto = (index: number, photoId: string | null) =>
     setItem(index, { photo_reference: photoId ? `@${photoId}` : null, bbox_2d: null });
   const attachFromPhotos = (index: number, photoId: string) => {
-    if (rowKeys[index]) pendingReveal.current = { key: rowKeys[index], block: "center", focusPart: false };
+    if (rowKeys[index]) pendingReveal.current = { key: rowKeys[index], block: "center" };
     setItemPhoto(index, photoId);
   };
   const setBodyType = (bodyType: string) => onChange((d) => ({ ...d, vehicle_info: { ...(d.vehicle_info || {}), body_type: bodyType || null } }));
@@ -466,7 +557,7 @@ export function ReviewStep({
   // A list item picked on the map: its row comes into view and flashes.
   const revealLatest = useRef<(index: number) => void>(() => {});
   revealLatest.current = (index: number) => {
-    if (rowKeys[index]) revealRow({ key: rowKeys[index], block: "center", focusPart: false });
+    if (rowKeys[index]) revealRow({ key: rowKeys[index], block: "center" });
   };
   const selectFromMap = useCallback(
     (s: Selection) => {
@@ -477,14 +568,16 @@ export function ReviewStep({
   );
 
   // [+ Add as damage] on a part of the 3D model nobody listed: the add row
-  // gets the first part that sits there, for the person to check and add.
+  // gets the panel's own part, as the case page adds it ("Underbody /
+  // Chassis", not the first list name that sits there), for the person to
+  // check and add.
   const addRowRef = useRef<HTMLDivElement>(null);
   // The car map's names join only while the server offers them
   // (lib/partsList.ts); Select still shows a row's own part either way.
   const partsList = useMemo(() => partsToPick(taxonomy), [taxonomy]);
   const addForZone = useCallback(
     (zoneKey: string) => {
-      setNewPart(partsList.find((p) => zoneKeyFor(p) === zoneKey) ?? "");
+      setNewPart(partForMapAdd(zoneKey, partsList));
       const row = addRowRef.current;
       row?.scrollIntoView({ behavior: "smooth", block: "center" });
       row?.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true });
@@ -497,6 +590,12 @@ export function ReviewStep({
 
   const selectedKey = selection?.kind === "finding" ? selection.key : null;
   const hoverKey = hover?.kind === "finding" ? hover.key : null;
+  // Phase 1 F: the rows the check before filing would list, and what filing
+  // really does with the list (P-parts gap 16): price-book staff get past
+  // cases' lines and prices for a make that has them (prefill.sync_annex_a).
+  const needYou = filingProblems(damage).length;
+  const priceBook = canViewAllCases(user);
+  const removedLast = removedRows?.entries[removedRows.entries.length - 1]?.item;
 
   return (
     // Three areas (globals.css "Step 3: review"): wide screens put the cover
@@ -547,6 +646,11 @@ export function ReviewStep({
             showUsualValues
             review={coverReview}
             onReview={(key, action) => reviewFields([key], action)}
+            // As the case page's Cover tab: the AI's own word beside a
+            // field (ai_read.notes) and the point of impact checked against
+            // the damaged parts. No sketch here: the map has its own column.
+            damage={damage}
+            aiNotes={ai.notes}
           />
         </section>
 
@@ -592,10 +696,19 @@ export function ReviewStep({
         <section className="card intake-panel">
           <div className="intake-panel-head">
             <h2>Damaged parts ({damage.length})</h2>
-            <span className="intake-muted">These become the Annex A rows, unpriced.</span>
+            <span className="intake-muted">
+              {priceBook
+                ? "Filing makes each part its Annex A line, worded as shown under it. For a make with past cases, their lines and prices come in too: check them on Annex A."
+                : "Filing makes each part one Annex A line, worded as shown under it and unpriced. Prices are entered on Annex A."}
+            </span>
             {damage.length > 0 && (
               <span className={`intake-chip ${checked === damage.length ? "ok" : ""}`}>
                 {checked} of {damage.length} {review ? "confirmed" : "checked"}
+              </span>
+            )}
+            {needYou > 0 && (
+              <span className="intake-chip warn" title="Rows with no part, no name or no condition, or a part listed twice">
+                {needYou} need{needYou === 1 ? "s" : ""} you
               </span>
             )}
           </div>
@@ -616,7 +729,7 @@ export function ReviewStep({
                     <th style={{ width: 36 }} aria-label="Remove" />
                   </tr>
                 </thead>
-                <tbody>
+                <tbody ref={tbodyRef}>
                   {damage.map((item, i) => {
                     const key = rowKeys[i];
                     const photo = photoForReference(item.photo_reference, photos);
@@ -630,12 +743,17 @@ export function ReviewStep({
                     // The AI's own doubt, only until the surveyor checks the row
                     // (the review badge says it instead, when the API sends one).
                     const unsure = !review && item.ai_confidence === "Low" && !item.human_verified;
-                    const rowState = damageState(item);
+                    // Needs you: no part, an unnamed Other or no condition
+                    // (P-parts gap 3), even on a row a person added.
+                    const gaps = rowGaps(item);
+                    const rowState = reviewRowState(item);
+                    const wording = printsAs(item, taxonomy, v);
                     const picked = selectedKey === findingKey || flashKey === key;
                     const hovered = hoverKey === findingKey;
                     return (
                       <tr
                         key={key}
+                        data-row-key={key}
                         ref={(el) => {
                           if (el) rowEls.current.set(key, el);
                           else rowEls.current.delete(key);
@@ -658,7 +776,7 @@ export function ReviewStep({
                             </AlertTriangle>
                           )}
                         </td>
-                        <td>
+                        <td data-col="part">
                           <Select
                             className="annex-cell-input"
                             value={item.part}
@@ -685,6 +803,20 @@ export function ReviewStep({
                               }}
                             />
                           )}
+                          {/* What its Annex A line will say (R-report gap 8). */}
+                          {wording.note === "left_out" ? (
+                            <span className="rc-prints-as warn">Left out of Annex A until a part is chosen</span>
+                          ) : wording.text && wording.text !== item.part ? (
+                            <span className="rc-prints-as">
+                              Prints as <em>{wording.text}</em>
+                              {wording.note === "unsided" ? " (no LH/RH until you confirm the side)" : wording.note === "unnamed" ? " until you name it" : ""}
+                            </span>
+                          ) : null}
+                          {!review && gaps.length > 0 && (
+                            <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }}>
+                              Needs you: {gapWords(gaps)}
+                            </span>
+                          )}
                           {!review && item.side_inferred && !item.human_verified && (
                             <span className="intake-chip warn" style={{ marginTop: 4, fontSize: 10 }} title="The AI guessed the side from nearby photos; check it">
                               side inferred
@@ -703,7 +835,7 @@ export function ReviewStep({
                             </span>
                           )}
                         </td>
-                        <td>
+                        <td data-col="condition">
                           <ConditionPicker
                             className="annex-cell-input"
                             value={item.condition ?? ""}
@@ -801,8 +933,8 @@ export function ReviewStep({
                           // (the old Verified tick) or undo a confirm.
                           <td>
                             <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                              <ReviewBadge state={rowState} label={partName} detail={damageCheckDetail(item)} />
-                              {rowState === "you" ? (
+                              <ReviewBadge state={rowState} label={partName} detail={gaps.length ? gapWords(gaps) : damageCheckDetail(item)} />
+                              {rowState === "needs" ? null : rowState === "you" ? (
                                 <ReviewUndoButton label={partName} onClick={() => setVerified(i, false)} />
                               ) : (
                                 <ReviewConfirmButton
@@ -895,6 +1027,40 @@ export function ReviewStep({
             setPickerFor(null);
           }}
           onClose={() => setPickerFor(null)}
+        />
+      )}
+
+      {addAsk && (
+        <AddCheckDialog
+          check={addAsk.check}
+          onAdd={() => {
+            const { add } = addAsk;
+            setAddAsk(null);
+            add();
+          }}
+          onGoTo={(index) => {
+            setAddAsk(null);
+            // Once the dialog has gone (it hands focus back as it closes).
+            if (rowKeys[index]) pendingReveal.current = { key: rowKeys[index], block: "center", focus: "condition" };
+          }}
+          onCancel={() => setAddAsk(null)}
+        />
+      )}
+
+      {removedRows && (
+        <UndoToast
+          message={
+            removedRows.entries.length === 1 && removedLast
+              ? `Removed ${(removedLast.part && damagePartLabel(removedLast)) || "a row"}`
+              : `Removed ${removedRows.entries.length} parts`
+          }
+          durationMs={PART_UNDO_MS}
+          timerKey={removedRows.version}
+          onUndo={undoRemove}
+          onDismiss={() => {
+            window.clearTimeout(undoTimer.current);
+            setRemovedRows(null);
+          }}
         />
       )}
 

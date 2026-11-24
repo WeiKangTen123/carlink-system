@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { CONDITION_WHOLE_VALUES, type ConditionWords } from "@/lib/api";
+import { joinAsPicked, quickConditions } from "@/lib/reviewChecks";
 
 /** The select's "Other words…" entry. The firm's words never start with "_",
  * so this can't collide with a real Condition. */
@@ -71,6 +72,9 @@ type Props = {
  * would otherwise print the AI's damage type instead. */
 export function ConditionPicker({ value, fallback, words, onChange, disabled, ariaLabel, partName, placeholder = "—", className, style }: Props) {
   const [picking, setPicking] = useState(false);
+  // Phase 1 F (P-parts P-S3): Necessary and Serviceable one click away,
+  // after the common compounds.
+  const quick = quickConditions(words.common);
   return (
     <>
       <select
@@ -88,8 +92,8 @@ export function ConditionPicker({ value, fallback, words, onChange, disabled, ar
         }}
       >
         {!value && <option value="">{fallback ? `${fallback} (damage type)` : placeholder}</option>}
-        {value && !words.common.includes(value) && <option value={value}>{value}</option>}
-        {words.common.map((c) => (
+        {value && !quick.includes(value) && <option value={value}>{value}</option>}
+        {quick.map((c) => (
           <option key={c} value={c}>
             {c}
           </option>
@@ -144,11 +148,18 @@ function ConditionWordsDialog({
   const [initialWords] = useState<string[]>(() => conditionWordsIn(initial, tokens));
   const [picked, setPicked] = useState<string[]>(initialWords);
   const [whole, setWhole] = useState<string | null>(() => wholeValueOf(initial));
+  // Phase 1 F (P-parts gap 12): the firm's usual order unless the person
+  // asks for the order they picked the words in ("Torn/cracked"); the
+  // server keeps either (taxonomy.parse_condition).
+  const [ownOrder, setOwnOrder] = useState(false);
   // The same words as the cell keep the cell's own text: the firm sometimes
   // writes its words out of list order ("Shifted/bent/cut"), and opening the
   // picker must not reword it. Only a change of words is rebuilt in order.
   const sameWords = picked.length > 0 && picked.length === initialWords.length && picked.every((w) => initialWords.includes(w));
-  const result = whole ?? (sameWords ? initial : joinConditionWords(picked, tokens));
+  const firmOrder = joinConditionWords(picked, tokens);
+  const pickedOrder = joinAsPicked(picked);
+  const orderDiffers = !whole && !sameWords && picked.length > 1 && pickedOrder !== firmOrder;
+  const result = whole ?? (sameWords ? initial : ownOrder && orderDiffers ? pickedOrder : firmOrder);
 
   // Focus moves into the dialog, and back to the select on close.
   useEffect(() => {
@@ -197,7 +208,10 @@ function ConditionWordsDialog({
             <X style={{ width: 16, height: 16 }} />
           </button>
         </div>
-        <p className="intake-muted rv-picker-hint">Pick up to {MAX_WORDS} of the firm&apos;s words. They print in the firm&apos;s order, joined with &quot;/&quot;.</p>
+        <p className="intake-muted rv-picker-hint">
+          Pick up to {MAX_WORDS} of the firm&apos;s words. They print in the firm&apos;s usual order, joined with &quot;/&quot;, unless you keep
+          your own order below.
+        </p>
         <div role="group" aria-label="Condition words" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {tokens.map((t) => {
             const on = picked.includes(t);
@@ -210,6 +224,12 @@ function ConditionWordsDialog({
             );
           })}
         </div>
+        {orderDiffers && (
+          <label className="rc-own-order">
+            <input type="checkbox" checked={ownOrder} onChange={(e) => setOwnOrder(e.target.checked)} />
+            Keep the order I picked them in: <strong>{pickedOrder}</strong> (the firm&apos;s usual order is {firmOrder})
+          </label>
+        )}
         <div className="intake-muted" style={{ fontSize: 12 }}>
           Or one value on its own
         </div>

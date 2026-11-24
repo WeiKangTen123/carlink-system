@@ -13,6 +13,7 @@ import {
   getTaxonomy,
   signOffReport,
   saveReportChecked,
+  MustHaveError,
   OpenItemsError,
   uploadReportPhotos,
   getReport,
@@ -61,7 +62,7 @@ import {
   type CheckedRequest,
   type CheckedResponse,
 } from "@/lib/api";
-import type { Review } from "@/lib/review";
+import type { MustHaveItem, Review } from "@/lib/review";
 import type { CatalogueJob, CatalogueSuggestion } from "@/lib/catalogue";
 import { buildReportPayload } from "./form-payload";
 
@@ -176,12 +177,15 @@ export async function signOffReportAction(
     // Fields still open and no "Sign off with N items open" tick (409):
     // the count and the API's counts, so the box can offer the tick.
     if (err instanceof OpenItemsError) return { error: err.message, openItems: { open: err.open, counts: err.counts } };
+    // A must-have fact neither filled in nor marked N/A (409 must_have): which.
+    if (err instanceof MustHaveError) return { error: err.message, mustHave: err.missing };
     return { error: err instanceof Error ? err.message : "Sign-off failed" };
   }
 }
 
-/** A refused sign-off; openItems when the API refused it for open fields. */
-export type SignOffRefusal = { error: string; openItems?: { open: number; counts: Review["counts"] | null } };
+/** A refused sign-off; openItems when the API refused it for open fields,
+ * mustHave for facts every report must state. */
+export type SignOffRefusal = { error: string; openItems?: { open: number; counts: Review["counts"] | null }; mustHave?: MustHaveItem[] };
 
 /** Confirms review fields, or takes a confirm back (PUT /reports/{id}/checked):
  * "No labour" on Annex B is {set: {annex_b: {na: true}}}. */

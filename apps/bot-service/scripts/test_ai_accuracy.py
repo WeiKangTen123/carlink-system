@@ -298,6 +298,10 @@ def learned_lines(report_id: str) -> list[PastAnnexLine]:
 
 
 def sign_off(client: TestClient, report_id: str):
+    # The must-have facts a test case leaves blank: N/A first (review.MUST_HAVE).
+    from auth_helpers import mark_must_haves_na
+
+    mark_must_haves_na(client, report_id)
     return client.post(f"/reports/{report_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
 
 

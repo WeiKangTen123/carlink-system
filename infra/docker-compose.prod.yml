@@ -154,6 +154,10 @@ x-bot-service: &bot-service
     - INTAKE_SIDE_GEOMETRY=${INTAKE_SIDE_GEOMETRY:-off}
     - INTAKE_ZONE_WRONG_END=${INTAKE_ZONE_WRONG_END:-drop}
     - INTAKE_LINK_CHECK_MAX_CALLS=${INTAKE_LINK_CHECK_MAX_CALLS:-2}
+    # Phase 1 (report checks, review M4): the AI's transmission and static
+    # check words in the firm's words, by meaning (app/reports/firm_words.py).
+    # Default off = config.py's: every reading's values byte for byte as before.
+    - INTAKE_FIRM_WORDS=${INTAKE_FIRM_WORDS:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

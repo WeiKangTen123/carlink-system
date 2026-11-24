@@ -1733,7 +1733,12 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     new_v = dict(new_ai.get("vehicle_info") or {})
     # A field still holding the firm's usual wording (put there when the
     # draft was made, before any reading) is nobody's edit: what the AI
-    # reads ("Scratched" paintwork) takes its place (review, 2026-11-11).
+    # reads takes its place (review, 2026-11-11) -- its own word
+    # ("Scratched" paintwork, "Impaired" steering), or with
+    # INTAKE_FIRM_WORDS on the firm's word of the same meaning ("Operable"
+    # -> "Good"); a finding is never blanked nor read as "Good"
+    # (reports/firm_words.py). Only an empty reading leaves the usual
+    # wording, still "check" until a person confirms it.
     usual = {
         key for key in (current.get("template_fields") or [])
         if isinstance(key, str) and same_value(value_at(current, key), TEMPLATE_DEFAULTS.get(key))

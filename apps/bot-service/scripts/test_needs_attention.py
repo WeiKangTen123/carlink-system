@@ -86,6 +86,7 @@ from app.intake import cleanup, pipeline  # noqa: E402
 from app.reports.db import SessionLocal, engine, init_db  # noqa: E402
 from app.reports.models import AuditEntry, IntakePhoto, IntakeSession, PublicSubmission, Report, User, gen_id  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
+from auth_helpers import mark_must_haves_na  # noqa: E402
 
 
 def _fake_render(data, photo_paths, output_path, report_id=None, **_kw):
@@ -394,6 +395,8 @@ def reopened() -> None:
         return listed(W.a)[case]["reopened"]
 
     check(flag() is False, "never signed off: not reopened")
+    # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+    mark_must_haves_na(W.a, case)
     r = W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "signed off", brief(r))
     check(flag() is False, "signed off: not reopened")
@@ -504,6 +507,7 @@ def query_count() -> None:
         new_draft(W.u1 if i % 2 else W.u2, stage="failed" if i % 2 else "ready", error_code="ai_key_invalid",
                   photos=[(0, NOW), (1, NOW)])
         case = new_case(W.u2, annex_a={"items": [{"part_name": "Door", "workshop_est": 0}]})
+        mark_must_haves_na(W.a, case)
         W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
         W.a.post(f"/reports/{case}/reopen")
     taken = new_draft(W.u2, channel="telegram_public", stage="ready")

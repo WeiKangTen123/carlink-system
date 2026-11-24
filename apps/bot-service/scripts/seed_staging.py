@@ -68,6 +68,12 @@ CASES = [
                                                  ("Right Headlamp", "Crack", "Moderate", "Replace")]),
     ("to process", "rear corner, to process", 6, []),
 ]
+# The point of impact per case, made up to match its parts.
+IMPACTS = {"filed": "Rear centre", "signed off": "LH side", "ready": "Front centre", "to process": "Rear LH corner"}
+# Sign-off needs these filled in or marked N/A (app/reports/review.py
+# MUST_HAVE): the signed-off case has them all; the filed one leaves three
+# out, so the lead sees the sign-off's "3 things before sign-off" list.
+LEFT_OUT_WHEN_FILED = ("requested_by", "date_of_survey", "workshop_assigned")
 
 
 def refuse_unless_staging() -> None:
@@ -155,19 +161,27 @@ def _font(size: int):
 
 # ------------------------------------------------------------------ data
 
-def draft_data(case_no: int, title: str, parts: list) -> dict:
+def draft_data(case_no: int, title: str, parts: list, key: str = "") -> dict:
     from app.reports.schema import SecurityIncidentDraft
 
+    cover = {"date_of_request": "2nd November 2026", "requested_by": "Test Insurer",
+             "date_of_survey": "3rd November 2026"}
+    insurance = {"insurer_name": "Test Insurer", "claim_type": "Own damage", "workshop_assigned": "Test Workshop"}
+    if key == "filed":
+        cover = {k: v for k, v in cover.items() if k not in LEFT_OUT_WHEN_FILED}
+        insurance = {k: v for k, v in insurance.items() if k not in LEFT_OUT_WHEN_FILED}
     return SecurityIncidentDraft(
         description=f"{MARK} {title}. A made-up case for testing: no real vehicle, person or claim.",
         category=["Vehicle Collision or Damage"],
+        report_id=f"TEST REF {case_no:04d}",
         location="1 Test Street, Test Town",
         incident_datetime="2026-11-01T09:30:00",
         reporter_name="Staging Tester",
         vehicle_info={"plate_number": f"TEST {case_no:04d}", "make": "Testmake", "model": "Testmodel",
                       "year": "2020", "color": "Grey", "body_type": "Sedan", "transmission": "Automatic",
-                      "odometer_reading": f"0{case_no}2345 Km"},
-        insurance_details={"insurer_name": "Test Insurer", "claim_type": "Own damage"},
+                      "odometer_reading": f"0{case_no}2345 Km", "point_of_impact": IMPACTS.get(key)},
+        insurance_details=insurance,
+        cover_page=cover,
         damage_summary=[{"part": p, "damage_type": t, "severity": s, "remarks": r} for p, t, s, r in parts],
         damaged_parts=[p for p, _, _, _ in parts],
     ).model_dump()
@@ -345,7 +359,7 @@ def ensure_cases(photos_out: Path | None) -> list[str]:
         for i, data in enumerate(photos, 1):
             _ok(staff.post(f"/intake/{report_id}/photos", files={"file": (f"seed-{case_no}-{i}.jpg", data, "image/jpeg")},
                            data={"position": str(i)}), f"{key}: photo {i}")
-        draft = draft_data(case_no, title, parts)
+        draft = draft_data(case_no, title, parts, key)
         _ok(staff.put(f"/intake/{report_id}/data", json={"data": draft, "reporter_notes": f"{MARK} made-up notes"}),
             f"{key}: the form")
         if key in ("filed", "signed off"):

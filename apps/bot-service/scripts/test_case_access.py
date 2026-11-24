@@ -171,7 +171,7 @@ from app.api.main import app  # noqa: E402
 from app.auth.core import SESSION_COOKIE  # noqa: E402
 from app.reports.db import SessionLocal, engine  # noqa: E402
 from app.reports.models import Report  # noqa: E402
-from auth_helpers import sign_in  # noqa: E402
+from auth_helpers import mark_must_haves_na, sign_in  # noqa: E402
 
 for _name, _mod in list(sys.modules.items()):
     if _name.startswith("app.") and getattr(_mod, "sync_playwright", None) is _REAL_SYNC_PLAYWRIGHT:
@@ -780,6 +780,8 @@ def who_may_do_what() -> None:
     print("  sign-off and reopen")
     r = B.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 404, "B can't sign off A's case (404)", brief(r))
+    # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+    mark_must_haves_na(S.c, MX)
     r = S.c.post(f"/reports/{MX}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
     check(r.status_code == 200, "S (staff, may sign off) signs off A's case", brief(r))
     _perm_check(A, f"/reports/{MX}", {"reopen": False}, "A on a case S signed")
