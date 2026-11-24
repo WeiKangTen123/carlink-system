@@ -295,8 +295,22 @@ def _channel(channel: str | None, actor: AiActor | None) -> str:
     return value if value in CHANNELS else "system"
 
 
+def _stamp(models=()) -> dict | None:
+    """The knowledge stamp (reports/knowledge.py, imported here: it reads
+    the link table and the car map); None, never an error, when it can't
+    be made -- the run log never stops the work."""
+    try:
+        from app.reports.knowledge import stamp
+
+        return stamp(models)
+    except Exception as exc:
+        logger.warning("AI run log: no knowledge stamp (%s)", type(exc).__name__)
+        return None
+
+
 def start_run(db, *, report_id: str | None, kind: str, channel: str | None, actor: AiActor | None) -> AiRun:
-    """Writes the row as "running" and commits it (the caller's session)."""
+    """Writes the row as "running" and commits it (the caller's session),
+    with the knowledge stamp of now (its models once it ends)."""
     row = AiRun(
         report_id=report_id,
         kind=kind,
@@ -305,6 +319,7 @@ def start_run(db, *, report_id: str | None, kind: str, channel: str | None, acto
         status="running",
         started_at=_now(),
         attempts=[],
+        knowledge=_stamp(),
     )
     db.add(row)
     db.commit()
@@ -350,6 +365,16 @@ def finish_run(
     row.input_bytes = input_bytes
     row.photos_sent = photos_sent
     row.parts_found = parts_found
+    # The stamp written at the start, with the models that answered (a new
+    # dict: SQLAlchemy only sees a JSON column change on assignment).
+    try:
+        from app.reports.knowledge import answered_models
+
+        base = row.knowledge if isinstance(row.knowledge, dict) else _stamp()
+        if base is not None:
+            row.knowledge = {**base, "models": answered_models(attempts)}
+    except Exception as exc:
+        logger.warning("AI run log: no knowledge stamp (%s)", type(exc).__name__)
     if status != "ok":
         row.error_code = error_code or (error_code_for(error, attempts) if error is not None else None)
         row.error_text = scrub_error(_error_text(error)) if error is not None else None

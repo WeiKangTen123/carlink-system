@@ -897,6 +897,10 @@ def _without_c10(ai_draft):
     return rest, rest.pop("zone_intact", None) is not None
 
 
+# The keys of each scenario's knowledge stamp (step 2B), by mode.
+KNOWLEDGE_SEEN: dict[str, list | None] = {}
+
+
 def off_scenario(mode: str) -> tuple[dict, dict]:
     """One case through every route with contract 10 at its defaults.
     (artefacts normalised, facts checked apart)."""
@@ -950,7 +954,14 @@ def off_scenario(mode: str) -> tuple[dict, dict]:
         metrics = dict(row.metrics or {}) if row else None
         facts["version"] = (row.version, metrics.pop("version", None)) if row else None
         out["accuracy"] = {"metrics": metrics, "models": row.models if row else None}
-        out["case"] = db_row(Report, rid).data
+        # Step 2B (24 Nov 2026): a sign-off stamps the knowledge versions on
+        # the case (data.knowledge) -- a deliberate addition: its keys are
+        # checked on their own (KNOWLEDGE_SEEN), not hashed, and kept out of
+        # facts, which the probes of older trees compare too.
+        case = dict(db_row(Report, rid).data or {})
+        stamp = case.pop("knowledge", None)
+        KNOWLEDGE_SEEN[mode] = sorted(stamp) if isinstance(stamp, dict) else None
+        out["case"] = case
         return normalised(out, ids), facts
 
 
@@ -967,6 +978,8 @@ def everything_off() -> None:
         check(facts["stage"] == "ready" and facts["sign_off"] == 200, f"{mode}: read, filed and signed off")
         check(sha == GOLDEN_OFF[mode], f"{mode}: requests and stored data byte for byte as master a89ede1's (golden)",
               sha)
+        check(KNOWLEDGE_SEEN.get(mode) == ["car_map", "library", "links", "models", "prompt"],
+              f"{mode}: the sign-off's knowledge stamp (step 2B), compared apart", KNOWLEDGE_SEEN.get(mode))
         check(not any(it.get("source") == "link" for it in (artefacts["case"].get("second_look") or {}).get("items") or [])
               and "link_suggestions" not in json.dumps(artefacts), f"{mode}: no linked part anywhere")
         want = mode == "zones"

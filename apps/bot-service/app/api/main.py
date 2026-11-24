@@ -48,6 +48,7 @@ from app.api.annexes import router as annexes_router
 from app.api.catalogue import router as catalogue_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
+from app.api.observations import router as observations_router
 from app.api.parts import own_prices_for_case, price_book_for_case, router as parts_router
 from app.api.prices import router as prices_router
 from app.api.signup import router as signup_router
@@ -92,7 +93,7 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
-from app.reports import accuracy, owners, suggestions
+from app.reports import accuracy, knowledge, observations, owners, suggestions
 from app.parts import catalogue
 from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
@@ -207,6 +208,7 @@ app.include_router(ai_usage_router)
 app.include_router(ai_allowance_router)
 app.include_router(catalogue_router)
 app.include_router(ai_accuracy_router)
+app.include_router(observations_router)
 app.include_router(prices_router)
 
 
@@ -1657,14 +1659,17 @@ def _with_sign_off(report_data: dict, **updates) -> dict:
 
 def _after_sign_off(report_id: str, signature_date: str) -> None:
     """What a sign-off records once its response is sent (a background
-    task): the AI accuracy record (app/reports/accuracy.py) and the case's
+    task): the AI accuracy record (app/reports/accuracy.py), the case's
     final Annex A in the parts history (app/parts/learn.py, when
-    settings.learn_from_signed_off). Neither may fail or slow a sign-off:
-    each runs on its own session, any error is logged and left -- the
-    backfill scripts (scripts/backfill_ai_accuracy.py, backfill_learned_
-    cases.py) redo what was missed. Both write only while the case is still
-    signed off by this sign-off (signature_date)."""
-    for what, step in (("AI accuracy", accuracy.record), ("parts history lines", learn.learn_case)):
+    settings.learn_from_signed_off) and its part decisions, de-identified
+    (app/reports/observations.py, step 2B). None may fail or slow a
+    sign-off: each runs on its own session, any error is logged and left --
+    the backfill scripts (scripts/backfill_ai_accuracy.py, backfill_
+    learned_cases.py, backfill_part_observations.py) redo what was missed.
+    Each writes only while the case is still signed off by this sign-off
+    (signature_date)."""
+    for what, step in (("AI accuracy", accuracy.record), ("parts history lines", learn.learn_case),
+                       ("part observations", observations.capture)):
         db = SessionLocal()
         try:
             step(db, report_id, signature_date)
@@ -1677,13 +1682,16 @@ def _after_sign_off(report_id: str, signature_date: str) -> None:
 
 def _forget_sign_off(db, report_id: str) -> None:
     """A case reopened or deleted is no longer a signed-off answer: its AI
-    accuracy row and its lines in the parts history go, in the caller's
-    transaction. Never fails the reopen or the delete: should it not get
-    done, history.past_lines still leaves out the lines of a case that
-    isn't signed off, and GET /admin/ai-accuracy its row."""
+    accuracy row, its lines in the parts history and its part observations
+    go, in the caller's transaction. Never fails the reopen or the delete:
+    should it not get done, history.past_lines still leaves out the lines
+    of a case that isn't signed off, GET /admin/ai-accuracy its row, GET
+    /admin/observations/summary its observations, and the cleanup sweep
+    removes them (observations.sweep_old)."""
     try:
         accuracy.forget(db, report_id)
         learn.forget(db, report_id)
+        observations.forget(db, report_id)
     except Exception:
         logger.exception("Could not drop the sign-off records of case %s", report_id)
 
@@ -1848,6 +1856,13 @@ async def sign_off_report(
 
         r.status = "Signed Off"
         new_data = _with_sign_off(r.data, **updates)
+        # The knowledge stamp (L-library D.3, step 2B): the versions of the
+        # link table, car map, reading prompt and the models that read the
+        # case. Never in a sign-off's way: none when it can't be made.
+        try:
+            new_data["knowledge"] = knowledge.case_stamp(db, r.id)
+        except Exception:
+            logger.exception("Could not stamp the knowledge versions of case %s at sign-off", r.id)
 
         # Annex C carries the settled figures; the approved cost on the
         # insurance details follows the lump sum. No GST: the firm's letter

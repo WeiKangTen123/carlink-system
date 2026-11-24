@@ -262,6 +262,8 @@ DECISIONS = {
     ("GET", "/ai-usage"): ("admin", "?days=7|30|90; every case's runs summed, never a key or public sender data"),
     # Contract 8 L (app/api/ai_accuracy.py; tested in scripts/test_ai_accuracy.py).
     ("GET", "/admin/ai-accuracy"): ("admin", "?since=YYYY-MM-DD; what surveyors kept of the AI's drafts, per case and month; never a plate"),
+    # Step 2B (app/api/observations.py; tested in scripts/test_part_observations.py).
+    ("GET", "/admin/observations/summary"): ("admin", "?from=&to= Singapore dates; parts people added / removed / dismissed; counts only, no case, no name"),
     # Stage 1 "My prices" (app/api/prices.py; tested in scripts/test_s1_prices.py).
     ("GET", "/admin/price-differences"): ("admin", "Stage 1: people's prices >10% off the book's; counts only, never who"),
     ("POST", "/admin/price-differences/decide"): ("admin", "Stage 1: update | keep -> book_prices row + history entry; 422 update without unit_price"),
