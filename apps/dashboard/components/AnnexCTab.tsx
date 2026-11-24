@@ -2,8 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Eraser, FileSpreadsheet, FileText, ListChecks, Lock, PenLine, RotateCcw, Save, Unlock } from "lucide-react";
-import { pdfDownloadUrl, xlsxDownloadUrl, type ReportDetail, type SignOffRequest } from "@/lib/api";
+import { AlertTriangle, CheckCheck, CheckCircle2, Eraser, FileSpreadsheet, FileText, ListChecks, Lock, PenLine, RotateCcw, Save, Unlock } from "lucide-react";
+import { pdfDownloadUrl, xlsxDownloadUrl, type AnnexAPartItem, type ReportDetail, type SignOffRequest, type UnconfirmedPriceLine } from "@/lib/api";
 import { reopenReportAction, saveAnnexCAction, signOffReportAction } from "@/app/reports/actions";
 import { useCurrentUser } from "@/components/CurrentUser";
 import { formatSgd } from "@/lib/pastReports";
@@ -14,6 +14,8 @@ import { ReviewBadge } from "./ReviewBadge";
 import { ANNEX_C_KEYS, annexCFieldState, openItemsLabel, openSections, openTotal, type OpenSection, type OpenTarget } from "@/lib/reviewRows";
 import { undecidedCount } from "@/lib/findings";
 import { beforeSignOff, type MustHaveItem } from "@/lib/review";
+import { priceText, sourceWord, unconfirmedPriceLines } from "@/lib/prices";
+import { useConfirmAllPrices } from "./PriceSource";
 
 const DEFAULT_TITLE = "Automotive Engineer Assessor";
 
@@ -155,6 +157,79 @@ function MustHaveList({ reportId, missing, onOpenTab }: { reportId: string; miss
     </div>
   );
 }
+
+/** The most price lines the list names; the rest are counted. */
+const PRICE_LINES_SHOWN = 12;
+
+/** Stage 1, beside the must-have list: Annex A prices filled in for the
+ * person (their own, an approved one, the book's) that nobody confirmed.
+ * The API refuses the sign-off until they are (409 prices_unconfirmed):
+ * [Confirm all prices] does it in one click, or a typed price replaces one
+ * on Annex A. */
+function PricesToConfirmList({
+  reportId,
+  lines,
+  busy,
+  error,
+  onConfirm,
+  onOpenTab,
+}: {
+  reportId: string;
+  lines: UnconfirmedPriceLine[];
+  busy: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onOpenTab?: (tab: OpenTab) => void;
+}) {
+  const n = lines.length;
+  return (
+    <div className="p1b-musthave s1-prices-confirm" role="status">
+      <div className="p1b-musthave-head">
+        <Lock aria-hidden style={{ width: 14, height: 14, flexShrink: 0 }} />
+        <span>
+          {n} price{n === 1 ? "" : "s"} to confirm before sign-off
+        </span>
+        <button type="button" className="btn-primary-modern s1-confirm-btn" disabled={busy} onClick={onConfirm}>
+          <CheckCheck aria-hidden style={{ width: 13, height: 13 }} /> {busy ? "Confirming…" : "Confirm all prices"}
+        </button>
+        <a
+          href={`/reports/${reportId}?tab=annexA`}
+          className="p1b-goto"
+          onClick={(e) => {
+            if (!onOpenTab || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            onOpenTab("annexA");
+          }}
+        >
+          Go to Annex A
+        </a>
+      </div>
+      <ul className="p1b-musthave-list">
+        {lines.slice(0, PRICE_LINES_SHOWN).map((l, i) => (
+          <li key={`${l.index}-${i}`} className="s1-price-chip">
+            <span>{l.wording || (l.index >= 0 ? `Line ${l.index + 1}` : "A line")}</span>
+            <span className="s1-price-chip-meta">
+              {[sourceWord(l.price_source), l.unit_price != null ? `${priceText(l.unit_price)}/unit` : ""].filter(Boolean).join(" · ")}
+            </span>
+          </li>
+        ))}
+        {n > PRICE_LINES_SHOWN && <li className="s1-price-chip">and {n - PRICE_LINES_SHOWN} more</li>}
+      </ul>
+      {error && (
+        <div className="setup-error" style={{ margin: "8px 0 0" }}>
+          {error}
+        </div>
+      )}
+      <div className="p1b-musthave-foot">
+        These prices were filled in for you, not typed. Check them against the workshop&apos;s quote and confirm them, or type the quoted price on Annex A.
+      </div>
+    </div>
+  );
+}
+
+/** The refusal's price lines, kept against the Annex A they were refused
+ * under: a newer table (saved, confirmed) drops them. */
+type RefusedPrices = { base: AnnexAPartItem[]; lines: UnconfirmedPriceLine[] };
 
 /** [Reopen]: a signed-off case back to editable, which only the signer or
  * an admin may do (the API refuses anyone else). Shown in the header and
@@ -327,6 +402,36 @@ export function AnnexCTab({
   const refusedList = refusedMissing && refusedMissing.base === report.review ? refusedMissing.list : null;
   const missing = isSignedOff ? [] : (refusedList ?? beforeSignOff(report.review));
 
+  // ---- Prices to confirm (Stage 1, owner 24 Nov 2026) -------------------------
+  // Annex A prices filled in for the person and not yet confirmed, from the
+  // table as saved: a block like the must-haves. The API's list when it
+  // refused a sign-off for them, until Annex A changes. Old cases and an
+  // older server have none.
+  const [refusedPrices, setRefusedPrices] = useState<RefusedPrices | null>(null);
+  const refusedPriceLines = refusedPrices && refusedPrices.base === store.annexABaseline ? refusedPrices.lines : null;
+  const pricesToConfirm = isSignedOff ? [] : (refusedPriceLines ?? unconfirmedPriceLines(store.annexABaseline));
+  const confirmPrices = useConfirmAllPrices(report.id, store);
+  const [confirmPricesError, setConfirmPricesError] = useState<string | null>(null);
+  const handleConfirmPrices = async () => {
+    if (confirmPrices.busy) return;
+    if (store.dirty.annexA || store.status.annexA.save === "saving") {
+      setConfirmPricesError("Save or discard your Annex A changes first: Confirm all prices works on Annex A as saved.");
+      return;
+    }
+    setConfirmPricesError(null);
+    const res = await confirmPrices.confirmAll();
+    if ("error" in res) {
+      setConfirmPricesError(res.error);
+      return;
+    }
+    setRefusedPrices(null);
+    setSignOffError(null);
+  };
+  const blockedReasons = [
+    missing.length ? missing.map((m) => m.label).join(", ") + " (fill in or mark N/A)" : "",
+    pricesToConfirm.length ? `confirm ${pricesToConfirm.length} Annex A price${pricesToConfirm.length === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+
   // The signature pad. Only what was actually drawn is sent: an untouched
   // pad used to go out as a blank image.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -394,6 +499,10 @@ export function AnnexCTab({
       setSignOffError(`Not signed off: ${missing.length} thing${missing.length === 1 ? "" : "s"} before sign-off (above).`);
       return;
     }
+    if (pricesToConfirm.length > 0) {
+      setSignOffError(`Not signed off: ${pricesToConfirm.length} Annex A price${pricesToConfirm.length === 1 ? "" : "s"} to confirm (above).`);
+      return;
+    }
     if (!declared) {
       setSignOffError("Tick the declaration before signing off.");
       return;
@@ -427,10 +536,12 @@ export function AnnexCTab({
 
     const res = await signOffReportAction(report.id, payload);
     if ("error" in res) {
-      if (res.mustHave) {
-        // Refused for must-have facts (saved since this page loaded, or
-        // someone else's change): the API's list replaces ours.
-        setRefusedMissing({ base: report.review, list: res.mustHave });
+      if (res.mustHave || res.unconfirmedPrices) {
+        // Refused for must-have facts and/or unconfirmed prices (saved
+        // since this page loaded, or someone else's change): the API's
+        // lists replace ours -- both come in one answer.
+        setRefusedMissing({ base: report.review, list: res.mustHave ?? [] });
+        setRefusedPrices({ base: store.annexABaseline, lines: res.unconfirmedPrices ?? [] });
         setSignOffError(`Not signed off: ${res.error}`);
       } else if (res.openItems) {
         // Refused for open items: say how many, and offer the extra tick.
@@ -680,6 +791,17 @@ export function AnnexCTab({
 
         {missing.length > 0 && !signOffLocked && <MustHaveList reportId={report.id} missing={missing} onOpenTab={onOpenTab} />}
 
+        {pricesToConfirm.length > 0 && !signOffLocked && (
+          <PricesToConfirmList
+            reportId={report.id}
+            lines={pricesToConfirm}
+            busy={confirmPrices.busy}
+            error={confirmPricesError}
+            onConfirm={() => void handleConfirmPrices()}
+            onOpenTab={onOpenTab}
+          />
+        )}
+
         {review && <OpenItemsList reportId={report.id} sections={openList} total={localOpen} onOpenTab={onOpenTab} onOpenRecord={onOpenRecord} />}
 
         {undecided > 0 && !signOffLocked && (
@@ -735,8 +857,8 @@ export function AnnexCTab({
               type="button"
               className="btn-primary-modern"
               style={{ padding: "10px 24px", fontSize: 13 }}
-              disabled={isSigningOff || missing.length > 0}
-              title={missing.length > 0 ? `First: ${missing.map((m) => m.label).join(", ")} (fill in or mark N/A)` : undefined}
+              disabled={isSigningOff || missing.length > 0 || pricesToConfirm.length > 0}
+              title={blockedReasons.length > 0 ? `First: ${blockedReasons.join("; ")}` : undefined}
               onClick={() => void handleSignOffSubmit()}
             >
               <CheckCircle2 style={{ width: 16, height: 16 }} />

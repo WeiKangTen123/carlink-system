@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Wrench, Zap, Car, Boxes, History } from "lucide-react";
+import { Wrench, Zap, Car, Boxes, History, Scale } from "lucide-react";
 import type { PartsHistory, Taxonomy } from "@/lib/api";
+import { isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { getPartsHistoryAction } from "./actions";
 import { PartsHistoryTab } from "./PartsHistoryTab";
+import { PriceDifferencesTab } from "./PriceDifferencesTab";
 
 export interface PartRow {
   part: string;
@@ -17,10 +19,13 @@ export interface PartRow {
 // made-up SKUs, prices and labour/spray rates seeded from a code constant
 // and edited in this browser's localStorage. Prices now come only from the
 // firm's own past reports.
-type Tab = "price_history" | "parts" | "damage" | "vehicles";
+type Tab = "price_history" | "price_diffs" | "parts" | "damage" | "vehicles";
 
-const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }> }[] = [
+const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }>; adminOnly?: boolean }[] = [
   { id: "price_history", label: "Parts price history", icon: History },
+  // Stage 1: people's own prices against the book's; admins decide (the API
+  // refuses anyone else, and the tab isn't shown to them).
+  { id: "price_diffs", label: "Price differences", icon: Scale, adminOnly: true },
   { id: "parts", label: "Vehicle Parts & 3D", icon: Wrench },
   { id: "damage", label: "Damage Types", icon: Zap },
   { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
@@ -51,6 +56,8 @@ export function KnowledgeClient({
 }) {
   const [tab, setTab] = useState<Tab>("price_history");
   const [query, setQuery] = useState("");
+  const admin = isAdmin(useCurrentUser());
+  const tabs = TABS.filter((t) => admin || !t.adminOnly);
 
   // Loaded by the page, and again here after an import or a removal.
   const [history, setHistory] = useState<PartsHistory | null>(initialHistory);
@@ -128,7 +135,7 @@ export function KnowledgeClient({
 
       {/* Primary Tab Bar */}
       <div className="case-tab-bar" style={{ marginBottom: 16 }}>
-        {TABS.map((t) => {
+        {tabs.map((t) => {
           const Icon = t.icon;
           return (
             <button key={t.id} type="button" className={`case-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
@@ -142,6 +149,9 @@ export function KnowledgeClient({
       {tab === "price_history" && (
         <PartsHistoryTab history={history} loadError={historyError} onReload={reloadHistory} />
       )}
+
+      {/* PRICE DIFFERENCES (Stage 1, admins only): loaded when opened. */}
+      {tab === "price_diffs" && admin && <PriceDifferencesTab />}
 
       {/* TAB 2: VEHICLE PARTS & 3D */}
       {tab === "parts" && (

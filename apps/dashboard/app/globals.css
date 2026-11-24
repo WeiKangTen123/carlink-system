@@ -11626,3 +11626,254 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end Phase 1 B ---- */
+
+/* ---- Stage 1: prices ---- */
+/* "My prices" and price safety (plans S1-contract.md): the source tag under
+   an Annex A price and its "old" / "check" marks (components/PriceSource.tsx),
+   the toast after a save remembered prices, the sign-off box's prices to
+   confirm (components/AnnexCTab.tsx), Settings -> My prices
+   (app/settings/MyPricesClient.tsx) and Knowledge -> Price differences
+   (app/knowledge/PriceDifferencesTab.tsx). Theme tokens only, so both
+   themes follow. */
+.s1-price-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-top: 3px;
+}
+.s1-price-tag,
+.s1-price-old,
+.s1-price-check {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: help;
+}
+.s1-price-tag {
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+}
+.s1-price-mine {
+  color: var(--badge-blue-text);
+  background: var(--badge-blue-bg);
+  border-color: var(--badge-blue-border);
+}
+.s1-price-approved {
+  color: var(--badge-green-text);
+  background: var(--badge-green-bg);
+  border-color: var(--badge-green-border);
+}
+.s1-price-old {
+  color: var(--text-muted);
+  background: transparent;
+}
+.s1-price-check {
+  color: var(--badge-amber-text);
+  background: var(--badge-amber-bg);
+  border-color: var(--badge-amber-border);
+  font-weight: 700;
+}
+.s1-price-toast {
+  max-width: min(560px, calc(100vw - 32px));
+}
+.s1-price-toast > span:not(.intake-toast-timer) {
+  min-width: 0;
+}
+
+/* The sign-off box: prices to confirm, beside the must-have list. */
+.s1-prices-confirm {
+  border-color: var(--badge-amber-border);
+  border-left-color: var(--badge-amber-text);
+  background: var(--badge-amber-bg);
+}
+.s1-prices-confirm .p1b-musthave-head > svg {
+  color: var(--badge-amber-text);
+}
+.s1-confirm-btn {
+  font-size: 11px;
+  padding: 4px 12px;
+}
+.s1-prices-confirm a.p1b-goto:hover {
+  text-decoration: none;
+}
+.s1-price-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  font-size: 11px;
+  font-weight: 600;
+}
+.s1-price-chip > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.s1-price-chip-meta {
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Settings -> My prices and Knowledge -> Price differences. */
+.s1-empty {
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--text-muted);
+}
+.s1-empty p {
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 540px;
+  margin: 6px auto 0;
+}
+.s1-empty-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.s1-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.s1-price-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.s1-price-edit:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+.s1-price-edit > svg {
+  color: var(--text-muted);
+}
+.s1-inline-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.s1-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.s1-icon-btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+.s1-price-edit:focus-visible,
+.s1-icon-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+.s1-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--badge-green-border);
+  background: var(--badge-green-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.s1-diff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.s1-diff-row {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.s1-diff-what {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 13px;
+}
+.s1-diff-car {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.s1-diff-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.s1-diff-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+.s1-diff-price,
+.s1-diff-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.s1-diff-price input {
+  width: 110px;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.s1-diff-reason {
+  flex: 1 1 200px;
+}
+.s1-diff-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (pointer: coarse) {
+  .s1-icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .s1-price-edit {
+    min-height: 32px;
+  }
+}
+/* ---- end Stage 1 ---- */

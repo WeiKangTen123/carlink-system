@@ -270,7 +270,8 @@ export function PartsHistoryTab({
                   <tr>
                     <th>Ref</th>
                     <th>Vehicle</th>
-                    {admin && <th>Plate</th>}
+                    {/* No plate column: Stage 1 drops plates from the price
+                        book (the CL ref is enough). */}
                     <th>Surveyed</th>
                     <th style={{ textAlign: "right" }}>Lines</th>
                     {admin && <th aria-label="Remove" />}
@@ -283,7 +284,6 @@ export function PartsHistoryTab({
                         {c.ref}
                       </td>
                       <td>{vehicleOf(c)}</td>
-                      {admin && <td style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.plate || "—"}</td>}
                       <td style={{ whiteSpace: "nowrap" }}>{shortIsoDate(c.surveyed) || "—"}</td>
                       <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{c.lines}</td>
                       {admin && (
