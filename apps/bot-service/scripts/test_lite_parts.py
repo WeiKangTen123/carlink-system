@@ -123,6 +123,14 @@ HATCH = case("CL 91002", "Vezel", [
 ])
 
 
+def twin(c: PastCase, ref: str) -> PastCase:
+    """The same report again under another reference: the book prices a
+    line only from 2+ past cases (Stage 1, owner K0), and these checks
+    read the wording and quantities by their prices."""
+    return PastCase(ref=ref, plate="", make=c.make, model=c.model, make_model_raw=c.make_model_raw,
+                    registered=c.registered, surveyed=c.surveyed, lines=list(c.lines))
+
+
 def reimport(*cases) -> None:
     db = SessionLocal()
     try:
@@ -234,7 +242,7 @@ def models() -> None:
     check(_same_model("HR-V", "Vezel") and _same_model("Vezel 1.5X", "hr-v") and _same_model("Jazz", "Fit")
           and _same_model("Mazda3", "Axela") and not _same_model("CX-3", "CX-5") and not _same_model("", ""),
           "market twins are one model (HR-V = Vezel, Jazz = Fit, Mazda3 = Axela); CX-3 is not CX-5")
-    reimport(SEDAN, HATCH)
+    reimport(SEDAN, HATCH, twin(SEDAN, "CL 91011"), twin(HATCH, "CL 91012"))
     db = SessionLocal()
     try:
         s = suggest(db, make="Honda", model="HR-V", damaged_parts=["Left Rear Wheel Arch Trim"], existing_items=[])
@@ -257,6 +265,8 @@ def quantities_and_ties() -> None:
     check(len(tyre) == 1 and tyre[0]["qty"] == 1 and tyre[0]["name"] == "Front tyre LH",
           "a both-tyres line (2) and a one-tyre line (1): qty 1, a count a past case wrote -- never 1.5",
           json.dumps([(ln["name"], ln["qty"]) for ln in tyre]))
+    # Priced from two cases (Stage 1's 2-case rule): each report twice.
+    reimport(SEDAN, HATCH, twin(SEDAN, "CL 91011"), twin(HATCH, "CL 91012"))
     out = rows([{"part": "Left Front Tyre", "damage_type": "Puncture / Tear"}], model="Jazz")
     check([(r["part_name"], r["qty"], r["workshop_est"]) for r in out] == [("Front tyre LH", 1.0, 380.0)],
           "the row prices one tyre at the usual unit price (760 for 2 -> 380), not 1.5 x",
@@ -279,7 +289,7 @@ def quantities_and_ties() -> None:
 
 
 def wheels() -> None:
-    reimport(SEDAN, HATCH)
+    reimport(SEDAN, HATCH, twin(SEDAN, "CL 91011"), twin(HATCH, "CL 91012"))
     out = rows([{"part": "Left Front Wheel", "damage_type": "Scratch"}], model="Jazz")
     check(names(out) == ["Front wheel rim LH"] and out[0]["main"] and out[0]["workshop_est"] == 650,
           "a front wheel on another Honda: the same make's front rim, its main row -- no 'Sport rim', tyre or spare-wheel nut",
@@ -300,7 +310,7 @@ def wheels() -> None:
 
 
 def other_parts() -> None:
-    reimport(SEDAN, HATCH)
+    reimport(SEDAN, HATCH, twin(SEDAN, "CL 91011"), twin(HATCH, "CL 91012"))
     item = DamageSummaryItem(part=OTHER_PART, other_part_name="  window   regulator motor ")
     check(item.other_part_name == "Window regulator motor", "the name is cleaned: spaces collapsed, first letter capitalised")
     check(DamageSummaryItem(part="Bonnet", other_part_name="anything").other_part_name is None

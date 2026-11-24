@@ -34,7 +34,18 @@ from app.auth.core import CurrentUser, audit
 from app.auth.deps import CASE_NOT_FOUND, ApiError, current_user, editable_case, require_admin, visible_case
 from app.auth.permissions import PUBLIC_CHANNEL, can_view_all_cases, is_admin
 from app.parts import catalogue
-from app.parts.history import FITTING_CONDITIONS, canonical_part, import_case, parse_report, past_lines, restricted, suggest
+from app.config import chain, settings
+from app.parts import prices
+from app.parts.history import (
+    FITTING_CONDITIONS,
+    canonical_part,
+    import_case,
+    parse_report,
+    past_lines,
+    price_usable,
+    restricted,
+    suggest,
+)
 from app.parts.learn import case_ref
 from app.parts.prefill import ORIGIN_RANK, ORIGINS, line_key, origin_of, side_unconfirmed
 from app.reports.db import SessionLocal
@@ -82,6 +93,19 @@ def price_book_for_case(db, r: Report, user) -> bool:
         return True
     owner = db.get(User, r.owner_id)
     return owner is not None and _sees_price_book(owner)
+
+
+def own_prices_for_case(db, r: Report, user) -> bool:
+    """Whether this person's own prices ("My prices", Stage 1) may fill
+    this case's lines: for everyone (owner P3) on their own case or one
+    with no owner, and on someone else's only where the price book may go
+    too (price_book_for_case) -- never one person's figures into the case
+    of someone who may not see them."""
+    if user is None or not getattr(user, "id", None):
+        return False
+    if r.owner_id is None or r.owner_id == user.id:
+        return True
+    return price_book_for_case(db, r, user)
 
 
 # ------------------------------------------------------------ history
@@ -134,7 +158,9 @@ def import_past_reports(files: list[UploadFile] = File(...), admin: CurrentUser 
 @router.get("/parts-history")
 def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUser = Depends(current_user)) -> dict:
     """Imported cases, and per line wording and vehicle: how many cases
-    had it and what one unit was adjusted to (_sees_price_book)."""
+    had it and what one unit was adjusted to (_sees_price_book). Prices
+    only from lines a person confirmed (history.price_usable, DB4). No
+    plate any more (owner K0): "plate" stays in the answer, always ""."""
     if not _sees_price_book(user):
         return {"cases": [], "lines": [], "hidden": True}
     admin = is_admin(user)
@@ -149,7 +175,7 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
         labour_counts = dict(db.query(PastLabourLine.case_ref, func.count()).group_by(PastLabourLine.case_ref).all())
         cases = {}
         for ln in lines:
-            cases.setdefault(ln.case_ref, {"ref": ln.case_ref, "plate": ln.plate if admin else "", "make": ln.make,
+            cases.setdefault(ln.case_ref, {"ref": ln.case_ref, "plate": "", "make": ln.make,
                                            "model": ln.model, "surveyed": ln.surveyed, "lines": 0,
                                            "labour": labour_counts.get(ln.case_ref, 0),
                                            "file": ln.source_file if admin else ""})
@@ -166,7 +192,8 @@ def parts_history(q: str = "", make: str = "", model: str = "", user: CurrentUse
             groups.setdefault((ln.make, ln.model, ln.item_key), []).append(ln)
         rows = []
         for (mk, md, _), group in groups.items():
-            prices = [round(g.adjusted_cost / (g.qty or 1), 2) for g in group if g.adjusted_cost and g.adjusted_cost > 0]
+            prices = [round(g.adjusted_cost / (g.qty or 1), 2) for g in group
+                      if g.adjusted_cost and g.adjusted_cost > 0 and price_usable(g)]
             names = [g.item for g in group]
             rows.append({
                 # Sorted first so a tie between wordings is decided the same
@@ -290,6 +317,12 @@ class AiSuggestionRequest(BaseModel):
     parts: list[str] = Field(min_length=1, max_length=40)
 
 
+def ask_ai_models() -> list[str]:
+    """"Ask the AI"'s models: the chain the intake reads with
+    (settings.gemini_model_chain, as ai/extraction._model_chain), in order."""
+    return chain(settings.gemini_model_chain)
+
+
 @router.post("/reports/{report_id}/annex-suggestions/ai")
 def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: CurrentUser = Depends(editable_case)) -> dict:
     """Gemini's lines for parts no imported report covers. Names and
@@ -320,7 +353,12 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
                 input_parts=[{"type": "text", "text": prompt}],
                 schema=_AI_SCHEMA,
                 parse=json.loads,
-                models=["gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+                # The reading's own chain from settings (owner K0, 24 Nov
+                # 2026): light models only where the intake reads with
+                # them (production's GEMINI_MODEL_CHAIN), never a strong
+                # model fixed here -- it began with one, whose free
+                # allowance is ~20 a day.
+                models=ask_ai_models(),
                 actor=actor,
                 timeout=60.0,
             )
@@ -338,7 +376,7 @@ def annex_suggestions_ai(report_id: str, body: AiSuggestionRequest, user: Curren
     for p in out.get("parts") or []:
         lines = [
             {"name": str(ln.get("name", "")).strip()[:120], "qty": float(ln.get("qty") or 1), "usual_unit_price": None,
-             "cases": 0, "kind": "part", "source": "AI suggestion"}
+             "cases": 0, "kind": "part", "source": "AI suggestion", "price_source": "ai"}
             for ln in (p.get("lines") or []) if str(ln.get("name", "")).strip()
         ]
         if lines:
@@ -441,6 +479,68 @@ def _origin_after_edit(row: dict, before: dict | None, damaged_parts: set[str]) 
     return client if client and ORIGIN_RANK[client] >= ORIGIN_RANK[stored] else stored
 
 
+def _money(value) -> float:
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _price_after_edit(row: dict, sent: set, before: dict | None) -> bool:
+    """A saved line's price fields (Stage 1, schema.AnnexAPartItem.
+    price_source ...), set by the server, never as a page sent them:
+      - its W/shop Est. changed from the stored line's (or a new line came
+        with one a person typed): "typed", confirmed -- True, so the save
+        remembers it as this person's own price (prices.remember) when it
+        is above 0;
+      - otherwise the stored line's, which a person may confirm here (the
+        page sends price_confirmed true, or its per-line Confirm turns a
+        prefilled line's prefilled off) but never un-confirm;
+      - a new unpriced line: no price, its source "ai" / "catalogue" when
+        the page says the line came from there.
+    A new line from the suggestions panel carrying the usual price
+    untouched (_from_suggestions) is the book's, to confirm."""
+    est = _money(row.get("workshop_est"))
+    if before is None:
+        if est > 0 and row.get("origin") == "history" and _from_suggestions(row):
+            row.update(prices.no_price_fields(), price_source="book", price_confirmed=False)
+            return False
+        if est > 0:
+            row.update(prices.no_price_fields(), price_source="typed", price_confirmed=True)
+            return True
+        source = row.get("price_source")
+        row.update(prices.no_price_fields(), price_source=source if source in ("ai", "catalogue") else None)
+        return False
+    if est != _money(before.get("workshop_est")):
+        row.update(prices.no_price_fields(), price_source="typed", price_confirmed=True,
+                   book_price=before.get("book_price"))
+        return est > 0
+    confirm = row.get("price_confirmed") is True and "price_confirmed" in sent
+    per_line = "prefilled" in sent and before.get("prefilled") and not row.get("prefilled")
+    for field in prices.PRICE_FIELDS:
+        row[field] = before.get(field)
+    if row.get("price_confirmed") is False and (confirm or per_line):
+        row["price_confirmed"] = True
+    return False
+
+
+def _remember(user_id: str, vehicle: dict, report_id: str, lines: list) -> list[dict]:
+    """prices.remember on a session of its own, after the save is
+    committed: remembering never fails a save (logged instead, nothing
+    remembered)."""
+    db = SessionLocal()
+    try:
+        out = prices.remember(db, user_id, vehicle, report_id, lines)
+        db.commit()
+        return out
+    except Exception:
+        db.rollback()
+        logger.exception("Could not remember the prices typed on case %s", report_id)
+        return []
+    finally:
+        db.close()
+
+
 @router.put("/reports/{report_id}/annex-a")
 def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(editable_case)) -> dict:
     """Saves the surveyor's Annex A table. Adjusted costs and the Annex A/C
@@ -455,7 +555,14 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
     422 catalogue_ref unless the suggestion is this case's; its facts are
     the stored row's, whatever was sent; it never touches the estimate.
     After the save every suggestion a line carries is accepted and one no
-    line carries any more is suggested again (catalogue.sync_accepted)."""
+    line carries any more is suggested again (catalogue.sync_accepted).
+
+    Stage 1 (owner P1, DB2): a line whose W/shop Est. the person changed
+    becomes price_source "typed", confirmed, and its unit price (est /
+    qty) is remembered as this person's own for the case's make and model
+    (prices.remember, after the save commits; a failure there is logged
+    and never fails the save). The answer's `remembered` lists those rows:
+    [{id, wording, make, model_key, unit_price, previous_unit_price}]."""
     db = SessionLocal()
     try:
         # A write first -- the PDF marked out of date, as the save does
@@ -503,10 +610,13 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
                 "replaced it). Unlink it and put it on the line again from the catalogue panel.",
                 "catalogue_ref",
             )
+        typed = []
         for row, (item, before) in zip(items, sent):
             _qty_fields(row)
             row["adjusted_cost"] = adjusted_cost(row.get("workshop_est"), row.get("discount_pct"), bool(row.get("is_net_item")))
             row["origin"] = _origin_after_edit(row, before, damaged_parts)
+            if _price_after_edit(row, item.model_fields_set, before):
+                typed.append((row["part_name"], row.get("workshop_est"), row.get("qty")))
             # source_part carries over from the stored row only when the
             # client left it OUT: an explicit null is [Keep] on a stale row
             # (the line stays as a hand line), and must stick.
@@ -529,9 +639,11 @@ def save_annex_a(report_id: str, body: AnnexASave, user: CurrentUser = Depends(e
         if from_catalogue or released:
             detail += f", {from_catalogue} with a catalogue part"
         audit(db, user, "annex_a_edited", r.id, detail=detail)
+        vehicle = dict(data.get("vehicle_info") or {})
         db.commit()
         if accepted or released:
             logger.info("Annex A of %s: %d catalogue row(s) accepted, %d back to suggested", r.id, accepted, released)
-        return {"annex_a": data["annex_a"], "annex_c": data["annex_c"]}
+        remembered = _remember(user.id, vehicle, report_id, typed) if typed else []
+        return {"annex_a": data["annex_a"], "annex_c": data["annex_c"], "remembered": remembered}
     finally:
         db.close()

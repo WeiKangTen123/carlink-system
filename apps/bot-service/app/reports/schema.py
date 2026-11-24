@@ -542,6 +542,27 @@ class AnnexAPartItem(BaseModel):
     # a reference shown under the line, never its estimate, never printed.
     # A row carrying one is a person's: a re-sync never rebuilds it.
     catalogue_ref: Optional[CatalogueRef] = None
+    # Where the W/shop Est. came from (Stage 1, app/parts/prices.py):
+    # "mine" (this person's own price), "approved" (an admin's book price),
+    # "book" (the median of 2+ confirmed past cases), "typed" (a person
+    # typed it), "ai" / "catalogue" (where the line came from); None for
+    # no price. Never printed. The server keeps it: the Annex A save sets
+    # "typed" when the estimate changed, else keeps the stored one. These
+    # five are out of the JSON schema like cover_page (SkipJsonSchema):
+    # code writes them, never the model, and the draft model's schema
+    # stays as it was (test_c9_base / test_c10_base goldens).
+    price_source: SkipJsonSchema[Optional[str]] = None
+    # mine / approved / book wait for a person (False) until they confirm
+    # (POST .../annex-a/confirm-prices, or type over it); sign-off refuses
+    # while one waits. None on lines from before Stage 1: never held up.
+    price_confirmed: SkipJsonSchema[Optional[bool]] = None
+    # The book's (or the approved) unit price, for comparison; staff only.
+    book_price: SkipJsonSchema[Optional[float]] = None
+    # ISO date of the source: the newest past line used, the person's own
+    # price's last change, or the approval.
+    price_date: SkipJsonSchema[Optional[str]] = None
+    # How many distinct past cases a "book" price rests on.
+    price_cases: SkipJsonSchema[Optional[int]] = None
 
 
 class AnnexAInfo(BaseModel):

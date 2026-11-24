@@ -59,6 +59,11 @@ class PastLine:
     workshop_est: float
     discount: float | None
     adjusted_cost: float
+    # Whether a person confirmed the price (Stage 1, owner 24 Nov 2026): a
+    # firm's spreadsheet is, a signed-off Carlink case's line only when its
+    # price was (learn.past_case_from). An unconfirmed line never prices a
+    # case (price_usable, DB4).
+    confirmed: bool = True
 
 
 @dataclass
@@ -74,6 +79,8 @@ class PastLabour:
 @dataclass
 class PastCase:
     ref: str
+    # As the spreadsheet's cover page says it, for the benchmark's matching
+    # only (scripts/benchmark_intake.py): never stored (import_case, K0).
     plate: str
     make: str
     model: str
@@ -537,14 +544,19 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
     with this one: its Annex A lines and its Annex B labour lines (so a
     report imported before Annex B was read gains them on re-import).
     Returns the number of Annex A lines stored; len(case.labour) is the
-    labour count."""
+    labour count.
+
+    No plate is stored (owner K0, 24 Nov 2026): the CL reference says which
+    report it was. Each line's origin is "carlink" for a signed-off case
+    (learn.py, LEARNED_PREFIX) and "import" for a spreadsheet, with
+    `confirmed` its PastLine's: a spreadsheet's prices are the firm's own."""
     db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == case.ref).delete()
     db.query(PastLabourLine).filter(PastLabourLine.case_ref == case.ref).delete()
+    origin = "carlink" if is_learned(case.ref) else "import"
     for job in case.labour:
         db.add(PastLabourLine(
             case_ref=case.ref,
             source_file=source_name[:200],
-            plate=case.plate,
             make=case.make,
             model=case.model,
             surveyed=case.surveyed,
@@ -558,7 +570,6 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
         db.add(PastAnnexLine(
             case_ref=case.ref,
             source_file=source_name[:200],
-            plate=case.plate,
             make=case.make,
             model=case.model,
             make_model_raw=case.make_model_raw,
@@ -576,6 +587,8 @@ def import_case(db: Session, case: PastCase, source_name: str) -> int:
             workshop_est=line.workshop_est,
             discount=line.discount,
             adjusted_cost=line.adjusted_cost,
+            origin=origin,
+            confirmed=bool(line.confirmed) if origin == "carlink" else True,
         ))
     return len(case.lines)
 
@@ -671,6 +684,28 @@ def is_learned(case_ref: str | None) -> bool:
     return (case_ref or "").startswith(LEARNED_PREFIX)
 
 
+def price_usable(line) -> bool:
+    """Whether a past line's price may price a case or count in a usual
+    price (owner K0 / DB4, 24 Nov 2026): a person confirmed it. A firm's
+    spreadsheet is confirmed (import_case); a line learned from a Carlink
+    case only when its price was confirmed at sign-off -- one nobody
+    confirmed (and every learned line from before Stage 1, confirmed None)
+    never is. An imported line still without the column's value (the
+    start-up step not run yet) counts as the spreadsheet it is. The line
+    itself -- its wording, its place in a kit -- is still used."""
+    confirmed = getattr(line, "confirmed", None)
+    if confirmed is None:
+        return not is_learned(getattr(line, "case_ref", None))
+    return bool(confirmed)
+
+
+def viewed_before() -> datetime | None:
+    """The restricted() view's cut-off (naive UTC), or None: a decision
+    made at or after it (an admin's book price, app/parts/prices.py) is as
+    much "later" as a line imported then."""
+    return _VIEW.get()[1]
+
+
 # --------------------------------------------------------- suggestions
 
 
@@ -694,6 +729,11 @@ def _model_key(model: str | None) -> str:
     words = (model or "").strip().lower().split()
     first = re.sub(r"[^a-z0-9]", "", words[0]) if words else ""
     return _MODEL_TWINS.get(first, first)
+
+
+# The key "My prices" and the admins' book decisions are kept under (owner
+# P2, 24 Nov 2026): the price book's own model key, twins merged.
+model_key = _model_key
 
 
 def _same_model(a: str | None, b: str | None) -> bool:
@@ -1033,11 +1073,14 @@ def suggest(
             if key in have:
                 continue
             seen_in = sorted({g.case_ref for g in group})
-            prices = [p for p in (_unit_price(g) for g in group) if p is not None]
+            # The lines that were paid, with a price a person confirmed
+            # (price_usable: never a learned line nobody confirmed, DB4).
+            paid = [g for g in group if price_usable(g) and _unit_price(g) is not None]
+            prices = [_unit_price(g) for g in paid]
             # What the workshop asked per unit, on the lines that were paid:
             # the W/shop Est column of a prefilled row (prefill.py). The
             # adjusted figure used to go there and was discounted a second time.
-            ests = [round(g.workshop_est / (g.qty or 1), 2) for g in group if _unit_price(g) is not None and g.workshop_est > 0]
+            ests = [round(g.workshop_est / (g.qty or 1), 2) for g in paid if g.workshop_est > 0]
             qtys = [g.qty for g in group if g.qty]
             names = [g.item for g in group]
             # Most common wording; sorted first so a tie is decided the same
@@ -1068,7 +1111,10 @@ def suggest(
                 "qty_text": f"{qty:g}{unit}" if unit else None,
                 "usual_unit_price": round(statistics.median(prices), 2) if prices else None,
                 "usual_unit_est": round(statistics.median(ests), 2) if ests else None,
-                "price_from_cases": len({g.case_ref for g in group if _unit_price(g) is not None}),
+                # How many distinct past cases the usual price rests on
+                # (prefill.MIN_BOOK_CASES), and the newest of them.
+                "price_from_cases": len({g.case_ref for g in paid}),
+                "price_last_seen": (max((g.surveyed or "") for g in paid) or None) if paid else None,
                 "price_range": [min(prices), max(prices)] if len(prices) > 1 else None,
                 "cases": len(seen_in),
                 "nett": all(g.section == "nett" for g in group),
@@ -1195,9 +1241,11 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     return name
 
 
-def _labour_rows(pool: list[PastLabourLine], have: set[str], vehicle_label) -> list[dict]:
+def _labour_rows(pool: list[PastLabourLine], have: set[str], vehicle_label, priced=None) -> list[dict]:
     """One row per wording key: the most common wording, the median
-    adjusted cost and median workshop figure, how many cases had it."""
+    adjusted cost and median workshop figure, how many cases had it.
+    priced(line): whether a line's figures may price the row (None: every
+    line's); a row none of whose lines may comes unpriced (None)."""
     groups: dict[str, list[PastLabourLine]] = {}
     for ln in pool:
         if ln.desc_key and ln.desc_key not in have:
@@ -1208,8 +1256,9 @@ def _labour_rows(pool: list[PastLabourLine], have: set[str], vehicle_label) -> l
         # Most common wording; sorted first so a tie is decided the same
         # way every time.
         description = max(sorted(set(names)), key=names.count)
-        prices = [g.adjusted_cost for g in group if g.adjusted_cost and g.adjusted_cost > 0]
-        ests = [g.workshop_est for g in group if g.workshop_est and g.workshop_est > 0]
+        paying = [g for g in group if priced is None or priced(g)]
+        prices = [g.adjusted_cost for g in paying if g.adjusted_cost and g.adjusted_cost > 0]
+        ests = [g.workshop_est for g in paying if g.workshop_est and g.workshop_est > 0]
         cases = len({g.case_ref for g in group})
         out.append({
             "description": description,
@@ -1229,7 +1278,13 @@ def suggest_labour(db: Session, make: str | None, model: str | None, existing: l
     case's Annex B (`existing`) are left out, as are repeats of the first
     group in the second. Answer: {"groups": [{"reason", "lines": [
     {"description", "usual_price", "usual_workshop_est", "cases", "source"}
-    ]}], "cases_used"}."""
+    ]}], "cases_used"}.
+
+    Another make's labour is no estimate for this car (owner K0, 24 Nov
+    2026): a job only other makes wrote comes unpriced (usual_price and
+    usual_workshop_est None), and one the same make wrote too is priced
+    from the same make's lines alone. A case with no make: every job of
+    the second group unpriced."""
     lines = db.query(PastLabourLine).all()
     have = {normalise_labour(e) for e in existing if e}
     same = [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)]
@@ -1247,7 +1302,7 @@ def suggest_labour(db: Session, make: str | None, model: str | None, existing: l
         return "other-vehicle" if not names else ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
 
     if others:
-        rows = _labour_rows(others, have, vehicles)
+        rows = _labour_rows(others, have, vehicles, priced=lambda ln: _same(ln.make, make))
         if rows:
             groups.append({"reason": "other past cases" if same else "all imported cases", "lines": rows})
     return {"groups": groups, "cases_used": len({ln.case_ref for ln in lines})}
