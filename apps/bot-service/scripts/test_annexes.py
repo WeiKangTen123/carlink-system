@@ -374,13 +374,16 @@ def main() -> int:
     r = stranger.post(f"/reports/{rid}/annex-a/prefill")
     assert r.status_code == 404, r.text
     own = new_case(stranger, plate="SNA5678C")
+    # Stage 1 (owner P3, 24 Nov 2026): "Fill prices" fills a person's own
+    # prices for everyone, so a self-signup may press it on their own case
+    # (it was 403) -- and still gets nothing from the firm's book.
     r = stranger.post(f"/reports/{own}/annex-a/prefill")
-    assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
+    assert r.status_code == 200, r.text
     unpriced = stranger.get(f"/reports/{own}").json()["data"]["annex_a"]["items"]
     assert all(i["workshop_est"] == 0 and not i["prefilled"] for i in unpriced)
     r = stranger.get(f"/reports/{own}/labour-suggestions")
     assert r.status_code == 200 and r.json()["hidden"] is True and r.json()["groups"] == [], r.text
-    ok("the price book stays the firm's: a self-signup can't prefill (403) and gets hidden labour suggestions")
+    ok("the price book stays the firm's: a self-signup's Fill prices brings no book price, and labour suggestions are hidden")
 
     print("sync_annex_a (detection -> Annex A, one way)")
     from app.parts.prefill import origin_of, sync_annex_a
@@ -460,7 +463,12 @@ def main() -> int:
     names = [r["part_name"] for r in priced_rows]
     assert names[0] == "Tail lamp LH" and names.count("Tail lamp LH") == 1
     rh = [r for r in priced_rows if r["source_part"] == "Right Tail Lamp"]
-    assert rh and any(normalise_item(r["part_name"]) == "tail lamp" and r["workshop_est"] > 0 and r["origin"] == "history" for r in rh), priced_rows
+    # Stage 1 (24 Nov 2026): a price is filled in only from >= 2 past cases of the
+    # model. The real reports hold ONE Vezel case, so its tail lamp line comes in
+    # from that case but UNPRICED, with the usual price as a hint
+    # (scripts/test_s1_prices.py covers the priced path with two cases).
+    assert rh and any(normalise_item(r["part_name"]) == "tail lamp" and r["origin"] == "history"
+                      and r["workshop_est"] == 0 and (r.get("usual_unit_price") or 0) > 0 for r in rh), priced_rows
     assert not any(r["source_part"] == "Left Tail Lamp" and r["origin"] != "typed" and normalise_item(r["part_name"]) == "tail lamp" for r in priced_rows), priced_rows
     plain_rows = sync_annex_a(db, sided, price_book=False)["annex_a"]["items"]
     assert [(r["part_name"], r["origin"]) for r in plain_rows] == [("Tail lamp LH", "typed"), ("Tail lamp RH", "detection")], plain_rows

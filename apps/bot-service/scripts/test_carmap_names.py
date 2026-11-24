@@ -216,10 +216,20 @@ def _annex() -> dict:
     for n, listed in enumerate(FIXTURES):
         for m, vehicle in enumerate(VEHICLES):
             data = {"vehicle_info": dict(vehicle), "damage_summary": [dict(it) for it in listed]}
-            out[f"sync/{n}/{m}"] = sync_annex_a(None, data, price_book=False)["annex_a"]
-            out[f"scaffold/{n}/{m}"] = synthesize_annexes_for_report(dict(data))
+            out[f"sync/{n}/{m}"] = _without_line_ids(sync_annex_a(None, data, price_book=False)["annex_a"])
+            out[f"scaffold/{n}/{m}"] = _without_line_ids(synthesize_annexes_for_report(dict(data)))
             out[f"item_row/{n}/{m}"] = [item_row_name(it, vehicle, unsided=u) for it in listed for u in (False, True)]
     return out
+
+
+def _without_line_ids(value):
+    """value without Stage 1's Annex A line ids (line_id, review H2: a
+    server-made id the branch base never wrote); nothing else touched."""
+    if isinstance(value, dict):
+        return {k: _without_line_ids(v) for k, v in value.items() if not (k == "line_id" and "part_name" in value)}
+    if isinstance(value, list):
+        return [_without_line_ids(v) for v in value]
+    return value
 
 
 SECTIONS = {

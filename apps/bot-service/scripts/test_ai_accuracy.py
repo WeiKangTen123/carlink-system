@@ -305,18 +305,21 @@ def sign_off(client: TestClient, report_id: str):
     return client.post(f"/reports/{report_id}/sign-off", json={"terms_accepted": True, "open_items_ack": True})
 
 
-# The firm's (made-up) past spreadsheet for this make and model: the rear
-# bumper's kit, as an imported CL report would hold it.
+# The firm's (made-up) past spreadsheets for this make and model: the rear
+# bumper's kit, as an imported CL report would hold it -- twice, the same
+# figures: the book prices a line only from 2+ past cases (Stage 1, owner
+# K0), and the machine's kit is measured here at its prices.
 def import_history() -> None:
     db = SessionLocal()
     try:
-        case = PastCase(ref="CL 90001", plate="", make=MAKE, model=MODEL, make_model_raw=f"{MAKE} {MODEL}",
-                        registered=None, surveyed="2026-01-05")
-        case.lines = [
-            PastLine(1, "list", "Rear bumper fascia", "Deformed", "Replace", 1.0, "1", 1000.0, 0.2, 800.0),
-            PastLine(2, "list", "Rear bumper clips", "Necessary", "", 10.0, "10", 50.0, 0.2, 40.0),
-        ]
-        import_case(db, case, "CL 90001 made-up.xlsx")
+        for ref, surveyed in (("CL 90001", "2026-01-05"), ("CL 90002", "2026-01-06")):
+            case = PastCase(ref=ref, plate="", make=MAKE, model=MODEL, make_model_raw=f"{MAKE} {MODEL}",
+                            registered=None, surveyed=surveyed)
+            case.lines = [
+                PastLine(1, "list", "Rear bumper fascia", "Deformed", "Replace", 1.0, "1", 1000.0, 0.2, 800.0),
+                PastLine(2, "list", "Rear bumper clips", "Necessary", "", 10.0, "10", 50.0, 0.2, 40.0),
+            ]
+            import_case(db, case, f"{ref} made-up.xlsx")
         db.commit()
     finally:
         db.close()
@@ -752,8 +755,12 @@ def never_from_itself() -> None:
             refs = {ln.case_ref for ln in past_lines(db)}
             check(ref in refs and learn.case_ref(W.case) not in refs,
                   f"a spreadsheet read as {ref!r} and the learned case of Our Ref \"CL 90123\" count once", sorted(refs))
-            stored_refs = {r for (r,) in db.query(PastAnnexLine.case_ref).filter(PastAnnexLine.source_file == f"{ref}.xlsx")}
-            check(stored_refs == {ref}, "the spreadsheet's reference is stored as the importer read it", stored_refs)
+            stored = {(r, f) for (r, f) in db.query(PastAnnexLine.case_ref, PastAnnexLine.source_file)
+                      .filter(PastAnnexLine.case_ref == ref)}
+            # Of the file's name only its CL reference (owner K0, Stage 1
+            # review H1: the firm writes the plate in it).
+            check(stored == {(ref, "CL 90123")}, "the spreadsheet's reference is stored as the importer read it, "
+                  "its file as the CL reference only", stored)
             db.query(PastAnnexLine).filter(PastAnnexLine.case_ref == ref).delete()
             db.commit()
         finally:
@@ -791,8 +798,10 @@ def make_fallback() -> None:
         data = sync_annex_a(db, {"vehicle_info": {"make": "Deltamotors", "model": "Modelfour"}, "damage_summary": [item("Left Headlamp")],
                                  "annex_a": {}}, price_book=True)
         rows = data["annex_a"]["items"]
-        check(len(rows) == 1 and rows[0]["workshop_est"] == 900.0 and rows[0]["suggested_from"] == "1 past case (Deltamotors)",
-              "prefill prices it from the make's case and labels it with the make", rows)
+        # The make's one case lists the line, labelled with the make --
+        # unpriced: the book prices only from 2+ past cases (Stage 1, K0).
+        check(len(rows) == 1 and rows[0]["workshop_est"] == 0.0 and rows[0]["suggested_from"] == "1 past case (Deltamotors)",
+              "prefill takes the line from the make's case and labels it with the make (unpriced: one case)", rows)
     finally:
         db.close()
 

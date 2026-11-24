@@ -360,9 +360,11 @@ def _without_p1(o):
     """o without what Phase 1 adds to every case: the AI's own words kept
     as a note (ai_words), the firm's usual point-of-impact note filled in
     (and listed in template_fields), and the N/A marks sign_off put on the
-    must-have facts. Nothing else is touched."""
+    must-have facts. Nothing else is touched -- but Stage 1's line ids on
+    Annex A lines (line_id, review H2: a server-made id no master wrote),
+    left out the same way."""
     if isinstance(o, dict):
-        o = {k: _without_p1(v) for k, v in o.items() if k != "ai_words"}
+        o = {k: _without_p1(v) for k, v in o.items() if k != "ai_words" and not (k == "line_id" and "part_name" in o)}
         cover = o.get("cover_page")
         if isinstance(cover, dict) and cover.get("point_of_impact_note") == P1_NOTE:
             o["cover_page"] = {**cover, "point_of_impact_note": None}

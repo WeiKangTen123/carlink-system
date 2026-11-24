@@ -53,7 +53,10 @@ export function qtyFromText(text: string): { qty: number; qty_text: string | nul
 /** The row as saved: editing-only fields dropped. catalogue_ref is always
  * sent, null when the line has none: the API keeps a stored line's ref only
  * when a client leaves the field out (a page from before it), so a blank
- * line typed with a removed line's name never inherits its catalogue part. */
+ * line typed with a removed line's name never inherits its catalogue part.
+ * line_id goes back exactly as the API gave it (none on a new line): the
+ * save matches each line to the stored one by it, not by its wording
+ * (Stage 1 review H2). */
 export function fromAnnexRow(row: AnnexRow): AnnexAPartItem {
   const { _key, _qty, _est, ...item } = row;
   const parsed = { ...item, ...qtyFromText(_qty), catalogue_ref: item.catalogue_ref ?? null };
@@ -70,7 +73,9 @@ export function inSections<T extends { is_net_item: boolean }>(rows: T[]): T[] {
 /** What a save would change -- to tell whether anything is unsaved. A
  * catalogue row put on a line (or unlinked) counts: its suggestion and part
  * number, which is all of it a save can change (the API writes the rest
- * from the stored row). */
+ * from the stored row). The price's source and confirm (Stage 1) count
+ * too: a [✓] Confirm is a change to save, and a case fetched again after
+ * "Confirm all prices" must replace the rows it confirmed. */
 export function annexSignature(items: AnnexAPartItem[]): string {
   return JSON.stringify(
     inSections(items).map((it) => [
@@ -91,6 +96,8 @@ export function annexSignature(items: AnnexAPartItem[]): string {
       Boolean(it.stale),
       it.catalogue_ref?.suggestion_id ?? null,
       it.catalogue_ref?.part_number ?? null,
+      it.price_source ?? null,
+      it.price_confirmed ?? null,
     ])
   );
 }

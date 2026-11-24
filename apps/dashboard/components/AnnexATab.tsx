@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, BookOpen, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, BookOpen, CheckCheck, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
 import { conditionWordsOf, type AnnexAPartItem, type ReportDetail } from "@/lib/api";
 import { getTaxonomyAction, prefillAnnexAAction, saveAnnexAAction } from "@/app/reports/actions";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
@@ -44,8 +44,10 @@ import {
 } from "@/lib/catalogue";
 import { ReviewBadge } from "./ReviewBadge";
 import { ReviewConfirmButton } from "./ReviewConfirmButton";
-import { CONFIRMED_ROW, annexAConfirmable, annexAState, annexATally, annexATallyText, isPastCasePrice } from "@/lib/reviewRows";
+import { annexAConfirmable, annexAState, annexATally, annexATallyText, confirmRow, isPastCasePrice } from "@/lib/reviewRows";
+import { confirmAllLabel, confirmedText, isPriceUnconfirmed, prefillNoteText, priceTag, typedPricePatch } from "@/lib/prices";
 import { LockedNote, SavedNote, UnsavedNote, fieldInputStyle } from "./SaveNotes";
+import { PriceSourceTag, RememberedPricesToast, useConfirmAllPrices, type PriceToastState } from "./PriceSource";
 
 /** Tab 3, Annex A: the spare parts table (List Items / S/Nett Items,
  * Remarks, Qty as text, line-total estimates), the suggested lines from past
@@ -57,7 +59,10 @@ import { LockedNote, SavedNote, UnsavedNote, fieldInputStyle } from "./SaveNotes
  * only) is shown only when the API has it switched on; its rows can be
  * ticked and put on a line or a new line of the draft ([Use N ticked]),
  * which then shows the part number, site and the site's price under it --
- * never in W/shop Est., never printed. */
+ * never in W/shop Est., never printed. Stage 1 (components/PriceSource.tsx):
+ * each price's source tag ("Your price · 23 Nov", "Book · 6 cases · 8 mo",
+ * "check" until confirmed), "Confirm all prices (N)", and the toast with
+ * Undo when a save remembered typed prices as the person's own. */
 export function AnnexATab({
   report,
   store,
@@ -81,7 +86,12 @@ export function AnnexATab({
   const annexADirty = store.dirty.annexA;
   const [prefillBusy, setPrefillBusy] = useState(false);
   const [prefillNote, setPrefillNote] = useState<string | null>(null);
-  const annexALocked = readOnly || status.save === "saving" || prefillBusy;
+  // Stage 1: "Confirm all prices", and the toast after a save remembered
+  // the prices typed as the person's own.
+  const confirmPrices = useConfirmAllPrices(report.id, store);
+  const [priceToast, setPriceToast] = useState<PriceToastState | null>(null);
+  const closePriceToast = useCallback(() => setPriceToast(null), []);
+  const annexALocked = readOnly || status.save === "saving" || prefillBusy || confirmPrices.busy;
 
   // The parts-catalogue look-up: asked only while the table can be edited,
   // like the suggested lines. Off on the server -> null here, and neither
@@ -162,6 +172,11 @@ export function AnnexATab({
   // so a typed price or a [✓] shows at once; the header counts them.
   const reviewOn = Boolean(report.review) && !isSignedOff;
   const tallyText = reviewOn ? annexATallyText(annexATally(annexAItems)) : "";
+
+  // Prices filled in for the person (their own, approved, the book's) that
+  // nobody has confirmed: the sign-off refuses while there are any. None on
+  // old cases or from an older server, and then no button shows.
+  const unconfirmedCount = annexAItems.filter((r) => r.part_name.trim() && isPriceUnconfirmed(r)).length;
 
   // Every change goes into the store's Annex A draft and nothing is saved
   // until "Save Annex A"; adjusted costs follow from the row
@@ -368,14 +383,15 @@ export function AnnexATab({
     </>
   );
 
-  const handleSaveAnnexA = async () => {
-    if (annexALocked) return;
+  /** Saves the draft; false when the API refused it (the error shows under
+   * the table). */
+  const saveDraft = async (): Promise<boolean> => {
     store.setStatus("annexA", "saving");
     setPrefillNote(null);
     const res = await saveAnnexAAction(report.id, inSections(annexAItems).map(fromAnnexRow));
     if ("error" in res) {
       store.setStatus("annexA", "error", res.error);
-      return;
+      return false;
     }
     // The API's answer replaces the table: its numbering, adjusted costs,
     // and without the lines that had no part description.
@@ -384,11 +400,36 @@ export function AnnexATab({
     // The save marked the catalogue rows on lines accepted (and the ones
     // taken off suggested again): show them so.
     if (catalogueInfo) catalogue.reload();
+    // Stage 1: the prices typed are remembered as the person's own, with
+    // an Undo. None from an older server, and then no toast.
+    if (res.remembered?.length) setPriceToast({ list: res.remembered, version: Date.now() });
+    return true;
+  };
+
+  const handleSaveAnnexA = async () => {
+    if (annexALocked) return;
+    await saveDraft();
+  };
+
+  // "Confirm all prices (N)": POST annex-a/confirm-prices works on the table
+  // as saved, so unsaved changes are saved first (their typed prices are
+  // confirmed by being typed); the confirmed lines then replace the table.
+  const handleConfirmAllPrices = async () => {
+    if (annexALocked || unconfirmedCount === 0) return;
+    if (annexADirty && !(await saveDraft())) return;
+    setPrefillNote(null);
+    const res = await confirmPrices.confirmAll();
+    // The API's count of the prices that were waiting (the page's own when
+    // an older answer has none).
+    if ("ok" in res) setPrefillNote(confirmedText(res.confirmed, unconfirmedCount));
   };
 
   // POST /reports/{id}/annex-a/prefill works on the table as saved and saves
   // the result: rows a person priced stay, prefilled and unpriced rows are
-  // priced from past cases of this make and model.
+  // priced from the person's own prices and, for price-book staff, past
+  // cases of this make and model (Stage 1). A refusal (403: the price book
+  // can't go into this case, and it isn't the person's own) shows in plain
+  // words under the table.
   const handlePrefill = async () => {
     if (annexALocked) return;
     if (annexADirty && !confirm("Filling prices uses Annex A as last saved, so your unsaved changes would be lost. Continue?")) return;
@@ -403,14 +444,7 @@ export function AnnexATab({
     }
     store.applySaved("annexA", res);
     router.refresh();
-    const n = res.filled;
-    setPrefillNote(
-      n === 0
-        ? "No prices found in past cases for the unpriced lines."
-        : `${n} line${n === 1 ? "" : "s"} priced from past cases${
-            res.unpriced ? `; ${res.unpriced} still ${res.unpriced === 1 ? "has" : "have"} no price` : ""
-          }.`
-    );
+    setPrefillNote(prefillNoteText(res.filled, res.unpriced, res.annex_a?.items || []));
   };
 
   const annexAColumns = readOnly ? 8 : 10;
@@ -420,6 +454,8 @@ export function AnnexATab({
   const originNote = (item: AnnexRow) => {
     // With field review on, the line's badge says "Check · from 3 past cases".
     if (reviewOn && isPastCasePrice(item)) return null;
+    // Stage 1: the price's own tag (under W/shop Est.) says where it came from.
+    if (item.prefilled && priceTag(item)) return null;
     if (item.prefilled && item.suggested_from) {
       return (
         <span className="annex-prefill-tag" title="The estimate was filled from past cases, not typed. Typing an estimate replaces it.">
@@ -436,7 +472,8 @@ export function AnnexATab({
 
   /** Field review: the line's state, and [✓] Confirm on a price the
    * machine put there (past cases above all) -- the price stays and the line
-   * is a person's (prefilled false, origin "typed"), saved with Save Annex A. */
+   * is a person's (prefilled false, origin "typed", and a price filled in
+   * for them confirmed), saved with Save Annex A. */
   const reviewLine = (item: AnnexRow, no: number) => {
     if (!reviewOn) return null;
     const state = annexAState(item);
@@ -462,7 +499,7 @@ export function AnnexATab({
             label={label}
             disabled={annexALocked}
             title="Confirm: the price stands (checked against the quotation). Saved with Save Annex A."
-            onClick={() => updateAnnexRow(item._key, CONFIRMED_ROW)}
+            onClick={() => updateAnnexRow(item._key, confirmRow(item))}
           />
         )}
       </div>
@@ -553,6 +590,7 @@ export function AnnexATab({
           <td data-label="Qty" style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{qtyShown}</td>
           <td data-label="W/shop Est." style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
             {isUnpriced ? "—" : amt(item.workshop_est)}
+            {!isUnpriced && <PriceSourceTag row={item} />}
             {catalogueRefPrice(item)}
           </td>
           <td data-label="Disc" style={{ textAlign: "center", fontFamily: "var(--font-mono)" }}>{item.is_net_item ? "" : `${Math.round(item.discount_pct * 100)}%`}</td>
@@ -637,9 +675,13 @@ export function AnnexATab({
             aria-label={`${line}: workshop estimate (line total)`}
             aria-invalid={isBadAmount(item._est) ? true : undefined}
             disabled={annexALocked}
-            // Typed by a person now, so the "from past cases" tag goes.
-            onChange={(e) => updateTypedRow(item._key, { _est: e.target.value, workshop_est: parseAmount(e.target.value), prefilled: false })}
+            // Typed by a person now, so the "from past cases" tag goes, and
+            // a price filled in for them (Stage 1) is theirs, confirmed.
+            onChange={(e) =>
+              updateTypedRow(item._key, { _est: e.target.value, workshop_est: parseAmount(e.target.value), prefilled: false, ...typedPricePatch(item) })
+            }
           />
+          {!isUnpriced && <PriceSourceTag row={item} />}
           {item.usual_unit_price != null && (
             <div
               title={`What past cases' lines were adjusted to per unit (median), from ${item.suggested_from || "past reports"}. A reference only: enter the workshop's own figure for the line.`}
@@ -731,20 +773,40 @@ export function AnnexATab({
         </div>
         {!readOnly && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {/* Past-case prices are the firm's price book (admins and
-                "see all cases" staff); the API refuses anyone else. */}
-            {canViewAllCases(user) && (
+            {/* Stage 1: prices filled in for the person must be confirmed
+                before sign-off; one click for all of them (saves first). */}
+            {unconfirmedCount > 0 && (
               <button
                 type="button"
-                className="btn-secondary-modern"
+                className="btn-primary-modern"
                 style={{ fontSize: 11, padding: "5px 12px" }}
                 disabled={annexALocked}
-                title="Prices the unpriced and prefilled lines from past cases of this make and model; lines you priced stay."
-                onClick={() => void handlePrefill()}
+                title="The prices filled in for you (your own, an approved price or the price book) stand as they are: checked against the workshop's quote. Unsaved changes are saved first."
+                onClick={() => void handleConfirmAllPrices()}
               >
-                <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} /> {prefillBusy ? "Filling prices…" : "Fill prices from past cases"}
+                <CheckCheck style={{ width: 13, height: 13 }} /> {confirmPrices.busy ? "Confirming…" : confirmAllLabel(unconfirmedCount)}
               </button>
             )}
+            {/* Stage 1: for everyone who may edit the case -- their own
+                prices first; past-case prices are the firm's price book
+                (admins and "see all cases" staff), which the API adds only
+                where the case's owner may see it too (else 403, said in
+                plain words under the table). */}
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              style={{ fontSize: 11, padding: "5px 12px" }}
+              disabled={annexALocked}
+              title={
+                canViewAllCases(user)
+                  ? "Prices the unpriced lines from your own prices, then the shared prices for this make and model; lines with a price stay as they are."
+                  : "Prices the unpriced lines from your own prices for this make and model (Settings → My prices); lines with a price stay as they are."
+              }
+              onClick={() => void handlePrefill()}
+            >
+              <Sparkles style={{ width: 13, height: 13, color: "var(--accent-cyan)" }} />{" "}
+              {prefillBusy ? "Filling prices…" : canViewAllCases(user) ? "Fill prices from past cases" : "Fill in my prices"}
+            </button>
             {/* The parts-catalogue look-up (POST /reports/{id}/catalogue/
                 lookup): the catalogue worker reads the makers' catalogues;
                 the results show in the panel under Suggested lines. Hidden
@@ -876,7 +938,7 @@ export function AnnexATab({
                 <RotateCcw style={{ width: 13, height: 13 }} /> Discard changes
               </button>
               <button type="button" className="btn-primary-modern" style={{ fontSize: 11, padding: "6px 14px" }} disabled={!annexADirty || annexALocked} onClick={() => void handleSaveAnnexA()}>
-                <Save style={{ width: 13, height: 13 }} /> {status.save === "saving" && !prefillBusy ? "Saving…" : "Save Annex A"}
+                <Save style={{ width: 13, height: 13 }} /> {status.save === "saving" && !prefillBusy && !confirmPrices.busy ? "Saving…" : "Save Annex A"}
               </button>
             </div>
           </div>
@@ -890,6 +952,8 @@ export function AnnexATab({
           )}
         </div>
       )}
+
+      {priceToast && <RememberedPricesToast key={priceToast.version} toast={priceToast} onClose={closePriceToast} />}
     </div>
   );
 }

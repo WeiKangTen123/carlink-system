@@ -26,6 +26,8 @@ and approved repair costs. All of that read as findings nobody had made.
 """
 from typing import Any, Dict, List
 
+from app.reports.annex_lines import ensure_line_ids
+
 DEFAULT_DISCOUNT = 0.20  # the firm's standard trade discount on parts
 # Condition "Repair": the firm's "repair it, don't renew it". The part's
 # line stays (the workshop priced it) and is disallowed at 100% -- the three
@@ -104,6 +106,9 @@ def synthesize_annexes_for_report(data: Dict[str, Any], *, scaffold_annex_a: boo
         # Always from the estimate, so a row saved under the old qty rule
         # comes right the next time its case is touched.
         row["adjusted_cost"] = adjusted_cost(row.get("workshop_est"), row.get("discount_pct"), bool(row.get("is_net_item")))
+    # Every line its own id from its first write (Stage 1 review H2): what
+    # a save matches the lines a page sends back by.
+    ensure_line_ids(items_a)
     total_est_a = round(sum(float(r.get("workshop_est") or 0) for r in items_a), 2)
     total_adj_a = round(sum(float(r.get("adjusted_cost") or 0) for r in items_a), 2)
     data["annex_a"] = {"items": items_a, "total_workshop_est": total_est_a, "total_adjusted_cost": total_adj_a}

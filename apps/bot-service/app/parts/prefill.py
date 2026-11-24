@@ -37,6 +37,8 @@ from app.parts.history import (
     side_of,
     suggest,
 )
+from app.parts.prices import MIN_BOOK_CASES, choose_prices
+from app.reports.annex_lines import ensure_line_ids
 from app.reports.synthesize_annexes import (
     DEFAULT_DISCOUNT,
     REPAIR_CONDITION,
@@ -423,6 +425,12 @@ def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = Non
         if price and not est_unit:
             est_unit = price if nett else round(float(price) / (1.0 - DEFAULT_DISCOUNT), 2)
         cases = int(ln.get("cases") or 0)
+        # The book prices a line only from 2+ distinct imported past cases
+        # (owner K0 and final model, 24 Nov 2026; history.price_usable:
+        # never a case signed off here): a one-off or a mistyped line is
+        # listed, unpriced, never copied into every later case of the car.
+        price_cases = int(ln.get("price_from_cases") or 0)
+        priced = bool(price and est_unit) and price_cases >= MIN_BOOK_CASES
         row = {
             "part_name": ln["name"],
             "condition": condition,
@@ -430,7 +438,7 @@ def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = Non
             "qty": qty,
             "qty_text": ln.get("qty_text"),
             # The line total the workshop usually asked for this many.
-            "workshop_est": round(float(est_unit) * qty, 2) if price and est_unit else 0.0,
+            "workshop_est": round(float(est_unit) * qty, 2) if priced else 0.0,
             "discount_pct": 0.0 if nett else DEFAULT_DISCOUNT,
             "adjusted_cost": 0.0,  # synthesize_annexes works it out
             "is_net_item": nett,
@@ -442,6 +450,12 @@ def _rows_for(part: dict, suggestion: dict, group: dict, floor: str | None = Non
             "source_part": part.get("source") or part["part"],
             "stale": False,
         }
+        if priced:
+            # Waits for a person (Confirm all prices, or typing over it).
+            # An unpriced row has no price fields at all: no price, nothing
+            # to confirm (schema.AnnexAPartItem.price_source).
+            row.update(price_source="book", price_confirmed=False, book_price=round(float(est_unit), 2),
+                       price_date=ln.get("price_last_seen"), price_cases=price_cases)
         if ln is main:
             row.update(_main_row_terms(part))
         rows.append(row)
@@ -506,9 +520,15 @@ def _other_rows(db: Session | None, part: dict, vehicle: dict, price_book: bool)
     return [_unpriced_row(part, _other_wording(name))]
 
 
-def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
+def sync_annex_a(db: Session, data: dict, price_book: bool, user_id: str | None = None) -> dict:
     """Returns the case data with Annex A following its damage list and
     the annex totals worked out (synthesize_annexes_for_report).
+
+    The rows it makes are priced by the Stage 1 price choice (app/parts/
+    prices.py): this person's own price (user_id; None: nobody's), then
+    an admin-approved price, then the book's median of 2+ confirmed past
+    cases -- the last two only with price_book -- each waiting for a
+    person (price_confirmed False).
 
     Kept as they are: every row a person priced, typed (origin "typed",
     even unpriced) or looked up, rows carrying a parts-catalogue row
@@ -552,7 +572,11 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     adopt = named_others[0]["source"] if len(named_others) == 1 and OTHER_PART not in damaged_keys else None
 
     kept = []
-    for row in ((data.get("annex_a") or {}).get("items") or []):
+    # Each stored line's id first, from its place in the stored list (Stage
+    # 1 review H2; annex_lines): a kept line from before ids keeps the one
+    # a page already holds for it.
+    stored = ensure_line_ids([dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)])
+    for row in stored:
         if _machine_owned(row, damaged_names):
             continue
         row = dict(row)
@@ -681,6 +705,12 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
             seen.add(owner)
             new_rows.append(row)
 
+    # The new rows' prices: the person's own first, then an approved one
+    # (prices.choose_prices); the book's are on them already (_rows_for).
+    # Kept rows -- a person's, or priced before -- are never touched.
+    if db is not None and new_rows and (user_id or price_book):
+        choose_prices(db, new_rows, vehicle, user_id=user_id, price_book=price_book)
+
     items = kept + [r for r in new_rows if not r["is_net_item"]] + [r for r in new_rows if r["is_net_item"]]
     for i, row in enumerate(items, start=1):
         row["item_no"] = f"{i}.0"
@@ -690,10 +720,10 @@ def sync_annex_a(db: Session, data: dict, price_book: bool) -> dict:
     return synthesize_annexes_for_report(data, scaffold_annex_a=False)
 
 
-def prefill_annex_a(db: Session, data: dict) -> dict:
-    """sync_annex_a for someone who may see the price book: the name the
-    prefill route and older callers use."""
-    return sync_annex_a(db, data, price_book=True)
+def prefill_annex_a(db: Session, data: dict, user_id: str | None = None) -> dict:
+    """sync_annex_a for someone who may see the price book: the name
+    older callers use."""
+    return sync_annex_a(db, data, price_book=True, user_id=user_id)
 
 
 def prefill_counts(data: dict) -> tuple[int, int]:

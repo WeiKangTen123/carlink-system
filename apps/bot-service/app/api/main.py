@@ -48,7 +48,8 @@ from app.api.annexes import router as annexes_router
 from app.api.catalogue import router as catalogue_router
 from app.api.auth import case_recipient, recipient_still_active, router as auth_router
 from app.api.inbox import clear_stale_run, router as inbox_router
-from app.api.parts import price_book_for_case, router as parts_router
+from app.api.parts import own_prices_for_case, price_book_for_case, router as parts_router, settle_sent_lines
+from app.api.prices import router as prices_router
 from app.api.signup import router as signup_router
 from app.api.telegram_link import router as telegram_link_router
 from app.api.intake import (
@@ -91,13 +92,21 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.cleanup import draft_deletes_at, last_photo_at
 from app.intake.photos import first_photo_paths, remove_intake_dir
-from app.reports import accuracy, owners, suggestions
+from app.reports import accuracy, annex_lines, owners, suggestions
 from app.parts import catalogue
 from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
-from app.reports.review import list_counts, missing_before_sign_off, must_have_message, open_summary, review_state
+from app.reports.review import (
+    list_counts,
+    missing_before_sign_off,
+    must_have_message,
+    open_summary,
+    prices_message,
+    review_state,
+    unconfirmed_prices,
+)
 from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakeSession, Report, User, gen_id, iso_utc
@@ -198,6 +207,7 @@ app.include_router(ai_usage_router)
 app.include_router(ai_allowance_router)
 app.include_router(catalogue_router)
 app.include_router(ai_accuracy_router)
+app.include_router(prices_router)
 
 
 @app.exception_handler(HashingBusy)
@@ -571,7 +581,10 @@ def get_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> dic
             "type": r.type,
             "status": r.status,
             "channel": r.channel,
-            "data": r.data,
+            # Each Annex A line with its line_id -- a line stored before ids
+            # with the one its case's next write gives it (Stage 1 review H2,
+            # annex_lines.with_line_ids); nothing written here.
+            "data": annex_lines.with_line_ids(r.data),
             "photo_urls": photo_urls,
             "photo_thumb_urls": photo_thumb_urls,
             "photo_preview_urls": photo_preview_urls,
@@ -995,6 +1008,12 @@ def create_report(body: CreateReportRequest, user: CurrentUser = Depends(current
         # A new case has no catalogue look-up, so no line can carry one of
         # its rows: any catalogue_ref sent is taken off (never refused).
         data = catalogue.without_bad_refs(db, report_id, data)
+        # Annex A lines sent with the case: new lines, their price fields
+        # the server's (a typed price is "typed"; nothing arrives confirmed
+        # as some other source), each with its own id (Stage 1 review Low 1).
+        annex = data.get("annex_a") if isinstance(data.get("annex_a"), dict) else None
+        if annex and isinstance(annex.get("items"), list):
+            settle_sent_lines(None, [it for it in annex["items"] if isinstance(it, dict)])
     finally:
         db.close()
 
@@ -1123,6 +1142,12 @@ def update_report(report_id: str, body: CreateReportRequest, user: CurrentUser =
             # kept or the PDF rendered; checked again under the write lock
             # below, where the rows' statuses follow.
             items = [dict(it) for it in ((data.get("annex_a") or {}).get("items") or []) if isinstance(it, dict)]
+            # The price fields are the server's, never as sent (Stage 1
+            # review Low 1): each line paired with its stored line by its
+            # line_id, its source and confirm the stored line's -- or
+            # "typed" when its estimate changed -- and no confirm here (only
+            # the Annex A save's per-line Confirm and Confirm all prices).
+            settle_sent_lines(r.data, items)
             try:
                 catalogue.checked_refs(db, r.id, items)
             except catalogue.BadCatalogueRef:
@@ -1390,13 +1415,15 @@ def _save_damage_items(db, user: CurrentUser, r: Report, data: dict, damage_summ
     the machine's unpriced rows are rebuilt, a kept row for a part no
     longer damaged is flagged stale. Priced from past cases only when
     this person AND the case's owner may see the price book
-    (parts.price_book_for_case). Its own history action (not "edited",
+    (parts.price_book_for_case); this person's own prices first (Stage 1,
+    parts.own_prices_for_case). Its own history action (not "edited",
     which audit() folds into the previous edit within 30 minutes, losing
     the detail). The PDF is rendered again on the next download, as after
     PUT /annex-a."""
     data["damage_summary"] = damage_summary
     data["damaged_parts"] = [it.get("part") for it in damage_summary if it.get("part")]
-    data = sync_annex_a(db, data, price_book=price_book_for_case(db, r, user))
+    data = sync_annex_a(db, data, price_book=price_book_for_case(db, r, user),
+                        user_id=user.id if own_prices_for_case(db, r, user) else None)
     # Reassigned rather than mutated in place: `data` is a plain JSON
     # column, so SQLAlchemy only detects the change on assignment (same
     # reason sign_off_report/reopen_report rebuild the dict).
@@ -1727,7 +1754,11 @@ async def sign_off_report(
     request and survey, Type of claim, Workshop, Registration No., Make &
     Model, Point of impact) must be filled in or marked N/A, else 409
     {detail, code: "must_have", missing: [{label, keys}]} -- a block, for
-    admins too. While the field
+    admins too. So must every Annex A price the machine filled in (price_
+    source mine / approved / book) be confirmed (Stage 1), else 409
+    {detail, code: "prices_unconfirmed", lines: [{index, wording,
+    price_source, unit_price}]}; with both, one 409 code "must_have" with
+    both missing and lines (each list always there). While the field
     review (app/reports/review.py) has items open -- empty fields only a
     person can fill, guesses, usual wordings and past-case prices nobody
     confirmed -- it also needs open_items_ack: true ("Sign off with N items
@@ -1758,12 +1789,21 @@ async def sign_off_report(
         # The facts every report must state (review.MUST_HAVE, owner
         # 23 Nov 2026): a block, for every account, admins too -- no tick
         # gets past it, unlike the open items below. Filing never asks.
+        # And every price the machine filled in (a person's own, an
+        # approved or a book price) confirmed by a person (Stage 1, owner
+        # P5): the same kind of block. Both at once: one 409 with both
+        # lists, code must_have (what a Phase 1 page already shows).
         missing = missing_before_sign_off(r.data or {})
-        if missing:
+        unconfirmed = unconfirmed_prices(r.data or {})
+        if missing or unconfirmed:
+            words = [must_have_message(missing)] if missing else []
+            if unconfirmed:
+                words.append(prices_message(unconfirmed))
             return JSONResponse({
-                "detail": must_have_message(missing),
-                "code": "must_have",
+                "detail": " ".join(words),
+                "code": "must_have" if missing else "prices_unconfirmed",
                 "missing": missing,
+                "lines": unconfirmed,
             }, status_code=409)
 
         # The figures Annex C prints: typed at sign-off when the body has

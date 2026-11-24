@@ -30,8 +30,12 @@ import {
   confirmTelegram,
   disconnectMyTelegram,
   disconnectUserTelegram,
+  listMyPrices,
+  updateMyPrice,
+  deleteMyPrice,
   ApiError,
   errorCode,
+  type MyPrice,
   type AccountLinkRow,
   type AppSettings,
   type CurrentUser,
@@ -460,5 +464,46 @@ export async function revokeAccountLinkAction(id: string): Promise<{ link: Accou
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to cancel the link" };
+  }
+}
+
+// My prices (Stage 1; everyone, own rows only -- the API lists and changes
+// nothing else). Ids come from the API's own list; seg() in lib/api.ts keeps
+// each inside its path segment whatever the browser sends.
+
+const isPriceId = (id: unknown): id is string | number => (typeof id === "string" && id !== "") || (typeof id === "number" && Number.isFinite(id));
+
+export async function listMyPricesAction(): Promise<{ prices: MyPrice[] } | { error: string }> {
+  try {
+    return { prices: await listMyPrices() };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load your prices" };
+  }
+}
+
+/** A new price per unit; the row as saved (null: load the list again). */
+export async function updateMyPriceAction(id: string | number, unitPrice: number): Promise<{ price: MyPrice | null } | { error: string }> {
+  if (!isPriceId(id)) return { error: "That price can't be found. Reload the page." };
+  if (typeof unitPrice !== "number" || !Number.isFinite(unitPrice) || unitPrice <= 0) return { error: "Type a price above 0." };
+  try {
+    const price = await updateMyPrice(id, unitPrice);
+    revalidatePath("/settings/my-prices");
+    return { price };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to change the price" };
+  }
+}
+
+export async function deleteMyPriceAction(id: string | number): Promise<{ ok: true } | { error: string }> {
+  if (!isPriceId(id)) return { error: "That price can't be found. Reload the page." };
+  try {
+    await deleteMyPrice(id);
+    revalidatePath("/settings/my-prices");
+    return { ok: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to delete the price" };
   }
 }

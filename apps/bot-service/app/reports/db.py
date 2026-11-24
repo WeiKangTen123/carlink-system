@@ -85,6 +85,12 @@ _ADDED_COLUMNS = [
     # The sort's geometry of a photo, for E7's side worked out in code
     # (models.IntakePhoto.geometry, plans/2026-11-22-enhance-staging 3c).
     ("intake_photos", "geometry", "JSON"),
+    # Stage 1 (owner, 24 Nov 2026): where a past line came from and whether
+    # its price was confirmed (models.PastAnnexLine.origin / confirmed);
+    # filled for the rows already there by the start-up step
+    # price_book_origin_v1 (init_db).
+    ("past_annex_lines", "origin", "VARCHAR"),
+    ("past_annex_lines", "confirmed", "BOOLEAN"),
     # When a photo was taken, by its EXIF: the camera's clock and, when the
     # camera wrote its offset, UTC (models.IntakePhoto.taken_at_local /
     # taken_at; owner decision D7, 23 Nov 2026).
@@ -131,6 +137,13 @@ _ADDED_INDEXES = [
     # The AI accuracy record (contract 8 L, models.AiAccuracy): the same name
     # create_all gives signed_off_at's index=True.
     "CREATE INDEX IF NOT EXISTS ix_ai_accuracy_signed_off_at ON ai_accuracy (signed_off_at)",
+    # "My prices" (Stage 1, models.UserPrice): one price per person, make,
+    # model and line, a side-less line included -- a plain UNIQUE would let
+    # NULL sides repeat. The other two are the models' own __table_args__.
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_prices_key"
+    " ON user_prices (user_id, make, model_key, item_key, coalesce(side, ''))",
+    "CREATE INDEX IF NOT EXISTS ix_user_prices_user_id_make_model_key ON user_prices (user_id, make, model_key)",
+    "CREATE INDEX IF NOT EXISTS ix_book_prices_key ON book_prices (make, model_key, item_key)",
 ]
 
 # One-off data changes, each safe to run on every start-up.
@@ -270,7 +283,7 @@ def _once(name: str, step) -> None:
 
 
 def init_db() -> None:
-    from app.parts import history
+    from app.parts import history, prices
     from app.reports import owners, synthesize_annexes
 
     _create_tables()
@@ -288,3 +301,14 @@ def init_db() -> None:
     # kept whole): the price book list shows the stored columns, which an
     # import wrote under the old rules (history.refresh_lines).
     _once("past_lines_refresh_v1", history.refresh_lines)
+    # Stage 1 (owner, 24 Nov 2026): each past line's origin ("import" /
+    # "carlink"), imported ones confirmed; a learned line never prices a
+    # case anyway (history.price_usable).
+    _once("price_book_origin_v1", prices.mark_past_line_origins)
+    # And no plate in the price book (K0, Stage 1 review H1): plates blanked,
+    # file names (which the firm writes with the plate) and file-name
+    # references cut down to their CL reference -- once, with one history
+    # entry giving the counts, never a plate. Irreversible; the deploy's
+    # backup has them. (Replaces "price_book_plates_v1", which blanked the
+    # plate column only and never ran anywhere.)
+    _once("price_book_personal_v1", prices.scrub_price_book)

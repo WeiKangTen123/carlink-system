@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 from app.auth.core import display_name
 from app.parts.prefill import origin_of, side_unconfirmed
+from app.parts.prices import FILLED_SOURCES, awaits_confirmation, unit_of
 
 # How a field is judged while nobody has confirmed it (lib/review.ts
 # FieldRule): doc -- read from a document or plate photo, the AI is
@@ -386,7 +387,12 @@ def annex_a_state(row: dict, damaged_parts: set, signed_off: bool) -> tuple[str,
         before origins existed with a price nobody prefilled reads as
         typed, prefill.origin_of), "check" for one the machine put there
         nobody confirmed (detection, a suggestion, a looked-up price).
-    Confirming is the Annex A save itself: prefilled false, origin "typed"."""
+    Confirming is the Annex A save itself: prefilled false, origin "typed".
+    Stage 1 (app/parts/prices.py): a price the machine filled in (price_
+    source mine / approved / book) is "check" while price_confirmed is
+    false -- a past case's ("book") also counted as one -- and "you" once
+    confirmed (POST .../annex-a/confirm-prices); lines without the field
+    are read as before."""
     if not str(row.get("part_name") or "").strip():
         return "none", False
     if signed_off:
@@ -396,6 +402,10 @@ def annex_a_state(row: dict, damaged_parts: set, signed_off: bool) -> tuple[str,
     priced = _number(row.get("workshop_est")) > 0
     if not priced and str(row.get("condition") or "").strip().lower() != "serviceable":
         return "needs", False
+    if priced and row.get("price_source") in FILLED_SOURCES and row.get("price_confirmed") is not None:
+        if row.get("price_confirmed"):
+            return "you", False
+        return "check", row.get("price_source") == "book"
     if priced and row.get("prefilled"):
         return "check", True
     if not row.get("origin") and not priced:
@@ -516,6 +526,34 @@ def missing_before_sign_off(data: dict | None) -> list[dict]:
         if open_keys:
             out.append({"label": label, "keys": open_keys})
     return out
+
+
+def unconfirmed_prices(data: dict | None) -> list[dict]:
+    """The Annex A lines whose price the machine filled in -- this person's
+    own, an approved or a book price (price_source mine / approved / book)
+    -- and nobody has confirmed (price_confirmed false): sign-off refuses
+    while there are any (409 prices_unconfirmed, owner P5). [{index,
+    wording, price_source, unit_price}], index the line's place in
+    annex_a.items. A line without the fields (a case from before Stage 1)
+    is never one."""
+    data = data if isinstance(data, dict) else {}
+    annex = data.get("annex_a") if isinstance(data.get("annex_a"), dict) else {}
+    out = []
+    for index, row in enumerate(annex.get("items") or []):
+        if awaits_confirmation(row):
+            out.append({"index": index, "wording": str(row.get("part_name") or "").strip(),
+                        "price_source": row.get("price_source"), "unit_price": unit_of(row)})
+    return out
+
+
+def prices_message(lines: list[dict]) -> str:
+    """"2 prices filled in from your own prices or the price book are not
+    confirmed yet: ..." for the sign-off's refusal."""
+    n = len(lines)
+    names = ", ".join(line["wording"] for line in lines[:5]) + (", ..." if n > 5 else "")
+    return (f"{n} price{'s' if n != 1 else ''} filled in from your own prices or the price book "
+            f"{'are' if n != 1 else 'is'} not confirmed yet: {names}. Check {'them' if n != 1 else 'it'} against the "
+            "workshop's quotation on the Annex A tab, then press Confirm all prices (or type the right figure).")
 
 
 def na_must_haves(data: dict | None) -> frozenset[str]:

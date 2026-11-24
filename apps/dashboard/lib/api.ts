@@ -6,6 +6,25 @@ import { isPublicPage } from "./publicPages";
 import type { MustHaveItem, Review } from "./review";
 import { CATALOGUE_OFF, normalizeCatalogue, type CatalogueJob, type CatalogueRef, type CatalogueState, type CatalogueSuggestion } from "./catalogue";
 import { seg } from "./apiPath";
+import {
+  confirmedLinesFrom,
+  normalizeMyPrice,
+  normalizeMyPrices,
+  normalizeUserPrice,
+  normalizeUserPrices,
+  parseRemembered,
+  prefillRefusal,
+  signOffBlock,
+  signOffBlockMessage,
+  type MyPrice,
+  type PriceSource,
+  type PromoteBody,
+  type RememberedPrice,
+  type UnconfirmedPriceLine,
+  type UserPriceRow,
+} from "./prices";
+
+export type { MyPrice, PriceSource, PromoteBody, RememberedPrice, UnconfirmedPriceLine, UserPriceRow } from "./prices";
 
 const isBrowser = typeof window !== "undefined";
 
@@ -1309,6 +1328,29 @@ export type AnnexAPartItem = {
    * the site's reference price, shown under the line. Never the estimate,
    * never printed. Null (sent as null) takes it off on save. */
   catalogue_ref?: CatalogueRef | null;
+  // Stage 1, price safety (S1-contract.md "Annex A line JSON"). All left
+  // out on old cases and by an older server: then no tag shows and the
+  // line counts as confirmed (lib/prices.ts). Shown, never printed.
+  /** Where the price came from: "mine" (the person's own remembered
+   * price), "approved" (an admin-approved book price), "book" (the price
+   * book's median of >=2 cases), "typed", "ai", "catalogue"; null: none. */
+  price_source?: PriceSource | null;
+  /** False until a person confirms a mine/approved/book price; the
+   * sign-off refuses while any is false (409 prices_unconfirmed). Null (or
+   * left out) on a line with no price to confirm: counts as confirmed. */
+  price_confirmed?: boolean | null;
+  /** The book's (or the approved) price per unit, for comparison. */
+  book_price?: number | null;
+  /** ISO date of the source: the newest past line used, the person's
+   * price's last change, or the approval. */
+  price_date?: string | null;
+  /** How many past cases a "book" price comes from. */
+  price_cases?: number | null;
+  /** The line's own id, the server's (Stage 1 review H2): the Annex A save
+   * matches each line sent back to the stored one by it, never by its
+   * wording, so it is sent back UNCHANGED. A new line has none until it is
+   * saved; never set or copied by the page. */
+  line_id?: string | null;
 };
 
 export type AnnexAOrigin = "detection" | "history" | "lookup" | "typed";
@@ -2260,40 +2302,36 @@ function openItemsRefusal(body: unknown): OpenItemsError | null {
 
 /** The sign-off was refused because facts every report must state are
  * neither filled in nor marked N/A (409, code "must_have"; owner, 23 Nov
- * 2026): which ones. No tick gets past it -- for admins too. */
+ * 2026): which ones. No tick gets past it -- for admins too. Stage 1 adds
+ * Annex A prices filled in for the person and not yet confirmed (409
+ * "prices_unconfirmed", `lines`), alone or in the same answer as the
+ * must-haves: unconfirmedPrices. */
 export class MustHaveError extends ApiError {
   readonly missing: MustHaveItem[];
+  readonly unconfirmedPrices: UnconfirmedPriceLine[];
 
-  constructor(message: string, missing: MustHaveItem[]) {
-    super(message, 409, "must_have", message);
+  constructor(message: string, missing: MustHaveItem[], unconfirmedPrices: UnconfirmedPriceLine[] = [], code = "must_have") {
+    super(message, 409, code, message);
     this.name = "MustHaveError";
     this.missing = missing;
+    this.unconfirmedPrices = unconfirmedPrices;
   }
 }
 
-/** A 409 must_have body ({detail, code, missing}), at the top or inside detail. */
+/** A 409 must_have and/or prices_unconfirmed body ({detail, code, missing,
+ * lines}), at the top or inside detail (lib/prices.ts signOffBlock). */
 function mustHaveRefusal(body: unknown): MustHaveError | null {
-  if (!body || typeof body !== "object") return null;
-  const top = body as Record<string, unknown>;
-  const inner = top.detail && typeof top.detail === "object" ? (top.detail as Record<string, unknown>) : null;
-  const src = top.code === "must_have" ? top : inner?.code === "must_have" ? inner : null;
-  if (!src) return null;
-  const missing = Array.isArray(src.missing)
-    ? (src.missing as unknown[]).flatMap((m) => {
-        const item = m as Record<string, unknown> | null;
-        if (!item || typeof item.label !== "string" || !Array.isArray(item.keys)) return [];
-        return [{ label: item.label, keys: (item.keys as unknown[]).filter((k): k is string => typeof k === "string") }];
-      })
-    : [];
-  const said = typeof src.detail === "string" && src.detail ? src.detail : null;
-  const words = said || `${missing.length} things before sign-off: ${missing.map((m) => m.label).join(", ")}.`;
-  return new MustHaveError(words, missing);
+  const block = signOffBlock(body);
+  if (!block) return null;
+  const code = block.codes.includes("must_have") ? "must_have" : "prices_unconfirmed";
+  return new MustHaveError(signOffBlockMessage(block), block.missing, block.prices, code);
 }
 
 /** Signs as the signed-in user, with their own profile (My settings) --
  * the API ignores any name, licence or firm in the request. A must-have
- * fact neither filled in nor marked N/A: a MustHaveError (409). Fields
- * still open without open_items_ack: an OpenItemsError (409). */
+ * fact neither filled in nor marked N/A, or an Annex A price nobody
+ * confirmed: a MustHaveError (409). Fields still open without
+ * open_items_ack: an OpenItemsError (409). */
 export async function signOffReport(
   id: string,
   payload: SignOffRequest = {}
@@ -2703,29 +2741,52 @@ export async function askAiAnnexSuggestions(reportId: string, parts: string[]): 
 /** Saves the whole Annex A table. The API numbers the rows, works out each
  * adjusted cost and the Annex A/C totals, and drops rows with no part name;
  * a signed-off case is refused (409). The PDF is rendered again on the next
- * download. */
+ * download. Stage 1: a line whose W/shop Est. the person changed is
+ * remembered as their own price per unit (`remembered`, [] from an older
+ * server), which the toast offers to undo. */
 export async function saveAnnexA(
   reportId: string,
   items: AnnexAPartItem[]
-): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo }> {
+): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; remembered: RememberedPrice[] }> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
   });
   if (!res.ok) throw await apiError(res, "Failed to save Annex A");
-  return res.json();
+  const body = await res.json();
+  return { ...body, remembered: parseRemembered(body) };
 }
 
-/** Fills the workshop estimates on Annex A from past cases of the same
- * make and model (POST /reports/{id}/annex-a/prefill). Rows a person
- * priced are kept; prefilled and unpriced rows are replaced. The whole
- * table comes back, saved. */
+/** "Confirm all prices" (POST /reports/{id}/annex-a/confirm-prices): every
+ * Annex A line's price confirmed, audited. The API answers {annex_a,
+ * annex_c, confirmed} as the Annex A save does: annex_a (lines and totals)
+ * and annex_c go on the page as they are (lib/prices.ts confirmedLinesFrom;
+ * items null when the answer holds no lines the page can use: the caller
+ * fetches the case again). 409 once signed off. */
+export async function confirmAnnexAPrices(reportId: string): Promise<ReturnType<typeof confirmedLinesFrom>> {
+  const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a/confirm-prices`, { method: "POST" });
+  if (!res.ok) throw await apiError(res, "Failed to confirm the prices");
+  return confirmedLinesFrom(await res.json().catch(() => null));
+}
+
+/** "Fill prices" (POST /reports/{id}/annex-a/prefill): the unpriced rows
+ * priced -- this person's own prices first (everyone who may edit the case,
+ * Stage 1), then for price-book staff an approved or the book's price.
+ * Rows a person priced are kept; prefilled and unpriced rows are replaced.
+ * The whole table comes back, saved. A 403 (the price book can't go into
+ * this case and it isn't the person's own -- an admin on a self-signup's
+ * case) comes back in plain words (lib/prices.ts prefillRefusal). */
 export async function prefillAnnexA(
   reportId: string
 ): Promise<{ annex_a: AnnexAInfo; annex_c: AnnexCInfo; filled: number; unpriced: number }> {
   const res = await apiFetch(`${API_BASE_URL}/reports/${seg(reportId)}/annex-a/prefill`, { method: "POST" }, { timeoutMs: 30000 });
-  if (!res.ok) throw await apiError(res, "Failed to fill prices from past cases");
+  if (res.status === 403) {
+    const err = await apiError(res, "Failed to fill prices");
+    const friendly = prefillRefusal(err.status, err.detail);
+    throw friendly ? new ApiError(friendly, err.status, err.code, err.detail) : err;
+  }
+  if (!res.ok) throw await apiError(res, "Failed to fill prices");
   return res.json();
 }
 
@@ -2866,15 +2927,18 @@ export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: str
 export type PastReportCase = {
   /** The firm's case reference, e.g. "CL 12330". */
   ref: string;
-  /** Admins only; empty for everyone else. */
-  plate: string;
+  /** No longer kept (Stage 1 drops plates from the price book); an older
+   * server still sends it, to admins only. Not shown. */
+  plate?: string;
   make: string;
   model: string;
   /** ISO date of the survey, when the report gave one. */
   surveyed: string | null;
   lines: number;
-  /** Admins only; empty for everyone else. */
-  file: string;
+  /** Always empty now: the firm writes the plate in a file's name, so
+   * the price book keeps only the CL reference (Stage 1 review H1). Not
+   * shown. */
+  file?: string;
 };
 
 /** One line wording for one make and model, across the past reports. */
@@ -2933,6 +2997,86 @@ export async function deletePastReport(ref: string): Promise<{ ok: boolean; line
   const res = await apiFetch(`${API_BASE_URL}/parts-history/${seg(ref)}`, { method: "DELETE" });
   if (!res.ok) throw await apiError(res, "Failed to remove the report");
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1, "My prices" (S1-contract.md): the prices a person typed on Annex
+// A, remembered per unit for them alone, keyed by make and model. Every
+// signed-in staff account has its own; the API lists and changes only the
+// caller's rows. The shared default changes only when an admin uses
+// someone's price for everyone on "All users' prices" (below) -- never by
+// signing a case off.
+
+/** An older server has no /me/prices: said plainly, not as "(404)". */
+const MY_PRICES_MISSING = "My prices isn't available on this server yet.";
+
+/** GET /me/prices, optionally filtered (make, model key, search words). */
+export async function listMyPrices(filters: { make?: string; model?: string; q?: string } = {}): Promise<MyPrice[]> {
+  const params = new URLSearchParams();
+  if (filters.make) params.set("make", filters.make);
+  if (filters.model) params.set("model", filters.model);
+  if (filters.q) params.set("q", filters.q);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/me/prices${query}`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (res.status === 404) throw new ApiError(MY_PRICES_MISSING, 404, "not_found", MY_PRICES_MISSING);
+  if (!res.ok) throw await apiError(res, "Failed to load your prices");
+  return normalizeMyPrices(await res.json());
+}
+
+/** PATCH /me/prices/{id}: a new price per unit. The row comes back (null
+ * when the answer can't be read: the caller loads the list again). */
+export async function updateMyPrice(id: string | number, unitPrice: number): Promise<MyPrice | null> {
+  const res = await apiFetch(`${API_BASE_URL}/me/prices/${seg(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ unit_price: unitPrice }),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to change the price");
+  return normalizeMyPrice(await res.json().catch(() => null));
+}
+
+/** DELETE /me/prices/{id}: forgotten (the API keeps an audit row). */
+export async function deleteMyPrice(id: string | number): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/me/prices/${seg(id)}`, { method: "DELETE" });
+  if (!res.ok) throw await apiError(res, "Failed to delete the price");
+}
+
+/** POST /me/prices/{id}/undo: back to the price before the last save, or
+ * gone if that save made it. */
+export async function undoMyPrice(id: string | number): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/me/prices/${seg(id)}/undo`, { method: "POST" });
+  if (!res.ok) throw await apiError(res, "Failed to undo the price");
+}
+
+/** Admins: everyone's own prices, with the person's name and the shared
+ * default beside each (GET /admin/user-prices), newest first; optionally
+ * filtered (a person's id or name words, make, model, search words). */
+export async function listUserPrices(filters: { user?: string; make?: string; model?: string; q?: string } = {}): Promise<UserPriceRow[]> {
+  const params = new URLSearchParams();
+  for (const key of ["user", "make", "model", "q"] as const) {
+    const value = filters[key];
+    if (value) params.set(key, value);
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await apiFetch(`${API_BASE_URL}/admin/user-prices${query}`, { cache: "no-store" }, { timeoutMs: 15000 });
+  if (res.status === 404) throw new ApiError("All users' prices isn't available on this server yet.", 404, "not_found");
+  if (!res.ok) throw await apiError(res, "Failed to load everyone's prices");
+  return normalizeUserPrices(await res.json());
+}
+
+/** Admins: "Use this price for everyone" (POST /admin/user-prices/{id}/
+ * promote) -- the shared default for that make, model and line becomes
+ * the person's price, or the admin's figure. Audited by the API. The row
+ * comes back with its new default (null when it can't be read: the
+ * caller loads the list again). */
+export async function promoteUserPrice(id: string | number, body: PromoteBody): Promise<UserPriceRow | null> {
+  const res = await apiFetch(`${API_BASE_URL}/admin/user-prices/${seg(id)}/promote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to use the price for everyone");
+  return normalizeUserPrice(await res.json().catch(() => null));
 }
 
 /** Over the same cases as listReports(scope), with the same default and

@@ -238,7 +238,7 @@ DECISIONS = {
     ("GET", "/analytics/summary"): ("signed-in", "follows the list scope"),
     ("GET", "/taxonomy"): ("signed-in", "follows the list scope; skips drafts"),
     ("GET", "/settings"): ("signed-in", "company name; P6's public_contact_phone, dpo_contact, company_key_billed to admins only"),
-    ("GET", "/parts-history"): ("special", "signed-in; plates and file names admin only; prices admin or sees_all_cases (B2)"),
+    ("GET", "/parts-history"): ("special", "signed-in; file names admin only, no plates at all (Stage 1 K0); prices admin or sees_all_cases (B2)"),
     ("POST", "/reports/analyze-photos"): ("special", "signed-in; AI allowed (409 ai_key_missing) before any file is saved (B2)"),
 
     ("GET", "/users"): ("admin", "with the three ticks and case counts"),
@@ -262,6 +262,13 @@ DECISIONS = {
     ("GET", "/ai-usage"): ("admin", "?days=7|30|90; every case's runs summed, never a key or public sender data"),
     # Contract 8 L (app/api/ai_accuracy.py; tested in scripts/test_ai_accuracy.py).
     ("GET", "/admin/ai-accuracy"): ("admin", "?since=YYYY-MM-DD; what surveyors kept of the AI's drafts, per case and month; never a plate"),
+    # Stage 1 "My prices" (app/api/prices.py; tested in scripts/test_s1_prices.py).
+    ("GET", "/admin/user-prices"): ("admin", "Stage 1 final model: everyone's own prices, with names, beside the shared default"),
+    ("POST", "/admin/user-prices/{price_id}/promote"): ("admin", "Stage 1 final model: use one person's price for everyone -> book_prices row + history entry"),
+    ("GET", "/me/prices"): ("self", "Stage 1: the person's own prices only (?make=&model=&q=)"),
+    ("PATCH", "/me/prices/{price_id}"): ("self", "Stage 1: own row only (else 404 price_not_found)"),
+    ("DELETE", "/me/prices/{price_id}"): ("self", "Stage 1: own row only; history entry with the old price (DB3)"),
+    ("POST", "/me/prices/{price_id}/undo"): ("self", "Stage 1: own row only; the price before, or the row removed if new"),
     ("GET", "/setup/llm-keys"): ("admin", ""),
     ("POST", "/setup/llm-keys"): ("admin", ""),
     ("DELETE", "/setup/llm-keys/{key_id}"): ("admin", ""),
@@ -290,7 +297,9 @@ DECISIONS = {
     ("PUT", "/reports/{report_id}/annex-b"): ("case-edit", ""),
     ("PUT", "/reports/{report_id}/annex-c"): ("case-edit", ""),
     ("PUT", "/reports/{report_id}/checked"): ("case-edit", "field review marks; 409 intake / signed off; tested in scripts/test_field_review.py"),
-    ("POST", "/reports/{report_id}/annex-a/prefill"): ("case-edit", "then 403 not_allowed unless admin or sees_all_cases (the price book)"),
+    ("POST", "/reports/{report_id}/annex-a/prefill"): ("case-edit", "Stage 1: own prices for anyone on their own case; the price book only "
+                                                                  "for admin or sees_all_cases (and the owner); 403 not_allowed if neither"),
+    ("POST", "/reports/{report_id}/annex-a/confirm-prices"): ("case-edit", "Stage 1: every line's price confirmed; 409 intake / signed off"),
     ("POST", "/reports/{report_id}/upload-photos"): ("case-edit", "no AI (P4); 507 disk_full; 60 photos an hour for unvetted accounts (429 rate_limited)"),
     ("POST", "/reports/{report_id}/render-pdf"): ("case-edit", "per-user rate limit 429 render_limit; 2 renders at once (B2)"),
     ("POST", "/intake/{report_id}/photos"): ("case-edit", "507 disk_full under 3 GB free (B2)"),
@@ -533,7 +542,7 @@ def new_draft(p, photos: int = 0) -> str:
 
 def fill(path: str, **values) -> str:
     """A concrete URL for an OpenAPI path, whatever its parameters are called."""
-    defaults = {"item_index": "0", "service": "llm", "case_ref": "CL 1"}
+    defaults = {"item_index": "0", "service": "llm", "case_ref": "CL 1", "price_id": "1"}
 
     def repl(m):
         name = m.group(1)
@@ -652,6 +661,7 @@ ADMIN_BODIES = {
     ("PUT", "/signup-settings"): lambda: {"json": {"open": False}},
     ("POST", "/account-links"): lambda: {"json": {"email": "nope@example.com", "role": "admin"}},
     ("PUT", "/settings"): lambda: {"json": {"company_name": "Not Carlink"}},
+    ("POST", "/admin/user-prices/{}/promote"): lambda: {"json": {"unit_price": 100, "reason": "plain user"}},
     ("POST", "/setup/llm-keys"): lambda: {"json": {"apiKey": "AIza-not-a-key"}},
 }
 
@@ -955,13 +965,16 @@ def b2_knowledge() -> None:
         db.commit()
     finally:
         db.close()
-    for who, p, sees_prices, sees_plates in (("the admin", W.admin, True, True), ("S (sees all cases)", W.S, True, False),
-                                             ("M (may sign off only)", W.M, False, False), ("A (self-signup)", W.A, False, False)):
+    # Stage 1 (owner K0, 24 Nov 2026; review H1): no plate and no file name
+    # for anyone, admins too (the line above still has both, as a row from
+    # before the one-time step would).
+    for who, p, sees_prices in (("the admin", W.admin, True), ("S (sees all cases)", W.S, True),
+                                ("M (may sign off only)", W.M, False), ("A (self-signup)", W.A, False)):
         r = p.c.get("/parts-history")
         body, text = jd(r), r.text or ""
         need(r.status_code == 200, f"{who} opens Knowledge", brief(r))
-        check((plate in text and source in text) == sees_plates,
-              f"{who}: plates and file names {'shown' if sees_plates else 'hidden'}", f"plate shown={plate in text}, file shown={source in text}")
+        check(plate not in text and source not in text,
+              f"{who}: no plate, no file name", f"plate shown={plate in text}, file shown={source in text}")
         lines = body.get("lines") if "lines" in body else body.get("items")
         if sees_prices:
             check(isinstance(lines, list) and any(isinstance(x, dict) and x.get("usual_unit_price") for x in lines) and not body.get("hidden"),

@@ -132,10 +132,19 @@ def main() -> int:
     assert striker["cases"] == 2 and striker["usual_unit_price"] == 76.0 and striker["min_price"] == 72.0
     ok("admins import reports (re-import replaces), other files are refused by name; history shows usual prices")
     assert all(c["plate"] == "" and c["file"] == "" for c in hist["cases"]), hist["cases"]
-    assert {c["plate"] for c in admin.get("/parts-history").json()["cases"]} == {"SLK3063Z", "SMV7530X"}
+    # Stage 1 (owner K0, 24 Nov 2026; review H1): the importer keeps no plate
+    # and, of the file's name -- the firm writes the plate in it -- only the
+    # CL reference, so not even an admin sees either.
+    r = admin.get("/parts-history")
+    admin_cases = r.json()["cases"]
+    assert all(c["plate"] == "" and c["file"] == "" for c in admin_cases), admin_cases
+    for _, (name, _, _) in files[:2]:
+        plate = name.split(" ", 2)[2].removesuffix(".xlsx")
+        assert plate not in r.text and name not in r.text, r.text[:300]
+    assert ".xlsx" not in r.text, r.text[:300]
     r = stranger.get("/parts-history")
     assert r.status_code == 200 and r.json() == {"cases": [], "lines": [], "hidden": True}, r.text
-    ok("plates and file names for admins only; a self-signup gets empty lists and hidden: true")
+    ok("no plate and no file name for anyone, admins too; a self-signup gets empty lists and hidden: true")
 
     print("suggestions")
     # The surveyor's own case: a plain user only sees the cases they own.
@@ -239,15 +248,15 @@ def main() -> int:
         {**panel, "part_name": "Tail gate seal", "workshop_est": 0},           # unpriced suggestion: history
         {**panel, "part_name": "Tail gate emblem", "workshop_est": 150},       # a figure the person typed: typed
         {"part_name": "Tail gate garnish", "workshop_est": 0, "origin": "history"},  # says history, from nowhere: typed
+        {**panel, "part_name": "Tail gate weatherstrip", "workshop_est": 0},   # unpriced suggestion: history
     ]
     rows5 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items5}).json()["annex_a"]["items"]
-    assert [r["origin"] for r in rows5] == ["history", "history", "typed", "typed"], [(r["part_name"], r["origin"]) for r in rows5]
+    assert [r["origin"] for r in rows5] == ["history", "history", "typed", "typed", "history"], [(r["part_name"], r["origin"]) for r in rows5]
     ok("a new row from the suggestions panel (suggested_from, the usual price or unpriced) keeps origin history; other new rows are typed")
     # Any other field changed on a history row makes it typed; re-saved untouched it stays history.
-    items6 = [{**rows5[0], "oem_part_number": "33500-T7A"}, {**rows5[1], "discount_pct": 0.0}, {**rows5[0], "part_name": "Tail gate hinge", "is_net_item": True},
-              {**rows5[1], "part_name": "Tail gate seal"}]
-    items6[2]["part_name"] = "Tail gate hinge"  # same row as items6[0]: only the first of a name is matched, so give it its own
-    items6 = [items6[0], items6[1], {**rows5[1], "action": "Replace"}]
+    # Each line is matched by its own line_id (Stage 1 review H2), so each
+    # change is on a history row of its own.
+    items6 = [{**rows5[0], "oem_part_number": "33500-T7A"}, {**rows5[1], "discount_pct": 0.0}, {**rows5[4], "action": "Replace"}]
     rows6 = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items6}).json()["annex_a"]["items"]
     assert [r["origin"] for r in rows6] == ["typed", "typed", "typed"], [(r["part_name"], r["origin"]) for r in rows6]
     again = surveyor.put(f"/reports/{rid}/annex-a", json={"items": items5[:2]}).json()["annex_a"]["items"]

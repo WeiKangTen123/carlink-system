@@ -17,7 +17,11 @@ line's usual unit price comes from. Personal data: less than the importer keeps 
 no plate (the case id leads back to the case); the vehicle's make, model
 and registration date and the date of survey, as a spreadsheet has them.
 Only for a case whose make and model are known: a line under no model would
-be offered to every car of the make.
+be offered to every car of the make. Each line is stored with origin
+"carlink" and whether a person confirmed its price (Stage 1) -- as history
+only: the owner's final model (24 Nov 2026) is that signing off never
+changes the shared default, so no learned line ever prices a later case
+or counts in the book's median (history.price_usable).
 
 settings.learn_from_signed_off switches it off; history.past_lines then
 also leaves out what was learned before, and never lets a case be priced
@@ -30,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.parts.history import LEARNED_PREFIX, PastCase, PastLine, _date, cl_ref, import_case, split_make_model
+from app.parts.prices import learned_as_confirmed
 from app.reports.models import PastAnnexLine, PastLabourLine, Report
 from app.reports.synthesize_annexes import adjusted_cost
 
@@ -130,6 +135,10 @@ def past_case_from(report: Report) -> PastCase | None:
             workshop_est=est,
             discount=discount,
             adjusted_cost=adjusted_cost(est, discount, nett),
+            # Whether a person confirmed it (Stage 1), kept as its history:
+            # a learned line never prices a later case (history.
+            # price_usable, the owner's final model).
+            confirmed=learned_as_confirmed(row),
         ))
     return case if case.lines else None
 
