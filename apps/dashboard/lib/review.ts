@@ -63,11 +63,47 @@ export type Review = {
   };
   /** Everything still open: needs + check over every section. */
   open: number;
+  /** The facts every report must state before sign-off (owner, 23 Nov
+   * 2026; app/reports/review.py MUST_HAVE), in the cover form's order:
+   * each filled in, or marked N/A. Left out by an older API. */
+  must_have?: MustHaveItem[];
+  /** The ones still missing (keys: those still open): the API refuses a
+   * sign-off until this is empty (409 must_have). [] once signed off. */
+  before_sign_off?: MustHaveItem[];
 };
 
+/** One fact on the sign-off's must-have list: "Make & Model" is two keys. */
+export type MustHaveItem = { label: string; keys: string[] };
+
 /** "guess" fields a case can't do without: empty, they need a person
- * (app/reports/review.py says the same). */
-const NEEDED_GUESSES = new Set(["insurance_details.insurer_name", "insurance_details.claim_type"]);
+ * (app/reports/review.py NEEDED_GUESSES says the same). The workshop and
+ * the point of impact are on the sign-off's must-have list. */
+const NEEDED_GUESSES = new Set([
+  "insurance_details.insurer_name",
+  "insurance_details.claim_type",
+  "insurance_details.workshop_assigned",
+  "vehicle_info.point_of_impact",
+]);
+
+/** Whether a field is on the sign-off's must-have list (a person may then
+ * mark it N/A whatever its rule). False with an older API. */
+export function isMustHave(review: Review | null | undefined, key: string): boolean {
+  return Boolean(review?.must_have?.some((item) => item.keys.includes(key)));
+}
+
+/** What is still missing before sign-off, as the API worked it out from
+ * the case as saved; [] with an older API (nothing to show). */
+export function beforeSignOff(review: Review | null | undefined): MustHaveItem[] {
+  return review?.before_sign_off ?? [];
+}
+
+/** A blank field's state by its rule: "needs" when only a person can fill
+ * it, the firm's usual wording was cleared, or it is a guess a case can't
+ * do without; "none" otherwise. */
+export function blankState(review: Review | null | undefined, key: string): ReviewState {
+  const rule = review?.rules[key];
+  return rule === "office" || rule === "doc" || rule === "template" || NEEDED_GUESSES.has(key) ? "needs" : "none";
+}
 
 /** A field's state while a person is editing the form: what the server
  * said, unless the value has since changed (then it is theirs). */
@@ -81,8 +117,7 @@ export function localState(
   const blank = (v: unknown) => v === null || v === undefined || (typeof v === "string" && v.trim() === "");
   if (JSON.stringify(value ?? null) !== JSON.stringify(savedValue ?? null)) {
     if (!blank(value)) return "you";
-    const rule = review?.rules[key];
-    return rule === "office" || rule === "doc" || rule === "template" || NEEDED_GUESSES.has(key) ? "needs" : "none";
+    return blankState(review, key);
   }
   return server;
 }

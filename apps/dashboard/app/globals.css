@@ -11417,3 +11417,212 @@ html:has(.intake-footer) {
 .ai-usage-table-wrap .users-table td {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Phase 1 F: review checks ---- */
+/* The Review step's damaged-parts checks (components/intake/ReviewStep.tsx,
+   ReviewCheckDialogs.tsx, ConditionPicker.tsx; lib/reviewChecks.ts). */
+
+/* "Prints as Rear bumper fascia" under a row's part. */
+.rc-prints-as {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.rc-prints-as em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.rc-prints-as.warn {
+  color: var(--badge-amber-text);
+  font-weight: 600;
+}
+
+/* The check before filing and the add warnings: a small dialog. */
+.rv-picker.rc-dialog {
+  width: min(540px, 100%);
+  gap: 10px;
+}
+.rc-dialog-text {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.rc-problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.rc-problem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.rc-problem-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.4;
+}
+.rc-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The Condition pop-up's "Keep the order I picked them in". */
+.rc-own-order {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rc-own-order input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  /* Not the photo picker's full screen: a dialog the page shows around. */
+  .rv-picker.rc-dialog {
+    width: calc(100% - 24px);
+    height: auto;
+    max-height: calc(100% - 24px);
+    border-radius: 14px;
+  }
+  .rc-problem-list li {
+    flex-wrap: wrap;
+  }
+}
+/* ---- end Phase 1 F ---- */
+
+/* ---- Phase 1 B: report checks ---- */
+/* The Cover Page's soft checks (lib/coverChecks.ts), the "for sign-off"
+   tag on a blank must-have field, the AI's own word as a note
+   (components/CoverPageFields.tsx), and the sign-off box's must-have list
+   (components/AnnexCTab.tsx). Theme tokens only, so both themes follow. */
+.p1b-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.p1b-check-tag,
+.p1b-required-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.p1b-check-tag {
+  color: var(--badge-amber-text);
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-amber-border);
+  cursor: help;
+}
+.p1b-required-tag {
+  color: var(--badge-red-text);
+  background: var(--badge-red-bg);
+  border: 1px solid var(--badge-red-border);
+  cursor: help;
+}
+.p1b-check-text {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--badge-amber-text);
+}
+.p1b-ai-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.p1b-musthave {
+  border: 1px solid var(--badge-red-border);
+  border-left: 4px solid var(--badge-red-text);
+  background: var(--badge-red-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.p1b-musthave-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-weight: 700;
+}
+.p1b-musthave-head > svg {
+  color: var(--badge-red-text);
+}
+.p1b-musthave-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.p1b-goto,
+.p1b-goto-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--accent-primary);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.p1b-goto:hover,
+.p1b-goto-chip:hover {
+  border-color: var(--border-glow);
+}
+.p1b-goto:focus-visible,
+.p1b-goto-chip:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+.p1b-musthave-foot {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+@media (pointer: coarse) {
+  .p1b-goto,
+  .p1b-goto-chip {
+    min-height: 32px;
+    padding: 4px 12px;
+  }
+}
+/* ---- end Phase 1 B ---- */

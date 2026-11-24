@@ -10,6 +10,7 @@ import { CaseNotFound } from "@/components/CaseNotFound";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import { undecidedCount, withSavedLook } from "@/lib/findings";
+import { filingProblems, focusFor, type FilingProblem } from "@/lib/reviewChecks";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   FILING_INTERRUPTED_MESSAGE,
@@ -36,7 +37,8 @@ import {
   type PhotoKind,
 } from "@/lib/intake";
 import { PartiesStep } from "./PartiesStep";
-import { ReviewStep } from "./ReviewStep";
+import { FilingCheckDialog } from "./ReviewCheckDialogs";
+import { ReviewStep, type RevealRequest } from "./ReviewStep";
 import { SortStep } from "./SortStep";
 import { UndoToast } from "./UndoToast";
 import { UploadStep, type UploadItem } from "./UploadStep";
@@ -147,6 +149,11 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
   const [readStartedAt, setReadStartedAt] = useState(0);
   // The "Photo deleted · Undo" toast; version restarts its countdown bar.
   const [deleteToast, setDeleteToast] = useState<{ count: number; version: number } | null>(null);
+  // Phase 1 F (P-parts 5.2): the damaged-parts rows the check before
+  // filing found, while its dialog is open; and the row its [Go to it]
+  // asks the Review step to bring into view.
+  const [filingCheck, setFilingCheck] = useState<FilingProblem[] | null>(null);
+  const [reveal, setReveal] = useState<RevealRequest | null>(null);
 
   // The upload queue lives in refs: uploads finish out of order and each
   // completion schedules the next, so reading it through React state would
@@ -613,14 +620,16 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, data, notes, draftId, running, busy, loading, loadError]);
 
-  async function goTo(next: Step) {
-    if (next === step) return;
+  /** keepScroll: the step brings a row of its own into view (reveal). */
+  async function goTo(next: Step, opts: { keepScroll?: boolean } = {}): Promise<boolean> {
+    if (next === step) return true;
     // A failed delete puts its photo back and says so; it doesn't hold up
     // the step change.
     await flushDeletes();
-    if (draftIdRef.current && !(await save())) return;
+    if (draftIdRef.current && !(await save())) return false;
     setStep(next);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (!opts.keepScroll) window.scrollTo({ top: 0, behavior: "smooth" });
+    return true;
   }
 
   async function startProcessing(mode: "all" | "read") {
@@ -807,6 +816,23 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
       // to the case, or to filing_interrupted with File case enabled again.
       if (isTransientFailure(e)) void refresh();
     }
+  }
+
+  /** "File case": first the check of the damaged parts (P-parts 5.2) --
+   * rows with no condition, an unnamed Other, no part, or a part twice. A
+   * clean list files as before; otherwise the dialog lists them, never a
+   * block ([File anyway]). */
+  function requestFinalize() {
+    const problems = filingProblems(data.damage_summary);
+    if (problems.length) setFilingCheck(problems);
+    else void finalize();
+  }
+
+  /** The dialog's [Go to it]: back to the Review step, at that row. */
+  async function goToProblem(problem: FilingProblem) {
+    setFilingCheck(null);
+    setReveal({ index: problem.index, focus: focusFor(problem), nonce: Date.now() });
+    if (!(await goTo(3, { keepScroll: true }))) setReveal(null);
   }
 
   /** Before a public report goes back to the inbox (release P6): what is on
@@ -1129,6 +1155,8 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiReadPhotos={state.ai_read_photos}
           review={state.review}
           savedData={state.data}
+          reveal={reveal}
+          onRevealed={() => setReveal(null)}
           onBack={() => goTo(2)}
           onNext={() => goTo(4)}
         />
@@ -1158,7 +1186,23 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           finalizing={busy === "finalizing" || filing}
           uploading={uploading}
           onBack={() => goTo(3)}
-          onFinalize={finalize}
+          onFinalize={requestFinalize}
+        />
+      )}
+
+      {filingCheck && step === 4 && (
+        <FilingCheckDialog
+          problems={filingCheck}
+          onGoTo={(p) => void goToProblem(p)}
+          onBack={() => {
+            setFilingCheck(null);
+            void goTo(3);
+          }}
+          onFileAnyway={() => {
+            setFilingCheck(null);
+            void finalize();
+          }}
+          onClose={() => setFilingCheck(null)}
         />
       )}
 

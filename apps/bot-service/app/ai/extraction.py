@@ -25,6 +25,7 @@ from app.ai.evidence import clean_box
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import READ_PACKS, pack_list, settings
+from app.reports.firm_words import apply_firm_words
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
     BODY_TYPES,
@@ -686,7 +687,17 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     draft = _strip_placeholder_people(draft)
     draft = _sanitize_damage_summary(draft)
     draft = _backfill_damage_summary(draft)
-    return _firm_condition(draft)
+    draft = _firm_condition(draft)
+    # Never the model's: only apply_firm_words writes the AI's own words.
+    draft.ai_words = None
+    # INTAKE_FIRM_WORDS (default off: the reading as before, byte for
+    # byte). On: the static check and transmission in the firm's words by
+    # meaning ("6-Speed Automatic" -> "Automatic"), a finding ("Resprayed")
+    # or an unclear word kept as the AI wrote it -- never blanked, never
+    # "Good" -- and the AI's own word kept as a note (draft.ai_words).
+    if settings.intake_firm_words == "on":
+        draft = apply_firm_words(draft)
+    return draft
 
 
 def draft_report(

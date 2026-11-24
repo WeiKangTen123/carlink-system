@@ -159,6 +159,10 @@ x-bot-service: &bot-service
     # EXIF (GPS included) dropped. Both containers store photos (the bot:
     # Telegram reports). Default is config.py's: "off", stored as uploaded.
     - PHOTO_STORE_COMPRESS=${PHOTO_STORE_COMPRESS:-off}
+    # Phase 1 (report checks, review M4): the AI's transmission and static
+    # check words in the firm's words, by meaning (app/reports/firm_words.py).
+    # Default off = config.py's: every reading's values byte for byte as before.
+    - INTAKE_FIRM_WORDS=${INTAKE_FIRM_WORDS:-off}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 

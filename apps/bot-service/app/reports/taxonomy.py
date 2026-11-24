@@ -443,10 +443,15 @@ FIRM_CONDITION_TOKENS: list[str] = [
 ]
 
 # Every damage condition the four reports wrote on three or more lines, most
-# used first (Bent 11 ... Crumpled 3): the editor's suggestions.
+# used first (Bent 11 ... Crumpled 3): the editor's suggestions. Then the
+# two whole-word conditions the firm writes most -- Necessary (61 of 171
+# lines: a fitting renewed on refit) and Serviceable (6: a part kept) --
+# so they are one click too (P-parts gap 12, 23 Nov 2026); last, as they
+# describe no damage.
 FIRM_CONDITION_COMMON: list[str] = [
     "Bent", "Deformed/cut", "Grazed/cut", "Bent/cut", "Distorted/jammed", "Dented/bent",
     "Grazed/cracked", "Buckled", "Distorted/cut", "Cracked", "Crumpled",
+    "Necessary", "Serviceable",
 ]
 
 # Conditions written as one whole word, never with damage words: a fitting

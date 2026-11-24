@@ -169,8 +169,16 @@ def report_view(report: dict) -> dict:
     lump_sum = annex_c.get("agreed_lump_sum")
     repair_days = annex_c.get("repair_days")
     signed = sign.get("status") == "Signed Off"
+    # Imported here, as _org_name's lookups are: rendering stays importable
+    # on its own.
+    from app.reports.review import na_must_haves
+
     return {
         "our_ref": str(report.get("report_id") or "").strip() or None,
+        # The must-have facts (review.MUST_HAVE) a person marked N/A and
+        # left blank, by key ("cover_page.requested_by"): printed "N/A",
+        # not "Not recorded" / "(to be issued)" (review M5).
+        "na": na_must_haves(report),
         "plate": str(vehicle.get("plate_number") or "").strip(),
         "make_model": " ".join(str(x).strip() for x in (vehicle.get("make"), vehicle.get("model")) if x and str(x).strip()),
         "workshop": str(insurance.get("workshop_assigned") or "").strip(),

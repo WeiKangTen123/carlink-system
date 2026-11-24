@@ -113,6 +113,8 @@ export function CoverTab({
         onReview={canReview && fieldReview ? (key, action) => void fieldReview.apply([key], action) : undefined}
         reviewBusy={fieldReview?.saving}
         sketch={<ImpactSketch damageEntries={damageEntries} pointOfImpact={cover.point_of_impact} />}
+        damage={damageEntries}
+        aiNotes={ai.notes}
       />
 
       {!readOnly && (

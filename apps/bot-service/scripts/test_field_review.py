@@ -272,10 +272,11 @@ def rules() -> None:
 
     missing = [k for k in review.FIELD_RULES if not resolves(k)]
     check(not missing, f"all {len(review.FIELD_RULES)} keys are fields of SecurityIncidentDraft", repr(missing))
-    check({k for k, v in review.FIELD_RULES.items() if v == "template"} == set(review.TEMPLATE_DEFAULTS),
-          "the template fields are exactly the six static-check fields with a usual wording")
-    check(set(review.TEMPLATE_DEFAULTS.values()) == {"see annex(es)", "Good", "Nil"},
-          "the usual wording: standard words only (see annex(es), Good, Nil)")
+    check({k for k, v in review.FIELD_RULES.items() if v == "template"} | {"cover_page.point_of_impact_note"}
+          == set(review.TEMPLATE_DEFAULTS),
+          "the usual wording: the six static-check fields, and the optional point-of-impact note")
+    check(set(review.TEMPLATE_DEFAULTS.values()) == {"see annex(es)", "Good", "Nil", review.POINT_OF_IMPACT_NOTE},
+          "the usual wording: standard words only (see annex(es), Good, Nil, the firm's impact note)")
     expected = {
         "vehicle_info.plate_number": "doc", "vehicle_info.make": "doc", "vehicle_info.model": "doc",
         "vehicle_info.color": "guess", "vehicle_info.vin": "guess", "vehicle_info.tyres": "guess",
@@ -333,7 +334,9 @@ def states() -> None:
     check(state(rv, "police_report.reported_to_police") == "check", "reported to police, as the AI said: check")
     check(state(rv, "location") == "check", "a value differing from the AI's only in spaces is still the AI's")
     check(state(rv, "insurance_details.claim_type") == "needs", "claim type empty: needs (a guess the case can't go without)")
-    check(state(rv, "insurance_details.workshop_assigned") == "none", "another guess empty: none")
+    check(state(rv, "vehicle_info.engine_number") == "none", "another guess empty: none")
+    check(state(rv, "insurance_details.workshop_assigned") == "needs",
+          "the workshop empty: needs (on the sign-off list, review.MUST_HAVE)")
     check(state(rv, "vehicle_info.vin") == "none", "VIN empty: none (only from a VIN-plate photo)")
     check(state(rv, "report_id") == "needs" and state(rv, "cover_page.date_of_survey") == "needs", "office fields empty: needs")
     check(state(rv, "cover_page.date_of_request") == "you", "an office field typed: you")
@@ -456,7 +459,8 @@ def states() -> None:
     check(rv["open"] == total and rv["open"] > 0, f"open = needs + check over the sections ({rv['open']})")
     check(set(counts) == {"cover", "parties", "damage", "annex_a", "annex_b", "annex_c"}, "counts has the six sections")
     check(counts["cover"]["total"] + counts["parties"]["total"] == len(review.FIELD_RULES), "cover + parties = every field")
-    check(set(rv) == {"fields", "rules", "damage", "annex_a", "counts", "open"}, "the Review shape (lib/review.ts)")
+    check(set(rv) == {"fields", "rules", "damage", "annex_a", "counts", "open", "must_have", "before_sign_off"},
+          "the Review shape (lib/review.ts)")
 
 
 def template_defaults() -> None:
@@ -480,7 +484,8 @@ def template_defaults() -> None:
     W.draft = r.json()["id"]
     state_ = W.o.get(f"/intake/{W.draft}").json()
     check(review.value_at(state_["data"], "cover_page.handbrake_condition") == "see annex(es)"
-          and len(state_["data"]["template_fields"]) == 6, "a new draft starts with the usual wording, listed")
+          and len(state_["data"]["template_fields"]) == len(review.TEMPLATE_DEFAULTS),
+          "a new draft starts with the usual wording, listed")
     rv = state_["review"]
     check(rv and state(rv, "cover_page.handbrake_condition") == "check", "GET /intake/{id} review: the usual wording is check")
     check(state(rv, "report_id") == "needs" and rv["open"] > 0, "...Our Ref needs a person")
@@ -682,8 +687,19 @@ def list_counts() -> None:
     check(len(statements()) == small, f"no extra query per case ({small} for the list either way)")
 
 
+# The sign-off's must-have facts (review.MUST_HAVE), made up: a case
+# missing one is refused outright (scripts/test_p1_report_checks.py).
+MUST_HAVE_FILLED = {
+    "report_id": "TEST REF 0001", "cover_page.date_of_request": "1st January 2026",
+    "cover_page.requested_by": "Requester One", "insurance_details.claim_type": "Third party",
+    "insurance_details.workshop_assigned": "Workshop One", "cover_page.date_of_survey": "2nd January 2026",
+    "vehicle_info.plate_number": "TEST 0001", "vehicle_info.make": "Makeone", "vehicle_info.model": "Modelone",
+    "vehicle_info.point_of_impact": "Rear centre",
+}
+
+
 def sign_off() -> None:
-    case = new_case(W.owner, review.apply_template_defaults(blank()), ai_draft())
+    case = new_case(W.owner, with_values(review.apply_template_defaults(blank()), MUST_HAVE_FILLED), ai_draft())
     r = W.a.post(f"/reports/{case}/sign-off", json={})
     check(r.status_code == 400 and r.json().get("code") == "declaration_required", "no declaration: 400 declaration_required", brief(r))
     r = W.a.post(f"/reports/{case}/sign-off", json={"terms_accepted": True})

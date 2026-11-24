@@ -703,6 +703,241 @@ def _same_model(a: str | None, b: str | None) -> bool:
     return bool(key) and key == _model_key(b)
 
 
+# ------------------------------------------- another model's lines (R 2.8)
+#
+# A case whose model has no past cases of its own takes the make's (and a
+# part its model's cases never had, the make's for that part). Those lines
+# are another model's: a Jazz's tailgate kit came out of a Vezel's and a
+# Civic's reports together -- "Tail gate emblem VEZEL", "Boot lid emblem
+# CIVIC", and both a tail gate and a boot lid (R-report section 2.8, owner
+# Phase 1, 23 Nov 2026). Such a line is left out only when it names
+# ANOTHER model of the case's own make, and the rest is worded for this
+# car's body: a hatchback, SUV or MPV's "Tail gate ...", a sedan's "Boot
+# lid ..."; an unknown body keeps the wording as written. The case's own
+# model's lines are never touched.
+#
+# What "names another model" means (review M6, 24 Nov 2026). A line left
+# out by mistake is a priced line silently missing from Annex A; a line
+# kept by mistake is one a person sees and removes. So only what is
+# plainly another model's name drops a line:
+#   - the models are the ones the history knows for the case's make (other
+#     makes' model names never count), each by its name: the make dropped
+#     from its front ("Honda Vezel" -> Vezel), its first word ("Vezel
+#     1.5X" -> Vezel), or its first two when the first alone is an
+#     ordinary word or under 3 characters ("Step WGN", "3 Series");
+#   - never the case's own model or its twin (HR-V is a Vezel, Jazz a Fit:
+#     _MODEL_TWINS), also when the case's model is typed with the make;
+#     never a make's name; and nothing at all when the case's model or
+#     make is unknown (any model might be its own);
+#   - matched as whole words, any letter case: a hyphen joins ("HR-V";
+#     "re-fit" is not "fit"), a two-word model only as the two words
+#     together or run into one ("Step WGN", "STEPWGN");
+#   - never a word under 3 characters or a bare number ("X1", "1.6"), and
+#     never an ordinary word that is also a model's name (_COMMON_WORDS:
+#     "Side step LH", "Rear bumper (new type)", "Door seal") -- except in
+#     an emblem line, written in capitals ("Tail gate emblem FIT"): that
+#     is the model's lettering.
+# An emblem naming no model ("Boot lid emblem 1.6") is kept like any other
+# line; a "badge" is the make's logo.
+
+_EMBLEM = re.compile(r"\bemblems?\b", re.I)
+_BOOT_LID = re.compile(r"\bboot ?lid\b", re.I)
+_TAIL_GATE = re.compile(r"\btail ?gate\b", re.I)
+_WORD = re.compile(r"[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*")
+
+# Ordinary words that are also a model's name somewhere (Honda Step WGN /
+# Fit / Life / Shuttle / Insight, Nissan Note / Leaf / Cube, Toyota Crown /
+# Tank / Rush / Wish, Daihatsu Move / Cast, Suzuki Every / Carry, VW Up /
+# Fox, Ford Focus / Transit, BYD Seal, Tesla Model 3 ...): never read as
+# the model on their own (see above).
+_COMMON_WORDS = frozenset({
+    "accent", "air", "beat", "caddy", "carry", "cast", "cross", "crown", "cube", "edge", "element", "escape",
+    "every", "fit", "focus", "fox", "grand", "insight", "kicks", "land", "leaf", "legacy", "legend", "life",
+    "mark", "matrix", "mirage", "model", "move", "new", "note", "one", "outback", "pace", "pilot", "ray",
+    "rocky", "rush", "seal", "shuttle", "side", "soul", "space", "spark", "sport", "star", "step", "stream",
+    "sunny", "tank", "today", "transit", "type", "up", "venue", "wagon", "wake", "will", "wish", "zest",
+})
+# Makes: a model's text that starts with one of these or with its own
+# make ("Honda Vezel") loses it, and a make's name -- these or any the
+# history has -- is never taken for a model.
+_MAKES = frozenset({
+    "alfa romeo", "aston martin", "audi", "bmw", "byd", "chery", "chevrolet", "citroen", "daihatsu", "ferrari",
+    "fiat", "ford", "honda", "hyundai", "infiniti", "isuzu", "jaguar", "jeep", "kia", "land rover", "lexus",
+    "mazda", "mercedes", "mercedes benz", "mini", "mitsubishi", "nissan", "opel", "perodua", "peugeot",
+    "porsche", "proton", "renault", "rolls royce", "skoda", "subaru", "suzuki", "tesla", "toyota", "volkswagen",
+    "volvo", "vw",
+})
+
+
+def _tokens(text: str | None) -> list[tuple[str, str]]:
+    """(the word as written, its key) per word; the key is lower case with
+    hyphens taken out: "HR-V" -> ("HR-V", "hrv"), "re-fit" -> ("re-fit",
+    "refit"), '"VEZEL"' -> ("VEZEL", "vezel")."""
+    return [(word, word.replace("-", "").lower()) for word in _WORD.findall(text or "")]
+
+
+def _keys(text: str | None) -> list[str]:
+    return [key for _, key in _tokens(text)]
+
+
+def _make_names(makes) -> tuple[tuple[str, ...], ...]:
+    """_MAKES and the makes given, each as its keys ("Mercedes-Benz" ->
+    ("mercedesbenz",), "Land Rover" -> ("land", "rover")), the longest
+    first (so "Land Rover" is tried before a "Land ..." model)."""
+    out = {tuple(_keys(m)) for m in _MAKES} | {tuple(_keys(m)) for m in makes if m}
+    return tuple(sorted((name for name in out if name), key=lambda name: (-len(name), name)))
+
+
+@lru_cache(maxsize=256)
+def _makes_with(make: str | None) -> tuple[tuple[str, ...], ...]:
+    """_MAKES and this one make: what a model's text may start with."""
+    return _make_names((make,))
+
+
+def _short(key: str) -> bool:
+    return len(key) < 3 or key.isdigit()
+
+
+def _canon(name: tuple[str, ...]) -> str:
+    """A model's name as one key, as its twin's ("hrv" -> "vezel")."""
+    joined = "".join(name)
+    return _MODEL_TWINS.get(joined, joined)
+
+
+@lru_cache(maxsize=4096)
+def _model_name(model: str | None, makes: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    """A model's name as the words a line would name it by (see above):
+    "Honda Vezel 1.5X" -> ("vezel",), "Step WGN" -> ("step", "wgn"),
+    "HR-V" -> ("hrv",); () for none."""
+    words = _keys(model)
+    for make in makes:
+        if tuple(words[:len(make)]) == make:
+            words = words[len(make):]
+            break
+        if words and words[0] == "".join(make):
+            words = words[1:]
+            break
+    if not words:
+        return ()
+    if (words[0] in _COMMON_WORDS or _short(words[0])) and len(words) > 1:
+        return (words[0], words[1])
+    return (words[0],)
+
+
+def _same_name(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """One model: the same name or its twin, or a one-word name that is the
+    other's first word (a history's "Step" for a case's "Step WGN")."""
+    if not a or not b:
+        return False
+    if _canon(a) == _canon(b):
+        return True
+    if len(a) != len(b):
+        shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+        return shorter[0] == longer[0]
+    return False
+
+
+def other_models(lines: list, make: str | None, model: str | None) -> frozenset[tuple[str, ...]]:
+    """The names (_model_name) of the case make's other models that the
+    past lines know -- never the case's own or its twin, never a make's
+    name. Empty when the case's make or model is unknown."""
+    own = _model_name(model, _makes_with(make))
+    make_key = "".join(_keys(make))
+    if not own or not make_key:
+        return frozenset()
+    make_keys = {"".join(name) for name in _make_names({getattr(ln, "make", None) for ln in lines})}
+    out = set()
+    for ln in lines:
+        if "".join(_keys(getattr(ln, "make", None))) != make_key or not getattr(ln, "model", None):
+            continue
+        name = _model_name(ln.model, _makes_with(ln.make))
+        if not name or _same_name(name, own) or "".join(name) in make_keys:
+            continue
+        out.add(name)
+    return frozenset(out)
+
+
+def names_another_model(item: str, others) -> bool:
+    """Whether a line names one of `others` (other_models) by the rule
+    above: whole words, a two-word model as both words, no short words,
+    an ordinary word only as an emblem's capitals."""
+    if not others:
+        return False
+    wanted = {_canon(name) for name in others}
+    emblem = bool(_EMBLEM.search(item or ""))
+    tokens = _tokens(item)
+    for i, (raw, key) in enumerate(tokens):
+        if _canon((key,)) in wanted and not _short(key):
+            if key not in _COMMON_WORDS or (emblem and raw.isupper()):
+                return True
+        # Two words together: a two-word model ("Step WGN"), or a one-word
+        # model written apart ("HR V").
+        if i + 1 < len(tokens) and _canon((key, tokens[i + 1][1])) in wanted:
+            return True
+    return False
+
+
+def _swap_word(text: str, pattern: re.Pattern, word: str) -> str:
+    """Every match of `pattern` as `word` ("tail gate"), capitalised where
+    the match was ("Boot lid assy" -> "Tail gate assy")."""
+    return pattern.sub(lambda m: word.capitalize() if m.group(0)[:1].isupper() else word, text)
+
+
+def kit_wording(item: str, *, line_model: str | None, model: str | None, body: str | None,
+                others=frozenset(), make: str | None = None, line_make: str | None = None) -> str | None:
+    """How a past line reads on this case's Annex A: as it is when the
+    line is this model's own (or its twin's), also when either is typed
+    with the make ("Honda Vezel" -- by its first word alone, as
+    _same_model goes, every "Honda ..." would be one model); None, to
+    leave it out, when it names another model of the case's make
+    (names_another_model; `others` from other_models); else worded for
+    this car's body (taxonomy.body_class: "hatch" -> "Tail gate ...",
+    "sedan" -> "Boot lid ...", None -> as written)."""
+    if _same_name(_model_name(line_model, _makes_with(line_make)), _model_name(model, _makes_with(make))):
+        return item
+    if names_another_model(item, others):
+        return None
+    if body == "hatch":
+        return _swap_word(item, _BOOT_LID, "tail gate")
+    if body == "sedan":
+        return _swap_word(item, _TAIL_GATE, "boot lid")
+    return item
+
+
+class _Worded:
+    """A past line as this case's kit reads it (kit_wording): its own
+    wording and key, everything else the line's. A stand-in, never the
+    database row itself, so nothing reworded here can be flushed back."""
+    __slots__ = ("_line", "item", "item_key")
+
+    def __init__(self, line, item: str):
+        self._line = line
+        self.item = item
+        self.item_key = normalise_item(item)
+
+    def __getattr__(self, name):
+        return getattr(self._line, name)
+
+
+def lines_for_car(lines: list, make: str | None, model: str | None, body_type: str | None = None) -> list:
+    """The past lines as a kit for this car (kit_wording): its own model's
+    as they are, every other model's reworded for its body or, when it
+    names another model of the case's make, left out. body_type: the
+    case's recorded one; the catalogue's wins (taxonomy.body_type_for)."""
+    from app.reports.taxonomy import body_class, body_type_for
+
+    body = body_class(body_type_for(make, model, body_type))
+    others = other_models(lines, make, model)
+    out = []
+    for ln in lines:
+        item = kit_wording(ln.item or "", line_model=ln.model, model=model, body=body, others=others, make=make,
+                           line_make=getattr(ln, "make", None))
+        if item is None:
+            continue
+        out.append(ln if item == ln.item else _Worded(ln, item))
+    return out
+
+
 def _unit_price(line: PastAnnexLine) -> float | None:
     """What one unit was adjusted to. None for a line not paid for -- kept
     (Serviceable, 100% disallowed) or never priced."""
@@ -720,6 +955,7 @@ def suggest(
     existing_items: list[str],
     exclude_ref: str | None = None,
     unsided: bool = False,
+    body_type: str | None = None,
 ) -> dict:
     """Annex A lines past cases wrote for these damaged parts.
 
@@ -735,10 +971,15 @@ def suggest(
     unsided: nobody has established the parts' sides (prefill.
     side_unconfirmed), so no line keeps a LH / RH; the end stays, which a
     "(side undetermined)" name loses ("Left Rear Wheel" -> the rear rims).
+    Another model's lines (any scope but the case's own model) are worded
+    for this car's body or left out (lines_for_car: no other model's name
+    or emblem, no boot lid on a hatchback); body_type: the case's
+    recorded one, the catalogue's wins.
     """
     lines = past_lines(db)
     if exclude_ref:
         lines = [ln for ln in lines if ln.case_ref != exclude_ref]
+    lines = lines_for_car(lines, make, model, body_type)
     scope_label, pool = "all imported cases", lines
     by_model = [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)]
     by_make = [ln for ln in lines if _same(ln.make, make)]
@@ -923,7 +1164,9 @@ def firm_wording(db: Session, part: str, make: str | None = None, model: str | N
     family, side = family_and_side(canon)
     if family in _COARSE_FAMILIES:
         return None
-    lines = [ln for ln in past_lines(db) if _line_family(ln) == family]
+    # Another model's wording as this car's (lines_for_car): no other
+    # model's name, a hatchback's tail gate.
+    lines = [ln for ln in lines_for_car(past_lines(db), make, model) if _line_family(ln) == family]
     scopes = (
         [ln for ln in lines if _same(ln.make, make) and _same_model(ln.model, model)],
         [ln for ln in lines if _same(ln.make, make)],

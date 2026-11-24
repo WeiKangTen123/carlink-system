@@ -246,12 +246,17 @@
     values (SLK 3063 Z's chassis/engine numbers, odometer, workshop, insurer,
     totals) and to a signature and seal on unsigned drafts. -#}
 {% set NR = 'Not recorded' %}
-{% set our_ref = ('Our Ref: ' ~ view.our_ref) if view.our_ref else 'Our Ref: (to be issued)' %}
+{#- A must-have fact a person marked N/A (review.MUST_HAVE, data.checked)
+    and left blank says so: "N/A", not "Not recorded" (view.na, review M5). -#}
+{% set NA = 'N/A' %}
+{% set NA_KEYS = view.na or () %}
+{% set our_ref = ('Our Ref: ' ~ view.our_ref) if view.our_ref else ('Our Ref: N/A' if 'report_id' in NA_KEYS else 'Our Ref: (to be issued)') %}
+{% set plate_line = view.plate or (NA if 'vehicle_info.plate_number' in NA_KEYS else NR) %}
 {% set firm = (org_name or 'Carlink Consultancy') | upper %}
 {% set show_photos = photo_data_uris and (include_photos if include_photos is defined else true) %}
 
-{% macro row(label, value, addr=None) -%}
-      <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val" colspan="4">{{ value or NR }}</td></tr>
+{% macro row(label, value, addr=None, na=False) -%}
+      <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val" colspan="4">{{ NA if na else (value or NR) }}</td></tr>
       {%- if addr %}
       <tr><td class="n"></td><td class="lbl"></td><td class="c"></td><td class="val" colspan="4">{{ addr }}</td></tr>
       {%- endif %}
@@ -285,19 +290,22 @@
 
   <table class="cover">
     <tr class="sec"><td class="n">1</td><td colspan="6">REFERENCE</td></tr>
-    {{ row('Date of request', cp.date_of_request) }}
-    {{ row('Requested by', cp.requested_by, cp.requested_by_address) }}
-    {{ row('Type of claim', ins.claim_type) }}
-    {{ row('Workshop', ins.workshop_assigned, cp.workshop_address) }}
+    {{ row('Date of request', cp.date_of_request, na='cover_page.date_of_request' in NA_KEYS) }}
+    {{ row('Requested by', cp.requested_by, cp.requested_by_address, na='cover_page.requested_by' in NA_KEYS) }}
+    {{ row('Type of claim', ins.claim_type, na='insurance_details.claim_type' in NA_KEYS) }}
+    {{ row('Workshop', ins.workshop_assigned, cp.workshop_address, na='insurance_details.workshop_assigned' in NA_KEYS) }}
     {{ row('Accident date', report.incident_datetime) }}
-    {{ row('Date of survey', cp.date_of_survey) }}
-    {{ row('Date of dismantle parts', cp.date_of_dismantle) }}
-    {{ row('Date of before painting', cp.date_before_painting) }}
-    {{ row('Date of after painting', cp.date_after_painting) }}
+    {{ row('Date of survey', cp.date_of_survey, na='cover_page.date_of_survey' in NA_KEYS) }}
+    {#- The optional dates only when recorded: the firm leaves an unused
+        one out (2 of its 4 reports) rather than printing "Not recorded",
+        and so does the Excel export (xlsx_export.OPTIONAL_DATE_ROWS). -#}
+    {% for label, value in [('Date of dismantle parts', cp.date_of_dismantle), ('Date of before painting', cp.date_before_painting), ('Date of after painting', cp.date_after_painting)] %}
+    {% if value and (value | string | trim) %}{{ row(label, value) }}{% endif %}
+    {% endfor %}
 
     <tr class="sec"><td class="n">2</td><td colspan="6">DETAILS OF VEHICLE</td></tr>
-    {{ row('Registration No.', v.plate_number) }}
-    {{ row('Make & Model', view.make_model) }}
+    {{ row('Registration No.', v.plate_number, na='vehicle_info.plate_number' in NA_KEYS) }}
+    {{ row('Make & Model', view.make_model, na=('vehicle_info.make' in NA_KEYS and 'vehicle_info.model' in NA_KEYS)) }}
     {{ row('Date of registration', v.date_of_registration) }}
     {{ row('Engine No.', v.engine_number) }}
     {{ row('Chassis No.', v.vin) }}
@@ -322,7 +330,7 @@
     <tr class="sec"><td class="n">5</td><td colspan="6">POINT OF IMPACT</td></tr>
     {#- The recorded point of impact, then the firm's note ("See Annex(es)
         and Motor Accident Reports"), whichever of the two is there. -#}
-    {% set impact = [v.point_of_impact, cp.point_of_impact_note] | select | list %}
+    {% set impact = [NA if 'vehicle_info.point_of_impact' in NA_KEYS else v.point_of_impact, cp.point_of_impact_note] | select | list %}
     <tr><td class="n"></td><td class="val" colspan="6">{% for line in impact %}<div>{{ line }}</div>{% else %}{{ NR }}{% endfor %}</td></tr>
 
     <tr class="sec"><td class="n">6</td><td colspan="6">REMARK</td></tr>
@@ -335,7 +343,7 @@
      ===================================================================== -->
 <div class="page">
   <div class="annex-title">Annex A : Assessment / Adjustment on Spare Parts</div>
-  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="plate-line">{{ plate_line }}</div>
   <table class="grid">
     <thead>
       <tr>
@@ -401,7 +409,7 @@
      ===================================================================== -->
 <div class="page">
   <div class="annex-title">Annex B : Adjustment on Labour and Spray Painting</div>
-  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="plate-line">{{ plate_line }}</div>
   <table class="grid">
     <thead>
       <tr>
@@ -466,7 +474,7 @@
      ===================================================================== -->
 <div class="page">
   <div class="annex-title">{{ firm }}</div>
-  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="plate-line">{{ plate_line }}</div>
   <div class="annex-title" style="margin-bottom: 14px;">Annex C: Recommendation</div>
 
   {#- The firm's fixed wording; only the workshop, the four figures and the
@@ -511,7 +519,7 @@
 {% if loop.index0 is divisibleby 4 %}
 <div class="page">
   <div class="annex-title">{{ firm }}</div>
-  <div class="plate-line">{{ view.plate or NR }}</div>
+  <div class="plate-line">{{ plate_line }}</div>
   <div class="annex-title">Photographs{% if loop.index0 %} (continued){% endif %}</div>
   <div class="photo-grid">
 {% endif %}

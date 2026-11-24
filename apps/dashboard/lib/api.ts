@@ -3,7 +3,7 @@
 import { cache } from "react";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { isPublicPage } from "./publicPages";
-import type { Review } from "./review";
+import type { MustHaveItem, Review } from "./review";
 import { CATALOGUE_OFF, normalizeCatalogue, type CatalogueJob, type CatalogueRef, type CatalogueState, type CatalogueSuggestion } from "./catalogue";
 import { seg } from "./apiPath";
 
@@ -2258,9 +2258,42 @@ function openItemsRefusal(body: unknown): OpenItemsError | null {
   return new OpenItemsError(words, open, counts);
 }
 
+/** The sign-off was refused because facts every report must state are
+ * neither filled in nor marked N/A (409, code "must_have"; owner, 23 Nov
+ * 2026): which ones. No tick gets past it -- for admins too. */
+export class MustHaveError extends ApiError {
+  readonly missing: MustHaveItem[];
+
+  constructor(message: string, missing: MustHaveItem[]) {
+    super(message, 409, "must_have", message);
+    this.name = "MustHaveError";
+    this.missing = missing;
+  }
+}
+
+/** A 409 must_have body ({detail, code, missing}), at the top or inside detail. */
+function mustHaveRefusal(body: unknown): MustHaveError | null {
+  if (!body || typeof body !== "object") return null;
+  const top = body as Record<string, unknown>;
+  const inner = top.detail && typeof top.detail === "object" ? (top.detail as Record<string, unknown>) : null;
+  const src = top.code === "must_have" ? top : inner?.code === "must_have" ? inner : null;
+  if (!src) return null;
+  const missing = Array.isArray(src.missing)
+    ? (src.missing as unknown[]).flatMap((m) => {
+        const item = m as Record<string, unknown> | null;
+        if (!item || typeof item.label !== "string" || !Array.isArray(item.keys)) return [];
+        return [{ label: item.label, keys: (item.keys as unknown[]).filter((k): k is string => typeof k === "string") }];
+      })
+    : [];
+  const said = typeof src.detail === "string" && src.detail ? src.detail : null;
+  const words = said || `${missing.length} things before sign-off: ${missing.map((m) => m.label).join(", ")}.`;
+  return new MustHaveError(words, missing);
+}
+
 /** Signs as the signed-in user, with their own profile (My settings) --
- * the API ignores any name, licence or firm in the request. Fields still
- * open without open_items_ack: an OpenItemsError (409). */
+ * the API ignores any name, licence or firm in the request. A must-have
+ * fact neither filled in nor marked N/A: a MustHaveError (409). Fields
+ * still open without open_items_ack: an OpenItemsError (409). */
 export async function signOffReport(
   id: string,
   payload: SignOffRequest = {}
@@ -2272,6 +2305,8 @@ export async function signOffReport(
   });
   if (res.status === 409) {
     const body = await res.clone().json().catch(() => null);
+    const missing = mustHaveRefusal(body);
+    if (missing) throw missing;
     const open = openItemsRefusal(body);
     if (open) throw open;
   }
@@ -3122,6 +3157,12 @@ export type Taxonomy = {
   condition_tokens: string[];
   /** The firm's most used Conditions (FIRM_CONDITION_COMMON), offered first. */
   condition_common: string[];
+  /** Each part's Annex A wording when no past case words it
+   * (taxonomy.FIRM_PART_NAMES, and _HATCH for a tail-gate body): the
+   * Review step's "prints as" (lib/reviewChecks.ts printsAs). Absent from
+   * an older API. */
+  firm_part_names?: Record<string, string>;
+  firm_part_names_hatch?: Record<string, string>;
 };
 
 /** Built-in copies of the two condition lists, for an API from before they
@@ -3162,6 +3203,9 @@ export const FALLBACK_CONDITION_COMMON: readonly string[] = [
   "Distorted/cut",
   "Cracked",
   "Crumpled",
+  // The whole-word conditions the firm writes most, one click too (P-parts gap 12).
+  "Necessary",
+  "Serviceable",
 ];
 
 /** Conditions the API takes whole, never joined with a word

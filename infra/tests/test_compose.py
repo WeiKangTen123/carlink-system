@@ -76,6 +76,10 @@ EXPECTED_PROD_NEW_ENV = {
     # only as ADDED, only at config.py's default "off" (scripts/
     # test_photo_compress.py checks that default), on api and telegram-bot.
     "PHOTO_STORE_COMPRESS": "off",
+    # Phase 1 (report checks): the AI's words in the firm's words
+    # (app/reports/firm_words.py), off = every reading as before
+    # (test_p1_report_checks checks the default against config.py).
+    "INTAKE_FIRM_WORDS": "off",
 }
 NEW_ENV_SERVICES = ("api", "telegram-bot")
 

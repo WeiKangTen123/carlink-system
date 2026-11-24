@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { confirmFields, type CheckedEntry, type CheckedSet, type CurrentUser, type ReportData, type ReportDetail } from "./api";
 import type { CoverForm, CoverFormKey } from "./coverForm";
-import { localState, type FieldReview, type FieldRule, type Review, type ReviewCounts, type ReviewState } from "./review";
+import { blankState, isMustHave, localState, type FieldReview, type FieldRule, type Review, type ReviewCounts, type ReviewState } from "./review";
 
 /** The ten tyre boxes are one review key. */
 export const TYRES_REVIEW_KEY = "vehicle_info.tyres";
@@ -107,6 +107,9 @@ export type FieldView = {
   /** Changed on the case page and not saved yet: nothing to confirm or
    * mark N/A until it is (the wizard saves as it goes). */
   unsaved: boolean;
+  /** On the sign-off's must-have list (review.must_have): filled in or
+   * marked N/A before anyone may sign off. */
+  mustHave: boolean;
 };
 
 /** The wizard keeps its confirmations in the draft (data.checked): they
@@ -122,7 +125,8 @@ export function fieldView(review: Review, key: string, value: unknown, saved: un
   const rule = review.rules[key] ?? null;
   const blank = isBlank(value);
   const unsaved = !draft && JSON.stringify(value ?? null) !== JSON.stringify(saved ?? null);
-  const view = (state: ReviewState, fr: FieldReview | null): FieldView => ({ key, state, review: fr, rule, blank, unsaved });
+  const mustHave = isMustHave(review, key);
+  const view = (state: ReviewState, fr: FieldReview | null): FieldView => ({ key, state, review: fr, rule, blank, unsaved, mustHave });
   if (draft) {
     const entry = draft.checked[key];
     if (entry) {
@@ -130,7 +134,7 @@ export function fieldView(review: Review, key: string, value: unknown, saved: un
       return view(state, { state, by: entry.by ?? null, at: entry.at ?? null });
     }
     // An N/A taken back here since the server's copy.
-    if (server?.state === "na" && blank) return view(rule === "office" || rule === "doc" || rule === "template" ? "needs" : "none", null);
+    if (server?.state === "na" && blank) return view(blankState(review, key), null);
   }
   let state = localState(review, key, value, saved);
   if (state === "na" && !blank) state = "you";
@@ -178,13 +182,13 @@ export function partyViews(
 export type ReviewAction = "confirm" | "na" | "undo";
 
 /** What a person can do with a field: confirm what the AI read or guessed,
- * mark an office or optional field N/A while it is blank, or take an N/A
- * back. */
+ * mark an office or optional field -- or any on the sign-off's must-have
+ * list -- N/A while it is blank, or take an N/A back. */
 export function reviewActions(view: FieldView): ReviewAction[] {
   if (view.unsaved) return [];
   if (view.state === "ai" || view.state === "check") return ["confirm"];
   if (view.state === "na") return ["undo"];
-  if (view.blank && (view.rule === "office" || view.rule === "optional")) return ["na"];
+  if (view.blank && (view.rule === "office" || view.rule === "optional" || view.mustHave)) return ["na"];
   return [];
 }
 
@@ -283,11 +287,7 @@ export function useCaseReview(report: ReportDetail, user: CurrentUser | null, re
     const at = new Date().toISOString();
     const states: Record<string, FieldReview> = {};
     for (const key of keys) {
-      const rule = review.rules[key];
-      states[key] =
-        action === "undo"
-          ? { state: rule === "office" || rule === "doc" || rule === "template" ? "needs" : "none" }
-          : { state: action === "na" ? "na" : "you", by: user?.name ?? null, at };
+      states[key] = action === "undo" ? { state: blankState(review, key) } : { state: action === "na" ? "na" : "you", by: user?.name ?? null, at };
     }
     setLive({ base, review: withStates(review, states) });
     setSaving(true);

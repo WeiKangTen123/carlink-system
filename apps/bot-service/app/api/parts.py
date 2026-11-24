@@ -235,7 +235,8 @@ def annex_suggestions(report_id: str, user: CurrentUser = Depends(visible_case))
             # Never the case's own lines: a signed-off case is in the history
             # itself (contract 8 L, app/parts/learn.py).
             with restricted(exclude_refs={case_ref(report_id)}):
-                result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing)
+                result = suggest(db, make=vehicle.get("make"), model=vehicle.get("model"), damaged_parts=parts, existing_items=existing,
+                                 body_type=vehicle.get("body_type"))
             result["hidden"] = False
         else:
             # Built from the price book, so nothing of it: as if no past

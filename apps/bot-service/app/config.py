@@ -273,6 +273,15 @@ class Settings(BaseSettings):
     # name: "Other side? Tail Lamp (side undetermined)") -- two lamps on two
     # photos no longer become one. "off": dropped, as before.
     intake_keep_other_side: str = "off"
+    # Phase 1 (R-report gap 10, review M2-M4): each reading's transmission
+    # and static-check words in the firm's words (app/reports/firm_words.py)
+    # -- by meaning ("6-Speed Automatic", "CVT" -> "Automatic"; "Operable"
+    # -> "Good"), never blanked, a finding ("Resprayed", "Impaired") kept as
+    # the AI wrote it for a person to check, the AI's own word kept as a
+    # note (ai_words). It changes what an AI reading prints, so it is off
+    # until it passes the accuracy gate. "off": every reading's values as
+    # before, byte for byte.
+    intake_firm_words: str = "off"
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
@@ -488,7 +497,8 @@ class Settings(BaseSettings):
         return value
 
     @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
-                     "intake_keep_sort_label", "photo_store_compress")
+                     "intake_keep_sort_label", "intake_firm_words",
+                     "photo_store_compress")
     @classmethod
     def _off_on(cls, value, info):
         return _one_of(value, OFF_ON, info.field_name)
