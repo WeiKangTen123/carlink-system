@@ -33,6 +33,7 @@ from app.auth.permissions import can_view_all_cases
 from app.intake.photos import photo_label
 from app.parts.prefill import sync_annex_a
 from app.reports.db import SessionLocal
+from app.reports.knowledge import case_stamp
 from app.reports.review import apply_template_defaults, is_blank
 from app.reports.schema import SignOffInfo
 from app.reports.synthesize_annexes import synthesize_annexes_for_report
@@ -157,7 +158,10 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     the filing -- the case is filed with unpriced rows rather than not.
     `ai_draft` is what the AI said (the caller stores it as
     Report.ai_draft); here it only labels unsorted photos. `report_id`
-    names the case in the log only. `read_ids`: photo_index_for's.
+    names the case in the log, and finds its AI runs: the knowledge stamp
+    of what made its draft (data.knowledge, reports/knowledge.case_stamp;
+    L-library D.3, step 2B), read on a session of its own like the prices
+    and never in the filing's way. `read_ids`: photo_index_for's.
     """
     data = dict(data)
     # data["second_look"] -- the AI's suggestions and what people decided
@@ -179,6 +183,14 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     finally:
         prices.close()
     data["photo_index"] = photo_index_for(photo_kinds, ai_draft, read_ids)
+    if report_id:
+        runs = SessionLocal()
+        try:
+            data["knowledge"] = case_stamp(runs, report_id)
+        except Exception:
+            logger.exception("Could not stamp the knowledge versions of case %s at filing", report_id)
+        finally:
+            runs.close()
     return data
 
 

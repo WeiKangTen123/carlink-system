@@ -590,10 +590,10 @@ class AiRun(Base):
     parts_found: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # The knowledge stamp (L-library D.3, step 2B): the versions of what the
     # run worked with -- {library, links ("L1:06bbebfa", the link table's
-    # version and the first 8 of its sha256), car_map, prompt, models} --
-    # written when the run starts, its models when it ends
-    # (app/reports/knowledge.py). None on rows from before. (Added after the
-    # table shipped: see db._ADDED_COLUMNS.)
+    # version and the first 8 of its sha256), car_map, prompt (on a reading
+    # run only), models} -- written when the run starts, its models when it
+    # ends (app/reports/knowledge.py). None on rows from before. (Added
+    # after the table shipped: see db._ADDED_COLUMNS.)
     knowledge: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
@@ -932,9 +932,11 @@ class PartObservation(Base):
     removes them, and none is kept past 7 years (observations.sweep_old).
 
     NEVER holds a plate, VIN, chassis or engine number, anyone's name, a
-    note or remark, a photo or a price: a typed "Other" name is scrubbed of
-    the case's identifiers (catalogue._secrets) and of plate- and number-
-    shaped words before it is stored. The case id (report_id) leads back to
+    note or remark, a photo or a price: a typed "Other" name and a fitting's
+    wording are scrubbed before they are stored -- the identifiers and name
+    words of the case and of every account, titles and the names after
+    them, any word with a digit, "@" or a letter outside a-z, and any other
+    short word that is not a part word (observations.scrub_words). The case id (report_id) leads back to
     the case, as the AI accuracy row's does; signed_by is an account id.
     New table, made by create_all: nothing in db._ADDED_COLUMNS."""
     __tablename__ = "part_observations"
@@ -1005,7 +1007,9 @@ class PartObservation(Base):
     # was suggested (the echo guard counts these apart).
     outcome: Mapped[str] = mapped_column(String, nullable=False)
     prompted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # The case's knowledge stamp at sign-off (data.knowledge).
+    # The knowledge stamp of what made the case's AI draft, from its own AI
+    # runs (knowledge.case_stamp, as data.knowledge); None fields when no
+    # run of it was stamped.
     knowledge: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Which definitions made the row (observations.VERSION).
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

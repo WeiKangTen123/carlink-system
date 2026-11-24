@@ -1688,12 +1688,12 @@ def _forget_sign_off(db, report_id: str) -> None:
     of a case that isn't signed off, GET /admin/ai-accuracy its row, GET
     /admin/observations/summary its observations, and the cleanup sweep
     removes them (observations.sweep_old)."""
-    try:
-        accuracy.forget(db, report_id)
-        learn.forget(db, report_id)
-        observations.forget(db, report_id)
-    except Exception:
-        logger.exception("Could not drop the sign-off records of case %s", report_id)
+    for what, forget in (("AI accuracy", accuracy.forget), ("parts history lines", learn.forget),
+                         ("part observations", observations.forget)):
+        try:
+            forget(db, report_id)
+        except Exception:
+            logger.exception("Could not drop the %s of case %s", what, report_id)
 
 
 @app.post("/reports/{report_id}/reopen")
@@ -1714,7 +1714,12 @@ def reopen_report(report_id: str, user: CurrentUser = Depends(visible_case)) -> 
             raise not_allowed("Only the surveyor who signed this report, or an admin, can reopen it.")
 
         r.status = "confirmed"
-        r.data = _with_sign_off(r.data, status="Draft")
+        # The sign-off's knowledge stamp goes with it (step 2B review L6):
+        # the next sign-off makes it again from the case's runs, so nobody
+        # trusts one an open case's re-detection may have outdated.
+        reopened = _with_sign_off(r.data, status="Draft")
+        reopened.pop("knowledge", None)
+        r.data = reopened
 
         r.pdf_path = _render_after_change(user, r, "reopened")
 
@@ -1857,8 +1862,10 @@ async def sign_off_report(
         r.status = "Signed Off"
         new_data = _with_sign_off(r.data, **updates)
         # The knowledge stamp (L-library D.3, step 2B): the versions of the
-        # link table, car map, reading prompt and the models that read the
-        # case. Never in a sign-off's way: none when it can't be made.
+        # link table, car map and reading prompt its AI draft was made with,
+        # from the case's own AI runs (never what is live now), and the
+        # models that read it. Never in a sign-off's way: none when it
+        # can't be made.
         try:
             new_data["knowledge"] = knowledge.case_stamp(db, r.id)
         except Exception:

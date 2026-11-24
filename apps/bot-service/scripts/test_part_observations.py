@@ -294,24 +294,31 @@ def new_case(data: dict, ai: dict | None, *, status: str = "confirmed") -> str:
 _LAST_RUN_AT = [datetime.min.replace(tzinfo=timezone.utc)]
 
 
-def add_run(report_id: str, model: str, kind: str = "read", status: str = "ok") -> None:
+def add_run(report_id: str, model: str, kind: str = "read", status: str = "ok", knowledge=None) -> None:
     started = max(datetime.now(timezone.utc), _LAST_RUN_AT[0] + timedelta(milliseconds=1))
     _LAST_RUN_AT[0] = started
     db = SessionLocal()
     try:
         db.add(AiRun(report_id=report_id, kind=kind, channel="dashboard", status=status, model_used=model,
-                     started_at=started))
+                     started_at=started, knowledge=knowledge))
         db.commit()
     finally:
         db.close()
 
 
+# The versions a case's runs were made under ("stamp A"): never what is
+# live when it is filed or signed off.
+STAMP_A = {"library": None, "links": "L1:aaaaaaaa", "car_map": None, "prompt": "v1", "models": ["gemini-test-strong"]}
+STAMP_SORT = {"library": None, "links": "L1:aaaaaaaa", "car_map": None, "prompt": None, "models": ["gemini-test-light"]}
+WANT_A = {**STAMP_A, "models": ["gemini-test-light", "gemini-test-strong"]}
+
+
 def drafted_case(**kw) -> str:
     report_id = new_case(case_data(**kw), ai_draft())
-    add_run(report_id, "gemini-test-light", kind="sort")
-    add_run(report_id, "gemini-test-light")
-    add_run(report_id, "gemini-test-strong", kind="redraft")
-    add_run(report_id, "gemini-test-failed", status="failed")
+    add_run(report_id, "gemini-test-light", kind="sort", knowledge=STAMP_SORT)
+    add_run(report_id, "gemini-test-light", knowledge={**STAMP_A, "links": "L1:00000000", "models": ["gemini-test-light"]})
+    add_run(report_id, "gemini-test-strong", kind="redraft", knowledge=STAMP_A)
+    add_run(report_id, "gemini-test-failed", status="failed", knowledge={**STAMP_A, "links": "L1:ffffffff"})
     return report_id
 
 
@@ -368,6 +375,8 @@ def setup() -> None:
     W.admin_id = new_user(SIGNER, role="admin", may_sign_off=True)
     W.admin = signed_in(W.admin_id)
     W.plain_id = new_user("Pat Plainuser")
+    # An account on no case: its name must still never be stored (M1).
+    W.other_id = new_user("Barnaby Whitlock", sees_all_cases=True)
     W.plain = signed_in(W.plain_id)
     W.links_before, W.car_map_before = settings.intake_links, settings.intake_car_map
     check(W.admin.get("/auth/me").status_code == 200, "an admin signer and a plain user are signed in")
@@ -455,7 +464,10 @@ def observe_outcomes() -> None:
 
 # ============================================================ sign-off
 def sign_off_writes() -> None:
+    # What is live at sign-off differs from what the case was read under
+    # (STAMP_A): the stamp must still say A.
     settings.intake_links = "on"
+    settings.intake_car_map = "shadow"
     W.case = drafted_case()
     r = sign_off(W.admin, W.case)
     check(r.status_code == 200 and stored(W.case).status == "Signed Off", "the case signs off", brief(r))
@@ -475,11 +487,13 @@ def sign_off_writes() -> None:
           "signer's account id, the case id, the definitions' version")
     sign_at = datetime.fromisoformat(data["sign_off"]["signature_date"]).astimezone(timezone.utc).replace(tzinfo=None)
     check(abs((first["signed_off_at"] - sign_at).total_seconds()) < 1, "signed_off_at is the signature's time")
-    want = {"library": None, "links": f"{links.TABLE_VERSION}:{lf_fingerprint()}", "car_map": None,
-            "prompt": settings.intake_read_prompt, "models": ["gemini-test-light", "gemini-test-strong"]}
-    check(data.get("knowledge") == want, "the case data carries the knowledge stamp (links L1:<sha8>, the reading models)",
-          data.get("knowledge"))
-    check(all(r["knowledge"] == want for r in rows), "and every row the same stamp")
+    live = knowledge.stamp()
+    check(live["links"] == f"{links.TABLE_VERSION}:{lf_fingerprint()}" and live["car_map"],
+          "(live now: another link table fingerprint, the car map in shadow)", live)
+    check(data.get("knowledge") == WANT_A,
+          "the case data carries the stamp it was READ under (its newest reading run's), not what is live at sign-off; "
+          "the models that read it", data.get("knowledge"))
+    check(all(r["knowledge"] == WANT_A for r in rows), "and every row the same stamp")
     got = by_part(rows)
     check({k: v["outcome"] for k, v in got.items()} == {
         "Rear Bumper": "kept", "Bonnet": "removed", "Right Tail Lamp": "added", "Rear Bumper Beam": "added",
@@ -511,7 +525,34 @@ def sign_off_writes() -> None:
           and all(x["how"] == "hand_added" for x in rows if x["outcome"] == "added" and not x["prompted"]),
           "a case without an AI draft: rows marked ai_drafted false, its parts added", [(x["part"], x["outcome"]) for x in rows])
     W.no_draft = plain
+    check(stored(plain).data.get("knowledge") == knowledge.empty() and all(x["knowledge"] == knowledge.empty() for x in rows),
+          "no AI run at all: every field of the stamp null, never today's versions", stored(plain).data.get("knowledge"))
+
+    # Runs from before the stamp existed: the models are known, nothing else.
+    old = new_case(case_data(ref="CL 90329"), ai_draft())
+    add_run(old, "gemini-test-old")
+    r = sign_off(W.admin, old)
+    want = {"library": None, "links": None, "car_map": None, "prompt": None, "models": ["gemini-test-old"]}
+    check(r.status_code == 200 and stored(old).data.get("knowledge") == want
+          and all(x["knowledge"] == want for x in obs_rows(old)),
+          "a case read before the stamp existed: null fields (its models only)", stored(old).data.get("knowledge"))
+
+    # Only a sort and a linked check were stamped: the newest of those, no
+    # reading prompt.
+    part = new_case(case_data(ref="CL 90330"), ai_draft())
+    add_run(part, "gemini-test-light", kind="sort", knowledge=STAMP_SORT)
+    add_run(part, "gemini-test-light")
+    add_run(part, "gemini-test-light", kind="link_check", knowledge={**STAMP_SORT, "links": "L1:bbbbbbbb"})
+    db = SessionLocal()
+    try:
+        got = knowledge.case_stamp(db, part)
+    finally:
+        db.close()
+    check(got == {"library": None, "links": "L1:bbbbbbbb", "car_map": None, "prompt": None,
+                  "models": ["gemini-test-light"]},
+          "no stamped reading run: the newest stamped run of the draft's other steps, without a prompt", got)
     settings.intake_links = W.links_before
+    settings.intake_car_map = W.car_map_before
 
 
 def db_has_accuracy(report_id: str) -> bool:
@@ -525,6 +566,7 @@ def db_has_accuracy(report_id: str) -> bool:
 def resign_and_remove() -> None:
     r = W.admin.post(f"/reports/{W.case}/reopen")
     check(r.status_code == 200 and obs_rows(W.case) == [], "a reopen removes the case's rows", brief(r))
+    check("knowledge" not in (stored(W.case).data or {}), "and the case's stamp (made again at the next sign-off; L6)")
     db = SessionLocal()
     try:
         rep = db.get(Report, W.case)
@@ -575,6 +617,158 @@ def never_fails() -> None:
     check(out is None and len(obs_rows(W.case)) == 9, "a capture for a sign-off that isn't the case's now writes nothing")
 
 
+# ======================================================== M1: the scrubber
+# The review's examples (review-2a-2b.md, 2B M1): each name or identifier
+# typed into an "Other" name or an Annex A wording, and what must be stored.
+REVIEW_PEOPLE = {
+    "vehicle_info": {"driver_name": "Ng Wei Ming", "plate_number": "SZZ 9876 Q", "vin": VIN},
+    "police_report": {"officer_name": "Azman bin Ismail"},
+    "sign_off": {"prepared_by": "Kamal Hassan"},
+    "third_party_info": {"driver_name": "Kok Wing", "plate_number": "BKA 9"},
+    "insurance_details": {"workshop_assigned": "Zephyrine Motor Works"},
+    "people_involved": [{"name": "Lucinda Featherstone", "role": "owner", "contact": PHONE}],
+}
+REVIEW_EXAMPLES = [
+    ("Rear bumper Azman", "rear bumper"),          # the police officer
+    ("Rear bumper Kamal", "rear bumper"),          # sign_off.prepared_by
+    ("Hassan bumper", "bumper"),                   # sign_off.prepared_by
+    ("Rear bumper Jason", "rear bumper"),          # a decision by another account
+    ("Rear bumper Ng", "rear bumper"),             # a 2-letter surname (driver Ng Wei Ming)
+    ("rear bumper per Mr Lim", "rear bumper"),     # a title, and a name on nobody's case
+    ("Rear bumper Muñoz", "rear bumper"),      # a letter outside a-z
+    ("rear bumper BKA", "rear bumper"),            # a short plate's letters
+    ("rear bumper SGX 1234 A", "rear bumper"),     # another car's plate
+    ("Door visor Kok Wing", "door visor"),         # a person named with a part word
+    ("Rear bumper – Mr Lim’s quote", "rear bumper"),
+    ("Side step (Ng)", "side step"),
+    ("Encik Ahmad bumper bracket", "bumper bracket"),
+    ("Puan Siti rear lamp", "rear lamp"),
+    ("Mdm Tan Siew Lan rear bumper", "rear bumper"),
+    ("Dr. Wong mirror", "mirror"),
+    ("Bracket Halim bin Yusof", "bracket"),
+    ("Zephyrine garnish", "garnish"),              # the workshop's name
+    ("Featherstone bumper clip", "bumper clip"),   # a person involved
+]
+# What must stay: real part words, the trade's abbreviations.
+KEPT_EXAMPLES = [
+    ("Rear air vent LH", "rear air vent"),
+    ("Front bumper ABS sensor", "front bumper abs sensor"),
+    ("A pillar trim", "a pillar trim"),
+    ("Low beam bulb", "low beam bulb"),
+    ("Mudflap bracket", "mudflap bracket"),
+    ("Tail gate garnish", "tailgate garnish"),
+    ("Fog lamp cover", "fog lamp cover"),
+    ("Wing mirror cover", "wing mirror cover"),
+]
+
+
+def review_case_data(ref: str) -> dict:
+    data = case_data(damage=[item("Rear Bumper", remarks="Replace", condition_tokens=["Deformed"])]
+                     + [item(OTHER_PART, other_part_name=typed) for typed, _ in REVIEW_EXAMPLES], ref=ref)
+    for key, value in REVIEW_PEOPLE.items():
+        data[key] = {**(data.get(key) or {}), **value} if isinstance(value, dict) else value
+    data["second_look"]["decisions"][0]["by_name"] = "Jason Teo"
+    # Annex A rows with a name typed in: their wordings scrubbed too.
+    data["annex_a"]["items"] = [dict(r) for r in ANNEX] + [
+        row("Clip per Mr Lim", 5.0, source_part=f"{OTHER_PART}: {REVIEW_EXAMPLES[0][0]}"),
+        row("Retainer Azman", 5.0, source_part="Rear Bumper"),
+    ]
+    return data
+
+
+def scrubber_m1() -> None:
+    report = SimpleNamespace(id="reviewcase01", data=review_case_data("CL 90340"))
+    db = SessionLocal()
+    try:
+        secrets, words = observations.case_secrets(report, db)
+        _, words_alone = observations.case_secrets(report)
+    finally:
+        db.close()
+    for typed, want in REVIEW_EXAMPLES:
+        got = observations.scrub_words(typed, secrets, words)
+        check(got == want, f"{typed!r} -> {want!r}", got)
+    for typed, want in KEPT_EXAMPLES:
+        got = observations.scrub_words(typed, secrets, words)
+        check(got == want, f"a real part name stays: {typed!r} -> {want!r}", got)
+    check("jason" in words_alone and "barnaby" in words and "barnaby" not in words_alone
+          and observations.scrub_words("Rear bumper Barnaby", secrets, words) == "rear bumper",
+          "a decision's name counts, and every account's name (Barnaby Whitlock, on no case)")
+    check(observations.scrub_words("Rear bumper Jason") == "rear bumper jason"
+          and observations.scrub_words("Door visor Kok Wing") == "door visor wing",
+          "(without those sources a long name word would stay: the sources matter; a lone part word stays)")
+
+    # End to end: signed off, every typed name scrubbed in the stored rows.
+    case = new_case(review_case_data("CL 90340"), ai_draft())
+    add_run(case, "gemini-test-strong", knowledge=STAMP_A)
+    r = sign_off(W.admin, case)
+    rows = obs_rows(case)
+    others = sorted({x["other_name"] for x in rows if x["part"] == OTHER_PART})
+    check(r.status_code == 200 and others == sorted({want for _, want in REVIEW_EXAMPLES}),
+          "signed off: the stored Other names are the scrubbed ones only", others)
+    names = {"azman", "ismail", "kamal", "hassan", "jason", "teo", "ng", "wei", "ming", "kok", "lim", "bka", "sgx",
+             "mr", "mdm", "encik", "puan", "siti", "ahmad", "tan", "siew", "lan", "dr", "wong", "halim", "yusof",
+             "zephyrine", "lucinda", "featherstone", "munoz", "mu", "oz", "quote", "per"}
+    stored_words = {w for x in rows for text in [x["other_name"] or ""] + [f["wording"] for f in x["fittings"]]
+                    for w in text.split()}
+    check(not (stored_words & names), "no name word, title or plate letters in any stored name or fitting wording",
+          stored_words & names)
+    bumper = by_part(rows).get("Rear Bumper") or {}
+    check([f["wording"] for f in bumper.get("fittings") or []]
+          == ["rear bumper clips", "rear bumper side retainer", "retainer"],
+          "a fitting's wording scrubbed the same way ('Retainer Azman' -> 'retainer')", bumper.get("fittings"))
+    check(all(x["version"] == observations.VERSION == 2 for x in rows), "rows of the new definitions: version 2")
+
+
+# ============================================================ L1, L8
+def fittings_and_race() -> None:
+    rows_ = [
+        {"part_name": "Rear bumper fascia", "source_part": "Rear Bumper"},       # its own line, before "main"
+        {"part_name": "Rear Bumper", "source_part": "Rear Bumper"},              # the old scaffold row
+        {"part_name": "Rear bumper clips", "source_part": "Rear Bumper", "qty": 10, "condition": "Necessary"},
+        {"part_name": "Tail gate assy", "source_part": "Boot Lid"},              # the hatch wording of Boot Lid
+        {"part_name": "Tail gate gas stay", "source_part": "Boot Lid"},
+        {"part_name": "Rear air vent", "source_part": f"{OTHER_PART}: Rear air vent"},
+    ]
+    check([f["wording"] for f in observations.fittings_of("Rear Bumper", rows_)] == ["rear bumper clips"],
+          "a part's own line is no fitting, marked main or not (L1)")
+    check([f["wording"] for f in observations.fittings_of("Boot Lid", rows_)] == ["tailgate gas stay"],
+          "on a hatch too")
+    check(observations.fittings_of(f"{OTHER_PART}: rear air vent", rows_) == [], "nor a named Other's own line")
+
+    # A capture that finds the case changed between its first read and the
+    # write lock (another sign-off, a reopen) writes nothing, and leaves
+    # what is there (L8).
+    case = drafted_case(ref="CL 90341")
+    check(sign_off(W.admin, case).status_code == 200, "a case signed off")
+    before = [r["id"] for r in obs_rows(case)]
+    saved = observations.case_rows
+
+    def meanwhile(db, report):
+        out = saved(db, report)
+        other = SessionLocal()
+        try:
+            rep = other.get(Report, case)
+            data = dict(rep.data)
+            data["sign_off"] = {**data["sign_off"], "signature_date": "2026-11-24T09:00:00+00:00"}
+            rep.data = data
+            other.commit()
+        finally:
+            other.close()
+        return out
+
+    observations.case_rows = meanwhile
+    try:
+        db = SessionLocal()
+        try:
+            out = observations.capture(db, case)
+        finally:
+            db.close()
+    finally:
+        observations.case_rows = saved
+    check(out is None and before and [r["id"] for r in obs_rows(case)] == before,
+          "a sign-off committed meanwhile wins: nothing written, the rows there kept (its DELETE rolled back)", out)
+
+
 # ============================================================ backfill
 def backfill() -> None:
     signed_at = datetime.now(timezone.utc).isoformat()
@@ -584,8 +778,13 @@ def backfill() -> None:
     case = new_case(data, ai_draft(), status="Signed Off")
     db = SessionLocal()
     try:
-        db.add(PartObservation(report_id="gonecase0001", signed_off_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                               part="Bonnet", how="ai_read", outcome="kept"))
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.add(PartObservation(report_id="gonecase0001", signed_off_at=now_naive, part="Bonnet", how="ai_read",
+                               outcome="kept", version=observations.VERSION))
+        # A row an older definition wrote (version 1: the scrubber before
+        # the review), on a case still signed off.
+        db.add(PartObservation(report_id=W.case, signed_off_at=now_naive, part=OTHER_PART,
+                               other_name="rear bumper azman", how="hand_added", outcome="added", version=1))
         db.commit()
     finally:
         db.close()
@@ -595,8 +794,9 @@ def backfill() -> None:
         code = backfill_part_observations.main([])
     text_out = out.getvalue()
     check(code == 0 and len(obs_rows()) == before and obs_rows(case) == [], "a dry run writes nothing", text_out)
-    check("Dry run" in text_out and "would be written" in text_out and "1 case(s) no longer signed off" in text_out,
-          "and says what it would do, in counts", text_out)
+    check("Dry run" in text_out and "would be written" in text_out and "1 case(s) no longer signed off" in text_out
+          and f"1 row(s) from older definitions (version < {observations.VERSION})" in text_out,
+          "and says what it would do, in counts (an older-version row to make again)", text_out)
     lowered = text_out.lower()
     check(not any(t in lowered for t in (case, W.case, MAKE.lower(), "cl 903", "szz")) and not leaks([text_out]),
           "counts only: no case id, Our Ref, make, plate or name", text_out)
@@ -605,6 +805,9 @@ def backfill() -> None:
     rows = obs_rows(case)
     check(len(rows) == 9 and obs_rows("gonecase0001") == [], "--apply writes the case's rows and takes out a gone case's",
           len(rows))
+    check(all(r["version"] == observations.VERSION for r in obs_rows()) and len(obs_rows(W.case)) == 9
+          and not any(r["other_name"] == "rear bumper azman" for r in obs_rows()),
+          "and makes again the rows an older definition wrote: none below the current version left")
     snapshot = sorted(json.dumps({k: v for k, v in r.items() if k not in ("id", "captured_at")}, default=str, sort_keys=True)
                       for r in obs_rows())
     with contextlib.redirect_stdout(io.StringIO()):
@@ -686,8 +889,26 @@ def stamp() -> None:
         done = runs.finish_run(db, started, "ok", attempts=[
             {"model": "gemini-test-light", "outcome": "429"}, {"model": "gemini-test-strong", "outcome": "ok"}])
         check(done.knowledge.get("models") == ["gemini-test-strong"], "and the model that answered once it ends", done.knowledge)
+        sort = runs.start_run(db, report_id="stampcase001", kind="sort", channel=None, actor=None)
+        check(sort.knowledge.get("prompt") is None and sort.knowledge.get("links") == started.knowledge.get("links"),
+              "the reading prompt only on a reading run: none on the sorter's (L5)", sort.knowledge)
     finally:
         db.close()
+
+    # Filing stamps the case from its own runs too (D.3), never in its way.
+    from app.reports.filing import file_case_data
+
+    case = new_case(case_data(ref="CL 90331"), ai_draft())
+    add_run(case, "gemini-test-strong", knowledge=STAMP_A)
+    db = SessionLocal()
+    try:
+        user = db.get(User, W.admin_id)
+        filed = file_case_data(db, case_data(ref="CL 90331"), user, ai_draft=None, photo_kinds=None, report_id=case)
+        unnamed = file_case_data(db, case_data(ref="CL 90331"), user, ai_draft=None, photo_kinds=None)
+    finally:
+        db.close()
+    check(filed.get("knowledge") == STAMP_A, "filing writes data.knowledge from the case's runs", filed.get("knowledge"))
+    check("knowledge" not in unnamed, "(no case id given: none)")
     with runs.recorded("stampcase002", "read", None) as run:
         runs.note_attempt({"model": "gemini-test-light", "outcome": "ok"})
     db = SessionLocal()
@@ -825,6 +1046,8 @@ def main_() -> int:
         ("sign-off writes the rows, de-identified", sign_off_writes),
         ("re-sign-off replaces; reopen and delete remove", resign_and_remove),
         ("the sign-off never fails for them", never_fails),
+        ("M1: the scrubber, the review's examples", scrubber_m1),
+        ("L1 fittings and L8 the capture race", fittings_and_race),
         ("backfill: dry run, apply, idempotent", backfill),
         ("retention: 7 years, and with the case", retention),
         ("the knowledge stamp", stamp),

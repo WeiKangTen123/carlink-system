@@ -142,6 +142,11 @@ output, then `--smoke-only` again or roll back.
 - **Code** (about 5 minutes): `bash infra/deploy.sh --env prod --ref <previous> --fast-lane "rollback"`
   (`previous=` in `/opt/carlink-system/.deployed`, or the deploy log). The
   database keeps any new columns; older code ignores them.
+- **After rolling forward again** past a rollback to before step 2B (part
+  observations): older code does not drop a case's observations when it is
+  reopened or deleted, so run
+  `docker exec carlink_api python scripts/backfill_part_observations.py --apply`
+  once (a dry run first without `--apply`; counts only).
 - **Data**: only when data is damaged or a one-time data step must be undone
   -- restore the pre-deploy backup ("Backups" below). Everything written
   since is lost: the owner's call.

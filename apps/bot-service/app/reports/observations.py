@@ -31,17 +31,20 @@ prices.price_key -- body type, a year band from the registration date),
 where the car was hit (impact_end / impact_side from where the signed-off
 parts are; impact_confirmed: a person confirmed the point of impact),
 vehicle_confirmed (make and model a person's), the fittings renewed with
-the part (its Annex A lines by source_part, the part's own main row left
+the part (its Annex A lines by source_part, the part's own line left
 out: wording key, qty, list / nett, Necessary -- no price), and the
-case's knowledge stamp (data.knowledge, app/reports/knowledge.py).
+knowledge stamp of what made the case's AI draft, from its own AI runs
+(knowledge.case_stamp, as data.knowledge).
 
 NEVER: a plate, VIN, chassis or engine number, a name, a note or remark,
 a photo or a price. An "Other" name and a fitting's wording are typed
-text, so they are scrubbed (scrub_words): the case's own identifiers
-taken out as the parts-catalogue job does (catalogue._secrets), any word
-with a digit or "@" (plates, VINs, phone and policy numbers, e-mails),
-and the words of the case's people's names that are not part words;
-then normalised (history.normalise_item: "Rear air vent LH" -> "rear air
+text, so they are scrubbed (scrub_words; when in doubt a word goes): the
+identifiers of the case and of every account (catalogue._secrets and the
+rest, case_secrets), titles and the names after them ("per Mr Lim"),
+any word with a digit, "@" or a letter outside a-z, the words of every
+name on the case and of every account, and any other word of 3 letters
+or fewer that is not a part word (plate prefixes, short names); then
+normalised (history.normalise_item: "Rear air vent LH" -> "rear air
 vent"). Condition words, hit and Repair / Replace are the firm's known
 words only.
 
@@ -87,6 +90,7 @@ from app.reports.suggestions import key_of, standing
 from app.reports.taxonomy import (
     BODY_TYPES,
     FIRM_PART_NAMES,
+    FIRM_PART_NAMES_HATCH,
     FIRM_REMARKS,
     FIRM_WHOLE_CONDITIONS,
     KNOWN_PARTS,
@@ -101,7 +105,9 @@ from app.reports.taxonomy import (
 logger = logging.getLogger(__name__)
 
 # Bump when a definition below changes (the backfill makes the rows again).
-VERSION = 1
+# 2: the stricter scrubber, the stamp from the case's own AI runs, and a
+# part's own Annex A line never one of its fittings (2B review M1, M2, L1).
+VERSION = 2
 OUTCOMES = ("kept", "removed", "added", "dismissed", "left")
 HOWS = ("ai_read", "zone", "suggestion", "link", "catalogue", "hand_added")
 AREAS = ("front", "rear", "side", "roof", "underbody", "cabin", "wheel")
@@ -131,16 +137,42 @@ _AREA_OF = {
 _BASES = frozenset(split_side(p)[0] for p in KNOWN_PARTS) - {OTHER_PART}
 
 # Words of part names (the canonical and car map names and the firm's
-# wording): a person's name word that is one of these ("Wing", "Lamp") is
-# not taken out of a part name -- it would cut the part, not a name.
-_PART_WORDS = frozenset(
-    w for text in list(KNOWN_PARTS) + list(FIRM_PART_NAMES.values())
+# wording, sedan and hatch): a person's name word that is one of these
+# ("Wing", "Lamp") is not taken out of a part name -- it would cut the part,
+# not a name.
+_PART_WORDS = (frozenset(
+    w for text in list(KNOWN_PARTS) + list(FIRM_PART_NAMES.values()) + list(FIRM_PART_NAMES_HATCH.values())
     for w in re.findall(r"[a-z]+", text.lower())
-) | {"lh", "rh", "left", "right", "front", "rear", "side", "assy", "set", "pcs", "clip", "clips", "bracket",
-     "brackets", "cover", "garnish", "moulding", "retainer", "screw", "bolt", "nut", "seal", "emblem", "sticker",
-     "vent", "air", "and", "with", "for", "the", "of"}
+) - {"be", "not", "named", "other", "listed"}) | {
+    "lh", "rh", "left", "right", "front", "rear", "side", "assy", "set", "pcs", "clip", "clips", "bracket",
+    "brackets", "cover", "garnish", "moulding", "retainer", "screw", "bolt", "nut", "seal", "emblem", "sticker",
+    "vent", "air", "and", "with", "for", "the", "of",
+}
+# Words of 3 letters or fewer that may stay in a typed name: the short
+# part words above and the trade's abbreviations. Every other short word
+# goes (scrub_words): plate prefixes ("BKA", "SGX"), short names ("Ng",
+# "Lim", "Tan"), titles ("Mr", "Dr") -- dropping a doubtful word is better
+# than keeping a name.
+_SHORT_OK = frozenset(w for w in _PART_WORDS if len(w) <= 3) | {
+    "abs", "srs", "led", "hid", "drl", "ecu", "oem", "cv", "ac", "rr", "fr", "upr", "lwr", "otr", "inr", "ctr",
+    "ext", "int", "std", "low", "mid", "hub", "oil", "rod", "pin", "box", "cup", "mat", "fin", "tie", "kit",
+    "cap", "bag", "bar", "arm", "pc", "in", "on", "eye", "lip", "rib",
+}
+# A pillar's letter ("A pillar trim") stays before these.
+_PILLAR = frozenset({"pillar", "pillars", "post"})
+# A title before a name: it and the words after it go, up to the next part
+# word ("per Mr Lim's quote", "Encik Azman", "Mdm Tan Siew Lan").
+_TITLES = frozenset({
+    "mr", "mrs", "ms", "miss", "mdm", "madam", "mister", "sir", "dr", "prof", "encik", "en", "cik", "puan", "pn",
+    "tuan", "tn", "datuk", "dato", "datin", "sri", "haji", "hj", "hajjah", "hjh", "ir", "capt", "sgt",
+    "insp", "cpl", "asp", "uncle", "auntie", "aunty",
+})
+# Between two parts of a name ("Azman bin Ali", "Kumar s/o Raj"): it, the
+# word before it and the words after it go.
+_NAME_LINKS = frozenset({"bin", "binti", "bte", "bt", "a/l", "a/p", "s/o", "d/o"})
 _YEAR = re.compile(r"\b(19[5-9]\d|20\d\d)\b")
-_WORD = re.compile(r"[a-z0-9]+")
+_TOKEN = re.compile(r"[^\s,;:()\[\]{}<>\"|]+")
+_LETTERS = re.compile(r"[^\W\d_]+")
 
 
 # ------------------------------------------------------------- privacy
@@ -151,73 +183,162 @@ def _key(value) -> str:
 
 
 def _texts(data: dict, path: str) -> list:
-    """The values at a dotted path, through lists ("people_involved.name")."""
+    """The values at a dotted path, through lists ("people_involved.name")
+    and, at a "*", through every value of a dict ("checked.*.by")."""
     nodes = [data]
     for part in path.split("."):
         nxt = []
         for node in nodes:
-            value = node.get(part) if isinstance(node, dict) else None
-            nxt.extend(value if isinstance(value, list) else [value])
+            if not isinstance(node, dict):
+                continue
+            values = list(node.values()) if part == "*" else [node.get(part)]
+            for value in values:
+                nxt.extend(value if isinstance(value, list) else [value])
         nodes = nxt
     return [n for n in nodes if isinstance(n, (str, int)) and not isinstance(n, bool)]
 
 
-# Who is in a case, beyond what catalogue._secrets already covers.
+# Who is in a case: every field naming a person, a firm or a place a person
+# can be found by -- their words are taken out of a typed name.
 _NAME_FIELDS = (
-    "reporter_name", "people_involved.name", "witnesses.name", "third_party_info.driver_name",
-    "vehicle_info.driver_name", "sign_off.surveyor_name", "sign_off.reviewed_by", "sign_off.approved_by",
-    "sign_off.signed_by_username", "insurance_details.adjuster_assigned", "cover_page.requested_by",
+    "reporter_name", "reporter_department", "company_name", "people_involved.name", "people_involved.department",
+    "witnesses.name", "third_party_info.driver_name", "third_party_info.insurer_name", "vehicle_info.driver_name",
+    "police_report.officer_name", "police_report.police_station", "insurance_details.adjuster_assigned",
+    "insurance_details.workshop_assigned", "insurance_details.insurer_name", "cover_page.requested_by",
+    "cover_page.requested_by_address", "cover_page.workshop_address", "sign_off.prepared_by",
+    "sign_off.surveyor_name", "sign_off.reviewed_by", "sign_off.approved_by", "sign_off.signed_by_username",
+    "sign_off.firm_name", "second_look.decisions.by_name", "checked.*.by", "location",
 )
+# And every contact or number that identifies someone, besides those
+# catalogue._secrets already has (the case id, Our Ref, plate, VIN, engine
+# and chassis no., the driver's, the policy and claim numbers).
 _OTHER_SECRETS = (
     "reporter_contact", "reporter_email", "people_involved.contact", "witnesses.contact",
     "third_party_info.plate_number", "third_party_info.driver_nric", "third_party_info.driver_contact",
-    "third_party_info.policy_number", "sign_off.signed_by_email", "police_report.report_number",
+    "third_party_info.policy_number", "sign_off.signed_by_email", "sign_off.license_number",
+    "police_report.report_number", "police_report.reference_number", "insurance_details.claim_number",
+    "insurance_details.policy_number", "vehicle_info.plate_number", "vehicle_info.vin",
+    "vehicle_info.engine_number", "vehicle_info.driver_contact",
 )
 
 
-def case_secrets(report: Report) -> tuple[list[str], set[str]]:
+def _name_words(values) -> set[str]:
+    """Every word of 2+ letters of these names (any alphabet) that is not
+    a part word; and every two words next to each other in one of them,
+    as "kok wing": scrub_words drops such a pair whole, a part word in it
+    too ("Kok Wing" the person, not a wing)."""
+    words: set[str] = set()
+    for value in values:
+        found = _LETTERS.findall(str(value).lower())
+        words.update(w for w in found if len(w) >= 2 and w not in _PART_WORDS)
+        words.update(f"{a} {b}" for a, b in zip(found, found[1:], strict=False))
+    return words
+
+
+def case_secrets(report: Report, db: Session | None = None) -> tuple[list[str], set[str]]:
     """(identifiers, name words) of a case: what scrub_words takes out of a
-    typed name. Identifiers: the parts-catalogue job's (catalogue._secrets:
-    the case id, Our Ref, plate, VIN, engine and chassis no., the driver,
-    policy and claim numbers) and the case's other people's names and
-    contacts -- letters and digits only, 5 or more. Name words: each word
-    of 3+ letters of a person's name that is not a part word."""
+    typed name. Identifiers: catalogue._secrets' and every other contact,
+    number and name on the case (_NAME_FIELDS, _OTHER_SECRETS) and of
+    every account (users: name, username, e-mail) -- letters and digits
+    only, 5 or more. Name words: each word of 2+ letters of those names
+    that is not a part word. `db` None: the accounts are left out (a case
+    on its own, in tests)."""
     from app.parts.catalogue import _secrets
 
     data = report.data if isinstance(report.data, dict) else {}
+    names = [v for path in _NAME_FIELDS for v in _texts(data, path)]
+    others = [v for path in _OTHER_SECRETS for v in _texts(data, path)]
+    if db is not None:
+        from app.reports.models import User
+
+        for name, username, email in db.query(User.name, User.username, User.email):
+            names += [v for v in (name, username) if v]
+            others += [str(email).split("@")[0]] if email else []
     secrets = list(_secrets(report))
-    for path in _NAME_FIELDS + _OTHER_SECRETS:
-        for value in _texts(data, path):
-            key = _key(value)
-            if len(key) >= 5 and key not in secrets:
-                secrets.append(key)
-    words: set[str] = set()
-    for path in _NAME_FIELDS:
-        for value in _texts(data, path):
-            words.update(w for w in re.findall(r"[a-z]+", str(value).lower()) if len(w) >= 3 and w not in _PART_WORDS)
-    return secrets, words
+    for value in names + others:
+        key = _key(value)
+        if len(key) >= 5 and key not in secrets:
+            secrets.append(key)
+    return secrets, _name_words(names)
+
+
+def _letters(token: str) -> str:
+    """A token's letters, lower case, without a possessive ("Lim's" ->
+    "lim")."""
+    token = re.sub(r"['’]s$", "", token, flags=re.I)
+    return re.sub(r"[^a-z]", "", token.lower())
+
+
+def _part_word(word: str) -> bool:
+    return word in _PART_WORDS or word in _SHORT_OK
 
 
 def scrub_words(text, secrets=(), name_words=()) -> str | None:
-    """A typed part name or line wording made safe to keep (see the
-    module's docstring), normalised; None when nothing is left."""
+    """A typed part name or line wording made safe to keep, normalised;
+    None when nothing is left. Taken out, in this order:
+      - the case's identifiers however spaced (catalogue._scrubbed);
+      - a title and the words after it up to the next part word ("per Mr
+        Lim's quote"), and a name link with the word before it and the
+        words after it ("Azman bin Ali");
+      - any word with a digit or "@" (plates, VINs, phone, policy and claim
+        numbers, e-mails), or a letter outside a-z ("Muñoz");
+      - a word of a name on the case or of an account, and two words
+        that stand together in one (name_words);
+      - any other word of 3 letters or fewer that is not a part word or a
+        trade abbreviation (_SHORT_OK): plate prefixes, short names; a
+        single A-D stays only before "pillar" / "post".
+    When in doubt a word goes: a name must never stay."""
     from app.parts.catalogue import _scrubbed
 
     raw = " ".join(str(text or "").split())
     if not raw:
         return None
     raw = _scrubbed(raw, list(secrets)) if secrets else raw
-    kept = []
-    for word in raw.split():
-        if "@" in word or any(ch.isdigit() for ch in word):
+    tokens = _TOKEN.findall(raw)
+    keep = [True] * len(tokens)
+    words = [_letters(t) for t in tokens]
+    lowered = [t.lower().strip(".") for t in tokens]
+
+    def drop_after(i: int) -> None:
+        """The words after a title or a name link, up to the next part word
+        (the first one goes whatever it is)."""
+        j = i + 1
+        while j < len(tokens):
+            if j > i + 1 and _part_word(words[j]):
+                break
+            keep[j] = False
+            j += 1
+
+    for i in range(len(tokens) - 1):
+        if f"{words[i]} {words[i + 1]}" in name_words:
+            keep[i] = keep[i + 1] = False
+    for i in range(len(tokens)):
+        if words[i] in _TITLES:
+            keep[i] = False
+            drop_after(i)
+        elif lowered[i] in _NAME_LINKS and 0 < i < len(tokens) - 1:
+            keep[i] = False
+            if not _part_word(words[i - 1]):
+                keep[i - 1] = False
+            drop_after(i)
+    for i, token in enumerate(tokens):
+        if not keep[i]:
             continue
-        if any(w in name_words for w in _WORD.findall(word.lower())):
-            continue
-        kept.append(word)
-    name = normalise_item(" ".join(kept))
-    # normalise_item keeps digits out already (none are left); a last guard.
-    name = " ".join(w for w in name.split() if not any(ch.isdigit() for ch in w))[:MAX_NAME].strip()
-    return name or None
+        word = words[i]
+        if "@" in token or any(ch.isdigit() for ch in token) or any(ord(ch) > 127 for ch in token):
+            keep[i] = False
+        elif not word or word in name_words:
+            keep[i] = False
+        elif len(word) == 1:
+            keep[i] = word in "abcd" and i + 1 < len(tokens) and words[i + 1] in _PILLAR
+        elif len(word) <= 3 and word not in _SHORT_OK:
+            keep[i] = False
+    name = normalise_item(" ".join(t for t, k in zip(tokens, keep, strict=True) if k))
+    # A last guard: nothing with a digit, nothing short and unknown that
+    # normalising split off ("L.H." is "l h").
+    name = " ".join(w for w in name.split() if not any(ch.isdigit() for ch in w)
+                    and (len(w) > 3 or w in _SHORT_OK or (len(w) == 1 and w in "abcd")))
+    return name[:MAX_NAME].strip() or None
 
 
 # ------------------------------------------------------------ the car
@@ -373,15 +494,29 @@ def _suggested_how(fact: dict) -> tuple[str, str | None, str | None]:
     return "suggestion", source, None
 
 
+def own_wordings(key: str) -> set[str]:
+    """The wording keys (history.normalise_item) of a part's own Annex A
+    line: its name, and the firm's wording of it on any body ("Rear bumper
+    fascia" -> "rear bumper"); a named Other's, its name."""
+    if key.startswith(OTHER_PART + ":"):
+        names = [key[len(OTHER_PART) + 1:]]
+    else:
+        names = [key, FIRM_PART_NAMES.get(key), FIRM_PART_NAMES_HATCH.get(key)]
+    return {normalise_item(n) for n in names if n} - {""}
+
+
 def fittings_of(key: str, annex_rows: list[dict], secrets=(), name_words=()) -> list[dict]:
     """The Annex A lines renewed with the part `key` (their source_part is
-    it; not its own main row): wording key, qty, section, Necessary."""
+    it), not its own line -- marked main, or, on a row from before that
+    mark (8 Nov 2026), worded as the part itself (own_wordings): wording
+    key, qty, section, Necessary."""
     out = []
+    own = own_wordings(key) if key else set()
     for row in annex_rows:
         source = row.get("source_part")
         if row.get("main") or not isinstance(source, str) or not source.strip():
             continue
-        if item_key({"part": source}) != key:
+        if item_key({"part": source}) != key or normalise_item(str(row.get("part_name") or "")) in own:
             continue
         wording = scrub_words(row.get("part_name"), secrets, name_words)
         if not wording:
@@ -497,14 +632,17 @@ def case_rows(db: Session, report: Report) -> list[dict]:
     fields: ready for PartObservation(**row)."""
     data = report.data if isinstance(report.data, dict) else {}
     ai = report.ai_draft if isinstance(report.ai_draft, dict) else None
-    secrets, name_words = case_secrets(report)
+    secrets, name_words = case_secrets(report, db)
     rows = observe(data, ai, secrets, name_words)
     placed = [(r["area"], r["side"]) for r in rows if r["outcome"] in ("kept", "added")]
     end, side = impact_of(placed)
     sign_off = data.get("sign_off") if isinstance(data.get("sign_off"), dict) else {}
     signer = sign_off.get("signed_by_user_id")
+    # From the case's own AI runs, as data.knowledge is made at filing and
+    # sign-off (knowledge.case_stamp) -- the backfill too: never data.
+    # knowledge as stored, which an older sign-off may have stamped wrong.
     try:
-        stamp = knowledge.clean(data.get("knowledge")) or knowledge.case_stamp(db, report.id)
+        stamp = knowledge.case_stamp(db, report.id)
     except Exception as exc:  # the rows matter more than their stamp
         logger.warning("Part observations of case %s: no knowledge stamp (%s)", report.id, type(exc).__name__)
         stamp = None
