@@ -144,7 +144,10 @@ def main() -> int:
         assert out["item_index"] == 2 and out["item"]["part"] == "Left Tail Lamp" and out["item"]["human_verified"] is True
         assert out["item"]["damage_type"] == "Crack" and out["item"]["photo_reference"] == "P02" and out["item"]["severity"] is None
         lamp = [i for i in rows_of(out) if i["source_part"] == "Left Tail Lamp"]
-        assert lamp and any(i["workshop_est"] > 0 and i["origin"] == "history" for i in lamp), lamp
+        # Stage 1: one past Vezel case in the real reports -> its line arrives
+        # unpriced with the usual price as a hint (>= 2 cases needed to price).
+        assert lamp and any(i["origin"] == "history" and i["workshop_est"] == 0
+                            and (i.get("usual_unit_price") or 0) > 0 for i in lamp), lamp
         assert next(i for i in rows_of(out) if i["part_name"] == typed_name)["workshop_est"] == 777.0
         ok("POST appends the part, verified by the person; Annex A gains its rows from past cases; typed rows untouched")
         assert surveyor.post(f"/reports/{rid}/damage-items", json={"part": "Flux Capacitor"}).status_code == 400
@@ -158,7 +161,10 @@ def main() -> int:
         out = r.json()
         assert out["item"]["part"] == "Left Tail Lamp" and [d["part"] for d in out["damage_summary"]] == ["Tail Gate", "Rear Windscreen"]
         lamp = [i for i in rows_of(out) if i["source_part"] == "Left Tail Lamp"]
-        assert lamp and all(i["stale"] and i["workshop_est"] > 0 for i in lamp), lamp
+        # Stage 1: the lamp's lines came in UNPRICED (one past Vezel case), and
+        # removing a part removes its unpriced rows. Priced rows staying, flagged
+        # stale, is checked above on the rear bumper.
+        assert not lamp, lamp
         detail = surveyor.get(f"/reports/{rid}").json()["data"]
         assert detail["dismissed_parts"] == ["Left Tail Lamp"], detail["dismissed_parts"]
         assert surveyor.delete(f"/reports/{rid}/damage-items/5").status_code == 404
