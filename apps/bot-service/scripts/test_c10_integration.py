@@ -848,12 +848,25 @@ _TIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:
 _DURATIONS = {"seconds", "ms", "waited_s", "signature_hash"}
 
 
+def _without_2b(o):
+    """o without step 2B's deliberate addition to a case (24 Nov 2026):
+    the knowledge stamp filing and sign-off put on it (data.knowledge, a
+    dict with the stamp's keys). Its values are checked on their own
+    (KNOWLEDGE_SEEN)."""
+    if isinstance(o, dict):
+        return {k: _without_2b(v) for k, v in o.items()
+                if not (k == "knowledge" and isinstance(v, dict) and {"links", "models"} <= set(v))}
+    if isinstance(o, (list, tuple)):
+        return [_without_2b(v) for v in o]
+    return o
+
+
 def normalised(obj, ids: dict[str, str]):
     """obj as JSON with the run's ids as placeholders, times as "<t>", the
     durations as null and image bytes as their sha256: what is the same on
-    every run of the same case. Phase 1's additions are left out
-    (_without_p1)."""
-    obj = _without_p1(obj)
+    every run of the same case. Phase 1's and step 2B's additions are left
+    out (_without_p1, _without_2b)."""
+    obj = _without_2b(_without_p1(obj))
 
     def walk(o):
         if isinstance(o, dict):
@@ -899,6 +912,13 @@ def _without_c10(ai_draft):
     return rest, rest.pop("zone_intact", None) is not None
 
 
+# Each scenario's knowledge stamps (step 2B), by mode: at filing
+# ("<mode>:filed"), at sign-off ("<mode>"), and the accuracy row's models
+# ("<mode>:models"). Kept out of facts, which the probes of older trees
+# compare too.
+KNOWLEDGE_SEEN: dict[str, object] = {}
+
+
 def off_scenario(mode: str) -> tuple[dict, dict]:
     """One case through every route with contract 10 at its defaults.
     (artefacts normalised, facts checked apart)."""
@@ -940,6 +960,7 @@ def off_scenario(mode: str) -> tuple[dict, dict]:
         state = client.get(f"/intake/{rid}").json()
         out["finalize"] = client.post(f"/intake/{rid}/finalize", json={"data": state["data"]}).json()
         filed = db_row(Report, rid)
+        KNOWLEDGE_SEEN[f"{mode}:filed"] = (filed.data or {}).get("knowledge")
         filed_ai, facts["zone_intact_filed"] = _without_c10(filed.ai_draft)
         out["filed"] = {"data": filed.data, "ai_draft": filed_ai, "status": filed.status, "runs": _run_rows(rid)}
         out["case_add"] = client.post(f"/reports/{rid}/damage-items",
@@ -952,7 +973,12 @@ def off_scenario(mode: str) -> tuple[dict, dict]:
         metrics = dict(row.metrics or {}) if row else None
         facts["version"] = (row.version, metrics.pop("version", None)) if row else None
         out["accuracy"] = {"metrics": metrics, "models": row.models if row else None}
+        # Step 2B (24 Nov 2026): the knowledge stamp on the case (data.
+        # knowledge) -- not hashed (normalised leaves it out), its values
+        # checked on their own (KNOWLEDGE_SEEN).
         out["case"] = db_row(Report, rid).data
+        KNOWLEDGE_SEEN[mode] = (out["case"] or {}).get("knowledge")
+        KNOWLEDGE_SEEN[f"{mode}:models"] = row.models if row else None
         return normalised(out, ids), facts
 
 
@@ -969,6 +995,15 @@ def everything_off() -> None:
         check(facts["stage"] == "ready" and facts["sign_off"] == 200, f"{mode}: read, filed and signed off")
         check(sha == GOLDEN_OFF[mode], f"{mode}: requests and stored data byte for byte as master a89ede1's (golden)",
               sha)
+        # The stamp of what made the draft, from the case's own runs: the
+        # linked parts and the car map off here, the reading prompt v1, the
+        # models that read it (the accuracy row's); the same at filing.
+        want = {"library": None, "links": None, "car_map": None, "prompt": "v1",
+                "models": KNOWLEDGE_SEEN.get(f"{mode}:models")}
+        check(KNOWLEDGE_SEEN.get(mode) == want and want["models"],
+              f"{mode}: the sign-off's knowledge stamp (step 2B), its values compared apart", KNOWLEDGE_SEEN.get(mode))
+        check(KNOWLEDGE_SEEN.get(f"{mode}:filed") == want, f"{mode}: and the same stamp at filing",
+              KNOWLEDGE_SEEN.get(f"{mode}:filed"))
         check(not any(it.get("source") == "link" for it in (artefacts["case"].get("second_look") or {}).get("items") or [])
               and "link_suggestions" not in json.dumps(artefacts), f"{mode}: no linked part anywhere")
         want = mode == "zones"

@@ -13,6 +13,7 @@ import type {
 } from "@/lib/api";
 import { formatSgtDate } from "@/lib/caseFields";
 import { getAiAccuracyAction } from "./ai-accuracy/actions";
+import { PeopleChangedSection } from "./PeopleChangedSection";
 
 const ALL = "all";
 
@@ -587,6 +588,8 @@ export function AiAccuracyClient({ initial, initialError }: { initial: AiAccurac
           </div>
         </>
       )}
+
+      <PeopleChangedSection />
     </>
   );
 }

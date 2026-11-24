@@ -588,6 +588,13 @@ class AiRun(Base):
     output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Damaged parts the run came back with (reading, drafting).
     parts_found: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The knowledge stamp (L-library D.3, step 2B): the versions of what the
+    # run worked with -- {library, links ("L1:06bbebfa", the link table's
+    # version and the first 8 of its sha256), car_map, prompt (on a reading
+    # run only), models} -- written when the run starts, its models when it
+    # ends (app/reports/knowledge.py). None on rows from before. (Added
+    # after the table shipped: see db._ADDED_COLUMNS.)
+    knowledge: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class PastAnnexLine(Base):
@@ -919,3 +926,99 @@ class AiAccuracy(Base):
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+
+
+class PartObservation(Base):
+    """One part decision on a signed-off case, de-identified (step 2B,
+    K-pricing B.4 (1) CAPTURE; owner-approved 24 Nov 2026): every part on
+    the signed-off damage list, every part the AI listed that people took
+    off, and every suggestion people saw -- with the car, where it was hit,
+    how the part got there and what became of it. The raw material the
+    knowledge loop learns from later (K3); nothing reads it back into a case
+    yet. Written by app/reports/observations.py in the sign-off's background
+    step; a re-sign-off replaces the case's rows, a reopen or a delete
+    removes them, and none is kept past 7 years (observations.sweep_old).
+
+    NEVER holds a plate, VIN, chassis or engine number, anyone's name, a
+    note or remark, a photo or a price: a typed "Other" name and a fitting's
+    wording are scrubbed before they are stored -- the identifiers and name
+    words of the case and of every account, titles and the names after
+    them, any word with a digit, "@" or a letter outside a-z, and any other
+    short word that is not a part word (observations.scrub_words). The case id (report_id) leads back to
+    the case, as the AI accuracy row's does; signed_by is an account id.
+    New table, made by create_all: nothing in db._ADDED_COLUMNS."""
+    __tablename__ = "part_observations"
+    __table_args__ = (
+        # Also in db._ADDED_INDEXES (create_all adds each index on its own).
+        Index("ix_part_observations_make_model_key", "make", "model_key"),
+        Index("ix_part_observations_part", "part"),
+        Index("ix_part_observations_report_id", "report_id"),
+        Index("ix_part_observations_signed_off_at", "signed_off_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[str] = mapped_column(String, nullable=False)
+    # When it was signed off (sign_off.signature_date, naive UTC) and by
+    # which account (users.id, never a name).
+    signed_off_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    signed_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The vehicle: make as the price book splits it ("Honda"), model_key
+    # its normalised first word with twins merged ("vezel"; history.
+    # model_key), body type (taxonomy.BODY_TYPES), year band from the
+    # registration date ("2015-19"). vehicle_confirmed: make and model
+    # both confirmed or entered by a person (the Review step's "you").
+    make: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    model_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    body_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    year_band: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    vehicle_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Where the car was hit, from where the signed-off damaged parts are:
+    # impact_end front | rear | both | side | other; impact_side left |
+    # right | both | centre. impact_confirmed: a person confirmed the point
+    # of impact (the field's text itself is not kept).
+    impact_end: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    impact_side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    impact_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The case had an AI draft to compare with (Report.ai_draft): without
+    # one every part is a person's, and "added" says nothing about the AI.
+    ai_drafted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # The part: a canonical or car map name, or "Other / Not Listed" with
+    # other_name (normalised, scrubbed); family and side as history.
+    # family_and_side gives them; area front | rear | side | roof |
+    # underbody | cabin | wheel. kind: "part" (fittings are inside a part's
+    # row, below). component_key: the parts library's key, filled by 3B.
+    part: Mapped[str] = mapped_column(String, nullable=False)
+    family: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    side: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    area: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    other_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="part")
+    component_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The firm's condition words, the hit level (links.hit_of) and Repair /
+    # Replace -- known words only, never free text.
+    condition_words: Mapped[list] = mapped_column(JSON, default=list)
+    hit: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    action: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The Annex A lines renewed with it (source_part this part, not its own
+    # main row): [{wording (normalised key), qty, section list | nett,
+    # necessary}] -- never a price.
+    fittings: Mapped[list] = mapped_column(JSON, default=list)
+    # How it got there: ai_read | zone | suggestion | link | catalogue |
+    # hand_added; the suggestion's source (zone | kit | nearby | link |
+    # other_side), the link rule ("L1:rear-bumper>beam") and the reads that
+    # found it ("overall", "zone:rear").
+    how: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    link_rule: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    found_by: Mapped[list] = mapped_column(JSON, default=list)
+    # kept | removed | added | dismissed | left; prompted: added because it
+    # was suggested (the echo guard counts these apart).
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    prompted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The knowledge stamp of what made the case's AI draft, from its own AI
+    # runs (knowledge.case_stamp, as data.knowledge); None fields when no
+    # run of it was stamped.
+    knowledge: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Which definitions made the row (observations.VERSION).
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)

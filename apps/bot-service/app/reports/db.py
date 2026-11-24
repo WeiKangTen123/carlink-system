@@ -96,6 +96,9 @@ _ADDED_COLUMNS = [
     # taken_at; owner decision D7, 23 Nov 2026).
     ("intake_photos", "taken_at_local", "DATETIME"),
     ("intake_photos", "taken_at", "DATETIME"),
+    # The knowledge stamp of an AI run (models.AiRun.knowledge; step 2B,
+    # L-library D.3): None on the rows from before.
+    ("ai_runs", "knowledge", "JSON"),
 ]
 
 # Indexes added after their table first shipped. A failure (e.g. existing
@@ -144,6 +147,12 @@ _ADDED_INDEXES = [
     " ON user_prices (user_id, make, model_key, item_key, coalesce(side, ''))",
     "CREATE INDEX IF NOT EXISTS ix_user_prices_user_id_make_model_key ON user_prices (user_id, make, model_key)",
     "CREATE INDEX IF NOT EXISTS ix_book_prices_key ON book_prices (make, model_key, item_key)",
+    # The part decisions of signed-off cases (step 2B, models.PartObservation):
+    # the same names as its __table_args__.
+    "CREATE INDEX IF NOT EXISTS ix_part_observations_make_model_key ON part_observations (make, model_key)",
+    "CREATE INDEX IF NOT EXISTS ix_part_observations_part ON part_observations (part)",
+    "CREATE INDEX IF NOT EXISTS ix_part_observations_report_id ON part_observations (report_id)",
+    "CREATE INDEX IF NOT EXISTS ix_part_observations_signed_off_at ON part_observations (signed_off_at)",
 ]
 
 # One-off data changes, each safe to run on every start-up.

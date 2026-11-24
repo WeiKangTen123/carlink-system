@@ -362,6 +362,18 @@ def _field_state(key: str, data: dict, ai_draft: dict | None, photos: dict, chec
     return {"state": "you"}
 
 
+def person_confirmed(data: dict | None, ai_draft: dict | None, key: str) -> bool:
+    """A cover field a person confirmed (ticked) or entered themselves: its
+    state "you" as the Review step shows it before sign-off -- not a value
+    still the AI's, nor one marked N/A. With no AI draft at all (None)
+    nothing can be said, so no (as _field_state). For the part
+    observations' vehicle_confirmed and impact_confirmed (step 2B)."""
+    data = data if isinstance(data, dict) else {}
+    if key not in FIELD_RULES:
+        return False
+    return _field_state(key, data, ai_draft, {}, checked_of(data), signed_off=False)["state"] == "you"
+
+
 def damage_state(item: dict, signed_off: bool) -> str:
     if signed_off:
         return "none"
