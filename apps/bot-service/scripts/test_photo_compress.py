@@ -466,6 +466,53 @@ def other_entries_section() -> None:
               "staff Telegram draft: sha256 the sent bytes', preview made, no temp file")
 
 
+# ------------------------------------------------------------- 7. the AI sees the same images
+
+
+def ai_same_section() -> None:
+    """Owner's accuracy gate (24 Nov 2026): with the switch on, the 4 real
+    cases scored 46/78 against a 47 floor set before the run. The AI reads
+    the 1600px preview (intake/photos.ai_input_path), so the preview and the
+    thumbnail are now made from the file AS SENT, before it is compressed:
+    switch on or off, they must be byte for byte the same, at every way in."""
+    src = camera_jpeg("same.jpg", size=(2400, 1600))
+    sent = src.read_bytes()
+
+    def pair(store):
+        out = {}
+        for mode in ("off", "on"):
+            with compress(mode):
+                path = Path(store())
+                out[mode] = (sha(files.preview_path_for(str(path)).read_bytes()),
+                             sha(files.thumbnail_path_for(str(path)).read_bytes()),
+                             path.stat().st_size)
+        return out
+
+    with TestClient(app) as client:
+        sign_in(client)
+
+        def website():
+            rid = client.post("/intake").json()["id"]
+            r = client.post(f"/intake/{rid}/photos", files={"file": ("IMG_7.jpg", sent, "image/jpeg")},
+                            data={"position": "0"})
+            need(r.status_code == 200 and "photo" in r.json(), "upload accepted", r.text)
+            return stored_row(r.json()["photo"]["id"]).path
+
+        ways = {
+            "website upload": website,
+            "save_photo (filed cases, WhatsApp, staff bot filing)": lambda: files.save_photo(gen_id(), str(src), 1),
+            "public Telegram report": lambda: public._store_photos(gen_id(), [str(src)])[0]["path"],
+            "staff Telegram full detection": lambda: telegram_bridge.store_photos(gen_id(), [str(src)])[0][0]["path"],
+        }
+        for name, store in ways.items():
+            got = pair(store)
+            check(got["off"][0] == got["on"][0],
+                  f"{name}: the AI's preview is byte for byte the same with the switch on and off")
+            check(got["off"][1] == got["on"][1], f"{name}: the thumbnail is the same too")
+            check(got["on"][2] < got["off"][2],
+                  f"{name}: and the stored original is still smaller with it on ({got['on'][2]} < {got['off'][2]})")
+
+
 # ------------------------------------------------------------- 6. when it was taken (D7)
 
 LOCAL = datetime(2026, 11, 20, 9, 15, 30)
@@ -614,6 +661,7 @@ def main() -> int:
         ("4. on: the website upload", upload_section),
         ("5. on: save_photo, public Telegram reports, staff Telegram drafts", other_entries_section),
         ("6. when each intake photo was taken (D7)", taken_section),
+        ("7. the AI's preview is the same, switch on or off (accuracy gate)", ai_same_section),
     ):
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")

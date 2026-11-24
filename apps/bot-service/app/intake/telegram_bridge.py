@@ -167,14 +167,14 @@ def store_photos(report_id: str, photo_paths) -> tuple[list[dict], int]:
         # (a photo sent as a Telegram "photo" has none -- Telegram strips
         # it; one sent as a file keeps it).
         taken = photo_taken_at(dest)
-        # settings.photo_store_compress, as a website upload: re-saved
-        # smaller before the thumbnail and preview; sha256 stays the sent
-        # bytes' hash, size is what is stored.
+        # As a website upload: the thumbnail and the AI's preview from the
+        # file as sent, then settings.photo_store_compress re-saves it
+        # smaller; sha256 stays the sent bytes' hash, size is what is stored.
+        generate_thumbnail(str(dest))
+        generate_preview(str(dest))
         stored_size = compress_original(str(dest))
         if stored_size is not None:
             size = stored_size
-        generate_thumbnail(str(dest))
-        generate_preview(str(dest))
         seen.add(sha)
         kept.append({"id": photo_id, "path": str(dest), "sha256": sha, "size": size, "ext": ext,
                      "taken_at_local": taken.local if taken else None, "taken_at": taken.utc if taken else None})

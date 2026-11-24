@@ -668,16 +668,16 @@ def _store_photos(report_id: str, photo_paths) -> list[dict]:
         if sha in seen or _image_ext(dest) != ext or not is_readable_image(dest):
             dest.unlink(missing_ok=True)
             continue
-        # settings.photo_store_compress: re-saved smaller, before the
-        # thumbnail and preview are made from it (a cut-off JPEG fails to
-        # decode there too, and is left as it came). sha256 stays the sent
-        # bytes' hash; the caps above count the sent sizes, as before.
-        stored_size = compress_original(str(dest))
         # verify() passes a cut-off JPEG; making these decodes all of it.
+        # Made from the file AS SENT, before it is compressed, so the AI's
+        # preview is the same whatever settings.photo_store_compress says.
         if generate_thumbnail(str(dest)) is None or generate_preview(str(dest)) is None:
             for path in (dest, thumbnail_path_for(str(dest)), preview_path_for(str(dest))):
                 path.unlink(missing_ok=True)
             continue
+        # settings.photo_store_compress: then re-saved smaller. sha256 stays
+        # the sent bytes' hash; the caps above count the sent sizes, as before.
+        stored_size = compress_original(str(dest))
         seen.add(sha)
         total += size
         kept.append({"id": photo_id, "path": str(dest), "sha256": sha,

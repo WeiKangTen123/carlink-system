@@ -402,15 +402,19 @@ def upload_intake_photo(
         # from the file as sent -- before compress_original drops its EXIF,
         # whatever that switch says.
         taken = photo_taken_at(dest)
-        # settings.photo_store_compress: the stored original re-saved smaller,
-        # before its thumbnail and preview are made from it. sha256 stays the
-        # UPLOADED bytes' hash, so the same file dropped again is still found
-        # above; size_bytes is what is stored (the draft's storage limit).
+        # The thumbnail and the preview (what the AI reads: intake/photos.
+        # ai_input_path) are made from the file AS SENT, before it is
+        # compressed, so the AI sees byte-for-byte the same images whatever
+        # settings.photo_store_compress says (owner's accuracy gate, 24 Nov).
+        generate_thumbnail(str(dest))
+        generate_preview(str(dest))
+        # settings.photo_store_compress: then the stored original re-saved
+        # smaller. sha256 stays the UPLOADED bytes' hash, so the same file
+        # dropped again is still found above; size_bytes is what is stored
+        # (the draft's storage limit).
         stored_size = compress_original(str(dest))
         if stored_size is not None:
             size = stored_size
-        generate_thumbnail(str(dest))
-        generate_preview(str(dest))
         photo = IntakePhoto(
             id=photo_id,
             report_id=report_id,

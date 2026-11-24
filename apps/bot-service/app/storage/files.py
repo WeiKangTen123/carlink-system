@@ -361,10 +361,12 @@ def save_photo(incident_id: str, source_path: str, index: int) -> str:
     ext = Path(source_path).suffix or ".jpg"
     dest = d / "photos" / f"photo_{index:02d}{ext}"
     shutil.copy(source_path, dest)
-    # Before the thumbnail and preview, which are made from the stored file.
-    compress_original(str(dest))
+    # The thumbnail and preview from the file as sent, then the original
+    # compressed (settings.photo_store_compress): the preview -- what the AI
+    # reads -- is the same either way.
     generate_thumbnail(str(dest))
     generate_preview(str(dest))
+    compress_original(str(dest))
     return str(dest)
 
 
