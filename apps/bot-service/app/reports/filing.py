@@ -12,7 +12,8 @@ the tail they all run, so every filed case starts the same way:
     from the AI's first list would otherwise survive the person changing
     it) and Annex A synced from past cases (parts/prefill.sync_annex_a):
     priced for someone who may see the price book, one unpriced row per
-    part for anyone else;
+    part for anyone else -- and, for everyone, the filer's own prices
+    first (Stage 1, own_prices_by);
   - data["photo_index"]: what each photo is, in P-number order, from the
     wizard's sort step; kind None for bot photos, which were never sorted,
     so a later re-detection (Phase 2) sorts them first;
@@ -130,6 +131,19 @@ def price_book_for(user, owner=None) -> bool:
     return can_view_all_cases(user) and (owner is None or can_view_all_cases(owner))
 
 
+def own_prices_by(user, owner=None) -> str | None:
+    """Whose own prices ("My prices", Stage 1) fill a case `user` files
+    for `owner`: the filer's -- for everyone (owner P3) -- when the case is
+    theirs (owner None or the filer), or someone else's where the price
+    book may go too (price_book_for). None for nobody's."""
+    user_id = getattr(user, "id", None)
+    if not user_id:
+        return None
+    if owner is None or getattr(owner, "id", None) == user_id or price_book_for(user, owner):
+        return user_id
+    return None
+
+
 def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: list[dict] | None,
                    owner=None, report_id: str | None = None, read_ids=None) -> dict:
     """The case data as it is filed: sign-off blank, annexes rebuilt from
@@ -159,7 +173,7 @@ def file_case_data(db, data: dict, user, *, ai_draft: dict | None, photo_kinds: 
     data = synthesize_annexes_for_report(data)
     prices = SessionLocal()
     try:
-        data = sync_annex_a(prices, data, price_book=price_book_for(user, owner))
+        data = sync_annex_a(prices, data, price_book=price_book_for(user, owner), user_id=own_prices_by(user, owner))
     except Exception:
         logger.exception("Could not sync Annex A from past cases for case %s; its rows stay unpriced", report_id or "(new)")
     finally:

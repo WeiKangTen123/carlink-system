@@ -132,10 +132,14 @@ def main() -> int:
     assert striker["cases"] == 2 and striker["usual_unit_price"] == 76.0 and striker["min_price"] == 72.0
     ok("admins import reports (re-import replaces), other files are refused by name; history shows usual prices")
     assert all(c["plate"] == "" and c["file"] == "" for c in hist["cases"]), hist["cases"]
-    assert {c["plate"] for c in admin.get("/parts-history").json()["cases"]} == {"SLK3063Z", "SMV7530X"}
+    # Stage 1 (owner K0, 24 Nov 2026): the importer keeps no plate, so not
+    # even an admin sees one; file names are still the admins'.
+    admin_cases = admin.get("/parts-history").json()["cases"]
+    assert all(c["plate"] == "" for c in admin_cases) and {c["file"] for c in admin_cases} == {
+        "CL 11900 SLK 3063 Z.xlsx", "CL 12330 SMV 7530 X.xlsx"}, admin_cases
     r = stranger.get("/parts-history")
     assert r.status_code == 200 and r.json() == {"cases": [], "lines": [], "hidden": True}, r.text
-    ok("plates and file names for admins only; a self-signup gets empty lists and hidden: true")
+    ok("file names for admins only, no plate for anyone; a self-signup gets empty lists and hidden: true")
 
     print("suggestions")
     # The surveyor's own case: a plain user only sees the cases they own.

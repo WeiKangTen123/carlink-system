@@ -25,11 +25,11 @@ from pydantic import BaseModel, Field
 
 from app.api import limits
 from app.api.intake import CheckedChange, checked_change, hold_write_lock
-from app.api.parts import _report, _sees_price_book, _signed_off, price_book_for_case
+from app.api.parts import _report, _sees_price_book, _signed_off, own_prices_for_case, price_book_for_case
 from app.auth.core import CurrentUser, audit
 from app.auth.deps import editable_case, not_allowed, visible_case
 from app.parts.history import suggest_labour
-from app.parts.prefill import prefill_annex_a, prefill_counts
+from app.parts.prefill import prefill_counts, sync_annex_a
 from app.reports.db import SessionLocal
 from app.reports.models import Report
 from app.reports.review import review_state
@@ -223,24 +223,37 @@ def labour_suggestions(report_id: str, user: CurrentUser = Depends(visible_case)
 
 @router.post("/reports/{report_id}/annex-a/prefill")
 def prefill_annex_a_route(report_id: str, user: CurrentUser = Depends(editable_case)) -> dict:
-    """Prices Annex A from past cases (prefill.prefill_annex_a): rows a
-    person priced stay, every prefilled or unpriced row is replaced by what
-    past cases wrote for the damaged parts. The same thing finalize does
-    when a case is filed, for pressing again after the damage list or the
-    imported history changed. 403 for anyone the price book is hidden
-    from: the prices would land in their case."""
+    """"Fill prices" (prefill.sync_annex_a): rows a person priced stay,
+    the machine's unpriced rows are built again for the damaged parts and
+    priced by the Stage 1 price choice (app/parts/prices.py) -- this
+    person's own prices first, then, for price-book staff, an approved or
+    the book's price. The same thing finalize does when a case is filed,
+    for pressing again after the damage list, the history or one's own
+    prices changed. Since Stage 1 anyone who may edit the case may press
+    it (owner P3: one's own prices are for everyone); the firm's book
+    only goes where both the presser and the case's owner may see it
+    (price_book_for_case), as before -- before Stage 1 anyone else got
+    403 not_allowed here."""
     db = SessionLocal()
     try:
         r = _editable(db, report_id)
         # By the case, not only the presser: an admin pricing a self-signup's
         # case would put the price book into a case whose owner can't see it.
-        if not price_book_for_case(db, r, user):
+        price_book = price_book_for_case(db, r, user)
+        own = own_prices_for_case(db, r, user)
+        if not price_book and not own:
             raise not_allowed(PRICE_BOOK_ONLY)
-        data = prefill_annex_a(db, r.data or {})
+        data = sync_annex_a(db, r.data or {}, price_book=price_book, user_id=user.id if own else None)
         r.data = data
         r.pdf_path = None
         filled, unpriced = prefill_counts(data)
-        audit(db, user, "annex_a_prefilled", r.id, detail=f"{filled} row(s) priced from past cases, {unpriced} unpriced")
+        mine = sum(1 for row in (data.get("annex_a") or {}).get("items") or []
+                   if row.get("price_source") == "mine" and row.get("price_confirmed") is False)
+        detail = f"{filled} row(s) priced from past cases, {unpriced} unpriced" if price_book else \
+            f"{filled} row(s) priced from your own prices, {unpriced} unpriced"
+        if price_book and mine:
+            detail += f" ({mine} from your own prices)"
+        audit(db, user, "annex_a_prefilled", r.id, detail=detail)
         db.commit()
         return {"annex_a": data["annex_a"], "annex_c": data["annex_c"], "filled": filled, "unpriced": unpriced}
     finally:

@@ -374,13 +374,16 @@ def main() -> int:
     r = stranger.post(f"/reports/{rid}/annex-a/prefill")
     assert r.status_code == 404, r.text
     own = new_case(stranger, plate="SNA5678C")
+    # Stage 1 (owner P3, 24 Nov 2026): "Fill prices" fills a person's own
+    # prices for everyone, so a self-signup may press it on their own case
+    # (it was 403) -- and still gets nothing from the firm's book.
     r = stranger.post(f"/reports/{own}/annex-a/prefill")
-    assert r.status_code == 403 and r.json()["code"] == "not_allowed", r.text
+    assert r.status_code == 200, r.text
     unpriced = stranger.get(f"/reports/{own}").json()["data"]["annex_a"]["items"]
     assert all(i["workshop_est"] == 0 and not i["prefilled"] for i in unpriced)
     r = stranger.get(f"/reports/{own}/labour-suggestions")
     assert r.status_code == 200 and r.json()["hidden"] is True and r.json()["groups"] == [], r.text
-    ok("the price book stays the firm's: a self-signup can't prefill (403) and gets hidden labour suggestions")
+    ok("the price book stays the firm's: a self-signup's Fill prices brings no book price, and labour suggestions are hidden")
 
     print("sync_annex_a (detection -> Annex A, one way)")
     from app.parts.prefill import origin_of, sync_annex_a

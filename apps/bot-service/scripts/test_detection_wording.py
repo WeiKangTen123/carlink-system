@@ -68,7 +68,7 @@ def line(n, item, condition, qty, est, adjusted, section="list", discount=0.2) -
 
 
 def import_history() -> None:
-    """Two made-up past cases: a hatch (an SUV model name, so
+    """Two made-up past cases, each twice: a hatch (an SUV model name, so
     taxonomy.body_type_for calls it one) with a tail gate, tail lamp and
     bumper, and a sedan with a boot lid."""
     hatch = PastCase(ref="CL 90001", plate="TEST1A", make="Alphamotors", model="Vezel", make_model_raw="Alphamotors Vezel",
@@ -91,6 +91,12 @@ def import_history() -> None:
     try:
         import_case(db, hatch, "synthetic-1.xlsx")
         import_case(db, sedan, "synthetic-2.xlsx")
+        # Each again under another reference: the book prices a line only
+        # from 2+ past cases (Stage 1, owner K0, 24 Nov 2026), and these
+        # checks read the rows by their prices.
+        for case, ref, name in ((hatch, "CL 90011", "synthetic-1b.xlsx"), (sedan, "CL 90012", "synthetic-2b.xlsx")):
+            import_case(db, PastCase(ref=ref, plate="", make=case.make, model=case.model, make_model_raw=case.make_model_raw,
+                                     registered=None, surveyed=case.surveyed, lines=list(case.lines)), name)
         db.commit()
     finally:
         db.close()
@@ -738,6 +744,10 @@ def check_family_lines() -> None:
     db = SessionLocal()
     try:
         import_case(db, both_lamps, "synthetic-3.xlsx")
+        # Twice, as import_history's (Stage 1's 2-case rule).
+        import_case(db, PastCase(ref="CL 90013", plate="", make=both_lamps.make, model=both_lamps.model,
+                                 make_model_raw=both_lamps.make_model_raw, registered=None, surveyed=both_lamps.surveyed,
+                                 lines=list(both_lamps.lines)), "synthetic-3b.xlsx")
         db.commit()
         sides = [{"part": "Left Tail Lamp", "damage_type": "Crack"}, {"part": "Right Tail Lamp", "damage_type": "Crack"}]
         first = sync_annex_a(db, case(sides, "Deltamotors", "Pilot"), price_book=True)
