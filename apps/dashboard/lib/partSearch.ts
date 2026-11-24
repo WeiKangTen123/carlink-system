@@ -5,9 +5,14 @@
  *
  * How it matches:
  *   - lower case, punctuation off ("Sill / Rocker Panel" = "sill rocker panel");
- *   - side words (LH, RH, L/H, R.H., left, right) are taken out of the words
- *     and become a side filter: only parts that can have a side are kept
- *     ("tail lamp lh" finds the tail lamp, side left; never the bonnet);
+ *   - side words are taken out of the words and become the side: LH, L/H,
+ *     L.H., LHS, L.H.S., left, left hand (side), nearside, N/S -- and the
+ *     same for the right, with offside and O/S. Malaysia drives on the left,
+ *     so the near side (the kerb side) is the LEFT and the off side the
+ *     RIGHT. A trailing "side" goes with them ("lh side"). The side never
+ *     hides a part: a part with LH / RH gets it (SearchHit.side, the picker's
+ *     toggle), a part without one is found as usual and the side simply
+ *     doesn't apply ("rear bumper lh" still finds the rear bumper);
  *   - singular and plural are one word ("clips" = "clip", "hinges" =
  *     "hinge", "glasses" = "glass");
  *   - one wrong letter -- or two letters swapped -- is forgiven in a word of
@@ -17,8 +22,9 @@
  * Order: an exact name, then a name that starts with the words, then one
  * with all the words, then another name (an alias), then a close spelling.
  * A "name" is the standard name or the firm's printed wording (sedan or
- * tail-gate). Ties: more uses first, then the preferred area, then the
- * shorter name, then A-Z.
+ * tail-gate). Ties: more uses first, then -- when the query named a side --
+ * the parts that have one, then the preferred area, then the shorter name,
+ * then A-Z.
  *
  * Pure: no React, no fetch, no imports. Node loads it directly
  * (scripts/check-library.mjs). */
@@ -49,7 +55,8 @@ export interface SearchEntry {
   uses?: number | null;
   /** The library area ("front", "rear", ...). */
   area?: string | null;
-  /** false: it never has a side, so a side word in the query drops it. */
+  /** false: its name never takes LH / RH, so a side in the query doesn't
+   * apply to it (it is still found). */
   sided?: boolean | null;
 }
 
@@ -68,6 +75,9 @@ export interface SearchHit<T extends SearchEntry> {
   tier: MatchTier;
   /** The text that matched (the name, a wording or an alias). */
   matched: string;
+  /** The side the query named, for an entry that takes one; null when the
+   * query named none or the entry has no side. */
+  side: Side | null;
 }
 
 export interface SearchOptions {
@@ -79,8 +89,16 @@ export interface SearchOptions {
   limit?: number;
 }
 
-const LEFT = /(?<![a-z0-9])(?:left|lh|l\s*[/.]\s*h)(?![a-z0-9])\.?/g;
-const RIGHT = /(?<![a-z0-9])(?:right|rh|r\s*[/.]\s*h)(?![a-z0-9])\.?/g;
+// A side word, then an optional "side": left, left hand, left-hand side,
+// lh, l/h, l.h., lhs, l.h.s., nearside, near side, n/s (and the right's).
+const sideWords = (word: string, letter: string, near: string) =>
+  new RegExp(
+    `(?<![a-z0-9])(?:${word}(?:\\s*-?\\s*hand)?|${letter}\\s*[/.]?\\s*h\\s*[/.]?\\s*s?|${near}\\s*-?\\s*side|${near[0]}\\s*[/.]\\s*s)` +
+      `(?:\\s*-?\\s*side)?(?![a-z0-9])\\.?`,
+    "g",
+  );
+const LEFT = sideWords("left", "l", "near");
+const RIGHT = sideWords("right", "r", "off");
 
 /** Lower case, anything but letters and digits as one space. */
 export function normalize(text: string | null | undefined): string {
@@ -204,15 +222,15 @@ export function searchParts<T extends SearchEntry>(entries: T[], query: string, 
   const hits: SearchHit<T>[] = [];
   for (const entry of entries) {
     if (opts.area && entry.area !== opts.area) continue;
-    if (q.side && entry.sided === false) continue;
     const m = matchTier(entry, q);
-    if (m) hits.push({ entry, ...m });
+    if (m) hits.push({ entry, ...m, side: entry.sided === false ? null : q.side });
   }
   const rank = (t: MatchTier) => TIER_ORDER.indexOf(t);
   hits.sort(
     (a, b) =>
       rank(a.tier) - rank(b.tier) ||
       (b.entry.uses ?? 0) - (a.entry.uses ?? 0) ||
+      Number(b.side !== null) - Number(a.side !== null) ||
       Number(Boolean(opts.preferArea) && b.entry.area === opts.preferArea) - Number(Boolean(opts.preferArea) && a.entry.area === opts.preferArea) ||
       a.entry.name.length - b.entry.name.length ||
       a.entry.name.localeCompare(b.entry.name),

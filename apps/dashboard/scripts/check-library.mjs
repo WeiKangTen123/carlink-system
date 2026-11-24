@@ -62,10 +62,36 @@ check("side words: L/H, R.H., left, right", () => {
   assert.equal(S.parseQuery("Right front door").side, "right");
   assert.deepEqual(S.parseQuery("left front door").words, ["front", "door"]);
 });
-check("both sides named: no side", () => assert.equal(S.parseQuery("lamp lh rh").side, null));
-check("a side word inside another word is not a side ('lhs', 'brighton')", () => {
-  assert.equal(S.parseQuery("lhs").side, null);
-  assert.equal(S.parseQuery("brighton").side, null);
+check("more side words: LHS / RHS, L.H.S., left hand (side), right-hand side", () => {
+  const read = (t) => [S.parseQuery(t).side, S.parseQuery(t).words.join(" ")];
+  assert.deepEqual(read("tail lamp LHS"), ["left", "tail lamp"]);
+  assert.deepEqual(read("tail lamp rhs"), ["right", "tail lamp"]);
+  assert.deepEqual(read("L.H.S. door"), ["left", "door"]);
+  assert.deepEqual(read("r.h.s door"), ["right", "door"]);
+  assert.deepEqual(read("left hand door"), ["left", "door"]);
+  assert.deepEqual(read("lefthand door"), ["left", "door"]);
+  assert.deepEqual(read("right-hand side door"), ["right", "door"]);
+  assert.deepEqual(read("rear bumper lh side"), ["left", "rear bumper"]);
+});
+check("nearside = LEFT, offside = RIGHT (Malaysia drives on the left); N/S, O/S", () => {
+  const read = (t) => [S.parseQuery(t).side, S.parseQuery(t).words.join(" ")];
+  assert.deepEqual(read("nearside mirror"), ["left", "mirror"]);
+  assert.deepEqual(read("near side mirror"), ["left", "mirror"]);
+  assert.deepEqual(read("near-side mirror"), ["left", "mirror"]);
+  assert.deepEqual(read("N/S mirror"), ["left", "mirror"]);
+  assert.deepEqual(read("offside door"), ["right", "door"]);
+  assert.deepEqual(read("off side door"), ["right", "door"]);
+  assert.deepEqual(read("O/S door"), ["right", "door"]);
+});
+check("both sides named: no side", () => {
+  assert.equal(S.parseQuery("lamp lh rh").side, null);
+  assert.equal(S.parseQuery("nearside and offside lamps").side, null);
+});
+check("a side word inside another word is not a side", () => {
+  for (const t of ["lhd", "brighton", "rhombus", "upright", "offset", "nos", "nearby", "l hinge", "bush"]) {
+    assert.equal(S.parseQuery(t).side, null, t);
+    assert.ok(S.parseQuery(t).words.length > 0, t);
+  }
 });
 check("singular and plural are one word", () => {
   assert.equal(S.stem("clips"), "clip");
@@ -137,9 +163,25 @@ check("typo 'ganrish' finds the garnish (close spelling)", () => {
 check("a short word gets no typo: 'lamb' finds nothing", () => assert.deepEqual(S.searchParts(entries, "lamb"), []));
 check("plural: 'tail lamps' finds the tail lamp", () => assert.equal(names(S.searchParts(entries, "tail lamps"))[0], "Tail Lamp"));
 check("a half-typed last word: 'rear bum'", () => assert.deepEqual(names(S.searchParts(entries, "rear bum")).slice(0, 2), ["Rear Bumper Beam", "Rear Bumper"]));
-check("side words filter: 'lamp lh' keeps only parts with a side", () => {
+check("a side word never hides a part without one: 'rear bumper lh' still finds the rear bumper first", () => {
+  const hits = S.searchParts(entries, "rear bumper lh");
+  assert.deepEqual(names(hits), names(S.searchParts(entries, "rear bumper")));
+  assert.equal(hits[0].entry.name, "Rear Bumper");
+  assert.equal(hits[0].side, null, "the side doesn't apply to it");
+});
+check("a part with LH / RH gets the side; one without gets none", () => {
   const hits = S.searchParts([...entries, E("Rear Lamp Panel")], "lamp lh");
-  assert.deepEqual(names(hits), ["Tail Lamp"]);
+  assert.deepEqual(hits.map((h) => [h.entry.name, h.side]), [["Tail Lamp", "left"], ["Rear Lamp Panel", null]]);
+  assert.equal(S.searchParts(entries, "tail lamp")[0].side, null, "no side in the query, none on the hit");
+  assert.equal(S.searchParts(entries, "nearside tail lamp")[0].side, "left");
+  assert.equal(S.searchParts(entries, "tail lamp O/S")[0].side, "right");
+});
+check("on a tie, a part that takes the side comes first", () => {
+  const two = [E("Door Trim A"), E("Door Trim B", { sided: true })];
+  assert.deepEqual(names(S.searchParts(two, "door trim")), ["Door Trim A", "Door Trim B"]);
+  assert.deepEqual(names(S.searchParts(two, "door trim lhs")), ["Door Trim B", "Door Trim A"]);
+  const used = [E("Door Trim A", { uses: 5 }), E("Door Trim B", { sided: true })];
+  assert.deepEqual(names(S.searchParts(used, "door trim lh")), ["Door Trim A", "Door Trim B"], "uses still come first");
 });
 check("side words alone find nothing (the page shows its list)", () => assert.deepEqual(S.searchParts(entries, "LH"), []));
 check("area filter", () => {
@@ -165,10 +207,31 @@ check("'hood' (alias) -> Bonnet", () => assert.equal(top("hood"), "Bonnet"));
 check("'tailgate' -> Boot Lid", () => assert.equal(top("tailgate"), "Boot Lid"));
 check("'ganrish' -> a garnish (the firm's typo is an alias of the arch garnish)", () => assert.match(top("ganrish"), /Wheel Arch Trim/));
 check("'garnsh' (a typo nobody wrote down) -> a garnish", () => assert.match(top("garnsh"), /Garnish|Wheel Arch Trim/));
-check("'tail lamp lh' -> Tail Lamp, and nothing without a side", () => {
+check("'tail lamp lh' -> Tail Lamp, side left", () => {
   const hits = S.searchParts(real, "tail lamp lh");
-  assert.equal(hits[0].entry.name, "Tail Lamp");
-  assert.ok(hits.every((h) => h.entry.sided !== false));
+  assert.deepEqual([hits[0].entry.name, hits[0].side], ["Tail Lamp", "left"]);
+});
+check("'tail lamp lhs', 'tail lamp nearside', 'N/S tail lamp' -> Tail Lamp, left", () => {
+  for (const q of ["tail lamp lhs", "tail lamp nearside", "N/S tail lamp", "left hand tail lamp"]) {
+    const hit = S.searchParts(real, q)[0];
+    assert.deepEqual([hit?.entry.name, hit?.side], ["Tail Lamp", "left"], q);
+  }
+  const hit = S.searchParts(real, "offside tail lamp")[0];
+  assert.deepEqual([hit.entry.name, hit.side], ["Tail Lamp", "right"]);
+});
+check("'rear bumper lh' -> Rear Bumper first (no side), its sided parts get LH", () => {
+  const hits = S.searchParts(real, "rear bumper lh");
+  assert.deepEqual([hits[0].entry.name, hits[0].side], ["Rear Bumper", null]);
+  const bracket = hits.find((h) => h.entry.name === "Rear Bumper Bracket");
+  assert.equal(bracket?.side, "left");
+});
+check("'fuel flap rh' -> the fuel filler flap (on one side; its name takes none)", () => {
+  const hit = S.searchParts(real, "fuel flap rh")[0];
+  assert.deepEqual([hit?.entry.name, hit?.side], ["Fuel Filler Flap", null]);
+});
+check("no name, wording or alias in the library holds a side word", () => {
+  const texts = real.flatMap((e) => [e.name, ...(e.wordings ?? []), ...(e.aliases ?? [])].filter(Boolean));
+  assert.deepEqual(texts.filter((t) => S.liftSide(t).side !== null || /\b(lh|rh|lhs|rhs)\b/i.test(t)), []);
 });
 check("'door hinges' -> a door hinge", () => assert.match(top("door hinges"), /Door Hinge/));
 check("'splash shield' in the front only", () => assert.equal(top("splash shield", { area: "front" }), "Front Wheel Arch Liner"));

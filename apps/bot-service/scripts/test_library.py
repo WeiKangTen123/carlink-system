@@ -23,6 +23,7 @@ Offline: a temporary database, fake rows, no AI.
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -38,6 +39,7 @@ os.environ.setdefault("GEMINI_API_KEY", "fake")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app.api.library as library_api  # noqa: E402
 from app.api.main import app  # noqa: E402
 from app.intake import links as links_mod  # noqa: E402
 from app.parts import library  # noqa: E402
@@ -126,6 +128,10 @@ def test_core() -> None:
           "the roof, under, wheels and inside areas hold their parts")
     check(by_key["radiator"]["assembly"] == "front-end" and by_key["boot-side-trim"]["assembly"] == "boot-interior",
           "hand-checked homes: the radiator in the front end, the boot side trim in the boot")
+    check(by_key["front-wheel-arch-liner"]["assembly"] == "front-fender"
+          and by_key["rear-wheel-arch-liner"]["assembly"] == "rear-quarter"
+          and by_key["rear-wheel-arch-trim"]["assembly"] == "rear-quarter",
+          "each arch liner with its own panel's assembly (review L13)")
     check(set(c["kind"] for c in core["components"]) <= set(library.KINDS) - {"fitting"},
           "core kinds are panel / part / mechanical / electrical / interior (a fitting is never core)")
     check(by_key["rear-bumper"]["kind"] == "panel" and by_key["airbag-system"]["kind"] == "electrical"
@@ -221,8 +227,45 @@ def test_core() -> None:
           (len(outs), len(ins), len(want)))
     check(any(x["key"] == "rear-bumper-beam" for x in by_key["rear-bumper"]["linked"]["out"]),
           "the rear bumper links out to its beam")
-    check(by_key["front-bumper"]["ai_use"] == "reader" and by_key["front-bumper-absorber"]["ai_use"] == "links",
-          "ai_use: canonical names are read by the AI, car map names only through linked parts")
+    check(by_key["front-bumper"]["ai_use"] == "reader" and by_key["front-bumper-absorber"]["ai_use"] == "car_map",
+          "ai_use: canonical names are read by the AI, car map names only through the car map (switched off)")
+    check({c["ai_use"] for c in core["components"] + core["twins"]} <= {"reader", "car_map", "none"},
+          "ai_use never says 'links' (no car map name is in L1's link table)")
+    l1_names = {n.replace("{side} ", "") for link in table["links"] for n in (link["parent"], link["child"])}
+    check(not [c["name"] for c in core["components"] if c["ai_use"] == "car_map" and c["name"] in l1_names],
+          "and none marked car_map is in L1")
+
+
+def test_sync_check() -> None:
+    print("the sync check fails on drift (review L11, L12)")
+    src = library.ZONES_TS.read_text(encoding="utf-8")
+    tmp = Path(tempfile.mkdtemp(prefix="library-zones-"))
+    path = tmp / "vehicleZones.ts"
+
+    def run(text: str, *extra: str):
+        path.write_text(text, encoding="utf-8")
+        return subprocess.run([sys.executable, str(ROOT / "scripts/check_library_sync.py"), "--zones", str(path),
+                               *extra], cwd=ROOT, capture_output=True, text=True, timeout=120)
+
+    line_ok = '"Left Tail Lamp": "l_taillamp",'
+    check(line_ok in src, "(the test finds the tail lamp's zone line)")
+    r = run(src)
+    check(r.returncode == 0 and "in sync" in r.stdout, "the real zone table: in sync (exit 0)", r.stdout[-300:])
+    r = run(src.replace(line_ok, '"Left Tail Lamp": "l_door_front",'))
+    check(r.returncode == 1 and "'tail-lamp' differs in panels, zones" in r.stdout,
+          "a changed zone: exit 1, naming the component and what differs", r.stdout[-600:])
+    commented = src.replace(line_ok, line_ok + " // a note")
+    path.write_text(commented, encoding="utf-8")
+    check(library.ts_tables(path)["zones"].get("Left Tail Lamp") == "l_taillamp",
+          "a zone line with a trailing comment still reads its zone")
+    r = run(commented)
+    check(r.returncode == 0, "and the core is the same (exit 0)", r.stdout[-300:])
+    r = run(src.replace(line_ok, '"Left Tail Lamp": l_taillamp,'))
+    check(r.returncode == 1 and "no zone read for Left Tail Lamp" in r.stdout,
+          "a line the reader can't read stops the build (never a silent 'no mesh')", r.stdout[-300:])
+    r = run(src, "--write")
+    check(r.returncode == 1 and "real zone table only" in r.stdout, "--write never takes another zone table",
+          r.stdout[-300:])
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +341,17 @@ def test_seeds() -> None:
           and library.fitting_kind("Front bumper side bracket") == "part"
           and library.fitting_kind("Door seals") == "fitting" and library.fitting_kind("Bushes") == "fitting",
           "fitting_kind: the B.4 words, plural too")
+    side_words = {"Rear bumper side retainer LHS": "Rear bumper side retainer",
+                  "Rear bumper retainer L.H.S.": "Rear bumper retainer",
+                  "Tail lamp gasket N/S": "Tail lamp gasket", "Fender liner clip O/S": "Fender liner clip",
+                  "Retainer left hand side": "Retainer", "Retainer right hand": "Retainer",
+                  "Nearside mirror cover": "Mirror cover", "Rear bumper LH side retainer": "Rear bumper side retainer"}
+    got = {text: library.seed_name(text, set(), "") for text in side_words}
+    check(got == side_words, "side words go: LHS, L.H.S., N/S, O/S, left hand (side), nearside; a part's own "
+                             "'side' stays", got)
+    sided = library.seed_fittings([line("Front bumper retainer N/S"), line("Front bumper retainer")],
+                                  library.load_core())
+    check(len(sided) == 1 and sided[0]["sided"], "a wording written with N/S is sided", sided)
     check(library.seed_name("Tail gate emblem FIT", {"fit"}, "") == "Tail gate emblem"
           and library.seed_name("Re-fit kit", {"fit"}, "") == "Re-fit kit"
           and library.seed_name("Door seal", {"seal"}, "") == "Door seal",
@@ -429,11 +483,62 @@ def test_api() -> None:
     finally:
         db.close()
     check(before == after, "reading the library writes nothing", (before, after))
+
+    # The staff extras are cached (review L9): worked out once for all three
+    # staff above, again at once when a case is filed or a past line added.
+    calls = []
+    real_usage = library.usage
+
+    def counting_usage(*args, **kwargs):
+        calls.append(1)
+        return real_usage(*args, **kwargs)
+
+    library.usage = counting_usage
+    try:
+        admin = client(role="admin")
+        admin.get("/library")
+        admin.get("/library/tree")
+        check(calls == [], "the staff extras come from the cache while nothing changed", len(calls))
+        db = SessionLocal()
+        try:
+            db.add(Report(channel="manual", reporter_chat_id="dashboard", status="Pending Review",
+                          data={"damage_summary": [{"part": "Left Tail Lamp", "condition": "Cracked"}]}))
+            db.commit()
+        finally:
+            db.close()
+        comps = {x["key"]: x for x in admin.get("/library").json()["components"]}
+        check(len(calls) == 1 and comps["tail-lamp"]["uses"] == 3, "a newly filed case counts at once",
+              (len(calls), comps["tail-lamp"].get("uses")))
+        db = SessionLocal()
+        try:
+            db.add(PastAnnexLine(case_ref="CL 13", source_file="y.xlsx", plate="", make="Honda", model="Vezel",
+                                 make_model_raw="Honda Vezel", item="Rear bumper absorber clip", item_key="x",
+                                 condition="Necessary", qty=1, workshop_est=1.0, adjusted_cost=1.0))
+            db.commit()
+        finally:
+            db.close()
+        names = {f["name"] for f in admin.get("/library").json()["fittings"]}
+        check(len(calls) == 2 and "Rear bumper absorber clip" in names, "a new past line shows at once",
+              (len(calls), sorted(names)))
+        library_api._cache["at"] -= library_api.CACHE_SECONDS + 1
+        admin.get("/library")
+        check(len(calls) == 3, "and an old cache is worked out again", len(calls))
+        before_cache = json.dumps(library_api._cache["value"], sort_keys=True)
+        body = library_api.library_for(SimpleNamespace(role="admin", sees_all_cases=False, may_sign_off=False))
+        body["components"][0]["uses"] = 999
+        body["components"][0]["conditions"].append(["x", 1])
+        body["fittings"][0]["name"] = "changed"
+        check(json.dumps(library_api._cache["value"], sort_keys=True) == before_cache
+              and "uses" not in library.load_core()["components"][0],
+              "an answer is a copy: changing it changes neither the cache nor the core")
+    finally:
+        library.usage = real_usage
     check(plain.post("/library").status_code in (404, 405), "no way to write: POST is refused")
 
 
 def main() -> int:
     test_core()
+    test_sync_check()
     test_seeds()
     test_usage_and_tree()
     test_api()

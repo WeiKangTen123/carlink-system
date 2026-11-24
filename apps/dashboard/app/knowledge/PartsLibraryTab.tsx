@@ -58,7 +58,7 @@ const small: React.CSSProperties = { fontSize: 11, color: "var(--text-muted)" };
 
 const AI_USE: Record<string, string> = {
   reader: "the AI may name it (its answer list)",
-  links: "the AI names it only as a linked part, with the car map's names switched on",
+  car_map: "only as one of the car map's linked parts, which are switched off: the AI doesn't name it today",
   none: "the AI never names it",
 };
 const PLACEMENT: Record<string, string> = {
@@ -484,7 +484,7 @@ export function PartsLibraryTab({ children }: { children?: ReactNode }) {
               </option>
             ))}
           </select>
-          {parsed.side && <Chip cls="moderate" title="Side words are taken out of the search">side: {parsed.side === "left" ? "LH" : "RH"}</Chip>}
+          {parsed.side && <Chip cls="moderate" title="Side words (LH, LHS, nearside, N/S...) are taken out of the search: parts with LH / RH take this side, parts without one are still shown">side: {parsed.side === "left" ? "LH" : "RH"}</Chip>}
         </div>
         {lib && !staff && (
           <p style={{ ...small, margin: "8px 0 0" }}>Usage counts and the price book&apos;s fitting names are shown to staff (admins, &quot;see all cases&quot;, &quot;may sign off&quot;).</p>
@@ -564,6 +564,7 @@ export function PartsLibraryTab({ children }: { children?: ReactNode }) {
                         <div style={{ ...small, paddingLeft: 12 }}>
                           {TIER_LABELS[h.tier]}
                           {h.matched !== h.entry.name ? `: “${h.matched}”` : ""} · {area}
+                          {h.side ? ` · ${h.side === "left" ? "LH" : "RH"}` : ""}
                         </div>
                       </div>
                     );

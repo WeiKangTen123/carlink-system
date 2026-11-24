@@ -66,7 +66,7 @@ export interface LibraryComponent {
   if_fitted: boolean;
   aliases: LibraryAlias[];
   linked: { out: LibraryLink[]; in: LibraryLink[] };
-  ai_use: "reader" | "links" | "none";
+  ai_use: "reader" | "car_map" | "none";
   note: string | null;
   status: LibraryStatus;
   version_added: number;
@@ -88,7 +88,7 @@ export interface LibraryTwin {
   stand_in: string | null;
   firm_wording: string | null;
   firm_wording_hatch: string | null;
-  ai_use: "reader" | "links" | "none";
+  ai_use: "reader" | "car_map" | "none";
   status: LibraryStatus;
   uses?: number;
   conditions?: [string, number][];

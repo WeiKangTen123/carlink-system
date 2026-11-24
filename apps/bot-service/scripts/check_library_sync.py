@@ -8,6 +8,7 @@ table in step.
 
     python scripts/check_library_sync.py           # check
     python scripts/check_library_sync.py --write   # regenerate the file
+    python scripts/check_library_sync.py --zones other/vehicleZones.ts   # check against another copy (tests)
 
 Offline and read-only (without --write): no database, no AI.
 """
@@ -42,12 +43,21 @@ def _differences(old: dict, new: dict) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--write", action="store_true", help="write the core the code gives to library_core.json")
+    parser.add_argument("--zones", type=Path, default=library.ZONES_TS,
+                        help="the dashboard's zone table to read (default: apps/dashboard/lib/vehicleZones.ts)")
     args = parser.parse_args()
 
-    if not library.ZONES_TS.exists():
-        print(f"Cannot find {library.ZONES_TS} (the dashboard's zone table)")
+    if not args.zones.exists():
+        print(f"Cannot find {args.zones} (the dashboard's zone table)")
         return 1
-    core = library.build_core()
+    if args.write and args.zones != library.ZONES_TS:
+        print("--write takes the real zone table only")
+        return 1
+    try:
+        core = library.build_core(args.zones)
+    except ValueError as exc:
+        print(f"  cannot build the library core: {exc}")
+        return 1
     text = library.dumps(core)
     if args.write:
         library.CORE_PATH.write_text(text, encoding="utf-8", newline="\n")

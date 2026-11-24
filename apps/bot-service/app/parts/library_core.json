@@ -1,7 +1,7 @@
 {
  "format": 1,
  "version": 0,
- "core": "core:be42d15af18e",
+ "core": "core:b9d45d04d04d",
  "built_from": {
   "taxonomy": "102 canonical + 45 car map names",
   "car_map": "K1.0",
@@ -294,14 +294,15 @@
     "rear-number-plate",
     "rear-bumper-beam",
     "rear-bumper-reflector",
-    "rear-wheel-arch-liner",
     "parking-sensor",
     "reversing-camera",
     "rear-bumper-absorber",
     "rear-bumper-bracket",
     "rear-parking-sensor"
    ],
-   "also": []
+   "also": [
+    "rear-wheel-arch-liner"
+   ]
   },
   {
    "key": "boot-lid",
@@ -389,13 +390,13 @@
    ],
    "components": [
     "rear-quarter-panel",
+    "rear-wheel-arch-liner",
     "rear-wheel-arch-trim",
     "fuel-filler-flap"
    ],
    "also": [
     "tail-lamp",
     "boot-side-trim",
-    "rear-wheel-arch-liner",
     "rear-bumper-bracket"
    ]
   },
@@ -3474,9 +3475,9 @@
    "side_rule": "sided",
    "twin_placement": "needs_end",
    "area": "rear",
-   "assembly": "rear-bumper",
+   "assembly": "rear-quarter",
    "also_in": [
-    "rear-quarter",
+    "rear-bumper",
     "rear-wheel"
    ],
    "kind": "part",
@@ -5452,7 +5453,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The foam or plastic energy absorber between cover and beam; priced on its own once the bumper is off.",
    "status": "core",
    "version_added": 0
@@ -5506,7 +5507,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The slide or retainer the cover's end clips into below the headlamp; a pushed or torn bumper end snaps it.",
    "status": "core",
    "version_added": 0
@@ -5556,7 +5557,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "Today's Parking Sensor has no end, so a front bumper can't link it; the split lets the front one be named.",
    "status": "core",
    "version_added": 0
@@ -5608,7 +5609,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The bezel or blank cover in the bumper's lower corners; it breaks with the cover even on cars with no fog lamp.",
    "status": "core",
    "version_added": 0
@@ -5656,7 +5657,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The panel that carries the radiator, latch and headlamp inner mounts; a frontal push past the beam bends it.",
    "status": "core",
    "version_added": 0
@@ -5706,7 +5707,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "Sits behind the radiator; a radiator pushed back cracks the shroud or blades.",
    "status": "core",
    "version_added": 0
@@ -5758,7 +5759,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "A bonnet pushed back or folded bends its hinges; uneven bonnet-to-fender gaps at the rear corners are the sign.",
    "status": "core",
    "version_added": 0
@@ -5804,7 +5805,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "Bolted to the radiator support under the bonnet's front edge; a bonnet that will not shut or open points at it.",
    "status": "core",
    "version_added": 0
@@ -5848,7 +5849,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The pad clipped under the bonnet; renewed when the bonnet is buckled or replaced.",
    "status": "core",
    "version_added": 0
@@ -5901,7 +5902,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "A door pushed in at its rear edge, or one that will not open or latch, usually has a bent lock.",
    "status": "core",
    "version_added": 0
@@ -5954,7 +5955,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "As the front door's: a jammed rear door or one pushed in at its rear edge.",
    "status": "core",
    "version_added": 0
@@ -6007,7 +6008,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "A hit at the door's front edge or a sagging door bends the hinges; a door that drops when opened is the sign.",
    "status": "core",
    "version_added": 0
@@ -6060,7 +6061,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "As the front door's, on the centre pillar.",
    "status": "core",
    "version_added": 0
@@ -6113,7 +6114,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The outer handle sits in the skin; a dent or scrape across it often cracks or scratches it.",
    "status": "core",
    "version_added": 0
@@ -6166,7 +6167,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "As the front door's.",
    "status": "core",
    "version_added": 0
@@ -6216,7 +6217,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The energy absorber between the rear cover and beam.",
    "status": "core",
    "version_added": 0
@@ -6270,7 +6271,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The retainer the rear cover's end clips into under the tail lamp; a pushed or torn bumper end snaps it.",
    "status": "core",
    "version_added": 0
@@ -6372,7 +6373,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The loop the lid's lock catches, on the panel under the opening; a panel pushed forward bends it.",
    "status": "core",
    "version_added": 0
@@ -6424,7 +6425,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The gas struts that hold a tailgate or lid up; a lid pushed out of line bends them. Some lids use torsion bars.",
    "status": "core",
    "version_added": 0
@@ -6474,7 +6475,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "Sits in the lid's garnish or the bumper above the plate; a hit at the plate cracks it.",
    "status": "core",
    "version_added": 0
@@ -6524,7 +6525,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The trim strip across the lid that holds the plate lamps and often the camera.",
    "status": "core",
    "version_added": 0
@@ -6574,7 +6575,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The spoiler on the lid's top or rear edge; on many hatches it also holds the high-mount stop lamp.",
    "status": "core",
    "version_added": 0
@@ -6621,7 +6622,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "Inside a tailgate under the rear glass; a tailgate pushed in at its centre can crack it. Hatches and estates only.",
    "status": "core",
    "version_added": 0
@@ -6674,7 +6675,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "On a tailgate's top edge or spoiler; a tailgate twisted or pushed in can crack it.",
    "status": "core",
    "version_added": 0
@@ -6719,7 +6720,7 @@
     "out": [],
     "in": []
    },
-   "ai_use": "links",
+   "ai_use": "car_map",
    "note": "The flap in one rear quarter; a dent across it bends the flap or its hinge. Which side is the car's own fact.",
    "status": "core",
    "version_added": 0
@@ -7131,7 +7132,7 @@
    "stand_in": "behind a bumper end",
    "firm_wording": "Front bumper side bracket",
    "firm_wording_hatch": "Front bumper side bracket",
-   "ai_use": "links",
+   "ai_use": "car_map",
    "status": "core",
    "version_added": 0
   },
@@ -7152,7 +7153,7 @@
    "stand_in": "in the bumper",
    "firm_wording": "Fog lamp cover",
    "firm_wording_hatch": "Fog lamp cover",
-   "ai_use": "links",
+   "ai_use": "car_map",
    "status": "core",
    "version_added": 0
   },
@@ -7173,7 +7174,7 @@
    "stand_in": "under the bonnet",
    "firm_wording": "Bonnet hinge",
    "firm_wording_hatch": "Bonnet hinge",
-   "ai_use": "links",
+   "ai_use": "car_map",
    "status": "core",
    "version_added": 0
   },
@@ -7269,7 +7270,7 @@
    "stand_in": "behind a bumper end",
    "firm_wording": "Rear bumper side bracket",
    "firm_wording_hatch": "Rear bumper side bracket",
-   "ai_use": "links",
+   "ai_use": "car_map",
    "status": "core",
    "version_added": 0
   },
@@ -7290,7 +7291,7 @@
    "stand_in": "under the boot lid",
    "firm_wording": "Boot lid gas stay",
    "firm_wording_hatch": "Tail gate gas stay",
-   "ai_use": "links",
+   "ai_use": "car_map",
    "status": "core",
    "version_added": 0
   }

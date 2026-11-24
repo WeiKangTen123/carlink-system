@@ -91,6 +91,10 @@ _ASSEMBLY_AREA = {"roof": "roof", "restraints": "inside"}
 # assembly rather than the part's own.
 _HOME = {
     "Front Wheel Arch Liner": "front-fender",
+    # The rear arch is the quarter panel's (its 3D zone, and the rear arch
+    # trim's home), though the firm words it "Rear bumper wheel arch
+    # protector".
+    "Rear Wheel Arch Liner": "rear-quarter",
     "Radiator": "front-end",
     "Air Conditioning Condenser": "front-end",
     "Steering Assembly": "front-subframe",
@@ -193,8 +197,9 @@ def ts_tables(path: Path | str = ZONES_TS) -> dict:
     3D map uses it, and the library follows it."""
     src = Path(path).read_text(encoding="utf-8")
     zones = {name: value or None for name, value in
-             re.findall(r'^\s*"([^"]+)":\s*(?:"([a-z_]+)"|null),?\s*$', _ts_block(src, "CANONICAL_ZONES"), re.M)}
-    stand_ins = dict(re.findall(r'^\s*"([^"]+)":\s*"([^"]*)",?\s*$', _ts_block(src, "STAND_INS"), re.M))
+             re.findall(r'^\s*"([^"]+)":\s*(?:"([a-z_]+)"|null),?\s*(?://.*)?$', _ts_block(src, "CANONICAL_ZONES"),
+                        re.M)}
+    stand_ins = dict(re.findall(r'^\s*"([^"]+)":\s*"([^"]*)",?\s*(?://.*)?$', _ts_block(src, "STAND_INS"), re.M))
     either = {key: re.findall(r'"([a-z_]+)"', body)
               for key, body in re.findall(r"^\s*([a-z_]+):\s*\[([^\]]*)\]", _ts_block(src, "EITHER_SIDE"), re.M)}
     return {"zones": zones, "stand_ins": stand_ins, "either_side": either}
@@ -294,6 +299,13 @@ def build_core(zones_ts: Path | str = ZONES_TS) -> dict:
 
     ts = ts_tables(zones_ts)
     zone_of, stand_ins, either = ts["zones"], ts["stand_ins"], ts["either_side"]
+    # A line the reader didn't understand must stop the build, not turn into
+    # "no mesh" (vehicleZones.ts has a decision for every known name:
+    # check_taxonomy_sync.py).
+    unread = [p for p in KNOWN_PARTS if p not in zone_of]
+    if unread:
+        raise ValueError(f"vehicleZones.ts: no zone read for {', '.join(unread[:5])}"
+                         f"{' ...' if len(unread) > 5 else ''} (a line the library's reader doesn't understand?)")
     cmap = car_map_mod.load()
     new_names = car_map_mod.load_new_names()
     table = links_mod.load_table()
@@ -407,7 +419,7 @@ def build_core(zones_ts: Path | str = ZONES_TS) -> dict:
         if names.get("left") in canonical or names.get("plain") in canonical:
             ai_use = "reader"
         elif base in relation_names:
-            ai_use = "links"
+            ai_use = "car_map"
         else:
             ai_use = "none"
         components.append({
@@ -465,7 +477,7 @@ def build_core(zones_ts: Path | str = ZONES_TS) -> dict:
             "stand_in": stand_ins.get(part),
             "firm_wording": firm,
             "firm_wording_hatch": FIRM_PART_NAMES_HATCH.get(part),
-            "ai_use": "reader" if part in canonical else ("links" if base in relation_names else "none"),
+            "ai_use": "reader" if part in canonical else ("car_map" if base in relation_names else "none"),
             "status": "core",
             "version_added": LIBRARY_VERSION,
         })
@@ -678,7 +690,10 @@ _PARENS = re.compile(r"\([^)]*\)")
 _QTY = re.compile(r"\bx\s*\d+(\.\d+)?\b", re.I)
 _QTY_UNITS = frozenset({"pc", "pcs", "nos", "pkt", "pkts", "set", "sets", "unit", "units"})
 _EDGE = re.compile(r"^[^0-9A-Za-z]+|[^0-9A-Za-z]+$")
-_SIDE_TOKEN = re.compile(r"^(?:l\.?/?h|r\.?/?h|left|right|nearside|offside)\.?$", re.I)
+# A word naming a side, as the dashboard's lib/partSearch.ts reads them:
+# LH, L/H, L.H.S., LHS, left; nearside and N/S are the left (Malaysia drives
+# on the left, so the near side is the kerb side), offside and O/S the right.
+_SIDE_TOKEN = re.compile(r"^(?:l\.?/?h\.?s?|r\.?/?h\.?s?|left|right|near-?side|off-?side|n/s|o/s)\.?$", re.I)
 
 
 def _key_of(word: str) -> str:
@@ -718,6 +733,7 @@ def seed_name(item: str, banned: set[str], plate: str = "") -> str | None:
     text = _QTY.sub(" ", _PARENS.sub(" ", item or ""))
     kept: list[str] = []
     dropped_number = False
+    expect = None  # "hand" after "left" / "right", then "side"
     for raw in text.split():
         word = _EDGE.sub("", raw)
         key = _key_of(word)
@@ -726,7 +742,15 @@ def seed_name(item: str, banned: set[str], plate: str = "") -> str | None:
         if any(ch.isdigit() for ch in word):
             dropped_number = True
             continue
-        if _SIDE_TOKEN.match(word) or key in plate_keys:
+        # "left hand (side)", "right hand (side)": the side words, all of them.
+        if expect and key == expect:
+            expect = "side" if key == "hand" else None
+            continue
+        expect = None
+        if _SIDE_TOKEN.match(word):
+            expect = "hand" if key in ("left", "right") else None
+            continue
+        if key in plate_keys:
             continue
         if key in _QTY_UNITS and dropped_number:
             continue
@@ -803,7 +827,8 @@ def seed_fittings(lines, core: dict | None = None) -> list[dict]:
         cond = (getattr(ln, "condition", "") or "").strip()
         if cond:
             g["conditions"][cond.capitalize() if cond.lower() in ("necessary", "serviceable") else cond] += 1
-        if side_of(getattr(ln, "item", "") or ""):
+        item = getattr(ln, "item", "") or ""
+        if side_of(item) or any(_SIDE_TOKEN.match(_EDGE.sub("", w)) for w in item.split()):
             g["sided"] = True
 
     order = {c["key"]: i for i, c in enumerate(core["components"])}
