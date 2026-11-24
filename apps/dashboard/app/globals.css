@@ -11417,3 +11417,97 @@ html:has(.intake-footer) {
 .ai-usage-table-wrap .users-table td {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Phase 1 F: review checks ---- */
+/* The Review step's damaged-parts checks (components/intake/ReviewStep.tsx,
+   ReviewCheckDialogs.tsx, ConditionPicker.tsx; lib/reviewChecks.ts). */
+
+/* "Prints as Rear bumper fascia" under a row's part. */
+.rc-prints-as {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.rc-prints-as em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.rc-prints-as.warn {
+  color: var(--badge-amber-text);
+  font-weight: 600;
+}
+
+/* The check before filing and the add warnings: a small dialog. */
+.rv-picker.rc-dialog {
+  width: min(540px, 100%);
+  gap: 10px;
+}
+.rc-dialog-text {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.rc-problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.rc-problem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.rc-problem-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.4;
+}
+.rc-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The Condition pop-up's "Keep the order I picked them in". */
+.rc-own-order {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rc-own-order input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  /* Not the photo picker's full screen: a dialog the page shows around. */
+  .rv-picker.rc-dialog {
+    width: calc(100% - 24px);
+    height: auto;
+    max-height: calc(100% - 24px);
+    border-radius: 14px;
+  }
+  .rc-problem-list li {
+    flex-wrap: wrap;
+  }
+}
+/* ---- end Phase 1 F ---- */

@@ -3122,6 +3122,12 @@ export type Taxonomy = {
   condition_tokens: string[];
   /** The firm's most used Conditions (FIRM_CONDITION_COMMON), offered first. */
   condition_common: string[];
+  /** Each part's Annex A wording when no past case words it
+   * (taxonomy.FIRM_PART_NAMES, and _HATCH for a tail-gate body): the
+   * Review step's "prints as" (lib/reviewChecks.ts printsAs). Absent from
+   * an older API. */
+  firm_part_names?: Record<string, string>;
+  firm_part_names_hatch?: Record<string, string>;
 };
 
 /** Built-in copies of the two condition lists, for an API from before they

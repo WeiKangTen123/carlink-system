@@ -109,6 +109,8 @@ from app.reports.taxonomy import (
     CAR_MAP_PARTS,
     FIRM_CONDITION_COMMON,
     FIRM_CONDITION_TOKENS,
+    FIRM_PART_NAMES,
+    FIRM_PART_NAMES_HATCH,
     FIRM_REMARKS,
     FIRM_WHOLE_CONDITIONS,
     MODEL_BODY_TYPES,
@@ -2603,6 +2605,12 @@ def get_taxonomy(scope: Scope = None, user: CurrentUser = Depends(current_user))
             "condition_common": FIRM_CONDITION_COMMON,
             "condition_whole": FIRM_WHOLE_CONDITIONS,
             "remarks": FIRM_REMARKS,
+            # Each part's Annex A wording when no past case words it (the
+            # floor, taxonomy.firm_part_name): the plain one and the one for
+            # a tail-gate body (hatch, SUV, MPV...). The Review step shows a
+            # row's "prints as" from them (dashboard lib/reviewChecks.ts).
+            "firm_part_names": FIRM_PART_NAMES,
+            "firm_part_names_hatch": FIRM_PART_NAMES_HATCH,
             "body_types": BODY_TYPES,
             "model_body_types": MODEL_BODY_TYPES,
             "usage": {
