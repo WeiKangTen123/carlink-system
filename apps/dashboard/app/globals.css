@@ -11511,3 +11511,118 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end Phase 1 F ---- */
+
+/* ---- Phase 1 B: report checks ---- */
+/* The Cover Page's soft checks (lib/coverChecks.ts), the "for sign-off"
+   tag on a blank must-have field, the AI's own word as a note
+   (components/CoverPageFields.tsx), and the sign-off box's must-have list
+   (components/AnnexCTab.tsx). Theme tokens only, so both themes follow. */
+.p1b-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.p1b-check-tag,
+.p1b-required-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.p1b-check-tag {
+  color: var(--badge-amber-text);
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-amber-border);
+  cursor: help;
+}
+.p1b-required-tag {
+  color: var(--badge-red-text);
+  background: var(--badge-red-bg);
+  border: 1px solid var(--badge-red-border);
+  cursor: help;
+}
+.p1b-check-text {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--badge-amber-text);
+}
+.p1b-ai-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.p1b-musthave {
+  border: 1px solid var(--badge-red-border);
+  border-left: 4px solid var(--badge-red-text);
+  background: var(--badge-red-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.p1b-musthave-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-weight: 700;
+}
+.p1b-musthave-head > svg {
+  color: var(--badge-red-text);
+}
+.p1b-musthave-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.p1b-goto,
+.p1b-goto-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--accent-primary);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.p1b-goto:hover,
+.p1b-goto-chip:hover {
+  border-color: var(--border-glow);
+}
+.p1b-goto:focus-visible,
+.p1b-goto-chip:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+.p1b-musthave-foot {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+@media (pointer: coarse) {
+  .p1b-goto,
+  .p1b-goto-chip {
+    min-height: 32px;
+    padding: 4px 12px;
+  }
+}
+/* ---- end Phase 1 B ---- */

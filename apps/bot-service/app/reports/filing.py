@@ -202,7 +202,9 @@ def ai_read_for(ai_draft: dict | None, photo_index: list[dict] | None) -> tuple[
     the AI's non-empty values for the cover and parties fields
     ({vehicle_info: {...}, incident_datetime, location, accident_type,
     insurance_details: {...}, police_report: {...}}; a top-level one None
-    and a section {} when the AI left it empty), and per vehicle field the
+    and a section {} when the AI left it empty; notes: {field: the AI's
+    own word} when a static-check or transmission word had no firm word
+    with its meaning, app/reports/firm_words.py), and per vehicle field the
     photo it was read from ("P03") when the photo index can tell. (None,
     {}) with no draft. Nothing here is ever printed, and nothing comes from
     anywhere but the AI's own draft."""
@@ -216,6 +218,14 @@ def ai_read_for(ai_draft: dict | None, photo_index: list[dict] | None) -> tuple[
     for section, keys in AI_SECTION_FIELDS.items():
         found = ai_draft.get(section) or {}
         read[section] = {key: found[key] for key in keys if not is_blank(found.get(key))}
+    # The AI's own static-check / transmission words that had no
+    # same-meaning firm word (firm_words.apply_firm_words), by vehicle_info
+    # field: a note beside the field, never printed. Only when there are.
+    words = ai_draft.get("ai_words")
+    notes = {key: word.strip()[:80] for key, word in words.items()
+             if key in AI_COVER_FIELDS and isinstance(word, str) and word.strip()} if isinstance(words, dict) else {}
+    if notes:
+        read["notes"] = notes
     first_of_kind: dict[str, str] = {}
     for entry in photo_index or []:
         if entry.get("kind") and entry.get("label"):

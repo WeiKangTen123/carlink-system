@@ -97,7 +97,7 @@ from app.parts import learn
 from app.parts.prefill import item_key, item_source, sync_annex_a, unpriced_rows
 from app.reports.db import SessionLocal, init_db
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for
-from app.reports.review import list_counts, open_summary, review_state
+from app.reports.review import list_counts, missing_before_sign_off, must_have_message, open_summary, review_state
 from app.intake.photos import photo_label
 from app.ai.client import get_client, reset_client_cache
 from app.reports.models import ApiKey, AppSetting, IntakeSession, Report, User, gen_id, iso_utc
@@ -1722,7 +1722,12 @@ async def sign_off_report(
     and "May sign off" accounts (permissions.can_sign_off).
 
     The body must carry the declaration the sign-off box asks for
-    (terms_accepted: true; 400 declaration_required). While the field
+    (terms_accepted: true; 400 declaration_required). Every fact on the
+    must-have list (review.MUST_HAVE: Our Ref, Requested by, the dates of
+    request and survey, Type of claim, Workshop, Registration No., Make &
+    Model, Point of impact) must be filled in or marked N/A, else 409
+    {detail, code: "must_have", missing: [{label, keys}]} -- a block, for
+    admins too. While the field
     review (app/reports/review.py) has items open -- empty fields only a
     person can fill, guesses, usual wordings and past-case prices nobody
     confirmed -- it also needs open_items_ack: true ("Sign off with N items
@@ -1750,6 +1755,16 @@ async def sign_off_report(
             body_data = {}
         if body_data.get("terms_accepted") is not True:
             raise ApiError(400, "Tick the declaration before signing off.", "declaration_required")
+        # The facts every report must state (review.MUST_HAVE, owner
+        # 23 Nov 2026): a block, for every account, admins too -- no tick
+        # gets past it, unlike the open items below. Filing never asks.
+        missing = missing_before_sign_off(r.data or {})
+        if missing:
+            return JSONResponse({
+                "detail": must_have_message(missing),
+                "code": "must_have",
+                "missing": missing,
+            }, status_code=409)
 
         # The figures Annex C prints: typed at sign-off when the body has
         # them, else what is saved on Annex C (PUT /reports/{id}/annex-c) --

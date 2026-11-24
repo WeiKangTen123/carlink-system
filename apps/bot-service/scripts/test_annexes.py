@@ -41,7 +41,7 @@ from app.reports.db import SessionLocal  # noqa: E402
 from app.reports.models import PastLabourLine, Report  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.reports.synthesize_annexes import adjusted_cost, convert_per_unit_estimates, synthesize_annexes_for_report  # noqa: E402
-from auth_helpers import sign_in  # noqa: E402
+from auth_helpers import mark_must_haves_na, sign_in  # noqa: E402
 
 EXAMPLES = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 LOCKED = "Report is signed off and locked. Reopen it before editing."
@@ -622,6 +622,8 @@ def main() -> int:
     ok(f"download.xlsx answers the four-sheet workbook ({'agent A''s exporter' if REAL_XLSX else 'stand-in exporter'}) under the same name and gates")
 
     print("sign-off keeps Annex C")
+    # Sign-off needs the must-have facts filled in or N/A (review.MUST_HAVE).
+    mark_must_haves_na(surveyor, rid)
     r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "open_items_ack": True, "signatory_title": "Automotive Engineer Assessor"})
     assert r.status_code == 200, r.text
     so = r.json()["sign_off"]

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Eraser, FileSpreadsheet, FileText, ListChecks, PenLine, RotateCcw, Save, Unlock } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Eraser, FileSpreadsheet, FileText, ListChecks, Lock, PenLine, RotateCcw, Save, Unlock } from "lucide-react";
 import { pdfDownloadUrl, xlsxDownloadUrl, type ReportDetail, type SignOffRequest } from "@/lib/api";
 import { reopenReportAction, saveAnnexCAction, signOffReportAction } from "@/app/reports/actions";
 import { useCurrentUser } from "@/components/CurrentUser";
@@ -13,6 +13,7 @@ import { LockedNote, Missing, SavedNote, UnsavedNote, Var, fieldInputStyle } fro
 import { ReviewBadge } from "./ReviewBadge";
 import { ANNEX_C_KEYS, annexCFieldState, openItemsLabel, openSections, openTotal, type OpenSection, type OpenTarget } from "@/lib/reviewRows";
 import { undecidedCount } from "@/lib/findings";
+import { beforeSignOff, type MustHaveItem } from "@/lib/review";
 
 const DEFAULT_TITLE = "Automotive Engineer Assessor";
 
@@ -86,6 +87,63 @@ function OpenItemsList({
           })}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** Takes the person to a Cover page field: the Cover tab, then the field
+ * (CoverPageFields marks each with data-review-key), scrolled to and
+ * focused. Without onOpenTab, the Cover tab's address. */
+function goToCoverField(reportId: string, key: string, onOpenTab?: (tab: OpenTab) => void) {
+  if (!onOpenTab) {
+    window.location.assign(`/reports/${reportId}?tab=cover`);
+    return;
+  }
+  onOpenTab("cover");
+  // The tab may only mount now: look for the field once it has drawn.
+  window.setTimeout(() => {
+    const field = document.querySelector<HTMLElement>(`[data-review-key="${key.replace(/"/g, "")}"]`);
+    if (!field) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    field.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    field.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  }, 80);
+}
+
+/** The sign-off's must-have list (owner, 23 Nov 2026): the facts every
+ * report must state that are neither filled in nor marked N/A, each with
+ * a way to its field. The API refuses the sign-off until it is empty --
+ * for every account, admins too; filing a draft never asks. */
+function MustHaveList({ reportId, missing, onOpenTab }: { reportId: string; missing: MustHaveItem[]; onOpenTab?: (tab: OpenTab) => void }) {
+  const n = missing.length;
+  const first = missing[0]?.keys[0];
+  return (
+    <div className="p1b-musthave" role="status">
+      <div className="p1b-musthave-head">
+        <Lock aria-hidden style={{ width: 14, height: 14, flexShrink: 0 }} />
+        <span>
+          {n} thing{n === 1 ? "" : "s"} before sign-off: {missing.map((m) => m.label).join(", ")}
+        </span>
+        {first && (
+          <button type="button" className="p1b-goto" onClick={() => goToCoverField(reportId, first, onOpenTab)}>
+            Go to it
+          </button>
+        )}
+      </div>
+      {n > 1 && (
+        <ul className="p1b-musthave-list">
+          {missing.map((m) => (
+            <li key={m.label}>
+              <button type="button" className="p1b-goto-chip" onClick={() => goToCoverField(reportId, m.keys[0], onOpenTab)}>
+                {m.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="p1b-musthave-foot">
+        Fill each in on the Cover page, or mark it N/A there if it doesn&apos;t apply. Every account needs these before signing off, admins too.
+      </div>
     </div>
   );
 }
@@ -252,6 +310,15 @@ export function AnnexCTab({
   // The tick is for a number of open items: a new number asks again.
   useEffect(() => setAckOpen(false), [openN]);
 
+  // ---- Before sign-off (owner, 23 Nov 2026) -----------------------------------
+  // The must-have facts still missing, from the case as saved: a block, no
+  // tick gets past it. The API's list when it refused a sign-off for them
+  // (409 must_have), until the case is fetched again.
+  // Kept against the review it was refused under: a refreshed one drops it.
+  const [refusedMissing, setRefusedMissing] = useState<{ base: ReportDetail["review"]; list: MustHaveItem[] } | null>(null);
+  const refusedList = refusedMissing && refusedMissing.base === report.review ? refusedMissing.list : null;
+  const missing = isSignedOff ? [] : (refusedList ?? beforeSignOff(report.review));
+
   // The signature pad. Only what was actually drawn is sent: an untouched
   // pad used to go out as a blank image.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -315,6 +382,10 @@ export function AnnexCTab({
   }, [isSignedOff]);
 
   const handleSignOffSubmit = async () => {
+    if (missing.length > 0) {
+      setSignOffError(`Not signed off: ${missing.length} thing${missing.length === 1 ? "" : "s"} before sign-off (above).`);
+      return;
+    }
     if (!declared) {
       setSignOffError("Tick the declaration before signing off.");
       return;
@@ -348,7 +419,12 @@ export function AnnexCTab({
 
     const res = await signOffReportAction(report.id, payload);
     if ("error" in res) {
-      if (res.openItems) {
+      if (res.mustHave) {
+        // Refused for must-have facts (saved since this page loaded, or
+        // someone else's change): the API's list replaces ours.
+        setRefusedMissing({ base: report.review, list: res.mustHave });
+        setSignOffError(`Not signed off: ${res.error}`);
+      } else if (res.openItems) {
         // Refused for open items: say how many, and offer the extra tick.
         const n = res.openItems.open;
         setRefusedOpen(n);
@@ -594,6 +670,8 @@ export function AnnexCTab({
           </div>
         </div>
 
+        {missing.length > 0 && !signOffLocked && <MustHaveList reportId={report.id} missing={missing} onOpenTab={onOpenTab} />}
+
         {review && <OpenItemsList reportId={report.id} sections={openList} total={localOpen} onOpenTab={onOpenTab} onOpenRecord={onOpenRecord} />}
 
         {undecided > 0 && !signOffLocked && (
@@ -645,7 +723,14 @@ export function AnnexCTab({
           ) : !canSignOff ? (
             <div style={{ color: "var(--badge-amber-text)", fontSize: 12 }}>Your account can&apos;t sign off reports yet. Ask an admin to sign it off, or to allow you.</div>
           ) : (
-            <button type="button" className="btn-primary-modern" style={{ padding: "10px 24px", fontSize: 13 }} disabled={isSigningOff} onClick={() => void handleSignOffSubmit()}>
+            <button
+              type="button"
+              className="btn-primary-modern"
+              style={{ padding: "10px 24px", fontSize: 13 }}
+              disabled={isSigningOff || missing.length > 0}
+              title={missing.length > 0 ? `First: ${missing.map((m) => m.label).join(", ")} (fill in or mark N/A)` : undefined}
+              onClick={() => void handleSignOffSubmit()}
+            >
               <CheckCircle2 style={{ width: 16, height: 16 }} />
               {isSigningOff ? "Signing off…" : "Sign off"}
             </button>

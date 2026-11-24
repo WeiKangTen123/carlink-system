@@ -133,6 +133,12 @@ NEW_FIELDS = ("seen_in", "found_by", "grid_cells")
 # saved data is compared with master's.
 C9_ITEM_FIELDS = ("reason", "evidence", "check", "added_from")
 C9_LOOK_FIELDS = ("reads", "decisions", "check")
+# Phase 1's (2026-11-23, test_p1_report_checks.py): the AI's own words
+# kept as a note (ai_words, none here) and the firm's usual point-of-impact
+# note filled in like the static check's usual words -- taken out too.
+P1_TOP_FIELDS = ("ai_words",)
+P1_NOTE_KEY = "cover_page.point_of_impact_note"
+P1_NOTE = "See Annex(es) and Motor Accident Reports"
 
 # (kind, area, part, shows damage) per photo, P01 first: the golden case.
 GOLDEN_CASE = [
@@ -218,6 +224,14 @@ def strip_new(data: dict | None) -> dict | None:
     if isinstance(look, dict):
         for key in C9_LOOK_FIELDS:
             look.pop(key, None)
+    for key in P1_TOP_FIELDS:
+        (data or {}).pop(key, None)
+    cover = (data or {}).get("cover_page")
+    if isinstance(cover, dict) and cover.get("point_of_impact_note") == P1_NOTE:
+        cover["point_of_impact_note"] = None
+    listed = (data or {}).get("template_fields")
+    if isinstance(listed, list) and P1_NOTE_KEY in listed:
+        data["template_fields"] = [key for key in listed if key != P1_NOTE_KEY]
     return data
 
 
