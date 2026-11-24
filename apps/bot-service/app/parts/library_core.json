@@ -1,0 +1,7589 @@
+{
+ "format": 1,
+ "version": 0,
+ "core": "core:be42d15af18e",
+ "built_from": {
+  "taxonomy": "102 canonical + 45 car map names",
+  "car_map": "K1.0",
+  "links": "L1",
+  "zones": "apps/dashboard/lib/vehicleZones.ts",
+  "families": "app/parts/history.py"
+ },
+ "areas": [
+  {
+   "key": "front",
+   "label": "Front",
+   "assemblies": [
+    "front-bumper",
+    "front-grille",
+    "front-end",
+    "bonnet",
+    "headlamp",
+    "front-fender",
+    "front-windscreen"
+   ]
+  },
+  {
+   "key": "rear",
+   "label": "Rear",
+   "assemblies": [
+    "rear-bumper",
+    "boot-lid",
+    "rear-end",
+    "boot-interior",
+    "tail-lamp",
+    "rear-quarter",
+    "rear-windscreen"
+   ]
+  },
+  {
+   "key": "side",
+   "label": "Side",
+   "assemblies": [
+    "front-door",
+    "rear-door",
+    "sill"
+   ]
+  },
+  {
+   "key": "roof",
+   "label": "Roof",
+   "assemblies": [
+    "roof"
+   ]
+  },
+  {
+   "key": "under",
+   "label": "Under",
+   "assemblies": [
+    "engine-undercover",
+    "front-subframe",
+    "rear-subframe",
+    "underbody"
+   ]
+  },
+  {
+   "key": "wheels",
+   "label": "Wheels",
+   "assemblies": [
+    "front-wheel",
+    "rear-wheel"
+   ]
+  },
+  {
+   "key": "inside",
+   "label": "Inside",
+   "assemblies": [
+    "restraints"
+   ]
+  }
+ ],
+ "assemblies": [
+  {
+   "key": "front-bumper",
+   "name": "Front bumper assembly",
+   "area": "front",
+   "anchors": [
+    "front-bumper"
+   ],
+   "components": [
+    "front-bumper",
+    "front-bumper-beam",
+    "fog-lamp",
+    "front-number-plate",
+    "front-bumper-absorber",
+    "front-bumper-bracket",
+    "front-parking-sensor",
+    "fog-lamp-cover"
+   ],
+   "also": [
+    "front-grille",
+    "front-wheel-arch-liner",
+    "engine-undercover"
+   ]
+  },
+  {
+   "key": "front-grille",
+   "name": "Front grille",
+   "area": "front",
+   "anchors": [
+    "front-grille"
+   ],
+   "components": [
+    "front-grille"
+   ],
+   "also": [
+    "radiator",
+    "air-conditioning-condenser",
+    "radiator-support"
+   ]
+  },
+  {
+   "key": "front-end",
+   "name": "Front end: radiator support and cooling",
+   "area": "front",
+   "anchors": [],
+   "components": [
+    "radiator",
+    "air-conditioning-condenser",
+    "radiator-support",
+    "radiator-fan"
+   ],
+   "also": [
+    "headlamp",
+    "underbody-chassis",
+    "bonnet-latch"
+   ]
+  },
+  {
+   "key": "bonnet",
+   "name": "Bonnet / hood",
+   "area": "front",
+   "anchors": [
+    "bonnet"
+   ],
+   "components": [
+    "bonnet",
+    "bonnet-hinge",
+    "bonnet-latch",
+    "bonnet-insulator"
+   ],
+   "also": [
+    "front-windscreen",
+    "radiator-support"
+   ]
+  },
+  {
+   "key": "headlamp",
+   "name": "Headlamp (each side)",
+   "area": "front",
+   "anchors": [
+    "headlamp"
+   ],
+   "components": [
+    "headlamp"
+   ],
+   "also": [
+    "front-bumper-beam",
+    "front-bumper-bracket",
+    "radiator-support"
+   ]
+  },
+  {
+   "key": "front-fender",
+   "name": "Front fender (each side)",
+   "area": "front",
+   "anchors": [
+    "front-fender"
+   ],
+   "components": [
+    "front-fender",
+    "front-wheel-arch-liner",
+    "front-wheel-arch-trim"
+   ],
+   "also": []
+  },
+  {
+   "key": "front-windscreen",
+   "name": "Front windscreen",
+   "area": "front",
+   "anchors": [
+    "front-windscreen"
+   ],
+   "components": [
+    "front-windscreen"
+   ],
+   "also": [
+    "dashboard"
+   ]
+  },
+  {
+   "key": "front-door",
+   "name": "Front door (each side)",
+   "area": "side",
+   "anchors": [
+    "front-door"
+   ],
+   "components": [
+    "front-door",
+    "front-door-glass",
+    "wing-mirror",
+    "front-window-regulator",
+    "front-door-lock",
+    "front-door-hinge",
+    "front-door-handle"
+   ],
+   "also": [
+    "interior-trim"
+   ]
+  },
+  {
+   "key": "rear-door",
+   "name": "Rear door (each side)",
+   "area": "side",
+   "anchors": [
+    "rear-door"
+   ],
+   "components": [
+    "rear-door",
+    "rear-door-glass",
+    "rear-window-regulator",
+    "rear-door-lock",
+    "rear-door-hinge",
+    "rear-door-handle"
+   ],
+   "also": [
+    "interior-trim"
+   ]
+  },
+  {
+   "key": "sill",
+   "name": "Sill / rocker (each side)",
+   "area": "side",
+   "anchors": [
+    "sill-rocker-panel"
+   ],
+   "components": [
+    "sill-rocker-panel"
+   ],
+   "also": [
+    "underbody-chassis"
+   ]
+  },
+  {
+   "key": "roof",
+   "name": "Roof",
+   "area": "roof",
+   "anchors": [
+    "roof"
+   ],
+   "components": [
+    "roof"
+   ],
+   "also": [
+    "front-windscreen",
+    "rear-windscreen",
+    "interior-trim",
+    "high-mount-stop-lamp"
+   ]
+  },
+  {
+   "key": "restraints",
+   "name": "Airbags and restraints",
+   "area": "inside",
+   "anchors": [
+    "airbag-system"
+   ],
+   "components": [
+    "airbag-system",
+    "interior-trim",
+    "seat",
+    "dashboard"
+   ],
+   "also": []
+  },
+  {
+   "key": "rear-bumper",
+   "name": "Rear bumper assembly",
+   "area": "rear",
+   "anchors": [
+    "rear-bumper"
+   ],
+   "components": [
+    "rear-bumper",
+    "rear-number-plate",
+    "rear-bumper-beam",
+    "rear-bumper-reflector",
+    "rear-wheel-arch-liner",
+    "parking-sensor",
+    "reversing-camera",
+    "rear-bumper-absorber",
+    "rear-bumper-bracket",
+    "rear-parking-sensor"
+   ],
+   "also": []
+  },
+  {
+   "key": "boot-lid",
+   "name": "Boot lid / tailgate",
+   "area": "rear",
+   "anchors": [
+    "boot-lid"
+   ],
+   "components": [
+    "boot-lid",
+    "boot-lid-lock",
+    "boot-lid-hinge",
+    "boot-lid-weatherstrip",
+    "boot-lid-inner-trim",
+    "boot-lid-lamp",
+    "boot-lid-striker",
+    "boot-lid-strut",
+    "rear-number-plate-lamp",
+    "boot-lid-garnish",
+    "boot-lid-spoiler",
+    "rear-wiper-motor",
+    "high-mount-stop-lamp"
+   ],
+   "also": [
+    "rear-windscreen",
+    "rear-number-plate",
+    "rear-end-panel",
+    "reversing-camera"
+   ]
+  },
+  {
+   "key": "rear-end",
+   "name": "Rear end panel",
+   "area": "rear",
+   "anchors": [
+    "rear-end-panel"
+   ],
+   "components": [
+    "rear-end-panel",
+    "rear-floor-panel"
+   ],
+   "also": [
+    "boot-lid-lock",
+    "boot-lid-weatherstrip",
+    "boot-floor-board",
+    "boot-side-trim",
+    "boot-lid-striker"
+   ]
+  },
+  {
+   "key": "boot-interior",
+   "name": "Boot floor and trims",
+   "area": "rear",
+   "anchors": [
+    "boot-floor-board"
+   ],
+   "components": [
+    "boot-floor-board",
+    "boot-side-trim"
+   ],
+   "also": [
+    "rear-floor-panel"
+   ]
+  },
+  {
+   "key": "tail-lamp",
+   "name": "Tail lamp (each side)",
+   "area": "rear",
+   "anchors": [
+    "tail-lamp"
+   ],
+   "components": [
+    "tail-lamp"
+   ],
+   "also": [
+    "boot-lid-lamp"
+   ]
+  },
+  {
+   "key": "rear-quarter",
+   "name": "Rear quarter panel (each side)",
+   "area": "rear",
+   "anchors": [
+    "rear-quarter-panel"
+   ],
+   "components": [
+    "rear-quarter-panel",
+    "rear-wheel-arch-trim",
+    "fuel-filler-flap"
+   ],
+   "also": [
+    "tail-lamp",
+    "boot-side-trim",
+    "rear-wheel-arch-liner",
+    "rear-bumper-bracket"
+   ]
+  },
+  {
+   "key": "rear-windscreen",
+   "name": "Rear windscreen",
+   "area": "rear",
+   "anchors": [
+    "rear-windscreen"
+   ],
+   "components": [
+    "rear-windscreen"
+   ],
+   "also": [
+    "rear-wiper-motor",
+    "high-mount-stop-lamp"
+   ]
+  },
+  {
+   "key": "engine-undercover",
+   "name": "Engine undercover",
+   "area": "under",
+   "anchors": [
+    "engine-undercover"
+   ],
+   "components": [
+    "engine-undercover"
+   ],
+   "also": [
+    "front-subframe",
+    "radiator",
+    "exhaust-system",
+    "suspension-front",
+    "steering-assembly"
+   ]
+  },
+  {
+   "key": "front-subframe",
+   "name": "Front subframe, suspension and steering",
+   "area": "under",
+   "anchors": [
+    "front-subframe",
+    "suspension-front"
+   ],
+   "components": [
+    "front-subframe",
+    "suspension-front",
+    "steering-assembly"
+   ],
+   "also": []
+  },
+  {
+   "key": "rear-subframe",
+   "name": "Rear subframe and suspension",
+   "area": "under",
+   "anchors": [
+    "rear-subframe",
+    "suspension-rear"
+   ],
+   "components": [
+    "rear-subframe",
+    "suspension-rear"
+   ],
+   "also": [
+    "rear-floor-panel",
+    "fuel-tank"
+   ]
+  },
+  {
+   "key": "underbody",
+   "name": "Underbody and floor",
+   "area": "under",
+   "anchors": [
+    "underbody-chassis"
+   ],
+   "components": [
+    "underbody-chassis",
+    "exhaust-system",
+    "fuel-tank"
+   ],
+   "also": [
+    "rear-floor-panel",
+    "front-subframe",
+    "rear-subframe",
+    "engine-undercover",
+    "suspension-rear"
+   ]
+  },
+  {
+   "key": "front-wheel",
+   "name": "Front wheel corner (each side)",
+   "area": "wheels",
+   "anchors": [
+    "front-wheel"
+   ],
+   "components": [
+    "front-wheel",
+    "front-tyre"
+   ],
+   "also": [
+    "front-wheel-arch-liner",
+    "suspension-front",
+    "steering-assembly"
+   ]
+  },
+  {
+   "key": "rear-wheel",
+   "name": "Rear wheel corner (each side)",
+   "area": "wheels",
+   "anchors": [
+    "rear-wheel"
+   ],
+   "components": [
+    "rear-wheel",
+    "rear-tyre"
+   ],
+   "also": [
+    "rear-wheel-arch-liner",
+    "suspension-rear"
+   ]
+  }
+ ],
+ "components": [
+  {
+   "key": "front-bumper",
+   "name": "Front Bumper",
+   "names": {
+    "plain": "Front Bumper"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Front bumper",
+   "firm_wording_hatch": "Front bumper",
+   "family": "Front Bumper",
+   "parent_key": null,
+   "zones": {
+    "plain": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "front-bumper>front-grille",
+      "key": "front-grille",
+      "name": "Front Grille",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "front",
+      "reason": "The grille clips into or beside the bumper cover; a cracked or pushed-in cover often breaks its tabs or mesh."
+     },
+     {
+      "id": "front-bumper>fog-lamp",
+      "key": "fog-lamp",
+      "name": "Fog Lamp",
+      "type": "attached",
+      "side": "impact",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "front",
+      "reason": "Fog lamps sit in the bumper cover; a crack or dent next to one can break the lamp or its bracket."
+     },
+     {
+      "id": "front-bumper>front-number-plate",
+      "key": "front-number-plate",
+      "name": "Front Number Plate",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "front",
+      "reason": "Plate and holder are fixed to the cover; a dent or crack at the plate usually bends or cracks them."
+     },
+     {
+      "id": "front-bumper>front-wheel-arch-liner",
+      "key": "front-wheel-arch-liner",
+      "name": "Front Wheel Arch Liner",
+      "type": "behind",
+      "side": "impact",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "front",
+      "reason": "The bumper end fixes to the front of the arch liner; a cracked or torn bumper end often tears the liner edge."
+     },
+     {
+      "id": "front-bumper>beam",
+      "key": "front-bumper-beam",
+      "name": "Front Bumper Beam",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "Sits behind the cover and foam absorber; a pushed-in cover can bend it. Check with the bumper off."
+     },
+     {
+      "id": "front-bumper>engine-undercover",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "front",
+      "reason": "The undercover is fixed to the bumper's lower edge; a pushed-in or torn lower bumper can tear it or pull it down."
+     },
+     {
+      "id": "front-bumper>headlamp",
+      "key": "headlamp",
+      "name": "Headlamp",
+      "type": "crush",
+      "side": "impact",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": true,
+      "area": "front",
+      "reason": "The bumper corner meets the headlamp; a pushed-in or shifted corner can crack the lamp or snap its hidden mounting tabs."
+     },
+     {
+      "id": "front-bumper>air-conditioning-condenser",
+      "key": "air-conditioning-condenser",
+      "name": "Air Conditioning Condenser",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "The first cooling part behind the bumper and grille; a pushed-in front can bend its fins or crack its pipes."
+     },
+     {
+      "id": "front-bumper>radiator",
+      "key": "radiator",
+      "name": "Radiator",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "Sits behind the condenser; a deep frontal push can bend its core or crack its tanks. Coolant on the ground is the sign."
+     },
+     {
+      "id": "front-bumper>front-subframe",
+      "key": "front-subframe",
+      "name": "Front Subframe",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A crumpling frontal hit runs from the beam into the rails and subframe; it needs measuring once parts are off."
+     },
+     {
+      "id": "front-bumper>steering-assembly",
+      "key": "steering-assembly",
+      "name": "Steering Assembly",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "The steering rack sits on the front subframe; a crush hit that moves the subframe can bend the rack or tie rods."
+     },
+     {
+      "id": "front-bumper>suspension-front",
+      "key": "suspension-front",
+      "name": "Suspension - Front",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A crush hit at a corner can push a front wheel back and bend arms or a strut; a wheel set back or turned is the sign."
+     },
+     {
+      "id": "front-bumper>airbag-system",
+      "key": "airbag-system",
+      "name": "Airbag System",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": false,
+      "area": "front",
+      "reason": "A hard frontal hit can fire the front airbags and lock the belt pretensioners; check cabin photos for a deployed bag."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-grille",
+   "name": "Front Grille",
+   "names": {
+    "plain": "Front Grille"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-grille",
+   "also_in": [
+    "front-bumper"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Front grille",
+   "firm_wording_hatch": "Front grille",
+   "family": "Front Grille",
+   "parent_key": null,
+   "zones": {
+    "plain": "front_grill"
+   },
+   "panels": [
+    "front_grill"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Grill",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "front-grille>air-conditioning-condenser",
+      "key": "air-conditioning-condenser",
+      "name": "Air Conditioning Condenser",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "Sits right behind the grille; a grille pushed in, not just scratched, often dents the condenser fins or pipes."
+     },
+     {
+      "id": "front-grille>radiator",
+      "key": "radiator",
+      "name": "Radiator",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "Sits behind the grille and condenser; check it when the grille is pushed in or the bonnet front edge is dented."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-bumper>front-grille",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "bonnet",
+   "name": "Bonnet",
+   "names": {
+    "plain": "Bonnet"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "bonnet",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Bonnet assy",
+   "firm_wording_hatch": "Bonnet assy",
+   "family": "Bonnet",
+   "parent_key": null,
+   "zones": {
+    "plain": "bonnet"
+   },
+   "panels": [
+    "bonnet"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Hood",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "bonnet>front-windscreen",
+      "key": "front-windscreen",
+      "name": "Front Windscreen",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "front",
+      "reason": "A bonnet folded back toward the cabin can hit the windscreen base and cowl; look for cracks along the lower edge."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "headlamp",
+   "name": "Headlamp",
+   "names": {
+    "left": "Left Headlamp",
+    "right": "Right Headlamp"
+   },
+   "twin": "Headlamp (side undetermined)",
+   "twin_key": "headlamp-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "headlamp",
+   "also_in": [
+    "front-end"
+   ],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Headlamp",
+   "firm_wording_hatch": "Headlamp",
+   "family": "Headlamp",
+   "parent_key": null,
+   "zones": {
+    "left": "l_headlamp",
+    "right": "r_headlamp"
+   },
+   "panels": [
+    "l_headlamp",
+    "r_headlamp"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Headlight",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "headlamp>front-bumper-beam",
+      "key": "front-bumper-beam",
+      "name": "Front Bumper Beam",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A headlamp broken with the bumper corner pushed in means the beam end below it may have taken the load too."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-bumper>headlamp",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-fender>headlamp",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-windscreen",
+   "name": "Front Windscreen",
+   "names": {
+    "plain": "Front Windscreen"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-windscreen",
+   "also_in": [
+    "bonnet",
+    "roof"
+   ],
+   "kind": "part",
+   "role": "glass",
+   "firm_wording": "Front windscreen",
+   "firm_wording_hatch": "Front windscreen",
+   "family": "Front Windscreen",
+   "parent_key": null,
+   "zones": {
+    "plain": "windscreen"
+   },
+   "panels": [
+    "windscreen"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Windshield",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "bonnet>front-windscreen",
+      "key": "bonnet",
+      "name": "Bonnet",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-fender",
+   "name": "Front Fender",
+   "names": {
+    "left": "Left Front Fender",
+    "right": "Right Front Fender"
+   },
+   "twin": "Front Fender (side undetermined)",
+   "twin_key": "front-fender-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "front-fender",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Front fender assy",
+   "firm_wording_hatch": "Front fender assy",
+   "family": "Front Fender",
+   "parent_key": null,
+   "zones": {
+    "left": "l_fender",
+    "right": "r_fender"
+   },
+   "panels": [
+    "l_fender",
+    "r_fender"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Wing panel",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "front-fender>front-wheel-arch-trim",
+      "key": "front-wheel-arch-trim",
+      "name": "Front Wheel Arch Trim",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "front",
+      "reason": "The arch trim clips onto the fender's arch lip; a dent there often cracks it or breaks its clips."
+     },
+     {
+      "id": "front-fender>front-wheel-arch-liner",
+      "key": "front-wheel-arch-liner",
+      "name": "Front Wheel Arch Liner",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "front",
+      "reason": "The liner is fixed inside the fender's arch; a dent near the arch often tears it or leaves it hanging."
+     },
+     {
+      "id": "front-fender>headlamp",
+      "key": "headlamp",
+      "name": "Headlamp",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": true,
+      "area": "front",
+      "reason": "The fender's front edge holds the headlamp's side; a fender pushed back can crack the lamp or its mounting tabs."
+     },
+     {
+      "id": "front-fender>suspension-front",
+      "key": "suspension-front",
+      "name": "Suspension - Front",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A hit at the front corner can push the wheel back and bend an arm or the strut; a wheel set back or turned is the sign."
+     },
+     {
+      "id": "front-fender>steering-assembly",
+      "key": "steering-assembly",
+      "name": "Steering Assembly",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A wheel pushed back at the corner can bend the tie rod or rack; a turned wheel or off-centre steering is the sign."
+     },
+     {
+      "id": "front-fender>front-subframe",
+      "key": "front-subframe",
+      "name": "Front Subframe",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "A crush hit at the front corner can move the subframe corner; it needs measuring with parts off."
+     },
+     {
+      "id": "front-fender>underbody-chassis",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "front",
+      "reason": "Behind the fender sit the inner apron and the front rail; a crumpled fender can mean they are bent too."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-bumper-beam",
+   "name": "Front Bumper Beam",
+   "names": {
+    "plain": "Front Bumper Beam"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [
+    "headlamp"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Front bumper reinforcement",
+   "firm_wording_hatch": "Front bumper reinforcement",
+   "family": "Front Bumper Beam",
+   "parent_key": null,
+   "zones": {
+    "plain": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "behind the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>beam",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "behind"
+     },
+     {
+      "id": "headlamp>front-bumper-beam",
+      "key": "headlamp",
+      "name": "Headlamp",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fog-lamp",
+   "name": "Fog Lamp",
+   "names": {
+    "left": "Left Fog Lamp",
+    "right": "Right Fog Lamp"
+   },
+   "twin": "Fog Lamp (side undetermined)",
+   "twin_key": "fog-lamp-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Fog lamp",
+   "firm_wording_hatch": "Fog lamp",
+   "family": "Fog Lamp",
+   "parent_key": null,
+   "zones": {
+    "left": "front_bumper",
+    "right": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>fog-lamp",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-number-plate",
+   "name": "Front Number Plate",
+   "names": {
+    "plain": "Front Number Plate"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Front number plate",
+   "firm_wording_hatch": "Front number plate",
+   "family": "Front Number Plate",
+   "parent_key": null,
+   "zones": {
+    "plain": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Front bumper number plate",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>front-number-plate",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-wheel-arch-liner",
+   "name": "Front Wheel Arch Liner",
+   "names": {
+    "left": "Left Front Wheel Arch Liner",
+    "right": "Right Front Wheel Arch Liner"
+   },
+   "twin": "Wheel Arch Liner (side undetermined)",
+   "twin_key": "wheel-arch-liner-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "front",
+   "assembly": "front-fender",
+   "also_in": [
+    "front-bumper",
+    "front-wheel"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Front fender splash shield",
+   "firm_wording_hatch": "Front fender splash shield",
+   "family": "Front Wheel Arch Liner",
+   "parent_key": null,
+   "zones": {
+    "left": "l_fender",
+    "right": "r_fender"
+   },
+   "panels": [
+    "l_fender",
+    "r_fender"
+   ],
+   "stand_in": "inside the wheel arch",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Front splash shield",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Front arch liner",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>front-wheel-arch-liner",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "behind"
+     },
+     {
+      "id": "front-fender>front-wheel-arch-liner",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "behind"
+     },
+     {
+      "id": "front-wheel>arch-liner",
+      "key": "front-wheel",
+      "name": "Front Wheel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-wheel-arch-trim",
+   "name": "Front Wheel Arch Trim",
+   "names": {
+    "left": "Left Front Wheel Arch Trim",
+    "right": "Right Front Wheel Arch Trim"
+   },
+   "twin": "Wheel Arch Trim (side undetermined)",
+   "twin_key": "wheel-arch-trim-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "front",
+   "assembly": "front-fender",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Front fender wheel arch garnish",
+   "firm_wording_hatch": "Front fender wheel arch garnish",
+   "family": "Front Wheel Arch Trim",
+   "parent_key": null,
+   "zones": {
+    "left": "l_fender",
+    "right": "r_fender"
+   },
+   "panels": [
+    "l_fender",
+    "r_fender"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "Front wheel arch moulding",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Front wheel arch molding",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Front mud flap",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Front fender wheel arch ganrish",
+     "kind": "typo",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-fender>front-wheel-arch-trim",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-door",
+   "name": "Front Door",
+   "names": {
+    "left": "Left Front Door",
+    "right": "Right Front Door"
+   },
+   "twin": "Door (side undetermined)",
+   "twin_key": "door-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Front door assy",
+   "firm_wording_hatch": "Front door assy",
+   "family": "Front Door",
+   "parent_key": null,
+   "zones": {
+    "left": "l_door_front",
+    "right": "r_door_front"
+   },
+   "panels": [
+    "l_door_front",
+    "r_door_front"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "front-door>wing-mirror",
+      "key": "wing-mirror",
+      "name": "Wing Mirror",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "side",
+      "reason": "The mirror is mounted at the door's front corner; a dent there can crack the housing or loosen the mount."
+     },
+     {
+      "id": "front-door>glass",
+      "key": "front-door-glass",
+      "name": "Front Door Glass",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "side",
+      "reason": "A door pushed in, or with its frame twisted, can crack the glass or push it out of its run."
+     },
+     {
+      "id": "front-door>front-window-regulator",
+      "key": "front-window-regulator",
+      "name": "Front Window Regulator",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The regulator sits inside the door; a deep dent in the lower half, a torn skin or stuck glass means it may be bent."
+     },
+     {
+      "id": "front-door>interior-trim",
+      "key": "interior-trim",
+      "name": "Interior Trim",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "side",
+      "reason": "The door trim card on the inside cracks or loses its clips when the door is pushed in."
+     },
+     {
+      "id": "front-door>sill-rocker-panel",
+      "key": "sill-rocker-panel",
+      "name": "Sill / Rocker Panel",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": true,
+      "area": "side",
+      "reason": "Load from a door pushed in at the bottom goes into the sill; a crease along the sill below the door is the sign."
+     },
+     {
+      "id": "front-door>airbag-system",
+      "key": "airbag-system",
+      "name": "Airbag System",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "side",
+      "reason": "A door pushed into the cabin can fire the side or curtain airbag; check cabin photos for a deployed bag."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-door",
+   "name": "Rear Door",
+   "names": {
+    "left": "Left Rear Door",
+    "right": "Right Rear Door"
+   },
+   "twin": "Door (side undetermined)",
+   "twin_key": "door-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Rear door assy",
+   "firm_wording_hatch": "Rear door assy",
+   "family": "Rear Door",
+   "parent_key": null,
+   "zones": {
+    "left": "l_door_rear",
+    "right": "r_door_rear"
+   },
+   "panels": [
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-door>glass",
+      "key": "rear-door-glass",
+      "name": "Rear Door Glass",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "side",
+      "reason": "A door pushed in, or with its frame twisted, can crack the glass or push it out of its run."
+     },
+     {
+      "id": "rear-door>rear-window-regulator",
+      "key": "rear-window-regulator",
+      "name": "Rear Window Regulator",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The regulator sits inside the door; a deep dent in the lower half, a torn skin or stuck glass means it may be bent."
+     },
+     {
+      "id": "rear-door>interior-trim",
+      "key": "interior-trim",
+      "name": "Interior Trim",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "side",
+      "reason": "The door trim card on the inside cracks or loses its clips when the door is pushed in."
+     },
+     {
+      "id": "rear-door>sill-rocker-panel",
+      "key": "sill-rocker-panel",
+      "name": "Sill / Rocker Panel",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": true,
+      "area": "side",
+      "reason": "Load from a door pushed in at the bottom goes into the sill; a crease along the sill below the door is the sign."
+     },
+     {
+      "id": "rear-door>airbag-system",
+      "key": "airbag-system",
+      "name": "Airbag System",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "side",
+      "reason": "A door pushed into the cabin can fire the side or curtain airbag; check cabin photos for a deployed bag."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-door-glass",
+   "name": "Front Door Glass",
+   "names": {
+    "left": "Left Front Door Glass",
+    "right": "Right Front Door Glass"
+   },
+   "twin": "Door Glass (side undetermined)",
+   "twin_key": "door-glass-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "glass",
+   "firm_wording": "Front door glass",
+   "firm_wording_hatch": "Front door glass",
+   "family": "Front Door",
+   "parent_key": "front-door",
+   "zones": {
+    "left": "l_door_glass_front",
+    "right": "r_door_glass_front"
+   },
+   "panels": [
+    "l_door_glass_front",
+    "r_door_glass_front"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "front-door-glass>front-window-regulator",
+      "key": "front-window-regulator",
+      "name": "Front Window Regulator",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The glass rides on the regulator inside the door; glass stuck, out of its run or pushed in usually means a bent regulator."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-door>glass",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-door-glass",
+   "name": "Rear Door Glass",
+   "names": {
+    "left": "Left Rear Door Glass",
+    "right": "Right Rear Door Glass"
+   },
+   "twin": "Door Glass (side undetermined)",
+   "twin_key": "door-glass-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "glass",
+   "firm_wording": "Rear door glass",
+   "firm_wording_hatch": "Rear door glass",
+   "family": "Rear Door",
+   "parent_key": "rear-door",
+   "zones": {
+    "left": "l_door_glass_rear",
+    "right": "r_door_glass_rear"
+   },
+   "panels": [
+    "l_door_glass_rear",
+    "r_door_glass_rear"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-door-glass>rear-window-regulator",
+      "key": "rear-window-regulator",
+      "name": "Rear Window Regulator",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The glass rides on the regulator inside the door; glass stuck, out of its run or pushed in usually means a bent regulator."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-door>glass",
+      "key": "rear-door",
+      "name": "Rear Door",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "wing-mirror",
+   "name": "Wing Mirror",
+   "names": {
+    "left": "Left Wing Mirror",
+    "right": "Right Wing Mirror"
+   },
+   "twin": "Wing Mirror (side undetermined)",
+   "twin_key": "wing-mirror-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "other",
+   "firm_wording": "Wing mirror",
+   "firm_wording_hatch": "Wing mirror",
+   "family": "Wing Mirror",
+   "parent_key": null,
+   "zones": {
+    "left": "l_mirror",
+    "right": "r_mirror"
+   },
+   "panels": [
+    "l_mirror",
+    "r_mirror"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Side mirror",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-door>wing-mirror",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-window-regulator",
+   "name": "Front Window Regulator",
+   "names": {
+    "left": "Left Front Window Regulator",
+    "right": "Right Front Window Regulator"
+   },
+   "twin": "Window Regulator (side undetermined)",
+   "twin_key": "window-regulator-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Front door glass regulator mechanism",
+   "firm_wording_hatch": "Front door glass regulator mechanism",
+   "family": "Front Window Regulator",
+   "parent_key": null,
+   "zones": {
+    "left": "l_door_front",
+    "right": "r_door_front"
+   },
+   "panels": [
+    "l_door_front",
+    "r_door_front"
+   ],
+   "stand_in": "inside the door",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-door>front-window-regulator",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "behind"
+     },
+     {
+      "id": "front-door-glass>front-window-regulator",
+      "key": "front-door-glass",
+      "name": "Front Door Glass",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-window-regulator",
+   "name": "Rear Window Regulator",
+   "names": {
+    "left": "Left Rear Window Regulator",
+    "right": "Right Rear Window Regulator"
+   },
+   "twin": "Window Regulator (side undetermined)",
+   "twin_key": "window-regulator-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Rear door glass regulator mechanism",
+   "firm_wording_hatch": "Rear door glass regulator mechanism",
+   "family": "Rear Window Regulator",
+   "parent_key": null,
+   "zones": {
+    "left": "l_door_rear",
+    "right": "r_door_rear"
+   },
+   "panels": [
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "inside the door",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-door>rear-window-regulator",
+      "key": "rear-door",
+      "name": "Rear Door",
+      "type": "behind"
+     },
+     {
+      "id": "rear-door-glass>rear-window-regulator",
+      "key": "rear-door-glass",
+      "name": "Rear Door Glass",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper",
+   "name": "Rear Bumper",
+   "names": {
+    "plain": "Rear Bumper"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Rear bumper fascia",
+   "firm_wording_hatch": "Rear bumper fascia",
+   "family": "Rear Bumper",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear air vent",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-bumper>rear-number-plate",
+      "key": "rear-number-plate",
+      "name": "Rear Number Plate",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Plate and holder sit on the bumper or just above it; a dent or crack at the plate usually bends or cracks them."
+     },
+     {
+      "id": "rear-bumper>reflector",
+      "key": "rear-bumper-reflector",
+      "name": "Rear Bumper Reflector",
+      "type": "attached",
+      "side": "impact",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Reflectors sit in the bumper ends; a crack or dent at that corner often breaks the reflector or its clips."
+     },
+     {
+      "id": "rear-bumper>parking-sensor",
+      "key": "parking-sensor",
+      "name": "Parking Sensor",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Sensors sit in holes in the cover; a dent or crack near them can push them in, break the holders or cut the wiring."
+     },
+     {
+      "id": "rear-bumper>reversing-camera",
+      "key": "reversing-camera",
+      "name": "Reversing Camera",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Where the camera sits in the bumper or the garnish just above it, a bumper pushed up or in can crack or misalign it."
+     },
+     {
+      "id": "rear-bumper>rear-wheel-arch-liner",
+      "key": "rear-wheel-arch-liner",
+      "name": "Rear Wheel Arch Liner",
+      "type": "behind",
+      "side": "impact",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The bumper end fixes to the rear arch liner; a cracked or torn bumper end often tears the liner edge."
+     },
+     {
+      "id": "rear-bumper>beam",
+      "key": "rear-bumper-beam",
+      "name": "Rear Bumper Beam",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "Sits behind the cover and absorber; a pushed-in cover or an uneven boot-to-bumper gap can mean it is bent."
+     },
+     {
+      "id": "rear-bumper>rear-end-panel",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The panel under the boot opening, behind the bumper; an uneven boot gap or a buckle under the boot sill is the sign."
+     },
+     {
+      "id": "rear-bumper>tail-lamp",
+      "key": "tail-lamp",
+      "name": "Tail Lamp",
+      "type": "crush",
+      "side": "impact",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The bumper corner sits under the tail lamp; a corner pushed up, in or shifted can crack the lens or the housing."
+     },
+     {
+      "id": "rear-bumper>boot-floor-board",
+      "key": "boot-floor-board",
+      "name": "Boot Floor Board",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "A rear panel pushed forward can lift, bend or crack the boot floor board; it is seen with the boot open."
+     },
+     {
+      "id": "rear-bumper>boot-side-trim",
+      "key": "boot-side-trim",
+      "name": "Boot Side Trim",
+      "type": "crush",
+      "side": "impact",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Boot side trims line the inside of the rear corners; a pushed-in corner can crack them or break their clips."
+     },
+     {
+      "id": "rear-bumper>exhaust-system",
+      "key": "exhaust-system",
+      "name": "Exhaust System",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The tailpipe ends at the bumper; a pushed-in bumper can bend the pipe or break its hangers."
+     },
+     {
+      "id": "rear-bumper>rear-floor-panel",
+      "key": "rear-floor-panel",
+      "name": "Rear Floor Panel",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "A crush hit runs through the rear rails into the spare wheel well and floor; wrinkles show under the boot carpet."
+     },
+     {
+      "id": "rear-bumper>suspension-rear",
+      "key": "suspension-rear",
+      "name": "Suspension - Rear",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "A crush hit at a rear corner can push the wheel and bend an arm or the axle; a wheel turned or set back is the sign."
+     },
+     {
+      "id": "rear-bumper>fuel-tank",
+      "key": "fuel-tank",
+      "name": "Fuel Tank",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The tank sits ahead of the rear floor; a deep rear crush can dent it or its filler pipe. Fuel on the ground is the sign."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid",
+   "name": "Boot Lid",
+   "names": {
+    "plain": "Boot Lid"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Boot lid assy",
+   "firm_wording_hatch": "Tail gate assy",
+   "family": "Boot Lid",
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Tail gate",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Tailgate",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Back door",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Trunk",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "boot-lid>lamp",
+      "key": "boot-lid-lamp",
+      "name": "Boot Lid Lamp",
+      "type": "attached",
+      "side": "impact",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "Lamps mounted on the lid crack or come loose when the lid is dented or pushed in next to them."
+     },
+     {
+      "id": "boot-lid>reversing-camera",
+      "key": "reversing-camera",
+      "name": "Reversing Camera",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "On many cars the camera sits in the lid's garnish above the plate; a dent there can crack or misalign it."
+     },
+     {
+      "id": "boot-lid>rear-windscreen",
+      "key": "rear-windscreen",
+      "name": "Rear Windscreen",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "On a tailgate or hatch the rear glass sits in the lid, so a twisted lid can crack it. Not on a sedan's boot lid."
+     },
+     {
+      "id": "boot-lid>lock",
+      "key": "boot-lid-lock",
+      "name": "Boot Lid Lock",
+      "type": "opens_with",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The lock sits in the lid's lower edge; a buckled lid, or one that will not open or latch, usually means a bent lock."
+     },
+     {
+      "id": "boot-lid>hinge",
+      "key": "boot-lid-hinge",
+      "name": "Boot Lid Hinge",
+      "type": "opens_with",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "A lid pushed forward or out of line bends its hinges; uneven gaps at the lid's top corners are the sign."
+     },
+     {
+      "id": "boot-lid>weatherstrip",
+      "key": "boot-lid-weatherstrip",
+      "name": "Boot Lid Weatherstrip",
+      "type": "opens_with",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The seal round the boot opening is cut or pushed out of place when the lid or the panel under it buckles."
+     },
+     {
+      "id": "boot-lid>inner-trim",
+      "key": "boot-lid-inner-trim",
+      "name": "Boot Lid Inner Trim",
+      "type": "opens_with",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The trim or insulator on the inside of the lid cracks or loses its clips when the lid is buckled or pushed in."
+     },
+     {
+      "id": "boot-lid>rear-end-panel",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The lid closes onto the rear end panel; a lid pushed in, or hitting on closing, often means that panel buckled too."
+     }
+    ],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-windscreen",
+   "name": "Rear Windscreen",
+   "names": {
+    "plain": "Rear Windscreen"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-windscreen",
+   "also_in": [
+    "roof",
+    "boot-lid"
+   ],
+   "kind": "part",
+   "role": "glass",
+   "firm_wording": "Rear windscreen glass",
+   "firm_wording_hatch": "Rear windscreen glass",
+   "family": "Rear Windscreen",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_glass"
+   },
+   "panels": [
+    "rear_glass"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear screen",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Back glass",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>rear-windscreen",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "tail-lamp",
+   "name": "Tail Lamp",
+   "names": {
+    "left": "Left Tail Lamp",
+    "right": "Right Tail Lamp"
+   },
+   "twin": "Tail Lamp (side undetermined)",
+   "twin_key": "tail-lamp-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "tail-lamp",
+   "also_in": [
+    "rear-quarter"
+   ],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Tail lamp",
+   "firm_wording_hatch": "Tail lamp",
+   "family": "Tail Lamp",
+   "parent_key": null,
+   "zones": {
+    "left": "l_taillamp",
+    "right": "r_taillamp"
+   },
+   "panels": [
+    "l_taillamp",
+    "r_taillamp"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Taillamp",
+     "kind": "typo",
+     "source": "code"
+    },
+    {
+     "text": "Taillight",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "tail-lamp>rear-quarter-panel",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The lamp sits in an opening in the quarter; a pushed-in lamp can wrinkle that opening, often seen only with the lamp out."
+     },
+     {
+      "id": "tail-lamp>boot-lid-lamp",
+      "key": "boot-lid-lamp",
+      "name": "Boot Lid Lamp",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The lid lamp sits right beside the tail lamp; a hit that cracks or pushes in one often reaches the other."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-bumper>tail-lamp",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>tail-lamp",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-quarter-panel",
+   "name": "Rear Quarter Panel",
+   "names": {
+    "left": "Left Rear Quarter Panel",
+    "right": "Right Rear Quarter Panel"
+   },
+   "twin": "Quarter Panel (side undetermined)",
+   "twin_key": "quarter-panel-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "rear-quarter",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Rear fender",
+   "firm_wording_hatch": "Rear fender",
+   "family": "Rear Quarter Panel",
+   "parent_key": null,
+   "zones": {
+    "left": "l_quarter",
+    "right": "r_quarter"
+   },
+   "panels": [
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Quarter panel",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-quarter-panel>tail-lamp",
+      "key": "tail-lamp",
+      "name": "Tail Lamp",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The tail lamp sits in the quarter; a dent at the lamp opening often cracks the lamp or breaks its mounts."
+     },
+     {
+      "id": "rear-quarter-panel>rear-wheel-arch-trim",
+      "key": "rear-wheel-arch-trim",
+      "name": "Rear Wheel Arch Trim",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The arch trim clips onto the quarter's arch lip; a dent there often cracks it or breaks its clips."
+     },
+     {
+      "id": "rear-quarter-panel>rear-wheel-arch-liner",
+      "key": "rear-wheel-arch-liner",
+      "name": "Rear Wheel Arch Liner",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The liner is fixed inside the quarter's arch; a dent near the arch often tears it or leaves it hanging."
+     },
+     {
+      "id": "rear-quarter-panel>boot-side-trim",
+      "key": "boot-side-trim",
+      "name": "Boot Side Trim",
+      "type": "behind",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The boot side trim lines the inside of the quarter; a pushed-in quarter cracks it or breaks its clips."
+     },
+     {
+      "id": "rear-quarter-panel>rear-end-panel",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The quarter's rear end joins the rear end panel; a quarter pushed in at the back can buckle it."
+     },
+     {
+      "id": "rear-quarter-panel>suspension-rear",
+      "key": "suspension-rear",
+      "name": "Suspension - Rear",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "A hit at the rear corner can push the wheel in and bend an arm or the axle; a wheel turned or rubbing is the sign."
+     },
+     {
+      "id": "rear-quarter-panel>rear-floor-panel",
+      "key": "rear-floor-panel",
+      "name": "Rear Floor Panel",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "A crumpled quarter can carry the load into the boot floor and spare wheel well; floor wrinkles are the sign."
+     },
+     {
+      "id": "rear-quarter-panel>rear-subframe",
+      "key": "rear-subframe",
+      "name": "Rear Subframe",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "A crush hit at the rear corner can move the rear subframe; it needs measuring with parts off."
+     },
+     {
+      "id": "rear-quarter-panel>sill-rocker-panel",
+      "key": "sill-rocker-panel",
+      "name": "Sill / Rocker Panel",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "heavy",
+      "hidden": false,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The quarter's lower front edge meets the sill behind the rear door; a low hit there can crease the sill's rear end."
+     }
+    ],
+    "in": [
+     {
+      "id": "tail-lamp>rear-quarter-panel",
+      "key": "tail-lamp",
+      "name": "Tail Lamp",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-number-plate",
+   "name": "Rear Number Plate",
+   "names": {
+    "plain": "Rear Number Plate"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [
+    "boot-lid"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Rear number plate",
+   "firm_wording_hatch": "Rear number plate",
+   "family": "Rear Number Plate",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>rear-number-plate",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-beam",
+   "name": "Rear Bumper Beam",
+   "names": {
+    "plain": "Rear Bumper Beam"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Rear bumper beam",
+   "firm_wording_hatch": "Rear bumper beam",
+   "family": "Rear Bumper Beam",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "behind the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear bumper reinforcement",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>beam",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-reflector",
+   "name": "Rear Bumper Reflector",
+   "names": {
+    "left": "Left Rear Bumper Reflector",
+    "right": "Right Rear Bumper Reflector"
+   },
+   "twin": "Rear Bumper Reflector (side undetermined)",
+   "twin_key": "rear-bumper-reflector-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Rear bumper reflector",
+   "firm_wording_hatch": "Rear bumper reflector",
+   "family": "Rear Bumper Reflector",
+   "parent_key": null,
+   "zones": {
+    "left": "rear_bumper",
+    "right": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>reflector",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-end-panel",
+   "name": "Rear End Panel",
+   "names": {
+    "plain": "Rear End Panel"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-end",
+   "also_in": [
+    "boot-lid"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Rear end panel",
+   "firm_wording_hatch": "Rear end panel",
+   "family": "Rear End Panel",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "behind the bumper",
+   "bodies": [
+    "sedan",
+    "Hatchback",
+    "SUV",
+    "MPV",
+    "Van",
+    "Wagon"
+   ],
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear body panel",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-end-panel>boot-lid-weatherstrip",
+      "key": "boot-lid-weatherstrip",
+      "name": "Boot Lid Weatherstrip",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The boot seal fits on this panel's top flange; a buckled panel cuts it or lifts it off."
+     },
+     {
+      "id": "rear-end-panel>boot-lid-lock",
+      "key": "boot-lid-lock",
+      "name": "Boot Lid Lock",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": false,
+      "area": "rear",
+      "reason": "The lock's striker is on this panel; a panel pushed forward stops the lid latching or jams the lock."
+     },
+     {
+      "id": "rear-end-panel>rear-floor-panel",
+      "key": "rear-floor-panel",
+      "name": "Rear Floor Panel",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "rear",
+      "reason": "The rear end panel is welded to the boot floor; a panel pushed forward wrinkles the floor and spare wheel well behind it."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-bumper>rear-end-panel",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "behind"
+     },
+     {
+      "id": "boot-lid>rear-end-panel",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>rear-end-panel",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-lock",
+   "name": "Boot Lid Lock",
+   "names": {
+    "plain": "Boot Lid Lock"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "rear-end"
+   ],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Boot lid lock",
+   "firm_wording_hatch": "Tail gate lock",
+   "family": "Boot Lid Lock",
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "in the boot lid",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Boot lid catch",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Key lock",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>lock",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "opens_with"
+     },
+     {
+      "id": "rear-end-panel>boot-lid-lock",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-hinge",
+   "name": "Boot Lid Hinge",
+   "names": {
+    "plain": "Boot Lid Hinge"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Boot lid hinges",
+   "firm_wording_hatch": "Tail gate hinges",
+   "family": "Boot Lid Hinge",
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "under the boot lid",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>hinge",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "opens_with"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-weatherstrip",
+   "name": "Boot Lid Weatherstrip",
+   "names": {
+    "plain": "Boot Lid Weatherstrip"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "rear-end"
+   ],
+   "kind": "part",
+   "role": "seal",
+   "firm_wording": "Boot lid weatherstrip",
+   "firm_wording_hatch": "Tail gate weatherstrip",
+   "family": "Boot Lid Weatherstrip",
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "round the boot opening",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Boot lid weather strip",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Boot lid weatherstripe",
+     "kind": "typo",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>weatherstrip",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "opens_with"
+     },
+     {
+      "id": "rear-end-panel>boot-lid-weatherstrip",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-inner-trim",
+   "name": "Boot Lid Inner Trim",
+   "names": {
+    "plain": "Boot Lid Inner Trim"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Boot lid insulator",
+   "firm_wording_hatch": "Tail gate inner trim board",
+   "family": "Boot Lid Inner Trim",
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "inside the boot lid",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Boot lid trim board",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>inner-trim",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "opens_with"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-lamp",
+   "name": "Boot Lid Lamp",
+   "names": {
+    "left": "Left Boot Lid Lamp",
+    "right": "Right Boot Lid Lamp"
+   },
+   "twin": "Boot Lid Lamp (side undetermined)",
+   "twin_key": "boot-lid-lamp-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "tail-lamp"
+   ],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Boot lid lamp",
+   "firm_wording_hatch": "Tail gate reflector lamp",
+   "family": "Boot Lid Lamp",
+   "parent_key": null,
+   "zones": {
+    "left": "tailgate",
+    "right": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "Boot lid reflector",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "boot-lid>lamp",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "attached"
+     },
+     {
+      "id": "tail-lamp>boot-lid-lamp",
+      "key": "tail-lamp",
+      "name": "Tail Lamp",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-floor-board",
+   "name": "Boot Floor Board",
+   "names": {
+    "plain": "Boot Floor Board"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-interior",
+   "also_in": [
+    "rear-end"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Spare tyre panel top board",
+   "firm_wording_hatch": "Rear floor panel board",
+   "family": "Boot Floor Board",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "inside the boot",
+   "bodies": [
+    "sedan",
+    "Hatchback",
+    "SUV",
+    "MPV",
+    "Van",
+    "Wagon"
+   ],
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Tool tray",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Floor panel board",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>boot-floor-board",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-side-trim",
+   "name": "Boot Side Trim",
+   "names": {
+    "left": "Left Boot Side Trim",
+    "right": "Right Boot Side Trim"
+   },
+   "twin": "Boot Side Trim (side undetermined)",
+   "twin_key": "boot-side-trim-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "boot-interior",
+   "also_in": [
+    "rear-end",
+    "rear-quarter"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Rear fender inner trim",
+   "firm_wording_hatch": "Rear fender inner trim board",
+   "family": "Boot Side Trim",
+   "parent_key": null,
+   "zones": {
+    "left": null,
+    "right": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": [
+    "sedan",
+    "Hatchback",
+    "SUV",
+    "MPV",
+    "Van",
+    "Wagon"
+   ],
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Quarter inner trim",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>boot-side-trim",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>boot-side-trim",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-wheel-arch-liner",
+   "name": "Rear Wheel Arch Liner",
+   "names": {
+    "left": "Left Rear Wheel Arch Liner",
+    "right": "Right Rear Wheel Arch Liner"
+   },
+   "twin": "Wheel Arch Liner (side undetermined)",
+   "twin_key": "wheel-arch-liner-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [
+    "rear-quarter",
+    "rear-wheel"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Rear bumper wheel arch protector",
+   "firm_wording_hatch": "Rear bumper wheel arch protector",
+   "family": "Rear Wheel Arch Liner",
+   "parent_key": null,
+   "zones": {
+    "left": "l_quarter",
+    "right": "r_quarter"
+   },
+   "panels": [
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": "inside the wheel arch",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear splash shield",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Rear arch liner",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>rear-wheel-arch-liner",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "behind"
+     },
+     {
+      "id": "rear-quarter-panel>rear-wheel-arch-liner",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "behind"
+     },
+     {
+      "id": "rear-wheel>arch-liner",
+      "key": "rear-wheel",
+      "name": "Rear Wheel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-wheel-arch-trim",
+   "name": "Rear Wheel Arch Trim",
+   "names": {
+    "left": "Left Rear Wheel Arch Trim",
+    "right": "Right Rear Wheel Arch Trim"
+   },
+   "twin": "Wheel Arch Trim (side undetermined)",
+   "twin_key": "wheel-arch-trim-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "rear",
+   "assembly": "rear-quarter",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Rear fender wheel arch garnish",
+   "firm_wording_hatch": "Rear fender wheel arch garnish",
+   "family": "Rear Wheel Arch Trim",
+   "parent_key": null,
+   "zones": {
+    "left": "l_quarter",
+    "right": "r_quarter"
+   },
+   "panels": [
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "Rear wheel arch moulding",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Rear wheel arch molding",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Rear mud flap",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-quarter-panel>rear-wheel-arch-trim",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-wheel",
+   "name": "Front Wheel",
+   "names": {
+    "left": "Left Front Wheel",
+    "right": "Right Front Wheel"
+   },
+   "twin": "Wheel (side undetermined)",
+   "twin_key": "wheel-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "wheels",
+   "assembly": "front-wheel",
+   "also_in": [],
+   "kind": "part",
+   "role": "wheel",
+   "firm_wording": "Front wheel rim",
+   "firm_wording_hatch": "Front wheel rim",
+   "family": "Front Wheel",
+   "parent_key": null,
+   "zones": {
+    "left": "l_wheel_front",
+    "right": "r_wheel_front"
+   },
+   "panels": [
+    "l_wheel_front",
+    "r_wheel_front"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Front rim",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "front-wheel>front-tyre",
+      "key": "front-tyre",
+      "name": "Front Tyre",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A rim dented or cracked at the lip can cut or bulge the tyre or lose its seal; check the sidewall next to the damage."
+     },
+     {
+      "id": "front-wheel>arch-liner",
+      "key": "front-wheel-arch-liner",
+      "name": "Front Wheel Arch Liner",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A wheel struck hard enough to dent the rim can be pushed into the arch liner and tear it."
+     },
+     {
+      "id": "front-wheel>suspension-front",
+      "key": "suspension-front",
+      "name": "Suspension - Front",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "wheel",
+      "reason": "A bent or cracked rim means the blow reached the hub; arms, strut and knuckle need checking, with an alignment."
+     },
+     {
+      "id": "front-wheel>steering-assembly",
+      "key": "steering-assembly",
+      "name": "Steering Assembly",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "wheel",
+      "reason": "A front wheel struck hard enough to bend the rim can bend the tie rod; a turned wheel or off-centre steering is the sign."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-tyre>front-wheel",
+      "key": "front-tyre",
+      "name": "Front Tyre",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-wheel",
+   "name": "Rear Wheel",
+   "names": {
+    "left": "Left Rear Wheel",
+    "right": "Right Rear Wheel"
+   },
+   "twin": "Wheel (side undetermined)",
+   "twin_key": "wheel-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "wheels",
+   "assembly": "rear-wheel",
+   "also_in": [],
+   "kind": "part",
+   "role": "wheel",
+   "firm_wording": "Rear wheel rim",
+   "firm_wording_hatch": "Rear wheel rim",
+   "family": "Rear Wheel",
+   "parent_key": null,
+   "zones": {
+    "left": "l_wheel_rear",
+    "right": "r_wheel_rear"
+   },
+   "panels": [
+    "l_wheel_rear",
+    "r_wheel_rear"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear rim",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-wheel>rear-tyre",
+      "key": "rear-tyre",
+      "name": "Rear Tyre",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A rim dented or cracked at the lip can cut or bulge the tyre or lose its seal; check the sidewall next to the damage."
+     },
+     {
+      "id": "rear-wheel>arch-liner",
+      "key": "rear-wheel-arch-liner",
+      "name": "Rear Wheel Arch Liner",
+      "type": "crush",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A wheel struck hard enough to dent the rim can be pushed into the arch liner and tear it."
+     },
+     {
+      "id": "rear-wheel>suspension-rear",
+      "key": "suspension-rear",
+      "name": "Suspension - Rear",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "wheel",
+      "reason": "A bent or cracked rim means the blow reached the hub; arms or axle need checking, with an alignment."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-tyre>rear-wheel",
+      "key": "rear-tyre",
+      "name": "Rear Tyre",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-tyre",
+   "name": "Front Tyre",
+   "names": {
+    "left": "Left Front Tyre",
+    "right": "Right Front Tyre"
+   },
+   "twin": "Tyre (side undetermined)",
+   "twin_key": "tyre-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "wheels",
+   "assembly": "front-wheel",
+   "also_in": [],
+   "kind": "part",
+   "role": "wheel",
+   "firm_wording": "Front tyre",
+   "firm_wording_hatch": "Front tyre",
+   "family": "Front Tyre",
+   "parent_key": null,
+   "zones": {
+    "left": "l_wheel_front",
+    "right": "r_wheel_front"
+   },
+   "panels": [
+    "l_wheel_front",
+    "r_wheel_front"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Front tire",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "front-tyre>front-wheel",
+      "key": "front-wheel",
+      "name": "Front Wheel",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A tyre cut or bulged by a kerb or pothole often comes with a dented or cracked rim lip at the same spot."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-wheel>front-tyre",
+      "key": "front-wheel",
+      "name": "Front Wheel",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-tyre",
+   "name": "Rear Tyre",
+   "names": {
+    "left": "Left Rear Tyre",
+    "right": "Right Rear Tyre"
+   },
+   "twin": "Tyre (side undetermined)",
+   "twin_key": "tyre-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "needs_end",
+   "area": "wheels",
+   "assembly": "rear-wheel",
+   "also_in": [],
+   "kind": "part",
+   "role": "wheel",
+   "firm_wording": "Rear tyre",
+   "firm_wording_hatch": "Rear tyre",
+   "family": "Rear Tyre",
+   "parent_key": null,
+   "zones": {
+    "left": "l_wheel_rear",
+    "right": "r_wheel_rear"
+   },
+   "panels": [
+    "l_wheel_rear",
+    "r_wheel_rear"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear tire",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-tyre>rear-wheel",
+      "key": "rear-wheel",
+      "name": "Rear Wheel",
+      "type": "attached",
+      "side": "same",
+      "min_hit": "medium",
+      "hidden": false,
+      "strip_down": false,
+      "area": "wheel",
+      "reason": "A tyre cut or bulged by a kerb or pothole often comes with a dented or cracked rim lip at the same spot."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-wheel>rear-tyre",
+      "key": "rear-wheel",
+      "name": "Rear Wheel",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "roof",
+   "name": "Roof",
+   "names": {
+    "plain": "Roof"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "roof",
+   "assembly": "roof",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Roof panel",
+   "firm_wording_hatch": "Roof panel",
+   "family": "Roof",
+   "parent_key": null,
+   "zones": {
+    "plain": "roof"
+   },
+   "panels": [
+    "roof"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "underbody-chassis",
+   "name": "Underbody / Chassis",
+   "names": {
+    "plain": "Underbody / Chassis"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "underbody",
+   "also_in": [
+    "front-end",
+    "sill"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Chassis frame member",
+   "firm_wording_hatch": "Chassis frame member",
+   "family": "Underbody / Chassis",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Undercarriage",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Chassis",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "underbody-chassis>exhaust-system",
+      "key": "exhaust-system",
+      "name": "Exhaust System",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The exhaust hangs lowest under the car; scrape marks underneath usually reach the pipe, box or hangers too."
+     },
+     {
+      "id": "underbody-chassis>fuel-tank",
+      "key": "fuel-tank",
+      "name": "Fuel Tank",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The tank sits under the rear seat area; a hard strike underneath can dent it or its straps. Fuel on the ground is the sign."
+     },
+     {
+      "id": "underbody-chassis>rear-subframe",
+      "key": "rear-subframe",
+      "name": "Rear Subframe",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "A hard strike under the rear can bend the rear subframe; it needs measuring with parts off."
+     },
+     {
+      "id": "underbody-chassis>suspension-rear",
+      "key": "suspension-rear",
+      "name": "Suspension - Rear",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "A hard strike under the rear can bend arms or the axle; a rear wheel out of line is the sign."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-fender>underbody-chassis",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "crush"
+     },
+     {
+      "id": "sill-rocker-panel>underbody-chassis",
+      "key": "sill-rocker-panel",
+      "name": "Sill / Rocker Panel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "sill-rocker-panel",
+   "name": "Sill / Rocker Panel",
+   "names": {
+    "left": "Left Sill / Rocker Panel",
+    "right": "Right Sill / Rocker Panel"
+   },
+   "twin": "Sill / Rocker Panel (side undetermined)",
+   "twin_key": "sill-rocker-panel-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "side",
+   "assembly": "sill",
+   "also_in": [],
+   "kind": "panel",
+   "role": "panel",
+   "firm_wording": "Side sill panel",
+   "firm_wording_hatch": "Side sill panel",
+   "family": "Sill / Rocker Panel",
+   "parent_key": null,
+   "zones": {
+    "left": "underbody",
+    "right": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "below the doors",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Side sill",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Sill panel",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "sill-rocker-panel>underbody-chassis",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "crush",
+      "hidden": true,
+      "strip_down": true,
+      "area": "side",
+      "reason": "The sill joins the floor crossmembers; a sill crushed inward can bend the floor and crossmember behind it."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-door>sill-rocker-panel",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "crush"
+     },
+     {
+      "id": "rear-door>sill-rocker-panel",
+      "key": "rear-door",
+      "name": "Rear Door",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>sill-rocker-panel",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-floor-panel",
+   "name": "Rear Floor Panel",
+   "names": {
+    "plain": "Rear Floor Panel"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-end",
+   "also_in": [
+    "boot-interior",
+    "rear-subframe",
+    "underbody"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Rear floor panel",
+   "firm_wording_hatch": "Rear floor panel",
+   "family": "Rear Floor Panel",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "under the car",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>rear-floor-panel",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "rear-end-panel>rear-floor-panel",
+      "key": "rear-end-panel",
+      "name": "Rear End Panel",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>rear-floor-panel",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-subframe",
+   "name": "Front Subframe",
+   "names": {
+    "plain": "Front Subframe"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "front-subframe",
+   "also_in": [
+    "engine-undercover",
+    "underbody"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Front cross member",
+   "firm_wording_hatch": "Front cross member",
+   "family": "Front Subframe",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "under the car",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Subframe",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "front-subframe>steering-assembly",
+      "key": "steering-assembly",
+      "name": "Steering Assembly",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The steering rack is bolted to the front subframe; a bent or moved subframe means the rack and tie rods need checking."
+     },
+     {
+      "id": "front-subframe>suspension-front",
+      "key": "suspension-front",
+      "name": "Suspension - Front",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The front lower arms mount on the subframe; a bent subframe usually means the arms and alignment need checking."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-bumper>front-subframe",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-fender>front-subframe",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "crush"
+     },
+     {
+      "id": "engine-undercover>front-subframe",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-subframe",
+   "name": "Rear Subframe",
+   "names": {
+    "plain": "Rear Subframe"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "rear-subframe",
+   "also_in": [
+    "underbody"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Rear cross member",
+   "firm_wording_hatch": "Rear cross member",
+   "family": "Rear Subframe",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "under the car",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [
+     {
+      "id": "rear-subframe>suspension-rear",
+      "key": "suspension-rear",
+      "name": "Suspension - Rear",
+      "type": "attached",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The rear arms mount on the rear subframe; a bent subframe usually means the arms and alignment need checking."
+     }
+    ],
+    "in": [
+     {
+      "id": "rear-quarter-panel>rear-subframe",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush"
+     },
+     {
+      "id": "underbody-chassis>rear-subframe",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "engine-undercover",
+   "name": "Engine Undercover",
+   "names": {
+    "plain": "Engine Undercover"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "engine-undercover",
+   "also_in": [
+    "front-bumper",
+    "underbody"
+   ],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Engine under cover",
+   "firm_wording_hatch": "Engine under cover",
+   "family": "Engine Undercover",
+   "parent_key": null,
+   "zones": {
+    "plain": "underbody"
+   },
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "under the car",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Front bumper under cover",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [
+     {
+      "id": "engine-undercover>front-subframe",
+      "key": "front-subframe",
+      "name": "Front Subframe",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The front subframe sits just above the undercover; a cover torn by a kerb, hump or debris may mean it was struck too."
+     },
+     {
+      "id": "engine-undercover>steering-assembly",
+      "key": "steering-assembly",
+      "name": "Steering Assembly",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The steering rack sits above the undercover; a hard strike from below can bend the rack or tie rods."
+     },
+     {
+      "id": "engine-undercover>radiator",
+      "key": "radiator",
+      "name": "Radiator",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The radiator's lower edge sits above the front of the undercover; a torn front cover may mean it was hit."
+     },
+     {
+      "id": "engine-undercover>exhaust-system",
+      "key": "exhaust-system",
+      "name": "Exhaust System",
+      "type": "behind",
+      "side": "none",
+      "min_hit": "medium",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "The front exhaust pipe runs just behind and above the undercover; a dented or scraped cover often comes with a hit pipe."
+     },
+     {
+      "id": "engine-undercover>suspension-front",
+      "key": "suspension-front",
+      "name": "Suspension - Front",
+      "type": "crush",
+      "side": "none",
+      "min_hit": "heavy",
+      "hidden": true,
+      "strip_down": true,
+      "area": "underbody",
+      "reason": "A strike that pushes the undercover up can reach the lower arms at its sides; a wheel out of line is the sign."
+     }
+    ],
+    "in": [
+     {
+      "id": "front-bumper>engine-undercover",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "radiator",
+   "name": "Radiator",
+   "names": {
+    "plain": "Radiator"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-end",
+   "also_in": [
+    "front-grille",
+    "engine-undercover"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Radiator assy",
+   "firm_wording_hatch": "Radiator assy",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "front_grill"
+   },
+   "panels": [
+    "front_grill"
+   ],
+   "stand_in": "behind the grille",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>radiator",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-grille>radiator",
+      "key": "front-grille",
+      "name": "Front Grille",
+      "type": "behind"
+     },
+     {
+      "id": "engine-undercover>radiator",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "air-conditioning-condenser",
+   "name": "Air Conditioning Condenser",
+   "names": {
+    "plain": "Air Conditioning Condenser"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-end",
+   "also_in": [
+    "front-grille"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Aircon condenser",
+   "firm_wording_hatch": "Aircon condenser",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "front_grill"
+   },
+   "panels": [
+    "front_grill"
+   ],
+   "stand_in": "behind the grille",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>air-conditioning-condenser",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-grille>air-conditioning-condenser",
+      "key": "front-grille",
+      "name": "Front Grille",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "exhaust-system",
+   "name": "Exhaust System",
+   "names": {
+    "plain": "Exhaust System"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "underbody",
+   "also_in": [
+    "engine-undercover"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Exhaust pipe",
+   "firm_wording_hatch": "Exhaust pipe",
+   "family": "Exhaust System",
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Silencer",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>exhaust-system",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "engine-undercover>exhaust-system",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "behind"
+     },
+     {
+      "id": "underbody-chassis>exhaust-system",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fuel-tank",
+   "name": "Fuel Tank",
+   "names": {
+    "plain": "Fuel Tank"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "underbody",
+   "also_in": [
+    "rear-subframe"
+   ],
+   "kind": "part",
+   "role": "other",
+   "firm_wording": "Fuel tank",
+   "firm_wording_hatch": "Fuel tank",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>fuel-tank",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "underbody-chassis>fuel-tank",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "suspension-front",
+   "name": "Suspension - Front",
+   "names": {
+    "plain": "Suspension - Front"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "front-subframe",
+   "also_in": [
+    "engine-undercover",
+    "front-wheel"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Front suspension",
+   "firm_wording_hatch": "Front suspension",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Lower arm",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Anti roll bar",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Shock absorber",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>suspension-front",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-fender>suspension-front",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "crush"
+     },
+     {
+      "id": "engine-undercover>suspension-front",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "crush"
+     },
+     {
+      "id": "front-subframe>suspension-front",
+      "key": "front-subframe",
+      "name": "Front Subframe",
+      "type": "attached"
+     },
+     {
+      "id": "front-wheel>suspension-front",
+      "key": "front-wheel",
+      "name": "Front Wheel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "suspension-rear",
+   "name": "Suspension - Rear",
+   "names": {
+    "plain": "Suspension - Rear"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "rear-subframe",
+   "also_in": [
+    "underbody",
+    "rear-wheel"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Rear suspension",
+   "firm_wording_hatch": "Rear suspension",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Rear trailing arm",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Rear torsion beam",
+     "kind": "synonym",
+     "source": "code"
+    },
+    {
+     "text": "Rear shock absorber",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>suspension-rear",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "rear-quarter-panel>suspension-rear",
+      "key": "rear-quarter-panel",
+      "name": "Rear Quarter Panel",
+      "type": "crush"
+     },
+     {
+      "id": "underbody-chassis>suspension-rear",
+      "key": "underbody-chassis",
+      "name": "Underbody / Chassis",
+      "type": "behind"
+     },
+     {
+      "id": "rear-subframe>suspension-rear",
+      "key": "rear-subframe",
+      "name": "Rear Subframe",
+      "type": "attached"
+     },
+     {
+      "id": "rear-wheel>suspension-rear",
+      "key": "rear-wheel",
+      "name": "Rear Wheel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "steering-assembly",
+   "name": "Steering Assembly",
+   "names": {
+    "plain": "Steering Assembly"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "under",
+   "assembly": "front-subframe",
+   "also_in": [
+    "engine-undercover",
+    "front-wheel"
+   ],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Steering rack and pinion",
+   "firm_wording_hatch": "Steering rack and pinion",
+   "family": "Steering Assembly",
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "Steering rack",
+     "kind": "synonym",
+     "source": "code"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>steering-assembly",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-fender>steering-assembly",
+      "key": "front-fender",
+      "name": "Front Fender",
+      "type": "crush"
+     },
+     {
+      "id": "engine-undercover>steering-assembly",
+      "key": "engine-undercover",
+      "name": "Engine Undercover",
+      "type": "behind"
+     },
+     {
+      "id": "front-subframe>steering-assembly",
+      "key": "front-subframe",
+      "name": "Front Subframe",
+      "type": "attached"
+     },
+     {
+      "id": "front-wheel>steering-assembly",
+      "key": "front-wheel",
+      "name": "Front Wheel",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "airbag-system",
+   "name": "Airbag System",
+   "names": {
+    "plain": "Airbag System"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "inside",
+   "assembly": "restraints",
+   "also_in": [],
+   "kind": "electrical",
+   "role": "safety",
+   "firm_wording": "Airbag",
+   "firm_wording_hatch": "Airbag",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-bumper>airbag-system",
+      "key": "front-bumper",
+      "name": "Front Bumper",
+      "type": "crush"
+     },
+     {
+      "id": "front-door>airbag-system",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "crush"
+     },
+     {
+      "id": "rear-door>airbag-system",
+      "key": "rear-door",
+      "name": "Rear Door",
+      "type": "crush"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "parking-sensor",
+   "name": "Parking Sensor",
+   "names": {
+    "plain": "Parking Sensor"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "electrical",
+   "role": "electrical",
+   "firm_wording": "Reverse sensor",
+   "firm_wording_hatch": "Reverse sensor",
+   "family": "Parking Sensor",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>parking-sensor",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "reversing-camera",
+   "name": "Reversing Camera",
+   "names": {
+    "plain": "Reversing Camera"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [
+    "boot-lid"
+   ],
+   "kind": "electrical",
+   "role": "electrical",
+   "firm_wording": "Reverse camera",
+   "firm_wording_hatch": "Reverse camera",
+   "family": "Reversing Camera",
+   "parent_key": null,
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "near the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "rear-bumper>reversing-camera",
+      "key": "rear-bumper",
+      "name": "Rear Bumper",
+      "type": "attached"
+     },
+     {
+      "id": "boot-lid>reversing-camera",
+      "key": "boot-lid",
+      "name": "Boot Lid",
+      "type": "attached"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "interior-trim",
+   "name": "Interior Trim",
+   "names": {
+    "plain": "Interior Trim"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "inside",
+   "assembly": "restraints",
+   "also_in": [
+    "front-door",
+    "rear-door",
+    "roof"
+   ],
+   "kind": "interior",
+   "role": "trim",
+   "firm_wording": "Interior trim",
+   "firm_wording_hatch": "Interior trim",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": [
+     {
+      "id": "front-door>interior-trim",
+      "key": "front-door",
+      "name": "Front Door",
+      "type": "behind"
+     },
+     {
+      "id": "rear-door>interior-trim",
+      "key": "rear-door",
+      "name": "Rear Door",
+      "type": "behind"
+     }
+    ]
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "seat",
+   "name": "Seat",
+   "names": {
+    "plain": "Seat"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "inside",
+   "assembly": "restraints",
+   "also_in": [],
+   "kind": "interior",
+   "role": "trim",
+   "firm_wording": "Seat assy",
+   "firm_wording_hatch": "Seat assy",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "dashboard",
+   "name": "Dashboard",
+   "names": {
+    "plain": "Dashboard"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "inside",
+   "assembly": "restraints",
+   "also_in": [
+    "front-windscreen"
+   ],
+   "kind": "interior",
+   "role": "trim",
+   "firm_wording": "Dashboard panel",
+   "firm_wording_hatch": "Dashboard panel",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": null
+   },
+   "panels": [],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "reader",
+   "note": null,
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-bumper-absorber",
+   "name": "Front Bumper Absorber",
+   "names": {
+    "plain": "Front Bumper Absorber"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "absorber",
+   "firm_wording": "Front bumper absorber",
+   "firm_wording_hatch": "Front bumper absorber",
+   "family": "Front Bumper",
+   "parent_key": "front-bumper",
+   "zones": {
+    "plain": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "behind the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "absorber",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The foam or plastic energy absorber between cover and beam; priced on its own once the bumper is off.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-bumper-bracket",
+   "name": "Front Bumper Bracket",
+   "names": {
+    "left": "Left Front Bumper Bracket",
+    "right": "Right Front Bumper Bracket"
+   },
+   "twin": "Front Bumper Bracket (side undetermined)",
+   "twin_key": "front-bumper-bracket-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [
+    "headlamp"
+   ],
+   "kind": "part",
+   "role": "mount",
+   "firm_wording": "Front bumper side bracket",
+   "firm_wording_hatch": "Front bumper side bracket",
+   "family": "Front Bumper",
+   "parent_key": "front-bumper",
+   "zones": {
+    "left": "front_bumper",
+    "right": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "behind the bumper end",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "side brackets",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The slide or retainer the cover's end clips into below the headlamp; a pushed or torn bumper end snaps it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-parking-sensor",
+   "name": "Front Parking Sensor",
+   "names": {
+    "plain": "Front Parking Sensor"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "electrical",
+   "role": "electrical",
+   "firm_wording": "Front parking sensor",
+   "firm_wording_hatch": "Front parking sensor",
+   "family": "Parking Sensor",
+   "parent_key": "parking-sensor",
+   "zones": {
+    "plain": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "front sensors",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "Today's Parking Sensor has no end, so a front bumper can't link it; the split lets the front one be named.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fog-lamp-cover",
+   "name": "Fog Lamp Cover",
+   "names": {
+    "left": "Left Fog Lamp Cover",
+    "right": "Right Fog Lamp Cover"
+   },
+   "twin": "Fog Lamp Cover (side undetermined)",
+   "twin_key": "fog-lamp-cover-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "front-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Fog lamp cover",
+   "firm_wording_hatch": "Fog lamp cover",
+   "family": "Fog Lamp",
+   "parent_key": "fog-lamp",
+   "zones": {
+    "left": "front_bumper",
+    "right": "front_bumper"
+   },
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "fog lamp covers",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The bezel or blank cover in the bumper's lower corners; it breaks with the cover even on cars with no fog lamp.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "radiator-support",
+   "name": "Radiator Support",
+   "names": {
+    "plain": "Radiator Support"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-end",
+   "also_in": [
+    "front-grille",
+    "bonnet",
+    "headlamp"
+   ],
+   "kind": "part",
+   "role": "structure",
+   "firm_wording": "Radiator support panel",
+   "firm_wording_hatch": "Radiator support panel",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "front_grill"
+   },
+   "panels": [
+    "front_grill"
+   ],
+   "stand_in": "behind the grille",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The panel that carries the radiator, latch and headlamp inner mounts; a frontal push past the beam bends it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "radiator-fan",
+   "name": "Radiator Fan",
+   "names": {
+    "plain": "Radiator Fan"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "front-end",
+   "also_in": [],
+   "kind": "mechanical",
+   "role": "mechanical",
+   "firm_wording": "Radiator fan assy",
+   "firm_wording_hatch": "Radiator fan assy",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "front_grill"
+   },
+   "panels": [
+    "front_grill"
+   ],
+   "stand_in": "behind the radiator",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "cooling fan",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "Sits behind the radiator; a radiator pushed back cracks the shroud or blades.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "bonnet-hinge",
+   "name": "Bonnet Hinge",
+   "names": {
+    "left": "Left Bonnet Hinge",
+    "right": "Right Bonnet Hinge"
+   },
+   "twin": "Bonnet Hinge (side undetermined)",
+   "twin_key": "bonnet-hinge-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "front",
+   "assembly": "bonnet",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Bonnet hinge",
+   "firm_wording_hatch": "Bonnet hinge",
+   "family": "Bonnet",
+   "parent_key": "bonnet",
+   "zones": {
+    "left": "bonnet",
+    "right": "bonnet"
+   },
+   "panels": [
+    "bonnet"
+   ],
+   "stand_in": "under the bonnet",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "bonnet hinges",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "A bonnet pushed back or folded bends its hinges; uneven bonnet-to-fender gaps at the rear corners are the sign.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "bonnet-latch",
+   "name": "Bonnet Latch",
+   "names": {
+    "plain": "Bonnet Latch"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "bonnet",
+   "also_in": [
+    "front-end"
+   ],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Bonnet lock",
+   "firm_wording_hatch": "Bonnet lock",
+   "family": "Bonnet",
+   "parent_key": "bonnet",
+   "zones": {
+    "plain": "bonnet"
+   },
+   "panels": [
+    "bonnet"
+   ],
+   "stand_in": "under the bonnet's front edge",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "Bolted to the radiator support under the bonnet's front edge; a bonnet that will not shut or open points at it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "bonnet-insulator",
+   "name": "Bonnet Insulator",
+   "names": {
+    "plain": "Bonnet Insulator"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "front",
+   "assembly": "bonnet",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Bonnet insulator",
+   "firm_wording_hatch": "Bonnet insulator",
+   "family": "Bonnet",
+   "parent_key": "bonnet",
+   "zones": {
+    "plain": "bonnet"
+   },
+   "panels": [
+    "bonnet"
+   ],
+   "stand_in": "under the bonnet",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The pad clipped under the bonnet; renewed when the bonnet is buckled or replaced.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-door-lock",
+   "name": "Front Door Lock",
+   "names": {
+    "left": "Left Front Door Lock",
+    "right": "Right Front Door Lock"
+   },
+   "twin": "Door Lock (side undetermined)",
+   "twin_key": "door-lock-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Front door lock",
+   "firm_wording_hatch": "Front door lock",
+   "family": "Front Door",
+   "parent_key": "front-door",
+   "zones": {
+    "left": "l_door_front",
+    "right": "r_door_front"
+   },
+   "panels": [
+    "l_door_front",
+    "r_door_front"
+   ],
+   "stand_in": "inside the door",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door lock",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "A door pushed in at its rear edge, or one that will not open or latch, usually has a bent lock.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-door-lock",
+   "name": "Rear Door Lock",
+   "names": {
+    "left": "Left Rear Door Lock",
+    "right": "Right Rear Door Lock"
+   },
+   "twin": "Door Lock (side undetermined)",
+   "twin_key": "door-lock-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Rear door lock",
+   "firm_wording_hatch": "Rear door lock",
+   "family": "Rear Door",
+   "parent_key": "rear-door",
+   "zones": {
+    "left": "l_door_rear",
+    "right": "r_door_rear"
+   },
+   "panels": [
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "inside the door",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door lock",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "As the front door's: a jammed rear door or one pushed in at its rear edge.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-door-hinge",
+   "name": "Front Door Hinge",
+   "names": {
+    "left": "Left Front Door Hinge",
+    "right": "Right Front Door Hinge"
+   },
+   "twin": "Door Hinge (side undetermined)",
+   "twin_key": "door-hinge-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Front door hinge",
+   "firm_wording_hatch": "Front door hinge",
+   "family": "Front Door",
+   "parent_key": "front-door",
+   "zones": {
+    "left": "l_door_front",
+    "right": "r_door_front"
+   },
+   "panels": [
+    "l_door_front",
+    "r_door_front"
+   ],
+   "stand_in": "at the door's front edge",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door hinges",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "A hit at the door's front edge or a sagging door bends the hinges; a door that drops when opened is the sign.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-door-hinge",
+   "name": "Rear Door Hinge",
+   "names": {
+    "left": "Left Rear Door Hinge",
+    "right": "Right Rear Door Hinge"
+   },
+   "twin": "Door Hinge (side undetermined)",
+   "twin_key": "door-hinge-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Rear door hinge",
+   "firm_wording_hatch": "Rear door hinge",
+   "family": "Rear Door",
+   "parent_key": "rear-door",
+   "zones": {
+    "left": "l_door_rear",
+    "right": "r_door_rear"
+   },
+   "panels": [
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "at the door's front edge",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door hinges",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "As the front door's, on the centre pillar.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-door-handle",
+   "name": "Front Door Handle",
+   "names": {
+    "left": "Left Front Door Handle",
+    "right": "Right Front Door Handle"
+   },
+   "twin": "Door Handle (side undetermined)",
+   "twin_key": "door-handle-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "front-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Front door outer handle",
+   "firm_wording_hatch": "Front door outer handle",
+   "family": "Front Door",
+   "parent_key": "front-door",
+   "zones": {
+    "left": "l_door_front",
+    "right": "r_door_front"
+   },
+   "panels": [
+    "l_door_front",
+    "r_door_front"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door handle",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The outer handle sits in the skin; a dent or scrape across it often cracks or scratches it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-door-handle",
+   "name": "Rear Door Handle",
+   "names": {
+    "left": "Left Rear Door Handle",
+    "right": "Right Rear Door Handle"
+   },
+   "twin": "Door Handle (side undetermined)",
+   "twin_key": "door-handle-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "not_placed",
+   "area": "side",
+   "assembly": "rear-door",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Rear door outer handle",
+   "firm_wording_hatch": "Rear door outer handle",
+   "family": "Rear Door",
+   "parent_key": "rear-door",
+   "zones": {
+    "left": "l_door_rear",
+    "right": "r_door_rear"
+   },
+   "panels": [
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "door handle",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "As the front door's.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-absorber",
+   "name": "Rear Bumper Absorber",
+   "names": {
+    "plain": "Rear Bumper Absorber"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "part",
+   "role": "absorber",
+   "firm_wording": "Rear bumper absorber",
+   "firm_wording_hatch": "Rear bumper absorber",
+   "family": "Rear Bumper",
+   "parent_key": "rear-bumper",
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "behind the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "absorber",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The energy absorber between the rear cover and beam.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-bracket",
+   "name": "Rear Bumper Bracket",
+   "names": {
+    "left": "Left Rear Bumper Bracket",
+    "right": "Right Rear Bumper Bracket"
+   },
+   "twin": "Rear Bumper Bracket (side undetermined)",
+   "twin_key": "rear-bumper-bracket-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [
+    "rear-quarter"
+   ],
+   "kind": "part",
+   "role": "mount",
+   "firm_wording": "Rear bumper side bracket",
+   "firm_wording_hatch": "Rear bumper side bracket",
+   "family": "Rear Bumper",
+   "parent_key": "rear-bumper",
+   "zones": {
+    "left": "rear_bumper",
+    "right": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "behind the bumper end",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": true,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "side brackets",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The retainer the rear cover's end clips into under the tail lamp; a pushed or torn bumper end snaps it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-parking-sensor",
+   "name": "Rear Parking Sensor",
+   "names": {
+    "plain": "Rear Parking Sensor"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-bumper",
+   "also_in": [],
+   "kind": "electrical",
+   "role": "electrical",
+   "firm_wording": "Reverse sensor",
+   "firm_wording_hatch": "Reverse sensor",
+   "family": "Parking Sensor",
+   "parent_key": "parking-sensor",
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "rear sensors",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "none",
+   "note": "The rear half of today's Parking Sensor, so the front and rear ones can be told apart.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-striker",
+   "name": "Boot Lid Striker",
+   "names": {
+    "plain": "Boot Lid Striker"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "rear-end"
+   ],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Boot lid lock striker",
+   "firm_wording_hatch": "Tail gate lock striker",
+   "family": "Boot Lid Lock",
+   "parent_key": "boot-lid-lock",
+   "zones": {
+    "plain": "rear_bumper"
+   },
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "under the boot opening",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "lock striker",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The loop the lid's lock catches, on the panel under the opening; a panel pushed forward bends it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-strut",
+   "name": "Boot Lid Strut",
+   "names": {
+    "left": "Left Boot Lid Strut",
+    "right": "Right Boot Lid Strut"
+   },
+   "twin": "Boot Lid Strut (side undetermined)",
+   "twin_key": "boot-lid-strut-side-undetermined",
+   "side_rule": "sided",
+   "twin_placement": "by_side",
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "mechanism",
+   "firm_wording": "Boot lid gas stay",
+   "firm_wording_hatch": "Tail gate gas stay",
+   "family": "Boot Lid",
+   "parent_key": "boot-lid",
+   "zones": {
+    "left": "tailgate",
+    "right": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "under the boot lid",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "lid struts",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The gas struts that hold a tailgate or lid up; a lid pushed out of line bends them. Some lids use torsion bars.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-number-plate-lamp",
+   "name": "Rear Number Plate Lamp",
+   "names": {
+    "plain": "Rear Number Plate Lamp"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "Rear number plate lamp",
+   "firm_wording_hatch": "Rear number plate lamp",
+   "family": "Rear Number Plate",
+   "parent_key": "rear-number-plate",
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "above the number plate",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "plate lamp",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "Sits in the lid's garnish or the bumper above the plate; a hit at the plate cracks it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-garnish",
+   "name": "Boot Lid Garnish",
+   "names": {
+    "plain": "Boot Lid Garnish"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Boot lid garnish",
+   "firm_wording_hatch": "Tail gate garnish",
+   "family": "Boot Lid",
+   "parent_key": "boot-lid",
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "lid garnish",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The trim strip across the lid that holds the plate lamps and often the camera.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-spoiler",
+   "name": "Boot Lid Spoiler",
+   "names": {
+    "plain": "Boot Lid Spoiler"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Boot lid spoiler",
+   "firm_wording_hatch": "Tail gate spoiler",
+   "family": "Boot Lid",
+   "parent_key": "boot-lid",
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": null,
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [
+    {
+     "text": "spoiler",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The spoiler on the lid's top or rear edge; on many hatches it also holds the high-mount stop lamp.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-wiper-motor",
+   "name": "Rear Wiper Motor",
+   "names": {
+    "plain": "Rear Wiper Motor"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "rear-windscreen"
+   ],
+   "kind": "electrical",
+   "role": "electrical",
+   "firm_wording": "Rear wiper motor",
+   "firm_wording_hatch": "Rear wiper motor",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "inside the tailgate",
+   "bodies": [
+    "hatch"
+   ],
+   "body_classes": [
+    "hatch"
+   ],
+   "hidden": true,
+   "strip_down": false,
+   "if_fitted": true,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "Inside a tailgate under the rear glass; a tailgate pushed in at its centre can crack it. Hatches and estates only.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "high-mount-stop-lamp",
+   "name": "High Mount Stop Lamp",
+   "names": {
+    "plain": "High Mount Stop Lamp"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "none",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "boot-lid",
+   "also_in": [
+    "roof",
+    "rear-windscreen"
+   ],
+   "kind": "part",
+   "role": "lamp",
+   "firm_wording": "High mount stop lamp",
+   "firm_wording_hatch": "High mount stop lamp",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "tailgate"
+   },
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "at the top of the boot lid or rear glass",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [
+    {
+     "text": "high stop lamp",
+     "kind": "also_check",
+     "source": "car map"
+    }
+   ],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "On a tailgate's top edge or spoiler; a tailgate twisted or pushed in can crack it.",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fuel-filler-flap",
+   "name": "Fuel Filler Flap",
+   "names": {
+    "plain": "Fuel Filler Flap"
+   },
+   "twin": null,
+   "twin_key": null,
+   "side_rule": "one_side_unknown",
+   "twin_placement": null,
+   "area": "rear",
+   "assembly": "rear-quarter",
+   "also_in": [],
+   "kind": "part",
+   "role": "trim",
+   "firm_wording": "Fuel filler lid",
+   "firm_wording_hatch": "Fuel filler lid",
+   "family": null,
+   "parent_key": null,
+   "zones": {
+    "plain": "any_quarter"
+   },
+   "panels": [
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": "on a rear quarter",
+   "bodies": null,
+   "body_classes": [
+    "sedan",
+    "hatch"
+   ],
+   "hidden": false,
+   "strip_down": false,
+   "if_fitted": false,
+   "aliases": [],
+   "linked": {
+    "out": [],
+    "in": []
+   },
+   "ai_use": "links",
+   "note": "The flap in one rear quarter; a dent across it bends the flap or its hinge. Which side is the car's own fact.",
+   "status": "core",
+   "version_added": 0
+  }
+ ],
+ "twins": [
+  {
+   "key": "quarter-panel-side-undetermined",
+   "name": "Quarter Panel (side undetermined)",
+   "base": "Quarter Panel",
+   "covers": [
+    "rear-quarter-panel"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "panel",
+   "zone": "any_quarter",
+   "panels": [
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": null,
+   "firm_wording": "Rear fender",
+   "firm_wording_hatch": "Rear fender",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-fender-side-undetermined",
+   "name": "Front Fender (side undetermined)",
+   "base": "Front Fender",
+   "covers": [
+    "front-fender"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "panel",
+   "zone": "any_fender",
+   "panels": [
+    "l_fender",
+    "r_fender"
+   ],
+   "stand_in": null,
+   "firm_wording": "Front fender assy",
+   "firm_wording_hatch": "Front fender assy",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "door-side-undetermined",
+   "name": "Door (side undetermined)",
+   "base": "Door",
+   "covers": [
+    "front-door",
+    "rear-door"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "panel",
+   "zone": "any_door",
+   "panels": [
+    "l_door_front",
+    "r_door_front",
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": null,
+   "firm_wording": "Door assy",
+   "firm_wording_hatch": "Door assy",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "door-glass-side-undetermined",
+   "name": "Door Glass (side undetermined)",
+   "base": "Door Glass",
+   "covers": [
+    "front-door-glass",
+    "rear-door-glass"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_door_glass",
+   "panels": [
+    "l_door_glass_front",
+    "r_door_glass_front",
+    "l_door_glass_rear",
+    "r_door_glass_rear"
+   ],
+   "stand_in": null,
+   "firm_wording": "Door glass",
+   "firm_wording_hatch": "Door glass",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "headlamp-side-undetermined",
+   "name": "Headlamp (side undetermined)",
+   "base": "Headlamp",
+   "covers": [
+    "headlamp"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "part",
+   "zone": "any_headlamp",
+   "panels": [
+    "l_headlamp",
+    "r_headlamp"
+   ],
+   "stand_in": null,
+   "firm_wording": "Headlamp",
+   "firm_wording_hatch": "Headlamp",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "tail-lamp-side-undetermined",
+   "name": "Tail Lamp (side undetermined)",
+   "base": "Tail Lamp",
+   "covers": [
+    "tail-lamp"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": "any_taillamp",
+   "panels": [
+    "l_taillamp",
+    "r_taillamp"
+   ],
+   "stand_in": null,
+   "firm_wording": "Tail lamp",
+   "firm_wording_hatch": "Tail lamp",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "wing-mirror-side-undetermined",
+   "name": "Wing Mirror (side undetermined)",
+   "base": "Wing Mirror",
+   "covers": [
+    "wing-mirror"
+   ],
+   "placement": "by_side",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_mirror",
+   "panels": [
+    "l_mirror",
+    "r_mirror"
+   ],
+   "stand_in": null,
+   "firm_wording": "Wing mirror",
+   "firm_wording_hatch": "Wing mirror",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "wheel-side-undetermined",
+   "name": "Wheel (side undetermined)",
+   "base": "Wheel",
+   "covers": [
+    "front-wheel",
+    "rear-wheel"
+   ],
+   "placement": "needs_end",
+   "area": "wheels",
+   "kind": "part",
+   "zone": "any_wheel",
+   "panels": [
+    "l_wheel_front",
+    "r_wheel_front",
+    "l_wheel_rear",
+    "r_wheel_rear"
+   ],
+   "stand_in": null,
+   "firm_wording": "Wheel rim",
+   "firm_wording_hatch": "Wheel rim",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "sill-rocker-panel-side-undetermined",
+   "name": "Sill / Rocker Panel (side undetermined)",
+   "base": "Sill / Rocker Panel",
+   "covers": [
+    "sill-rocker-panel"
+   ],
+   "placement": "by_side",
+   "area": "side",
+   "kind": "panel",
+   "zone": "underbody",
+   "panels": [
+    "underbody"
+   ],
+   "stand_in": "below the doors",
+   "firm_wording": "Side sill panel",
+   "firm_wording_hatch": "Side sill panel",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fog-lamp-side-undetermined",
+   "name": "Fog Lamp (side undetermined)",
+   "base": "Fog Lamp",
+   "covers": [
+    "fog-lamp"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "part",
+   "zone": "front_bumper",
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "firm_wording": "Fog lamp",
+   "firm_wording_hatch": "Fog lamp",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-reflector-side-undetermined",
+   "name": "Rear Bumper Reflector (side undetermined)",
+   "base": "Rear Bumper Reflector",
+   "covers": [
+    "rear-bumper-reflector"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": "rear_bumper",
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "firm_wording": "Rear bumper reflector",
+   "firm_wording_hatch": "Rear bumper reflector",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-lamp-side-undetermined",
+   "name": "Boot Lid Lamp (side undetermined)",
+   "base": "Boot Lid Lamp",
+   "covers": [
+    "boot-lid-lamp"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": "tailgate",
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": null,
+   "firm_wording": "Boot lid lamp",
+   "firm_wording_hatch": "Tail gate reflector lamp",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "wheel-arch-liner-side-undetermined",
+   "name": "Wheel Arch Liner (side undetermined)",
+   "base": "Wheel Arch Liner",
+   "covers": [
+    "front-wheel-arch-liner",
+    "rear-wheel-arch-liner"
+   ],
+   "placement": "needs_end",
+   "area": "front",
+   "kind": "part",
+   "zone": "any_arch",
+   "panels": [
+    "l_fender",
+    "r_fender",
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": "inside a wheel arch",
+   "firm_wording": "Wheel arch protector",
+   "firm_wording_hatch": "Wheel arch protector",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-side-trim-side-undetermined",
+   "name": "Boot Side Trim (side undetermined)",
+   "base": "Boot Side Trim",
+   "covers": [
+    "boot-side-trim"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": null,
+   "panels": [],
+   "stand_in": null,
+   "firm_wording": "Rear fender inner trim",
+   "firm_wording_hatch": "Rear fender inner trim board",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "wheel-arch-trim-side-undetermined",
+   "name": "Wheel Arch Trim (side undetermined)",
+   "base": "Wheel Arch Trim",
+   "covers": [
+    "front-wheel-arch-trim",
+    "rear-wheel-arch-trim"
+   ],
+   "placement": "needs_end",
+   "area": "front",
+   "kind": "part",
+   "zone": "any_arch",
+   "panels": [
+    "l_fender",
+    "r_fender",
+    "l_quarter",
+    "r_quarter"
+   ],
+   "stand_in": null,
+   "firm_wording": "Wheel arch garnish",
+   "firm_wording_hatch": "Wheel arch garnish",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "window-regulator-side-undetermined",
+   "name": "Window Regulator (side undetermined)",
+   "base": "Window Regulator",
+   "covers": [
+    "front-window-regulator",
+    "rear-window-regulator"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_door",
+   "panels": [
+    "l_door_front",
+    "r_door_front",
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "inside a door",
+   "firm_wording": "Door glass regulator mechanism",
+   "firm_wording_hatch": "Door glass regulator mechanism",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "tyre-side-undetermined",
+   "name": "Tyre (side undetermined)",
+   "base": "Tyre",
+   "covers": [
+    "front-tyre",
+    "rear-tyre"
+   ],
+   "placement": "needs_end",
+   "area": "wheels",
+   "kind": "part",
+   "zone": "any_wheel",
+   "panels": [
+    "l_wheel_front",
+    "r_wheel_front",
+    "l_wheel_rear",
+    "r_wheel_rear"
+   ],
+   "stand_in": null,
+   "firm_wording": "Tyre",
+   "firm_wording_hatch": "Tyre",
+   "ai_use": "reader",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "front-bumper-bracket-side-undetermined",
+   "name": "Front Bumper Bracket (side undetermined)",
+   "base": "Front Bumper Bracket",
+   "covers": [
+    "front-bumper-bracket"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "part",
+   "zone": "front_bumper",
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "behind a bumper end",
+   "firm_wording": "Front bumper side bracket",
+   "firm_wording_hatch": "Front bumper side bracket",
+   "ai_use": "links",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "fog-lamp-cover-side-undetermined",
+   "name": "Fog Lamp Cover (side undetermined)",
+   "base": "Fog Lamp Cover",
+   "covers": [
+    "fog-lamp-cover"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "part",
+   "zone": "front_bumper",
+   "panels": [
+    "front_bumper"
+   ],
+   "stand_in": "in the bumper",
+   "firm_wording": "Fog lamp cover",
+   "firm_wording_hatch": "Fog lamp cover",
+   "ai_use": "links",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "bonnet-hinge-side-undetermined",
+   "name": "Bonnet Hinge (side undetermined)",
+   "base": "Bonnet Hinge",
+   "covers": [
+    "bonnet-hinge"
+   ],
+   "placement": "by_side",
+   "area": "front",
+   "kind": "part",
+   "zone": "bonnet",
+   "panels": [
+    "bonnet"
+   ],
+   "stand_in": "under the bonnet",
+   "firm_wording": "Bonnet hinge",
+   "firm_wording_hatch": "Bonnet hinge",
+   "ai_use": "links",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "door-lock-side-undetermined",
+   "name": "Door Lock (side undetermined)",
+   "base": "Door Lock",
+   "covers": [
+    "front-door-lock",
+    "rear-door-lock"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_door",
+   "panels": [
+    "l_door_front",
+    "r_door_front",
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "inside a door",
+   "firm_wording": "Door lock",
+   "firm_wording_hatch": "Door lock",
+   "ai_use": "none",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "door-hinge-side-undetermined",
+   "name": "Door Hinge (side undetermined)",
+   "base": "Door Hinge",
+   "covers": [
+    "front-door-hinge",
+    "rear-door-hinge"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_door",
+   "panels": [
+    "l_door_front",
+    "r_door_front",
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": "at a door's front edge",
+   "firm_wording": "Door hinge",
+   "firm_wording_hatch": "Door hinge",
+   "ai_use": "none",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "door-handle-side-undetermined",
+   "name": "Door Handle (side undetermined)",
+   "base": "Door Handle",
+   "covers": [
+    "front-door-handle",
+    "rear-door-handle"
+   ],
+   "placement": "not_placed",
+   "area": "side",
+   "kind": "part",
+   "zone": "any_door",
+   "panels": [
+    "l_door_front",
+    "r_door_front",
+    "l_door_rear",
+    "r_door_rear"
+   ],
+   "stand_in": null,
+   "firm_wording": "Door outer handle",
+   "firm_wording_hatch": "Door outer handle",
+   "ai_use": "none",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "rear-bumper-bracket-side-undetermined",
+   "name": "Rear Bumper Bracket (side undetermined)",
+   "base": "Rear Bumper Bracket",
+   "covers": [
+    "rear-bumper-bracket"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": "rear_bumper",
+   "panels": [
+    "rear_bumper"
+   ],
+   "stand_in": "behind a bumper end",
+   "firm_wording": "Rear bumper side bracket",
+   "firm_wording_hatch": "Rear bumper side bracket",
+   "ai_use": "links",
+   "status": "core",
+   "version_added": 0
+  },
+  {
+   "key": "boot-lid-strut-side-undetermined",
+   "name": "Boot Lid Strut (side undetermined)",
+   "base": "Boot Lid Strut",
+   "covers": [
+    "boot-lid-strut"
+   ],
+   "placement": "by_side",
+   "area": "rear",
+   "kind": "part",
+   "zone": "tailgate",
+   "panels": [
+    "tailgate"
+   ],
+   "stand_in": "under the boot lid",
+   "firm_wording": "Boot lid gas stay",
+   "firm_wording_hatch": "Tail gate gas stay",
+   "ai_use": "links",
+   "status": "core",
+   "version_added": 0
+  }
+ ],
+ "families": [
+  {
+   "name": "Boot Lid Lock",
+   "component": "boot-lid-lock",
+   "twin": null
+  },
+  {
+   "name": "Boot Lid Hinge",
+   "component": "boot-lid-hinge",
+   "twin": null
+  },
+  {
+   "name": "Boot Lid Weatherstrip",
+   "component": "boot-lid-weatherstrip",
+   "twin": null
+  },
+  {
+   "name": "Boot Lid Inner Trim",
+   "component": "boot-lid-inner-trim",
+   "twin": null
+  },
+  {
+   "name": "Boot Lid Lamp",
+   "component": "boot-lid-lamp",
+   "twin": "boot-lid-lamp-side-undetermined"
+  },
+  {
+   "name": "Boot Lid",
+   "component": "boot-lid",
+   "twin": null
+  },
+  {
+   "name": "Rear Windscreen",
+   "component": "rear-windscreen",
+   "twin": null
+  },
+  {
+   "name": "Front Windscreen",
+   "component": "front-windscreen",
+   "twin": null
+  },
+  {
+   "name": "Rear Bumper Beam",
+   "component": "rear-bumper-beam",
+   "twin": null
+  },
+  {
+   "name": "Rear Bumper Reflector",
+   "component": "rear-bumper-reflector",
+   "twin": "rear-bumper-reflector-side-undetermined"
+  },
+  {
+   "name": "Front Wheel Arch Trim",
+   "component": "front-wheel-arch-trim",
+   "twin": null
+  },
+  {
+   "name": "Rear Wheel Arch Trim",
+   "component": "rear-wheel-arch-trim",
+   "twin": null
+  },
+  {
+   "name": "Wheel Arch Trim",
+   "component": null,
+   "twin": "wheel-arch-trim-side-undetermined"
+  },
+  {
+   "name": "Rear Wheel Arch Liner",
+   "component": "rear-wheel-arch-liner",
+   "twin": null
+  },
+  {
+   "name": "Rear Bumper",
+   "component": "rear-bumper",
+   "twin": null
+  },
+  {
+   "name": "Tail Lamp",
+   "component": "tail-lamp",
+   "twin": "tail-lamp-side-undetermined"
+  },
+  {
+   "name": "Rear End Panel",
+   "component": "rear-end-panel",
+   "twin": null
+  },
+  {
+   "name": "Boot Floor Board",
+   "component": "boot-floor-board",
+   "twin": null
+  },
+  {
+   "name": "Rear Floor Panel",
+   "component": "rear-floor-panel",
+   "twin": null
+  },
+  {
+   "name": "Boot Side Trim",
+   "component": "boot-side-trim",
+   "twin": "boot-side-trim-side-undetermined"
+  },
+  {
+   "name": "Rear Quarter Panel",
+   "component": "rear-quarter-panel",
+   "twin": null
+  },
+  {
+   "name": "Front Bumper Beam",
+   "component": "front-bumper-beam",
+   "twin": null
+  },
+  {
+   "name": "Engine Undercover",
+   "component": "engine-undercover",
+   "twin": null
+  },
+  {
+   "name": "Fog Lamp",
+   "component": "fog-lamp",
+   "twin": "fog-lamp-side-undetermined"
+  },
+  {
+   "name": "Front Number Plate",
+   "component": "front-number-plate",
+   "twin": null
+  },
+  {
+   "name": "Front Bumper",
+   "component": "front-bumper",
+   "twin": null
+  },
+  {
+   "name": "Front Grille",
+   "component": "front-grille",
+   "twin": null
+  },
+  {
+   "name": "Headlamp",
+   "component": "headlamp",
+   "twin": "headlamp-side-undetermined"
+  },
+  {
+   "name": "Front Wheel Arch Liner",
+   "component": "front-wheel-arch-liner",
+   "twin": null
+  },
+  {
+   "name": "Front Fender",
+   "component": "front-fender",
+   "twin": "front-fender-side-undetermined"
+  },
+  {
+   "name": "Front Window Regulator",
+   "component": "front-window-regulator",
+   "twin": null
+  },
+  {
+   "name": "Rear Window Regulator",
+   "component": "rear-window-regulator",
+   "twin": null
+  },
+  {
+   "name": "Window Regulator",
+   "component": null,
+   "twin": "window-regulator-side-undetermined"
+  },
+  {
+   "name": "Front Door",
+   "component": "front-door",
+   "twin": null
+  },
+  {
+   "name": "Rear Door",
+   "component": "rear-door",
+   "twin": null
+  },
+  {
+   "name": "Sill / Rocker Panel",
+   "component": "sill-rocker-panel",
+   "twin": "sill-rocker-panel-side-undetermined"
+  },
+  {
+   "name": "Wing Mirror",
+   "component": "wing-mirror",
+   "twin": "wing-mirror-side-undetermined"
+  },
+  {
+   "name": "Parking Sensor",
+   "component": "parking-sensor",
+   "twin": null
+  },
+  {
+   "name": "Reversing Camera",
+   "component": "reversing-camera",
+   "twin": null
+  },
+  {
+   "name": "Rear Number Plate",
+   "component": "rear-number-plate",
+   "twin": null
+  },
+  {
+   "name": "Exhaust System",
+   "component": "exhaust-system",
+   "twin": null
+  },
+  {
+   "name": "Rear Subframe",
+   "component": "rear-subframe",
+   "twin": null
+  },
+  {
+   "name": "Front Subframe",
+   "component": "front-subframe",
+   "twin": null
+  },
+  {
+   "name": "Suspension - Rear",
+   "component": "suspension-rear",
+   "twin": null
+  },
+  {
+   "name": "Suspension - Front",
+   "component": "suspension-front",
+   "twin": null
+  },
+  {
+   "name": "Steering Assembly",
+   "component": "steering-assembly",
+   "twin": null
+  },
+  {
+   "name": "Underbody / Chassis",
+   "component": "underbody-chassis",
+   "twin": null
+  },
+  {
+   "name": "Wheel Arch Liner",
+   "component": null,
+   "twin": "wheel-arch-liner-side-undetermined"
+  },
+  {
+   "name": "Wheel Nut",
+   "component": null,
+   "twin": null
+  },
+  {
+   "name": "Front Tyre",
+   "component": "front-tyre",
+   "twin": null
+  },
+  {
+   "name": "Rear Tyre",
+   "component": "rear-tyre",
+   "twin": null
+  },
+  {
+   "name": "Tyre",
+   "component": null,
+   "twin": "tyre-side-undetermined"
+  },
+  {
+   "name": "Front Wheel",
+   "component": "front-wheel",
+   "twin": null
+  },
+  {
+   "name": "Rear Wheel",
+   "component": "rear-wheel",
+   "twin": null
+  },
+  {
+   "name": "Wheel",
+   "component": null,
+   "twin": "wheel-side-undetermined"
+  },
+  {
+   "name": "Bonnet",
+   "component": "bonnet",
+   "twin": null
+  },
+  {
+   "name": "Roof",
+   "component": "roof",
+   "twin": null
+  }
+ ],
+ "other": {
+  "name": "Other / Not Listed",
+  "firm_wording": "Other part (to be named)"
+ }
+}

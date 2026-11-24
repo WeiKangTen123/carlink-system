@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Wrench, Zap, Car, Boxes, History } from "lucide-react";
 import type { PartsHistory, Taxonomy } from "@/lib/api";
 import { getPartsHistoryAction } from "./actions";
+import { PartsLibraryTab } from "./PartsLibraryTab";
 import { PartsHistoryTab } from "./PartsHistoryTab";
 
 export interface PartRow {
@@ -21,7 +22,7 @@ type Tab = "price_history" | "parts" | "damage" | "vehicles";
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ style?: React.CSSProperties }> }[] = [
   { id: "price_history", label: "Parts price history", icon: History },
-  { id: "parts", label: "Vehicle Parts & 3D", icon: Wrench },
+  { id: "parts", label: "Parts library", icon: Wrench },
   { id: "damage", label: "Damage Types", icon: Zap },
   { id: "vehicles", label: "Vehicle Catalogue", icon: Car },
 ];
@@ -145,6 +146,7 @@ export function KnowledgeClient({
 
       {/* TAB 2: VEHICLE PARTS & 3D */}
       {tab === "parts" && (
+        <PartsLibraryTab>
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           <div className="card-glass">
             <div className="card-header">
@@ -205,6 +207,7 @@ export function KnowledgeClient({
             )}
           </div>
         </div>
+        </PartsLibraryTab>
       )}
 
       {/* TAB 3: DAMAGE TYPES */}

@@ -237,6 +237,10 @@ DECISIONS = {
     ("POST", "/intake"): ("signed-in", "owner = caller; 5 open drafts per person, staff exempt from the shared 30 (B2)"),
     ("GET", "/analytics/summary"): ("signed-in", "follows the list scope"),
     ("GET", "/taxonomy"): ("signed-in", "follows the list scope; skips drafts"),
+    # 2A parts library (app/api/library.py; tested in scripts/test_library.py).
+    ("GET", "/library"): ("signed-in", "2A: uses, conditions and seed fittings (names only) for staff only: "
+                                       "admin, sees_all_cases or may_sign_off (G9)"),
+    ("GET", "/library/tree"): ("signed-in", "2A: as GET /library"),
     ("GET", "/settings"): ("signed-in", "company name; P6's public_contact_phone, dpo_contact, company_key_billed to admins only"),
     ("GET", "/parts-history"): ("special", "signed-in; plates and file names admin only; prices admin or sees_all_cases (B2)"),
     ("POST", "/reports/analyze-photos"): ("special", "signed-in; AI allowed (409 ai_key_missing) before any file is saved (B2)"),
