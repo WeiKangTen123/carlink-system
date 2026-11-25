@@ -1,11 +1,22 @@
-"""The facts only the user types in (owner, 25 Nov 2026): the workshop and
-the odometer reading are always left empty for the user, never filled by
-the AI. Behind settings.intake_user_fields, off by default.
+"""The facts only the user types in, and no example-case values in what the
+AI reads (owner, 25 Nov 2026): the workshop and the odometer reading are
+always left empty for the user, never filled by the AI; and no value taken
+from the example cases (references only: the report's format and the
+tests' answer key) is in the AI's instructions. Behind
+settings.intake_user_fields, off by default.
 
 "on":
   - every read is sent without them: no instruction or example about the
     workshop or the odometer in the prompt, neither field in the response
     schema (ai/extraction.py);
+  - the read's other examples that came from the example cases -- the tyre
+    size, the tyre brands, the OEM part number -- are generic ones (or
+    none) in the prompt and the response schema (extraction.
+    _USER_FIELDS_V1 / _V2, _SCHEMA_EXAMPLES);
+  - the website's upload tip doesn't say the AI reads the odometer (GET
+    /intake/{id} user_fields), and the Telegram bot's guide points the
+    workshop to its template's "Workshop:" line (channels/telegram.
+    welcome_guide);
   - a value the model returns all the same is dropped as its answer is
     parsed (drop_from_draft, from extraction._parse_draft), before it can
     reach the draft, the AI draft (Report.ai_draft / IntakeSession.ai_draft)

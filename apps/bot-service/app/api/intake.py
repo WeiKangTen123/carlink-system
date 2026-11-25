@@ -54,7 +54,7 @@ from app.parts import catalogue
 from app.reports import owners, suggestions
 from app.reports.db import SessionLocal
 from app.reports.filing import PHOTO_INDEX_KEYS, ai_read_for, file_case_data, relabel_ai_draft
-from app.reports import review
+from app.reports import review, user_fields
 from app.reports.models import IntakePhoto, IntakeSession, Report, User, gen_id, iso_utc
 from app.reports.schema import SecurityIncidentDraft, SignOffInfo
 from app.reports.taxonomy import body_type_for
@@ -247,6 +247,11 @@ def _state(db, report: Report, session: IntakeSession, user: CurrentUser) -> dic
         "photos":[serialize_photo(p, photo_label(i)) for i, p in enumerate(photos)],
         "data": report.data or {},
         "limits": {"max_photos": MAX_PHOTOS_PER_CASE, "max_photo_bytes": MAX_PHOTO_SIZE_BYTES},
+        # INTAKE_USER_FIELDS on (app/reports/user_fields.py): the workshop and
+        # the odometer reading are the user's to type in, so the upload step's
+        # tip doesn't say the AI reads the odometer. Absent while off: the
+        # answer as before.
+        **({"user_fields": True} if user_fields.on() else {}),
         **owners.access_fields(db, report, user),
         # Who sent it, on a report from the public (P6); else None. The
         # wizard sends an untaken one (no owner) to /inbox/{id}.

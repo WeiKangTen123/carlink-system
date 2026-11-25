@@ -1115,6 +1115,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiOff={aiOff}
           onFillByHand={fillByHand}
           onFileCase={filingInterrupted ? () => void goTo(4) : undefined}
+          userFields={state?.user_fields === true}
         />
       )}
 

@@ -283,12 +283,16 @@ class Settings(BaseSettings):
     # before, byte for byte.
     intake_firm_words: str = "off"
     # Owner, 25 Nov 2026: the workshop and the odometer reading are always
-    # left empty for the user to type in (app/reports/user_fields.py). "on":
-    # no read is asked for them -- their instructions and examples are taken
-    # out of every read prompt and their fields out of the response schema
+    # left empty for the user to type in, and no example-case value is in
+    # the AI's instructions (app/reports/user_fields.py). "on": no read is
+    # asked for the two -- their instructions and examples are taken out of
+    # every read prompt and their fields out of the response schema
     # (ai/extraction.py) -- a value the model returns all the same is dropped
     # before it reaches the draft, the AI draft or the case, and the field
-    # review shows both as a person's to fill (app/reports/review.py). It
+    # review shows both as a person's to fill (app/reports/review.py); the
+    # read's other examples from the example cases (tyre size and brands,
+    # OEM part number) are generic ones; the upload tip and the Telegram
+    # guide no longer say the AI reads the odometer or the workshop. It
     # changes what the AI is sent, so it ships off. "off": every read and
     # every stored draft as before, byte for byte
     # (scripts/test_user_fields.py).

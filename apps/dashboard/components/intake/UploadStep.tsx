@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FolderOpen, ImagePlus, Lightbulb, Loader2, PencilLine, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
 import { fileUrl } from "@/lib/api";
 import { formatBytes, UPLOAD_RETRY_DELAYS_MS, type IntakePhoto, type IntakeStage } from "@/lib/intake";
+import { uploadTip } from "@/lib/uploadTip";
 
 /** retrying: a transient failure, waiting out its backoff before the next try. */
 export type UploadStatus = "queued" | "uploading" | "retrying" | "done" | "duplicate" | "failed" | "rejected";
@@ -86,6 +87,10 @@ type Props = {
   /** Set when a filing was cut off (filing_interrupted): the main button
    * goes to File case, not to a fresh (paid) AI run. */
   onFileCase?: () => void;
+  /** INTAKE_USER_FIELDS on (GET /intake/{id} user_fields): the odometer
+   * reading is the user's to type in, so the tip asks for the photo
+   * without saying the AI reads it. */
+  userFields?: boolean;
 };
 
 export function UploadStep({
@@ -109,6 +114,7 @@ export function UploadStep({
   aiOff = false,
   onFillByHand,
   onFileCase,
+  userFields = false,
 }: Props) {
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -207,7 +213,7 @@ export function UploadStep({
           details; without them every one is left for a person. */}
       <div className="intake-photo-tip">
         <Lightbulb aria-hidden style={{ width: 14, height: 14, flexShrink: 0, marginTop: 1, color: "var(--badge-amber-text)" }} />
-        <span>Tip: also photograph the log card, the VIN/chassis plate and the odometer, so the AI can read them.</span>
+        <span>{uploadTip(userFields)}</span>
       </div>
 
       {counted.length > 0 && (

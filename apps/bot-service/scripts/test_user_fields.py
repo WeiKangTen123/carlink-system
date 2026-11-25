@@ -1,28 +1,32 @@
-"""The workshop and the odometer reading are the user's to type in (owner,
-25 Nov 2026; settings.intake_user_fields) -- offline: Gemini is a fake, a
-scratch database and storage folder, no PDF render.
+"""The workshop and the odometer reading are the user's to type in, and no
+example-case value is in what the AI reads (owner, 25 Nov 2026;
+settings.intake_user_fields) -- offline: Gemini is a fake, a scratch
+database and storage folder, no PDF render.
 
   0. the setting: "off" by default, only off / on, the compose default;
   1. off: byte for byte as master ae0fde4 (MASTER below, taken there with
      --hashes before any change): what every read sends (the website's
      intake read, the Telegram bot's, v1 with the packs, v2, v2 with the
      packs and the anchor), the sort and the zone reads, the response
-     schema, a parsed draft, the Telegram bot's draft, a case read end to
-     end through the intake API (requests, stored data, AI draft, GET
-     /intake, filing, GET /reports), the Telegram bridge's and a public
-     report's case, and the field review of a case;
+     schema, a parsed draft, the Telegram bot's draft and its guide, a
+     case read end to end through the intake API (requests, stored data,
+     AI draft, GET /intake and its keys, filing, GET /reports), the
+     Telegram bridge's and a public report's case, and the field review
+     of a case;
   2. on: no read is told about the workshop or the odometer -- no
      instruction, no example ("odometer", "workshop", the example names,
      the "Km" reading), the rest of each prompt word for word -- and the
-     response schema has neither field; the sorter still sorts an
-     odometer photo;
+     response schema has neither field; no example-case value (tyre size
+     and brands, OEM part number) is in any read's text or schema, the
+     generic ones are; the sorter still sorts an odometer photo;
   3. on: a model answer that fills both (and a workshop address) anyway
      -> both empty in the draft, the AI draft and the case, and nothing of
      the values in the log;
   4. on: the field review shows both as "needs" (a person to fill), a
      person's value as "you", never "ai", and ai_read leaves them out;
-  5. on: the Telegram bot (a typed workshop kept: a person's), the
-     Telegram bridge and a public report the same way.
+  5. on: the Telegram bot (a typed workshop kept: a person's; its guide
+     sends the workshop to the template's line), the Telegram bridge and
+     a public report the same way; GET /intake says user_fields.
 
     python scripts/test_user_fields.py
     python scripts/test_user_fields.py --hashes   # print section 1's hashes
@@ -482,6 +486,8 @@ def intake_case(client, uid: str, typed: dict | None = None) -> tuple[dict, dict
                  "read_photo_ids": session.read_photo_ids,
                  "runs": run_rows(rid)},
         "intake_get": _pick(state, GET_KEYS),
+        # Every key GET /intake answers with (user_fields only while on).
+        "intake_get_keys": sorted(state),
     }
     out["finalize"] = client.post(f"/intake/{rid}/finalize", json={"data": state["data"]}).json()
     filed = db_row(Report, rid)
@@ -588,6 +594,14 @@ def review_sample() -> dict:
     }
 
 
+def telegram_guide() -> str:
+    """The guide the Telegram bot's /start and /help send (WELCOME_GUIDE
+    before the switch existed)."""
+    from app.channels import telegram
+
+    return getattr(telegram, "welcome_guide", lambda: telegram.WELCOME_GUIDE)()
+
+
 def snapshot() -> dict:
     """Section 1's artefacts at today's settings, by name."""
     from fastapi.testclient import TestClient
@@ -598,7 +612,7 @@ def snapshot() -> dict:
            "schema": extraction._response_schema(),
            "parsed": extraction._parse_draft(json.dumps(draft_answer(["P04", "P05"]))).model_dump(),
            "bot_case": bot_case(None)[0], "bot_case_typed": bot_case(TYPED_WORKSHOP)[0],
-           "review": review_sample()}
+           "review": review_sample(), "telegram_guide": telegram_guide()}
     with TestClient(_app()) as client:
         uid = sign_in(client, role="admin", may_sign_off=True)
         out["intake_case"] = intake_case(client, uid)[0]
@@ -607,8 +621,8 @@ def snapshot() -> dict:
     return out
 
 
-# Taken on master ae0fde4 with --hashes, before any change (python 3.11 and
-# 3.13 gave the same).
+# Taken on master ae0fde4 with --hashes (this file run in a git archive of
+# ae0fde4's apps/bot-service; python 3.11 and 3.13 gave the same).
 MASTER = {
     "read_v1": "185a5ef3ded2d5bd0c2e3e4e5f1d5da0390e6124639a892d738b2f8e1af4b7b3",
     "bot_v1": "2b29a50e957752ca0738d7c27d9c7b574b6323a3a7cbaab21ab29b0fec1149d8",
@@ -629,7 +643,8 @@ MASTER = {
     "bot_case": "4ab59e1e101a87d7282834978a6baf8d148feecba421f72e85f1ce621edd004a",
     "bot_case_typed": "5a6721a85e5a26d22b08fb1227dae965b9fba65563f25782ee7bbd7c431ad5c6",
     "review": "8d43ae0ed647cf3d36f21cb59ce258e79ea009d3a61f485d46e33ae7eacbf2df",
-    "intake_case": "4f882335efa3dbcff321a86cbb6eb9d8520096949f7635a004cdcc47cda870b6",
+    "telegram_guide": "5a77a3f0bf4e3839b160056eadb660c31912a0940d87e4bd0ba9b80451de7b9e",
+    "intake_case": "c69dd4123d293ce5c177da22ee0b4a435407b1ba680570e55d4a19d1174169be",
     "bridge_case": "740d8eae9cd7fb478da1d91693ccaddf1ac86e01616f6dbb9d848687b0fe4f64",
     "public_case": "73ec44ea896e373292bdce281ac7f7e9eaa790c5de8c0b71a5e6be959899a129",
 }
@@ -661,6 +676,7 @@ def off_byte_for_byte() -> None:
     for name, want in MASTER.items():
         check(digest(got.get(name)) == want, f"{name}: byte for byte as master ae0fde4", digest(got.get(name)))
     check(set(got) == set(MASTER), "every artefact compared", sorted(set(got) ^ set(MASTER)))
+    check("user_fields" not in got["intake_case"]["intake_get_keys"], "GET /intake has no user_fields while off")
 
 
 # What "on" takes out of each read's text, as it is taken out. The rest of
@@ -669,16 +685,43 @@ def off_byte_for_byte() -> None:
 EDITS_V1 = (
     ("police report, or workshop estimate). A human", "police report, or repair estimate). A human"),
     ("4. Insurance & Workshop Details ('insurance_details'):", "4. Insurance Details ('insurance_details'):"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
 )
 LINES_V1 = ("     * 'odometer_reading':", "   - Extract 'workshop_assigned'")
 EDITS_V2 = (
     ("(LTA log card, police report, workshop estimate)", "(LTA log card, police report, repair estimate)"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
 )
 SPANS_V2 = (("'odometer_reading' exactly as read", "; "), (", 'workshop_assigned'", ")"))
 # Never in a read's words with "on" (the photo kind is the sorter's own):
 # in any letter case, and the example values as they were written.
 NEVER_WORDS = ("odometer", "workshop", "speedometer", "mileage")
 NEVER_VALUES = ("Precise Auto", "Sin Ming", "EM-1", "ComfortDelGro", "058615", " Km'", "Km)")
+# The read's other example values from the example cases (owner: none in
+# what the AI reads), and the generic ones "on" sends instead.
+OLD_EXAMPLES = ("215/60", "Dunlop", "Michelin", "Goodride", "71501", "T7A")
+NEW_EXAMPLES = ("205/55 R16", "12345-ABC-A00")
+# The response schema's descriptions "on" changes: (model, field, off, on).
+SCHEMA_DESCRIPTIONS = (
+    ("TyreItem", "size", "Tyre size specification e.g. 215/60 R16", "Tyre size specification e.g. 205/55 R16"),
+    ("TyreItem", "brand", "Tyre manufacturer e.g. Dunlop, Michelin, Goodride", "Tyre manufacturer"),
+    ("DamageSummaryItem", "oem_part_number", "OEM replacement part number, e.g. '71501-T7A-A00' -- never invent",
+     "OEM replacement part number, e.g. '12345-ABC-A00' -- never invent"),
+)
+
+
+def expected_on_schema(schema: dict) -> dict:
+    """The "off" schema with the two fields out and the example cases'
+    values swapped for generic ones, as "on" should send it."""
+    out = json.loads(json.dumps(schema))
+    defs = out["$defs"]
+    defs["VehicleInfo"]["properties"].pop("odometer_reading")
+    defs["InsuranceDetails"]["properties"].pop("workshop_assigned")
+    for model, field, old, new in SCHEMA_DESCRIPTIONS:
+        prop = defs[model]["properties"][field]
+        assert prop["description"].startswith(old), (model, field, prop["description"])
+        prop["description"] = new + prop["description"][len(old):]
+    return out
 
 
 def _drop_line(text: str, start: str) -> str:
@@ -717,6 +760,12 @@ def on_instructions() -> None:
             words = sent_text(on_kw)
             found = [w for w in NEVER_WORDS if w in words.lower()] + [v for v in NEVER_VALUES if v in words]
             check(not found, f"{name} ({how}): nothing of the workshop or the odometer is sent", found)
+            old = [v for v in OLD_EXAMPLES if v in words]
+            check(not old and all(v in words for v in NEW_EXAMPLES)
+                  and all(v in sent_text(off_kw) for v in OLD_EXAMPLES),
+                  f"{name} ({how}): no example-case value is sent, the generic ones are (off: the old ones are)", old)
+            check(on_kw["schema"] == expected_on_schema(off_kw["schema"]),
+                  f"{name} ({how}): the schema is off's without the two fields, with generic examples")
             check(on_kw["system_instruction"] == expected_on(off_kw["system_instruction"], version),
                   f"{name} ({how}): the rest of the prompt is word for word")
             check(on_kw["input_parts"] == off_kw["input_parts"], f"{name} ({how}): the input parts are as off")
@@ -741,6 +790,8 @@ def on_instructions() -> None:
     check(zones == zone_requests(), "the zone reads send the same with on as off")
     check(not any(w.lower() in json.dumps(z).lower() for z in zones.values() for w in ("odometer", "workshop")),
           "no zone read says odometer or workshop")
+    check(not any(v in json.dumps(z) for z in [*zones.values(), sort] for v in OLD_EXAMPLES + NEVER_VALUES),
+          "no zone read and no sort carries an example-case value")
     with Settings(**ON), Settings(**{}):
         from app.reports import knowledge
 
@@ -831,6 +882,8 @@ def on_case() -> None:
         runs_ = raw["read"]["runs"]
         tags = {a.get("prompt") for r in runs_ if r["kind"] == "read" for a in r["attempts"]}
         check(any(t and "+user-fields@" in t for t in tags), "the run log's read tries carry the user-fields tag", tags)
+        check(raw["intake_get_keys"] and "user_fields" in raw["intake_get_keys"],
+              "GET /intake says user_fields (the upload tip then doesn't say the AI reads the odometer)")
 
         # A person typed both before the read: theirs, kept, "you".
         _, typed = intake_case(client, uid, {"insurance_details.workshop_assigned": TYPED_WORKSHOP,
@@ -880,7 +933,18 @@ def on_review() -> None:
 def on_telegram_public() -> None:
     from fastapi.testclient import TestClient
 
+    from app.channels import telegram
+    from app.conversation import flow
     from auth_helpers import sign_in
+
+    check(telegram.welcome_guide() == telegram.WELCOME_GUIDE, "off: the bot's guide as before")
+    with Settings(**ON):
+        guide = telegram.welcome_guide()
+    check("Workshop XYZ" not in guide and "the template's 'Workshop:' line" in guide
+          and "\nWorkshop: \n" in flow.TEMPLATE_PROMPT,
+          "on: the bot's guide puts the workshop on the template's 'Workshop:' line, not in free text")
+    check(guide.replace(telegram._FREE_TEXT_LINE_USER_FIELDS, telegram._FREE_TEXT_LINE) == telegram.WELCOME_GUIDE,
+          "on: the rest of the guide is word for word")
 
     with Settings(**ON):
         _, bot = bot_case(None)

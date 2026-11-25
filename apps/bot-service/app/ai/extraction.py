@@ -233,21 +233,34 @@ def _prompt_v2(packs: list[str], anchor: bool) -> str:
 # 2026): the workshop and the odometer reading are the user's to type in,
 # so no read is told about them -- every instruction and example value for
 # either is taken out of the prompt as it is built, whatever its version
-# and packs, and nothing is put in their place. The template files stay as
-# they are (a template is never edited under a switch, ai/prompt_packs.py)
-# and each piece must be there exactly once, so a prompt edited from under
-# the switch fails loudly rather than half-built. The rest of the prompt is
-# word for word, but for one word: the "workshop estimate" among the
-# documents a reporter may send is a "repair estimate" -- the same document,
-# without pointing the read at the workshop. Off: nothing here runs.
+# and packs, and nothing is put in their place. And no value from the
+# example cases is in what the read is told: the tyre size example taken
+# from one is a generic size (the schema's examples likewise,
+# _SCHEMA_EXAMPLES). The template files stay as they are (a template is
+# never edited under a switch, ai/prompt_packs.py) and each piece must be
+# there exactly once, so a prompt edited from under the switch fails
+# loudly rather than half-built. The rest of the prompt is word for word,
+# but for one word: the "workshop estimate" among the documents a reporter
+# may send is a "repair estimate" -- the same document, without pointing
+# the read at the workshop. Off: nothing here runs.
 _USER_FIELDS_V1 = (
     ("police report, or workshop estimate). A human", "police report, or repair estimate). A human"),
     ("4. Insurance & Workshop Details ('insurance_details'):\n", "4. Insurance Details ('insurance_details'):\n"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
 )
 # v1's whole lines for the two fields, by how each starts.
 _USER_FIELD_LINES_V1 = ("     * 'odometer_reading':", "   - Extract 'workshop_assigned'")
 _USER_FIELDS_V2 = (
     ("(LTA log card, police report, workshop estimate)", "(LTA log card, police report, repair estimate)"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
+)
+# The response schema's example values from the example cases, in their
+# field's description: (model, field, as written, what "on" sends). The
+# tyre brands go with no example at all.
+_SCHEMA_EXAMPLES = (
+    ("TyreItem", "size", "e.g. 215/60 R16", "e.g. 205/55 R16"),
+    ("TyreItem", "brand", " e.g. Dunlop, Michelin, Goodride", ""),
+    ("DamageSummaryItem", "oem_part_number", "e.g. '71501-T7A-A00'", "e.g. '12345-ABC-A00'"),
 )
 # v2's pieces of its field list: from where each starts to the end of the
 # first `end` after it ("'odometer_reading' ... (e.g. ...); ").
@@ -380,7 +393,8 @@ def _response_schema(user_fields_on: bool | None = None) -> dict:
 
     user_fields_on (None: as settings.intake_user_fields says): without
     the workshop and the odometer reading (user_fields.SCHEMA_FIELDS), the
-    user's to type in -- the model has no field to write them in.
+    user's to type in -- the model has no field to write them in -- and
+    with generic examples in place of the example cases' (_SCHEMA_EXAMPLES).
     """
     schema = SecurityIncidentDraft.model_json_schema()
     for name in _NOT_MODEL_OUTPUT:
@@ -426,6 +440,9 @@ def _response_schema(user_fields_on: bool | None = None) -> dict:
             node.get("properties", {}).pop(field, None)
             if field in (node.get("required") or []):
                 node["required"] = [name for name in node["required"] if name != field]
+        for model, field, old, new in _SCHEMA_EXAMPLES:
+            prop = defs[model]["properties"][field]
+            prop["description"] = prompt_packs.once(prop["description"], old, new)
 
     return schema
 

@@ -147,6 +147,10 @@ export type IntakeState = {
   photos: IntakePhoto[];
   data: ReportData;
   limits: { max_photos: number; max_photo_bytes: number };
+  /** True while INTAKE_USER_FIELDS is on (app/reports/user_fields.py): the
+   * workshop and the odometer reading are the user's to type in, never
+   * the AI's. Absent while it is off, and from an older API. */
+  user_fields?: boolean;
   /** Null when the draft is Unassigned. */
   owner: Owner | null;
   /** What the signed-in user may do with this draft; the API checks again. */
