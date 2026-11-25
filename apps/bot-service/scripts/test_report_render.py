@@ -2,8 +2,8 @@
 
     python scripts/test_report_render.py [example_case folder]
 
-With the example_case folder, the report is built from the real
-CL 12330 SMV 7530 X.xls (Cover Page, Annex A, Annex B and the letter's
+With the example_case folder, the report is built from the firm's real
+CL 12330 workbook (Cover Page, Annex A, Annex B and the letter's
 figures) so the output can be held against the firm's own file; without it,
 a small fixture stands in. Checks: the HTML carries every page's key text
 and none of the dropped extras (GST, BOLA, forensic, seal, variance); the
@@ -45,13 +45,13 @@ def fixture() -> dict:
     """A small signed-off case in the shape agent B's schema gives it."""
     return {
         "report_id": "CL 12999",
-        "reporter_name": "Ong Ah Kee",
+        "reporter_name": "Lim Wei Jie",
         "incident_datetime": "21st February 2023",
         "cover_page": {
             "date_of_request": "27th February 2023",
-            "requested_by": "Loh Keng Yew",
-            "requested_by_address": "C/o Blk 3023A, Ubi Road 1, #01-60, Singapore 408717",
-            "workshop_address": "Blk 3023A, Ubi Road 1, #01-60,\nSingapore 408717",
+            "requested_by": "Tan Mei Ling",
+            "requested_by_address": "C/o Blk 100, Test Road 1, #01-01, Singapore 000100",
+            "workshop_address": "Blk 100, Test Road 1, #01-01,\nSingapore 000100",
             "date_of_survey": "27th February 2023 (10.15am)",
             "date_of_dismantle": "27th February 2023 (2.25pm)",
             "date_before_painting": "1st March 2023",
@@ -62,8 +62,8 @@ def fixture() -> dict:
             "point_of_impact_note": "See Annex(es) and Motor Accident Reports",
         },
         "vehicle_info": {
-            "plate_number": "SMV 7530 X", "make": "Honda", "model": "Vezel 1.5X CVT",
-            "date_of_registration": "19th October 2020", "engine_number": "L15B5578795", "vin": "RU11328756",
+            "plate_number": "TST 2002 B", "make": "Honda", "model": "Vezel 1.5X CVT",
+            "date_of_registration": "19th October 2020", "engine_number": "L15B0000001", "vin": "JHMTESTX0Y0000001",
             "odometer_reading": "058615 Km", "transmission": "Automatic", "color": "White",
             "paintwork_condition": "Good", "steering_condition": "see annex(es)", "brakes_condition": "see annex(es)",
             "tyres": {
@@ -73,7 +73,7 @@ def fixture() -> dict:
                 "rear_offside": {"tread_depth_mm": 6.5, "brand": "Dunlop"},
             },
         },
-        "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S People's Vehicle Recovery Service"},
+        "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
         "annex_a": {"items": [
             {"item_no": "1.0", "part_name": "Rear bumper fascia", "condition": "Buckled/cut", "action": "Replace", "qty": 1,
              "workshop_est": 1020.0, "discount_pct": 0.2, "adjusted_cost": 816.0, "is_net_item": False},
@@ -90,7 +90,7 @@ def fixture() -> dict:
              "workshop_est": 1200.0, "adjusted_cost": 900.0},
         ]},
         "annex_c": {"agreed_lump_sum": 1900.0, "repair_days": 7},
-        "sign_off": {"status": "Signed Off", "surveyor_name": "Patrick Ng", "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.",
+        "sign_off": {"status": "Signed Off", "surveyor_name": "Alex Tan", "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.",
                      "signatory_title": "Automotive Engineer Assessor", "signature_data_url": None},
     }
 
@@ -111,7 +111,7 @@ def _tyre(text: str, size: str) -> dict:
 
 
 def report_from_xls(path: Path) -> dict:
-    """The firm's CL 12330 SMV 7530 X.xls as a report dict: Annex A through
+    """The firm's CL 12330 workbook as a report dict: Annex A through
     history.parse_report, the rest read off the Cover Page / Annex B / Annex
     C sheets."""
     case = parse_report(path)
@@ -202,7 +202,7 @@ def report_from_xls(path: Path) -> dict:
         "annex_b": {"items": labour},
         "annex_c": {"agreed_lump_sum": float(lump.group(1).replace(",", "")) if lump else None,
                     "repair_days": int(days.group(1)) if days else None},
-        "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else "Patrick Ng"), "signatory_title": "Automotive Engineer Assessor",
+        "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else None), "signatory_title": "Automotive Engineer Assessor",
                      "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."},
     }
 
@@ -243,8 +243,8 @@ def check_html(report: dict, m) -> None:
                    "Singapore 549009", "Tel : 62856178", "Fax : 62874788", "1 REFERENCE", "Date of request :",
                    f"Requested by : {report['cover_page']['requested_by']}", "Type of claim : Third party",
                    f"Workshop : {report['insurance_details']['workshop_assigned']}", "Date of dismantle parts :",
-                   "2 DETAILS OF VEHICLE", "Registration No. : SMV 7530 X", "Make & Model : Honda Vezel 1.5X CVT",
-                   "Chassis No. : RU11328756", "Speedometer reading : 058615 Km", "3 STATIC CHECK", "Paintwork : Good",
+                   "2 DETAILS OF VEHICLE", f"Registration No. : {report['vehicle_info']['plate_number']}", "Make & Model : Honda Vezel 1.5X CVT",
+                   f"Chassis No. : {report['vehicle_info']['vin']}", "Speedometer reading : 058615 Km", "3 STATIC CHECK", "Paintwork : Good",
                    "Modification : Nil", "General condition : Good", "4 TYRE CONDITION", "Nearside/Make Offside/Make Size",
                    "Front tyre : 7mm/Dunlop 7mm/Dunlop : 215/60 R16", "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
                    "6 REMARK", 'conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair.'):
@@ -419,7 +419,7 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     view = renderer.report_view(report)
     assert back.ref == re.sub(r"\s+", " ", re.search(r"CL\s*\d+", report["report_id"]).group(0)), back.ref
     assert (back.make, back.model) == ("Honda", "Vezel"), (back.make, back.model)
-    assert back.plate == "SMV7530X" and back.registered == "2020-10-19"
+    assert back.plate == re.sub(r"\s+", "", report["vehicle_info"]["plate_number"]).upper() and back.registered == "2020-10-19"
     want = [(r["no"], r["name"], r["qty"], r["est"], r["disc"], r["adjusted"], "nett" if r["nett"] else "list")
             for r in view["list_rows"] + view["nett_rows"]]
     got = [(l.line_no, l.item, l.qty, l.workshop_est, l.discount, l.adjusted_cost, l.section) for l in back.lines]
@@ -440,7 +440,7 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     values = " | ".join(str(c.value) for ws in dbook.worksheets for row in ws.iter_rows() for c in row if c.value is not None)
     assert "Our Ref: (to be issued)" in values and "Not recorded" not in values and "CL 12" not in values
     assert "(to be agreed)" in values and "DRAFT - not signed off" in values and "Prepared by an unverified user" in values
-    assert "Patrick" not in values.title()
+    assert report["sign_off"]["surveyor_name"].title() not in values.title(), "a draft names no signer"
     ok("a draft workbook: Our Ref (to be issued), blanks for missing facts, (to be agreed), DRAFT, unverified line")
 
 
@@ -453,8 +453,8 @@ def main() -> int:
         source = next(Path(sys.argv[1]).rglob("CL 12330*.xls"))
         report = report_from_xls(source)
         print(f"report built from {source.name}: {len(report['annex_a']['items'])} parts, {len(report['annex_b']['items'])} labour lines")
-        assert report["report_id"] == "CL 12330 SMV 7530 X" and report["annex_c"] == {"agreed_lump_sum": 6500.0, "repair_days": 10}
-        assert report["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and report["sign_off"]["surveyor_name"] == "Patrick Ng"
+        assert report["report_id"] == f"CL 12330 {report['vehicle_info']['plate_number']}" and report["annex_c"] == {"agreed_lump_sum": 6500.0, "repair_days": 10}
+        assert report["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and report["sign_off"]["surveyor_name"], "signer read off the letter"
         view = renderer.report_view(report)
         assert (view["a_est"], view["a_adjusted"], view["b_est"], view["b_adjusted"]) == (6843.8, 4935.04, 3270.0, 2540.0), view
         assert (view["c_est"], view["c_adjusted"]) == (10113.8, 7475.04)

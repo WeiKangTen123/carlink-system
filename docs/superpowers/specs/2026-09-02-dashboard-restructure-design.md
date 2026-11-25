@@ -73,6 +73,6 @@ No new backend endpoints. Overview reuses `GET /analytics/summary` (already exis
 
 Manual verification against real live data (per this project's established practice) after `npm run build` passes locally:
 - Overview tiles match what `/analytics` already shows for the same underlying counts (cross-check, not a new source of truth).
-- Each case-detail tab renders its moved content correctly for a report that has real data in that area (e.g. verify Sign-off tab against an already-signed-off case, Damage tab against SLK 3063 Z).
+- Each case-detail tab renders its moved content correctly for a report that has real data in that area (e.g. verify Sign-off tab against an already-signed-off case, Damage tab against TST 1001 A).
 - Hotspot click from Overview tab correctly switches to Evidence tab and scrolls/highlights the right photo.
 - Breadcrumb and sidebar active-state correct on every route.

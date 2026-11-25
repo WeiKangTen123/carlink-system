@@ -42,7 +42,7 @@ def _session(**overrides):
     # the type of claim and the workshop. The AI never sees these in a photo.
     s.requested_by = "Tokio Marine Insurance"
     s.claim_type = "Own damage"
-    s.workshop_name = "Precise Auto Service"
+    s.workshop_name = "XYZ Auto Service"
     s.vehicle_plate = "SBD1234C"
     s.pending_edits = []
     for k, v in overrides.items():
@@ -82,7 +82,7 @@ def main() -> int:
         d = flow.build_draft("x", [], _session(), actor=ACTOR).draft
         check("requested_by applied (cover page)", d.cover_page.requested_by, "Tokio Marine Insurance")
         check("claim_type applied", d.insurance_details.claim_type, "Own damage")
-        check("workshop applied", d.insurance_details.workshop_assigned, "Precise Auto Service")
+        check("workshop applied", d.insurance_details.workshop_assigned, "XYZ Auto Service")
         check("location applied", d.location, "Bedok")
         check("typed plate beats the AI's photo reading", d.vehicle_info.plate_number, "SBD1234C")
 
@@ -91,7 +91,7 @@ def main() -> int:
         d = flow.build_draft("x", [], _session(pending_edits=["the plate is actually ABC1234"]), actor=ACTOR).draft
         check("requested_by survives", d.cover_page.requested_by, "Tokio Marine Insurance")
         check("claim_type survives", d.insurance_details.claim_type, "Own damage")
-        check("workshop survives", d.insurance_details.workshop_assigned, "Precise Auto Service")
+        check("workshop survives", d.insurance_details.workshop_assigned, "XYZ Auto Service")
         check("location survives", d.location, "Bedok")
         check("incident_datetime survives", d.incident_datetime, "2026-09-13 05:02 UTC")
 
@@ -116,14 +116,14 @@ def main() -> int:
     for dropped in ("Name:", "Role", "Contact", "Reported to Authorities", "Location:", "Insurer"):
         check(f"the template no longer asks {dropped!r}", dropped in prompt, False)
     parsed = flow.parse_template_reply(
-        "Vehicle Plate: SMV7530X\nRequested by (insurer / company): Tokio Marine\nType of claim (Own damage / Third party): Own damage\n"
-        "Workshop: Precise Auto\nDate/time of accident: 27 Feb 2023 10.15am\nDamaged Side (Left / Right / Front / Rear): Rear\n"
+        "Vehicle Plate: TST2002B\nRequested by (insurer / company): Tokio Marine\nType of claim (Own damage / Third party): Own damage\n"
+        "Workshop: XYZ Auto\nDate/time of accident: 27 Feb 2023 10.15am\nDamaged Side (Left / Right / Front / Rear): Rear\n"
         "What happened: Rear-ended at a junction.\nSecond line of the story."
     )
-    check("parsed: plate", parsed["vehicle_plate"], "SMV7530X")
+    check("parsed: plate", parsed["vehicle_plate"], "TST2002B")
     check("parsed: requested by", parsed["requested_by"], "Tokio Marine")
     check("parsed: type of claim", parsed["claim_type"], "Own damage")
-    check("parsed: workshop", parsed["workshop_name"], "Precise Auto")
+    check("parsed: workshop", parsed["workshop_name"], "XYZ Auto")
     check("parsed: date/time of accident", parsed["incident_datetime"], "27 Feb 2023 10.15am")
     check("parsed: side", parsed["damaged_side"], "Rear")
     check("parsed: what happened (continued lines)", parsed["description"], "Rear-ended at a junction. Second line of the story.")

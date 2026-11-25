@@ -18,7 +18,7 @@ The liability (BOLA) assessment, the sign-off and the insurance details are
 never touched.
 
 Until 2026-10-21 this "synthesized" complete priced dossiers: the real
-CL 11900 / SLK 3063 Z annexes whenever that plate appeared, keyword-priced
+CL 11900 / TST 1001 A annexes whenever that plate appeared, keyword-priced
 parts with OEM-001 style part numbers for everything else, standard towing /
 tuff-coat / LTA-reseal labour lines on every case, an 85% lump sum, a BOLA
 liability finding, a reviewer name, and it overwrote the recorded estimated

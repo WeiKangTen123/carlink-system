@@ -122,7 +122,7 @@ def shown_state(session: IntakeSession, now: datetime | None = None) -> tuple[st
 # only reliable source of plate, VIN and make -- the facts parts lookup will
 # depend on -- and there are rarely more than a few. One VIN plate, odometer
 # or tyre photo says what a second one would: the old budget spent 2 VIN
-# plates, 2 tyres and 4 near-identical rear overviews on SLK 3063 Z while 22
+# plates, 2 tyres and 4 near-identical rear overviews on TST 1001 A while 22
 # of its 37 damage photos -- the tailgate's worst buckling, the cracked tail
 # lamp -- were never read.
 FACT_BUDGET: list[tuple[str, int]] = [
@@ -610,7 +610,7 @@ def _spread_order(photos: list[IntakePhoto]) -> list[IntakePhoto]:
     """Reorders photos that are in camera order so that the first k of them
     are spread over the whole sequence: first, last, middle, then the
     quarters... Taking a group's earliest photos read only what was shot
-    first -- on SLK 3063 Z the tailgate photos taken with the boot open,
+    first -- on TST 1001 A the tailgate photos taken with the boot open,
     later in the walk-around, were never sent."""
     n = len(photos)
     if n <= 2:

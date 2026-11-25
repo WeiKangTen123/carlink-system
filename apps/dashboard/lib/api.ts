@@ -1411,7 +1411,7 @@ export type LabourSuggestions = {
 export type CoverPageInfo = {
   date_of_request?: string | null;
   requested_by?: string | null;
-  /** "C/o Blk 3023A, Ubi Road 1, #01-60, Singapore 408717" */
+  /** "C/o Blk 100, Test Road 1, #01-01, Singapore 000100" */
   requested_by_address?: string | null;
   workshop_address?: string | null;
   date_of_survey?: string | null;

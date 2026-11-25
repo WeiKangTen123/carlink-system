@@ -90,7 +90,7 @@ class FakeInteractions:
                 # A label that wasn't sent: reference and box must be dropped.
                 {"part": "Boot Lid", "severity": "Minor", "photo_reference": "P77", "bbox_2d": [1, 2, 3, 4]},
             ],
-            # Not SLK 3063 Z: that plate switches synthesize_annexes to its
+            # Not TST 1001 A: that plate switches synthesize_annexes to its
             # hardcoded benchmark annex.
             "vehicle_info": {"make": "Honda", "model": "Vezel", "plate_number": "SNA1234B"},
             "reporter_name": "AI Should Not Win",

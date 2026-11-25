@@ -589,10 +589,10 @@ async def check_drafting_as_the_person() -> None:
 
 
 TEMPLATE_REPLY = (
-    "Vehicle Plate: SMV7530X\n"
+    "Vehicle Plate: TST2002B\n"
     "Requested by (insurer / company): Tokio Marine\n"
     "Type of claim (Own damage / Third party): Own damage\n"
-    "Workshop: Precise Auto Service\n"
+    "Workshop: XYZ Auto Service\n"
     "Date/time of accident: 27 Feb 2023 10.15am\n"
     "Damaged Side (Left / Right / Front / Rear): Rear\n"
     "What happened: Rear-ended at a junction."
@@ -615,7 +615,7 @@ async def check_template() -> None:
     session = state.get_session(str(chat))
     assert session.stage == Stage.AWAITING_CONFIRMATION, out.texts[-2:]
     assert (session.vehicle_plate, session.requested_by, session.claim_type, session.workshop_name, session.incident_datetime,
-            session.damaged_side) == ("SMV7530X", "Tokio Marine", "Own damage", "Precise Auto Service", "27 Feb 2023 10.15am", "Rear")
+            session.damaged_side) == ("TST2002B", "Tokio Marine", "Own damage", "XYZ Auto Service", "27 Feb 2023 10.15am", "Rear")
     assert session.description == "Rear-ended at a junction."
     assert not hasattr(session, "reporter_name") and not hasattr(session, "reported_to_authorities")
     ok("the reply fills the session's plate, requested by (-> cover page), type of claim and workshop (-> insurance details), "

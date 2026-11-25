@@ -33,7 +33,7 @@ PHOTO_KINDS: dict[str, str] = {
     "odometer": "instrument cluster showing the odometer/mileage",
     "tyre": "tyre sidewall or tread",
     # "Inside the insured vehicle" alone had the model file every photo into
-    # an open boot as interior -- 8 of 65 on the SLK 3063 Z case, including
+    # an open boot as interior -- 8 of 65 on the TST 1001 A case, including
     # the tailgate lock and boot floor damage the surveyor priced.
     "interior": "inside the cabin (seats, dashboard, headliner, door trims) -- NOT the boot",
     "scene": "the accident scene or road",

@@ -129,12 +129,12 @@ def past_report_files() -> list[tuple]:
         assert len(files) >= 4, f"expected the four CL reports under {EXAMPLES}, found {[f.name for f in files]}"
         return [("files", (f.name, f.read_bytes(), "application/octet-stream")) for f in files]
     return [
-        ("files", ("CL 11900 SLK 3063 Z.xlsx", report_xlsx("CL 11900", "SLK 3063 Z", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A), "application/octet-stream")),
-        ("files", ("CL 12330 SMV 7530 X.xlsx", report_xlsx("CL 12330", "SMV 7530 X", "Honda Vezel 1.5X CVT", VEZEL_B, LABOUR_B), "application/octet-stream")),
+        ("files", ("CL 11900 TST 1001 A.xlsx", report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A), "application/octet-stream")),
+        ("files", ("CL 12330 TST 2002 B.xlsx", report_xlsx("CL 12330", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B, LABOUR_B), "application/octet-stream")),
     ]
 
 
-def new_case(client: TestClient, plate: str = "SMV7530X") -> str:
+def new_case(client: TestClient, plate: str = "TST2002B") -> str:
     r = client.post("/reports", json={"draft": {
         "category": ["Vehicle Collision or Damage"], "description": "Rear-ended at a junction",
         "vehicle_info": {"plate_number": plate, "make": "Honda", "model": "Vezel"},
@@ -218,7 +218,7 @@ def main() -> int:
     sign_in(admin, role="admin", name="Kelvin Lim")
     # An in-house surveyor: sees every case (the price book), may sign off.
     surveyor = TestClient(app, base_url="https://carlink.test")
-    sign_in(surveyor, role="user", name="Patrick Ng", sees_all_cases=True, may_sign_off=True, ai_company_key_allowed=True,
+    sign_in(surveyor, role="user", name="Alex Tan", sees_all_cases=True, may_sign_off=True, ai_company_key_allowed=True,
             qualifications="MIMI, MIRTE, LCGI")
     # A self-signup: no ticks.
     stranger = TestClient(app, base_url="https://carlink.test")
@@ -236,7 +236,7 @@ def main() -> int:
         ok(f"the real {real.name} reads 30 parts and 7 labour lines; wrapped job descriptions come out on one line")
     else:
         path = Path(_tmp, "a.xlsx")
-        path.write_bytes(report_xlsx("CL 11900", "SLK 3063 Z", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A))
+        path.write_bytes(report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A))
         case = parse_report(path)
         assert len(case.lines) == 8 and [l.description for l in case.labour] == [l[0] for l in LABOUR_A], case.labour
         assert case.labour[0].workshop_est == 150.0 and case.labour[0].adjusted_cost == 120.0
@@ -388,7 +388,7 @@ def main() -> int:
     print("sync_annex_a (detection -> Annex A, one way)")
     from app.parts.prefill import origin_of, sync_annex_a
     base = {
-        "vehicle_info": {"plate_number": "SMV7530X", "make": "Honda", "model": "Vezel"},
+        "vehicle_info": {"plate_number": "TST2002B", "make": "Honda", "model": "Vezel"},
         "damage_summary": [{"part": "Tail Gate", "damage_type": "Dent"}, {"part": "Rear Bumper", "damage_type": "Deformation"}],
         "annex_a": {"items": [
             # Rows saved before origin existed: derived on read.
@@ -483,7 +483,7 @@ def main() -> int:
     print("prefill on filing an intake")
     draft = surveyor.post("/intake").json()["id"]
     body = {"category": ["Vehicle Collision or Damage"], "description": "Rear-ended",
-            "vehicle_info": {"plate_number": "SLK3063Z", "make": "Honda", "model": "Vezel 1.5X CVT"},
+            "vehicle_info": {"plate_number": "TST1001A", "make": "Honda", "model": "Vezel 1.5X CVT"},
             "damage_summary": [{"part": "Boot Lid", "damage_type": "Dent"}]}
     assert surveyor.put(f"/intake/{draft}/data", json={"data": body}).status_code == 200
     r = surveyor.post(f"/intake/{draft}/finalize", json={"data": body})
@@ -503,12 +503,12 @@ def main() -> int:
     rid = new_case(surveyor)
     body = {
         "report_id": "CL 12330", "incident_datetime": "21st February 2023",
-        "cover_page": {"date_of_request": "27th February 2023", "requested_by": "Loh Keng Yew",
+        "cover_page": {"date_of_request": "27th February 2023", "requested_by": "Tan Mei Ling",
                        "date_of_survey": "27th February 2023 (10.15am)", "general_condition": "Good", "modification": "Nil"},
         "vehicle_info": {"date_of_registration": "19th October 2020", "odometer_reading": "058615 Km",
                          "tyres": {"front_nearside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
                                    "front_offside": {"tread_depth_mm": 7, "brand": "Dunlop"}}},
-        "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S People's Vehicle Recovery Service"},
+        "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
     }
     r = surveyor.put(f"/reports/{rid}/cover-page", json=body)
     assert r.status_code == 200, r.text
@@ -516,9 +516,9 @@ def main() -> int:
     assert saved["report_id"] == "CL 12330" and saved["incident_datetime"] == "21st February 2023"
     assert saved["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and saved["cover_page"]["handbrake_condition"] is None
     v = saved["vehicle_info"]
-    assert v["make"] == "Honda" and v["plate_number"] == "SMV7530X" and v["odometer_reading"] == "058615 Km", v
+    assert v["make"] == "Honda" and v["plate_number"] == "TST2002B" and v["odometer_reading"] == "058615 Km", v
     assert v["tyres"]["front_nearside"]["brand"] == "Dunlop" and v["tyres"]["rear_offside"]["brand"] is None
-    assert saved["insurance_details"]["workshop_assigned"] == "M/S People's Vehicle Recovery Service"
+    assert saved["insurance_details"]["workshop_assigned"] == "M/S ABC Auto Service"
     stored = surveyor.get(f"/reports/{rid}").json()
     assert stored["data"]["cover_page"] == saved["cover_page"] and stored["data"]["description"] == "Rear-ended at a junction"
     assert stored["pdf_url"] is None or True  # the PDF is rendered again on the next download (pdf_path dropped)
@@ -596,7 +596,7 @@ def main() -> int:
     render_calls.clear()
     r = surveyor.get(f"/reports/{rid}/download?photos=0")
     assert r.status_code == 200 and r.headers["content-type"].startswith("application/pdf"), r.text
-    assert filename_of(r) == "CL 12330 SMV7530X (no photos).pdf", r.headers["content-disposition"]
+    assert filename_of(r) == "CL 12330 TST2002B (no photos).pdf", r.headers["content-disposition"]
     # Rendered to "<id>_nophotos.<random>.part.pdf" and swapped into place whole.
     assert render_calls[-1]["include_photos"] is False and f"{rid}_nophotos." in render_calls[-1]["path"]
     db = SessionLocal()
@@ -604,7 +604,7 @@ def main() -> int:
     assert row.pdf_path is None, row.pdf_path
     db.close()
     r = surveyor.get(f"/reports/{rid}/download")
-    assert r.status_code == 200 and filename_of(r) == "CL 12330 SMV7530X.pdf", r.headers["content-disposition"]
+    assert r.status_code == 200 and filename_of(r) == "CL 12330 TST2002B.pdf", r.headers["content-disposition"]
     assert render_calls[-1]["include_photos"] is True and render_calls[-1]["path"].endswith("report_v1.pdf")
     db = SessionLocal()
     assert db.get(Report, rid).pdf_path.endswith("report_v1.pdf")
@@ -619,7 +619,7 @@ def main() -> int:
     r = surveyor.get(f"/reports/{rid}/download.xlsx")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert filename_of(r) == "CL 12330 SMV7530X.xlsx" and r.headers["cache-control"] == "no-store"
+    assert filename_of(r) == "CL 12330 TST2002B.xlsx" and r.headers["cache-control"] == "no-store"
     book = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
     assert "Cover Page" in book.sheetnames
     if REAL_XLSX:
@@ -635,7 +635,7 @@ def main() -> int:
     r = surveyor.post(f"/reports/{rid}/sign-off", json={"terms_accepted": True, "open_items_ack": True, "signatory_title": "Automotive Engineer Assessor"})
     assert r.status_code == 200, r.text
     so = r.json()["sign_off"]
-    assert so["status"] == "Signed Off" and so["surveyor_name"] == "Patrick Ng" and so["signatory_title"] == "Automotive Engineer Assessor"
+    assert so["status"] == "Signed Off" and so["surveyor_name"] == "Alex Tan" and so["signatory_title"] == "Automotive Engineer Assessor"
     assert so["agreed_quantum"] == 6500 and so["turnaround_days"] is None, so
     signed = surveyor.get(f"/reports/{rid}").json()["data"]
     assert signed["annex_c"]["agreed_lump_sum"] == 6500 and signed["annex_c"]["repair_days"] is None

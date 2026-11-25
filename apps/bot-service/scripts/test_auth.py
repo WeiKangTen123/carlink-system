@@ -158,7 +158,7 @@ def main() -> int:
 
         mark_must_haves_na(pat, case_id)
         r = pat.post(f"/reports/{case_id}/sign-off", json={
-            "surveyor_name": "Patrick Ng", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True, "open_items_ack": True,
+            "surveyor_name": "Alex Tan", "license_number": "SURV-SG-0492", "signature_hash": "FORGED", "terms_accepted": True, "open_items_ack": True,
             "signature_data_url": "http://169.254.169.254/latest/meta-data/",
         })
         assert r.status_code == 200, r.text

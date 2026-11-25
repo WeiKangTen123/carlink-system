@@ -88,7 +88,7 @@ const AFTER_ACCIDENT_KEYS: CoverFormKey[] = ["date_of_dismantle", "date_before_p
 
 // ---- Vehicle facts -------------------------------------------------------------
 
-/** Letters, digits, then maybe a letter: "WXY 1234", "WXY 1234 A", "SLK 3063 Z". */
+/** Letters, digits, then maybe a letter: "WXY 1234", "WXY 1234 A", "TST 1001 A". */
 const PLATE = /^[A-Z]{1,3} ?\d{1,4} ?[A-Z]?$/;
 /** A VIN: 17 letters and digits, never I, O or Q. */
 const VIN = /^[A-HJ-NPR-Z0-9]{17}$/;
