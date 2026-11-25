@@ -60,9 +60,23 @@ from app.reports.taxonomy import (
 
 HERE = Path(__file__).resolve().parent
 CORE_PATH = HERE / "library_core.json"
-# apps/bot-service/app/parts -> the repository root.
-REPO = HERE.parents[3]
-ZONES_TS = REPO / "apps" / "dashboard" / "lib" / "vehicleZones.ts"
+
+
+def _find_repo(start: Path) -> Path | None:
+    """The repository root (the folder holding apps/dashboard) above `start`:
+    found on a developer's machine and in CI. None inside the api container,
+    which holds only bot-service's app/ (at /app/app) -- there the committed
+    library_core.json is all the library needs (load_core); only a rebuild
+    (build_core, scripts/check_library_sync.py) reads the dashboard's zone
+    table. (staging, 25 Nov 2026: a fixed parents[3] crashed the api there.)"""
+    for folder in (start, *start.parents):
+        if (folder / "apps" / "dashboard" / "lib" / "vehicleZones.ts").is_file():
+            return folder
+    return None
+
+
+REPO = _find_repo(HERE)
+ZONES_TS = REPO / "apps" / "dashboard" / "lib" / "vehicleZones.ts" if REPO else None
 
 FORMAT = 1
 # The library's version: one step per admin decision (L-library-cycle D.3).
@@ -189,12 +203,15 @@ def _ts_block(src: str, name: str) -> str:
     return m.group(1)
 
 
-def ts_tables(path: Path | str = ZONES_TS) -> dict:
+def ts_tables(path: Path | str | None = ZONES_TS) -> dict:
     """The dashboard's zone tables (lib/vehicleZones.ts): CANONICAL_ZONES
     (part -> zone or None), STAND_INS (part -> where it really is) and
     EITHER_SIDE (an "any_*" zone -> the zones it may be). Read as text, the
     way scripts/check_taxonomy_sync.py reads it: the table stays where the
     3D map uses it, and the library follows it."""
+    if path is None:
+        raise FileNotFoundError("the dashboard's lib/vehicleZones.ts is not here (the api container holds only app/): "
+                                "rebuild the library from a full checkout")
     src = Path(path).read_text(encoding="utf-8")
     zones = {name: value or None for name, value in
              re.findall(r'^\s*"([^"]+)":\s*(?:"([a-z_]+)"|null),?\s*(?://.*)?$', _ts_block(src, "CANONICAL_ZONES"),
@@ -290,7 +307,7 @@ def _family_of(text: str | None) -> str | None:
     return family_of(text) if text else None
 
 
-def build_core(zones_ts: Path | str = ZONES_TS) -> dict:
+def build_core(zones_ts: Path | str | None = ZONES_TS) -> dict:
     """The core library from today's code (see the module docstring). Pure
     apart from reading the code's own data files; the same code gives the
     same dict, key order included."""

@@ -552,7 +552,32 @@ def test_api() -> None:
     check(plain.post("/library").status_code in (404, 405), "no way to write: POST is refused")
 
 
+def test_container_layout() -> None:
+    """Staging, 25 Nov 2026: the api crashed at import because the library
+    took the repo root as a fixed parents[3] -- the api container holds only
+    bot-service's app/ (at /app/app), so there is no such folder there. The
+    library must load from the committed core alone."""
+    print("\ncontainer layout (only app/, no repo above it)")
+    from app.parts import library as lib
+    check(lib._find_repo(Path("/app/app/parts")) is None, "no dashboard above /app/app/parts: _find_repo gives None")
+    with tempfile.TemporaryDirectory() as tmp:
+        import shutil
+        shutil.copytree(ROOT / "app", Path(tmp) / "app", ignore=shutil.ignore_patterns("__pycache__"))
+        code = ("import app.parts.library as L, app.api.library as A; "
+                "core = L.load_core(); print(L.REPO, L.ZONES_TS, len(core['components']))")
+        env = {**os.environ, "PYTHONPATH": tmp, "GEMINI_API_KEY": ""}
+        r = subprocess.run([sys.executable, "-c", code], cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+        check(r.returncode == 0 and r.stdout.strip().startswith("None None"),
+              "a copy of app/ alone imports the library and its API, and loads the committed core", (r.stdout + r.stderr)[-600:])
+        try:
+            lib.ts_tables(None)
+            check(False, "a rebuild without the zone table says why")
+        except FileNotFoundError as exc:
+            check("vehicleZones.ts" in str(exc), "a rebuild without the zone table says why", str(exc))
+
+
 def main() -> int:
+    test_container_layout()
     test_core()
     test_sync_check()
     test_seeds()
