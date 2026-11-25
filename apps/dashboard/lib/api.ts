@@ -1960,6 +1960,9 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   sign_lifted?: AiAccuracySuggestionCounts;
   /** intake_car_map "shadow": the car map's linked parts on the AI draft. */
   car_map_shadow?: AiAccuracyLinkShadow | null;
+  /** Detection Round 1 in shadow: the photo sorter's suggestions on the AI
+   * draft, by rule ("sorter_seen" / "sorter_intact"). */
+  sorter_shadow?: AiAccuracyLinkShadow | null;
 };
 
 export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };

@@ -447,6 +447,13 @@ def _suggestions(ai_draft: dict, final_data: dict) -> dict:
     car_shadow = _shadow(ai_draft, final_data, [], "car_map_suggestions")
     if car_shadow is not None:
         _link_groups(out)["car_map_shadow"] = car_shadow
+    # Detection Round 1 in shadow (settings.intake_sorter_hints /
+    # intake_intact_rule "shadow"): the photo sorter's suggestions the AI
+    # draft kept but nobody saw, by rule (found_by: "sorter_seen",
+    # "sorter_intact"). Only on a case that has the list.
+    sorter_shadow = _shadow(ai_draft, final_data, [], "sorter_suggestions", by="found_by")
+    if sorter_shadow is not None:
+        out["sorter_shadow"] = sorter_shadow
     if "links_table" in out:
         out["links_table"] = tables[0] if tables else None
     return out
@@ -505,13 +512,17 @@ def _carmap_tallies(out: dict, fact: dict) -> list[dict]:
     return tallies
 
 
-def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str = "link_suggestions") -> dict | None:
+def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str = "link_suggestions",
+            by: str = "link_rule") -> dict | None:
     """Shadow mode's outcome (contract 10): the linked parts the AI draft
     kept but nobody saw (ai_draft["link_suggestions"], or list_key: the
     car map's "car_map_suggestions"), one per key, and how many of them
     are on the signed-off list (by name, or by a name that stands for
     them: "Tail Lamp (side undetermined)" for a "Left Tail Lamp") -- in
-    all and by rule. None when the draft has no such list."""
+    all and by rule. None when the draft has no such list. by: the field
+    an item's rule is ("link_rule"), or "found_by" (its first entry:
+    Detection Round 1's "sorter_seen" / "sorter_intact", each rule's own
+    items once per key)."""
     if not isinstance(ai_draft.get(list_key), list):
         return None
     final = damage_items(final_data)
@@ -521,12 +532,16 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str =
     seen: set[str] = set()
     for it in _dicts(ai_draft.get(list_key)):
         key = key_of(it)
-        if not key or key in seen:
+        rule = it.get(by) if isinstance(it.get(by), str) and it.get(by) else None
+        if by == "found_by":
+            marks = [m for m in it.get("found_by") or [] if isinstance(m, str) and m]
+            rule = marks[0] if marks else None
+        once = key if by == "link_rule" else f"{rule}|{key}"
+        if not key or once in seen:
             continue
-        seen.add(key)
+        seen.add(once)
         covers = [c for c in it.get("covers") or [] if isinstance(c, str)] or [str(it.get("part") or "")]
         on_list = key in final_keys or bool(set(covers) & final_parts)
-        rule = it.get("link_rule") if isinstance(it.get("link_rule"), str) and it.get("link_rule") else None
         tallies = [out] + ([out["by_rule"].setdefault(rule[:MAX_RULE], {"predicted": 0, "on_final_list": 0})]
                            if rule else [])
         for tally in tallies:
@@ -586,7 +601,7 @@ def sum_suggestions(metrics: list[dict]) -> dict:
         found = s.get("links_table")
         tables.update(name[:20] for name in (found if isinstance(found, list) else [found])
                       if isinstance(name, str) and name)
-        for shadow_key in ("shadow", "car_map_shadow"):
+        for shadow_key in ("shadow", "car_map_shadow", "sorter_shadow"):
             shadow = s.get(shadow_key) if isinstance(s.get(shadow_key), dict) else None
             if shadow is None:
                 continue

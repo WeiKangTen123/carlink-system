@@ -15,9 +15,10 @@ database; see the fixture scripts/fixtures/sorter_hints_sample.json):
       "photos": [{"label": "P01", "kind": "damage", "area": "rear",
                   "part": "Rear Bumper", "damage": true, "note": "...",
                   "read": true, "box": [y0, x0, y1, x1] | null,
-                  "quality": "good", "excluded": false}, ...],
-                                            (camera order; quality and
-                                            excluded optional)
+                  "quality": "good", "excluded": false, "raw": false}, ...],
+                                            (camera order; quality,
+                                            excluded and raw -- the AI got
+                                            the original: no box -- optional)
       "damage_summary": [{"part": ...}, ...],   (the AI draft's items)
       "second_look": {"items": [...], "dismissed": [...]},
       "runs": [{"kind": "read_zones", "photos_sent": {"zones": [
@@ -75,7 +76,7 @@ never rebuilt.
 
 Output (--out, and a short table on stdout):
 
-    {"tool": "replay_sorter_hints", "version": 2, "cap": 6,
+    {"tool": "replay_sorter_hints", "version": 3, "cap": 6,
      "cases": [{"case", "photos",
                 "zone_intact": {...},
                 "a1": [ROW, ...], "a2": [ROW, ...], "both": [ROW, ...],
@@ -88,8 +89,9 @@ Output (--out, and a short table on stdout):
                                          "unmatched_stored", "missing_inputs": [...]},
                                "settings": {...}}}],
      "totals": {"a1", "a2", "both", "a2_overrides", "links_gained", "links_lost"}}
-    ROW = {"part", "source": "sorter", "photo": "P07", "reason",
-           "via": "part" | "note", "intact_in": [zone reads],
+    ROW = {"part", "source": "sorter", "rule": "sorter_seen" (A1) |
+           "sorter_intact" (A2), "photo": "P07", "reason": the sorter's
+           note, cleaned, "via": "part" | "note", "intact_in": [zone reads],
            "read": did the main read get that photo (the trail's "read"),
            "seen_in": ["P07", ...], "box": the sorter's box on that photo
            when it is round this part (its tag's, or the only one), else null}
@@ -117,7 +119,7 @@ BOT_DIR = SCRIPTS_DIR.parent
 if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
-VERSION = 2
+VERSION = 3
 
 
 class NoNetwork(RuntimeError):
@@ -215,7 +217,7 @@ def photos_of(trail: dict) -> list[dict]:
             "id": str(p["label"]), "position": n, "kind": p.get("kind"), "area": p.get("area"),
             "part": p.get("part"), "note": p.get("note"), "shows_damage": p.get("damage") is True,
             "quality": p.get("quality") or "good", "excluded": bool(p.get("excluded")),
-            "damage_box": p.get("box"), "read": bool(p.get("read")),
+            "damage_box": p.get("box"), "read": bool(p.get("read")), "raw": bool(p.get("raw")),
         })
     return out
 
@@ -269,7 +271,8 @@ def rows(items: list[dict], found: "sorter_hints.Found", photos: dict[str, dict]
         photo = photos.get(label or "") or {}
         own = next((e for e in it.get("evidence") or [] if e.get("photo") == it.get("photo_reference")), {})
         out.append({
-            "part": it["part"], "source": it.get("source"), "photo": label, "reason": it.get("reason"),
+            "part": it["part"], "source": it.get("source"), "rule": (it.get("found_by") or [None])[0],
+            "photo": label, "reason": it.get("reason"),
             "via": origin.get("via"), "intact_in": list(origin.get("reads") or []), "read": bool(photo.get("read")),
             "seen_in": [_label(r) for r in it.get("seen_in") or []], "box": own.get("box"),
         })
@@ -358,7 +361,6 @@ def links_diff(trail: dict, photos: list[dict], intact: dict, values: dict) -> t
 
 def replay_case(trail: dict, name: str, cap: int = sorter_hints.MAX_HINTS, flags: dict | None = None) -> dict:
     photos = photos_of(trail)
-    labels = {p["id"]: p["id"] for p in photos}
     listed = listed_parts({"damage_summary": listed_of(trail)})
     shown, dismissed = look_of(trail)
     intact = zone_intact_of(trail)
@@ -374,7 +376,7 @@ def replay_case(trail: dict, name: str, cap: int = sorter_hints.MAX_HINTS, flags
         shown_strict = shown
 
     def run(hints: bool, strict: bool):
-        return sorter_hints.find(photos, labels, listed=listed, shown=shown_strict if strict else shown,
+        return sorter_hints.find(photos, listed=listed, shown=shown_strict if strict else shown,
                                  dismissed=dismissed, zone_intact=intact, hints=hints, strict_rule=strict, cap=cap)
 
     a1, a2, both = run(True, False), run(False, True), run(True, True)

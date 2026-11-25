@@ -81,12 +81,11 @@ EXPECTED_PROD_NEW_ENV = {
     # (test_p1_report_checks checks the default against config.py).
     "INTAKE_FIRM_WORDS": "off",
     # Detection Round 1 (owner, 25 Nov 2026): A1 the sorter's finds as
-    # suggestions, A2 the zone reads' "intact" rule, A3 the main read's photo
-    # choice -- each at config.py's default = today's behaviour (scripts/
-    # test_detect_r1.py section 0 checks them against config.py).
+    # suggestions, A2 the zone reads' "intact" rule -- each at config.py's
+    # default = today's behaviour (scripts/test_detect_r1.py section 0
+    # checks them against config.py).
     "INTAKE_SORTER_HINTS": "off",
     "INTAKE_INTACT_RULE": "old",
-    "INTAKE_READ_PICK": "v1",
 }
 NEW_ENV_SERVICES = ("api", "telegram-bot")
 

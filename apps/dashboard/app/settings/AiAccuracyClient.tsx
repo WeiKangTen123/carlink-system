@@ -147,6 +147,9 @@ const READ_NAMES: Record<string, string> = {
   "zone:left": "Left side read",
   "zone:right": "Right side read",
   "zone:close": "Close-up read",
+  // Detection Round 1: a photo sorter suggestion's rule (found_by).
+  sorter_seen: "Photo sorter: seen only by it",
+  sorter_intact: "Photo sorter: a zone read said intact",
 };
 
 function readName(read: string): string {
@@ -180,6 +183,7 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
           before they were counted show none.
         </div>
         {s?.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={tableNames(s)} />}
+        {s?.sorter_shadow && s.sorter_shadow.predicted > 0 && <SorterShadow shadow={s.sorter_shadow} />}
       </Section>
     );
   }
@@ -269,12 +273,20 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
       {s.car_map_shadow && s.car_map_shadow.predicted > 0 && (
         <ShadowBlock shadow={s.car_map_shadow} table={null} title="Car map's linked parts in shadow mode (not shown to people)" />
       )}
+      {s.sorter_shadow && s.sorter_shadow.predicted > 0 && <SorterShadow shadow={s.sorter_shadow} />}
     </Section>
   );
 }
 
 /** Contract 10, shadow mode: the linked parts worked out but not shown to
  * anyone, against the signed-off list (counts only, never a percentage). */
+/** Detection Round 1 in shadow mode: the photo sorter's suggestions worked
+ * out but not shown, by rule (found_by), against the signed-off list. */
+function SorterShadow({ shadow }: { shadow: AiAccuracyLinkShadow }) {
+  const named = { ...shadow, by_rule: Object.fromEntries(Object.entries(shadow.by_rule ?? {}).map(([k, v]) => [readName(k), v])) };
+  return <ShadowBlock shadow={named} table={null} title="Photo sorter's suggestions in shadow mode (not shown to people)" />;
+}
+
 function ShadowBlock({
   shadow,
   table,

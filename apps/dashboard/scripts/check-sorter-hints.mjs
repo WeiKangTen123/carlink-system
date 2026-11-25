@@ -55,7 +55,7 @@ const item = (over = {}) => ({
   confidence: "Low",
   reason: "Left fog lamp cover cracked",
   evidence: [{ photo: "@p12", box: [100, 100, 400, 400], box_kind: "sort", by: "sort", reason: null, confidence: "Low", img_w: null, img_h: null }],
-  found_by: [],
+  found_by: ["sorter_seen"],
   seen_in: ["@p12"],
   condition_tokens: [],
   condition: null,
@@ -80,12 +80,37 @@ check("a sorter suggestion is shown, its source kept", () => {
   assert.equal(f.source, "sorter");
   assert.equal(f.name, "Front fog lamp LH");
 });
-check('its card says "Seen by the photo sorter" (sourceLabel); other sources none', () => {
+check('its card says "Seen by the photo sorter" (sourceLabel) beside its words; other sources none', () => {
   assert.equal(F.SORTER_LABEL, "Seen by the photo sorter");
   assert.equal(F.sourceLabel(sug(dataWith([item()]))), "Seen by the photo sorter");
   for (const source of ["zone", "kit", "nearby", "link", "other_side"]) {
-    assert.equal(F.sourceLabel({ source }), null, source);
+    assert.equal(F.sourceLabel({ source, reason: "x", foundBy: [], intactIn: [] }), null, source);
   }
+});
+check("L5: one label, not both -- with no words of its own, codeReason says it and sourceLabel nothing", () => {
+  const f = sug(dataWith([item({ reason: null })]));
+  assert.equal(F.sourceLabel(f), null);
+  assert.ok(F.codeReason(f).startsWith("Seen by the photo sorter"), F.codeReason(f));
+});
+check("its marks are not reads: never 'Found by the sorter_seen read'", () => {
+  const f = sug(dataWith([item({ reason: null })]));
+  assert.equal(F.foundByText(f), null);
+  assert.equal(F.foundByNames(f), null);
+  assert.ok(!F.codeReason(f).includes("sorter_"), F.codeReason(f));
+  assert.deepEqual(F.SORTER_MARKS, ["sorter_seen", "sorter_intact"]);
+  assert.equal(F.isRead("zone:rear"), true);
+  assert.equal(F.isRead("sorter_intact"), false);
+});
+check("M5: A2's sentence is written here from its facts (intact_in, the mark) -- no photo label, not 'AI says'", () => {
+  const a2 = item({ found_by: ["sorter_intact"], intact_in: ["zone:rear"], reason: "Rear windscreen cracked" });
+  const f = sug(dataWith([a2]));
+  assert.equal(f.reason, "Rear windscreen cracked");
+  assert.equal(F.sourceLabel(f), "The rear read called it intact, but the photo sorter saw damage on this photo");
+  const bare = sug(dataWith([{ ...a2, reason: null }]));
+  assert.ok(F.codeReason(bare).startsWith("The rear read called it intact, but the photo sorter saw damage"), F.codeReason(bare));
+  assert.ok(!/P\d+/.test(F.codeReason(bare)), F.codeReason(bare));
+  const two = sug(dataWith([{ ...a2, intact_in: ["zone:rear", "zone:left"] }]));
+  assert.equal(F.sourceLabel(two), "The rear and left side reads called it intact, but the photo sorter saw damage on this photo");
 });
 check("its words are the sorter's note, as any suggestion's reason", () => {
   assert.equal(sug(dataWith([item()])).reason, "Left fog lamp cover cracked");

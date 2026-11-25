@@ -458,7 +458,7 @@ export function codeReason(f: Finding): string {
     const parent = f.parents?.[0]?.name || f.linkedFrom?.[0];
     return parent ? `Linked to the ${parent} on the list` : "Linked to a part on the list";
   }
-  const reads = f.foundBy.filter((r) => r !== "overall").map(readName);
+  const reads = f.foundBy.filter((r) => r !== "overall" && isRead(r)).map(readName);
   let why: string;
   if (f.kind === "item") {
     why = f.foundBy.includes("overall")
@@ -476,7 +476,7 @@ export function codeReason(f: Finding): string {
       ? `Seen on another photo than the listed ${f.otherSideListed}: it may be the other side`
       : "Seen on another photo than the listed part: it may be the other side";
   } else if (f.source === "sorter") {
-    why = SORTER_LABEL;
+    why = sorterText(f);
   } else if (f.source === "kit") {
     why = "Often damaged with a part found here (past cases)";
   } else {
@@ -487,11 +487,33 @@ export function codeReason(f: Finding): string {
 }
 
 /** Detection Round 1: what a suggestion only the photo sorter saw is
- * labelled (source "sorter"). */
+ * labelled (source "sorter", found_by "sorter_seen"). */
 export const SORTER_LABEL = "Seen by the photo sorter";
 
-/** The label a suggestion's source adds to its card, or null. */
-export const sourceLabel = (f: Pick<Finding, "source">): string | null => (f.source === "sorter" ? SORTER_LABEL : null);
+/** Detection Round 1's rules on a suggestion (found_by): marks, not reads. */
+export const SORTER_MARKS = ["sorter_seen", "sorter_intact"];
+
+/** Whether a found_by entry is a read ("overall", "zone:rear"), not a
+ * photo sorter rule's mark. */
+export const isRead = (r: string) => !SORTER_MARKS.includes(r);
+
+/** The words for a photo sorter suggestion, written here from its facts
+ * (never stored, never shown as the AI's): one a zone read called intact
+ * (found_by "sorter_intact", intact_in the reads) or one only the sorter saw. */
+export function sorterText(f: Pick<Finding, "foundBy" | "intactIn">): string {
+  const reads = (f.intactIn ?? []).filter((r) => typeof r === "string" && r.startsWith("zone:")).map(readName);
+  if (f.foundBy.includes("sorter_intact") || reads.length) {
+    const who = reads.length ? `The ${joined(reads)} read${reads.length > 1 ? "s" : ""}` : "A zone read";
+    return `${who} called it intact, but the photo sorter saw damage on this photo`;
+  }
+  return SORTER_LABEL;
+}
+
+/** The label a suggestion's source adds to its card's facts, or null -- only
+ * where the card shows its own words (the AI's reason): without them
+ * codeReason says it, once (the review's L5). */
+export const sourceLabel = (f: Pick<Finding, "source" | "reason" | "foundBy" | "intactIn">): string | null =>
+  f.source === "sorter" && f.reason ? sorterText(f) : null;
 
 /** "AI says: “…”" -- the AI's own words, always marked as the AI's. */
 export const aiSays = (reason: string) => `AI says: “${reason}”`;
@@ -499,7 +521,7 @@ export const aiSays = (reason: string) => `AI says: “${reason}”`;
 /** "Found by 1 of 5 reads" when the case's reads are known, else "Found by
  * the rear read"; null for a suggestion no read found (kit / nearby). */
 export function foundByText(f: Pick<Finding, "foundBy">, reads?: string[] | null): string | null {
-  const found = [...new Set(f.foundBy.filter(Boolean))];
+  const found = [...new Set(f.foundBy.filter((r) => Boolean(r) && isRead(r)))];
   if (!found.length) return null;
   const total = reads?.length ? new Set([...reads, ...found]).size : 0;
   if (total > 1) return `Found by ${found.length} of ${total} reads`;
@@ -508,7 +530,7 @@ export function foundByText(f: Pick<Finding, "foundBy">, reads?: string[] | null
 
 /** The reads by name, for the viewer's "Found by: rear read". */
 export function foundByNames(f: Pick<Finding, "foundBy">): string | null {
-  const found = [...new Set(f.foundBy.filter(Boolean))].map(readName);
+  const found = [...new Set(f.foundBy.filter((r) => Boolean(r) && isRead(r)))].map(readName);
   return found.length ? `${joined(found)} read${found.length > 1 ? "s" : ""}` : null;
 }
 

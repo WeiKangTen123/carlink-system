@@ -2,11 +2,12 @@
 enhancement, then tell me") -- offline: Gemini is the fake of
 scripts/test_c10_integration.py, no server, made-up cases only.
 
-  0. settings: intake_sorter_hints (off | shadow | on), intake_intact_rule
-     (old | strict) and intake_read_pick (v1 | v2) default to today's
+  0. settings: intake_sorter_hints (off | shadow | on) and
+     intake_intact_rule (old | shadow | strict) default to today's
      behaviour, take their choices, refuse a typo, and are passed through
      docker-compose.prod.yml once, in the block both containers share, at
-     config.py's default (and test_compose's allow-list has them);
+     config.py's default (and test_compose's allow-list has them); A3
+     (intake_read_pick) dropped: app/intake/pipeline.py is master's;
   1. everything at the defaults: the requests and the stored data byte for
      byte as master ae0fde4's -- the full routes (read, decisions,
      autosave, filing, the case page, sign-off) in single mode, zone mode,
@@ -14,22 +15,26 @@ scripts/test_c10_integration.py, no server, made-up cases only.
      whose sorter saw parts no read listed (single mode, and zones + links
      with intake_links_intact "drop"), and a 44-photo case with 16 photos of
      one part -- the same scenarios on a git archive of that commit and here;
-  2. A1 (units, intake/sorter_hints.py): what the sorter saw (part tags,
-     notes read with the wording rules, never another vehicle, a document,
-     the scene, an excluded or unusable photo, or one with no damage seen),
-     the side-less compare, one per part on its best photo, the cap, the
-     skips (listed, suggested, dismissed);
-  3. A1 end to end: "on" shows them (source "sorter", the firm's names,
-     the sorter's evidence; a person adds one); "shadow" stores them on the
-     AI draft only -- the case's data as "off"'s -- relabelled at filing;
+  2. A1 (units, intake/sorter_hints.py): the note parser on the review's
+     M1 notes (negation, the first part mentioned, the other end, whole
+     words, locators, sub-parts we have no name for), what the sorter saw
+     (never another vehicle, a document, the scene, an excluded or
+     unusable photo, or one with no damage seen), the side-less compare,
+     one per part on its best photo, the cap, the skips (listed,
+     suggested, dismissed), the box through evidence.finish (M6);
+  3. A1 end to end: "on" shows them (source "sorter", found_by
+     "sorter_seen", the firm's names, the sorter's evidence; a person adds
+     one; one dismissed stays away after a re-read); "shadow" stores them
+     on the AI draft only -- the case's data as "off"'s -- relabelled at
+     filing and counted at sign-off (M7);
   4. A2: strict keeps the parts the sorter saw damaged that a zone read
-     called intact -- a suggestion with "Zone read said intact, but photo
-     Pxx shows damage (sorter): ..."; the linked parts no longer demoted or
-     dropped for them; "old" as before;
-  5. A3: v2's choice -- at most 2 damage photos per sorter (part, area)
-     while other photos are left, every damaged area a slot, the same
-     limit, no slot left empty, the same set when all fit; v1 exactly
-     today's; end to end, read_photo_ids;
+     called intact -- never across sides or ends (M2) -- a suggestion with
+     the sorter's note, intact_in the reads and found_by "sorter_intact"
+     (no photo label in any text: M5; renumbered at filing after a
+     deletion), at most 4 (L3); "shadow" on the AI draft only; the linked
+     parts no longer demoted or dropped for them, and never lost when the
+     rule fails (L4); the re-check asks them last (L1); a zone read's find
+     cut by the limit is never the sorter's (L2); "old" as before;
   6. scripts/bench/replay_sorter_hints.py on its made-up fixture: the
      command line, its output, the same functions as the pipeline,
      deterministic; links_diff -- the linked parts old and strict, rebuilt
@@ -48,12 +53,12 @@ scripts/test_c10_integration.py, no server, made-up cases only.
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
 import tempfile
 import traceback
-from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -235,12 +240,13 @@ if __name__ == "__main__" and "--probe" in sys.argv:
 # ------------------------------------------------------------- this tree only
 
 from app import config  # noqa: E402
-from app.ai import second_look  # noqa: E402
+from app.ai import check as check_step  # noqa: E402
+from app.ai import evidence, second_look  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.intake import links, pipeline, sorter_hints  # noqa: E402
+from app.intake import links, sorter_hints  # noqa: E402
 from app.reports import accuracy, filing  # noqa: E402
 from app.parts.prefill import item_key  # noqa: E402
-from app.reports.models import IntakePhoto  # noqa: E402
+from app.reports.models import AiAccuracy, IntakePhoto  # noqa: E402
 
 ROOT = HERE.parent
 REPO = ROOT.parent.parent
@@ -315,8 +321,8 @@ def requests_of(ids: dict) -> list[dict]:
 
 # ------------------------------------------------------------- 0. settings
 
-NEW_SETTINGS = {"intake_sorter_hints": "off", "intake_intact_rule": "old", "intake_read_pick": "v1"}
-COMPOSE = {"INTAKE_SORTER_HINTS": "off", "INTAKE_INTACT_RULE": "old", "INTAKE_READ_PICK": "v1"}
+NEW_SETTINGS = {"intake_sorter_hints": "off", "intake_intact_rule": "old"}
+COMPOSE = {"INTAKE_SORTER_HINTS": "off", "INTAKE_INTACT_RULE": "old"}
 
 
 def settings_section() -> None:
@@ -326,12 +332,12 @@ def settings_section() -> None:
     check({k: getattr(settings, k) for k in NEW_SETTINGS} == NEW_SETTINGS, "and this process runs at them")
     problems = []
     for name, good, want in (("intake_sorter_hints", "Shadow", "shadow"), ("intake_sorter_hints", "ON", "on"),
-                             ("intake_intact_rule", "STRICT", "strict"), ("intake_read_pick", "V2", "v2"),
-                             ("intake_read_pick", " v1 ", "v1")):
+                             ("intake_intact_rule", "STRICT", "strict"), ("intake_intact_rule", "Shadow", "shadow"),
+                             ("intake_intact_rule", " old ", "old")):
         if getattr(config.Settings(**{name: good}), name) != want:
             problems.append((name, good, "not taken"))
     for name, bad in (("intake_sorter_hints", "yes"), ("intake_sorter_hints", "true"), ("intake_intact_rule", "new"),
-                      ("intake_read_pick", "v3"), ("intake_read_pick", "2")):
+                      ("intake_intact_rule", "on")):
         try:
             config.Settings(**{name: bad})
             problems.append((name, bad, "a typo accepted"))
@@ -341,8 +347,9 @@ def settings_section() -> None:
         if getattr(config.Settings(**{name: ""}), name) != NEW_SETTINGS[name]:
             problems.append((name, "", "blank is not the default"))
     check(not problems, "each takes its choices (any case), blank is its default, a typo stops the app", problems)
-    check((config.SORTER_HINTS, config.INTACT_RULES, config.READ_PICKS)
-          == (("off", "shadow", "on"), ("old", "strict"), ("v1", "v2")), "the choices, today's first")
+    check((config.SORTER_HINTS, config.INTACT_RULES) == (("off", "shadow", "on"), ("old", "shadow", "strict"))
+          and not hasattr(config.settings, "intake_read_pick") and not hasattr(config, "READ_PICKS"),
+          "the choices, today's first; A3 (intake_read_pick) dropped")
     compose = (REPO / "infra" / "docker-compose.prod.yml").read_text(encoding="utf-8")
     anchor, services = compose.index("x-bot-service: &bot-service"), compose.index("\nservices:")
     bad = []
@@ -355,7 +362,14 @@ def settings_section() -> None:
     check(not bad, "docker-compose.prod.yml: each once, in the shared x-bot-service block, with config's default", bad)
     allow = (REPO / "infra" / "tests" / "test_compose.py").read_text(encoding="utf-8")
     missing = [env for env, default in COMPOSE.items() if f'"{env}": "{default}",' not in allow]
-    check(not missing, "infra/tests/test_compose.py allows each as an added line at its default only", missing)
+    check(not missing and "INTAKE_READ_PICK" not in allow and "INTAKE_READ_PICK" not in compose,
+          "infra/tests/test_compose.py allows each as an added line at its default only (A3's gone from both)",
+          missing)
+    base = subprocess.run(["git", "-C", str(REPO), "show", f"{BASE_REF}:apps/bot-service/app/intake/pipeline.py"],
+                          capture_output=True, text=True, encoding="utf-8")
+    here = (ROOT / "app" / "intake" / "pipeline.py").read_text(encoding="utf-8")
+    check(base.returncode == 0 and base.stdout.replace("\r\n", "\n") == here.replace("\r\n", "\n"),
+          f"A3 dropped: app/intake/pipeline.py is {BASE_REF}'s, byte for byte (the photo choice untouched)")
     check("sorter_suggestions" in filing.AI_DRAFT_PHOTO_LISTS and "sorter" in accuracy.SUGGESTION_SOURCES,
           "filing relabels the shadow list's photos; the AI-accuracy record counts source \"sorter\"")
 
@@ -417,8 +431,66 @@ def _photo(i: int, kind, area=None, part=None, damage=False, **kw) -> IntakePhot
                        excluded=kw.pop("excluded", False), **kw)
 
 
-def _labels(photos) -> dict[str, str]:
-    return {p.id: f"P{i + 1:02d}" for i, p in enumerate(photos)}
+def _find(photos, **kw):
+    """sorter_hints.find with nothing listed, suggested or dismissed unless given."""
+    args = dict(listed=set(), shown=[], dismissed=[], zone_intact={}, hints=True, strict_rule=False)
+    args.update(kw)
+    return sorter_hints.find(photos, **args)
+
+
+# (note, the photo's area, its tag) -> the part the note names first. The
+# review's M1 cases, each fixed, and the ones that worked before.
+NOTE_CASES = {
+    # The wording rules as before: a sub-part on a tagged photo, a canonical name word for word.
+    ("Damaged left front wheel arch liner", "front-left", None): "Left Front Wheel Arch Liner",
+    ("Boot lid striker bent", "rear", "Boot Lid"): "Boot Lid Lock",
+    ("Boot floor board torn", "rear", None): "Boot Floor Board",
+    ("Wheel arch trim scraped", "front-left", None): "Wheel Arch Trim (side undetermined)",
+    ("Fog lamp cover cracked", "front-left", None): "Fog Lamp (side undetermined)",
+    ("Left fog lamp cover missing", "front-right", None): "Fog Lamp (side undetermined)",
+    ("Left fog lamp cover missing", "front-left", None): "Left Fog Lamp",
+    # (d) the locator words: the part before them, a clause that is only a place left out.
+    ("Rear bumper cracked near LH reflector", "rear", None): "Rear Bumper",
+    ("Front bumper torn at LH fog lamp", "front", None): "Front Bumper",
+    ("Rear door dented behind front door", "left", None): "Door (side undetermined)",
+    ("Front bumper scratched under headlamp", "front", None): "Front Bumper",
+    ("Scratch on front fender from front door", "left", None): "Front Fender (side undetermined)",
+    ("Dent over the wheel arch", "left", None): None,
+    ("Scuff on bumper corner by the fog lamp", "front", None): None,
+    ("Paint transfer between front and rear door", "left", None): None,
+    ("Bumper cover adjacent headlamp cracked", "front", None): None,
+    ("Under the front bumper, undercover hanging", "front", None): None,
+    # (a) negated in its clause: "ok", "fine", "good", "intact", "undamaged", "no" / "not" before it.
+    ("Wheel scuffed, tyre ok", "front-left", "Left Front Wheel"): "Wheel (side undetermined)",
+    ("Tyre sidewall cut, wheel fine", "front-left", None): "Tyre (side undetermined)",
+    ("Bumper scraped, exhaust tip ok", "rear", "Rear Bumper"): None,
+    ("Door undamaged, sill scraped", "left", None): "Sill / Rocker Panel (side undetermined)",
+    ("No damage to door", "left", None): None,
+    ("Front view of the car, no visible damage on bonnet", "front", None): None,
+    ("Rear bumper intact; boot lid dented", "rear", None): "Boot Lid",
+    ("Bonnet not damaged", "front", None): None,
+    ("Headlamp in good condition", "front", None): None,
+    # (b) the other end of the car from the photo's area (else its tag's).
+    ("Windscreen shattered", "rear", "Rear Windscreen"): None,
+    ("Number plate bent", "front", "Front Number Plate"): None,
+    ("Left fog lamp cover cracked", "rear", None): None,
+    ("Tail lamp cracked", "front", None): None,
+    ("Rear bumper scraped", "left", "Left Front Door"): None,
+    # (c) the part mentioned first, not the first rule that matches.
+    ("Left headlamp broken, right headlamp ok", "front", None): "Left Headlamp",
+    ("Front grille cracked and front bumper torn", "front", None): "Front Grille",
+    ("Scrape along sill to rear wheel arch", "left", None): "Sill / Rocker Panel (side undetermined)",
+    ("Rear bumper cracked, boot lid dented", "rear", None): "Rear Bumper",
+    # (e) whole words: "hood" in "neighbourhood" is no bonnet.
+    ("Car parked in neighbourhood", "front", None): None,
+    ("Hood", "front", None): "Bonnet",
+    # A sub-part we have no name for is not its part.
+    ("Scratched door handle", "left", None): None,
+    ("Number plate lamp broken", "rear", None): None,
+    ("Radiator support bent", "front", None): None,
+    ("Scratches", "rear", None): None, ("", "rear", None): None, (None, None, None): None,
+    ("Rescue sort: damage on the insured car (first sorted: interior)", "rear", None): None,
+}
 
 
 def a1_units() -> None:
@@ -430,45 +502,51 @@ def a1_units() -> None:
           and not same("Left Front Wheel Arch Liner", "Left Rear Wheel Arch Liner")
           and not same("Rear Bumper", "Rear Bumper Beam") and not same(None, "Rear Bumper"),
           "same_component: the part whatever its side, never another part")
-    notes = {
-        ("Damaged left front wheel arch liner", "front-left"): "Left Front Wheel Arch Liner",
-        ("Rear bumper cracked near LH reflector", "rear"): "Rear Bumper",
-        ("Boot lid striker bent", "rear"): "Boot Lid Lock",
-        ("Boot floor board torn", "rear"): "Boot Floor Board",
-        ("Left fog lamp cover missing", "front-right"): "Fog Lamp (side undetermined)",
-        ("Left fog lamp cover missing", "front-left"): "Left Fog Lamp",
-        ("Tail lamp cracked", "rear"): "Tail Lamp (side undetermined)",
-        ("Front bumper torn at LH fog lamp", "front"): "Front Bumper",
-        ("Scratches", "rear"): None, ("", "rear"): None, (None, None): None,
-        ("Rescue sort: damage on the insured car (first sorted: interior)", "rear"): None,
+    got = {k: sorter_hints.note_part(*k) for k in NOTE_CASES}
+    wrong = {k: (v, NOTE_CASES[k]) for k, v in got.items() if v != NOTE_CASES[k]}
+    check(not wrong, f"note_part on {len(NOTE_CASES)} notes (M1): the first part mentioned, whole words, up to the "
+                     "first locator, never negated, never at the other end, never a sub-part we have no name for",
+          wrong)
+    two = sorter_hints.note_parts("Rear bumper cracked, boot lid dented", "rear")
+    check([p for p, _ in two] == ["Rear Bumper", "Boot Lid"]
+          and sorter_hints.note_parts("Front door dented", "right") == [("Door (side undetermined)", "Front Door")],
+          "note_parts: every part, in the order mentioned, with its family (which keeps the door's front)", two)
+    # The review's table (M1): the photo's own tag listed, so nothing to suggest -- and no wrong part from the note.
+    table = {
+        "windscreen": _photo(1, "damage", "rear", "Rear Windscreen", True, note="Windscreen shattered"),
+        "plate": _photo(1, "damage", "front", "Front Number Plate", True, note="Number plate bent"),
+        "wheel": _photo(1, "tyre", "front-left", "Left Front Wheel", True, note="Wheel scuffed, tyre ok"),
+        "exhaust": _photo(1, "damage", "rear", "Rear Bumper", True, note="Bumper scraped, exhaust tip ok"),
+        "sill": _photo(1, "damage", "left", "Left Sill / Rocker Panel", True, note="Door undamaged, sill scraped"),
     }
-    got = {k: sorter_hints.note_part(*k) for k in notes}
-    check(got == notes, "note_part: the wording rules up to the first locator word, the side the area allows, "
-                        "the (side undetermined) name, nothing for no part",
-          {k: v for k, v in got.items() if notes[k] != v})
+    made = {k: parts(_find([p], listed={p.part}).hints) for k, p in table.items()}
+    check(all(v == [] for v in made.values()), "the review's five notes on a listed tag suggest nothing "
+                                               "(no Front Windscreen, Rear Number Plate, Tyre, Exhaust or Door)", made)
     photos = [
         _photo(0, "log_card"), _photo(1, "damage", "rear", "Rear Bumper", True, note="Rear bumper cracked"),
-        _photo(2, "third_party", None, "Front Bumper", True, note="Other car"),
+        _photo(2, "third_party", None, "Front Bumper", True, note="Other car's front bumper dented"),
         _photo(3, "document", None, "Front Grille", True), _photo(4, "scene", None, "Roof", True),
         _photo(5, "damage", "rear", "Boot Lid", True, excluded=True), _photo(6, "damage", "rear", "Roof", True,
                                                                              quality="unusable"),
         _photo(7, "damage", "rear", "Rear End Panel", False), _photo(8, "damage", "rear", "Boot Lid", True,
                                                                      note="Boot lid striker bent"),
         _photo(9, None, None, "Boot Lid Hinge", True),
+        _photo(10, "damage", "rear", "Rear Windscreen", True, note="Rear windscreen and tail lamp cracked"),
     ]
     seen = [(s.part, s.photo.id, s.via) for s in sorter_hints.seen_damage(photos)]
-    check(seen == [("Rear Bumper", "p1", "part"), ("Boot Lid", "p8", "part"), ("Boot Lid Lock", "p8", "note")],
-          "seen_damage: tags and note parts of the insured car's photos showing damage only -- never another "
-          "vehicle, a document, the scene, an excluded, unusable, damage-free or unsorted photo", seen)
+    check(seen == [("Rear Bumper", "p1", "part"), ("Boot Lid", "p8", "part"), ("Boot Lid Lock", "p8", "note"),
+                   ("Rear Windscreen", "p10", "part"), ("Tail Lamp (side undetermined)", "p10", "note")],
+          "seen_damage: tags and a note's first other part, on the insured car's photos showing damage only -- "
+          "never another vehicle (its note neither), a document, the scene, an excluded, unusable, damage-free or "
+          "unsorted photo", seen)
     many = [_photo(0, "overview", "rear", "Rear Bumper", True, note="Wide shot")]
     many += [_photo(i, "damage", "rear", part, True) for i, part in enumerate(
         ["Left Tail Lamp", "Right Tail Lamp", "Boot Lid Hinge", "Boot Lid Lock", "Rear End Panel", "Rear Number Plate",
          "Left Rear Bumper Reflector", "Boot Floor Board", "Rear Bumper Beam"], start=1)]
     many.append(_photo(10, "damage", "rear", "Rear Bumper", True, quality="blurry", damage_box=[100, 100, 500, 500]))
     many.append(_photo(11, "damage", "rear", "Rear Bumper", True, damage_box=[200, 200, 600, 600]))
-    found = sorter_hints.find(many, _labels(many), listed={"Right Rear Bumper Reflector"},
-                              shown=[{"part": "Tail Lamp (side undetermined)", "key": "x"}],
-                              dismissed=["Rear Number Plate"], zone_intact={}, hints=True, strict_rule=False)
+    found = _find(many, listed={"Right Rear Bumper Reflector"}, shown=[{"part": "Tail Lamp (side undetermined)"}],
+                  dismissed=["Rear Number Plate"])
     check(len(found.hints) == 6 and not found.intact, "at most MAX_HINTS (6) a case", parts(found.hints))
     check(parts(found.hints) == ["Boot Lid Hinge", "Boot Lid Lock", "Rear End Panel", "Boot Floor Board",
                                  "Rear Bumper Beam", "Rear Bumper"],
@@ -482,36 +560,53 @@ def a1_units() -> None:
           and bumper["evidence"][0] == {**bumper["evidence"][0], "photo": "@p11", "box": [200, 200, 600, 600],
                                         "box_kind": "sort", "by": "sort"},
           "one per part on its best photo (sharp before blurry), its other photos in seen_in, the sorter's box as "
-          "its evidence", {k: bumper[k] for k in ("photo_reference", "seen_in", "evidence")})
+          "its evidence (evidence.finish)", {k: bumper[k] for k in ("photo_reference", "seen_in", "evidence")})
     check(all(it["source"] == "sorter" and it["confidence"] == "Low" and it["key"] == item_key({"part": it["part"]})
-              and it["covers"] == second_look.covers_of(it["part"]) for it in found.hints),
-          "each a SecondLookItem: source \"sorter\", Low, its key and covers as any suggestion's")
-    capped = sorter_hints.find(many, _labels(many), listed=set(), shown=[], dismissed=[], zone_intact={}, hints=True,
-                               strict_rule=False, cap=2)
+              and it["covers"] == second_look.covers_of(it["part"]) and it["found_by"] == [sorter_hints.SEEN]
+              and "intact_in" not in it for it in found.hints),
+          "each a SecondLookItem: source \"sorter\", found_by [\"sorter_seen\"] (A1's mark), Low, its key and covers")
+    capped = _find(many, cap=2)
     check(len(capped.hints) == 2 and capped.skipped == {"cap": 7}, "a smaller cap: the rest counted as cut by it, "
-          "once per part (the right tail lamp is the left's part)",
-          capped.skipped)
+          "once per part (the right tail lamp is the left's part)", capped.skipped)
     notes_only = [_photo(0, "damage", "rear", None, True, note="Boot floor board torn"),
                   _photo(1, "interior", "rear", "Boot Side Trim (side undetermined)", True, note="Trim cracked")]
-    got = sorter_hints.find(notes_only, _labels(notes_only), listed=set(), shown=[], dismissed=[], zone_intact={},
-                            hints=True, strict_rule=False)
+    got = _find(notes_only)
     check(parts(got.hints) == ["Boot Floor Board", "Boot Side Trim (side undetermined)"]
           and got.hints[0]["reason"] == "Boot floor board torn" and got.origin[got.hints[0]["key"]]["via"] == "note",
-          "a note's part (its note the reason); an interior photo of the boot counts; the sorter's own "
+          "a note's part (its note, cleaned, the reason); an interior photo of the boot counts; the sorter's own "
           "(side undetermined) kept", [(it["part"], it["reason"]) for it in got.hints])
+    # M6: the sorter's box through evidence.finish -- round its own part only, never on a raw original, its frame.
     boxed = [_photo(0, "damage", "rear", "Boot Lid", True, note="Boot lid striker bent",
                     damage_box=[100, 100, 400, 400]),
              _photo(1, "damage", "rear", None, True, note="Boot floor board torn", damage_box=[200, 200, 500, 500])]
-    got = sorter_hints.find(boxed, _labels(boxed), listed={"Boot Lid"}, shown=[], dismissed=[], zone_intact={},
-                            hints=True, strict_rule=False)
+    got = _find(boxed, listed={"Boot Lid"})
     boxes = {it["part"]: it["evidence"][0]["box"] for it in got.hints}
     check(boxes == {"Boot Lid Lock": None, "Boot Floor Board": [200, 200, 500, 500]},
           "the sorter's box only round its own part: none for a note's part on a tagged photo, the box on an "
           "untagged one", boxes)
-    off = sorter_hints.find(many, _labels(many), listed=set(), shown=[], dismissed=[], zone_intact={"zone:rear": []},
-                            hints=False, strict_rule=False)
+    from PIL import Image
+
+    folder = Path(tempfile.mkdtemp(prefix="detect-r1-frames-"))
+    image = folder / "p0.jpg"
+    Image.new("RGB", (640, 480), (90, 90, 90)).save(image, "JPEG")
+    hinge = [_photo(0, "damage", "rear", "Boot Lid Hinge", True, damage_box=[100, 100, 400, 400])]
+
+    def facts(raw: bool) -> dict:
+        return {"p0": evidence.PhotoFacts(ai_path=str(image), raw=raw, sort_box=[100, 100, 400, 400],
+                                          sort_part="Boot Lid Hinge")}
+
+    framed = _find(hinge, facts=facts(False)).hints[0]["evidence"][0]
+    raw = _find(hinge, facts=facts(True)).hints[0]["evidence"][0]
+    check(framed["box"] == [100, 100, 400, 400] and (framed["img_w"], framed["img_h"]) == (640, 480)
+          and raw["box"] is None and raw["box_kind"] is None,
+          "M6: with the photo's facts (pipeline.photo_facts), the box carries its frame; on a raw original "
+          "(no preview, EXIF may turn it) there is none", (framed, raw))
+    import shutil
+
+    shutil.rmtree(folder, ignore_errors=True)
+    off = _find(many, zone_intact={"zone:rear": []}, hints=False)
     check(not off.hints and not off.intact, "nothing with both off")
-    check(sorter_hints.hints_mode() == "off" and not sorter_hints.strict() and not sorter_hints.active()
+    check(sorter_hints.hints_mode() == "off" and sorter_hints.intact_rule() == "old" and not sorter_hints.active()
           and not second_look._round1_active(), "at the defaults nothing of it is active")
 
 
@@ -538,9 +633,10 @@ def a1_end_to_end() -> None:
               "on: the parts only the sorter saw, damage close-ups first, at most 6 (the boot floor board's note 7th: "
               "cut); never the other car's bumper (P10); the listed ones and their twins left out", parts(mine))
         check(mine[0]["photo_reference"] == f"@{pids[3]}" and mine[-1]["photo_reference"] == f"@{pids[4]}"
-              and mine[-1]["reason"] == "Boot lid striker bent" and mine[2]["reason"] == "Rear windscreen cracked",
-              "each on the sorter's photo, its note the reason (the boot lid's striker from its note)",
-              [(it["part"], it["photo_reference"], it["reason"]) for it in mine])
+              and mine[-1]["reason"] == "Boot lid striker bent" and mine[2]["reason"] == "Rear windscreen cracked"
+              and all(it["found_by"] == [sorter_hints.SEEN] for it in mine),
+              "each on the sorter's photo, its note the reason (the boot lid's striker from its note), A1's mark",
+              [(it["part"], it["photo_reference"], it["reason"], it.get("found_by")) for it in mine])
         check(all(it.get("name") and it.get("covers") and it["evidence"] and it["evidence"][0]["by"] == "sort"
                   for it in mine), "named in the firm's words, with covers and the sorter's evidence",
               [(it.get("name"), it.get("covers")) for it in mine])
@@ -548,12 +644,27 @@ def a1_end_to_end() -> None:
         r = client.post(f"/intake/{rid}/suggestions", json={"key": mine[2]["key"], "action": "add"})
         added = r.json().get("item") or {}
         check(r.status_code == 200 and added.get("part") == "Rear Windscreen"
-              and added.get("added_from") == "suggestion"
+              and added.get("added_from") == "suggestion" and added.get("reason") == "Rear windscreen cracked"
               and added.get("photo_reference") == f"@{pids[8]}" and added.get("human_verified") is True,
-              "a person adds one: on the list, from the suggestion, on its photo", r.text[:400])
+              "a person adds one: on the list, from the suggestion, on its photo, the sorter's plain note as its "
+              "reason", r.text[:400])
         listed_now = [it.get("part") for it in (t.db_row(Report, rid).data or {}).get("damage_summary") or []]
         check("Rear Windscreen" in listed_now, "... and it is on the damage list", listed_now)
         check("sorter_suggestions" not in (t.db_row(IntakeSession, rid).ai_draft or {}), "on: nothing on the AI draft")
+        # L8: dismissed, then read again -- never suggested again.
+        gone = mine[1]["key"]
+        r = client.post(f"/intake/{rid}/suggestions", json={"key": gone, "action": "dismiss"})
+        again = client.post(f"/intake/{rid}/process", json={"mode": "read"})
+        state = t.wait_done(client, rid)
+        look = look_of(rid)
+        on_list = [it.get("part") for it in (t.db_row(Report, rid).data or {}).get("damage_summary") or []]
+        open_now = [it for it in sorter_items(look) if it["key"] not in (look.get("dismissed") or [])
+                    and it["part"] not in on_list]
+        check(r.status_code == 200 and again.status_code == 200 and state["stage"] == "ready"
+              and gone in (look.get("dismissed") or []) and gone not in [it["key"] for it in open_now]
+              and "Rear Windscreen" not in parts(open_now) and "Boot Floor Board" in parts(open_now),
+              "a dismissed one stays away after a re-read (the added one too); the next part takes its place",
+              (parts(open_now), look.get("dismissed")))
 
     with a_case(dict(intake_sorter_hints="shadow"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
             client, rid, pids, uid, state):
@@ -578,45 +689,79 @@ def a1_end_to_end() -> None:
         check(r.status_code == 200 and refs and all(isinstance(x, str) and x.startswith("P") for x in refs)
               and not t.refs_in((filed.ai_draft or {}).get("sorter_suggestions")),
               "filing relabels the shadow list's photos to the case's P-numbers", refs)
+        code = t.sign_off(client, rid).status_code
+        metrics = (t.db_row(AiAccuracy, rid).metrics or {}).get("suggestions") or {}
+        ss = metrics.get("sorter_shadow") or {}
+        check(code == 200 and ss.get("predicted") == 6 and ss.get("on_final_list") == 0
+              and (ss.get("by_rule") or {}).get(sorter_hints.SEEN, {}).get("predicted") == 6,
+              "M7: the shadow list counted at sign-off (sorter_shadow: predicted, on the list, by rule)", ss)
+    total = accuracy.sum_suggestions([{"suggestions": {"sorter_shadow": ss}}, {"suggestions": {"sorter_shadow": ss}}])
+    check((total.get("sorter_shadow") or {}).get("predicted") == 12
+          and "sorter_shadow" not in accuracy.sum_suggestions([{"suggestions": {"shown": 1}}]),
+          "... and added up over cases on the AI-accuracy page (only once a case has it)", total.get("sorter_shadow"))
 
 
 # ------------------------------------------------------------- 4. A2
 
+A2_INTACT = {"zone:rear": ["Rear Windscreen", "Left Tail Lamp", "Parking Sensor"],
+             "zone:left": ["Left Rear Door", "Left Wing Mirror"], "zone:front": ["Fog Lamp (side undetermined)"]}
+
 
 def a2_units() -> None:
     photos = [_photo(0, "damage", "rear", "Rear Windscreen", True, note="Rear windscreen cracked"),
-              _photo(1, "damage", "rear", "Right Tail Lamp", True), _photo(2, "damage", "rear", None, True,
-                                                                          note="Left fog lamp cover cracked"),
+              _photo(1, "damage", "rear", "Right Tail Lamp", True),
+              _photo(2, "damage", "rear", None, True, note="Left fog lamp cover cracked"),
               _photo(3, "damage", "left", "Door (side undetermined)", True)]
-    intact = {"zone:rear": ["Rear Windscreen", "Left Tail Lamp", "Parking Sensor"],
-              "zone:left": ["Left Rear Door", "Left Wing Mirror"], "zone:front": ["Fog Lamp (side undetermined)"]}
-    check(sorter_hints.strict_intact(intact, photos)
-          == {"zone:rear": ["Left Tail Lamp", "Parking Sensor"], "zone:left": ["Left Wing Mirror"], "zone:front": []},
-          "strict_intact: each read's list without the parts the sorter saw damaged (the same part, never the "
-          "other side's twin: Left Tail Lamp stays against a damaged Right Tail Lamp)",
-          sorter_hints.strict_intact(intact, photos))
-    over = sorter_hints.overridden(intact, photos)
-    check(over == [{"read": "zone:front", "part": "Fog Lamp (side undetermined)", "photo": "@p2"},
-                   {"read": "zone:left", "part": "Left Rear Door", "photo": "@p3"},
+    check(sorter_hints.strict_intact(A2_INTACT, photos)
+          == {"zone:rear": ["Left Tail Lamp", "Parking Sensor"], "zone:left": ["Left Wing Mirror"],
+              "zone:front": ["Fog Lamp (side undetermined)"]},
+          "strict_intact: each read's list without the parts the sorter saw damaged -- never the other side's (the "
+          "Left Tail Lamp stays against a damaged Right one), never the other end's (a rear photo's fog lamp note "
+          "doesn't touch the front read's fog lamps); the door on a left photo is a left door",
+          sorter_hints.strict_intact(A2_INTACT, photos))
+    over = sorter_hints.overridden(A2_INTACT, photos)
+    check(over == [{"read": "zone:left", "part": "Left Rear Door", "photo": "@p3"},
                    {"read": "zone:rear", "part": "Rear Windscreen", "photo": "@p0"}],
           "overridden: each intact verdict a sorter photo contradicts, with that photo", over)
-    found = sorter_hints.find(photos, _labels(photos), listed={"Left Rear Door"}, shown=[], dismissed=[],
-                              zone_intact=intact, hints=False, strict_rule=True)
-    check([(it["part"], it["reason"]) for it in found.intact]
-          == [("Rear Windscreen",
-               "Zone read said intact, but photo P01 shows damage (sorter): Rear windscreen cracked"),
-              ("Left Fog Lamp",
-               "Zone read said intact, but photo P03 shows damage (sorter): Left fog lamp cover cracked")]
+    # M2: an undetermined door on a RIGHT photo whose note says front: only the right front door.
+    door = [_photo(0, "damage", "right", "Door (side undetermined)", True, note="Front door dented")]
+    doors = {"zone:left": ["Left Rear Door", "Left Front Door", "Left Sill / Rocker Panel"],
+             "zone:right": ["Right Rear Door", "Right Front Door"]}
+    check(sorter_hints.strict_intact(doors, door)
+          == {"zone:left": ["Left Rear Door", "Left Front Door", "Left Sill / Rocker Panel"],
+              "zone:right": ["Right Rear Door"]},
+          "M2: a door with no side on a right photo noted 'front door' matches the right FRONT door only -- not the "
+          "left ones, not the right rear", sorter_hints.strict_intact(doors, door))
+    wheel = [_photo(0, "tyre", "front-left", "Wheel (side undetermined)", True)]
+    wheels = {"zone:left": ["Left Front Wheel", "Left Rear Wheel"], "zone:right": ["Right Front Wheel"]}
+    check(sorter_hints.strict_intact(wheels, wheel) == {"zone:left": ["Left Rear Wheel"],
+                                                        "zone:right": ["Right Front Wheel"]},
+          "M2: an undetermined wheel on a front-left photo: the left FRONT wheel only (never across ends or sides)",
+          sorter_hints.strict_intact(wheels, wheel))
+    check(sorter_hints.strict_intact({"zone:rear": ["Rear Windscreen", None, 4, {"x": 1}], "zone:x": "junk"}, photos)
+          == {"zone:rear": []}, "L4: strict_intact leaves out anything not a name (and a read that isn't a list)")
+    found = sorter_hints.find(photos, listed={"Left Rear Door"}, shown=[], dismissed=[], zone_intact=A2_INTACT,
+                              hints=False, strict_rule=True)
+    rows = [(it["part"], it["reason"], it.get("intact_in"), it.get("found_by")) for it in found.intact]
+    check(rows == [("Rear Windscreen", "Rear windscreen cracked", ["zone:rear"], [sorter_hints.INTACT])]
           and not found.hints and found.skipped == {"listed": 1},
-          "find strict: the contradicted parts as suggestions with the reason (a note's part too, its side kept on "
-          "a rear photo); the door listed already (without side) is not; A1 off adds nothing else",
-          [(it["part"], it["reason"]) for it in found.intact])
-    both = sorter_hints.find(photos, _labels(photos), listed=set(), shown=[], dismissed=[], zone_intact=intact,
-                             hints=True, strict_rule=True, cap=0)
-    check(parts(both.intact) == ["Rear Windscreen", "Door (side undetermined)", "Left Fog Lamp"]
-          and not both.hints and both.skipped == {"cap": 1},
-          "A2's suggestions in best-photo order (tags before notes), outside A1's cap (cap 0: only A1's tail lamp "
-          "cut -- the zone called the LEFT one intact)", (parts(both.intact), both.skipped))
+          "find strict: the contradicted part a suggestion -- the sorter's note its reason, the reads in intact_in, "
+          "A2's mark; the door listed already (without side) is not; A1 off adds nothing else", rows)
+    check(not any(re.search(r"\bP\d+\b", str(it.get("reason") or "")) for it in found.intact),
+          "M5: no photo label in any stored text (the photo is the evidence; filing renumbers it)")
+    both = sorter_hints.find(photos, listed=set(), shown=[], dismissed=[], zone_intact=A2_INTACT, hints=True,
+                             strict_rule=True, cap=0)
+    check(parts(both.intact) == ["Rear Windscreen", "Door (side undetermined)"] and not both.hints
+          and both.skipped == {"cap": 1},
+          "A2's suggestions in best-photo order, outside A1's cap (cap 0: only A1's tail lamp cut -- the zone "
+          "called the LEFT one intact)", (parts(both.intact), both.skipped))
+    six = [_photo(i, "damage", "rear", part, True) for i, part in enumerate(
+        ["Rear Windscreen", "Parking Sensor", "Rear Number Plate", "Boot Lid Hinge", "Boot Lid Lock",
+         "Rear End Panel"])]
+    many = sorter_hints.find(six, listed=set(), shown=[], dismissed=[], hints=False, strict_rule=True,
+                             zone_intact={"zone:rear": [p.part for p in six]})
+    check(len(many.intact) == sorter_hints.MAX_INTACT == 4 and many.skipped == {"intact_cap": 2},
+          "L3: at most MAX_INTACT (4) A2 suggestions a case", (parts(many.intact), many.skipped))
     # The linked parts: what "drop" and "demote" do with the zone reads' intact.
     listed = [{"part": "Rear Bumper", "photo_reference": "@p9", "condition_tokens": ["Cracked", "Crumpled"],
                "severity": "Severe", "remarks": "Replace"}]
@@ -635,10 +780,31 @@ def a2_units() -> None:
         check(want_old and sensor_new is not None and sensor_new["intact_in"] == [] and sensor_new["bucket"] == "seen"
               and want_plate,
               f"links {how}: old {'drops' if how == 'drop' else 'demotes'} the sensor the sorter saw damaged; strict "
-              f"keeps it in its place (seen); the plate the sorter never saw still {how}ped" if how == "drop" else
-              f"links {how}: old demotes the sensor the sorter saw damaged; strict keeps it in its place (seen); "
-              f"the plate the sorter never saw still demoted",
+              f"keeps it in its place (seen); the plate the sorter never saw as before",
               (sensor_old, sensor_new and sensor_new["intact_in"], plate_new and plate_new["intact_in"]))
+    # L4: a failure in the strict rule never loses the linked parts.
+    opts = links.Options(**{**links.options().__dict__, "intact": "drop"})
+    plain, _ = second_look.build_links(listed, [], pics, {"zone_intact": raw}, [], None, opts=opts, strict=False)
+    real = sorter_hints.strict_intact
+
+    def broken(*_a, **_k):
+        raise RuntimeError("made-up failure")
+
+    sorter_hints.strict_intact = broken
+    try:
+        kept, _ = second_look.build_links(listed, [], pics, {"zone_intact": raw}, [], None, opts=opts, strict=True)
+    finally:
+        sorter_hints.strict_intact = real
+    check([it["part"] for it in kept] == [it["part"] for it in plain] and kept,
+          "L4: the strict rule failing falls back to the zone reads' lists -- the linked parts kept, as old's",
+          ([it["part"] for it in kept], [it["part"] for it in plain]))
+    # L1: the re-check asks the reads' finds, then the linked parts, then the sorter's.
+    plan = check_step.plan_asks([{"key": "s", "part": "Rear Windscreen", "source": "sorter"},
+                                 {"key": "l", "part": "Rear Bumper Beam", "source": "link"},
+                                 {"key": "z", "part": "Left Tail Lamp", "source": "zone"},
+                                 {"key": "k", "part": "Boot Lid Hinge", "source": "kit"}], [])
+    check(plan.unasked == ["z", "k", "l", "s"], "L1: the sorter's after the linked parts in the re-check's order",
+          plan.unasked)
 
 
 def a2_end_to_end() -> None:
@@ -651,15 +817,36 @@ def a2_end_to_end() -> None:
             client, rid, pids, uid, state):
         mine = sorter_items(look_of(rid))
         ai = t.db_row(IntakeSession, rid).ai_draft or {}
-    check([(it["part"], it["photo_reference"], it["reason"]) for it in mine]
-          == [("Rear Windscreen", f"@{pids[8]}",
-               "Zone read said intact, but photo P09 shows damage (sorter): Rear windscreen cracked"),
-              ("Parking Sensor", f"@{pids[10]}",
-               "Zone read said intact, but photo P11 shows damage (sorter): Parking sensor pushed in")],
-          "strict: each part the sorter saw damaged that a zone read called intact is a suggestion, with the reason",
-          [(it["part"], it["photo_reference"], it["reason"]) for it in mine])
-    check(ai.get("zone_intact") == intact and "sorter_suggestions" not in ai,
-          "... the zone reads' own intact lists kept as they said them; A1 off: no shadow list")
+        check([(it["part"], it["photo_reference"], it["reason"], it.get("intact_in"), it.get("found_by"))
+               for it in mine]
+              == [("Rear Windscreen", f"@{pids[8]}", "Rear windscreen cracked", ["zone:rear"], [sorter_hints.INTACT]),
+                  ("Parking Sensor", f"@{pids[10]}", "Parking sensor pushed in", ["zone:rear"], [sorter_hints.INTACT])],
+              "strict: each part the sorter saw damaged that a zone read called intact is a suggestion: the photo by "
+              "id, the sorter's note, the reads in intact_in, A2's mark",
+              [(it["part"], it["photo_reference"], it["reason"], it.get("intact_in")) for it in mine])
+        check(ai.get("zone_intact") == intact and "sorter_suggestions" not in ai,
+              "... the zone reads' own intact lists kept as they said them; no shadow mode: no shadow list")
+        # L8 / M5: a photo deleted before filing -- the filed suggestion's photo renumbered, no label in its text.
+        deleted = client.delete(f"/intake/{rid}/photos/{pids[1]}")
+        state = client.get(f"/intake/{rid}").json()
+        done = client.post(f"/intake/{rid}/finalize", json={"data": state["data"]})
+        filed = [it for it in ((t.db_row(Report, rid).data or {}).get("second_look") or {}).get("items") or []
+                 if it.get("source") == "sorter"]
+        check(deleted.status_code == 200 and done.status_code == 200
+              and [(it["part"], it["photo_reference"], it.get("intact_in")) for it in filed]
+              == [("Rear Windscreen", "P08", ["zone:rear"]), ("Parking Sensor", "P10", ["zone:rear"])]
+              and not any(re.search(r"\bP\d+\b", str(it.get("reason") or "")) for it in filed),
+              "after a photo is deleted, filing renumbers the suggestion's photo (P09 -> P08); its text names none",
+              [(it["part"], it["photo_reference"], it.get("reason")) for it in filed])
+    # A2 "shadow": its suggestions on the AI draft only; the linked parts as old's.
+    with a_case(dict(ZONES, intake_intact_rule="shadow"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
+            client, rid, pids, uid, state):
+        shown = sorter_items(look_of(rid))
+        shadow = (t.db_row(IntakeSession, rid).ai_draft or {}).get("sorter_suggestions") or []
+    check(not shown and parts(shadow) == ["Rear Windscreen", "Parking Sensor"]
+          and all(it.get("found_by") == [sorter_hints.INTACT] and it.get("intact_in") == ["zone:rear"]
+                  for it in shadow),
+          "A2 shadow: nothing shown; its suggestions kept on the AI draft (A2's mark)", (parts(shown), parts(shadow)))
     # With the linked parts on: the sensor is a linked part of the bumper.
     # keep_cut on: a linked part a cap or "intact" cut is kept apart, so it
     # can be found either way.
@@ -671,25 +858,31 @@ def a2_end_to_end() -> None:
     with a_case(values, SORTED, SORTER_ROWS, SORTER_NOTES) as (client, rid, pids, uid, state):
         shown_old, cut_old = sensor_of(look_of(rid))
         old_mine = sorter_items(look_of(rid))
+    with a_case(dict(values, intake_intact_rule="shadow"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
+            client, rid, pids, uid, state):
+        shown_sh, cut_sh = sensor_of(look_of(rid))
+    old_sensor = shown_old or cut_old
+    check(not old_mine and old_sensor is not None and old_sensor.get("intact_in") == ["zone:rear"]
+          and (shown_old is not None or cut_old.get("cut_reason") == "intact")
+          and (shown_sh or cut_sh or {}).get("intact_in") == ["zone:rear"],
+          "links, old (and A2 shadow): the linked sensor the sorter saw damaged is demoted for the zone read's intact",
+          (shown_old and shown_old.get("intact_in"), cut_old and cut_old.get("cut_reason")))
     with a_case(dict(values, intake_intact_rule="strict"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
             client, rid, pids, uid, state):
         look = look_of(rid)
         shown_new, cut_new = sensor_of(look)
         mine = sorter_items(look)
         others = [it["part"] for it in look.get("items") or [] if it.get("source") != "sorter"]
-    old_sensor = shown_old or cut_old
-    check(not old_mine and old_sensor is not None and old_sensor.get("intact_in") == ["zone:rear"]
-          and (shown_old is not None or cut_old.get("cut_reason") == "intact"),
-          "links, old: the linked sensor the sorter saw damaged is demoted for the zone read's intact",
-          (shown_old and shown_old.get("intact_in"), cut_old and cut_old.get("cut_reason")))
+        order = [it.get("source") for it in look.get("items") or []]
     check(shown_new is not None and not shown_new.get("intact_in") and shown_new.get("bucket") == "seen"
           and cut_new is None,
           "links, strict: the linked sensor is shown in its place (seen), not demoted",
           (shown_new and shown_new.get("intact_in"), shown_new and shown_new.get("bucket"), cut_new))
     check(parts(mine) == ["Rear Windscreen"] and not any(sorter_hints.same_component(it["part"], p)
-                                                          for it in mine for p in others),
-          "links, strict: the sensor not suggested twice; the windscreen (no link) is the sorter's suggestion",
-          (parts(mine), others))
+                                                          for it in mine for p in others)
+          and order.index("sorter") > max(i for i, s in enumerate(order) if s == "link"),
+          "links, strict: the sensor not suggested twice; the windscreen (no link) is the sorter's suggestion, "
+          "after the linked parts", (parts(mine), order))
     with a_case(dict(values, intake_links_intact="drop"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
             client, rid, pids, uid, state):
         dropped, dropped_cut = sensor_of(look_of(rid))
@@ -700,7 +893,8 @@ def a2_end_to_end() -> None:
           and kept_cut is None,
           "links \"drop\": old drops the sensor the sorter saw damaged (cut as \"intact\"), strict keeps it",
           (dropped, dropped_cut and dropped_cut.get("cut_reason"), kept and kept.get("part")))
-    # Both on, with links: A2's first, then A1's; none twice.
+    # Both on, with links: A2's first, then A1's; none twice. Then signed off:
+    # the accuracy record counts each rule apart (M7).
     with a_case(dict(values, intake_intact_rule="strict", intake_sorter_hints="on"), SORTED, SORTER_ROWS,
                 SORTER_NOTES) as (client, rid, pids, uid, state):
         look = look_of(rid)
@@ -708,8 +902,14 @@ def a2_end_to_end() -> None:
         others = [it["part"] for it in look.get("items") or [] if it.get("source") != "sorter"]
         listed = [it.get("part") for it in (t.db_row(Report, rid).data or {}).get("damage_summary") or []]
         cut_parts = [it.get("part") for it in look.get("cut") or []]
-    check(mine and mine[0]["part"] == "Rear Windscreen" and mine[0]["reason"].startswith("Zone read said intact")
-          and len(mine) <= 1 + sorter_hints.MAX_HINTS
+        client.post(f"/intake/{rid}/suggestions", json={"key": mine[0]["key"], "action": "add"})
+        state = client.get(f"/intake/{rid}").json()
+        client.post(f"/intake/{rid}/finalize", json={"data": state["data"]})
+        signed = t.sign_off(client, rid).status_code
+        metrics = (t.db_row(AiAccuracy, rid).metrics or {}).get("suggestions") or {}
+    check(mine and mine[0]["part"] == "Rear Windscreen" and mine[0]["found_by"] == [sorter_hints.INTACT]
+          and all(it["found_by"] == [sorter_hints.SEEN] for it in mine[1:]) and len(mine) > 1
+          and len(mine) <= sorter_hints.MAX_INTACT + sorter_hints.MAX_HINTS
           and not any(sorter_hints.same_component(it["part"], p) for it in mine for p in others + listed)
           and len({it["part"] for it in mine}) == len(mine) and "Front Bumper" not in parts(mine)
           and "Left Fog Lamp" in parts(mine),
@@ -717,146 +917,76 @@ def a2_end_to_end() -> None:
           "twice; never the other car's", (parts(mine), others))
     check(not any(p in parts(mine) for p in cut_parts), "... and none of them also in the folded cut list",
           cut_parts)
-
-
-# ------------------------------------------------------------- 5. A3
-
-
-def _rows_photos(rows) -> list[IntakePhoto]:
-    return [_photo(i, kind, area, part, damage) for i, (kind, area, part, damage) in enumerate(rows)]
-
-
-def _v1_reference(photos, cap):
-    """Today's _priority_pick, as a frozen copy of master's (v1 must stay it)."""
-    P = pipeline
-    usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
-    by_kind: dict = {}
-    for p in usable:
-        by_kind.setdefault(p.kind or "unsorted", []).append(p)
-    damage_pool = [p for p in usable if P._is_damage_evidence(p)]
-    areas: dict = {}
-    for p in by_kind.get("overview", []):
-        areas.setdefault(p.area, []).append(p)
-    chosen, ids = [], set()
-
-    def take(cands, limit):
-        for p in cands:
-            if limit <= 0 or len(chosen) >= cap:
-                return
-            if p.id not in ids:
-                chosen.append(p)
-                ids.add(p.id)
-                limit -= 1
-    for kind, limit in P.FACT_BUDGET:
-        take(P._by_tiers(by_kind.get(kind, [])), limit)
-    take(P._round_robin([P._by_tiers(g) for g in areas.values()]), P.OVERVIEW_BUDGET)
-    unsorted = P._spread_order(by_kind.get("unsorted", []))
-    take(P._damage_order(damage_pool), cap - len(chosen) - min(P.UNSORTED_BUDGET, len(unsorted)))
-    take(unsorted, P.UNSORTED_BUDGET)
-    take(P._top_up_order(usable, by_kind, damage_pool, unsorted), cap)
-    return chosen
-
-
-def crowded_rows() -> list:
-    """big_rows() and 20 more photos of the insured car (wide shots of
-    each side, no damage seen): more car photos than the 32 slots."""
-    return big_rows()[:-1] + [("overview", area, None, False) for area in ("left", "right", "front", "rear") * 5] + [
-        big_rows()[-1]]
-
-
-def a3_units() -> None:
-    big = _rows_photos(big_rows())
-    small = _rows_photos(t.CASE)
-    mixed = _rows_photos(SORTER_ROWS)
-    crowded = _rows_photos(crowded_rows())
-    for name, case in (("44 photos", big), ("10 photos", small), ("14 photos", mixed), ("64 photos", crowded)):
-        for cap in (5, 12, 32):
-            with t.Settings(intake_max_read_photos=cap):
-                got = [p.id for p in pipeline.select_for_reading(case, priority_order=True)]
-            want = [p.id for p in _v1_reference(case, min(cap, pipeline.MAX_READ_PHOTOS))]
-            check(got == want, f"v1 ({name}, limit {cap}): exactly today's choice, in today's order")
-    with t.Settings(intake_max_read_photos=40):
-        got = [p.id for p in pipeline.select_for_reading(big, priority_order=True)]
-    with t.Settings(intake_max_read_photos=40, intake_read_pick="v1"):
-        again = [p.id for p in pipeline.select_for_reading(big, priority_order=True)]
-    check(got == again and pipeline.read_pick() == "v1", "v1 above 32 (E12) as the default")
-
-    def counted(photos) -> Counter:
-        return Counter((p.part, p.area) for p in photos if pipeline._group_counted(p))
-
-    v1 = pipeline.select_for_reading(crowded, priority_order=True)
-    with t.Settings(intake_read_pick="v2"):
-        v2 = pipeline.select_for_reading(crowded, priority_order=True)
-    check(len(v2) == len(v1) == 32, "v2: the same limit (32 of 64)", (len(v2), len(v1)))
-    check(max(counted(v2).values()) <= 2 and counted(v1)[("Rear Bumper", "rear")] > 2,
-          "v2: at most 2 damage photos per sorter (part, area) while other car photos are left (v1: many of one part)",
-          (counted(v2), counted(v1)))
-    damaged_areas = {p.area for p in crowded if p.area and pipeline._shows_any(p)}
-    covered = {p.area for p in v2 if pipeline._shows_any(p)}
-    check(damaged_areas == {"rear", "rear-left", "left", "right", "front-left"} and damaged_areas <= covered,
-          "v2: every area with a photo showing damage has one", damaged_areas - covered)
-    check([p.kind for p in v2[:5]] == ["log_card", "tyre", "overview", "overview", "overview"]
-          and [p.id for p in v2[:5]] == [p.id for p in v1[:5]],
-          "v2: the facts and overviews first, as v1", [p.kind for p in v2[:5]])
-    check(len({p.id for p in v2}) == len(v2) and "scene" not in {p.kind for p in v2},
-          "v2: no photo twice, the scene not before a car photo")
-
-    v1 = pipeline.select_for_reading(big, priority_order=True)
-    with t.Settings(intake_read_pick="v2"):
-        v2 = pipeline.select_for_reading(big, priority_order=True)
-    v1_ids, v2_ids = {p.id for p in v1}, {p.id for p in v2}
-    wheels = [p for p in big if p.kind in ("tyre", "other") or (p.kind == "overview" and p.shows_damage)]
-    check(len(v2) == 32 and counted(v2)[("Rear Bumper", "rear")] < counted(v1)[("Rear Bumper", "rear")]
-          and all(p.id in v2_ids for p in wheels) and not all(p.id in v1_ids for p in wheels),
-          "v2 (44 photos): every wheel, arch and damaged side photo read, which v1 left out; fewer of the one part -- "
-          "and its later photos still fill the slots left (none empty)",
-          (counted(v2), [p.id for p in wheels if p.id not in v1_ids]))
-    # One part only, more photos than the limit: no slot left empty.
-    lone = [_photo(i, "damage", "rear", "Rear Bumper", True) for i in range(40)]
-    with t.Settings(intake_read_pick="v2"):
-        filled = pipeline.select_for_reading(lone)
-    check(len(filled) == 32, "v2: a case of one part still fills every slot (the cap only while others are left)",
-          len(filled))
-    # Everything fits: the same photos as v1.
-    with t.Settings(intake_read_pick="v2"):
-        fits = {p.id for p in pipeline.select_for_reading(mixed)}
-    check(fits == {p.id for p in pipeline.select_for_reading(mixed)} and len(fits) == len(mixed),
-          "v2: when all fit, the same photos as v1")
-    with t.Settings(intake_read_pick="v2"):
-        base32 = pipeline.select_for_reading(crowded, priority_order=True)
-    with t.Settings(intake_read_pick="v2", intake_max_read_photos=40):
-        more = pipeline.select_for_reading(crowded, priority_order=True)
-    check(len(more) == 40 and [p.id for p in more[:32]] == [p.id for p in base32],
-          "v2 above 32 (E12): the 32 first, then further down v2's order")
-    with t.Settings(intake_read_pick="v2", intake_max_read_photos=8):
-        few = pipeline.select_for_reading(big, priority_order=True)
-    check(len(few) == 8 and {p.area for p in few if pipeline._shows_any(p)} >= {"rear", "rear-left", "left"},
-          "v2 with a small limit: still the limit, the damaged areas first", [(p.kind, p.part, p.area) for p in few])
-
-
-def a3_end_to_end() -> None:
-    reads = {}
-    rows = crowded_rows()
-    for pick in ("v1", "v2"):
-        with a_case(dict(intake_read_pick=pick), {}, rows) as (client, rid, pids, uid, state):
-            session = t.db_row(IntakeSession, rid)
-            by_id = dict(zip(pids, rows))
-            reads[pick] = [by_id[pid] for pid in session.read_photo_ids or []]
-            check(state["stage"] == "ready" and len(session.read_photo_ids or []) == 32,
-                  f"{pick}: read, 32 photos recorded in read_photo_ids", len(session.read_photo_ids or []))
-    bumper = {pick: sum(1 for r in got if r[2] == "Rear Bumper") for pick, got in reads.items()}
-    check(bumper["v1"] > 2 and bumper["v2"] == 2, "end to end: v1 sends many photos of the one part, v2 two", bumper)
+    by_read = metrics.get("by_read") or {}
+    check(signed == 200 and (metrics.get("by_source") or {}).get("sorter", {}).get("shown") == len(mine)
+          and by_read.get(sorter_hints.INTACT, {}).get("added") == 1
+          and by_read.get(sorter_hints.SEEN, {}).get("shown") == len(mine) - 1,
+          "M7: signed off, the accuracy record counts the sorter's under source \"sorter\" and each rule apart "
+          "(by its mark)", (metrics.get("by_source"), {k: v for k, v in by_read.items() if k.startswith("sorter")}))
+    # L2: a part a zone read found and the limit cut is never a sorter card.
+    real_max = second_look.MAX_SUGGESTIONS
+    second_look.MAX_SUGGESTIONS = 0
+    try:
+        with a_case(dict(ZONES, intake_sorter_hints="on"), SORTED, SORTER_ROWS, SORTER_NOTES) as (
+                client, rid, pids, uid, state):
+            mine = sorter_items(look_of(rid))
+            zone_reads = (t.db_row(IntakeSession, rid).ai_draft or {}).get("zone_suggestions") or []
+    finally:
+        second_look.MAX_SUGGESTIONS = real_max
+    check("Left Tail Lamp" in parts(zone_reads) and "Left Tail Lamp" not in parts(mine)
+          and "Tail Lamp (side undetermined)" not in parts(mine),
+          "L2: the tail lamp a zone read found, cut by the suggestion limit, is not re-suggested as the sorter's",
+          (parts(zone_reads), parts(mine)))
 
 
 # ------------------------------------------------------------- 6. the replay tool
 
 REPLAY = HERE / "bench" / "replay_sorter_hints.py"
+# A token shaped like a plate (letters and digits: SXX1234A, WXY 1234), a VIN
+# (17 letters and digits), a phone number or an e-mail: never in a fixture.
+_PLATE = re.compile(r"^[A-Z]{1,3}\d{1,4}[A-Z]{0,2}$")
+_VIN = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
+_PHONE = re.compile(r"\+?\d[\d -]{6,}\d")
+_MAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_LABEL = re.compile(r"^P\d{1,3}$")
+
+
+def private_tokens(obj) -> list[str]:
+    """Every plate-, VIN-, phone- or e-mail-shaped token in obj's texts and
+    keys (photo labels like P07 aside; two adjacent words read together,
+    as a plate is written "WXY 1234")."""
+    texts: list[str] = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                texts.append(str(k))
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+        elif isinstance(o, str):
+            texts.append(o)
+    walk(obj)
+    found = []
+    for text in texts:
+        found += _PHONE.findall(text) + _MAIL.findall(text)
+        words = [w.strip(".,;:()[]'\"").upper() for w in text.split()]
+        pairs = [a + b for a, b in zip(words, words[1:]) if not (_LABEL.match(a) or _LABEL.match(b))]
+        for word in words + pairs:
+            if _LABEL.match(word):
+                continue
+            if (_PLATE.match(word) and any(c.isdigit() for c in word)) or _VIN.match(word):
+                found.append(word)
+    return sorted(set(found))
 FIXTURE = HERE / "fixtures" / "sorter_hints_sample.json"
 
 
 def replay_section() -> None:
     text = FIXTURE.read_text(encoding="utf-8")
-    check("made-up" in text.lower() and "plate_number" not in text, "the fixture is made up (no plate, no case)")
+    check("made-up" in text.lower() and "plate_number" not in text and not private_tokens(json.loads(text)),
+          "L8: the fixture is made up -- no plate-, VIN-, phone- or e-mail-shaped token in any of its texts or keys "
+          "(photo labels P01.. aside)", private_tokens(json.loads(text)))
     work = Path(tempfile.mkdtemp(prefix="detect-r1-replay-"))
     outs = []
     for n in (1, 2):
@@ -872,7 +1002,7 @@ def replay_section() -> None:
     result = json.loads(outs[0] or b"{}")
     cases = {c["case"]: c for c in result.get("cases") or []}
     rear = cases.get("made-up rear hit") or {}
-    check(result.get("tool") == "replay_sorter_hints" and result.get("cap") == 6 and result.get("version") == 2
+    check(result.get("tool") == "replay_sorter_hints" and result.get("cap") == 6 and result.get("version") == 3
           and len(cases) == 3,
           "the output: tool, cap, one entry per case", {k: result.get(k) for k in ("tool", "version", "cap")})
     check([(r["part"], r["photo"], r["via"]) for r in rear.get("a1") or []]
@@ -884,9 +1014,9 @@ def replay_section() -> None:
           "at most 6", [(r["part"], r["photo"]) for r in rear.get("a1") or []])
     check([(r["part"], r["photo"], r["intact_in"]) for r in rear.get("a2") or []]
           == [("Rear Windscreen", "P07", ["zone:rear"]), ("Left Rear Door", "P14", ["zone:left"])]
-          and rear["a2"][0]["reason"]
-          == "Zone read said intact, but photo P07 shows damage (sorter): Rear windscreen cracked",
-          "a2: the parts a zone read called intact that the sorter saw damaged, with the reason",
+          and rear["a2"][0]["reason"] == "Rear windscreen cracked" and rear["a2"][0]["rule"] == "sorter_intact"
+          and rear["a1"][0]["rule"] == "sorter_seen",
+          "a2: the parts a zone read called intact that the sorter saw damaged, with the sorter's note and A2's mark",
           [(r["part"], r["reason"]) for r in rear.get("a2") or []])
     check(parts(rear.get("both") or [])[:2] == ["Rear Windscreen", "Left Rear Door"]
           and "Right Sill / Rocker Panel" in parts(rear.get("both") or [])
@@ -896,11 +1026,12 @@ def replay_section() -> None:
     check(rear.get("zone_intact") == {"zone:left": ["Left Rear Door", "Left Front Door"],
                                       "zone:rear": ["Rear Windscreen", "Parking Sensor"]},
           "zone_intact from the last read_zones run's zones that answered", rear.get("zone_intact"))
-    check(all(set(r) == {"part", "source", "photo", "reason", "via", "intact_in", "read", "seen_in", "box"}
+    check(all(set(r) == {"part", "source", "rule", "photo", "reason", "via", "intact_in", "read", "seen_in", "box"}
               and r["source"] == "sorter" for c in cases.values() for key in ("a1", "a2", "both") for r in c[key])
           and rear["a1"][0]["read"] is True and rear["a1"][0]["box"] == [500, 200, 800, 500]
           and t.by_part(rear["a1"], "Boot Lid Lock")["box"] is None,
-          "each row: part, source, photo, reason, via, intact_in, read, seen_in, box (the sorter's box only round "
+          "each row: part, source, rule, photo, reason, via, intact_in, read, seen_in, box (the sorter's box only "
+          "round "
           "its own part: none for the striker its note names on the boot lid's boxed photo)")
     side = cases.get("made-up side scrape, one read") or {}
     check(parts(side.get("a1") or []) == ["Right Wing Mirror"] and not side.get("a2") and side.get("zone_intact") == {},
@@ -915,8 +1046,7 @@ def replay_section() -> None:
 
     trail = json.loads(text)[0]
     photos = replay.photos_of(trail)
-    found = sorter_hints.find(photos, {p["id"]: p["id"] for p in photos},
-                              listed=second_look.listed_parts({"damage_summary": trail["damage_summary"]}),
+    found = sorter_hints.find(photos, listed=second_look.listed_parts({"damage_summary": trail["damage_summary"]}),
                               shown=trail["second_look"]["items"], dismissed=trail["second_look"]["dismissed"],
                               zone_intact=replay.zone_intact_of(trail), hints=True, strict_rule=False)
     check(parts(found.hints) == parts(rear.get("a1") or []), "replay_case = sorter_hints.find on the trail's facts")
@@ -1023,9 +1153,9 @@ def bench_section() -> None:
         args = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z", *[a for p in pairs for a in ("--set", p)]])
         return bench.setting_overrides(args.set_values, settings)
 
-    got = overrides("intake_sorter_hints=ON", "intake_intact_rule=strict", "intake_read_pick=v2",
+    got = overrides("intake_sorter_hints=ON", "intake_intact_rule=strict", "intake_zone_wrong_end=Keep",
                     "photo_store_compress=on")
-    check(got == {"intake_sorter_hints": "on", "intake_intact_rule": "strict", "intake_read_pick": "v2",
+    check(got == {"intake_sorter_hints": "on", "intake_intact_rule": "strict", "intake_zone_wrong_end": "keep",
                   "photo_store_compress": "on"},
           "--set NAME=VALUE: each through its field's own validation (any case, as config writes it)", got)
     check(overrides() == {} and bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"]).set_values is None
@@ -1051,7 +1181,7 @@ def bench_section() -> None:
         out = bench.run_case(case, cases_dir)
     rows = [r for r in out.get("suggestions") or [] if r.get("source") == "sorter"]
     check("error" not in out and rows and rows[0]["part"] == "Rear Windscreen"
-          and rows[0]["reason"].startswith("Zone read said intact, but photo P09")
+          and rows[0]["reason"] == "Rear windscreen cracked" and rows[0].get("found_by") == ["sorter_intact"]
           and rows[0]["photo_reference"] == "P09" and {r["truth"] for r in rows} <= {"real", "extra", "wrong_side"},
           "--set intake_sorter_hints=on / intake_intact_rule=strict reach the pipeline: the run keeps the sorter's "
           "suggestions (source, reason, photo by label, evidence) and marks them against the key",
@@ -1060,7 +1190,8 @@ def bench_section() -> None:
           "... with the suggestion fields every suggestion keeps")
     m = bench.run_metrics(out)
     real = sum(1 for r in rows if r["truth"] == "real")
-    check(m.get("sorter_sugg") == len(rows) and m.get("sorter_sugg_real") == real and m.get("sug_n", 0) >= len(rows),
+    check(m.get("sorter_sugg") == len(rows) and m.get("sorter_sugg_real") == real and m.get("sug_n", 0) >= len(rows)
+          and "sug_real" in m and "sug_wrong" in m,
           "counted apart (sorter_sugg, sorter_sugg_real) and among every suggestion", m)
     lines = bench.detail_lines(out) + [bench.summary_line(out)]
     check(any("the sorter's:" in ln for ln in lines), "the printed per-case lines name them", lines)
@@ -1132,8 +1263,6 @@ def main() -> int:
         ("3. A1: on and shadow, end to end", a1_end_to_end),
         ("4a. A2: the intact rule (units, the linked parts)", a2_units),
         ("4b. A2: end to end", a2_end_to_end),
-        ("5a. A3: the main read's photos (units)", a3_units),
-        ("5b. A3: end to end", a3_end_to_end),
         ("6. replay_sorter_hints.py on its fixture", replay_section),
         ("7. the benchmark: --set, the sorter's suggestions in a result, gate.py", bench_section),
     ):

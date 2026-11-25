@@ -557,8 +557,6 @@ def evidence_metrics(run: dict) -> dict:
         # Detection Round 1: the sorter's own (source "sorter"), counted
         # apart too -- only in a run that has them.
         m.update(_sorter_counts("sorter_sugg", [s for s in sugg if s.get("source") == "sorter"]))
-    if isinstance(run.get("sorter_shadow"), list):
-        m.update(_sorter_counts("sorter_shadow", run["sorter_shadow"], always=True))
         verdicts = [((s.get("check") or {}).get("verdict") or "none") for s in sugg]
         checked = any(v != "none" for v in verdicts) or bool((run.get("second_look") or {}).get("check"))
         if checked:
@@ -573,6 +571,9 @@ def evidence_metrics(run: dict) -> dict:
                 for s, v in zip(sugg, verdicts):
                     m[f"chk_{'real' if s['truth'] == 'real' else 'wrong'}_{v}"] += 1
                 m["chk_real_kept"] = m["chk_real_yes"] + m["chk_real_unsure"]
+    if isinstance(run.get("sorter_shadow"), list):
+        # Detection Round 1, A1 in shadow: what "on" would have shown.
+        m.update(_sorter_counts("sorter_shadow", run["sorter_shadow"], always=True))
     items = run.get("drafted_items") or []
     if any("evidence" in i or "bbox_2d" in i for i in items):
         m.update(list_n=len(items), list_box=sum(1 for i in items if has_ai_box(i)),

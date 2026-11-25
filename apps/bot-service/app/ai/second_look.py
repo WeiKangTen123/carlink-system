@@ -811,9 +811,14 @@ def build_links(listed: list[dict], kept: list[dict], photos: list, ai_draft: di
         extra["cut"] = cut
     intact = zones.intact_of(ai_draft)
     if _strict_intact() if strict is None else strict:
-        from app.intake import sorter_hints
+        # The review's L4: never the reason the linked parts are lost -- on
+        # any error, the intact lists as the reads left them.
+        try:
+            from app.intake import sorter_hints
 
-        intact = sorter_hints.strict_intact(intact, photos)
+            intact = sorter_hints.strict_intact(intact, photos)
+        except Exception:
+            logger.exception("Linked parts: couldn't apply the strict intact rule; the zone reads' lists stand")
     if tables is None:
         return links.build_all(listed, kept, photos, intact, links.TABLE, opts, dismissed=dismissed,
                                neighbours=neighbours, **extra)
@@ -926,36 +931,53 @@ def _strict_intact() -> bool:
 
 def _round1_active() -> bool:
     """Detection Round 1: A1 (settings.intake_sorter_hints) not "off", or A2
-    "strict" -- else nothing of it runs, not even an import."""
-    return getattr(settings, "intake_sorter_hints", "off") in ("shadow", "on") or _strict_intact()
+    (settings.intake_intact_rule) not "old" -- else nothing of it runs, not
+    even an import."""
+    return (getattr(settings, "intake_sorter_hints", "off") in ("shadow", "on")
+            or getattr(settings, "intake_intact_rule", "old") in ("shadow", "strict"))
 
 
 def _sorter_items(db, report_id: str, session, ai_draft: dict, shown: list[dict], dismissed: list[str],
                   listed: set[str], vehicle: dict) -> list[dict]:
     """Detection Round 1 (intake/sorter_hints.py), for _store: the
-    suggestions to show after the open ones -- A2's ("strict": a part the
-    sorter saw damaged that a zone read called intact) and, with A1 "on",
-    A1's (a part only the sorter saw). With A1 "shadow", A1's go on the AI
-    draft only (session.ai_draft["sorter_suggestions"]). shown: the
-    suggestions shown or decided; the list's parts and those, and the
-    dismissed, are never suggested again (compared without their side)."""
+    suggestions to show after the linked parts -- A2's (intake_intact_rule
+    "strict": a part the sorter saw damaged that a zone read called intact)
+    and A1's (intake_sorter_hints "on": a part only the sorter saw). In
+    "shadow" each rule's go on the AI draft only (session.ai_draft[
+    "sorter_suggestions"], counted at sign-off: accuracy), worked out as
+    that rule alone would show them. shown: every suggestion a read made --
+    shown, cut by the limit, or decided; those, the list's parts and the
+    dismissed are never suggested again (compared without their side). The
+    sorter's boxes go through evidence.finish with each photo's facts
+    (pipeline.photo_facts), as every other finding's."""
     from app.intake import sorter_hints, zones
-    from app.intake.photos import ordered_photos, photo_label
+    from app.intake.photos import ordered_photos
+    from app.intake.pipeline import photo_facts
 
-    mode = sorter_hints.hints_mode()
+    hints, rule = sorter_hints.hints_mode(), sorter_hints.intact_rule()
     photos = ordered_photos(db, report_id)
-    labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
-    found = sorter_hints.find(photos, labels, listed=listed, shown=shown, dismissed=dismissed,
-                              zone_intact=zones.intact_of(ai_draft), hints=mode != "off",
-                              strict_rule=sorter_hints.strict())
-    if mode == "shadow":
+    common = dict(listed=listed, shown=shown, dismissed=dismissed, zone_intact=zones.intact_of(ai_draft),
+                  facts={p.id: photo_facts(p) for p in photos})
+    out: list[dict] = []
+    shadow: list[dict] = []
+    if rule == "strict":
+        found = sorter_hints.find(photos, hints=hints != "off", strict_rule=True, **common)
+        out, seen = list(found.intact), list(found.hints)
+    else:
+        if rule == "shadow":
+            shadow += sorter_hints.find(photos, hints=False, strict_rule=True, **common).intact
+        seen = sorter_hints.find(photos, hints=True, strict_rule=False, **common).hints if hints != "off" else []
+    if hints == "on":
+        out += seen
+    elif hints == "shadow":
+        shadow += seen
+    if "shadow" in (hints, rule):
         from app.parts.prefill import row_name
 
-        for it in found.hints:
+        for it in shadow:
             it["name"] = row_name(db, it["part"], vehicle)
-        session.ai_draft = {**(session.ai_draft or {}), "sorter_suggestions": found.hints}
-        return list(found.intact)
-    return list(found.intact) + (list(found.hints) if mode == "on" else [])
+        session.ai_draft = {**(session.ai_draft or {}), "sorter_suggestions": shadow}
+    return out
 
 
 # F2/F5: what the Review step's folded "More (N)" block may say of a cut
@@ -1123,23 +1145,26 @@ def _store(report_id: str, result: dict) -> None:
             linked = []
         # Detection Round 1 (settings.intake_sorter_hints, intake_intact_rule;
         # intake/sorter_hints.py): the parts the sorter saw damaged that no
-        # read listed or suggested, after the open suggestions and before the
+        # read listed or suggested, after the open suggestions and the
         # linked parts. Both at their defaults: none, nothing of it runs.
         # Never the reason the other suggestions are lost.
         sorter: list[dict] = []
         if _round1_active():
             try:
-                sorter = _sorter_items(db, report_id, session, ai_draft, kept + linked + settled, dismissed, listed,
+                # Every suggestion a read made: the open ones before the cut
+                # to MAX_SUGGESTIONS too (the review's L2), the linked parts,
+                # the decided ones.
+                sorter = _sorter_items(db, report_id, session, ai_draft, items + linked + settled, dismissed, listed,
                                        vehicle)
             except Exception:
                 logger.exception("Second look for %s: couldn't work out the sorter's finds", report_id)
                 sorter = []
-        cut = tidy_cut(cut, kept + sorter + linked + settled) if cut else []
-        for it in kept + sorter + linked + settled + cut:
+        cut = tidy_cut(cut, kept + linked + sorter + settled) if cut else []
+        for it in kept + linked + sorter + settled + cut:
             it["name"] = row_name(db, it["part"], vehicle)
             it["covers"] = covers_for(it)
             it["other_side_listed"] = other_side_note(it, listed)
-        items = [evidence.settle(it) for it in kept + sorter + linked + settled]
+        items = [evidence.settle(it) for it in kept + linked + sorter + settled]
         extra = {"cut": [evidence.settle(it) for it in cut[:MAX_CUT]], "cut_counts": cut_counts(cut)} if cut else {}
         stored = SecondLook(
             status=result["status"], model=result.get("model"), note=result.get("note"),

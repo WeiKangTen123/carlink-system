@@ -238,7 +238,9 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
     const isBusy = busy === f.key;
     const bucket = isLink ? linkBucket(f) : null;
     const strip = confirmAtStripDown(f);
-    const intact = intactText(f.intactIn, photos);
+    // A photo sorter suggestion's intact_in is why it is there (sourceLabel /
+    // codeReason say it), not a warning.
+    const intact = f.source === "sorter" ? null : intactText(f.intactIn, photos);
     // In the strip-down block a card sits apart from its parent's group, so
     // without a group name it says which listed part(s) it hangs off.
     const also = alsoLinkedText(f, inBlock && !f.assemblyName);

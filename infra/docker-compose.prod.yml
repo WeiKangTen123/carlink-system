@@ -165,12 +165,10 @@ x-bot-service: &bot-service
     - INTAKE_FIRM_WORDS=${INTAKE_FIRM_WORDS:-off}
     # Detection Round 1 (owner, 25 Nov 2026; app/intake/sorter_hints.py): the
     # sorter's own finds as suggestions (A1: off / shadow / on), a zone read's
-    # "intact" never hiding a part the sorter saw damaged (A2: old / strict),
-    # the main read's photo choice (A3: v1 / v2). Defaults are config.py's:
-    # today's behaviour byte for byte.
+    # "intact" never hiding a part the sorter saw damaged (A2: old / shadow /
+    # strict). Defaults are config.py's: today's behaviour byte for byte.
     - INTAKE_SORTER_HINTS=${INTAKE_SORTER_HINTS:-off}
     - INTAKE_INTACT_RULE=${INTAKE_INTACT_RULE:-old}
-    - INTAKE_READ_PICK=${INTAKE_READ_PICK:-v1}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 
