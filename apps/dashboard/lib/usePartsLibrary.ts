@@ -46,8 +46,14 @@ export function usePartsLibrary(): PartsLibraryState {
     let live = true;
     void load().then((r) => {
       if (!live) return;
+      // A failed refresh of a copy still in use says nothing: the picker
+      // searches that copy, not the bare part list (review N11).
       setState((cur) =>
-        "error" in r ? { library: cur.library, error: r.error, loading: false } : cur.library === r ? cur : { library: r, error: null, loading: false }
+        "error" in r
+          ? { library: cur.library, error: cur.library ? null : r.error, loading: false }
+          : cur.library === r
+            ? cur
+            : { library: r, error: null, loading: false }
       );
     });
     return () => {

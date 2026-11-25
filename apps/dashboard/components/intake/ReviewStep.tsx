@@ -188,7 +188,9 @@ export function ReviewStep({
   const [flashKey, setFlashKey] = useState<string | null>(null);
   // The part picker (step 3A), open: what it was opened on, and the photo
   // an add from the photo viewer links.
-  const [addPicker, setAddPicker] = useState<{ title: string; preset: PickerPreset | null; photoId: string | null } | null>(null);
+  // `toRow`: an add from the map or a photo, far from its new row -- the
+  // cursor goes to that row's Condition (review N9).
+  const [addPicker, setAddPicker] = useState<{ title: string; preset: PickerPreset | null; photoId: string | null; toRow?: boolean } | null>(null);
   // The picker's parts library, fetched as the step opens: the first
   // "+ Add part here" then has the panel's parts at once (review M2).
   useEffect(() => prefetchPartsLibrary(), []);
@@ -409,9 +411,9 @@ export function ReviewStep({
    * here", the photo viewer's "Add part seen here"): the row a pick from
    * the old add-row select made -- a named Other with its name, an add from
    * a photo with that photo linked, as Photos by part links it. The cursor:
-   * an unnamed Other's name box; after a photo's add (its viewer gone) the
-   * new row's Condition; else back on the opener (the picker hands it). */
-  const addPicked = ({ part, other_part_name }: PartPick, photoId: string | null) =>
+   * an unnamed Other's name box; after a map's or a photo's add (far from
+   * the new row) that row's Condition; else back on the opener. */
+  const addPicked = ({ part, other_part_name }: PartPick, photoId: string | null, toRow = false) =>
     askBeforeAdd(
       part,
       () =>
@@ -423,7 +425,7 @@ export function ReviewStep({
             ...(photoId ? { photo_reference: `@${photoId}`, bbox_2d: null } : {}),
             human_verified: true,
           },
-          { block: photoId ? "center" : "nearest", focus: part === OTHER_PART && !other_part_name ? "name" : photoId ? "condition" : undefined }
+          { block: photoId ? "center" : "nearest", focus: part === OTHER_PART && !other_part_name ? "name" : photoId || toRow ? "condition" : undefined }
         ),
       other_part_name
     );
@@ -596,7 +598,7 @@ export function ReviewStep({
   // (lib/partsList.ts); Select still shows a row's own part either way.
   const partsList = useMemo(() => partsToPick(taxonomy), [taxonomy]);
   const addForZone = useCallback(
-    (zoneKey: string) => setAddPicker({ title: `Add a part: ${zoneLabel(zoneKey)}`, preset: presetFromZone(zoneKey), photoId: null }),
+    (zoneKey: string) => setAddPicker({ title: `Add a part: ${zoneLabel(zoneKey)}`, preset: presetFromZone(zoneKey), photoId: null, toRow: true }),
     []
   );
   // [Add part seen here] in the photo viewer: the picker set from the
@@ -605,7 +607,7 @@ export function ReviewStep({
     const p = ref.startsWith("@") ? photoMaps.byId.get(ref.slice(1)) : photoMaps.byLabel.get(ref);
     if (!p) return;
     setViewer(null);
-    setAddPicker({ title: `Add a part seen on ${p.label}`, preset: presetFromPhoto(p), photoId: p.id });
+    setAddPicker({ title: `Add a part seen on ${p.label}`, preset: presetFromPhoto(p), photoId: p.id, toRow: true });
   };
   const setBodyTypeStable = useRef(setBodyType);
   setBodyTypeStable.current = setBodyType;
@@ -1071,9 +1073,9 @@ export function ReviewStep({
           preset={addPicker.preset}
           listed={damage}
           onPick={(pick) => {
-            const { photoId } = addPicker;
+            const { photoId, toRow } = addPicker;
             setAddPicker(null);
-            addPicked(pick, photoId);
+            addPicked(pick, photoId, toRow);
           }}
           onClose={() => setAddPicker(null)}
         />

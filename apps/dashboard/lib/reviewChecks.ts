@@ -45,6 +45,15 @@ function cleanName(text: string | null | undefined): string | null {
 const partOf = (item: Pick<Row, "part">) => (item.part || "").trim();
 const isOther = (item: Pick<Row, "part">) => partOf(item) === OTHER_PART;
 
+/** The Annex A line a row makes, as a key: a list part by its name
+ * (findings.itemKey), a named Other by the words it PRINTS (otherWording:
+ * the side last), so "Left front bumper bracket" and "Front bumper bracket
+ * LH" are one line (step 3A, review N2). */
+export function lineKey(item: { part?: string | null; other_part_name?: string | null }): string {
+  const name = isOther({ part: item.part ?? "" }) ? cleanName(item.other_part_name) : null;
+  return name ? `${OTHER_PART}: ${otherWording(name).toLowerCase()}` : itemKey({ part: item.part ?? "", other_part_name: item.other_part_name });
+}
+
 /** An "Other / Not Listed" row nobody named: it prints "Other part (to be named)". */
 export const isUnnamedOther = (item: Pick<Row, "part" | "other_part_name">) => isOther(item) && !cleanName(item.other_part_name);
 
@@ -120,7 +129,9 @@ export type FilingProblem = {
  * with no part (left out of Annex A), an Other with no name (prints
  * "Other part (to be named)"), no condition (Annex A's Condition blank),
  * or a part already on an earlier row (prefill._damaged keeps the first
- * row only: this one's condition and remarks never print). Two unnamed
+ * row only: this one's condition and remarks never print; a named Other
+ * printing the same words as an earlier one is the same line, lineKey).
+ * Two unnamed
  * Others are one Annex A line too, but naming them settles both, so they
  * are listed as unnamed only. Empty when nothing needs anyone. */
 export function filingProblems(items: readonly Row[] | null | undefined): FilingProblem[] {
@@ -130,7 +141,7 @@ export function filingProblems(items: readonly Row[] | null | undefined): Filing
     const issues: FilingIssue[] = [...rowGaps(item)];
     let sameAs: number | null = null;
     if (partOf(item) && !isUnnamedOther(item)) {
-      const key = itemKey({ part: item.part, other_part_name: item.other_part_name });
+      const key = lineKey(item);
       const first = firstOf.get(key);
       if (first === undefined) firstOf.set(key, index);
       else {
@@ -183,8 +194,8 @@ export function checkAdd(items: readonly Row[] | null | undefined, part: string,
   const list = items || [];
   const candidate = { part: name, other_part_name: otherName ?? null };
   if (!isUnnamedOther(candidate)) {
-    const key = itemKey(candidate);
-    const index = list.findIndex((it) => partOf(it) && !isUnnamedOther(it) && itemKey({ part: it.part, other_part_name: it.other_part_name }) === key);
+    const key = lineKey(candidate);
+    const index = list.findIndex((it) => partOf(it) && !isUnnamedOther(it) && lineKey(it) === key);
     if (index >= 0) return { kind: "duplicate", part: rowLabel(candidate), index, condition: conditionShown(list[index]) };
   }
   const twin = mirrorOf(name);

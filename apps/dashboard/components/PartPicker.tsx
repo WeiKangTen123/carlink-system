@@ -12,11 +12,13 @@ import {
   SIDE_LABELS,
   areaLabel,
   emptyText,
+  enterHit,
   highlightFor,
   isTabbable,
   listedNote,
   listedRows,
   otherPick,
+  otherSideAdded,
   otherStep,
   pickFor,
   pickLabel,
@@ -155,7 +157,7 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
   // "Which side?" for a sided part picked with no side.
   const [askSide, setAskSide] = useState<PickerEntry | null>(null);
   // "Other" with typed words: one confirmation, "Did you mean" first.
-  const [confirm, setConfirm] = useState<{ pick: PartPick; suggestions: PickerHit[] } | null>(null);
+  const [confirm, setConfirm] = useState<{ pick: PartPick; suggestions: PickerHit[]; otherFirst: boolean; sideNote: string | null } | null>(null);
 
   const preferArea = preset?.preferArea ?? null;
   const view = useMemo(
@@ -166,11 +168,21 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
     () => [...view.hits.map((hit) => ({ key: `h:${hit.entry.key}`, kind: "hit" as const, hit })), ...(ready ? [{ key: "other", kind: "other" as const }] : [])],
     [view.hits, ready]
   );
-  const at = Math.max(0, rows.findIndex((r) => r.key === activeKey));
+  // Until the arrows or the mouse pick a row, Enter's row: the first part
+  // found by its own names -- never one found only by a name filed under it
+  // (review N1) -- else "Other / Not Listed", which asks first.
+  const firstHit = enterHit(view.hits);
+  const defaultKey = firstHit ? `h:${firstHit.entry.key}` : "other";
+  const at = Math.max(0, rows.findIndex((r) => r.key === (rows.some((x) => x.key === activeKey) ? activeKey : defaultKey)));
   const activeRow = rows[at];
   const rowId = (i: number) => `${idBase}-o${i}`;
   const activeId = activeRow ? rowId(at) : null;
   const typed = otherPick(query, side).other_part_name;
+  // A side the toggle adds to a typed name, when the toggle's side was a
+  // guess from the photo or the map panel: said so (review N5).
+  const addedSide = otherSideAdded(query, side);
+  const sideNote =
+    addedSide && (sideFrom === "photo" || sideFrom === "zone") ? `${SIDE_LABELS[addedSide]} from the ${sideFrom === "photo" ? "photo" : "map panel"}: check it` : null;
 
   // Focus: the search box on opening (after any dialog closing under it
   // hands its focus back), the opener's again on closing when it is still
@@ -255,7 +267,7 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
     if (!ready) return;
     const step = otherStep(entries, query, side);
     if (!step.confirm) onPick(step.pick);
-    else setConfirm({ pick: step.pick, suggestions: step.suggestions });
+    else setConfirm({ pick: step.pick, suggestions: step.suggestions, otherFirst: step.otherFirst, sideNote });
   };
 
   const activate = (row: Row | undefined) => {
@@ -328,7 +340,11 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
     // Matched by another name (an alias, a wording): say which; a close
     // spelling of the name itself needs no note.
     const otherName = matched && matched.toLowerCase() !== entry.name.toLowerCase() && matched.toLowerCase() !== label.toLowerCase();
-    const note = (tier === "alias" || tier === "near") && otherName ? `${TIER_LABELS[tier]}: ${matched}` : null;
+    const note = row.hit.filed
+      ? `"${matched}" is filed under it: not the same part`
+      : (tier === "alias" || tier === "near") && otherName
+        ? `${TIER_LABELS[tier]}: ${matched}`
+        : null;
     const onList = listedNote(entry, side, rowsListed);
     const ends = twinNote(entry, side);
     return (
@@ -375,47 +391,69 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
   let body;
   if (confirm) {
     const name = confirm.pick.other_part_name ?? "";
+    const otherFirst = confirm.otherFirst || !confirm.suggestions.length;
+    const addOther = (
+      <button type="button" className="btn-primary-modern" onClick={() => onPick(confirm.pick)} data-autofocus={otherFirst ? true : undefined}>
+        Add &quot;{name}&quot; as Other
+      </button>
+    );
+    const suggestions = confirm.suggestions.length > 0 && (
+      <ul className="pp-dym-list">
+        {confirm.suggestions.map((h, i) => {
+          const pick = pickFor(h.entry, side);
+          const prints = printsAsFor(h.entry, side, taxonomy, vehicle);
+          const onList = listedNote(h.entry, side, rowsListed);
+          return (
+            <li key={h.entry.key}>
+              <button type="button" className="pp-dym-btn" onClick={() => choose(h.entry, side)} data-autofocus={!otherFirst && i === 0 ? true : undefined}>
+                <span className="pp-name">{pick ? pickLabel(pick) : h.entry.name}</span>
+                <span className="pp-kind">
+                  {kindText(h.entry)}
+                  {pick ? "" : " · then choose the side"}
+                  {onList ? ` · ${onList}` : ""}
+                </span>
+                {h.filed && <span className="pp-row-sub pp-note">&quot;{h.matched}&quot; is filed under it: not the same part</span>}
+                {prints && (
+                  <span className="pp-row-sub">
+                    Prints <em>{prints}</em>
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    );
     body = (
       <div className="pp-dym" ref={confirmRef}>
-        <p className="pp-dym-title">{confirm.suggestions.length ? "Did you mean one of these?" : `Add "${name}" as a part not on the list?`}</p>
+        <p className="pp-dym-title">{otherFirst ? `Add "${name}" as a part not on the list?` : "Did you mean one of these?"}</p>
         <p className="intake-muted pp-dym-hint">
           &quot;{name}&quot; isn&apos;t on the part list. As &quot;Other&quot; it prints on Annex A under that name, with no 3D marker and no linked
           parts.
+          {confirm.sideNote && <strong className="pp-side-note"> {confirm.sideNote}.</strong>}
         </p>
-        {confirm.suggestions.length > 0 && (
-          <ul className="pp-dym-list">
-            {confirm.suggestions.map((h, i) => {
-              const pick = pickFor(h.entry, side);
-              const prints = printsAsFor(h.entry, side, taxonomy, vehicle);
-              const onList = listedNote(h.entry, side, rowsListed);
-              return (
-                <li key={h.entry.key}>
-                  <button type="button" className="pp-dym-btn" onClick={() => choose(h.entry, side)} data-autofocus={i === 0 ? true : undefined}>
-                    <span className="pp-name">{pick ? pickLabel(pick) : h.entry.name}</span>
-                    <span className="pp-kind">
-                      {kindText(h.entry)}
-                      {pick ? "" : " · then choose the side"}
-                      {onList ? ` · ${onList}` : ""}
-                    </span>
-                    {prints && (
-                      <span className="pp-row-sub">
-                        Prints <em>{prints}</em>
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+        {otherFirst ? (
+          <>
+            <div className="pp-dym-actions pp-dym-first">{addOther}</div>
+            {suggestions && <p className="pp-dym-or">Or is it one of these parts?</p>}
+            {suggestions}
+            <div className="pp-dym-actions">
+              <button type="button" className="btn-secondary-modern" onClick={backToSearch}>
+                Back to the list
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {suggestions}
+            <div className="pp-dym-actions">
+              <button type="button" className="btn-secondary-modern" onClick={backToSearch}>
+                Back to the list
+              </button>
+              {addOther}
+            </div>
+          </>
         )}
-        <div className="pp-dym-actions">
-          <button type="button" className="btn-secondary-modern" onClick={backToSearch}>
-            Back to the list
-          </button>
-          <button type="button" className="btn-primary-modern" onClick={() => onPick(confirm.pick)} data-autofocus={confirm.suggestions.length ? undefined : true}>
-            Add &quot;{name}&quot; as Other
-          </button>
-        </div>
       </div>
     );
   } else {
@@ -463,6 +501,7 @@ function PickerDialog({ title, taxonomy, vehicle, preset, listed, onPick, onClos
               </span>
               <span className="pp-row-sub">
                 {typed ? <>Adds &quot;{typed}&quot; as a part not on the list (you confirm it next)</> : "Adds a part not on the list: name it on its row"}
+                {sideNote && <span className="pp-note"> · {sideNote}</span>}
               </span>
             </div>
           )}

@@ -13,8 +13,13 @@
  * What it searches (all on the page, no server call per key):
  *   - the library's components ON THE LIST (GET /library): the standard
  *     name, the firm's wording (sedan and tail-gate), the side names, the
- *     "(side undetermined)" twin, aliases, the car map's "also check" words,
- *     and "light" for "lamp" ("Head lamp", "Head light" for Headlamp);
+ *     "(side undetermined)" twin, true other names (synonyms, typos, the car
+ *     map's "also check" words), and "light" for "lamp" ("Head lamp", "Head
+ *     light" for Headlamp);
+ *   - the names only FILED UNDER a part (library alias kind "filed_under":
+ *     "Rear air vent" under the rear bumper): found, but shown as "filed
+ *     under" in a group of their own, never Enter's first choice -- typing
+ *     a sub-part never silently gives its parent (review N1);
  *   - for staff, the price book's past wordings of main parts (decision D3,
  *     /library's seed `fittings` of kind "part"): one that is a list part's
  *     own wording joins that part as another name; the rest pick as a named
@@ -34,11 +39,10 @@
  * Pure, with type-only imports from ./api and ./library's types, so Node
  * loads it: scripts/check-picker.mjs. */
 import type { Taxonomy } from "./api";
-import { panelsFor, printsAs as libraryPrintsAs, type BodyClass, type Library, type LibraryKind } from "./library";
+import { FILED_UNDER, panelsFor, printsAs as libraryPrintsAs, type BodyClass, type Library, type LibraryKind } from "./library";
 import { liftSide, nearWord, normalize, parseQuery, searchParts, stem, type MatchTier, type SearchEntry, type Side } from "./partSearch";
 import { partsToPick } from "./partsList";
-import { itemKey } from "./findings";
-import { HATCH_BODIES, bodyTypeFor, otherWording, partForMapAdd, printsAs as rowPrintsAs, type FirmWording } from "./reviewChecks";
+import { HATCH_BODIES, bodyTypeFor, lineKey, otherWording, partForMapAdd, printsAs as rowPrintsAs, type FirmWording } from "./reviewChecks";
 import { zoneKeysFor } from "./vehicleZones";
 
 /** taxonomy.OTHER_PART, written here as findings.ts does (api.ts isn't
@@ -68,6 +72,9 @@ export interface PickerEntry extends SearchEntry {
   twinDropsEnd: boolean;
   /** A list part (a pick is its canonical name); false: a past wording. */
   onList: boolean;
+  /** Names only filed under it (a sub-part, a neighbour): searched apart,
+   * shown as "filed under" (review N1). */
+  filedUnder: string[];
   kind: LibraryKind | null;
   /** A past wording's part ("under Rear Bumper"). */
   parent: string | null;
@@ -125,15 +132,25 @@ export function pickerList(lib: PickerLibrary | null | undefined, t: PickerTaxon
 
 // ---- the entries -----------------------------------------------------------------
 
+// The lamps written as one word ("Headlamp", "Taillamp", ...).
+const LAMP_COMPOUND = /\b(head|tail|fog|side|stop|brake|plate|roof|map|park|parking)(lamp)(s?)\b/gi;
+const LAMP_WORD = /\b([Ll])amp(s?)\b/g;
+const HAS_LAMP_WORD = /\blamps?\b/i;
+
 /** "light" for "lamp", and a compound split ("Headlamp" -> "Head lamp",
- * "Head light", "Headlight"): what people type for the lamps (review L6). */
+ * "Head light", "Headlight"): what people type for the lamps (review L6).
+ * Whole words only (review N14): "Exhaust clamp" stays as it is. */
 export function lampNames(texts: readonly (string | null | undefined)[]): string[] {
   const out = new Set<string>();
+  const light = (v: string) => v.replace(LAMP_WORD, (_m, l: string, s: string) => `${l === "L" ? "L" : "l"}ight${s}`);
   for (const t of texts) {
-    if (!t || !/lamp/i.test(t)) continue;
-    const split = t.replace(/\b([a-z]{3,})(lamp)\b/gi, "$1 $2");
-    if (split !== t) out.add(split);
-    for (const v of [t, split]) out.add(v.replace(/lamp/gi, (m) => (m[0] === "L" ? "Light" : "light")));
+    if (!t) continue;
+    const split = t.replace(LAMP_COMPOUND, "$1 $2$3");
+    if (split !== t) {
+      out.add(split);
+      out.add(t.replace(LAMP_COMPOUND, (_m, a: string, l: string, s: string) => `${a}${l[0] === "L" ? "Light" : "light"}${s}`));
+    }
+    for (const v of [t, split]) if (HAS_LAMP_WORD.test(v)) out.add(light(v));
   }
   return [...out].filter((x) => !texts.includes(x));
 }
@@ -171,7 +188,8 @@ export function pickerEntries(lib: PickerLibrary | null | undefined, t: PickerTa
     const twin = sided && c.twin && onList.has(c.twin) ? c.twin : null;
     if (twin) taken.add(twin);
     const wordings = [c.firm_wording, c.firm_wording_hatch, ...all, twin ? twinBase(twin) : null];
-    const aliases = (c.aliases ?? []).map((a) => a.text);
+    const aliases = (c.aliases ?? []).filter((a) => a.kind !== FILED_UNDER).map((a) => a.text);
+    const filedUnder = (c.aliases ?? []).filter((a) => a.kind === FILED_UNDER).map((a) => a.text);
     out.push({
       key: c.key,
       type: "part",
@@ -186,6 +204,7 @@ export function pickerEntries(lib: PickerLibrary | null | undefined, t: PickerTa
       twin,
       twinDropsEnd: Boolean(twin && (twinCovers.get(twin) ?? 1) > 1),
       onList: true,
+      filedUnder,
       kind: c.kind,
       parent: null,
       zones: c.zones ?? {},
@@ -230,6 +249,7 @@ export function pickerEntries(lib: PickerLibrary | null | undefined, t: PickerTa
       // "Door" for "Front Door": the twin's name dropped the end.
       twinDropsEnd: Boolean(twin && /\b(front|rear)\b/i.test(name) && !/\b(front|rear)\b/i.test(twinBase(twin))),
       onList: true,
+      filedUnder: [],
       kind: null,
       parent: null,
       zones,
@@ -253,14 +273,19 @@ export function pickerEntries(lib: PickerLibrary | null | undefined, t: PickerTa
 
   // The price book's wordings (staff only: /library sends none to anyone
   // else). Fittings wait for step 4A (review H3: D4, D5). A wording that is
-  // a list part's own (its name, wording or another name, side and plural
-  // aside) joins that part as another name: a pick is the part.
-  const byKey = new Map<string, PickerEntry>();
-  for (const e of out) for (const text of [e.name, ...(e.wordings ?? []), ...(e.aliases ?? [])]) if (text) byKey.set(keyOf(text), e);
+  // a list part's own (its name, wording or a TRUE other name -- never one
+  // only filed under it, review N1; side and plural aside) joins that part
+  // as another name: a pick is the part. A wording that is two parts' own
+  // ("Doors": the front door and the rear door) joins neither (N8).
+  const byKey = new Map<string, Set<PickerEntry>>();
+  for (const e of out)
+    for (const text of [e.name, ...(e.wordings ?? []), ...(e.aliases ?? [])])
+      if (text) byKey.set(keyOf(text), (byKey.get(keyOf(text)) ?? new Set<PickerEntry>()).add(e));
   for (const f of lib?.fittings ?? []) {
     if (f.kind === "fitting") continue;
     const texts = [f.name, ...(f.aliases ?? []).map((a) => a.text)];
-    const same = texts.map((x) => byKey.get(keyOf(x))).find(Boolean);
+    const matches = new Set(texts.flatMap((x) => [...(byKey.get(keyOf(x)) ?? [])]));
+    const same = matches.size === 1 ? [...matches][0] : null;
     if (same) {
       same.aliases = uniq([...(same.aliases ?? []), ...texts]) as string[];
       continue;
@@ -279,6 +304,7 @@ export function pickerEntries(lib: PickerLibrary | null | undefined, t: PickerTa
       twin: null,
       twinDropsEnd: false,
       onList: false,
+      filedUnder: [],
       kind: f.kind,
       parent: parent?.name ?? null,
       zones: {},
@@ -328,7 +354,7 @@ export function pickFor(entry: PickerEntry, side: PickSide | null): PartPick | n
     return name ? { part: name, other_part_name: null } : null;
   }
   const code = entry.sided && side === "left" ? " LH" : entry.sided && side === "right" ? " RH" : "";
-  return { part: OTHER_PART, other_part_name: cleanName(`${entry.name}${code}`) };
+  return { part: OTHER_PART, other_part_name: withSide(entry.name, code) };
 }
 
 /** A side must be chosen before this entry can be picked. */
@@ -345,36 +371,67 @@ export function sideChoices(entry: PickerEntry): PickSide[] {
 export const pickLabel = (pick: PartPick) => (pick.part === OTHER_PART ? pick.other_part_name || OTHER_PART : pick.part);
 
 /** "Other / Not Listed" for what the person typed: the typed words,
- * tidied, as the old name box took them, with the side toggle's LH / RH
- * last when the words name no side (review L4); none typed, an unnamed
- * Other (named on its row). */
+ * tidied as the old name box took them. Words naming a side are kept as
+ * Annex A prints them, the side last ("rear air vent lh", "Left rear air
+ * vent" -> "Rear air vent LH": one line, reviewChecks.lineKey); words
+ * naming none take the side toggle's LH / RH (review L4). None typed: an
+ * unnamed Other (named on its row). */
 export function otherPick(typed: string | null | undefined, side: PickSide | null = null): PartPick {
   const name = cleanName(typed);
   if (!name) return { part: OTHER_PART, other_part_name: null };
-  const code = !querySide(name) && side === "left" ? " LH" : !querySide(name) && side === "right" ? " RH" : "";
-  return { part: OTHER_PART, other_part_name: cleanName(`${name}${code}`) };
+  const printed = querySide(name) === "left" || querySide(name) === "right" ? otherWording(name) : null;
+  const own = printed ? / (LH|RH)$/.exec(printed) : null;
+  if (printed && own) return { part: OTHER_PART, other_part_name: withSide(printed.slice(0, -3), ` ${own[1]}`) };
+  const added = otherSideAdded(name, side);
+  return { part: OTHER_PART, other_part_name: withSide(name, added ? ` ${SIDE_LABELS[added]}` : "") };
+}
+
+/** The side the toggle adds to a typed Other's name: LH / RH when the
+ * typed words name no side; null when they do, or for "?" / none. Shown
+ * with where the toggle's side came from (review N5). */
+export function otherSideAdded(typed: string | null | undefined, side: PickSide | null): Side | null {
+  const name = cleanName(typed);
+  if (!name || querySide(name) || (side !== "left" && side !== "right")) return null;
+  return side;
+}
+
+/** A name with its side code last, the name (not the side) cut to fit the
+ * 80 characters (review N4). */
+function withSide(name: string, code: string): string | null {
+  const base = cleanName(name);
+  if (!base) return null;
+  return cleanName(`${base.slice(0, MAX_NAME - code.length).trimEnd()}${code}`);
 }
 
 /** "Other / Not Listed" with typed words never goes in at once (review
- * M4): the best matches first ("Did you mean"), then one confirmation.
+ * M4): one confirmation, with the best matches ("Did you mean"). When no
+ * part matches the words by its own names (none, or only parts they are
+ * filed under), the typed name comes first, the parts after (N1).
  * Nothing typed: an unnamed Other, named on its row, at once. */
-export function otherStep(entries: readonly PickerEntry[], typed: string, side: PickSide | null): { pick: PartPick; confirm: boolean; suggestions: PickerHit[] } {
+export function otherStep(
+  entries: readonly PickerEntry[],
+  typed: string,
+  side: PickSide | null
+): { pick: PartPick; confirm: boolean; suggestions: PickerHit[]; otherFirst: boolean } {
   const pick = otherPick(typed, side);
-  if (!pick.other_part_name) return { pick, confirm: false, suggestions: [] };
-  return { pick, confirm: true, suggestions: didYouMean(entries, typed) };
+  if (!pick.other_part_name) return { pick, confirm: false, suggestions: [], otherFirst: false };
+  const suggestions = didYouMean(entries, typed);
+  const otherFirst = !searchParts([...entries], searchText(typed), { limit: 1 }).length;
+  return { pick, confirm: true, suggestions, otherFirst };
 }
 
 // ---- already on the list (review M1) -----------------------------------------------
 
 export type ListedItem = { part?: string | null; other_part_name?: string | null };
 
-/** The rows on the list now, by findings.itemKey (a named Other by its
- * name): their first row. */
+/** The rows on the list now, by the Annex A line they make
+ * (reviewChecks.lineKey: a named Other by its printed words): their first
+ * row. */
 export function listedRows(items: readonly ListedItem[] | null | undefined): Map<string, number> {
   const out = new Map<string, number>();
   (items ?? []).forEach((it, i) => {
     if (!(it.part || "").trim()) return;
-    const key = itemKey({ part: it.part || "", other_part_name: it.other_part_name });
+    const key = lineKey(it);
     if (!out.has(key)) out.set(key, i);
   });
   return out;
@@ -384,7 +441,7 @@ export function listedRows(items: readonly ListedItem[] | null | undefined): Map
  * to choose, which of its sides are ("LH is row 3"). null: not listed. */
 export function listedNote(entry: PickerEntry, side: PickSide | null, rows: Map<string, number>): string | null {
   if (!rows.size) return null;
-  const rowOf = (p: PartPick | null) => (p ? rows.get(itemKey(p)) : undefined);
+  const rowOf = (p: PartPick | null) => (p ? rows.get(lineKey(p)) : undefined);
   const pick = pickFor(entry, side);
   if (pick) {
     const row = rowOf(pick);
@@ -440,6 +497,9 @@ export interface PickerHit {
   /** How it matched; null while browsing (no words typed). */
   tier: MatchTier | null;
   matched: string | null;
+  /** Found only by a name filed under it ("Rear air vent" -> Rear Bumper):
+   * shown as "filed under", never Enter's first choice (review N1). */
+  filed?: boolean;
 }
 
 export interface PickerGroup {
@@ -513,6 +573,24 @@ const areaOf = (e: PickerEntry) => e.area || "other";
 const TIERS: MatchTier[] = ["exact", "starts", "words", "alias", "near"];
 /** The last group while searching: close spellings, whatever their area. */
 export const NEAR_GROUP = "near";
+/** The very last group while searching: parts found only by a name filed
+ * under them (review N1). */
+export const FILED_GROUP = "filed";
+
+/** The parts' filed-under names as entries of their own, to search apart:
+ * `ref` is the part. */
+function filedEntries(entries: readonly PickerEntry[]): (SearchEntry & { ref: PickerEntry })[] {
+  return entries
+    .filter((e) => e.filedUnder.length)
+    .map((e) => ({ key: e.key, name: e.filedUnder[0], wordings: e.filedUnder.slice(1), uses: e.uses, area: e.area, sided: e.sided, ref: e }));
+}
+
+/** The first row Enter takes: the first part found by its own names --
+ * never one found only by a name filed under it (review N1); null: none
+ * (Enter goes to "Other / Not Listed", which asks first). */
+export function enterHit(hits: readonly PickerHit[]): PickerHit | null {
+  return hits.find((h) => !h.filed) ?? null;
+}
 
 function passes(entry: PickerEntry, opts: PickerOptions): boolean {
   if (opts.zone && !onZone(entry, opts.zone)) return false;
@@ -532,20 +610,32 @@ export function pickerView(entries: readonly PickerEntry[], query: string, opts:
   const prefer = new Set(opts.preferNames ?? []);
   const preferred = (e: PickerEntry) => Object.values(e.names).some((n) => prefer.has(n as string)) || (e.twin !== null && prefer.has(e.twin));
   if (searching) {
-    const found = searchParts(entries.filter((e) => passes(e, { zone: opts.zone })), text, { preferArea: opts.area || opts.preferArea || null });
-    const kept = found.filter((h) => !opts.area || h.entry.area === opts.area);
-    elsewhere = found.length - kept.length;
-    hits = kept.map((h) => ({ entry: h.entry, tier: h.tier, matched: h.matched }));
-    // The photo's area: a boost within each tier (a stable sort).
-    if (opts.preferArea && !opts.area) {
-      const tier = (h: PickerHit) => TIERS.indexOf(h.tier as MatchTier);
-      const home = (h: PickerHit) => Number(h.entry.area === opts.preferArea);
-      hits = [...hits].sort((a, b) => tier(a) - tier(b) || home(b) - home(a));
-    }
+    const pool = entries.filter((e) => passes(e, { zone: opts.zone }));
+    const preferArea = opts.area || opts.preferArea || null;
+    const found: PickerHit[] = searchParts(pool, text, { preferArea }).map((h) => ({ entry: h.entry, tier: h.tier, matched: h.matched }));
+    // The names only filed under a part, searched on their own (N1); a part
+    // a true name found already isn't repeated.
+    const seen = new Set(found.map((h) => h.entry));
+    const filed = searchParts(filedEntries(pool.filter((e) => !seen.has(e))), text, { preferArea }).map((h) => ({
+      entry: h.entry.ref,
+      tier: h.tier,
+      matched: h.matched,
+      filed: true,
+    }));
+    const all = [...found, ...filed];
+    hits = all.filter((h) => !opts.area || h.entry.area === opts.area);
+    elsewhere = all.length - hits.length;
+    // Within a tier: list parts before past wordings (N7), then the
+    // photo's area (a boost, M6); filed-under matches after the rest.
+    const tier = (h: PickerHit) => TIERS.indexOf(h.tier as MatchTier);
+    const home = (h: PickerHit) => Number(Boolean(opts.preferArea) && !opts.area && h.entry.area === opts.preferArea);
+    hits = [...hits].sort(
+      (a, b) => Number(Boolean(a.filed)) - Number(Boolean(b.filed)) || tier(a) - tier(b) || Number(b.entry.onList) - Number(a.entry.onList) || home(b) - home(a)
+    );
   } else {
     const isListed = (e: PickerEntry) => {
       const pick = opts.listed?.size ? pickFor(e, opts.side ?? null) : null;
-      return Boolean(pick && opts.listed?.has(itemKey(pick)));
+      return Boolean(pick && opts.listed?.has(lineKey(pick)));
     };
     hits = entries
       .filter((e) => e.type === "part" && passes(e, opts))
@@ -565,13 +655,18 @@ export function pickerView(entries: readonly PickerEntry[], query: string, opts:
   }
   const areas = opts.areas ?? DEFAULT_AREAS;
   const label = (key: string) =>
-    key === NEAR_GROUP ? "Close spellings" : (areas.find((a) => a.key === key)?.label ?? (key === "other" ? "Other parts" : key));
-  const groupOf = (h: PickerHit) => (searching && h.tier === "near" ? NEAR_GROUP : areaOf(h.entry));
+    key === NEAR_GROUP
+      ? "Close spellings"
+      : key === FILED_GROUP
+        ? "Filed under a part (not the same part)"
+        : (areas.find((a) => a.key === key)?.label ?? (key === "other" ? "Other parts" : key));
+  const groupOf = (h: PickerHit) => (searching && h.filed ? FILED_GROUP : searching && h.tier === "near" ? NEAR_GROUP : areaOf(h.entry));
   const byGroup = new Map<string, PickerHit[]>();
   for (const h of hits) byGroup.set(groupOf(h), [...(byGroup.get(groupOf(h)) ?? []), h]);
   let keys = [...byGroup.keys()];
   if (searching) {
-    keys = [...keys.filter((k) => k !== NEAR_GROUP), ...keys.filter((k) => k === NEAR_GROUP)];
+    const last = [NEAR_GROUP, FILED_GROUP];
+    keys = [...keys.filter((k) => !last.includes(k)), ...last.filter((k) => keys.includes(k))];
   } else {
     // The preferred part's area first (the map panel's own part on top),
     // then the photo's area, then the library's order.
@@ -585,23 +680,44 @@ export function pickerView(entries: readonly PickerEntry[], query: string, opts:
 }
 
 /** "Did you mean": the best three for a name about to go in as an Other
- * (K-pricing B.4 step 2; review M4), whatever the chip or the zone. First
- * the strict matches (all words); then any part sharing at least half of
- * the typed words (a 5+ letter word may be one letter out), most shared
- * first, then the part whose own words are most covered, more uses,
- * shorter name. "rear bumper retainer" -> Rear Bumper. */
+ * (K-pricing B.4 step 2; review M4), whatever the chip or the zone. True
+ * matches first, then parts the words are only filed under (N1). Each:
+ * the strict matches (all words), then any part sharing most of the typed
+ * words (both of two, half of three or more; a 5+ letter word may be one
+ * letter out), most shared first, then the part whose own words are most
+ * covered, more uses, shorter name. "rear bumper retainer" -> Rear Bumper;
+ * "rear air vent" -> Rear Bumper, as filed under it. */
 export function didYouMean(entries: readonly PickerEntry[], typed: string, n = 3): PickerHit[] {
   if (!hasWords(typed)) return [];
-  const strict = searchParts([...entries], searchText(typed), { limit: n }).map((h) => ({ entry: h.entry, tier: h.tier, matched: h.matched }));
+  const own = closest(entries, typed, n, (e) => [e.name, ...(e.wordings ?? []), ...(e.aliases ?? [])], false);
+  if (own.length >= n) return own;
+  const taken = new Set(own.map((h) => h.entry));
+  const filed = closest(
+    entries.filter((e) => !taken.has(e)),
+    typed,
+    n,
+    (e) => e.filedUnder,
+    true
+  );
+  return [...own, ...filed].slice(0, n);
+}
+
+function closest(entries: readonly PickerEntry[], typed: string, n: number, textsOf: (e: PickerEntry) => (string | null | undefined)[], filed: boolean): PickerHit[] {
+  const pool = entries.filter((e) => textsOf(e).some(Boolean));
+  const asEntries = pool.map((e) => {
+    const texts = textsOf(e).filter(Boolean) as string[];
+    return { key: e.key, name: texts[0], wordings: texts.slice(1), uses: e.uses, area: e.area, sided: e.sided, ref: e };
+  });
+  const strict = searchParts(asEntries, searchText(typed), { limit: n }).map((h) => ({ entry: h.entry.ref, tier: h.tier, matched: h.matched, filed }));
   if (strict.length >= n) return strict;
   const words = uniq(parseQuery(searchText(typed)).words.filter((w) => w.length >= 2));
-  const need = Math.max(1, Math.ceil(words.length / 2));
+  const need = words.length <= 2 ? words.length : Math.ceil(words.length / 2);
   const same = (q: string, w: string) => stem(q) === stem(w) || nearWord(q, w);
   const scored: { hit: PickerHit; shared: number; cover: number }[] = [];
-  for (const entry of entries) {
+  for (const entry of pool) {
     if (strict.some((h) => h.entry === entry)) continue;
     let best: { shared: number; cover: number; text: string } | null = null;
-    for (const text of [entry.name, ...(entry.wordings ?? []), ...(entry.aliases ?? [])]) {
+    for (const text of textsOf(entry)) {
       if (!text) continue;
       const own = normalize(liftSide(text).text).split(" ").filter(Boolean);
       if (!own.length) continue;
@@ -609,7 +725,7 @@ export function didYouMean(entries: readonly PickerEntry[], typed: string, n = 3
       const cover = own.filter((w) => words.some((q) => same(q, w))).length / own.length;
       if (!best || shared > best.shared || (shared === best.shared && cover > best.cover)) best = { shared, cover, text };
     }
-    if (best && best.shared >= need) scored.push({ hit: { entry, tier: null, matched: best.text }, shared: best.shared, cover: best.cover });
+    if (best && best.shared >= need && need > 0) scored.push({ hit: { entry, tier: null, matched: best.text, filed }, shared: best.shared, cover: best.cover });
   }
   scored.sort(
     (a, b) =>
@@ -672,6 +788,12 @@ export function nextAddRow(cur: AddRowDraft | null, pick: PartPick, opts: { fres
   };
 }
 
+/** What a filled add row still lacks before it can be added at once (the
+ * add check's "Yes, add", review N13): an Other's name; null: nothing. */
+export function addRowGap(row: AddRowDraft): "name" | null {
+  return row.part === OTHER_PART && !cleanName(row.other_part_name) ? "name" : null;
+}
+
 // ---- presets (B.3) ---------------------------------------------------------------
 
 export interface PickerPreset {
@@ -702,7 +824,7 @@ export function presetFromZone(zone: string): PickerPreset {
  * already (review M1). */
 export function zonePreferred(zone: string | null | undefined, list: readonly string[], rows?: Map<string, number>): string[] {
   const own = zone ? partForMapAdd(zone, list) : "";
-  if (!own || rows?.has(itemKey({ part: own, other_part_name: null }))) return [];
+  if (!own || rows?.has(lineKey({ part: own, other_part_name: null }))) return [];
   return [own];
 }
 

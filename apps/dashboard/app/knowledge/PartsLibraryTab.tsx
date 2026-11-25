@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Library as LibraryIcon, List, Search, X } fr
 import { OUTLINE_KEYS, QUARTER_SHAPES, ZONE_SHAPES, type Shape } from "@/components/ImpactSketch";
 import { zoneLabel } from "@/lib/vehicleZones";
 import {
+  FILED_UNDER,
   LIBRARY_KINDS,
   NO_FILTERS,
   areaCounts,
@@ -285,7 +286,11 @@ function DetailPanel({ lib, picked, onSelect, onClose }: { lib: Library; picked:
           )}
         </DetailRow>
         <DetailRow label="Other names">
-          {c.aliases.length ? c.aliases.map((a) => `${a.text}${a.kind === "typo" ? " (typo)" : ""}`).join(", ") : <span style={muted}>none</span>}
+          {c.aliases.length ? (
+            c.aliases.map((a) => `${a.text}${a.kind === "typo" ? " (typo)" : a.kind === FILED_UNDER ? " (filed under it, not the same part)" : ""}`).join(", ")
+          ) : (
+            <span style={muted}>none</span>
+          )}
         </DetailRow>
         <DetailRow label="On the 3D model">
           {zoneText(c.panels)}

@@ -25,7 +25,7 @@ import { STRIP_DOWN_CHIP, needsStripDownChip } from "@/lib/findings";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
 import { isCarMapPart, partsToPick } from "@/lib/partsList";
-import { nextAddRow, type PartPick, type PickerPreset } from "@/lib/partPicker";
+import { addRowGap, nextAddRow, type PartPick, type PickerPreset } from "@/lib/partPicker";
 import { checkAdd, type AddCheck } from "@/lib/reviewChecks";
 import { prefetchPartsLibrary } from "@/lib/usePartsLibrary";
 import { AddCheckDialog } from "./intake/ReviewCheckDialogs";
@@ -157,7 +157,9 @@ export function DetectedPartsTable({
     if (request) setDoneRequest(request.nonce);
   };
   // The parts library for the picker, fetched as the tab opens (review M2).
-  useEffect(() => prefetchPartsLibrary(), []);
+  useEffect(() => {
+    if (!readOnly) prefetchPartsLibrary();
+  }, [readOnly]);
   const addRowRef = useRef<HTMLTableRowElement>(null);
   // A pick fills the add row: bring it into view (it may be far below the
   // map) and put the cursor on what comes next -- the name of an Other
@@ -178,12 +180,24 @@ export function DetectedPartsTable({
     setRevealAdd((r) => ({ n: (r?.n ?? 0) + 1, focus: pick.part === OTHER_PART && !pick.other_part_name ? "name" : "condition" }));
   };
   // "Rear Bumper is already row 3" / "the other side?" before a pick fills
-  // the add row, as the Review step asks (review M1).
+  // the add row, as the Review step asks (review M1). Its "Yes, add" / "Add
+  // anyway" adds the part at once, as the Review step does (N13) -- unless
+  // the row still lacks something an add needs (an Other's name): then the
+  // row is filled and the cursor put there.
   const [addAsk, setAddAsk] = useState<{ check: NonNullable<AddCheck>; go: () => void } | null>(null);
   const pickToAdd = (pick: PartPick, opts: { photoLabel: string | null; fresh: boolean }) => {
     const check = checkAdd(damageEntries, pick.part, pick.other_part_name);
-    if (check) setAddAsk({ check, go: () => fillAdd(pick, opts) });
-    else fillAdd(pick, opts);
+    if (!check) return fillAdd(pick, opts);
+    setAddAsk({
+      check,
+      go: () => {
+        const draft = nextAddRow(adding, pick, opts);
+        const gap = addRowGap(draft);
+        setAdding(draft);
+        if (gap) setRevealAdd((r) => ({ n: (r?.n ?? 0) + 1, focus: gap }));
+        else void submitAdd(draft);
+      },
+    });
   };
   // A condition or remark a row was just set to, kept visible while it
   // saves and after a refusal (so the choice isn't silently snapped back).
@@ -323,16 +337,17 @@ export function DetectedPartsTable({
     }
   };
 
-  const submitAdd = async () => {
-    if (readOnly || !adding || !adding.part.trim()) return;
+  /** [Add]: the add row as it is, or `draft` (the add check's "Yes, add"). */
+  const submitAdd = async (draft: typeof adding = adding) => {
+    if (readOnly || !draft || !draft.part.trim()) return;
     const ok = await run("new", () =>
       // No damage_type: the add row asks for the firm's wording only.
       addDamageItemAction(reportId, {
-        part: adding.part.trim(),
-        other_part_name: adding.part === OTHER_PART ? cleanPartName(adding.other_part_name) : null,
-        condition: adding.condition || null,
-        remarks: toDamageRemarks(adding.remarks),
-        photo_reference: adding.photo_reference || null,
+        part: draft.part.trim(),
+        other_part_name: draft.part === OTHER_PART ? cleanPartName(draft.other_part_name) : null,
+        condition: draft.condition || null,
+        remarks: toDamageRemarks(draft.remarks),
+        photo_reference: draft.photo_reference || null,
       })
     );
     if (ok) setAdding(null);

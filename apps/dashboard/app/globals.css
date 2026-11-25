@@ -11861,6 +11861,18 @@ html:has(.intake-footer) {
   font-size: 12px;
   line-height: 1.45;
 }
+.pp-side-note {
+  color: var(--badge-amber-text);
+}
+.pp-dym-actions.pp-dym-first {
+  justify-content: flex-start;
+}
+.pp-dym-or {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
 .pp-side-chip {
   min-width: 36px;
   padding: 3px 8px;

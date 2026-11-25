@@ -248,16 +248,18 @@ check("ties: more uses first (staff counts) -- the best hit's group leads; then 
   assert.equal(P.pickerView(entriesOn, "absorber", { area: null, preferArea: "rear" }).hits[0].entry.name, "Rear Bumper Absorber");
   assert.equal(P.pickerView(entriesOn, "absorber", { preferArea: "front" }).hits[0].entry.name, "Front Bumper Absorber");
 });
-check("L8: close spellings come last, in a group of their own; the area groups hold the closer matches", () => {
-  for (const q of ["bumpr", "rear bumpr", "bonet", "ganrish", "tail lamp", "door", "rear fender"]) {
+check("L8: close spellings come after the area groups, filed-under matches last; the area groups hold the closer matches", () => {
+  for (const q of ["bumpr", "rear bumpr", "bonet", "ganrish", "tail lamp", "door", "rear fender", "absorber", "rear air vent"]) {
     const view = P.pickerView(entriesOn, q);
-    const nearAt = view.groups.findIndex((g) => g.key === P.NEAR_GROUP);
-    if (nearAt >= 0) {
-      assert.equal(nearAt, view.groups.length - 1, `${q}: close spellings last`);
-      assert.equal(view.groups[nearAt].label, "Close spellings");
-      assert.ok(view.groups[nearAt].hits.every((h) => h.tier === "near"));
+    const keys = view.groups.map((g) => g.key);
+    const tail = keys.filter((k) => k === P.NEAR_GROUP || k === P.FILED_GROUP);
+    assert.deepEqual(keys.slice(keys.length - tail.length), tail, `${q}: ${keys}`);
+    if (tail.length === 2) assert.deepEqual(tail, [P.NEAR_GROUP, P.FILED_GROUP], q);
+    for (const g of view.groups) {
+      if (g.key === P.NEAR_GROUP) assert.ok(g.hits.every((h) => h.tier === "near" && !h.filed), q);
+      else if (g.key === P.FILED_GROUP) assert.ok(g.hits.every((h) => h.filed), q);
+      else assert.ok(g.hits.every((h) => h.tier !== "near" && !h.filed), `${q}: ${g.key}`);
     }
-    for (const g of view.groups) if (g.key !== P.NEAR_GROUP) assert.ok(g.hits.every((h) => h.tier !== "near"), `${q}: ${g.key}`);
   }
 });
 
@@ -334,7 +336,7 @@ check("M4: typed words never go in at once -- otherStep asks first; nothing type
   assert.equal(typed.confirm, true);
   assert.deepEqual(typed.suggestions, []);
   assert.deepEqual(typed.pick, { part: OTHER, other_part_name: "Xyzzy 1234" });
-  assert.deepEqual(P.otherStep(entriesOff, "  ", null), { pick: { part: OTHER, other_part_name: null }, confirm: false, suggestions: [] });
+  assert.deepEqual(P.otherStep(entriesOff, "  ", null), { pick: { part: OTHER, other_part_name: null }, confirm: false, suggestions: [], otherFirst: false });
 });
 check("M4: Did you mean is looser: 'rear bumper retainer' -> Rear Bumper; 'front bumper ganrish grille' -> Front Bumper, Front Grille", () => {
   assert.equal(P.didYouMean(entriesOff, "rear bumper retainer")[0].entry.name, "Rear Bumper");
@@ -349,15 +351,18 @@ check("Did you mean: strict matches first, at most three; none for gibberish, no
   assert.deepEqual(P.didYouMean(entriesOff, ""), []);
   assert.deepEqual(P.didYouMean(entriesOff, "lh"), []);
 });
-check("Other keeps the typed name, tidied as the name box did (spaces, capital, 80 characters)", () => {
-  assert.deepEqual(P.otherPick("  left rear   air vent "), { part: OTHER, other_part_name: "Left rear air vent" });
+check("Other keeps the typed name, tidied (spaces, capital, 80 characters); a named side as Annex A prints it, last", () => {
+  assert.deepEqual(P.otherPick("  rear   air vent "), { part: OTHER, other_part_name: "Rear air vent" });
+  assert.deepEqual(P.otherPick("  left rear   air vent "), { part: OTHER, other_part_name: "Rear air vent LH" });
+  assert.deepEqual(P.otherPick("rear air vent lh"), { part: OTHER, other_part_name: "Rear air vent LH" });
+  assert.equal(P.otherPick("rear air vent lh").other_part_name, R.otherWording("rear air vent lh"), "stored as it prints");
   assert.deepEqual(P.otherPick(""), { part: OTHER, other_part_name: null });
   assert.equal(P.otherPick("x".repeat(120)).other_part_name.length, 80);
 });
 check("L4: a typed Other takes the side toggle (LH / RH last) unless its words name a side; '?' adds none", () => {
   assert.equal(P.otherPick("air vent", "left").other_part_name, "Air vent LH");
   assert.equal(P.otherPick("air vent", "right").other_part_name, "Air vent RH");
-  assert.equal(P.otherPick("left air vent", "right").other_part_name, "Left air vent");
+  assert.equal(P.otherPick("left air vent", "right").other_part_name, "Air vent LH", "the words' side, not the toggle's");
   assert.equal(P.otherPick("air vent", "unknown").other_part_name, "Air vent");
   assert.equal(P.otherStep(entriesOff, "air vent", "left").pick.other_part_name, "Air vent LH");
 });
@@ -550,18 +555,24 @@ check("Review step: the add row opens the picker; a pick adds the old row; liste
   const row = tsx.slice(tsx.indexOf('<div className="intake-add-row">'), tsx.indexOf("</div>", tsx.indexOf('<div className="intake-add-row">')));
   assert.doesNotMatch(row, /<Select/);
   assert.match(row, /setAddPicker\(\{ title: "Add a damaged part"/);
-  assert.match(tsx, /<PartPicker[\s\S]*?listed=\{damage\}[\s\S]*?addPicked\(pick, photoId\)/);
+  assert.match(tsx, /<PartPicker[\s\S]*?listed=\{damage\}[\s\S]*?addPicked\(pick, photoId, toRow\)/);
   // A list part: { part, severity: null, human_verified: true } as before.
   assert.match(tsx, /\{\s*part,\s*\.\.\.\(other_part_name \? \{ other_part_name \} : \{\}\),\s*severity: null,\s*\.\.\.\(photoId \? \{ photo_reference: `@\$\{photoId\}`, bbox_2d: null \} : \{\}\),\s*human_verified: true,\s*\}/);
   assert.match(tsx, /onAddDamage=\{addForZone\}/);
   assert.match(tsx, /onAddFromPhoto=\{addFromViewer\}/);
   assert.match(tsx, /useEffect\(\(\) => prefetchPartsLibrary\(\), \[\]\)/);
-  assert.match(tsx, /photoId \? "condition" : undefined/, "after a photo's add, the cursor on the new row (L1)");
+  assert.match(tsx, /photoId \|\| toRow \? "condition" : undefined/, "after a photo's or the map's add, the cursor on the new row (L1, N9)");
+  assert.match(tsx, /presetFromZone\(zoneKey\), photoId: null, toRow: true/);
 });
 check("Case tab 1: picks ask checkAdd first (M1) and fill a fresh row (M5); the cursor goes to the row (L1)", () => {
   const table = source("../components/DetectedPartsTable.tsx");
   assert.doesNotMatch(table, /aria-label="New part"/, "the add row's part <select> is gone");
-  assert.match(table, /const check = checkAdd\(damageEntries, pick\.part, pick\.other_part_name\);\n\s*if \(check\) setAddAsk\(\{ check, go: \(\) => fillAdd\(pick, opts\) \}\);\n\s*else fillAdd\(pick, opts\);/);
+  assert.match(table, /const check = checkAdd\(damageEntries, pick\.part, pick\.other_part_name\);\n\s*if \(!check\) return fillAdd\(pick, opts\);\n\s*setAddAsk\(\{/);
+  // N13: the check's "Yes, add" adds at once (submitAdd(draft)), unless the
+  // row lacks an Other's name (addRowGap): then the cursor goes there.
+  assert.match(table, /const draft = nextAddRow\(adding, pick, opts\);\n\s*const gap = addRowGap\(draft\);\n\s*setAdding\(draft\);\n\s*if \(gap\) setRevealAdd\([^\n]*focus: gap \}\)\);\n\s*else void submitAdd\(draft\);/);
+  // N10: no library fetched for a case nobody can change.
+  assert.match(table, /if \(!readOnly\) prefetchPartsLibrary\(\);/);
   assert.match(table, /<AddCheckDialog/);
   assert.match(table, /setAdding\(\(cur\) => nextAddRow\(cur, pick, opts\)\)/);
   assert.match(table, /fresh: true \}\)/);
@@ -582,6 +593,131 @@ check("M7: photo viewer's 'Add part seen here' only in photo mode, never read-on
   const tsx = source("../components/EvidenceViewer.tsx");
   assert.match(tsx, /onAddFromPhoto && !readOnly && mode === "photo" && photoRef && src && \(/);
   assert.match(tsx, /Add part seen here/);
+});
+
+// ---------------------------------------------------------------------------
+console.log("-- second review: names filed under a part (N1), the printed line (N2), and the lows");
+check("N1: the library's 'filed under' names are kept apart from its true other names", () => {
+  const bumper = entryNamed(entriesOff, "Rear Bumper");
+  assert.deepEqual(bumper.filedUnder, ["Rear air vent"]);
+  assert.ok(!bumper.aliases.includes("Rear air vent"));
+  assert.ok(entryNamed(entriesOff, "Bonnet").aliases.includes("Hood"), "a true synonym stays an alias");
+  assert.ok(entryNamed(entriesOff, "Suspension - Front").filedUnder.includes("Shock absorber"));
+  assert.ok(entryNamed(entriesOff, "Exhaust System").filedUnder.includes("Silencer"));
+});
+check("N1: 'rear air vent' finds the rear bumper only as 'filed under' (last group); Enter never takes it", () => {
+  const view = P.pickerView(entriesOff, "rear air vent");
+  assert.deepEqual(view.hits.map((h) => [h.entry.name, Boolean(h.filed)]), [["Rear Bumper", true]]);
+  assert.equal(view.groups[view.groups.length - 1].key, P.FILED_GROUP);
+  assert.equal(P.enterHit(view.hits), null, "Enter goes to Other, which asks");
+  for (const q of ["air vent lh", "silencer", "shock absorber", "tool tray", "front mud flap", "lower arm", "key lock"]) {
+    const v = P.pickerView(entriesOff, q);
+    assert.ok(v.hits.length > 0 && v.hits.every((h) => h.filed), `${q}: ${names(v.hits)}`);
+    assert.equal(P.enterHit(v.hits), null, q);
+  }
+  assert.equal(P.enterHit(P.pickerView(entriesOff, "hood").hits).entry.name, "Bonnet", "a true synonym is Enter's");
+  assert.equal(P.enterHit(P.pickerView(entriesOff, "steering rack").hits).entry.name, "Steering Assembly", "the firm's own words");
+  // A true match beats a filed-under one, for Enter too: 'absorber' with the
+  // car map's names on finds the bumper absorbers, the suspensions filed.
+  const absorber = P.pickerView(entriesOn, "absorber");
+  assert.match(P.enterHit(absorber.hits).entry.name, /Bumper Absorber/);
+  assert.ok(absorber.hits.some((h) => h.filed && /Suspension/.test(h.entry.name)));
+});
+check("N1: the confirmation puts the typed name first ('Rear air vent LH'), the part it is filed under as a suggestion", () => {
+  const step = P.otherStep(entriesOff, "rear air vent", "left");
+  assert.deepEqual(step.pick, { part: OTHER, other_part_name: "Rear air vent LH" });
+  assert.equal(step.confirm, true);
+  assert.equal(step.otherFirst, true);
+  assert.deepEqual(step.suggestions.map((h) => [h.entry.name, Boolean(h.filed)]), [["Rear Bumper", true]]);
+  // No part matches all the words: the typed name first, the near parts after.
+  const retainer = P.otherStep(entriesOff, "rear bumper retainer", null);
+  assert.deepEqual([retainer.otherFirst, retainer.suggestions[0].entry.name, Boolean(retainer.suggestions[0].filed)], [true, "Rear Bumper", false]);
+  // Other chosen while a part does match: "Did you mean" first.
+  const lamp = P.otherStep(entriesOff, "tail lamp cover", null);
+  assert.equal(P.otherStep(entriesOff, "tail lamp", null).otherFirst, false);
+  assert.equal(lamp.otherFirst, true);
+  assert.match(picker, /const otherFirst = confirm\.otherFirst \|\| !confirm\.suggestions\.length;/);
+});
+check("N1: Did you mean ranks true matches above filed-under ones", () => {
+  const got = P.didYouMean(entriesOn, "rear shock absorber").map((h) => [h.entry.name, Boolean(h.filed)]);
+  assert.deepEqual(got[0], ["Rear Bumper Absorber", false]);
+  assert.ok(got.some(([n, f]) => n === "Suspension - Rear" && f), JSON.stringify(got));
+  const firstFiled = got.findIndex(([, f]) => f);
+  assert.ok(got.slice(firstFiled).every(([, f]) => f), "no true match after a filed one");
+});
+const seedLib = (fittings) => ({ ...core, staff: true, fittings });
+check("N1: a past wording folds into a part through a true name only, never one filed under it", () => {
+  const e = P.pickerEntries(seedLib([
+    seed("seed-rear-air-vents", "Rear air vents", "part", "rear-bumper", "rear", ["rear_bumper"], true),
+    seed("seed-hoods", "Hoods", "part", "bonnet", "front", ["bonnet"], false),
+  ]), tax(false));
+  assert.ok(e.some((x) => x.key === "seed-rear-air-vents" && x.type === "wording"), "the vent stays a wording of its own");
+  assert.ok(!e.some((x) => x.key === "seed-hoods"), "'Hoods' is the bonnet");
+  assert.deepEqual(topPick(e, "hoods"), { part: "Bonnet", other_part_name: null });
+  assert.deepEqual(P.pickFor(e.find((x) => x.key === "seed-rear-air-vents"), "left"), { part: OTHER, other_part_name: "Rear air vents LH" });
+});
+check("N8: a past wording that is two parts' own ('Doors': front and rear door) joins neither", () => {
+  const e = P.pickerEntries(seedLib([seed("seed-doors", "Doors", "part", "front-door", "side", [], true)]), tax(false));
+  assert.ok(e.some((x) => x.key === "seed-doors" && x.type === "wording"));
+  assert.ok(!entryNamed(e, "Front Door").aliases.includes("Doors") && !entryNamed(e, "Rear Door").aliases.includes("Doors"));
+});
+check("N7: within a tier, list parts come before past wordings, whatever their uses", () => {
+  const e = P.pickerEntries(seedLib([seed("seed-door-trims", "Door trims", "part", "front-door", "side", [], true, { uses: 50 })]), tax(false));
+  const hits = P.pickerView(e, "door").hits;
+  for (const tier of new Set(hits.map((h) => h.tier))) {
+    const inTier = hits.filter((h) => h.tier === tier && !h.filed);
+    const firstWording = inTier.findIndex((h) => !h.entry.onList);
+    if (firstWording >= 0) assert.ok(inTier.slice(firstWording).every((h) => !h.entry.onList), `${tier}: ${names(inTier)}`);
+  }
+  assert.ok(hits[0].entry.onList, names(hits).join(", "));
+});
+check("N2: named Others are compared by the line they print -- 'Left front bumper bracket' = 'Front bumper bracket LH'", () => {
+  assert.equal(R.lineKey({ part: OTHER, other_part_name: "Left front bumper bracket" }), R.lineKey({ part: OTHER, other_part_name: "Front bumper bracket LH" }));
+  assert.notEqual(R.lineKey({ part: OTHER, other_part_name: "Front bumper bracket RH" }), R.lineKey({ part: OTHER, other_part_name: "Front bumper bracket LH" }));
+  assert.equal(R.lineKey({ part: "Rear Bumper" }), "Rear Bumper");
+  const items = [{ part: OTHER, other_part_name: "Left front bumper bracket", condition: "Bent" }];
+  const typed = P.otherPick("front bumper bracket", "left");
+  assert.equal(typed.other_part_name, "Front bumper bracket LH");
+  assert.equal(R.checkAdd(items, typed.part, typed.other_part_name)?.kind, "duplicate");
+  const both = [...items, { part: OTHER, other_part_name: "Front bumper bracket LH", condition: "Bent" }];
+  assert.deepEqual(R.filingProblems(both).map((p) => [p.index, p.issues, p.sameAs]), [[1, ["duplicate"], 0]]);
+  assert.ok(P.listedRows(items).has(R.lineKey(typed)), "the picker marks it listed too");
+});
+check("N4: a long typed name keeps its side -- the name is cut, not the LH / RH", () => {
+  for (const n of [70, 77, 78, 79, 80, 95]) {
+    const got = P.otherPick("x".repeat(n), "left").other_part_name;
+    assert.ok(got.endsWith(" LH") && got.length <= 80, `${n}: ${got.slice(-6)} (${got.length})`);
+  }
+  const long = seed("seed-long", `Rear ${"bumper ".repeat(14)}piece`, "part", null, null, [], true);
+  const e = P.pickerEntries(seedLib([long]), tax(false)).find((x) => x.key === "seed-long");
+  const got = P.pickFor(e, "right").other_part_name;
+  assert.ok(got.endsWith(" RH") && got.length <= 80, got);
+});
+check("N5: the side a typed Other takes from the toggle is known, and the picker says where it came from", () => {
+  assert.equal(P.otherSideAdded("bumper corner moulding", "left"), "left");
+  assert.equal(P.otherSideAdded("left bumper corner moulding", "right"), null, "the words name the side");
+  assert.equal(P.otherSideAdded("bumper corner moulding", "unknown"), null);
+  assert.equal(P.otherSideAdded("", "left"), null);
+  assert.match(picker, /addedSide && \(sideFrom === "photo" \|\| sideFrom === "zone"\)/);
+  assert.match(picker, /\{confirm\.sideNote && <strong className="pp-side-note">/);
+});
+check("N13: an add the check let through goes in at once unless it lacks an Other's name", () => {
+  assert.equal(P.addRowGap(P.nextAddRow(null, { part: OTHER, other_part_name: null }, { fresh: true, photoLabel: null })), "name");
+  assert.equal(P.addRowGap(P.nextAddRow(null, { part: OTHER, other_part_name: "Air vent LH" }, { fresh: true, photoLabel: null })), null);
+  assert.equal(P.addRowGap(P.nextAddRow(null, { part: "Rear Bumper", other_part_name: null }, { fresh: true, photoLabel: null })), null);
+});
+check("N14: 'lamp' becomes 'light' in whole words only ('Exhaust clamp' stays)", () => {
+  assert.deepEqual(P.lampNames(["Exhaust clamp"]), []);
+  assert.deepEqual(P.lampNames(["Clamp"]), []);
+  assert.deepEqual(P.lampNames(["Tail Lamp"]), ["Tail Light"]);
+  assert.deepEqual(P.lampNames(["Fog Lamps"]), ["Fog Lights"]);
+  assert.ok(P.lampNames(["Rear Number Plate Lamp"]).includes("Rear Number Plate Light"));
+  assert.deepEqual(P.lampNames(["Headlamp"]).sort(), ["Head lamp", "Head light", "Headlight"]);
+});
+check("PartPicker: Enter's first row is enterHit's (a filed-under row never is); filed rows say so", () => {
+  assert.match(picker, /const firstHit = enterHit\(view\.hits\);/);
+  assert.match(picker, /const defaultKey = firstHit \? `h:\$\{firstHit\.entry\.key\}` : "other";/);
+  assert.match(picker, /is filed under it: not the same part/);
 });
 
 if (failed) {
