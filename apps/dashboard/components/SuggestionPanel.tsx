@@ -279,6 +279,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
           </div>
         )}
         {f.wrongEndNote && <div className="sg-note">{f.wrongEndNote}</div>}
+        {f.inventoryNote && <div className="sg-note">{f.inventoryNote}</div>}
         <div className="sg-card-foot">
           {slides.length > 0 && (
             <div className="sg-thumbs">

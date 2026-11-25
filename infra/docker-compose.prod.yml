@@ -154,6 +154,13 @@ x-bot-service: &bot-service
     - INTAKE_SIDE_GEOMETRY=${INTAKE_SIDE_GEOMETRY:-off}
     - INTAKE_ZONE_WRONG_END=${INTAKE_ZONE_WRONG_END:-drop}
     - INTAKE_LINK_CHECK_MAX_CALLS=${INTAKE_LINK_CHECK_MAX_CALLS:-2}
+    # Detection Round 2 (app/config.py intake_box_every, intake_zone_inventory;
+    # zone mode only, no extra Gemini call): a box on every listed part the
+    # zone reads see (B2), and the zone reads' per-photo inventory with its
+    # damaged parts as suggestions (B1). Defaults are config.py's: "off",
+    # today's behaviour byte for byte.
+    - INTAKE_BOX_EVERY=${INTAKE_BOX_EVERY:-off}
+    - INTAKE_ZONE_INVENTORY=${INTAKE_ZONE_INVENTORY:-off}
     # Photo storage (owner, 23 Nov 2026; app/config.py photo_store_compress):
     # "on" re-saves each JPEG original at quality 85, same pixel size, its
     # EXIF (GPS included) dropped. Both containers store photos (the bot:

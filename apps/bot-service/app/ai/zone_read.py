@@ -44,10 +44,20 @@ a line per anchor panel this zone offers (after the packs, before the
 closing line) and an `assembly_walk` field after `damage`; the answer's
 walk is ZoneAnswer.walk. None (the default): the request as before, byte
 for byte. A zone that offers no anchor with a sign is asked nothing new.
+
+Detection Round 2 (settings.intake_box_every, intake_zone_inventory; the
+"Round 2" section below): `r2` (a Round2Ask) adds, after everything else,
+a `locate` field -- a box round each part already on the drafted list
+that the photos show, damaged or not: where it is, never a new find --
+and/or an `inventory` field -- the area's parts each photo shows, damaged
+or not, each with a box. Both last in the schema, so an answer cut off in
+them is read as today's (salvage). None (the default): the request as
+before, byte for byte.
 """
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 from app.ai import evidence, prompt_packs, runs
@@ -64,6 +74,8 @@ from app.reports.taxonomy import (
     FIRM_CONDITION_TOKENS,
     FIRM_REMARKS,
     OTHER_PART,
+    UNDETERMINED_SUFFIX,
+    known_part,
     split_side,
     unsided_part,
 )
@@ -225,6 +237,299 @@ def _photo_half_on(zone: str, photo_half: bool) -> bool:
     return bool(photo_half) and zone in END_ZONES
 
 
+# ------------------------------------------------------------ Round 2
+#
+# Detection Round 2 (owner: "try, see whether there is any enhancement"),
+# two switches, both off by default, zone mode only:
+#   B2 settings.intake_box_every: the zone calls are told the drafted
+#     list's parts their checklist can name and answer `locate` -- a box
+#     round each one the photos show, damaged or not. Where it is, never a
+#     new find: intake/zones.apply_round2 puts the box on the list item
+#     that has none (evidence by "locate:zone:<zone>"), the list unchanged.
+#   B1 settings.intake_zone_inventory: the zone calls answer `inventory` --
+#     per photo, the area's parts it shows (the checklist, and the car
+#     map's small outside parts while settings.intake_car_map_names is on),
+#     damaged or not, each with a box. The damaged ones nobody listed or
+#     suggested become zone suggestions (capped per case); the undamaged
+#     ones are kept apart (ai_draft["zone_inventory"]) and never suppress
+#     anything.
+# No extra call: both ride on the zone call, after every field it has
+# today -- an answer cut off there is today's answer (salvage) -- and the
+# caps keep the extra output small (scripts/test_detect_r2.py prints and
+# caps the schema sizes).
+
+LOCATE = "locate"
+INVENTORY = "inventory"
+ROUND2_FIELDS = (LOCATE, INVENTORY)
+# Listed parts one zone call is asked to place (a case lists a handful per
+# area), and the photos of a listed part named beside it as a hint.
+MAX_LOCATE = 8
+MAX_HINTS = 2
+# The inventory's caps: entries per photo and per zone call (the prompt
+# says them; code keeps no more).
+INVENTORY_PER_PHOTO = 6
+INVENTORY_PER_ZONE = 16
+# The car map's small outside parts (taxonomy.CAR_MAP_PARTS) an inventory
+# may name, by zone, only while settings.intake_car_map_names is "on" -- a
+# car map name is never offered otherwise (taxonomy's rule). A side zone's
+# without their side, as its checklist's; a close-up zone's unsided.
+SMALL_PARTS = {
+    "front": ["Left Fog Lamp Cover", "Right Fog Lamp Cover"],
+    "rear": ["Boot Lid Garnish", "Boot Lid Striker", "Rear Number Plate Lamp", "Boot Lid Spoiler"],
+    "left": ["Front Door Handle", "Rear Door Handle", "Fuel Filler Flap"],
+    "right": ["Front Door Handle", "Rear Door Handle", "Fuel Filler Flap"],
+    CLOSE: ["Fog Lamp Cover (side undetermined)", "Boot Lid Garnish", "Boot Lid Striker", "Rear Number Plate Lamp",
+            "Boot Lid Spoiler", "Door Handle (side undetermined)", "Fuel Filler Flap"],
+}
+
+
+@dataclass
+class Round2Ask:
+    """What one zone call asks beyond today's (intake/zones builds it per
+    zone; read_zone's r2). locate: this zone's checklist names of the
+    drafted list's parts to place (none: no `locate`); hints: {name: the
+    labels of the listed item's own photos among the call's}; inventory:
+    the names the inventory may use (none: no `inventory`)."""
+    locate: list[str] = field(default_factory=list)
+    hints: dict[str, list[str]] = field(default_factory=dict)
+    inventory: list[str] = field(default_factory=list)
+
+    def on(self) -> bool:
+        return bool(self.locate or self.inventory)
+
+
+def _r2(r2) -> "Round2Ask | None":
+    return r2 if isinstance(r2, Round2Ask) and r2.on() else None
+
+
+def _can_be(zone: str, name: str) -> list[str]:
+    """The canonical parts a checklist name can come back as (canonical):
+    a side zone's family on either side or unsided; a close-up's unsided
+    name or any of its sided ones."""
+    if zone in SIDE_ZONES:
+        out = [f"{side} {name}" for side in ("Left", "Right")] + [unsided_part(f"Left {name}") or ""]
+        return [p for p in out if p in CANONICAL_PARTS]
+    if zone == CLOSE:
+        return [name] + [p for p in CANONICAL_PARTS if p != name and unsided_part(p) == name]
+    return [name]
+
+
+def place_match(listed_part: str, located: str, zone: str) -> int:
+    """How a located part (canonical) stands for a listed one: 2 the same
+    part; 1 the listed part is "(side undetermined)" and this is one of its
+    sided names, or -- a close-up zone, whose names carry no side -- the
+    located name is the listed part's unsided one; 0 not it. Never the
+    other side's twin."""
+    if not listed_part or not located:
+        return 0
+    if located == listed_part:
+        return 2
+    if listed_part.endswith(UNDETERMINED_SUFFIX) and unsided_part(located) == listed_part:
+        return 1
+    if zone == CLOSE and located.endswith(UNDETERMINED_SUFFIX) and unsided_part(listed_part) == located:
+        return 1
+    return 0
+
+
+def locate_names(zone: str, parts) -> list[str]:
+    """The checklist names a zone call is asked to place for the drafted
+    list's parts (canonical): each name that can come back as one of them
+    (place_match), in checklist order, at most MAX_LOCATE. "Other / Not
+    Listed" is never asked: nothing names it."""
+    wanted = [str(p) for p in parts or [] if p and p != OTHER_PART]
+    out = []
+    for name in checklist(zone)[:-1]:
+        if any(place_match(part, cand, zone) for cand in _can_be(zone, name) for part in wanted):
+            out.append(name)
+    return out[:MAX_LOCATE]
+
+
+def locate_names_of(zone: str, part: str) -> list[str]:
+    """locate_names for one listed part: the names that can place it."""
+    return [n for n in checklist(zone)[:-1] if any(place_match(part, c, zone) for c in _can_be(zone, n))]
+
+
+def inventory_names(zone: str, car_names: bool = False) -> list[str]:
+    """The names a zone's inventory may use: its checklist (not "Other /
+    Not Listed"), then -- car_names, settings.intake_car_map_names "on" --
+    the car map's small outside parts of the zone (SMALL_PARTS)."""
+    names = checklist(zone)[:-1]
+    if car_names:
+        names += [n for n in SMALL_PARTS.get(zone, []) if n not in names]
+    return names
+
+
+def inventory_part(zone: str, name, side_seen: str, allowed) -> str | None:
+    """An inventory name as a known part (taxonomy.known_part): as
+    canonical() names a find -- a side zone's family takes the side seen,
+    or its "(side undetermined)" name -- and a car map name the same way.
+    None for a name that wasn't offered (allowed)."""
+    name = str(name or "").strip()
+    if name not in allowed:
+        return None
+    if zone not in SIDE_ZONES:
+        return name if known_part(name) else None
+    if side_seen in SIDE_ZONES:
+        sided = f"{side_seen.capitalize()} {name}"
+        if known_part(sided):
+            return sided
+    else:
+        unsided = unsided_part(f"Left {name}")
+        if unsided and known_part(unsided):
+            return unsided
+    # A part with no side at all ("Fuel Filler Flap"); a family ("Front
+    # Door") is no part without one.
+    return name if known_part(name) else None
+
+
+LOCATE_SENTENCE = (
+    "These parts are on the damage list already: {names}. In 'locate' give each of them you can see in these "
+    "photos, damaged or not: photo_reference, the photo that shows the part best (the one in brackets when it "
+    "shows it); part; and box_2d: [y_min, x_min, y_max, x_max] on 0-1000 round the whole part. Leave out a part you "
+    "can't see. 'locate' only says where they are: list damage in 'damage' as before.\n"
+)
+INVENTORY_SENTENCE = (
+    "Last, in 'inventory' list the parts{other} you can see in each photo, damaged or not, by the inventory's part "
+    "names -- small parts next to a damaged panel first (covers, trims, garnish, lamps, clips) -- at most "
+    f"{INVENTORY_PER_PHOTO} a photo and {INVENTORY_PER_ZONE} in all. For each: photo_reference; part; damaged, true "
+    "or false; ai_confidence; and box_2d round the part.\n"
+)
+
+
+def _hinted(name: str, hints: dict) -> str:
+    labels = [str(x) for x in (hints or {}).get(name) or []][:MAX_HINTS]
+    return f"{name} ({', '.join(labels)})" if labels else name
+
+
+def round2_text(r2) -> str:
+    """Round 2's sentences (system_prompt, before the closing line): ""
+    without r2."""
+    ask = _r2(r2)
+    if ask is None:
+        return ""
+    text = ""
+    if ask.locate:
+        text += LOCATE_SENTENCE.format(names=", ".join(_hinted(n, ask.hints) for n in ask.locate))
+    if ask.inventory:
+        text += INVENTORY_SENTENCE.format(other=" not in 'locate'" if ask.locate else "")
+    return text
+
+
+def round2_schema(r2, labels: list[str]) -> dict:
+    """Round 2's fields, in order ({} without r2): `locate` (photo,
+    part, box) and `inventory` (photo, part, damaged, confidence, box).
+    Small on purpose: no descriptions, no min/max items."""
+    ask = _r2(r2)
+    if ask is None:
+        return {}
+    box = {"type": "array", "items": {"type": "integer"}}
+    out: dict = {}
+    if ask.locate:
+        out[LOCATE] = {"type": "array", "items": {"type": "object", "properties": {
+            "photo_reference": {"type": "string", "enum": list(labels)},
+            "part": {"type": "string", "enum": list(ask.locate)},
+            "box_2d": box,
+        }, "required": ["photo_reference", "part", "box_2d"]}}
+    if ask.inventory:
+        out[INVENTORY] = {"type": "array", "items": {"type": "object", "properties": {
+            "photo_reference": {"type": "string", "enum": list(labels)},
+            "part": {"type": "string", "enum": list(ask.inventory)},
+            "damaged": {"type": "boolean"},
+            "ai_confidence": {"type": "string", "enum": CONFIDENCES},
+            "box_2d": box,
+        }, "required": ["photo_reference", "part", "damaged", "box_2d"]}}
+    return out
+
+
+def salvage(raw: str, required=("zone_side_seen", "damage", "checked_intact")) -> dict:
+    """A zone answer that isn't JSON because it was cut off (or spoilt)
+    inside Round 2's fields, which come last: the object up to the last of
+    its top-level fields that still reads, closed, holding every field of
+    today's answer -- today's answer (parse_answer then reads none of Round
+    2's). ValueError when no such object is left: a cut in today's own
+    fields fails as it always did, and the next model is asked."""
+    text = str(raw or "")
+    depth, in_string, escaped = 0, False, False
+    commas: list[int] = []
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        elif ch == "," and depth == 1:
+            commas.append(i)
+    for at in reversed(commas):
+        try:
+            data = json.loads(text[:at] + "}")
+        except ValueError:
+            continue
+        if isinstance(data, dict) and all(name in data for name in required):
+            return data
+    raise ValueError("the zone answer is not JSON")
+
+
+def _truthy(value) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "yes"))
+
+
+def _round2_answer(zone: str, data: dict, sent: set[str], seen: str, ask: Round2Ask, side_of, answer) -> None:
+    """parse_answer's Round 2 (in place on answer): the located parts and
+    the inventory, canonical, photos as labels, boxes cleaned (a bad box:
+    none). A part not offered, a photo not sent, a located part with no
+    box, more than the caps: left out. Never raises for a bad field: the
+    rest of the answer stands."""
+    if ask.locate and isinstance(data.get(LOCATE), list):
+        done: set[str] = set()
+        for raw_item in data[LOCATE]:
+            if not isinstance(raw_item, dict):
+                continue
+            name = str(raw_item.get("part") or "").strip()
+            label = _label(raw_item.get("photo_reference"), sent)
+            box = evidence.clean_box(raw_item.get("box_2d"))
+            if name not in ask.locate or name in done or not label or not box:
+                continue
+            own = side_of(raw_item) if side_of is not None else None
+            part = canonical(zone, name, own or seen)
+            if not part or part == OTHER_PART:
+                continue
+            done.add(name)
+            answer.located.append({"part": part, "photo": label, "box": box})
+            if len(answer.located) >= MAX_LOCATE:
+                break
+    if ask.inventory and isinstance(data.get(INVENTORY), list):
+        per_photo: Counter = Counter()
+        kept: set[tuple[str, str]] = set()
+        for raw_item in data[INVENTORY]:
+            if not isinstance(raw_item, dict):
+                continue
+            label = _label(raw_item.get("photo_reference"), sent)
+            if not label or per_photo[label] >= INVENTORY_PER_PHOTO:
+                continue
+            own = side_of(raw_item) if side_of is not None else None
+            part = inventory_part(zone, raw_item.get("part"), own or seen, ask.inventory)
+            if not part or (label, part) in kept:
+                continue
+            kept.add((label, part))
+            per_photo[label] += 1
+            confidence = raw_item.get("ai_confidence")
+            answer.inventory.append({
+                "part": part, "photo": label, "damaged": _truthy(raw_item.get("damaged")),
+                "confidence": confidence if confidence in CONFIDENCES else None,
+                "box": evidence.clean_box(raw_item.get("box_2d")),
+            })
+            if len(answer.inventory) >= INVENTORY_PER_ZONE:
+                break
+
+
 def _walk_spec(zone: str, walk) -> "assembly_walk.ZoneSpec | None":
     """The assembly walk this zone call asks for (walk: the car map's
     assembly_walk.MapIndex), or None: no walk, or no anchor here -- or a
@@ -239,7 +544,7 @@ def _walk_spec(zone: str, walk) -> "assembly_walk.ZoneSpec | None":
 
 
 def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_OFF, packs=(),
-                  photo_half: bool = False, walk=None) -> str:
+                  photo_half: bool = False, walk=None, r2=None) -> str:
     """Short on purpose: the light models this is for follow a short prompt
     better than the overall reading's long one. evidence_mode
     (settings.intake_zone_evidence): "reason" / "reason_box" add the one
@@ -247,7 +552,9 @@ def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_O
     (settings.intake_zone_packs) and photo_half (settings.
     intake_zone_photo_half): the light-model packs and Z5's sentence, none
     by default. walk (settings.intake_assembly_walk): the walk's paragraph
-    and panel lines, before the closing line."""
+    and panel lines, before the closing line. r2 (Round 2, a Round2Ask):
+    its sentences after those, before the closing line; None adds
+    nothing."""
     packs = set(packs or ())
     intact = prompt_packs.pack("intact") + "\n" if "intact" in packs else _INTACT_LINE
     sides = _SIDES_LINE
@@ -273,6 +580,7 @@ def system_prompt(zone: str, grid: bool = False, evidence_mode: str = EVIDENCE_O
         + sides
         + added
         + assembly_walk.prompt_text(_walk_spec(zone, walk))
+        + round2_text(r2)
         + _CLOSING
     )
 
@@ -296,7 +604,7 @@ def side_from_half(end: str, half) -> str | None:
 
 
 def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_mode: str = EVIDENCE_OFF,
-                    packs=(), photo_half: bool = False, walk=None) -> dict:
+                    packs=(), photo_half: bool = False, walk=None, r2=None) -> dict:
     """The small schema: zone_side_seen first (fields are filled in schema
     order, so the model settles what it is looking at before it lists
     parts), photo_reference before part (where, then what), grid_cells
@@ -310,7 +618,8 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
     packs with "intact" (Z2): checked_intact carries intact-v1's rule as
     its description. photo_half (Z5, end zones): photo_half after
     photo_reference, required. walk (the assembly walk): `assembly_walk`
-    after `damage`, required. None of them by default."""
+    after `damage`, required. r2 (Round 2): `locate` and / or `inventory`
+    last, required (round2_schema). None of them by default."""
     names = checklist(zone)
     item: dict = {"photo_reference": {"type": "string", "enum": list(labels)}}
     half = _photo_half_on(zone, photo_half)
@@ -352,6 +661,10 @@ def response_schema(zone: str, labels: list[str], grid: bool = False, evidence_m
                                 "assembly_walk": assembly_walk.schema_field(spec, labels),
                                 "checked_intact": props["checked_intact"]}
         schema["required"] = ["zone_side_seen", "damage", "assembly_walk", "checked_intact"]
+    extra = round2_schema(r2, labels)
+    if extra:
+        schema["properties"].update(extra)
+        schema["required"] = schema["required"] + list(extra)
     return schema
 
 
@@ -406,6 +719,18 @@ class ZoneAnswer:
     # photos it says show the other end): its finds, parsed as items are, and
     # kept apart -- `items` stays empty, as when they are dropped.
     wrong_end_items: list[dict] = field(default_factory=list)
+    # Round 2 (read_zone's r2; empty without it): the listed parts this call
+    # placed, {"part": canonical, "photo": label, "box"}; its inventory,
+    # {"part": known part, "photo", "damaged", "confidence", "box" or None}
+    # -- none from an end zone whose photos show the other end. r2_chars:
+    # the characters of the answer's Round 2 fields, answer_chars the whole
+    # answer's (the run log's estimate of the extra output tokens);
+    # r2_salvaged: the answer was cut off inside them and read without them.
+    located: list[dict] = field(default_factory=list)
+    inventory: list[dict] = field(default_factory=list)
+    r2_chars: int = 0
+    answer_chars: int = 0
+    r2_salvaged: bool = False
 
 
 # E11: what an end zone whose photos show the other end does with its finds.
@@ -438,7 +763,7 @@ _ITEM_FIELDS = ("other_part_name", "condition_tokens", "severity", "remarks", "a
 
 def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
                  evidence_mode: str = EVIDENCE_OFF, packs=(), photo_half: bool = False, walk=None,
-                 geometry: tuple | None = None, wrong_end: str = "drop") -> ZoneAnswer:
+                 geometry: tuple | None = None, wrong_end: str = "drop", r2=None) -> ZoneAnswer:
     """The zone call's JSON as canonical damage items. Raises ValueError on
     an answer that isn't the object asked for, so call_structured tries the
     next model. Items whose part the zone doesn't offer, and an "Other / Not
@@ -471,8 +796,22 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     other end with no finds, as before; "shadow" and "keep" also parse its
     finds into wrong_end_items (items stays empty either way). Their parse
     failing is never the answer failing (the review's L4): no finds kept,
-    and the answer is drop's -- no other model is asked."""
-    data = json.loads(raw)
+    and the answer is drop's -- no other model is asked.
+
+    r2 (Round 2, a Round2Ask): its fields read into located / inventory
+    (_round2_answer), never a reason to refuse the answer -- a bad entry is
+    left out, an answer cut off inside them is read without them (salvage:
+    today's answer), and an end zone that sees the other end keeps none.
+    None: the answer read exactly as before."""
+    ask = _r2(r2)
+    salvaged = False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        if ask is None:
+            raise
+        data = salvage(raw)
+        salvaged = True
     if not isinstance(data, dict):
         raise ValueError("the zone answer is not an object")
     seen = str(data.get("zone_side_seen") or "").strip().lower()
@@ -493,6 +832,11 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
     answer = ZoneAnswer(zone=zone, side_seen=seen)
     if seen != model_seen:
         answer.side_model = model_seen
+    if ask is not None:
+        answer.r2_salvaged = salvaged
+        answer.answer_chars = len(raw or "")
+        answer.r2_chars = 0 if salvaged else sum(
+            len(json.dumps(data[name], separators=(",", ":"))) for name in ROUND2_FIELDS if name in data)
     mode = _evidence_mode(evidence_mode)
     wrong = zone in END_ZONES and seen in END_ZONES and seen != zone
     if wrong:
@@ -524,6 +868,12 @@ def parse_answer(zone: str, raw: str, labels: list[str], grid: bool = False,
         except Exception:  # parse_zone is total; this is in case it ever isn't
             logger.exception("Assembly walk: zone %s's walk couldn't be read; the finds stand", zone)
             answer.walk = {}
+    if ask is not None and not salvaged:
+        try:
+            _round2_answer(zone, data, sent, seen, ask, side_of, answer)
+        except Exception:  # _round2_answer leaves bad entries out; in case it ever raises
+            logger.exception("Round 2: zone %s's locate / inventory couldn't be read; the finds stand", zone)
+            answer.located, answer.inventory = [], []
     return answer
 
 
@@ -583,6 +933,7 @@ def read_zone(
     walk=None,
     geometry: tuple | None = None,
     wrong_end: str = "drop",
+    r2: "Round2Ask | None" = None,
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
@@ -595,22 +946,28 @@ def read_zone(
     (settings.intake_assembly_walk), None for no walk; a walked call is
     tagged "+walk-<map version>" in the run log. geometry (E7) and
     wrong_end (E11): parse_answer's, how the answer is read -- the request
-    is the same."""
+    is the same. r2 (Round 2, a Round2Ask): its fields asked for too, the
+    call tagged "+locate-r2" / "+inventory-r2"; None (the default): the
+    request as before."""
     labels = [label for label, _, _ in photos]
     packs = list(packs or ())
-    system = system_prompt(zone, grid, evidence_mode, packs, photo_half, walk)
+    ask = _r2(r2)
+    extra = {"r2": ask} if ask is not None else {}
+    system = system_prompt(zone, grid, evidence_mode, packs, photo_half, walk, **extra)
     named = packs + (["photo_half"] if _photo_half_on(zone, photo_half) else [])
     if _walk_spec(zone, walk) is not None:
         named.append(f"walk-{walk.version}")
+    if ask is not None:
+        named += (["locate-r2"] if ask.locate else []) + (["inventory-r2"] if ask.inventory else [])
     tag = prompt_packs.tag(f"zone:{zone}", "v1", named, system) if named else None
     with runs.prompt_tag(tag):
         return call_structured(
             purpose=PURPOSE,
             system_instruction=system,
             input_parts=build_input(photos, grid),
-            schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half, walk),
+            schema=response_schema(zone, labels, grid, evidence_mode, packs, photo_half, walk, **extra),
             parse=lambda raw: parse_answer(zone, raw, labels, grid, evidence_mode, packs, photo_half, walk,
-                                           geometry=geometry, wrong_end=wrong_end),
+                                           geometry=geometry, wrong_end=wrong_end, **extra),
             models=models,
             actor=actor,
             timeout=timeout,

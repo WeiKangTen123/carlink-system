@@ -55,6 +55,9 @@ export type Finding = {
   otherSideListed: string | null;
   /** Wave 2 E11: the "wrong end" zone read's note, on its suggestion only. */
   wrongEndNote?: string | null;
+  /** Detection Round 2: a zone read's inventory marked it damaged
+   * ("Seen in the zone check: ..."), on its suggestion only. */
+  inventoryNote?: string | null;
   /** Contract 10: "link", a part tied to a listed one by the link table
    * (SecondLookItem.source). */
   source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side";
@@ -389,6 +392,7 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       check: s.check ?? null,
       otherSideListed: s.other_side_listed ?? null,
       ...(s.wrong_end_note ? { wrongEndNote: s.wrong_end_note } : {}),
+      ...(s.inventory_note ? { inventoryNote: s.inventory_note } : {}),
       source,
       condition: s.condition || s.damage_type || null,
       ...linkFields(s),
@@ -398,6 +402,10 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
   }
   return withParents(out);
 }
+
+/** Detection Round 2: the evidence of a box a zone read put round a
+ * listed part ("locate:zone:rear"). */
+export const LOCATE_BY = "locate:";
 
 const READ_NAMES: Record<string, string> = {
   overall: "main",
@@ -424,6 +432,9 @@ export function sourceName(by: string | null | undefined): string {
   // Contract 10: the listed part's photo (no box), and the linked check's.
   if (by === "link") return "listed part's photo";
   if (by === "link_check") return "linked check";
+  // Detection Round 2: a zone read's box round a listed part it saw
+  // ("locate:zone:rear"), not a find of its own.
+  if (by.startsWith(LOCATE_BY)) return `${readName(by.slice(LOCATE_BY.length))} read, part located`;
   return `${readName(by)} read`;
 }
 

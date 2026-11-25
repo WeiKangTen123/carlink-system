@@ -1235,6 +1235,7 @@ def run_metrics(run: dict) -> dict:
         m["wrong_end_sugg"] = len(wrong_end_sugg)
         m["wrong_end_sugg_real"] = sum(1 for r in wrong_end_sugg if r.get("truth") == "real")
     m.update(sorter_count_metrics(run))
+    m.update(round2_metrics(run))
     m.update(link_check_metrics(run.get("link_suggestions")))
     found_by = [i.get("found_by") for i in run.get("drafted_items") or [] if i.get("found_by")]
     if found_by:
@@ -2040,6 +2041,9 @@ _LINK_SUGGESTION_FIELDS = ("severity", "condition_tokens", "remarks", "linked_fr
 # Wave 2 E11, only with intake_zone_wrong_end "keep": a "wrong end" zone
 # read's suggestion's note.
 _WAVE2_SUGGESTION_FIELDS = ("wrong_end_note",)
+# Detection Round 2, only with intake_zone_inventory "on": a suggestion from
+# a zone read's inventory carries its note.
+_R2_SUGGESTION_FIELDS = ("inventory_note",)
 # The assembly walk, only while it acts: a second hop's hop and middle part,
 # and the yes signs that lifted a linked part or opened its chain.
 _WALK_SUGGESTION_FIELDS = ("hop", "via", "signs_yes")
@@ -2309,6 +2313,9 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         if getattr(A.settings, "intake_zone_wrong_end", "drop") == "keep":
             # E11: a "wrong end" zone read's suggestion keeps its note.
             fields += _WAVE2_SUGGESTION_FIELDS
+        if r2_on(A.settings) and getattr(A.settings, "intake_zone_inventory", "off") == "on":
+            # Round 2 B1: an inventory suggestion keeps its note.
+            fields += _R2_SUGGESTION_FIELDS
         link_items: list = []
         if look and mode != "off":
             look = dict(look)
@@ -2367,6 +2374,10 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
         if walk_on(A.settings):
             # The assembly walk as the zone reads merged it, photos by label.
             out["assembly_walk"] = walk_rows((session.ai_draft or {}).get("assembly_walk"), label_of)
+        if r2_on(A.settings):
+            # Detection Round 2: the list's box coverage and the zone reads'
+            # inventory, photos by case label.
+            out.update(round2_record(session.ai_draft, label_of))
         geo_log = (session.ai_draft or {}).get("side_geometry") if isinstance(session.ai_draft, dict) else None
         if isinstance(geo_log, list):
             # E7: each side the sort's geometry changed in the side resolver.
@@ -2953,6 +2964,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--link-models", type=_chain, metavar="CHAIN",
                     help="B8: the linked check's model chain (settings.gemini_link_chain; default the two lites); "
                          "needs --link-check lite")
+    ap.add_argument("--box-every", action="store_true",
+                    help="detection Round 2 B2: the zone reads also box every drafted list part they see "
+                         "(settings.intake_box_every on; no extra call); needs --read-mode zones. "
+                         "The result file records box_coverage")
+    ap.add_argument("--zone-inventory", action="store_true",
+                    help="detection Round 2 B1: the zone reads also list each photo's parts with a box, the damaged "
+                         "ones nobody listed becoming suggestions (settings.intake_zone_inventory on; no extra "
+                         "call; the car map's small parts with --car-map-names); needs --read-mode zones")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2981,6 +3000,8 @@ CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "as
 # Wave 2's flags at their defaults: likewise.
 WAVE2_ARGS = {"image_resolution_main_read": None, "side_geometry": None, "zone_wrong_end": None,
               "link_check_max_calls": None, "link_models": None}
+# Detection Round 2's flags at their defaults: likewise.
+R2_ARGS = {"box_every": False, "zone_inventory": False}
 
 
 def _now() -> str:
@@ -3066,6 +3087,20 @@ def model_settings(args: argparse.Namespace) -> dict:
     out.update(walk_settings(args, config, zones_on, out))
     out.update(carmap_settings(args, config, out))
     out.update(wave2_settings(args, config, zones_on, out, PHOTO_KINDS))
+    out.update(r2_settings(args, zones_on))
+    return out
+
+
+def r2_settings(args: argparse.Namespace, zones_on: bool) -> dict:
+    """Detection Round 2's flags as {Settings field: value} (INTAKE_BOX_EVERY
+    / INTAKE_ZONE_INVENTORY in the environment do the same). Exits on a
+    flag that would change nothing: either without zone reads."""
+    out: dict = {}
+    for flag, field in (("box_every", "intake_box_every"), ("zone_inventory", "intake_zone_inventory")):
+        if getattr(args, flag, False):
+            if not zones_on:
+                sys.exit(f"--{flag.replace('_', '-')}: rides on the zone reads; give --read-mode zones too")
+            out[field] = "on"
     return out
 
 
@@ -3449,7 +3484,68 @@ def ai_settings(settings) -> dict:
     out.update(light_ai_settings(settings))
     out.update(walk_ai_settings(settings))
     out.update(wave2_ai_settings(settings))
+    out.update(r2_ai_settings(settings))
     return out
+
+
+def r2_on(settings) -> bool:
+    """Detection Round 2 acts: a switch on, in zone mode."""
+    return getattr(settings, "intake_read_mode", "single") == "zones" and "on" in (
+        getattr(settings, "intake_box_every", "off"), getattr(settings, "intake_zone_inventory", "off"))
+
+
+def r2_ai_settings(settings) -> dict:
+    """Detection Round 2's switches while they act (so a run without them
+    reads as before), with the car map's names when the inventory may use
+    them."""
+    if not r2_on(settings):
+        return {}
+    out = {name: getattr(settings, name, "off") for name in ("intake_box_every", "intake_zone_inventory")}
+    if out["intake_zone_inventory"] == "on":
+        out["intake_car_map_names"] = getattr(settings, "intake_car_map_names", "off")
+    return out
+
+
+def round2_record(ai_draft, label_of: dict[str, str]) -> dict:
+    """A Round 2 run's own record: ai_draft["box_coverage"] (how many list
+    items have a box, before and after the located ones) and the zone
+    reads' inventory (photos by case label), with its counts."""
+    ai_draft = ai_draft if isinstance(ai_draft, dict) else {}
+    out: dict = {}
+    if isinstance(ai_draft.get("box_coverage"), dict):
+        out["box_coverage"] = dict(ai_draft["box_coverage"])
+    rows = ai_draft.get("zone_inventory")
+    if isinstance(rows, list):
+        rows = [relabel_refs(dict(r), label_of) for r in rows if isinstance(r, dict)]
+        out["zone_inventory"] = {"rows": rows, "n": len(rows), "damaged": sum(1 for r in rows if r.get("damaged")),
+                                 "boxed": sum(1 for r in rows if r.get("box"))}
+    return out
+
+
+def round2_metrics(run: dict) -> dict:
+    """Round 2's numbers, only in a run that had it: the list's box
+    coverage (box_cov_*), the inventory and its suggestions (inv_*, the
+    real ones by the key), and the zone reads' extra output and fallbacks
+    (r2_*, from the run log)."""
+    m: dict = {}
+    cov = run.get("box_coverage")
+    if isinstance(cov, dict):
+        for name in ("items", "boxed", "ai_boxed", "located", "boxed_before_locate"):
+            if isinstance(cov.get(name), int):
+                m[f"box_cov_{name}"] = cov[name]
+    inv = run.get("zone_inventory")
+    if isinstance(inv, dict):
+        m.update(inv_rows=inv.get("n", 0), inv_damaged=inv.get("damaged", 0))
+        sugg = [r for r in run.get("suggestions") or [] if isinstance(r, dict) and r.get("inventory_note")]
+        m["inv_sugg"] = len(sugg)
+        m["inv_sugg_box"] = sum(1 for r in sugg if has_ai_box(r))
+        if sugg and all(r.get("truth") for r in sugg):
+            m["inv_sugg_real"] = sum(1 for r in sugg if r["truth"] == "real")
+    r2 = (run.get("zones") or {}).get("r2")
+    if isinstance(r2, dict):
+        m.update(r2_extra_tok_est=r2.get("extra_output_tokens_est", 0), r2_fallbacks=r2.get("fallbacks", 0),
+                 r2_salvaged=r2.get("salvaged", 0), r2_located=r2.get("located", 0))
+    return m
 
 
 def wave2_ai_settings(settings) -> dict:
@@ -3688,7 +3784,7 @@ def main(argv=None) -> int:
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
                  if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])
                  and not (k in WALK_ARGS and v == WALK_ARGS[k]) and not (k in CARMAP_ARGS and v == CARMAP_ARGS[k])
-                 and not (k in WAVE2_ARGS and v == WAVE2_ARGS[k])},
+                 and not (k in WAVE2_ARGS and v == WAVE2_ARGS[k]) and not (k in R2_ARGS and v == R2_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
         "ai_settings": ai_settings(A.settings),

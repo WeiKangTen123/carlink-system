@@ -415,5 +415,31 @@ check("decided suggestions kept in items (review L3): out of the list, the liste
   );
 });
 
+check("detection Round 2: a located box shows as any AI box, its source in words; an inventory suggestion keeps its note", () => {
+  const d = clone(data);
+  // Boot Lid with no box of its own; a zone read located it (B2).
+  const located = { photo: "@ph05", box: [100, 150, 450, 850], box_kind: "ai", by: "locate:zone:rear", reason: null,
+                    confidence: "High", img_w: 1600, img_h: 1200 };
+  d.damage_summary[1] = { ...d.damage_summary[1], bbox_2d: null, evidence: [located] };
+  const lid = F.buildFindings(d).find((f) => f.key === "item:1");
+  const [slide] = E.slidesOf(lid);
+  assert.deepEqual([slide.photo, slide.box, slide.kind, slide.by], ["@ph05", [100, 150, 450, 850], "ai", "locate:zone:rear"]);
+  assert.equal(E.boxLine(slide), E.BOX_WORDS.ai, "worded as any AI box");
+  assert.equal(F.sourceName("locate:zone:rear"), "rear read, part located");
+  assert.equal(F.sourceName("locate:zone:close"), "close-up read, part located");
+  assert.equal(F.sourceName("zone:rear"), "rear read", "a zone read's own find as before");
+  // An inventory suggestion (B1): a zone suggestion with its note.
+  const note = "Seen in the zone check: marked damaged among the parts in view.";
+  d.second_look.items.push({ key: "Boot Floor Board", part: "Boot Floor Board", name: "Boot floor board", source: "zone",
+                             confidence: "Medium", covers: ["Boot Floor Board"], found_by: ["zone:rear"], seen_in: ["@ph05"],
+                             reason: null, photo_reference: "@ph05", inventory_note: note,
+                             evidence: [{ ...located, by: "zone:rear", confidence: "Medium" }] });
+  const all = F.buildFindings(d);
+  const board = all.find((f) => f.key === "sug:Boot Floor Board");
+  assert.equal(board.inventoryNote, note);
+  assert.equal(board.source, "zone", "listed with the zone reads' suggestions");
+  assert.ok(!("inventoryNote" in all.find((f) => f.key === "sug:Boot Lid Lock")), "no note on the others");
+});
+
 process.exitCode = failed ? 1 : 0;
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");

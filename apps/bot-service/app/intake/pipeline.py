@@ -1159,6 +1159,17 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # E11 "keep": the finds of an end zone read that saw the other
             # end, as suggestions with their note -- never on the list.
             zone_draft.setdefault("zone_suggestions", []).extend(zones.wrong_end_suggestions(extras.wrong_end))
+        if extras is not None and extras.round2_on():
+            # Detection Round 2 (settings.intake_box_every / intake_zone_
+            # inventory): the located boxes onto the list items that have
+            # none, the inventory's damaged parts as suggestions -- before
+            # the evidence is settled below (raw photos, frames). Off: not
+            # even called. Never the reason a reading is lost.
+            try:
+                zones.apply_round2(data.get("damage_summary") or [], zone_draft, extras, facts)
+            except Exception:
+                logger.exception("Reading %s: Round 2 couldn't place its boxes or suggestions; the reading stands",
+                                 report_id)
     try:
         # Each finding's evidence against the photos: frames, boxes on raw
         # originals dropped, the sorter's boxes, best first. Code only; the
@@ -1182,6 +1193,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
     if vehicle:
         vehicle["body_type"] = body_type_for(vehicle.get("make"), vehicle.get("model"), vehicle.get("body_type"))
 
+    # Round 2's box coverage, once counted (only while it is on).
+    coverage: dict | None = None
     db = SessionLocal()
     try:
         report = db.get(Report, report_id)
@@ -1217,6 +1230,12 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                                                    **geo_args)
             if geo_mode in geometry.ACTING:
                 zone_draft["side_geometry"] = geo_log
+            if extras is not None and extras.box_every:
+                # Round 2: a located box the resolver's side now contradicts.
+                try:
+                    zones.drop_crossed_boxes(data["damage_summary"], extras)
+                except Exception:
+                    logger.exception("Reading %s: Round 2 couldn't check its boxes against the sides", report_id)
             if zone_mode:
                 zones.apply_agreement(data["damage_summary"])
             if other_side:
@@ -1233,6 +1252,13 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                                        data.get("vehicle_info") or {})
             except Exception:
                 logger.exception("Reading %s: couldn't name the suggestions", report_id)
+        if extras is not None and extras.round2_on():
+            # Round 2: how many list items have a box, the list as final.
+            try:
+                coverage = zones.box_coverage(data.get("damage_summary") or [], extras.boxed_before)
+                zone_draft["box_coverage"] = coverage
+            except Exception:
+                logger.exception("Reading %s: Round 2 couldn't count the boxes", report_id)
         # Merged against the form as it is NOW (re-read inside this
         # transaction), not as it was when the run started.
         report.data = merge_redraft(current, session.ai_draft, data)
@@ -1242,6 +1268,9 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         db.commit()
     finally:
         db.close()
+    if coverage is not None:
+        # ... and in the zone run's log (never raises).
+        zones.note_round2(extras, coverage)
     # The reading is saved: the case's first parts-catalogue look-up, if it
     # qualifies (catalogue.maybe_auto_lookup never raises; off by default).
     catalogue.maybe_auto_lookup(report_id)

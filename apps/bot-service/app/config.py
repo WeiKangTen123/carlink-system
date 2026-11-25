@@ -259,6 +259,25 @@ class Settings(BaseSettings):
     # note "The rear read thought these photos show the front." -- never on
     # the list.
     intake_zone_wrong_end: str = "drop"
+    # Detection Round 2 (zone mode only; ai/zone_read.py "Round 2",
+    # intake/zones.apply_round2), no extra Gemini call -- each rides on the
+    # zone calls, after every field they have today, so an answer cut off
+    # there is read as today's, and a zone call that fails with them is
+    # asked once more as today. Both "off": every request and stored draft
+    # byte for byte as before.
+    # B2 "on": the zone calls are told the drafted list's parts of their
+    # area and box each one the photos show (`locate`, damaged or not);
+    # a list item with no box gets that box (evidence by "locate:zone:..."),
+    # the list itself unchanged. ai_draft["box_coverage"] and the zone run's
+    # log say how many list items have a box.
+    intake_box_every: str = "off"
+    # B1 "on": the zone calls also list the area's parts each photo shows
+    # (`inventory`, damaged or not, with a box; the car map's small parts
+    # too while intake_car_map_names is "on"). Damaged ones nothing listed
+    # or suggested become zone suggestions (at most 6 a case, "Seen in the
+    # zone check"); the rest are kept apart (ai_draft["zone_inventory"]) and
+    # never suppress a part.
+    intake_zone_inventory: str = "off"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
     # side_from_sorter). Off: the reader's side stands, as before.
@@ -498,7 +517,7 @@ class Settings(BaseSettings):
 
     @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
                      "intake_keep_sort_label", "intake_firm_words",
-                     "photo_store_compress")
+                     "photo_store_compress", "intake_box_every", "intake_zone_inventory")
     @classmethod
     def _off_on(cls, value, info):
         return _one_of(value, OFF_ON, info.field_name)

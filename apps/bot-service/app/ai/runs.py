@@ -383,6 +383,25 @@ def finish_run(
     return row
 
 
+def add_detail(run_id: str | None, key: str, value) -> None:
+    """A figure worked out after a run ended, added to its photos_sent
+    (a dict there only: a zone run's) under key -- detection Round 2's box
+    coverage, known once the reading's list is final. Nothing for a row
+    that isn't there or holds a list; never raises (logged)."""
+    if not run_id:
+        return
+
+    def step(db) -> None:
+        row = db.get(AiRun, run_id)
+        if row is None or not isinstance(row.photos_sent, dict):
+            return
+        # A new dict: SQLAlchemy only sees a JSON column change on assignment.
+        row.photos_sent = {**row.photos_sent, key: value}
+        db.commit()
+
+    _write(step, "add a detail")
+
+
 class Run:
     """recorded()'s handle. The work sets what it found; the row gets it
     when the block ends."""
