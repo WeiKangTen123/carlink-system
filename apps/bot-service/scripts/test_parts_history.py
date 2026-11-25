@@ -87,9 +87,9 @@ VEZEL_B = [
 def main() -> int:
     print("parsing and part families")
     path = Path(_tmp, "a.xlsx")
-    path.write_bytes(report_xlsx("CL 11900", "SLK 3063 Z", "Honda Vezel 1.5X CVT", VEZEL_A))
+    path.write_bytes(report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A))
     case = parse_report(path)
-    assert (case.ref, case.plate, case.make, case.model, case.registered) == ("CL 11900", "SLK3063Z", "Honda", "Vezel", "2017-01-12"), case
+    assert (case.ref, case.plate, case.make, case.model, case.registered) == ("CL 11900", "TST1001A", "Honda", "Vezel", "2017-01-12"), case
     assert [l.item for l in case.lines][-1] == "Reverse sensor" and case.lines[-1].section == "nett" and case.lines[-1].qty == 1.0
     assert case.lines[0].adjusted_cost == 1160 and case.lines[0].discount == 0.2
     assert family_of("Tail gate lock striker") == "Boot Lid Lock" and family_of("Tail lamp LH") == "Tail Lamp"
@@ -115,8 +115,8 @@ def main() -> int:
 
     print("importing")
     files = [
-        ("files", ("CL 11900 SLK 3063 Z.xlsx", report_xlsx("CL 11900", "SLK 3063 Z", "Honda Vezel 1.5X CVT", VEZEL_A), "application/octet-stream")),
-        ("files", ("CL 12330 SMV 7530 X.xlsx", report_xlsx("CL 12330", "SMV 7530 X", "Honda Vezel 1.5X CVT", VEZEL_B), "application/octet-stream")),
+        ("files", ("CL 11900 TST 1001 A.xlsx", report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A), "application/octet-stream")),
+        ("files", ("CL 12330 TST 2002 B.xlsx", report_xlsx("CL 12330", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B), "application/octet-stream")),
         ("files", ("notes.txt", b"hello", "text/plain")),
     ]
     assert surveyor.post("/parts-history/import", files=files).status_code == 403

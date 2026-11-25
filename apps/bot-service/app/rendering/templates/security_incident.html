@@ -243,7 +243,7 @@
 {% set cp = report.cover_page or {} %}
 {#- This report goes to insurers and courts, so a missing fact prints as
     missing. Until 2026-10-21 empty fields fell back to a real past case's
-    values (SLK 3063 Z's chassis/engine numbers, odometer, workshop, insurer,
+    values (TST 1001 A's chassis/engine numbers, odometer, workshop, insurer,
     totals) and to a signature and seal on unsigned drafts. -#}
 {% set NR = 'Not recorded' %}
 {#- A must-have fact a person marked N/A (review.MUST_HAVE, data.checked)
@@ -480,7 +480,7 @@
   {#- The firm's fixed wording; only the workshop, the four figures and the
       signer change. Lump sum and working days the surveyor hasn't agreed
       print "(to be agreed)". This page used to print a S$8,700 "agreed" lump
-      sum, 11 working days, Patrick Ng's signature and a seal on every draft. -#}
+      sum, 11 working days, the surveyor's signature and a seal on every draft. -#}
   <div class="letter">
     <p>We have inspected thoroughly the actual damages found on the vehicle and our assessment is appended in the Annex(es) attached. The condition and age of the vehicle was considered before we reached our recommendation as to whether the parts need replacement or repair.</p>
 

@@ -627,7 +627,7 @@ def _audit_export(db, user: CurrentUser, r: Report, detail: str) -> None:
 
 def _report_filename(r: Report, ext: str, suffix: str = "") -> str:
     """"<Our Ref or REF-xxxxxx> <plate>.<ext>": the firm names its report
-    files by reference and plate ("CL 12330 SMV 7530 X.xls"). REF- and the
+    files by reference and plate ("CL 12330 TST 2002 B.xls"). REF- and the
     case id stand in while no Our Ref is issued -- never a made-up CL
     number. Characters a file name can't carry become "-"."""
     data = r.data or {}

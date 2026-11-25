@@ -73,7 +73,7 @@ def import_history() -> None:
 VEZEL = SecurityIncidentDraft(
     description="Rear-ended at PIE exit 12", category=["Vehicle Collision or Damage"],
     accident_type="Rear-end collision", incident_datetime="2026-11-01 09:00",
-    vehicle_info=VehicleInfo(plate_number="SMV7530X", make="Honda", model="Vezel", odometer_reading="15,287 km", color="White"),
+    vehicle_info=VehicleInfo(plate_number="TST2002B", make="Honda", model="Vezel", odometer_reading="12,345 km", color="White"),
     damage_summary=[DamageSummaryItem(part="Tail Gate", damage_type="Dent", severity="Moderate", photo_reference="P01"),
                     DamageSummaryItem(part="Rear Bumper", damage_type="Deformation", photo_reference="P02")],
     damaged_parts=["Tail Gate", "Rear Bumper"],
@@ -91,7 +91,7 @@ TEMPLATE_REPLY = (
     "Vehicle Plate: SKX9999Z\n"
     "Requested by (insurer / company): Tokio Marine\n"
     "Type of claim (Own damage / Third party): Own damage\n"
-    "Workshop: Precise Auto Service\n"
+    "Workshop: XYZ Auto Service\n"
     "Date/time of accident: 27 Feb 2023 10.15am\n"
     "Damaged Side (Left / Right / Front / Rear): Rear\n"
     "What happened: Rear-ended at a junction."
@@ -138,7 +138,7 @@ async def telegram_checks() -> None:
             {"label": "P02", "kind": None, "area": None, "part": "Rear Bumper", "shows_damage": True, "quality": None},
         ], case.data["photo_index"]
         ok("photo_index: one entry per photo, kind None (never sorted), the part from the AI's own photo reference")
-        assert case.ai_draft and case.ai_draft["vehicle_info"]["plate_number"] == "SMV7530X" and case.ai_draft["vehicle_info"]["odometer_reading"] == "15,287 km"
+        assert case.ai_draft and case.ai_draft["vehicle_info"]["plate_number"] == "TST2002B" and case.ai_draft["vehicle_info"]["odometer_reading"] == "12,345 km"
         assert [d["part"] for d in case.ai_draft["damage_summary"]] == ["Tail Gate", "Rear Bumper"]
         ok("the AI's draft is kept on the row (Report.ai_draft)")
         assert len(RENDERED[-1]["annex_a"]["items"]) == 2 and RENDERED[-1]["photo_index"], "filed before the PDF rendered"
@@ -162,12 +162,12 @@ async def telegram_checks() -> None:
         case, out = await file_via_bot(SUE_TG, TEMPLATE_REPLY)
         assert case.data["vehicle_info"]["plate_number"] == "SKX9999Z" and case.data["cover_page"]["requested_by"] == "Tokio Marine"
         assert case.data["insurance_details"]["claim_type"] == "Own damage" and case.data["incident_datetime"] == "27 Feb 2023 10.15am"
-        assert case.ai_draft["vehicle_info"]["plate_number"] == "SMV7530X" and case.ai_draft["incident_datetime"] == "2026-11-01 09:00"
+        assert case.ai_draft["vehicle_info"]["plate_number"] == "TST2002B" and case.ai_draft["incident_datetime"] == "2026-11-01 09:00"
         assert not (case.ai_draft.get("cover_page") or {}).get("requested_by") and not (case.ai_draft.get("insurance_details") or {}).get("claim_type")
         with TestClient(app) as admin:
             sign_in(admin, role="admin", name="Ada Admin")
             read = admin.get(f"/reports/{case.id}").json()
-            assert read["ai_read"]["vehicle_info"]["plate_number"] == "SMV7530X" and read["ai_read"]["incident_datetime"] == "2026-11-01 09:00", read["ai_read"]
+            assert read["ai_read"]["vehicle_info"]["plate_number"] == "TST2002B" and read["ai_read"]["incident_datetime"] == "2026-11-01 09:00", read["ai_read"]
             assert "SKX9999Z" not in str(read["ai_read"]) and read["data"]["vehicle_info"]["plate_number"] == "SKX9999Z"
         ok("a typed plate, date, requested-by and claim type are the case's facts, not AI-read: ai_draft and ai_read keep what the AI said")
 
@@ -251,7 +251,7 @@ def intake_checks() -> None:
             db.close()
         ok("a wizard case's photo_index comes from the sorted photos; the AI's draft is kept apart from the surveyor's version, its photo references turned into P-numbers")
         # The parties guesses too (contract 7): None / {} where the AI said nothing.
-        assert detail["ai_read"] == {"vehicle_info": {"plate_number": "SMV7530X", "make": "Honda", "model": "Vezel", "odometer_reading": "15,287 km",
+        assert detail["ai_read"] == {"vehicle_info": {"plate_number": "TST2002B", "make": "Honda", "model": "Vezel", "odometer_reading": "12,345 km",
                                                       "color": "Red"}, "incident_datetime": "2026-11-01 09:00",
                                      "location": None, "accident_type": "Rear-end collision",
                                      "insurance_details": {}, "police_report": {}}, detail["ai_read"]

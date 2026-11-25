@@ -83,7 +83,7 @@ def main() -> int:
         assert r.status_code == 200 and all("lines" in x for x in r.json()["results"]), r.text
 
         print("PATCH /damage-items/{i}")
-        rid = new_case(surveyor, "SMV7530X")
+        rid = new_case(surveyor, "TST2002B")
         # Price Annex A from past cases first, then type one price by hand.
         first = surveyor.post(f"/reports/{rid}/annex-a/prefill").json()
         assert any(i["prefilled"] and i["workshop_est"] > 0 for i in rows_of(first))

@@ -140,17 +140,17 @@ export function CoverPageFields({
         onReview={disabled || !ourRefEditable ? undefined : onReview}
         hint={
           ourRefEditable
-            ? "The firm's file number, e.g. CL 12330 SMV 7530 X. Blank prints as (to be issued)."
+            ? "The firm's file number, e.g. CL 12330 TST 2002 B. Blank prints as (to be issued)."
             : "The firm's file number, set by staff who may sign off. Blank prints as (to be issued)."
         }
       />
       {field("date_of_request", "Date of request")}
       {field("requested_by", "Requested by")}
       {field("requested_by_address", "C/o address (requested by)", {
-        hint: "Printed under the name, e.g. C/o Blk 3023A, Ubi Road 1, #01-60, Singapore 408717",
+        hint: "Printed under the name, e.g. C/o Blk 100, Test Road 1, #01-01, Singapore 000100",
       })}
       {field("claim_type", "Type of claim", { list: claimTypesId })}
-      {field("workshop_assigned", "Workshop", { hint: "As the letter names it, e.g. M/S People's Vehicle Recovery Service" })}
+      {field("workshop_assigned", "Workshop", { hint: "As the letter names it, e.g. M/S ABC Auto Service" })}
       {field("workshop_address", "Workshop address")}
       {field("incident_datetime", "Accident date")}
       {field("date_of_survey", "Date of survey", { hint: "e.g. 27th February 2023 (10.15am)" })}

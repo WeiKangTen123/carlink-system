@@ -62,7 +62,7 @@ const CATEGORY_RULES: CategoryRule[] = [
 ];
 
 // Real assessor reports in this market write sides as LH/RH (and L/H,
-// R/H), not "Left"/"Right" -- confirmed on the live SLK 3063 Z report,
+// R/H), not "Left"/"Right" -- confirmed on the live TST 1001 A report,
 // where "Tail lamp LH", "Rear fender wheel arch garnish LH" and "Rear
 // fender inner trim board LH" were all silently getting NO 3D marker
 // because only the spelled-out words were recognised.
