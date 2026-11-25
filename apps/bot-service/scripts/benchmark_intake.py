@@ -529,6 +529,18 @@ def has_reason(entry: dict) -> bool:
 VERDICTS = ("yes", "unsure", "no", "none")
 
 
+def _sorter_counts(prefix: str, rows: list[dict], always: bool = False) -> dict:
+    """Detection Round 1: {prefix: how many, prefix_real: of those the key
+    has} -- none for no rows unless `always`; _real only when every row is
+    marked (mark_truth)."""
+    if not rows and not always:
+        return {}
+    out = {prefix: len(rows)}
+    if all(isinstance(r, dict) and r.get("truth") for r in rows):
+        out[f"{prefix}_real"] = sum(1 for r in rows if r["truth"] == "real")
+    return out
+
+
 def evidence_metrics(run: dict) -> dict:
     """Contract 9: the suggestions' evidence, against the key, and the
     re-check's verdicts on the real and the wrong ones; the list's box and
@@ -542,6 +554,11 @@ def evidence_metrics(run: dict) -> dict:
                  sug_sort_box=sum(1 for s in sugg if has_box(s, "sort")),
                  sug_any_box=sum(1 for s in sugg if has_box(s)),
                  sug_reason=sum(1 for s in sugg if has_reason(s)))
+        # Detection Round 1: the sorter's own (source "sorter"), counted
+        # apart too -- only in a run that has them.
+        m.update(_sorter_counts("sorter_sugg", [s for s in sugg if s.get("source") == "sorter"]))
+    if isinstance(run.get("sorter_shadow"), list):
+        m.update(_sorter_counts("sorter_shadow", run["sorter_shadow"], always=True))
         verdicts = [((s.get("check") or {}).get("verdict") or "none") for s in sugg]
         checked = any(v != "none" for v in verdicts) or bool((run.get("second_look") or {}).get("check"))
         if checked:
@@ -2341,6 +2358,14 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             after = sum(x for x in after if isinstance(x, (int, float)) and not isinstance(x, bool))
             if after and "read_seconds" in out:
                 out["read_seconds"] = round(max(0.0, out["read_seconds"] - after), 1)
+        shadow = (session.ai_draft or {}).get("sorter_suggestions") if isinstance(session.ai_draft, dict) else None
+        if isinstance(shadow, list):
+            # Detection Round 1, A1 in shadow (settings.intake_sorter_hints):
+            # what "on" would have shown, kept as the suggestions are, and
+            # marked real or wrong the same way. "on": they are among the
+            # suggestions themselves (source "sorter").
+            out["sorter_shadow"] = suggestion_rows({}, label_of, _SUGGESTION_FIELDS, shadow)
+            mark_truth(out["sorter_shadow"], case["parts"], out["parts"])
         if mode != "off":
             # Contract 10: the linked parts as shown, scored as
             # scripts/bench/replay_links.py scores a stored run's.
@@ -2514,6 +2539,9 @@ def evidence_lines(r: dict) -> list[str]:
         if "list_n" in m:
             said += f" | list: AI box {m['list_box']}/{m['list_n']}, reason {m['list_reason']}/{m['list_n']}"
         lines.append(said)
+    for key, words in (("sorter_sugg", "the sorter's"), ("sorter_shadow", "the sorter's, in shadow (not shown)")):
+        if key in m:
+            lines.append(f"   {words}: {m[key]}" + (f" (real {m[key + '_real']})" if key + "_real" in m else ""))
     check = (r.get("second_look") or {}).get("check")
     if isinstance(check, dict):
         said = (f"   re-check: {check.get('status')}" + (f" by {check['by']}" if check.get("by") else "")
@@ -2953,6 +2981,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--link-models", type=_chain, metavar="CHAIN",
                     help="B8: the linked check's model chain (settings.gemini_link_chain; default the two lites); "
                          "needs --link-check lite")
+    ap.add_argument("--set", action="append", dest="set_values", metavar="NAME=VALUE",
+                    help="any intake_* / photo_* setting of app/config.py for this run, through that field's own "
+                         "validation (a typo stops the run), after every other flag -- e.g. --set "
+                         "intake_sorter_hints=on; repeatable; recorded in the result's ai_settings (overrides)")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
                          "no Gemini call, no database; --out writes the rescored file")
@@ -2981,6 +3013,44 @@ CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "as
 # Wave 2's flags at their defaults: likewise.
 WAVE2_ARGS = {"image_resolution_main_read": None, "side_geometry": None, "zone_wrong_end": None,
               "link_check_max_calls": None, "link_models": None}
+# --set at its default (none): left out of "args" too.
+SET_ARGS = {"set_values": None}
+# The settings --set may change: app/config.py's intake_* and photo_* ones
+# (the reading's, the sort's, the photo store's) -- never a key, a path or a
+# model chain, which have their own flags.
+SET_PREFIXES = ("intake_", "photo_")
+
+
+def setting_overrides(pairs, current) -> dict:
+    """--set NAME=VALUE ... as {Settings field: its validated value}, in the
+    order given: each NAME a field of app/config.py's Settings starting with
+    SET_PREFIXES, each value through a validated copy of `current` (the
+    run's settings after every other flag) with the overrides before it --
+    the field's own type and validators, and the checks across fields
+    (config.light_conflict). Exits on anything else."""
+    from pydantic import ValidationError
+
+    from app import config
+
+    out: dict = {}
+    if not pairs:
+        return out
+    values = current.model_dump()
+    for text in pairs:
+        name, sep, value = str(text).partition("=")
+        name = name.strip()
+        if not sep or not name:
+            sys.exit(f"--set {text!r}: write it as NAME=VALUE, e.g. --set intake_sorter_hints=on")
+        if not name.startswith(SET_PREFIXES) or name not in config.Settings.model_fields:
+            sys.exit(f"--set {name}: not a setting --set may change (a field of app/config.py's Settings whose name "
+                     f"starts with {' or '.join(SET_PREFIXES)})")
+        try:
+            checked = type(current).model_validate({**values, **out, name: value})
+        except ValidationError as exc:
+            why = "; ".join(str(e.get("msg")) for e in exc.errors()) or str(exc)
+            sys.exit(f"--set {name}={value!r}: {why}")
+        out[name] = getattr(checked, name)
+    return out
 
 
 def _now() -> str:
@@ -3647,6 +3717,13 @@ def main(argv=None) -> int:
         extraction.SORTER_HINTS = False
     if args.max_read:
         A.settings.intake_max_read_photos = args.max_read
+    # --set NAME=VALUE: after every other flag, so it is what the run uses
+    # (and what the checks below see); recorded in ai_settings.
+    overrides = setting_overrides(args.set_values, A.settings)
+    if "intake_car_map" in overrides and args.car_map is not None:
+        sys.exit("--set intake_car_map: --car-map sets it (and puts the map in place); give one of the two")
+    for field, value in overrides.items():
+        setattr(A.settings, field, value)
     if args.drop_rule and A.settings.intake_read_prompt != "v1":
         sys.exit("--drop-rule: takes a rule out of read prompt v1; not with --read-prompt v2")
     for rule in args.drop_rule or []:
@@ -3688,10 +3765,10 @@ def main(argv=None) -> int:
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
                  if not (k in C10_ARGS and v == C10_ARGS[k]) and not (k in LIGHT_ARGS and v == LIGHT_ARGS[k])
                  and not (k in WALK_ARGS and v == WALK_ARGS[k]) and not (k in CARMAP_ARGS and v == CARMAP_ARGS[k])
-                 and not (k in WAVE2_ARGS and v == WAVE2_ARGS[k])},
+                 and not (k in WAVE2_ARGS and v == WAVE2_ARGS[k]) and not (k in SET_ARGS and v == SET_ARGS[k])},
         "models": {"model_chain": A.settings.gemini_model_chain, "triage_model_chain": A.settings.gemini_triage_model_chain,
                    "second_look_chain": A.settings.gemini_second_look_chain if A.settings.second_look_enabled else None},
-        "ai_settings": ai_settings(A.settings),
+        "ai_settings": {**ai_settings(A.settings), **({"overrides": overrides} if overrides else {})},
         "sort_cache": cache_meta,
         "started": _now(),
         "finished": None,

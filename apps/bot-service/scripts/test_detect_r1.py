@@ -32,7 +32,13 @@ scripts/test_c10_integration.py, no server, made-up cases only.
      today's; end to end, read_photo_ids;
   6. scripts/bench/replay_sorter_hints.py on its made-up fixture: the
      command line, its output, the same functions as the pipeline,
-     deterministic.
+     deterministic; links_diff -- the linked parts old and strict, rebuilt
+     with second_look.build_links, against the stored ones;
+  7. scripts/benchmark_intake.py: --set NAME=VALUE (intake_* / photo_*
+     settings, validated; a bad one exits non-zero) reaches the pipeline
+     through the benchmark's own runner and is recorded in the result's
+     ai_settings; a result keeps the sorter's suggestions (and shadow
+     list), counts them apart, prints them; gate.py reads such files.
 
     python scripts/test_detect_r1.py
     python scripts/test_detect_r1.py --probe OUT.json   (section 1's
@@ -866,7 +872,8 @@ def replay_section() -> None:
     result = json.loads(outs[0] or b"{}")
     cases = {c["case"]: c for c in result.get("cases") or []}
     rear = cases.get("made-up rear hit") or {}
-    check(result.get("tool") == "replay_sorter_hints" and result.get("cap") == 6 and len(cases) == 2,
+    check(result.get("tool") == "replay_sorter_hints" and result.get("cap") == 6 and result.get("version") == 2
+          and len(cases) == 3,
           "the output: tool, cap, one entry per case", {k: result.get(k) for k in ("tool", "version", "cap")})
     check([(r["part"], r["photo"], r["via"]) for r in rear.get("a1") or []]
           == [("Left Rear Wheel Arch Trim", "P06", "part"), ("Rear Windscreen", "P07", "part"),
@@ -899,7 +906,9 @@ def replay_section() -> None:
     check(parts(side.get("a1") or []) == ["Right Wing Mirror"] and not side.get("a2") and side.get("zone_intact") == {},
           "one read, no zone reads: the door listed on the other side is not suggested; A2 has nothing to act on",
           side)
-    check(result.get("totals") == {"a1": 7, "a2": 2, "a2_overrides": 2, "both": 8}, "the totals", result.get("totals"))
+    check(result.get("totals") == {"a1": 8, "a2": 2, "a2_overrides": 3, "both": 8, "links_gained": 1,
+                                   "links_lost": 1}, "the totals", result.get("totals"))
+    links_section(cases, work)
     # The same functions as the pipeline: replay_case's rows are find()'s items.
     sys.path.insert(0, str(HERE / "bench"))
     import replay_sorter_hints as replay
@@ -911,6 +920,204 @@ def replay_section() -> None:
                               shown=trail["second_look"]["items"], dismissed=trail["second_look"]["dismissed"],
                               zone_intact=replay.zone_intact_of(trail), hints=True, strict_rule=False)
     check(parts(found.hints) == parts(rear.get("a1") or []), "replay_case = sorter_hints.find on the trail's facts")
+    import shutil
+
+    shutil.rmtree(work, ignore_errors=True)
+
+
+CAPPED_OLD = ["Rear Number Plate", "Left Rear Bumper Reflector", "Reversing Camera", "Left Boot Lid Lamp",
+              "Left Tail Lamp", "Left Rear Wheel Arch Trim", "Left Rear Door Glass", "Left Wing Mirror",
+              "Left Front Door Glass", "Boot Lid Lock", "Boot Lid Hinge", "Boot Lid Weatherstrip"]
+
+
+def links_section(cases: dict, work: Path) -> None:
+    """The replay's links_diff: what A2 strict does to the linked parts."""
+    crowded = cases.get("made-up crowded rear, links capped") or {}
+    diff = crowded.get("links_diff") or {}
+    check(diff.get("old", [])[:12] == CAPPED_OLD and "Parking Sensor" not in diff.get("old", [])
+          and diff.get("strict", [])[:12] == ["Parking Sensor"] + CAPPED_OLD[:11],
+          "links_diff, a capped case: old demotes the sensor a zone read called intact past intake_links_max (12); "
+          "strict shows it first (seen) and pushes the 12th past the cap", (diff.get("old"), diff.get("strict")))
+    check(diff.get("gained") == ["Parking Sensor"] and diff.get("lost") == ["Boot Lid Weatherstrip"]
+          and diff.get("reordered") is False and len(diff.get("old") or []) == len(diff.get("strict") or []) == 22,
+          "gained, lost, reordered (the others in the same order); the strip-down block after them in both",
+          {k: diff.get(k) for k in ("gained", "lost", "reordered")})
+    check(diff.get("check") == {"stored": 22, "matched": 22, "unmatched_rebuilt": 0, "unmatched_stored": 0,
+                                "missing_inputs": []},
+          "check: the old rebuild matches the trail's stored linked parts exactly", diff.get("check"))
+    settings_used = diff.get("settings") or {}
+    check({k: settings_used.get(k) for k in ("intake_links", "intake_links_max", "intake_links_intact",
+                                             "intake_links_stripdown_cap", "intake_car_map")}
+          == {"intake_links": "on", "intake_links_max": 12, "intake_links_intact": "demote",
+              "intake_links_stripdown_cap": "out", "intake_car_map": "off"},
+          "production's settings by default (links on, 12, demote, strip-down out, car map off)", settings_used)
+    check(crowded.get("a2_links") == "rebuilt" and parts(crowded.get("a1") or []) == ["Parking Sensor"]
+          and not crowded.get("a2") and crowded["skipped"]["a2"] == {"suggested": 1},
+          "with the rebuild matching, A2 is found against the strict linked parts: the sensor is a linked part "
+          "then, not a sorter suggestion (A1 alone, against the stored ones, suggests it)",
+          (crowded.get("a2_links"), parts(crowded.get("a1") or []), crowded.get("skipped")))
+    rear = cases.get("made-up rear hit") or {}
+    ck = (rear.get("links_diff") or {}).get("check") or {}
+    check(rear.get("a2_links") == "stored" and ck.get("stored") == 1 and ck.get("unmatched_stored") == 1
+          and any("damage words" in m for m in ck.get("missing_inputs") or []),
+          "a trail without the listed parts' damage words: the check says so, and A2 keeps the stored linked parts",
+          ck)
+    side = cases.get("made-up side scrape, one read") or {}
+    missing = ((side.get("links_diff") or {}).get("check") or {}).get("missing_inputs") or []
+    check(any("zone_intact" in m for m in missing) and any("no open linked parts stored" in m for m in missing),
+          "... and no zone run, no stored linked parts", missing)
+    # The flags: a bigger cap -- the sensor un-demoted, nothing lost.
+    out = work / "replay-max30.json"
+    proc = subprocess.run([PY, str(REPLAY), str(FIXTURE), "--out", str(out), "--links-max", "30"],
+                          capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), env=clean_env(), timeout=300)
+    wide = {c["case"]: c for c in json.loads(out.read_text(encoding="utf-8"))["cases"]} if out.exists() else {}
+    d30 = (wide.get("made-up crowded rear, links capped") or {}).get("links_diff") or {}
+    check(proc.returncode == 0 and d30.get("gained") == [] and d30.get("lost") == [] and d30.get("reordered") is True
+          and d30.get("strict", [None])[0] == "Parking Sensor"
+          and d30.get("settings", {}).get("intake_links_max") == 30,
+          "--links-max 30: nothing past the cap -- strict only moves the sensor up (reordered)",
+          (proc.stderr[-400:], {k: d30.get(k) for k in ("gained", "lost", "reordered")}))
+    bad = subprocess.run([PY, str(REPLAY), str(FIXTURE), "--links-max", "-1"], capture_output=True, text=True,
+                         encoding="utf-8", cwd=str(ROOT), env=clean_env(), timeout=300)
+    check(bad.returncode == 2 and "intake_links_max" in bad.stderr, "a value config refuses stops the replay (exit 2)",
+          (bad.returncode, bad.stderr[-300:]))
+    sys.path.insert(0, str(HERE / "bench"))
+    import replay_sorter_hints as replay
+
+    trail = json.loads(FIXTURE.read_text(encoding="utf-8"))[2]
+    own = replay.settings_for({**trail, "settings": {"intake_links_max": 30, "not_a_link_setting": 1}}, {})
+    flagged = replay.settings_for({**trail, "settings": {"intake_links_max": 30}}, {"intake_links_max": 5})
+    check(own["intake_links_max"] == 30 and "not_a_link_setting" not in own and flagged["intake_links_max"] == 5,
+          "a trail's own settings over production's, a flag over both; other names ignored")
+    try:
+        replay.settings_for({"settings": {"intake_links_intact": "maybe"}}, {})
+        refused = False
+    except replay.SettingsError:
+        refused = True
+    check(refused, "a trail's setting config refuses is an error, not a guess")
+
+
+# ------------------------------------------------------------- 7. the benchmark
+
+BENCH = HERE / "benchmark_intake.py"
+GATE = HERE / "bench" / "gate.py"
+R1_KEY_PARTS = [{"part": "Rear Bumper"}, {"part": "Boot Lid"}, {"part": "Left Rear Door"}, {"part": "Rear Windscreen"},
+                {"part": "Left Fog Lamp"}, {"part": "Boot Lid Lock"}]
+R1_VEHICLE = {"make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-R1", "color": "White",
+              "vin": "TESTVIN0000000R1", "engine_number": "TESTENGR1", "date_of_registration": "2019-03-01"}
+
+
+def _bench_case(folder: Path) -> tuple[dict, Path]:
+    """A made-up key case over SORTER_ROWS' photos (coloured rectangles)."""
+    case_dir = folder / "made_up_r1"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(len(SORTER_ROWS)):
+        (case_dir / f"IMG_{i:04d}.jpg").write_bytes(t.jpeg(i))
+    return {"name": "MADE UP R1", "folder": "made_up_r1", "vehicle": R1_VEHICLE, "parts": R1_KEY_PARTS}, folder
+
+
+def bench_section() -> None:
+    import benchmark_intake as bench
+
+    def overrides(*pairs):
+        args = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z", *[a for p in pairs for a in ("--set", p)]])
+        return bench.setting_overrides(args.set_values, settings)
+
+    got = overrides("intake_sorter_hints=ON", "intake_intact_rule=strict", "intake_read_pick=v2",
+                    "photo_store_compress=on")
+    check(got == {"intake_sorter_hints": "on", "intake_intact_rule": "strict", "intake_read_pick": "v2",
+                  "photo_store_compress": "on"},
+          "--set NAME=VALUE: each through its field's own validation (any case, as config writes it)", got)
+    check(overrides() == {} and bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"]).set_values is None
+          and bench.SET_ARGS == {"set_values": None}, "no --set: nothing, and left out of a result's args")
+    refused = {}
+    for pair in ("gemini_api_key=x", "database_url=sqlite:///x.db", "intake_no_such_thing=1", "intake_sorter_hints=yes",
+                 "intake_max_read_photos=65", "intake_read_anchor=true", "intake_sorter_hints", "=on"):
+        try:
+            overrides(pair)
+            refused[pair] = "accepted"
+        except SystemExit as exc:
+            refused[pair] = exc.code if exc.code not in (0, None) else "exit 0"
+    check(all(isinstance(v, str) and v.startswith("--set") for v in refused.values()),
+          "a name not intake_* / photo_* or not a setting, a bad value, a cross-field conflict (the anchor without "
+          "read prompt v2), a pair without '=': each stops with a message (exit non-zero)", refused)
+    # The benchmark's own runner, in this process (the fake Gemini): the
+    # overrides as main applies them reach the pipeline.
+    work = Path(tempfile.mkdtemp(prefix="detect-r1-bench-"))
+    case, cases_dir = _bench_case(work / "cases")
+    bench._app()
+    with fakes(SORTED, SORTER_ROWS, SORTER_NOTES), t.Settings(**ZONES), \
+            t.Settings(**overrides("intake_sorter_hints=on", "intake_intact_rule=strict")):
+        out = bench.run_case(case, cases_dir)
+    rows = [r for r in out.get("suggestions") or [] if r.get("source") == "sorter"]
+    check("error" not in out and rows and rows[0]["part"] == "Rear Windscreen"
+          and rows[0]["reason"].startswith("Zone read said intact, but photo P09")
+          and rows[0]["photo_reference"] == "P09" and {r["truth"] for r in rows} <= {"real", "extra", "wrong_side"},
+          "--set intake_sorter_hints=on / intake_intact_rule=strict reach the pipeline: the run keeps the sorter's "
+          "suggestions (source, reason, photo by label, evidence) and marks them against the key",
+          [(r.get("part"), r.get("photo_reference"), r.get("truth")) for r in rows] or out.get("error"))
+    check(all(set(r) <= set(bench._SUGGESTION_FIELDS) | {"truth"} for r in rows) and rows[0].get("evidence"),
+          "... with the suggestion fields every suggestion keeps")
+    m = bench.run_metrics(out)
+    real = sum(1 for r in rows if r["truth"] == "real")
+    check(m.get("sorter_sugg") == len(rows) and m.get("sorter_sugg_real") == real and m.get("sug_n", 0) >= len(rows),
+          "counted apart (sorter_sugg, sorter_sugg_real) and among every suggestion", m)
+    lines = bench.detail_lines(out) + [bench.summary_line(out)]
+    check(any("the sorter's:" in ln for ln in lines), "the printed per-case lines name them", lines)
+    with fakes(SORTED, SORTER_ROWS, SORTER_NOTES), t.Settings(**ZONES), \
+            t.Settings(**overrides("intake_sorter_hints=shadow")):
+        shadow = bench.run_case(case, cases_dir)
+    sm = bench.run_metrics(shadow)
+    check(not [r for r in shadow.get("suggestions") or [] if r.get("source") == "sorter"]
+          and shadow.get("sorter_shadow") and all(r.get("truth") for r in shadow["sorter_shadow"])
+          and sm.get("sorter_shadow") == len(shadow["sorter_shadow"]) and "sorter_sugg" not in sm,
+          "shadow: none among the suggestions; the AI draft's kept apart (sorter_shadow), marked and counted",
+          (shadow.get("sorter_shadow"), sm.get("sorter_shadow")))
+    with fakes(SORTED, SORTER_ROWS, SORTER_NOTES), t.Settings(**ZONES):
+        plain = bench.run_case(case, cases_dir)
+    check("sorter_shadow" not in plain and not [k for k in bench.run_metrics(plain) if k.startswith("sorter_s")],
+          "the defaults: no sorter rows, no sorter metrics (a run as before)")
+    # gate.py and the summary table on result files that have them.
+    docs = {}
+    for name, runs in (("base", [plain]), ("cand", [out]), ("shadow", [shadow])):
+        doc = {"label": name, "git_ref": None, "args": {}, "models": {}, "ai_settings": {}, "runs": runs,
+               "summary": bench.summarize(runs)}
+        docs[name] = work / f"{name}.json"
+        docs[name].write_text(json.dumps(doc, default=str), encoding="utf-8")
+        bench.summary_table(doc["summary"])
+    gated = subprocess.run([PY, str(GATE), str(docs["base"]), str(docs["cand"]), str(docs["shadow"])],
+                           capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), env=clean_env(),
+                           timeout=300)
+    sugg = subprocess.run([PY, str(GATE), "--suggestions", str(docs["cand"])], capture_output=True, text=True,
+                          encoding="utf-8", cwd=str(ROOT), env=clean_env(), timeout=300)
+    check(gated.returncode in (0, 1) and sugg.returncode in (0, 1) and "Traceback" not in gated.stderr + sugg.stderr,
+          "gate.py (and --suggestions) read result files with the sorter's suggestions without crashing",
+          (gated.returncode, sugg.returncode, (gated.stderr + sugg.stderr)[-600:]))
+    # main: the overrides recorded in the result file; a bad one stops it.
+    key = work / "key.json"
+    key.write_text(json.dumps({"cases": [case]}), encoding="utf-8")
+    result = work / "result.json"
+    run = subprocess.run([PY, str(BENCH), "--cases", str(cases_dir), "--key", str(key), "--out", str(result),
+                          "--scratch", str(work / "scratch"), "--set", "intake_sorter_hints=on",
+                          "--set", "intake_intact_rule=strict", "--no-second-look"],
+                         capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), env=clean_env(), timeout=600)
+    doc = json.loads(result.read_text(encoding="utf-8")) if result.exists() else {}
+    check(run.returncode == 0 and (doc.get("ai_settings") or {}).get("overrides")
+          == {"intake_sorter_hints": "on", "intake_intact_rule": "strict"}
+          and (doc.get("args") or {}).get("set_values") == ["intake_sorter_hints=on", "intake_intact_rule=strict"],
+          "main: the result file records the overrides (ai_settings.overrides, args.set_values)",
+          (run.returncode, (run.stdout + run.stderr)[-800:], doc.get("ai_settings")))
+    bad = subprocess.run([PY, str(BENCH), "--cases", str(cases_dir), "--key", str(key), "--out", str(work / "bad.json"),
+                          "--scratch", str(work / "scratch-bad"), "--set", "intake_sorter_hints=maybe"],
+                         capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), env=clean_env(), timeout=600)
+    bad_name = subprocess.run([PY, str(BENCH), "--cases", str(cases_dir), "--key", str(key), "--out",
+                               str(work / "bad2.json"), "--scratch", str(work / "scratch-bad2"), "--set",
+                               "gemini_model_chain=x"], capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT),
+                              env=clean_env(), timeout=600)
+    check(bad.returncode != 0 and "--set intake_sorter_hints" in bad.stderr and not (work / "bad.json").exists()
+          and bad_name.returncode != 0 and "--set gemini_model_chain" in bad_name.stderr,
+          "main: a bad value or a name --set may not change exits non-zero before any case runs",
+          (bad.returncode, bad.stderr[-300:], bad_name.returncode, bad_name.stderr[-300:]))
     import shutil
 
     shutil.rmtree(work, ignore_errors=True)
@@ -928,6 +1135,7 @@ def main() -> int:
         ("5a. A3: the main read's photos (units)", a3_units),
         ("5b. A3: end to end", a3_end_to_end),
         ("6. replay_sorter_hints.py on its fixture", replay_section),
+        ("7. the benchmark: --set, the sorter's suggestions in a result, gate.py", bench_section),
     ):
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")

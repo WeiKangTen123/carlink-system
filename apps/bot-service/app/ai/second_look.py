@@ -771,36 +771,53 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
     against the list as it is now, beside the open suggestions `kept` --
     a part one of them is joins it instead (the joins, by key). tables:
     car_map.link_tables' answer (None: L1 as before); shadow: build from
-    its shadow table instead of the shown one. With the car map's facts,
-    each group also gets its "also check" words (car_map.add_also_check).
-    With the assembly walk on (settings.intake_assembly_walk) and a stored
-    walk, its signs too (intake/assembly_walk.from_settings), on whichever
-    table is built; off, build_all is called as before. cut (F2/F5): when
-    a list is given, build_all adds what its caps cut to it."""
-    from app.intake import assembly_walk, links, zones
+    its shadow table instead of the shown one. The case's photos and, with
+    settings.intake_links_catalogue, the catalogue's diagram neighbours
+    from the database; the rest is build_links. cut (F2/F5): when a list is
+    given, build_all adds what its caps cut to it."""
+    from app.intake import links
     from app.intake.photos import ordered_photos
 
     vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
     listed = [it for it in data.get("damage_summary") or [] if isinstance(it, dict)]
     opts = links.options()
     neighbours = _catalogue_neighbours(report_id, vehicle, listed) if opts.catalogue else None
+    return build_links(listed, kept, ordered_photos(db, report_id), ai_draft, dismissed, tables, shadow=shadow,
+                       neighbours=neighbours, cut=cut, opts=opts)
+
+
+def build_links(listed: list[dict], kept: list[dict], photos: list, ai_draft: dict, dismissed, tables=None, *,
+                shadow: bool = False, neighbours: dict | None = None, cut: list | None = None, opts=None,
+                strict: bool | None = None) -> tuple[list[dict], dict[str, dict]]:
+    """_with_links without the database, for it and for the offline replay
+    (scripts/bench/replay_sorter_hints.py): links.build_all on the listed
+    items, the open suggestions `kept`, the case's photos (IntakePhoto rows
+    or dicts) and ai_draft's zone_intact. With the assembly walk on
+    (settings.intake_assembly_walk) and a stored walk, its signs too
+    (intake/assembly_walk.from_settings), on whichever table is built; off,
+    build_all is called as before. With the car map's facts (tables'
+    info), each group also gets its "also check" words
+    (car_map.add_also_check). opts: links.Options (None: the settings').
+    strict (Detection Round 1, A2; None: settings.intake_intact_rule): a
+    zone read's "intact" never demotes or drops a part the sorter saw
+    damaged on a photo of it (sorter_hints.strict_intact); off, the lists
+    as the reads left them."""
+    from app.intake import assembly_walk, links, zones
+
+    opts = opts if opts is not None else links.options()
     walk = assembly_walk.from_settings(ai_draft, settings)
     extra = {"walk": walk} if walk else {}
     if cut is not None:
         extra["cut"] = cut
     intact = zones.intact_of(ai_draft)
-    if _strict_intact():
-        # Detection Round 1, A2 (settings.intake_intact_rule "strict"): a
-        # zone read's "intact" never demotes or drops a part the sorter saw
-        # damaged on a photo of it. "old": the lists as the reads left them.
+    if _strict_intact() if strict is None else strict:
         from app.intake import sorter_hints
 
-        intact = sorter_hints.strict_intact(intact, ordered_photos(db, report_id))
+        intact = sorter_hints.strict_intact(intact, photos)
     if tables is None:
-        return links.build_all(listed, kept, ordered_photos(db, report_id), intact, links.TABLE,
-                               opts, dismissed=dismissed, neighbours=neighbours, **extra)
+        return links.build_all(listed, kept, photos, intact, links.TABLE, opts, dismissed=dismissed,
+                               neighbours=neighbours, **extra)
     table, info = (tables.shadow, tables.shadow_info) if shadow else (tables.shown, tables.shown_info)
-    photos = ordered_photos(db, report_id)
     linked, joins = links.build_all(listed, kept, photos, intact, table, opts, dismissed=dismissed,
                                     neighbours=neighbours, info=info, **extra)
     if info is not None:
@@ -809,6 +826,13 @@ def _with_links(db, report_id: str, data: dict, ai_draft: dict, kept: list[dict]
         levels = links.levels_of(listed, photos, opts, **({"walk": extra["walk"]} if "walk" in extra else {}))
         car_map.add_also_check(linked, tables.car_map, levels, body_type=tables.body_type)
     return linked, joins
+
+
+def open_links(linked: list[dict], listed: set[str], listed_keys: set[str], dismissed) -> list[dict]:
+    """The linked parts _store shows (or keeps as cut): none on the list
+    (_listed_as) or dismissed (by key, or an old draft's part name)."""
+    return [it for it in linked if not _listed_as(it, listed, listed_keys)
+            and it["key"] not in dismissed and it["part"] not in dismissed]
 
 
 def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept: list[dict], dismissed: list[str],
@@ -853,8 +877,7 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     if tables is not None and tables.shadow is not None:
         try:
             mapped, _ = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables, shadow=True)
-            mapped = [it for it in mapped if not _listed_as(it, listed, listed_keys)
-                      and it["key"] not in dismissed and it["part"] not in dismissed]
+            mapped = open_links(mapped, listed, listed_keys, dismissed)
             extra["car_map_suggestions"] = [SecondLookItem.model_validate(it).model_dump() for it in mapped]
         except Exception:
             logger.exception("Second look for %s: couldn't work out the car map's linked parts", report_id)
@@ -869,10 +892,8 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
         if it["key"] in joins:
             _join_twin(it, joins[it["key"]])
     if link_cut:
-        cut.extend(it for it in link_cut if not _listed_as(it, listed, listed_keys)
-                   and it["key"] not in dismissed and it["part"] not in dismissed)
-    return [it for it in linked if not _listed_as(it, listed, listed_keys)
-            and it["key"] not in dismissed and it["part"] not in dismissed]
+        cut.extend(open_links(link_cut, listed, listed_keys, dismissed))
+    return open_links(linked, listed, listed_keys, dismissed)
 
 
 def _catalogue_neighbours(report_id: str, vehicle: dict, listed: list[dict]) -> dict | None:

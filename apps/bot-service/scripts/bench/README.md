@@ -12,7 +12,7 @@ folder holds what runs it on the server and compares two runs:
 | `probe_boxes.py` | contract 9: N random evidence boxes of a result drawn on their photos, with an `index.csv` for a person to mark on / off target (run R3) |
 | `probe_crops.py` | contract 8 D1: only the sorter, with its damage box, on a few photos of one case; writes the boxes and the close-ups cut from them, to judge the light sorter's boxes before a `--read-crops` run (its docstring has the command) |
 | `gate.py` | the owner's gate: PASS or FAIL for each candidate result file against a baseline |
-| `replay_sorter_hints.py` | Detection Round 1, offline, 0 calls: what A1 (the sorter's finds as suggestions) and A2 (the strict intact rule) would add on stored case "trails" -- the pipeline's own `app/intake/sorter_hints.find` (its docstring has the trail format; made-up fixture: `../fixtures/sorter_hints_sample.json`) |
+| `replay_sorter_hints.py` | Detection Round 1, offline, 0 calls: what A1 (the sorter's finds as suggestions) and A2 (the strict intact rule) would add on stored case "trails" -- the pipeline's own `app/intake/sorter_hints.find` -- and what A2 does to the linked parts (`links_diff`: old vs strict, rebuilt with `second_look.build_links`, checked against the stored ones); its docstring has the trail format and the flags; made-up fixture: `../fixtures/sorter_hints_sample.json` |
 | `../test_benchmark_scoring.py` | offline tests of the scoring (synthetic data, no Gemini) |
 
 ## Rules
