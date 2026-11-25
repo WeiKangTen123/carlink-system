@@ -347,6 +347,32 @@ check("search entries follow the filters", () => {
   assert.equal(S.searchParts(L.searchEntries(withSeeds), "rear bumper clip")[0].entry.name, "Rear bumper clips");
 });
 
+// ---------------------------------------------------------------------------
+// The Knowledge page as merged with Stage 1 ("My prices"): its admins-only
+// "All users' prices" tab beside "Parts library", which keeps the old flat
+// list of the AI's names one click away (its children, the "AI name list").
+console.log("-- the Knowledge page's tabs");
+const pageSource = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+check("Knowledge tabs: Parts price history, All users' prices (admins), Parts library, Damage Types, Vehicle Catalogue", () => {
+  const tsx = pageSource("../app/knowledge/KnowledgeClient.tsx");
+  const ids = [...tsx.matchAll(/\{ id: "(\w+)", label: "([^"]+)"/g)].map((m) => `${m[1]}:${m[2]}`);
+  assert.deepEqual(ids, ["price_history:Parts price history", "user_prices:All users' prices", "parts:Parts library",
+                         "damage:Damage Types", "vehicles:Vehicle Catalogue"]);
+  assert.match(tsx, /id: "user_prices", label: "All users' prices", icon: Users, adminOnly: true/);
+  assert.match(tsx, /tab === "user_prices" && admin && <AllUserPricesTab \/>/);
+});
+check("the Parts library tab wraps the old AI name list, shown under its \"AI name list\" view", () => {
+  const tsx = pageSource("../app/knowledge/KnowledgeClient.tsx");
+  const open = tsx.indexOf("<PartsLibraryTab>");
+  const close = tsx.indexOf("</PartsLibraryTab>");
+  assert.ok(open > tsx.indexOf('tab === "parts"') && close > open, "<PartsLibraryTab> ... </PartsLibraryTab> in the parts tab");
+  assert.match(tsx.slice(open, close), /Canonical Part Name/);
+  const tab = pageSource("../app/knowledge/PartsLibraryTab.tsx");
+  assert.match(tab, /export function PartsLibraryTab\(\{ children \}/);
+  assert.match(tab, /if \(view === "names"\) \{[\s\S]*?\{children\}/);
+  assert.match(tab, /AI name list/);
+});
+
 if (failed) {
   console.log(`\n${failed} check(s) failed`);
   process.exit(1);

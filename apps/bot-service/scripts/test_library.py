@@ -12,7 +12,8 @@ app/api/library.py; L-library-cycle.md step 2A).
    taxonomy.FIRM_PART_NAMES / _HATCH; aliases never point at another part's
    price-book family; every L1 link shows once out and once in.
 2. Seed fittings from price-book wordings: names only (no digit runs, no
-   make or model, no plate), kind by the B.4 words, placed under their
+   make or model, no plate -- by its shape too, as the price book keeps no
+   plate since Stage 1), kind by the B.4 words, placed under their
    family's part, a core part's own wording left out.
 3. Usage counts and the tree.
 4. The API: signed-in only; counts, conditions and seed fittings for staff
@@ -292,6 +293,9 @@ SEED_LINES = [
     line("Wheel nut", ref="CL 3"),
     line("Body panel joint sealer", ref="CL 3"),                   # no family rule places it
     line("Front bumper lower garnish SXX 1234 A", plate="SXX 1234 A", ref="CL 4"),  # a plate typed in it
+    # A plate typed in it, the line without one: the price book keeps no
+    # plate since Stage 1 (owner K0; prices.scrub_price_book).
+    line("Front bumper upper garnish SBA 5678 B", plate="", ref="CL 5"),
 ]
 
 
@@ -300,8 +304,8 @@ def test_seeds() -> None:
     core = library.load_core()
     seeds = library.seed_fittings(SEED_LINES, core)
     by_name = {s["name"]: s for s in seeds}
-    banned = {"vezel", "civic", "honda", "sxx1234a", "sxx"} | {k for frag in MODEL_BODY_TYPES for k in frag.split()
-                                                        if len(k) >= 3}
+    banned = {"vezel", "civic", "honda", "sxx1234a", "sxx", "sba", "b"} | {k for frag in MODEL_BODY_TYPES
+                                                                       for k in frag.split() if len(k) >= 3}
     names = [s["name"] for s in seeds] + [a["text"] for s in seeds for a in s["aliases"]]
     check(not [n for n in names if re.search(r"\d", n)], "no seed name holds a digit", names)
     check(not [n for n in names if set(re.findall(r"[a-z0-9-]+", n.lower())) & banned],
@@ -334,6 +338,16 @@ def test_seeds() -> None:
     check(sealer and sealer["parent_key"] is None and sealer["parent_keys"] == [] and sealer["area"] is None,
           "a wording no rule places has no parent", sealer)
     check("Front bumper lower garnish" in by_name, "a plate in a wording is dropped, the rest kept", sorted(by_name))
+    check("Front bumper upper garnish" in by_name, "... also when the line has no plate (Stage 1 keeps none)",
+          sorted(by_name))
+    plates = {"Front bumper upper garnish SBA 5678 B": "Front bumper upper garnish",  # Singapore's shape
+              "Vent clip SBA5678B": "Vent clip",
+              "Rear garnish WXY 1234": "Rear garnish",  # Malaysia's, without a check letter
+              "BOOT LID 2 PCS": "BOOT LID",  # all capitals: a quantity, not a plate
+              "Tail lamp RH 1 SET": "Tail lamp",  # a side and a quantity
+              "Rear bumper clips x 10": "Rear bumper clips"}
+    got = {text: library.seed_name(text, set(), "") for text in plates}
+    check(got == plates, "a plate goes by its shape (no plate on the line); a number and its unit still go", got)
     check(not any(k in s for s in seeds for k in ("price", "adjusted_cost", "workshop_est", "plate", "case_ref",
                                                     "make", "model")),
           "a seed carries no price, plate, case, make or model field")
@@ -420,9 +434,11 @@ def test_api() -> None:
         # A draft never counts.
         db.add(Report(channel="manual", reporter_chat_id="dashboard", status="intake",
                       data={"damage_summary": [{"part": "Bonnet"}]}))
+        # No plate on a line (Stage 1, owner K0: the price book keeps none),
+        # one typed into a wording.
         for item, ref in (("Rear bumper side retainer LH", "CL 11"), ("Rear bumper clips", "CL 11"),
-                          ("Tail gate emblem VEZEL", "CL 12")):
-            db.add(PastAnnexLine(case_ref=ref, source_file="x.xlsx", plate="SXX1234A", make="Honda", model="Vezel",
+                          ("Tail gate emblem VEZEL", "CL 12"), ("Front bumper lower garnish SXX 1234 A", "CL 12")):
+            db.add(PastAnnexLine(case_ref=ref, source_file="x.xlsx", plate="", make="Honda", model="Vezel",
                                  make_model_raw="Honda Vezel", item=item, item_key=item.lower(), condition="Necessary",
                                  qty=2, workshop_est=123.0, adjusted_cost=98.0))
         db.commit()
@@ -466,7 +482,7 @@ def test_api() -> None:
               (comps["tail-lamp"].get("uses"), comps["bonnet"].get("uses")))
         check(comps["tail-lamp"]["conditions"] == [["Cracked", 2]], f"{label}: typical conditions")
         names = {f["name"] for f in body["fittings"]}
-        check({"Rear bumper side retainer", "Rear bumper clips", "Tail gate emblem"} <= names,
+        check({"Rear bumper side retainer", "Rear bumper clips", "Tail gate emblem", "Front bumper lower garnish"} <= names,
               f"{label}: the price book's wordings as seed fittings", names)
         text = json.dumps(body["fittings"])
         check(not re.search(r"SXX|1234|123\.0|98\.0|CL 1|Vezel|Honda|x\.xlsx", text),

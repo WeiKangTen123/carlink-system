@@ -690,6 +690,17 @@ _PARENS = re.compile(r"\([^)]*\)")
 _QTY = re.compile(r"\bx\s*\d+(\.\d+)?\b", re.I)
 _QTY_UNITS = frozenset({"pc", "pcs", "nos", "pkt", "pkts", "set", "sets", "unit", "units"})
 _EDGE = re.compile(r"^[^0-9A-Za-z]+|[^0-9A-Za-z]+$")
+# A number plate typed into a wording, by its shape: 1-3 capitals, a number
+# and the check letter ("SBA 1234 A", Singapore's; Malaysia's when it has
+# one). The price book keeps no plate since Stage 1 (owner K0, prices.
+# scrub_price_book), so a line's own plate is no longer there to drop. In a
+# wording not all in capitals the check letter may be missing (Malaysia's
+# "WXY 1234"); in one all in capitals it must be there, so "BOOT LID 2 PCS"
+# keeps its words. Only the letters go: the number is left for the word
+# loop, which drops it -- and a quantity's unit after it -- as any number.
+# Never part of a longer word ("L/H 2", "R.H 2" stay side words).
+_PLATE = re.compile(r"(?<![0-9A-Za-z/.-])[A-Z]{1,3} ?(\d{1,4}) ?[A-Z](?![0-9A-Za-z/.-])")
+_PLATE_NO_CHECK = re.compile(r"(?<![0-9A-Za-z/.-])[A-Z]{1,3} ?(\d{1,4})(?![0-9A-Za-z/.-])")
 # A word naming a side, as the dashboard's lib/partSearch.ts reads them:
 # LH, L/H, L.H.S., LHS, left; nearside and N/S are the left (Malaysia drives
 # on the left, so the near side is the kerb side), offside and O/S the right.
@@ -725,12 +736,16 @@ def seed_name(item: str, banned: set[str], plate: str = "") -> str | None:
     """A price-book wording as a generic name: no side words, no bracketed
     notes, no quantities, no word with a digit, no make or model name (an
     ordinary word that is also a model's -- "Seal", "Step" -- only in
-    capitals, as an emblem's lettering), none of its case's plate. None
-    when nothing is left."""
+    capitals, as an emblem's lettering), none of its case's plate (`plate`,
+    on a line from before Stage 1) nor anything shaped as one (_PLATE).
+    None when nothing is left."""
     from app.parts.history import _COMMON_WORDS
 
     plate_keys = {_key_of(w) for w in re.findall(r"[0-9A-Za-z]+", plate or "")}
     text = _QTY.sub(" ", _PARENS.sub(" ", item or ""))
+    text = _PLATE.sub(r" \1 ", text)
+    if text != text.upper():
+        text = _PLATE_NO_CHECK.sub(r" \1 ", text)
     kept: list[str] = []
     dropped_number = False
     expect = None  # "hand" after "left" / "right", then "side"

@@ -14,7 +14,10 @@ the car's fields (make, model key, body, year band; vehicle and impact
 confirmed only when a person confirmed them) and the knowledge stamp, and
 NO plate, VIN, name, note, photo or price anywhere in them; a re-sign-off
 replaces them; a reopen and a delete remove them; a failing capture (or a
-failing stamp) never fails the sign-off. The backfill: a dry run writes
+failing stamp) never fails the sign-off. Annex A lines as Stage 1 keeps
+them (a line id, price source, confirm and book price on each) give the
+same fittings, and none of those fields reaches a row; a waiting price
+blocks the sign-off, so nothing is captured. The backfill: a dry run writes
 nothing and prints counts only; --apply writes, again changes nothing, and
 takes out the rows of a case no longer signed off. Retention: rows over 7
 years old and rows without a signed-off case go, from the cleanup sweep
@@ -769,6 +772,78 @@ def fittings_and_race() -> None:
           "a sign-off committed meanwhile wins: nothing written, the rows there kept (its DELETE rolled back)", out)
 
 
+# ============================================================ Stage 1's lines
+# What Stage 1 ("My prices") keeps on every Annex A line: its line id
+# (app/reports/annex_lines.py) and where its price came from. None of it is
+# a fitting's (wording, qty, section, Necessary), so none may reach a row.
+STAGE1_KEYS = {"line_id", "price_source", "price_confirmed", "book_price", "price_date", "price_cases"}
+
+
+def with_stage1_fields(data: dict, *, confirmed: bool = True) -> dict:
+    """data with each Annex A line as Stage 1 leaves it: a line id (kept if
+    it has one), and a price the machine filled in (a person's own, an
+    approved or a book price) with the book's price beside it -- PRICE,
+    which no row may hold."""
+    for n, it in enumerate(data["annex_a"]["items"]):
+        it.setdefault("line_id", f"L{n:012d}")
+        it.update(price_source=("mine", "approved", "book")[n % 3], price_confirmed=confirmed,
+                  book_price=PRICE, price_date="2026-11-20", price_cases=3)
+    return data
+
+
+def stage1_lines() -> None:
+    plain = observations.observe(case_data(), ai_draft())
+    staged = observations.observe(with_stage1_fields(case_data()), ai_draft())
+    check(staged == plain and len(by_part(staged).get("Rear Bumper", {}).get("fittings") or []) == 2,
+          "lines with Stage 1's line id and price fields: the same rows, the same fittings",
+          [(r["part"], r["fittings"]) for r in staged if r["fittings"]])
+
+    # Through the routes, as a page does it: GET gives every line its id,
+    # a save keeps them; machine prices still waiting block the sign-off
+    # (nothing captured); confirmed, the case signs off and is captured.
+    case = new_case(case_data(ref="CL 90351"), ai_draft())
+    add_run(case, "gemini-test-strong", knowledge=STAMP_A)
+    r = W.admin.get(f"/reports/{case}")
+    lines = (((r.json() if r.status_code == 200 else {}).get("data") or {}).get("annex_a") or {}).get("items") or []
+    ids = [ln.get("line_id") for ln in lines]
+    check(r.status_code == 200 and len(ids) == len(ANNEX) and all(ids) and len(set(ids)) == len(ids),
+          "GET /reports/{id} gives every Annex A line its id", ids)
+    r = W.admin.put(f"/reports/{case}/annex-a", json={"items": lines})
+    saved = (stored(case).data.get("annex_a") or {}).get("items") or []
+    check(r.status_code == 200 and [ln.get("line_id") for ln in saved] == ids,
+          "PUT /reports/{id}/annex-a keeps them", brief(r))
+    db = SessionLocal()
+    try:
+        rep = db.get(Report, case)
+        rep.data = with_stage1_fields(json.loads(json.dumps(rep.data)), confirmed=False)
+        db.commit()
+    finally:
+        db.close()
+    r = sign_off(W.admin, case)
+    body = r.json() if r.status_code == 409 else {}
+    check(r.status_code == 409 and body.get("code") == "prices_unconfirmed" and len(body.get("lines") or []) == len(ANNEX)
+          and obs_rows(case) == [], "machine prices waiting: the sign-off refused (Stage 1), nothing captured", brief(r))
+    r = W.admin.post(f"/reports/{case}/annex-a/confirm-prices")
+    check(r.status_code == 200 and r.json().get("confirmed") == len(ANNEX), "Confirm all prices", brief(r))
+    r = sign_off(W.admin, case)
+    rows = obs_rows(case)
+    check(r.status_code == 200 and len(rows) == len(plain), "then it signs off and its rows are written", brief(r))
+    got = {k: v["fittings"] for k, v in by_part(rows).items() if v["fittings"]}
+    check(got == {
+        "Rear Bumper": [{"wording": "rear bumper clips", "qty": 10.0, "section": "list", "necessary": True},
+                        {"wording": "rear bumper side retainer", "qty": 2.0, "section": "nett", "necessary": False}],
+        "rear air vent": [{"wording": "vent clip", "qty": 4.0, "section": "list", "necessary": True}],
+    }, "the fittings as on lines without ids or price fields (by source_part and the main mark)", got)
+    blob = json.dumps(rows, default=str)
+    check(not leaks(rows) and not [k for k in STAGE1_KEYS if k in blob]
+          and all(set(f) == {"wording", "qty", "section", "necessary"} for x in rows for f in x["fittings"]),
+          "no price, line id or Stage 1 price field in any row", (leaks(rows), [k for k in STAGE1_KEYS if k in blob]))
+    signed = (stored(case).data.get("annex_a") or {}).get("items") or []
+    check([ln.get("line_id") for ln in signed] == ids and all(ln.get("price_confirmed") is True for ln in signed),
+          "the signed-off case keeps its line ids and confirmed prices (the capture writes nothing back)",
+          [(ln.get("line_id"), ln.get("price_confirmed")) for ln in signed])
+
+
 # ============================================================ backfill
 def backfill() -> None:
     signed_at = datetime.now(timezone.utc).isoformat()
@@ -1048,6 +1123,7 @@ def main_() -> int:
         ("the sign-off never fails for them", never_fails),
         ("M1: the scrubber, the review's examples", scrubber_m1),
         ("L1 fittings and L8 the capture race", fittings_and_race),
+        ("Stage 1's Annex A lines: line ids and price fields", stage1_lines),
         ("backfill: dry run, apply, idempotent", backfill),
         ("retention: 7 years, and with the case", retention),
         ("the knowledge stamp", stamp),
