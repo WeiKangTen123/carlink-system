@@ -767,6 +767,11 @@ def select_for_reading(photos: list[IntakePhoto], *, priority_order: bool = Fals
     each only while the request stays within read_bytes_budget() -- one that
     would pass it is skipped and the next tried (_extra_photos). At 32 or
     fewer nothing is measured.
+    Detection Round 1, A3 (settings.intake_read_pick "v2"): steps 3 and 5
+    as _priority_pick_v2 -- every damaged area a photo, at most
+    READ_GROUP_MAX damage photos per sorter (part, area) while other
+    photos of the insured car are left; the same limit. "v1": exactly as
+    above.
     priority_order: the chosen photos in the order they were taken (for the
     tests and the benchmark's notes), not in case order."""
     cap = read_limit()
@@ -825,9 +830,18 @@ def fit_crops(photo_bytes: int, made: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def read_pick() -> str:
+    """Detection Round 1, A3: settings.intake_read_pick -- "v1" (today's
+    choice) or "v2" (_priority_pick_v2)."""
+    return "v2" if getattr(settings, "intake_read_pick", "v1") == "v2" else "v1"
+
+
 def _priority_pick(photos: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
     """select_for_reading's choice of at most `cap` photos, in the priority
-    order they are taken (its docstring), nothing measured."""
+    order they are taken (its docstring), nothing measured. A3 "v2":
+    _priority_pick_v2's instead."""
+    if read_pick() == "v2":
+        return _priority_pick_v2(photos, cap)
     usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
     by_kind: dict[str, list[IntakePhoto]] = {}
     for p in usable:
@@ -859,6 +873,128 @@ def _priority_pick(photos: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
     take(unsorted, UNSORTED_BUDGET)
     # Room left over (a case with few damage photos): every other photo.
     take(_top_up_order(usable, by_kind, damage_pool, unsorted), cap)
+    return chosen
+
+
+# Detection Round 1, A3 "v2" (settings.intake_read_pick): at most this many
+# damage photos of one sorter (part, area) go to the main read while other
+# photos of the insured car are left. On a practice case 9 of the 32 slots
+# went to near-identical photos of one removed part, and 4 wheel and arch
+# overviews were never read.
+READ_GROUP_MAX = 2
+
+
+def _read_group(p: IntakePhoto) -> tuple:
+    """A3 v2's group: the sorter's (part, area)."""
+    return (p.part, p.area)
+
+
+def _shows_any(p: IntakePhoto) -> bool:
+    return p.kind == "damage" or bool(p.shows_damage)
+
+
+def _group_counted(p: IntakePhoto) -> bool:
+    """A photo READ_GROUP_MAX counts: damage evidence (_is_damage_evidence),
+    or another photo of the insured car showing damage (an overview, a
+    tyre)."""
+    return _is_damage_evidence(p) or (bool(p.shows_damage) and p.kind in _CAR_KINDS)
+
+
+def _best_first(group: list[IntakePhoto]) -> list[IntakePhoto]:
+    """A3 v2: a group's photos, damage close-ups first, then those showing
+    damage, sharp before blurry; each tier spread over the camera order."""
+    tiers: dict[tuple[bool, bool, bool], list[IntakePhoto]] = {}
+    for p in group:
+        tiers.setdefault((p.kind != "damage", not p.shows_damage, p.quality == "blurry"), []).append(p)
+    return [p for key in sorted(tiers) for p in _spread_order(tiers[key])]
+
+
+def _priority_pick_v2(photos: list[IntakePhoto], cap: int) -> list[IntakePhoto]:
+    """A3 "v2": select_for_reading's steps (its docstring) with the damage
+    photos chosen another way, at most `cap` as v1:
+      1-2. the fact photos and the overviews as v1;
+      3a. every area with a photo of the insured car showing damage gets
+          one -- its best (_best_first) -- unless a photo chosen already
+          shows damage there;
+      3b. then the damage evidence by the sorter's (part, area): the groups
+          showing damage first, in camera order, one photo each in turn
+          (_best_first), at most READ_GROUP_MAX a group (3a's photo counts);
+          3a and 3b share v1's damage budget (every slot but the unsorted
+          ones');
+      4. the unsorted as v1;
+      5. the slots left: v1's top-up order (_top_up_order), but a damage
+         photo of a group that has READ_GROUP_MAX already goes after every
+         other photo of the insured car, and before the other party's car,
+         the scene and paperwork (_LAST_KINDS, past their fact budgets:
+         nothing there for the damage) -- so no slot v1 would fill is left
+         empty.
+    The priority order they were taken in, as _priority_pick's."""
+    usable = [p for p in sorted(photos, key=lambda p: p.position) if not p.excluded and p.quality != "unusable"]
+    by_kind: dict[str, list[IntakePhoto]] = {}
+    for p in usable:
+        by_kind.setdefault(p.kind or "unsorted", []).append(p)
+
+    damage_pool = [p for p in usable if _is_damage_evidence(p)]
+    areas: dict[str | None, list[IntakePhoto]] = {}
+    for p in by_kind.get("overview", []):
+        areas.setdefault(p.area, []).append(p)
+
+    chosen: list[IntakePhoto] = []
+    chosen_ids: set[str] = set()
+    per_group: Counter = Counter()
+
+    def add(p: IntakePhoto) -> None:
+        chosen.append(p)
+        chosen_ids.add(p.id)
+        if _group_counted(p):
+            per_group[_read_group(p)] += 1
+
+    def full(p: IntakePhoto) -> bool:
+        return _group_counted(p) and per_group[_read_group(p)] >= READ_GROUP_MAX
+
+    def take(candidates: list[IntakePhoto], limit: int, grouped: bool = False) -> None:
+        for p in candidates:
+            if limit <= 0 or len(chosen) >= cap:
+                return
+            if p.id in chosen_ids or (grouped and full(p)):
+                continue
+            add(p)
+            limit -= 1
+
+    for kind, limit in FACT_BUDGET:
+        take(_by_tiers(by_kind.get(kind, [])), limit)
+    take(_round_robin([_by_tiers(g) for g in areas.values()]), OVERVIEW_BUDGET)
+    unsorted = _spread_order(by_kind.get("unsorted", []))
+    budget = cap - len(chosen) - min(UNSORTED_BUDGET, len(unsorted))
+    start = len(chosen)
+    car = [p for p in usable if p.kind in ("damage",) + _CAR_KINDS and _shows_any(p)]
+    for area in dict.fromkeys(p.area for p in car if p.area):
+        if len(chosen) - start >= budget:
+            break
+        if any(c.area == area and _shows_any(c) for c in chosen):
+            continue
+        take(_best_first([p for p in car if p.area == area]), 1, grouped=True)
+    groups: dict[tuple, list[IntakePhoto]] = {}
+    for p in damage_pool:
+        groups.setdefault(_read_group(p), []).append(p)
+    ordered = sorted(groups.values(), key=lambda g: (not any(p.shows_damage for p in g), g[0].position))
+    take(_round_robin([_best_first(g) for g in ordered]), budget - (len(chosen) - start), grouped=True)
+    take(unsorted, UNSORTED_BUDGET)
+    later: list[IntakePhoto] = []
+    last: list[IntakePhoto] = []
+    for p in _top_up_order(usable, by_kind, damage_pool, unsorted):
+        if len(chosen) >= cap:
+            break
+        if p.id in chosen_ids:
+            continue
+        if p.kind in _LAST_KINDS:
+            last.append(p)
+        elif full(p):
+            later.append(p)
+        else:
+            add(p)
+    take(later, cap)
+    take(last, cap)
     return chosen
 
 

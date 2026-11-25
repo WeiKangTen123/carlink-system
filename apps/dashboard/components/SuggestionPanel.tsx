@@ -29,6 +29,7 @@ import {
   seenCount,
   sideFromText,
   signText,
+  sourceLabel,
   stripDownBlockNote,
   suggestionSections,
   type AssemblyGroup,
@@ -228,7 +229,7 @@ export function SuggestionPanel({ surface, findings, decisions, check, linkRun, 
     const oem = isLink && f.oem?.length ? `the parts catalogue puts it with the ${parentName(f) ?? "listed part"}` : null;
     // K4: in the strip-down block a card names its group; a second hop's says via what.
     const where = inBlock && f.assemblyName ? f.assemblyName : null;
-    const facts = [where, hopText(f), sideFromText(f), sided, foundByText(f, reads), seenCount(f), confidenceText(f.confidence), oem]
+    const facts = [sourceLabel(f), where, hopText(f), sideFromText(f), sided, foundByText(f, reads), seenCount(f), confidenceText(f.confidence), oem]
       .filter(Boolean)
       .join(" · ");
     const fitted = isLink ? fittedText(f) : null;

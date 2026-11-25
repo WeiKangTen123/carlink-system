@@ -84,6 +84,7 @@ const SOURCE_NAMES: Record<string, string> = {
   nearby: "Next to a part found",
   link: "Linked to a listed part",
   other_side: "Other side? (another photo of a listed part's family)",
+  sorter: "Seen by the photo sorter",
 };
 // Contract 10 (accuracy VERSION 3): the linked parts, in the cards' words.
 const LINK_TYPE_NAMES: Record<string, string> = {
@@ -184,7 +185,7 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
   }
   const rules = groupRows(s.by_rule, (k) => k, []);
   const groups: Array<{ head: string; rows: ReturnType<typeof groupRows> }> = [
-    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby", "link", "other_side"]) },
+    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby", "link", "other_side", "sorter"]) },
     { head: "AI re-check", rows: groupRows(s.by_check, (k) => CHECK_NAMES[k] ?? k, ["yes", "unsure", "no", "none"]) },
     { head: "Read that found it", rows: groupRows(s.by_read, readName, Object.keys(READ_NAMES)) },
     // Contract 10: absent on a VERSION 2 record, so those cases show none.

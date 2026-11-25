@@ -57,7 +57,7 @@ export type Finding = {
   wrongEndNote?: string | null;
   /** Contract 10: "link", a part tied to a listed one by the link table
    * (SecondLookItem.source). */
-  source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side";
+  source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side" | "sorter";
   /** The Condition in the firm's words ("Cracked"), else the AI's damage
    * type; for the cards and the viewer. Optional: added by the evidence UI. */
   condition?: string | null;
@@ -365,7 +365,9 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
     // Where a suggestion with no stored evidence came from, for its photo.
     // F3's "Other side?" ones were found by the reads too (never an
     // "other_side read").
-    const fallbackBy = source === "zone" || source === "other_side" ? s.found_by?.[0] || "overall" : source;
+    // Detection Round 1: the sorter's own find is on its photo by "sort".
+    const fallbackBy =
+      source === "zone" || source === "other_side" ? s.found_by?.[0] || "overall" : source === "sorter" ? "sort" : source;
     const evidence = evidenceFrom(s.evidence, s.photo_reference, null, s.seen_in, s.confidence, fallbackBy, fallbackBy);
     // Contract 10: a linked part's reason is the link table's (the code's
     // words), and the listed part's photo ("link") is not a photo it was
@@ -473,6 +475,8 @@ export function codeReason(f: Finding): string {
     why = f.otherSideListed
       ? `Seen on another photo than the listed ${f.otherSideListed}: it may be the other side`
       : "Seen on another photo than the listed part: it may be the other side";
+  } else if (f.source === "sorter") {
+    why = SORTER_LABEL;
   } else if (f.source === "kit") {
     why = "Often damaged with a part found here (past cases)";
   } else {
@@ -481,6 +485,13 @@ export function codeReason(f: Finding): string {
   const seen = seenText(f.seenIn);
   return seen ? `${why} · ${seen}` : why;
 }
+
+/** Detection Round 1: what a suggestion only the photo sorter saw is
+ * labelled (source "sorter"). */
+export const SORTER_LABEL = "Seen by the photo sorter";
+
+/** The label a suggestion's source adds to its card, or null. */
+export const sourceLabel = (f: Pick<Finding, "source">): string | null => (f.source === "sorter" ? SORTER_LABEL : null);
 
 /** "AI says: “…”" -- the AI's own words, always marked as the AI's. */
 export const aiSays = (reason: string) => `AI says: “${reason}”`;
