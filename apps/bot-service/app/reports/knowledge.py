@@ -12,8 +12,9 @@ what produced them, and "before" and "after" a change sit side by side.
            (settings.intake_links "off") or the table didn't load.
   car_map  the car map's version ("K1.0") while settings.intake_car_map is
            "shadow" or "on" and the map loaded; None while it is off.
-  prompt   the reading prompt (settings.intake_read_prompt, "v1" / "v2"),
-           on a reading run only (READ_KINDS); None on any other run.
+  prompt   the reading prompt (settings.intake_read_prompt, "v1" / "v2";
+           "v1+user-fields" while settings.intake_user_fields is on), on a
+           reading run only (READ_KINDS); None on any other run.
   models   the models that answered.
 
 Two kinds of stamp:
@@ -111,12 +112,22 @@ def stamp(models=(), kind: str | None = "read") -> dict | None:
             "library": None,
             "links": links_version(),
             "car_map": car_map_version(),
-            "prompt": str(getattr(settings, "intake_read_prompt", "v1") or "v1") if kind in READ_KINDS else None,
+            "prompt": read_prompt() if kind in READ_KINDS else None,
             "models": _models(models),
         }
     except Exception as exc:
         logger.warning("Knowledge stamp: none this time (%s)", type(exc).__name__)
         return None
+
+
+def read_prompt() -> str:
+    """The reading prompt now: "v1" / "v2", and "+user-fields" while
+    settings.intake_user_fields is on (app/reports/user_fields.py: the read
+    is sent without the workshop and the odometer)."""
+    from app.reports import user_fields
+
+    version = str(getattr(settings, "intake_read_prompt", "v1") or "v1")
+    return f"{version}+{user_fields.TAG}" if user_fields.on() else version
 
 
 def answered_models(attempts) -> list[str]:

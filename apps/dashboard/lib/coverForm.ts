@@ -7,7 +7,7 @@
 import type { CoverPageRequest, ReportData, TyreCondition, TyreItem } from "./api";
 
 /** Every Cover Page field as text, as typed -- the firm's dates are free
- * text ("27th February 2023 (10.15am)") and so are the readings. "" when
+ * text ("13th January 2026 (9.30am)") and so are the readings. "" when
  * absent: the form never shows a guessed value. */
 export type CoverForm = {
   report_id: string;

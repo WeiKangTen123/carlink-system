@@ -116,7 +116,7 @@ def main() -> int:
         insurance_details={"insurer_name": "NTUC Income", "claim_number": "C-1"},
         people_involved=[{"name": "Lim", "role": "Driver"}],
         damage_summary=[{"part": "Rear Bumper", "severity": "Severe", "human_verified": True}, {"part": "Boot Lid"}],
-        cover_page={"requested_by": "Tokio Marine", "date_of_survey": "27th February 2023", "general_condition": None},
+        cover_page={"requested_by": "Tokio Marine", "date_of_survey": "13th January 2026", "general_condition": None},
     )
     previous = ai_draft()
     # The draft's model_dump() carries cover_page as all-None: the AI never
@@ -126,7 +126,7 @@ def main() -> int:
                    damage_summary=[{"part": "Rear Bumper", "severity": "Minor"}, {"part": "Left Tail Lamp"}],
                    cover_page={"requested_by": None, "date_of_survey": None, "general_condition": None})
     merged = merge_redraft(current, previous, new)
-    assert merged["cover_page"]["requested_by"] == "Tokio Marine" and merged["cover_page"]["date_of_survey"] == "27th February 2023"
+    assert merged["cover_page"]["requested_by"] == "Tokio Marine" and merged["cover_page"]["date_of_survey"] == "13th January 2026"
     empty_cover = merge_redraft(ai_draft(cover_page={"requested_by": None}), previous, new)
     assert empty_cover["cover_page"] == new["cover_page"]  # nothing typed: the (empty) new reading stands
     assert merged["description"] == "Surveyor rewrote this"           # surveyor edit kept
@@ -154,7 +154,7 @@ def main() -> int:
         data["vehicle_info"]["color"] = "Black"
         data["damage_summary"][0]["human_verified"] = True
         data["damage_summary"][0]["severity"] = "Severe"
-        data["cover_page"] = {**(data.get("cover_page") or {}), "requested_by": "Tokio Marine", "date_of_survey": "27th February 2023"}
+        data["cover_page"] = {**(data.get("cover_page") or {}), "requested_by": "Tokio Marine", "date_of_survey": "13th January 2026"}
         assert client.put(f"/intake/{rid}/data", json={"data": data}).status_code == 200
         draft_answers.append(ai_draft(damage_summary=[{"part": "Rear Bumper", "severity": "Minor"}, {"part": "Rear Windscreen"}]))
         client.post(f"/intake/{rid}/process", json={"mode": "read"})
@@ -163,7 +163,7 @@ def main() -> int:
         assert after["people_involved"][0]["name"] == "Lim Wei"
         assert after["vehicle_info"]["color"] == "Black"
         assert [(d["part"], d["severity"]) for d in after["damage_summary"]] == [("Rear Bumper", "Severe"), ("Rear Windscreen", None)]
-        assert after["cover_page"]["requested_by"] == "Tokio Marine" and after["cover_page"]["date_of_survey"] == "27th February 2023", after["cover_page"]
+        assert after["cover_page"]["requested_by"] == "Tokio Marine" and after["cover_page"]["date_of_survey"] == "13th January 2026", after["cover_page"]
         ok("re-read through the API keeps insurer, people, colour fix, the typed cover page and the checked damage item")
 
         # Edits refused while the AI is reading.

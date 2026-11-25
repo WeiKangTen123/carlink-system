@@ -48,7 +48,7 @@ def case_ref(report_id: str) -> str:
 
 def _iso_date(text) -> str | None:
     """A cover date as the spreadsheet importer stores it (ISO), from the
-    firm's wording ("27th February 2023 (10.15am)", history._date) or an
+    firm's wording ("13th January 2026 (9.30am)", history._date) or an
     ISO date; None when it reads as neither."""
     text = str(text or "").strip()
     if not text:
@@ -63,7 +63,7 @@ def _iso_date(text) -> str | None:
 
 
 def our_ref(data: dict) -> str:
-    """The case's Our Ref, a CL reference written one way ("CL 12330",
+    """The case's Our Ref, a CL reference written one way ("CL 10001",
     history.cl_ref), so a case whose exported spreadsheet is imported too
     counts once (history.past_lines compares both sides through cl_ref);
     any other wording as typed; "" when none is issued."""

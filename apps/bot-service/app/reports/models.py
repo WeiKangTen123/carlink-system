@@ -604,7 +604,7 @@ class PastAnnexLine(Base):
     __tablename__ = "past_annex_lines"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 10001"
     # The CL reference of the spreadsheet ("CL 10001"), or "": never the
     # file's name, which the firm writes with the plate (owner K0, Stage 1
     # review H1; history.source_ref). The start-up step
@@ -661,7 +661,7 @@ class PastLabourLine(Base):
     __tablename__ = "past_labour_lines"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 11900"
+    case_ref: Mapped[str] = mapped_column(String, index=True)  # "CL 10001"
     # As PastAnnexLine.source_file: the CL reference, or "".
     source_file: Mapped[str] = mapped_column(String, default="")
     # Always "", as PastAnnexLine.plate.

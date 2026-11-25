@@ -54,10 +54,10 @@ const checksOf = (values, damage = []) => C.coverChecks(form(values), damage, TO
 // ---------------------------------------------------------------------------
 console.log("-- reading dates");
 check("the firm's style, with ordinals and a time", () => {
-  assert.deepEqual(C.parseCoverDate("27th February 2023 (10.15am)"), { y: 2023, m: 2, d: 27 });
+  assert.deepEqual(C.parseCoverDate("13th January 2026 (9.30am)"), { y: 2026, m: 1, d: 13 });
   assert.deepEqual(C.parseCoverDate("1st Jan 2026"), { y: 2026, m: 1, d: 1 });
   assert.deepEqual(C.parseCoverDate("3 Sept 2025"), { y: 2025, m: 9, d: 3 });
-  assert.deepEqual(C.parseCoverDate("February 27, 2023"), { y: 2023, m: 2, d: 27 });
+  assert.deepEqual(C.parseCoverDate("January 13, 2026"), { y: 2026, m: 1, d: 13 });
 });
 check("day first with / - . and two-digit years; ISO and the AI's datetime", () => {
   assert.deepEqual(C.parseCoverDate("02/03/2026"), { y: 2026, m: 3, d: 2 });
@@ -122,9 +122,9 @@ check("engine no.: letters and digits; not a word in its place", () => {
   for (const engine of ["N/A", "unknown", "ABCDEF", "A1", "-"]) assert.equal(checksOf({ engine_number: engine }).engine_number?.length, 1, engine);
 });
 check("speedometer: the digits, then Km", () => {
-  for (const odo of ["058615 Km", "58,615 km", "58615km"]) assert.equal(checksOf({ odometer_reading: odo }).odometer_reading, undefined, odo);
-  assert.match(checksOf({ odometer_reading: "58615" }).odometer_reading[0], /then Km/);
-  assert.match(checksOf({ odometer_reading: "58615 miles" }).odometer_reading[0], /then Km/);
+  for (const odo of ["012345 Km", "12,345 km", "12345km"]) assert.equal(checksOf({ odometer_reading: odo }).odometer_reading, undefined, odo);
+  assert.match(checksOf({ odometer_reading: "12345" }).odometer_reading[0], /then Km/);
+  assert.match(checksOf({ odometer_reading: "12345 miles" }).odometer_reading[0], /then Km/);
   assert.match(checksOf({ odometer_reading: "not visible" }).odometer_reading[0], /^No digits/);
 });
 check("tyres: below 1.6 mm, and a depth that isn't a number", () => {

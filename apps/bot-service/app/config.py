@@ -282,6 +282,17 @@ class Settings(BaseSettings):
     # until it passes the accuracy gate. "off": every reading's values as
     # before, byte for byte.
     intake_firm_words: str = "off"
+    # Owner, 25 Nov 2026: the workshop and the odometer reading are always
+    # left empty for the user to type in (app/reports/user_fields.py). "on":
+    # no read is asked for them -- their instructions and examples are taken
+    # out of every read prompt and their fields out of the response schema
+    # (ai/extraction.py) -- a value the model returns all the same is dropped
+    # before it reaches the draft, the AI draft or the case, and the field
+    # review shows both as a person's to fill (app/reports/review.py). It
+    # changes what the AI is sent, so it ships off. "off": every read and
+    # every stored draft as before, byte for byte
+    # (scripts/test_user_fields.py).
+    intake_user_fields: str = "off"
     # Sweeps idle intake drafts and stale tmp uploads (intake/cleanup.py).
     # Off in tests and scripts that import the app; set in production.
     run_background_cleanup: bool = False
@@ -497,7 +508,7 @@ class Settings(BaseSettings):
         return value
 
     @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
-                     "intake_keep_sort_label", "intake_firm_words",
+                     "intake_keep_sort_label", "intake_firm_words", "intake_user_fields",
                      "photo_store_compress")
     @classmethod
     def _off_on(cls, value, info):

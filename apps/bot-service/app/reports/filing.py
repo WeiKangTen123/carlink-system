@@ -234,17 +234,25 @@ def ai_read_for(ai_draft: dict | None, photo_index: list[dict] | None) -> tuple[
     app/reports/firm_words.py), and per vehicle field the
     photo it was read from ("P03") when the photo index can tell. (None,
     {}) with no draft. Nothing here is ever printed, and nothing comes from
-    anywhere but the AI's own draft."""
+    anywhere but the AI's own draft. With settings.intake_user_fields on
+    the workshop and the odometer reading are never listed -- the user's
+    to type in, never "AI-read", even on a draft the AI read before the
+    switch went on (app/reports/user_fields.py)."""
     if not ai_draft:
         return None, {}
+    from app.reports import user_fields
+
+    users = set(user_fields.REVIEW_KEYS) if user_fields.on() else set()
     vehicle = ai_draft.get("vehicle_info") or {}
-    values = {key: vehicle[key] for key in AI_COVER_FIELDS if not is_blank(vehicle.get(key))}
+    values = {key: vehicle[key] for key in AI_COVER_FIELDS
+              if not is_blank(vehicle.get(key)) and f"vehicle_info.{key}" not in users}
     read = {"vehicle_info": values}
     for key in AI_TOP_FIELDS:
         read[key] = None if is_blank(ai_draft.get(key)) else ai_draft.get(key)
     for section, keys in AI_SECTION_FIELDS.items():
         found = ai_draft.get(section) or {}
-        read[section] = {key: found[key] for key in keys if not is_blank(found.get(key))}
+        read[section] = {key: found[key] for key in keys
+                         if not is_blank(found.get(key)) and f"{section}.{key}" not in users}
     # The AI's own static-check / transmission words (firm_words.
     # apply_firm_words, INTAKE_FIRM_WORDS on), by vehicle_info field: a
     # note beside the field, never printed. Only when there are.

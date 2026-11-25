@@ -40,22 +40,47 @@ def ok(label: str) -> None:
 
 # ------------------------------------------------------------ the report
 
+# The signer's qualifications, made up (the real file's letter is not read
+# for them either).
+QUALIFICATIONS = "BEng (Mech), MIMI"
+
+
+def _tyre_cell(tyre: dict) -> str:
+    """{"tread_depth_mm": 6, "brand": "Michelin"} -> "6mm/Michelin", as the
+    cover page prints a tyre."""
+    return f"{float(tyre['tread_depth_mm']):g}mm/{tyre['brand']}"
+
+
+def _front_tyre_needle(report: dict) -> str:
+    tyres = report["vehicle_info"]["tyres"]
+    return (f"Front tyre : {_tyre_cell(tyres['front_nearside'])} {_tyre_cell(tyres['front_offside'])} : "
+            f"{tyres['front_nearside']['size']}")
+
+
+def _iso(date_text: str) -> str:
+    """"3rd March 2021" -> "2021-03-03"."""
+    from datetime import datetime
+
+    return datetime.strptime(re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", date_text), "%d %B %Y").strftime("%Y-%m-%d")
+
+
 
 def fixture() -> dict:
-    """A small signed-off case in the shape agent B's schema gives it."""
+    """A small signed-off case in the shape agent B's schema gives it. Made up:
+    dates, readings, tyres, people and the workshop."""
     return {
         "report_id": "CL 12999",
         "reporter_name": "Lim Wei Jie",
-        "incident_datetime": "21st February 2023",
+        "incident_datetime": "10th January 2026",
         "cover_page": {
-            "date_of_request": "27th February 2023",
+            "date_of_request": "13th January 2026",
             "requested_by": "Tan Mei Ling",
             "requested_by_address": "C/o Blk 100, Test Road 1, #01-01, Singapore 000100",
             "workshop_address": "Blk 100, Test Road 1, #01-01,\nSingapore 000100",
-            "date_of_survey": "27th February 2023 (10.15am)",
-            "date_of_dismantle": "27th February 2023 (2.25pm)",
-            "date_before_painting": "1st March 2023",
-            "date_after_painting": "7th March 2023",
+            "date_of_survey": "13th January 2026 (9.30am)",
+            "date_of_dismantle": "13th January 2026 (2.00pm)",
+            "date_before_painting": "15th January 2026",
+            "date_after_painting": "20th January 2026",
             "handbrake_condition": "see annex(es)",
             "modification": "Nil",
             "general_condition": "Good",
@@ -63,14 +88,14 @@ def fixture() -> dict:
         },
         "vehicle_info": {
             "plate_number": "TST 2002 B", "make": "Honda", "model": "Vezel 1.5X CVT",
-            "date_of_registration": "19th October 2020", "engine_number": "L15B0000001", "vin": "JHMTESTX0Y0000001",
-            "odometer_reading": "058615 Km", "transmission": "Automatic", "color": "White",
+            "date_of_registration": "3rd March 2021", "engine_number": "L15B0000001", "vin": "JHMTESTX0Y0000001",
+            "odometer_reading": "012345 Km", "transmission": "Automatic", "color": "White",
             "paintwork_condition": "Good", "steering_condition": "see annex(es)", "brakes_condition": "see annex(es)",
             "tyres": {
-                "front_nearside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                "front_offside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                "rear_nearside": {"tread_depth_mm": 6.5, "brand": "Dunlop", "size": "215/60 R16"},
-                "rear_offside": {"tread_depth_mm": 6.5, "brand": "Dunlop"},
+                "front_nearside": {"tread_depth_mm": 6, "brand": "Michelin", "size": "205/55 R16"},
+                "front_offside": {"tread_depth_mm": 6, "brand": "Michelin", "size": "205/55 R16"},
+                "rear_nearside": {"tread_depth_mm": 5.5, "brand": "Michelin", "size": "205/55 R16"},
+                "rear_offside": {"tread_depth_mm": 5.5, "brand": "Michelin"},
             },
         },
         "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
@@ -90,7 +115,7 @@ def fixture() -> dict:
              "workshop_est": 1200.0, "adjusted_cost": 900.0},
         ]},
         "annex_c": {"agreed_lump_sum": 1900.0, "repair_days": 7},
-        "sign_off": {"status": "Signed Off", "surveyor_name": "Alex Tan", "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.",
+        "sign_off": {"status": "Signed Off", "surveyor_name": "Alex Tan", "qualifications": QUALIFICATIONS,
                      "signatory_title": "Automotive Engineer Assessor", "signature_data_url": None},
     }
 
@@ -104,7 +129,7 @@ def _xls_rows(path: Path, sheet: str) -> list[list]:
 
 
 def _tyre(text: str, size: str) -> dict:
-    """"7mm/Dunlop" + "215/60 R16" -> the schema's TyreItem."""
+    """"6mm/Michelin" + "205/55 R16" -> the schema's TyreItem."""
     depth, _, brand = text.partition("/")
     m = re.search(r"\d+(?:\.\d+)?", depth)
     return {"tread_depth_mm": float(m.group(0)) if m else None, "brand": brand.strip() or None, "size": size.strip() or None}
@@ -203,7 +228,7 @@ def report_from_xls(path: Path) -> dict:
         "annex_c": {"agreed_lump_sum": float(lump.group(1).replace(",", "")) if lump else None,
                     "repair_days": int(days.group(1)) if days else None},
         "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else None), "signatory_title": "Automotive Engineer Assessor",
-                     "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."},
+                     "qualifications": QUALIFICATIONS},
     }
 
 
@@ -244,9 +269,9 @@ def check_html(report: dict, m) -> None:
                    f"Requested by : {report['cover_page']['requested_by']}", "Type of claim : Third party",
                    f"Workshop : {report['insurance_details']['workshop_assigned']}", "Date of dismantle parts :",
                    "2 DETAILS OF VEHICLE", f"Registration No. : {report['vehicle_info']['plate_number']}", "Make & Model : Honda Vezel 1.5X CVT",
-                   f"Chassis No. : {report['vehicle_info']['vin']}", "Speedometer reading : 058615 Km", "3 STATIC CHECK", "Paintwork : Good",
+                   f"Chassis No. : {report['vehicle_info']['vin']}", f"Speedometer reading : {report['vehicle_info']['odometer_reading']}", "3 STATIC CHECK", "Paintwork : Good",
                    "Modification : Nil", "General condition : Good", "4 TYRE CONDITION", "Nearside/Make Offside/Make Size",
-                   "Front tyre : 7mm/Dunlop 7mm/Dunlop : 215/60 R16", "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
+                   _front_tyre_needle(report), "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
                    "6 REMARK", 'conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair.'):
         assert needle in text, needle
     ok("cover page: letterhead, Our Ref, sections 1-6 with the firm's labels, tyres per axle")
@@ -277,7 +302,7 @@ def check_html(report: dict, m) -> None:
                    f"contract lump sum of {m['lump']}, according to acceptable quality and standard",
                    f"reasonable period of {report['annex_c']['repair_days']} working days", "strictly on a WITHOUT PREJUDICE basis",
                    "enclosed is our invoice for service rendered", "Yours faithfully, CARLINK CONSULTANCY",
-                   report["sign_off"]["surveyor_name"].upper(), "Automotive Engineer Assessor", "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."):
+                   report["sign_off"]["surveyor_name"].upper(), "Automotive Engineer Assessor", QUALIFICATIONS):
         assert needle in text, needle
     assert "DRAFT" not in text
     ok("Annex C: the firm's letter with workshop, totals, lump sum, days, signer, default title and qualifications")
@@ -383,7 +408,7 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     assert cover["B8"].value == f"Our Ref: {report['report_id']}"
     labels = {(cover.cell(r, 3).value, cover.cell(r, 4).value): cover.cell(r, 5).value for r in range(1, cover.max_row + 1)}
     assert labels[("Requested by", ":")] == report["cover_page"]["requested_by"]
-    assert labels[("Make & Model", ":")] == "Honda Vezel 1.5X CVT" and labels[("Front tyre", ":")] == "7mm/Dunlop"
+    assert labels[("Make & Model", ":")] == "Honda Vezel 1.5X CVT" and labels[("Front tyre", ":")] == _tyre_cell(report["vehicle_info"]["tyres"]["front_nearside"])
     static = {cover.cell(r, 6).value: cover.cell(r, 8).value for r in range(1, cover.max_row + 1)
               if cover.cell(r, 3).value in ("Steering", "Footbrake", "Handbrake")}
     assert static == {"Paintwork": "Good", "Modification": "Nil", "General condition": "Good"}, static
@@ -419,7 +444,7 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     view = renderer.report_view(report)
     assert back.ref == re.sub(r"\s+", " ", re.search(r"CL\s*\d+", report["report_id"]).group(0)), back.ref
     assert (back.make, back.model) == ("Honda", "Vezel"), (back.make, back.model)
-    assert back.plate == re.sub(r"\s+", "", report["vehicle_info"]["plate_number"]).upper() and back.registered == "2020-10-19"
+    assert back.plate == re.sub(r"\s+", "", report["vehicle_info"]["plate_number"]).upper() and back.registered == _iso(report["vehicle_info"]["date_of_registration"])
     want = [(r["no"], r["name"], r["qty"], r["est"], r["disc"], r["adjusted"], "nett" if r["nett"] else "list")
             for r in view["list_rows"] + view["nett_rows"]]
     got = [(l.line_no, l.item, l.qty, l.workshop_est, l.discount, l.adjusted_cost, l.section) for l in back.lines]

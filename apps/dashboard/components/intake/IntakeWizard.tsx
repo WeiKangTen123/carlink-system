@@ -487,7 +487,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setError(null);
     const maxBytes = state?.limits.max_photo_bytes ?? DEFAULT_MAX_BYTES;
     const maxPhotos = state?.limits.max_photos ?? DEFAULT_MAX_PHOTOS;
-    // Name order is camera order (P1273082.JPG, P1273083.JPG...), which is
+    // Name order is camera order (IMG_0001.JPG, IMG_0002.JPG...), which is
     // the order a surveyor expects P01, P02... to follow.
     const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     let position =

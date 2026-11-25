@@ -960,11 +960,11 @@ def b2_banner() -> None:
 
 
 def b2_knowledge() -> None:
-    plate, source = "SGX4321Q", "past-report-cl11900.xlsx"
+    plate, source = "SGX4321Q", "past-report-cl10001.xlsx"
     db = SessionLocal()
     try:
         for i, (item, cost) in enumerate((("Tail gate", 1160.0), ("Tail lamp LH", 521.6)), start=1):
-            db.add(PastAnnexLine(case_ref="CL 11900", source_file=source, plate=plate, make="Honda", model="Vezel",
+            db.add(PastAnnexLine(case_ref="CL 10001", source_file=source, plate=plate, make="Honda", model="Vezel",
                                  make_model_raw="Honda Vezel", surveyed="2018-01-27", line_no=i, section="list", item=item,
                                  item_key=item.lower(), family=None, condition="Dented", qty=1.0, workshop_est=cost * 1.25,
                                  discount=0.2, adjusted_cost=cost))

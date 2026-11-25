@@ -46,9 +46,9 @@ function realDate(y: number, m: number, d: number): CoverDate | null {
 const fullYear = (text: string) => (text.length === 2 ? 2000 + Number(text) : Number(text));
 
 /** A cover date as the firm or a person writes it, read from its start:
- * "27th February 2023 (10.15am)", "27 Feb 2023", "February 27, 2023",
- * "27/02/2023" or "27-02-23" (day first, as in Malaysia and Singapore),
- * "2023-02-27" and the AI's "2023-02-27T10:15". Null for anything else
+ * "13th January 2026 (9.30am)", "13 Jan 2026", "January 13, 2026",
+ * "13/01/2026" or "13-01-26" (day first, as in Malaysia and Singapore),
+ * "2026-01-13" and the AI's "2026-01-13T09:30". Null for anything else
  * ("Not applicable", a date that doesn't exist): no check then. */
 export function parseCoverDate(text: string | null | undefined): CoverDate | null {
   const t = (text || "").trim().toLowerCase();
@@ -96,7 +96,7 @@ const VIN = /^[A-HJ-NPR-Z0-9]{17}$/;
 const FRAME_NUMBER = /^[A-Z0-9]{2,7}-\d{5,8}$/;
 /** Words written instead of a number. */
 const NOT_A_NUMBER = /^(n\/?a|nil|none|unknown|not (visible|seen|available|recorded|readable|known)|tbc|tba|-+|\?+)$/i;
-/** Digits (leading zeros kept), then Km: "058615 Km", "58,615 km". */
+/** Digits (leading zeros kept), then Km: "012345 Km", "12,345 km". */
 const ODOMETER = /^\d[\d,. ]*\s?km$/i;
 
 export const LEGAL_TREAD_MM = 1.6;
@@ -239,7 +239,7 @@ export function coverChecks(form: CoverForm, damage: DamagedPart[] = [], today: 
   // Speedometer reading: the digits, then Km.
   const odometer = form.odometer_reading.trim();
   if (odometer && !ODOMETER.test(odometer)) {
-    add("odometer_reading", /\d/.test(odometer) ? "Write the digits, then Km (e.g. 058615 Km)" : "No digits: write the reading, then Km (e.g. 058615 Km)");
+    add("odometer_reading", /\d/.test(odometer) ? "Write the digits, then Km (e.g. 012345 Km)" : "No digits: write the reading, then Km (e.g. 012345 Km)");
   }
 
   // Tyres: below the legal minimum, or not a number (saved as blank).

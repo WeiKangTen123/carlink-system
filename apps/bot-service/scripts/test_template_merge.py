@@ -117,14 +117,14 @@ def main() -> int:
         check(f"the template no longer asks {dropped!r}", dropped in prompt, False)
     parsed = flow.parse_template_reply(
         "Vehicle Plate: TST2002B\nRequested by (insurer / company): Tokio Marine\nType of claim (Own damage / Third party): Own damage\n"
-        "Workshop: XYZ Auto\nDate/time of accident: 27 Feb 2023 10.15am\nDamaged Side (Left / Right / Front / Rear): Rear\n"
+        "Workshop: XYZ Auto\nDate/time of accident: 13 Jan 2026 9.30am\nDamaged Side (Left / Right / Front / Rear): Rear\n"
         "What happened: Rear-ended at a junction.\nSecond line of the story."
     )
     check("parsed: plate", parsed["vehicle_plate"], "TST2002B")
     check("parsed: requested by", parsed["requested_by"], "Tokio Marine")
     check("parsed: type of claim", parsed["claim_type"], "Own damage")
     check("parsed: workshop", parsed["workshop_name"], "XYZ Auto")
-    check("parsed: date/time of accident", parsed["incident_datetime"], "27 Feb 2023 10.15am")
+    check("parsed: date/time of accident", parsed["incident_datetime"], "13 Jan 2026 9.30am")
     check("parsed: side", parsed["damaged_side"], "Rear")
     check("parsed: what happened (continued lines)", parsed["description"], "Rear-ended at a junction. Second line of the story.")
     check("parsed: no reporter keys", any(k.startswith("reporter") or k == "reported_to_authorities" for k in parsed), False)

@@ -1406,8 +1406,8 @@ export type LabourSuggestions = {
 };
 
 /** The Cover Page fields that have no home elsewhere on the report
- * (report.cover_page). Dates are free text, printed as typed ("27th
- * February 2023 (10.15am)"). Anything unset prints as "Not recorded". */
+ * (report.cover_page). Dates are free text, printed as typed ("13th
+ * January 2026 (9.30am)"). Anything unset prints as "Not recorded". */
 export type CoverPageInfo = {
   date_of_request?: string | null;
   requested_by?: string | null;
@@ -2925,7 +2925,7 @@ export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: str
 
 /** One imported past report. */
 export type PastReportCase = {
-  /** The firm's case reference, e.g. "CL 12330". */
+  /** The firm's case reference, e.g. "CL 10001". */
   ref: string;
   /** No longer kept (Stage 1 drops plates from the price book); an older
    * server still sends it, to admins only. Not shown. */
