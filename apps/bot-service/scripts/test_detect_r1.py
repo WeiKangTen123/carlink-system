@@ -8,7 +8,7 @@ scripts/test_c10_integration.py, no server, made-up cases only.
      docker-compose.prod.yml once, in the block both containers share, at
      config.py's default (and test_compose's allow-list has them);
   1. everything at the defaults: the requests and the stored data byte for
-     byte as master a148ad1's -- the full routes (read, decisions,
+     byte as master ae0fde4's -- the full routes (read, decisions,
      autosave, filing, the case page, sign-off) in single mode, zone mode,
      links on and links capped hard, and the reads Round 1 touches: a case
      whose sorter saw parts no read listed (single mode, and zones + links
@@ -86,7 +86,7 @@ PROBE_MODES = {
     "links_on": dict(LINKS, intake_check_mode="lite"),
     "links_capped": CAPPED,
 }
-BASE_REF = "a148ad1"  # origin/master when this branch began
+BASE_REF = "ae0fde4"  # origin/master this branch is on (PR #57)
 
 # --------------------------------------------------------------- the fakes' cases
 
