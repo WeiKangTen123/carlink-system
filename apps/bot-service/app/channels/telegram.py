@@ -145,7 +145,7 @@ WELCOME_GUIDE = (
     "   • Upload 1 or more photos of the scene, damage, log card, or repair estimate.\n\n"
     "2️⃣ *Provide Incident Particulars* 📝\n"
     "   • Reply with details or copy the short template.\n"
-    "   • Or type naturally (e.g. 'SLK3063Z rear ended at PIE, Insurer Tokio Marine, Workshop Precise Auto').\n\n"
+    "   • Or type naturally (e.g. 'TST1001A rear ended at PIE, Insurer Tokio Marine, Workshop XYZ Auto').\n\n"
     "3️⃣ *Interactive Review & Buttons* 📄\n"
     "   • Tap the interactive buttons below the draft to select side, insurer, or confirm.\n\n"
     "----------------------------------------\n"

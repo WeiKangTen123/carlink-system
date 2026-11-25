@@ -118,7 +118,7 @@ TEMPLATE_REPLY = (
     "Vehicle Plate: SKA1234X\n"
     "Requested by (insurer / company): Acme Insurance\n"
     "Type of claim (Own damage / Third party): Own damage\n"
-    "Workshop: Precise Auto\n"
+    "Workshop: XYZ Auto\n"
     "Date/time of accident: 3 Nov 2026 16:45\n"
     "Damaged Side (Left / Right / Front / Rear): Rear\n"
     "What happened: Rear-ended at a junction"
@@ -412,7 +412,7 @@ async def check_on_reads_like_the_website(log: LogCapture) -> None:
         assert data["vehicle_info"]["plate_number"] == "SKA1234X", data["vehicle_info"]
         assert data["cover_page"]["requested_by"] == "Acme Insurance"
         assert data["insurance_details"]["claim_type"] == "Own damage"
-        assert data["insurance_details"]["workshop_assigned"] == "Precise Auto"
+        assert data["insurance_details"]["workshop_assigned"] == "XYZ Auto"
         assert data["incident_datetime"] == "3 Nov 2026 16:45"
         assert [it["part"] for it in data["damage_summary"]] == ["Rear Bumper", "Boot Lid"]
         assert data["damage_summary"][0]["photo_reference"] == f"@{photos[0].id}"

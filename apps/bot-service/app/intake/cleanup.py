@@ -15,6 +15,9 @@
   (a finalize or save stopped half-way) once ORPHAN_FOLDER_AGE old.
 - STORAGE_DIR/ai_derived/ files (the zone calls' grid copies, the reading's
   close-ups) unchanged for DRAFT_MAX_IDLE (contract 9).
+- Part observations (step 2B) signed off over 7 years ago, and any left
+  behind by a case gone or no longer signed off (reports/observations.py
+  sweep_old; the owner's retention rule, 24 Nov 2026).
 
 Runs in the api process (started from main.py's lifespan), every
 SWEEP_EVERY. The telegram-bot process doesn't run it.
@@ -36,6 +39,7 @@ from app.config import settings
 from app.intake import pipeline, public
 from app.intake.photos import remove_intake_dir
 from app.parts import catalogue
+from app.reports import observations
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.storage.files import tmp_dir
@@ -234,6 +238,23 @@ def sweep(now: datetime | None = None) -> dict:
     finally:
         db.close()
 
+    # Part observations past the retention limit, or whose case is gone or
+    # no longer signed off (counts only in the log). Its own session: a
+    # failure here never undoes the sweeps above.
+    db = SessionLocal()
+    removed_observations = 0
+    try:
+        removed_observations = observations.sweep_old(db, now)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Cleanup: couldn't sweep the part observations")
+    finally:
+        db.close()
+    if removed_observations:
+        logger.info("Cleanup removed %d part observation(s) (over %d years old, or their case no longer signed off)",
+                    removed_observations, observations.RETAIN_YEARS)
+
     if removed_drafts or removed_tmp or removed_sessions or removed_links or removed_codes or removed_derived:
         logger.info(
             "Cleanup removed %d idle intake draft(s) %s, %d tmp file(s), %d AI-derived file(s), "
@@ -262,6 +283,8 @@ def sweep(now: datetime | None = None) -> dict:
         "intake_folders": orphan_folders,
         # Contract 9: grid copies and close-ups past DRAFT_MAX_IDLE.
         "ai_derived": removed_derived,
+        # Step 2B: part observations past 7 years or without a signed-off case.
+        "part_observations": removed_observations,
     }
 
 
