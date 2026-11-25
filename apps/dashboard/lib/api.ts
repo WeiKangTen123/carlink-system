@@ -1965,7 +1965,12 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   sorter_shadow?: AiAccuracyLinkShadow | null;
 };
 
-export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };
+export type AiAccuracyShadowCounts = {
+  predicted: number;
+  on_final_list: number;
+  /** The photo sorter's shadow only: on the list from a suggestion card people saw. */
+  prompted?: number;
+};
 export type AiAccuracyLinkShadow = AiAccuracyShadowCounts & { by_rule?: Record<string, AiAccuracyShadowCounts> };
 
 export type AiAccuracySums = {

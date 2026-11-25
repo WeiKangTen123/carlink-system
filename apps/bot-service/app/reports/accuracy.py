@@ -520,11 +520,11 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str =
     are on the signed-off list (by name, or by a name that stands for
     them: "Tail Lamp (side undetermined)" for a "Left Tail Lamp") -- in
     all and by rule. None when the draft has no such list. by: the field
-    an item's rule is ("link_rule"), or "found_by" (its first entry:
-    Detection Round 1's "sorter_seen" / "sorter_intact", each rule's own
-    items once per key)."""
+    an item's rule is ("link_rule"), or "found_by" (_sorter_shadow)."""
     if not isinstance(ai_draft.get(list_key), list):
         return None
+    if by == "found_by":
+        return _sorter_shadow(ai_draft.get(list_key), final_data)
     final = damage_items(final_data)
     final_keys = {item_key(it) for it in final}
     final_parts = {str(it.get("part")) for it in final}
@@ -532,16 +532,12 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str =
     seen: set[str] = set()
     for it in _dicts(ai_draft.get(list_key)):
         key = key_of(it)
-        rule = it.get(by) if isinstance(it.get(by), str) and it.get(by) else None
-        if by == "found_by":
-            marks = [m for m in it.get("found_by") or [] if isinstance(m, str) and m]
-            rule = marks[0] if marks else None
-        once = key if by == "link_rule" else f"{rule}|{key}"
-        if not key or once in seen:
+        if not key or key in seen:
             continue
-        seen.add(once)
+        seen.add(key)
         covers = [c for c in it.get("covers") or [] if isinstance(c, str)] or [str(it.get("part") or "")]
         on_list = key in final_keys or bool(set(covers) & final_parts)
+        rule = it.get("link_rule") if isinstance(it.get("link_rule"), str) and it.get("link_rule") else None
         tallies = [out] + ([out["by_rule"].setdefault(rule[:MAX_RULE], {"predicted": 0, "on_final_list": 0})]
                            if rule else [])
         for tally in tallies:
@@ -550,6 +546,39 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str =
         table = _table_of(rule)
         if table and table not in tables:
             tables.append(table)
+    return out
+
+
+def _sorter_shadow(items, final_data: dict) -> dict:
+    """Detection Round 1 in shadow (ai_draft["sorter_suggestions"]): the
+    photo sorter's suggestions nobody saw, against the signed-off list --
+    in all over the distinct parts (A1's and A2's lists, worked out apart,
+    may both hold a part: counted once, the second review's N5), and by
+    rule (found_by: "sorter_seen", "sorter_intact"), each rule's parts once.
+    A part a person put on the list from a suggestion card (added_from
+    "suggestion": an A1 card shown beside A2's trial, a zone read's...) is
+    "prompted", never on_final_list: that hit was the card's (N6)."""
+    final = damage_items(final_data)
+    out: dict = {"predicted": 0, "on_final_list": 0, "prompted": 0, "by_rule": {}}
+    counted: set[str] = set()
+    seen: set[tuple] = set()
+    for it in _dicts(items):
+        key = key_of(it)
+        marks = [m for m in it.get("found_by") or [] if isinstance(m, str) and m]
+        rule = marks[0][:MAX_RULE] if marks else None
+        if not key or (rule, key) in seen:
+            continue
+        seen.add((rule, key))
+        covers = [c for c in it.get("covers") or [] if isinstance(c, str)] or [str(it.get("part") or "")]
+        hits = [f for f in final if item_key(f) == key or str(f.get("part")) in covers]
+        prompted = any(f.get("added_from") == "suggestion" for f in hits)
+        tallies = ([out] if key not in counted else []) + (
+            [out["by_rule"].setdefault(rule, {"predicted": 0, "on_final_list": 0, "prompted": 0})] if rule else [])
+        counted.add(key)
+        for tally in tallies:
+            tally["predicted"] += 1
+            tally["on_final_list"] += int(bool(hits) and not prompted)
+            tally["prompted"] += int(bool(hits) and prompted)
     return out
 
 
@@ -573,9 +602,12 @@ def sum_suggestions(metrics: list[dict]) -> dict:
     out["shadow"] = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
 
     def add_shadow(into: dict, counts) -> None:
-        for key in ("predicted", "on_final_list"):
+        for key in ("predicted", "on_final_list", "prompted"):
+            # "prompted": the photo sorter's shadow only (_sorter_shadow).
+            if key == "prompted" and "prompted" not in (counts or {}):
+                continue
             try:
-                into[key] += int((counts or {}).get(key) or 0)
+                into[key] = into.get(key, 0) + int((counts or {}).get(key) or 0)
             except (TypeError, ValueError, AttributeError):
                 pass
 

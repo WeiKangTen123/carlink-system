@@ -280,13 +280,6 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
 
 /** Contract 10, shadow mode: the linked parts worked out but not shown to
  * anyone, against the signed-off list (counts only, never a percentage). */
-/** Detection Round 1 in shadow mode: the photo sorter's suggestions worked
- * out but not shown, by rule (found_by), against the signed-off list. */
-function SorterShadow({ shadow }: { shadow: AiAccuracyLinkShadow }) {
-  const named = { ...shadow, by_rule: Object.fromEntries(Object.entries(shadow.by_rule ?? {}).map(([k, v]) => [readName(k), v])) };
-  return <ShadowBlock shadow={named} table={null} title="Photo sorter's suggestions in shadow mode (not shown to people)" />;
-}
-
 function ShadowBlock({
   shadow,
   table,
@@ -331,6 +324,23 @@ function ShadowBlock({
         </div>
       )}
     </div>
+  );
+}
+
+/** Detection Round 1 in shadow mode: the photo sorter's suggestions worked
+ * out but not shown, by rule (found_by), against the signed-off list; the
+ * ones a person added from a card are "prompted", not the rule's hits. */
+function SorterShadow({ shadow }: { shadow: AiAccuracyLinkShadow }) {
+  const named = { ...shadow, by_rule: Object.fromEntries(Object.entries(shadow.by_rule ?? {}).map(([k, v]) => [readName(k), v])) };
+  return (
+    <>
+      <ShadowBlock shadow={named} table={null} title="Photo sorter's suggestions in shadow mode (not shown to people)" />
+      {(shadow.prompted ?? 0) > 0 && (
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+          {num(shadow.prompted ?? 0)} more on the signed-off list from a suggestion card people saw (not counted as the sorter&apos;s)
+        </div>
+      )}
+    </>
   );
 }
 

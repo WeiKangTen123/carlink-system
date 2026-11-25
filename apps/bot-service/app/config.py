@@ -277,7 +277,10 @@ class Settings(BaseSettings):
     # intact_in the zone reads; at most sorter_hints.MAX_INTACT a case).
     # "shadow": those suggestions worked out and kept on the AI draft only
     # (ai_draft["sorter_suggestions"]), the linked parts as before, nothing
-    # shown. "old": the zone reads' intact lists act as before.
+    # shown -- worked out as if A1 were off, and at sign-off a part a person
+    # added from a card (an A1 card, say) counts as prompted, not as A2's
+    # hit; for a clean trial run it with A1 "off" or "shadow". "old": the
+    # zone reads' intact lists act as before.
     intake_intact_rule: str = "old"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.

@@ -965,7 +965,14 @@ def _sorter_items(db, report_id: str, session, ai_draft: dict, shown: list[dict]
         out, seen = list(found.intact), list(found.hints)
     else:
         if rule == "shadow":
-            shadow += sorter_hints.find(photos, hints=False, strict_rule=True, **common).intact
+            # A2's trial as if A1 were off (the second review's N6): the
+            # sorter's own cards -- shown, or decided on a re-read -- are not
+            # "suggestions" it must leave out, so the same part may be an A1
+            # card and an A2 shadow item; at sign-off a part a person put on
+            # the list from a card is counted as prompted, never as A2's hit
+            # (accuracy._shadow).
+            trial = dict(common, shown=[it for it in shown if it.get("source") != sorter_hints.SOURCE])
+            shadow += sorter_hints.find(photos, hints=False, strict_rule=True, **trial).intact
         seen = sorter_hints.find(photos, hints=True, strict_rule=False, **common).hints if hints != "off" else []
     if hints == "on":
         out += seen

@@ -529,6 +529,11 @@ def has_reason(entry: dict) -> bool:
 VERDICTS = ("yes", "unsure", "no", "none")
 
 
+# Detection Round 1's rules (a sorter suggestion's found_by) and their short
+# names in the metrics: A1 "seen", A2 "intact".
+SORTER_RULES = (("sorter_seen", "seen"), ("sorter_intact", "intact"))
+
+
 def _sorter_counts(prefix: str, rows: list[dict], always: bool = False) -> dict:
     """Detection Round 1: {prefix: how many, prefix_real: of those the key
     has} -- none for no rows unless `always`; _real only when every row is
@@ -555,8 +560,11 @@ def evidence_metrics(run: dict) -> dict:
                  sug_any_box=sum(1 for s in sugg if has_box(s)),
                  sug_reason=sum(1 for s in sugg if has_reason(s)))
         # Detection Round 1: the sorter's own (source "sorter"), counted
-        # apart too -- only in a run that has them.
-        m.update(_sorter_counts("sorter_sugg", [s for s in sugg if s.get("source") == "sorter"]))
+        # apart too, and by rule (found_by) -- only in a run that has them.
+        mine = [s for s in sugg if s.get("source") == "sorter"]
+        m.update(_sorter_counts("sorter_sugg", mine))
+        for rule, short in SORTER_RULES:
+            m.update(_sorter_counts(f"sorter_sugg_{short}", [s for s in mine if rule in (s.get("found_by") or [])]))
         verdicts = [((s.get("check") or {}).get("verdict") or "none") for s in sugg]
         checked = any(v != "none" for v in verdicts) or bool((run.get("second_look") or {}).get("check"))
         if checked:
@@ -572,8 +580,12 @@ def evidence_metrics(run: dict) -> dict:
                     m[f"chk_{'real' if s['truth'] == 'real' else 'wrong'}_{v}"] += 1
                 m["chk_real_kept"] = m["chk_real_yes"] + m["chk_real_unsure"]
     if isinstance(run.get("sorter_shadow"), list):
-        # Detection Round 1, A1 in shadow: what "on" would have shown.
-        m.update(_sorter_counts("sorter_shadow", run["sorter_shadow"], always=True))
+        # Detection Round 1 in shadow, by rule (the second review's N9): A1's
+        # (intake_sorter_hints "shadow") and A2's (intake_intact_rule
+        # "shadow"), each what its "on" / "strict" would have shown.
+        for rule, short in SORTER_RULES:
+            m.update(_sorter_counts(f"sorter_shadow_{short}", [s for s in run["sorter_shadow"]
+                                                               if rule in (s.get("found_by") or [])], always=True))
     items = run.get("drafted_items") or []
     if any("evidence" in i or "bbox_2d" in i for i in items):
         m.update(list_n=len(items), list_box=sum(1 for i in items if has_ai_box(i)),
@@ -2361,12 +2373,16 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
                 out["read_seconds"] = round(max(0.0, out["read_seconds"] - after), 1)
         shadow = (session.ai_draft or {}).get("sorter_suggestions") if isinstance(session.ai_draft, dict) else None
         if isinstance(shadow, list):
-            # Detection Round 1, A1 in shadow (settings.intake_sorter_hints):
-            # what "on" would have shown, kept as the suggestions are, and
-            # marked real or wrong the same way. "on": they are among the
-            # suggestions themselves (source "sorter").
+            # Detection Round 1 in shadow (intake_sorter_hints /
+            # intake_intact_rule "shadow"): what "on" / "strict" would have
+            # shown, kept as the suggestions are, and marked real or wrong
+            # the same way -- each rule's apart (found_by), so a part both
+            # rules hold is never the second one's "untick". "on": they are
+            # among the suggestions themselves (source "sorter").
             out["sorter_shadow"] = suggestion_rows({}, label_of, _SUGGESTION_FIELDS, shadow)
-            mark_truth(out["sorter_shadow"], case["parts"], out["parts"])
+            for rule, _ in SORTER_RULES:
+                mark_truth([r for r in out["sorter_shadow"] if rule in (r.get("found_by") or [])], case["parts"],
+                           out["parts"])
         if mode != "off":
             # Contract 10: the linked parts as shown, scored as
             # scripts/bench/replay_links.py scores a stored run's.
@@ -2540,9 +2556,16 @@ def evidence_lines(r: dict) -> list[str]:
         if "list_n" in m:
             said += f" | list: AI box {m['list_box']}/{m['list_n']}, reason {m['list_reason']}/{m['list_n']}"
         lines.append(said)
-    for key, words in (("sorter_sugg", "the sorter's"), ("sorter_shadow", "the sorter's, in shadow (not shown)")):
-        if key in m:
-            lines.append(f"   {words}: {m[key]}" + (f" (real {m[key + '_real']})" if key + "_real" in m else ""))
+    if "sorter_sugg" in m:
+        lines.append(f"   the sorter's: {m['sorter_sugg']}" + (f" (real {m['sorter_sugg_real']})"
+                                                               if "sorter_sugg_real" in m else "")
+                     + "".join(f"; {short} {m[f'sorter_sugg_{short}']}" for _, short in SORTER_RULES
+                               if f"sorter_sugg_{short}" in m))
+    if any(f"sorter_shadow_{short}" in m for _, short in SORTER_RULES):
+        lines.append("   the sorter's, in shadow (not shown): " + "; ".join(
+            f"{short} {m[f'sorter_shadow_{short}']}" + (f" (real {m[f'sorter_shadow_{short}_real']})"
+                                                       if f"sorter_shadow_{short}_real" in m else "")
+            for _, short in SORTER_RULES if f"sorter_shadow_{short}" in m))
     check = (r.get("second_look") or {}).get("check")
     if isinstance(check, dict):
         said = (f"   re-check: {check.get('status')}" + (f" by {check['by']}" if check.get("by") else "")

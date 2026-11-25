@@ -9,15 +9,18 @@ reads listed or suggested, so a part only the sorter saw was lost -- on four
 practice cases 12 of 26 missed parts were on photos the main read was sent.
 
 What the sorter saw damaged (seen_damage): on each photo of the insured
-car it saw damage on, its part tag, and the parts its note names
-(note_parts) that are other parts. A note is read with care -- the
-review's M1: up to its first locator word ("near", "behind", "by"...),
-clause by clause, the parts in the order mentioned (the past-report
+car it saw damage on, its part tag, and the first part its note names
+(note_parts) that is another part. A note is read with care -- the
+reviews' M1 and N1-N4: clause by clause, each up to its own locator word
+("near", "behind", "by"...), the parts in the order mentioned (a few
+words of our own -- "door mirror" is a wing mirror --, the past-report
 wording rules, history.family_of's, every word whole, then a canonical
-name word for word), never one negated in its clause ("tyre ok", "no
-damage on bonnet"), never a sub-part we have no name for ("door handle"),
-and never one at the other end of the car from the photo's area
-("Windscreen shattered" on a rear photo is no Front Windscreen).
+name word for word), never one negated ("tyre ok", "no damage on bonnet",
+"wheel fine" -- never "fine scratches"), never a sub-part we have no name
+for ("door handle", "front door trim"), never the steering wheel's
+"wheel", and never one at the other end of the car from the photo's area
+("Windscreen shattered" on a rear photo is no Front Windscreen; a side
+photo shows both ends, and its parts are on its side).
 
 A1, settings.intake_sorter_hints ("off" | "shadow" | "on"): once the
 reading, the second look and the linked parts are in (second_look._store),
@@ -43,12 +46,14 @@ dropped, a second hop's middle part dropped, cut as "intact") -- it acts
 without those parts (strict_intact), and such a part not listed or
 suggested becomes a suggestion: found_by ["sorter_intact"] (INTACT),
 intact_in the zone reads that called it intact, the sorter's note as its
-reason, at most MAX_INTACT a case, outside A1's cap -- the dashboard words
+reason, at most MAX_INTACT a case (the rest left to A1, in its own cap),
+outside A1's cap -- the dashboard words
 "a zone read said intact, but the photo sorter saw damage" from intact_in;
 no photo label is ever stored in the text (filing renumbers photos).
-"shadow": those suggestions on the AI draft only, the linked parts as
-before. The zone reads' own finds were never suppressed by "intact"
-(intake/zones.py), and the second look doesn't read it.
+"shadow": those suggestions on the AI draft only, worked out as if A1
+were off (second_look._sorter_items), the linked parts as before. The
+zone reads' own finds were never suppressed by "intact" (intake/zones.py),
+and the second look doesn't read it.
 
 find() is the one place both are worked out, for the pipeline and for the
 offline replay (scripts/bench/replay_sorter_hints.py). Photos may be
@@ -168,26 +173,46 @@ def _canonical(family: str, side: str | None) -> str | None:
 
 # ------------------------------------------------------------ reading a note
 
-# A note names its part first and where it is after: "Rear bumper cracked
-# near LH reflector" is the bumper. Read only up to the first of these.
+# A clause names its part first and where it is after: "Rear bumper cracked
+# near LH reflector" is the bumper. Each clause is read only up to the first
+# of these (a clause that starts with one only names a place).
 _LOCATORS = re.compile(r"\b(?:near|beside|next to|adjacent(?: to)?|close to|above|below|around|at|behind|by|from|"
                        r"under|over|between)\b", re.I)
-# A note's clauses: one part's words each, as a rule ("Wheel scuffed, tyre ok").
-_CLAUSES = re.compile(r"[,;:]|\b(?:and|but|while|with)\b", re.I)
-# A part said to be undamaged in its clause; or "no" / "not" before it.
-_NEGATION = re.compile(r"\b(?:ok|okay|undamaged|no damage|not damaged|intact|fine|good)\b", re.I)
+# A note's clauses: one part's words each, as a rule ("Wheel scuffed, tyre
+# ok") -- first never at an "and" before an end or side ("front and rear
+# doors", "between front and rear door": one phrase, one locator), then, cut
+# at its locator, at every "and" (_AND) once the pairs are spelt out.
+_CLAUSES = re.compile(r"[,;:]|\b(?:but|while|with)\b|\band\b(?!\s+(?:front|rear|left|right)\b)", re.I)
+_AND = re.compile(r"\band\b", re.I)
+# "front and rear doors scratched": each end (or side) with the words after
+# it ("front doors scratched and rear doors scratched").
+_PAIRS = re.compile(r"\b(front|rear|left|right)\s+and\s+(front|rear|left|right)\s+(\w+(?:\s+\w+)?)", re.I)
+# A part said to be undamaged anywhere in its clause; "no" / "not" before
+# it; "fine" / "good" after it ("wheel fine" -- never "fine scratches").
+_NEGATION = re.compile(r"\b(?:ok|okay|undamaged|no damage|not damaged|intact)\b", re.I)
 _NOT_BEFORE = re.compile(r"\b(?:no|not)\b", re.I)
+_NEGATED_AFTER = re.compile(r"\b(?:fine|good)\b", re.I)
 # A part's name followed by one of these is a sub-part we have no name for
-# ("door handle", "number plate lamp"): not that part.
+# ("door handle", "door mirror", "front door trim", "fender liner"): not
+# that part.
 _SUB_PART = re.compile(r"\s*(?:handle|emblem|badge|logo|garnish|moulding|molding|seal|holder|bracket|lamp|light|"
                        r"sensor|camera|absorber|clip|hinge|lock|striker|strut|spoiler|washer|wiper|nozzle|"
-                       r"support)s?\b", re.I)
+                       r"support|mirror|glass|trim|airbag|liner|pillar|visor|weatherstrip|insulator|bezel)s?\b",
+                       re.I)
+# A wheel the note names right after "steering" is the steering wheel.
+_STEERING = re.compile(r"\bsteering\s*$", re.I)
+_WHEELS = frozenset({"Wheel", "Front Wheel", "Rear Wheel"})
+# The side areas, where a photo shows one whole side: both ends of the car
+# (no end check), and a part with no side word is on that side.
+_SIDE_AREAS = ("left", "right")
 # Inside a rule: a word's start -- the pattern's, an alternative's, a
 # group's, or after ".*" -- where a whole word must begin (the review's M1
 # e: "hood" in "neighbourhood" is no bonnet).
 _WORD_START = re.compile(r"(^|\(|\||\.\*)(?=[a-z])")
-# Words the rules have no family for, as a note writes them.
-_EXTRA_RULES = [(r"\bsills?\b", "Sill / Rocker Panel")]
+# Words the rules have no family for, as a note writes them (before the
+# history rules: "door mirror" is a wing mirror, never a door).
+_EXTRA_RULES = [(r"\bdoor\s+mirrors?\b", "Wing Mirror"), (r"\bsills?\b", "Sill / Rocker Panel"),
+                (r"\bair\s?bags?\b", "Airbag System")]
 
 
 def _whole_words(pattern: str) -> str:
@@ -197,81 +222,93 @@ def _whole_words(pattern: str) -> str:
 # The canonical names without their side, longest first: a note that names
 # one word for word ("boot floor board torn") where no wording rule does.
 _NAMES = sorted({split_side(p)[0] for p in CANONICAL_PARTS if p != OTHER_PART}, key=lambda n: (-len(n), n))
-# Every way a note names a family, most specific first: history's rules
-# (whole words), these few more, then the canonical names themselves.
+# Every way a note names a family, most specific first: these few, history's
+# rules (whole words), then the canonical names themselves.
 _RULES: list[tuple[re.Pattern, str]] = (
-    [(re.compile(_whole_words(p), re.I), family) for p, family in _FAMILY_RULES]
-    + [(re.compile(p, re.I), family) for p, family in _EXTRA_RULES]
+    [(re.compile(p, re.I), family) for p, family in _EXTRA_RULES]
+    + [(re.compile(_whole_words(p), re.I), family) for p, family in _FAMILY_RULES]
     + [(re.compile(rf"\b{re.escape(name)}\b", re.I), name) for name in _NAMES]
 )
 
 
-def _mentions(clause: str) -> list[tuple[int, int, str]]:
-    """(start, end, family) of each part a clause mentions, in the order
-    mentioned: of the rules matching words that overlap, the most specific
-    (the first in _RULES: "boot lid striker" is the lock, not the lid)."""
-    found = []
-    for n, (rx, family) in enumerate(_RULES):
-        m = rx.search(clause)
-        if m:
-            found.append((m.start(), m.end(), n, family))
-    found.sort()
-    out: list[list] = []
+def _mentions(clause: str) -> list[list[tuple[int, int, str]]]:
+    """Each part a clause mentions, in the order mentioned: the rules that
+    match its words (overlapping matches together), most specific first --
+    (start, end, family) each ("boot lid striker" is the lock before the
+    lid)."""
+    found = sorted((m.start(), m.end(), n, family) for n, (rx, family) in enumerate(_RULES)
+                   for m in [rx.search(clause)] if m)
+    groups: list[dict] = []
     for start, end, n, family in found:
-        if out and start < out[-1][1]:
-            held = out[-1]
-            held[1] = max(held[1], end)
-            if n < held[2]:
-                held[2], held[3], held[4] = n, family, end
-            continue
-        out.append([start, end, n, family, end])
-    return [(start, own_end, family) for start, _, _, family, own_end in out]
+        if groups and start < groups[-1]["end"]:
+            groups[-1]["end"] = max(groups[-1]["end"], end)
+            groups[-1]["items"].append((n, start, end, family))
+        else:
+            groups.append({"end": end, "items": [(n, start, end, family)]})
+    return [[(start, end, family) for _, start, end, family in sorted(g["items"])] for g in groups]
 
 
-def _before_locator(text: str) -> str:
-    """The note up to its first locator word; a clause that starts with one
-    ("Under the front bumper, undercover hanging") is a place, not a part:
-    left out, and the rest read the same way."""
-    while text:
-        m = _LOCATORS.search(text)
-        if m is None:
-            return text
-        if text[:m.start()].strip():
-            return text[:m.start()].strip()
-        sep = _CLAUSES.search(text, m.end())
-        text = text[sep.end():].strip() if sep else ""
-    return text
+def _clauses(text: str) -> list[str]:
+    """The note's clauses (_CLAUSES), each cut at its own first locator word
+    -- one that starts with one is a place, not a part: left out -- then
+    its pairs spelt out (_PAIRS) and split at every "and"."""
+    out = []
+    for clause in _CLAUSES.split(text):
+        clause = (clause or "").strip()
+        m = _LOCATORS.search(clause)
+        if m is not None:
+            clause = clause[:m.start()].strip()
+        clause = _PAIRS.sub(lambda m: f"{m.group(1)} {m.group(3)} and {m.group(2)} {m.group(3)}", clause)
+        out += [piece.strip() for piece in _AND.split(clause) if piece.strip()]
+    return out
+
+
+def _names_it(clause: str, start: int, end: int, family: str) -> bool:
+    """Whether a rule's match names its family: not a sub-part we have no
+    name for after it (_SUB_PART), not the steering wheel (_STEERING)."""
+    if _SUB_PART.match(clause[end:]):
+        return False
+    return not (family in _WHEELS and _STEERING.search(clause[:start]))
+
+
+def _negated(clause: str, start: int, end: int) -> bool:
+    return bool(_NEGATION.search(clause) or _NOT_BEFORE.search(clause[:start])
+                or _NEGATED_AFTER.search(clause[end:]))
 
 
 def note_parts(note, area: str | None = None, tag: str | None = None) -> list[tuple[str, str]]:
     """Every part a sorter's note names, in the order mentioned, as
     (canonical part, family) -- the family keeps the end the canonical
-    name may drop ("Front Door" -> "Door (side undetermined)"). Read up to
-    the first locator word (_LOCATORS), clause by clause (_CLAUSES); a part
-    negated in its clause (_NEGATION, or "no" / "not" before it), a
-    sub-part we have no name for (_SUB_PART), or one at the other end of
-    the car from the photo's area (else from its tag) is left out; a side
-    the area disagrees with is dropped (as the sorter's own part,
-    triage._clean): the "(side undetermined)" name."""
+    name may drop ("Front Door" -> "Door (side undetermined)"). Clause by
+    clause (_clauses: each up to its own locator word); in each, the parts
+    in the order mentioned, the most specific rule that names one
+    (_names_it); a part negated (_negated) is left out, and one at the
+    other end of the car from the photo's area -- or, when the area names
+    no end and isn't a side, from its tag (a side photo shows both ends). A
+    side the area disagrees with is dropped (as the sorter's own part,
+    triage._clean): the "(side undetermined)" name; on a side photo a part
+    with no side word is on that side."""
     text = " ".join(note.split()) if isinstance(note, str) else ""
     if not text or text.startswith(_RESCUE_PREFIX):
         return []
-    text = _before_locator(text)
-    photo_end = _AREA_END.get(area or "") or end_of(tag)
+    area = area if isinstance(area, str) else ""
+    photo_end = _AREA_END.get(area) or (None if area in _SIDE_AREAS else end_of(tag))
     out: list[tuple[str, str]] = []
-    for clause in _CLAUSES.split(text):
-        clause = clause.strip()
-        if not clause:
-            continue
-        negated = bool(_NEGATION.search(clause))
-        for start, end, family in _mentions(clause):
-            if negated or _NOT_BEFORE.search(clause[:start]) or _SUB_PART.match(clause[end:]):
+    for clause in _clauses(text):
+        for group in _mentions(clause):
+            pick = next(((s, e, f) for s, e, f in group if _names_it(clause, s, e, f)), None)
+            if pick is None:
+                continue
+            start, end, family = pick
+            if _negated(clause, start, end):
                 continue
             if photo_end and end_of(family) not in (None, photo_end):
                 continue
             side = side_of(clause[max(0, start - 12):end]) or side_of(clause)
             if side and area in _AREA_SIDE and side != _AREA_SIDE[area]:
                 side = None
+            if side is None and area in _SIDE_AREAS:
+                side = _AREA_SIDE[area]
             part = _canonical(family, side)
             if part and part not in [p for p, _ in out]:
                 out.append((part, family))
@@ -282,7 +319,6 @@ def note_part(note, area: str | None = None, tag: str | None = None) -> str | No
     """The part a sorter's note names first (note_parts), or None."""
     parts = note_parts(note, area, tag)
     return parts[0][0] if parts else None
-
 
 # ------------------------------------------------------------ what the sorter saw
 
@@ -476,10 +512,12 @@ def find(photos: list, *, listed, shown: list[dict], dismissed, zone_intact: dic
 
     A2 first, over every part the sorter saw in best-photo order: one that
     a zone read called intact (a_two_match) is suggested, intact_in those
-    reads, at most `intact_cap`. Then A1: every other part, one per part
-    (same_component), at most `cap`. A part listed, suggested or dismissed
-    -- compared without its side -- is neither; each part is counted once
-    in skipped."""
+    reads, at most `intact_cap` -- the parts past that cap are left to A1
+    (the second review's N8): with A1 on they may still be its cards, in
+    its own cap; with A1 off they are counted as intact_cap. Then A1: every
+    other part, one per part (same_component), at most `cap`. A part
+    listed, suggested or dismissed -- compared without its side -- is
+    neither; each part is counted once in skipped."""
     seen = sorted(seen_damage(photos), key=_rank)
     facts = default_facts(photos) if facts is None else facts
     listed = [str(p) for p in listed or () if p]
@@ -506,12 +544,17 @@ def find(photos: list, *, listed, shown: list[dict], dismissed, zone_intact: dic
             found.skipped[why] = found.skipped.get(why, 0) + 1
         return bool(why)
 
+    over: list[str] = []  # A2's parts past its cap
     if strict_rule:
         for s in seen:
             reads = intact_reads(s, zone_intact or {})
-            if not reads or any(same_component(s.part, p) for p in done):
+            if not reads or any(same_component(s.part, p) for p in done + over):
                 continue
-            if decided(s, skip(s) or ("intact_cap" if len(found.intact) >= intact_cap else None)):
+            why = skip(s)
+            if why is None and len(found.intact) >= intact_cap:
+                over.append(s.part)
+                continue
+            if decided(s, why):
                 continue
             found.intact.append(_item(s, seen, INTACT, reads, facts))
             found.origin[found.intact[-1]["key"]] = {"via": s.via, "reads": reads}
@@ -523,4 +566,7 @@ def find(photos: list, *, listed, shown: list[dict], dismissed, zone_intact: dic
                 continue
             found.hints.append(_item(s, seen, SEEN, [], facts))
             found.origin[found.hints[-1]["key"]] = {"via": s.via, "reads": intact_reads(s, zone_intact or {})}
+    for part in over:
+        if not any(same_component(part, p) for p in done):
+            found.skipped["intact_cap"] = found.skipped.get("intact_cap", 0) + 1
     return found

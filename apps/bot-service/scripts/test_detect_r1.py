@@ -452,9 +452,9 @@ NOTE_CASES = {
     # (d) the locator words: the part before them, a clause that is only a place left out.
     ("Rear bumper cracked near LH reflector", "rear", None): "Rear Bumper",
     ("Front bumper torn at LH fog lamp", "front", None): "Front Bumper",
-    ("Rear door dented behind front door", "left", None): "Door (side undetermined)",
+    ("Rear door dented behind front door", "left", None): "Left Rear Door",
     ("Front bumper scratched under headlamp", "front", None): "Front Bumper",
-    ("Scratch on front fender from front door", "left", None): "Front Fender (side undetermined)",
+    ("Scratch on front fender from front door", "left", None): "Left Front Fender",
     ("Dent over the wheel arch", "left", None): None,
     ("Scuff on bumper corner by the fog lamp", "front", None): None,
     ("Paint transfer between front and rear door", "left", None): None,
@@ -464,7 +464,7 @@ NOTE_CASES = {
     ("Wheel scuffed, tyre ok", "front-left", "Left Front Wheel"): "Wheel (side undetermined)",
     ("Tyre sidewall cut, wheel fine", "front-left", None): "Tyre (side undetermined)",
     ("Bumper scraped, exhaust tip ok", "rear", "Rear Bumper"): None,
-    ("Door undamaged, sill scraped", "left", None): "Sill / Rocker Panel (side undetermined)",
+    ("Door undamaged, sill scraped", "left", None): "Left Sill / Rocker Panel",
     ("No damage to door", "left", None): None,
     ("Front view of the car, no visible damage on bonnet", "front", None): None,
     ("Rear bumper intact; boot lid dented", "rear", None): "Boot Lid",
@@ -475,11 +475,12 @@ NOTE_CASES = {
     ("Number plate bent", "front", "Front Number Plate"): None,
     ("Left fog lamp cover cracked", "rear", None): None,
     ("Tail lamp cracked", "front", None): None,
-    ("Rear bumper scraped", "left", "Left Front Door"): None,
+    ("Rear bumper scraped", None, "Left Front Door"): None,
+    ("Rear bumper scraped", "interior", "Left Front Door"): None,
     # (c) the part mentioned first, not the first rule that matches.
     ("Left headlamp broken, right headlamp ok", "front", None): "Left Headlamp",
     ("Front grille cracked and front bumper torn", "front", None): "Front Grille",
-    ("Scrape along sill to rear wheel arch", "left", None): "Sill / Rocker Panel (side undetermined)",
+    ("Scrape along sill to rear wheel arch", "left", None): "Left Sill / Rocker Panel",
     ("Rear bumper cracked, boot lid dented", "rear", None): "Rear Bumper",
     # (e) whole words: "hood" in "neighbourhood" is no bonnet.
     ("Car parked in neighbourhood", "front", None): None,
@@ -490,6 +491,29 @@ NOTE_CASES = {
     ("Radiator support bent", "front", None): None,
     ("Scratches", "rear", None): None, ("", "rear", None): None, (None, None, None): None,
     ("Rescue sort: damage on the insured car (first sorted: interior)", "rear", None): None,
+    # The second review. N1: more sub-parts we have no name for; "door mirror" is a wing mirror; the
+    # steering wheel is no wheel.
+    ("Door mirror housing cracked", "left", "Left Wing Mirror"): "Left Wing Mirror",
+    ("Door mirror housing cracked", "rear-left", None): "Wing Mirror (side undetermined)",
+    ("Steering wheel airbag deployed", "interior", "Steering Assembly"): "Steering Assembly",
+    ("Steering wheel scratched", "interior", None): "Steering Assembly",
+    ("Front door glass shattered", "left", None): "Left Front Door Glass",
+    ("Front door trim torn", "left", None): None,
+    ("Front fender liner torn", "front-left", None): "Wheel Arch Liner (side undetermined)",  # the arch liner
+    ("Door pillar dented", "left", None): None,
+    # N2: a side photo shows both ends of the car -- no end check there (the tag's end only where the
+    # area is missing or names neither an end nor a side), and its parts are on its side.
+    ("Rear door dented", "left", "Left Front Door"): "Left Rear Door",
+    ("Front and rear doors scratched", "left", "Left Front Door"): "Left Front Door",
+    ("Rear bumper scraped", "left", "Left Front Door"): "Rear Bumper",
+    # N3: "fine" / "good" negate only after the part.
+    ("Fine scratches on front bumper", "front", None): "Front Bumper",
+    ("Fine scratch marks on bonnet", "front", None): "Bonnet",
+    ("Bumper fine, headlamp good", "front", None): None,
+    ("Headlamp looks fine", "front", None): None,
+    ("Good dent on bonnet", "front", None): "Bonnet",
+    # N4: each clause up to its own locator.
+    ("Dent near reflector, left tail lamp broken", "rear", None): "Left Tail Lamp",
 }
 
 
@@ -509,8 +533,35 @@ def a1_units() -> None:
           wrong)
     two = sorter_hints.note_parts("Rear bumper cracked, boot lid dented", "rear")
     check([p for p, _ in two] == ["Rear Bumper", "Boot Lid"]
-          and sorter_hints.note_parts("Front door dented", "right") == [("Door (side undetermined)", "Front Door")],
-          "note_parts: every part, in the order mentioned, with its family (which keeps the door's front)", two)
+          and sorter_hints.note_parts("Front door dented", "right") == [("Right Front Door", "Front Door")],
+          "note_parts: every part, in the order mentioned, with its family", two)
+    more = {
+        ("Rear bumper cracked near reflector, left tail lamp broken", "rear", None): ["Rear Bumper", "Left Tail Lamp"],
+        ("Front and rear doors scratched", "left", "Left Front Door"): ["Left Front Door", "Left Rear Door"],
+        ("Left and right tail lamps cracked", "rear", None): ["Left Tail Lamp", "Right Tail Lamp"],
+        ("Steering wheel airbag deployed", "interior", "Steering Assembly"): ["Steering Assembly", "Airbag System"],
+        ("Rear windscreen and tail lamp cracked", "rear", "Rear Windscreen"):
+            ["Rear Windscreen", "Tail Lamp (side undetermined)"],
+    }
+    got_more = {k: [p for p, _ in sorter_hints.note_parts(*k)] for k in more}
+    check(got_more == more, "N2/N4: every clause cut at its own locator, the ends of 'front and rear doors' each "
+                            "a part; the second part after a locator kept", got_more)
+    # N1 (the second review's table): what A1 makes of each, nothing listed.
+    n1 = {
+        "mirror": (_photo(1, "damage", "left", "Left Wing Mirror", True, note="Door mirror housing cracked"),
+                   ["Left Wing Mirror"]),
+        "airbag": (_photo(1, "interior", "interior", "Steering Assembly", True, note="Steering wheel airbag deployed"),
+                   ["Steering Assembly", "Airbag System"]),
+        "glass": (_photo(1, "damage", "left", None, True, note="Front door glass shattered"),
+                  ["Left Front Door Glass"]),
+        "trim": (_photo(1, "damage", "left", None, True, note="Front door trim torn"), []),
+        "side": (_photo(1, "damage", "left", "Left Front Door", True, note="Rear door dented"),
+                 ["Left Front Door", "Left Rear Door"]),
+    }
+    made = {k: parts(_find([ph]).hints) for k, (ph, _) in n1.items()}
+    check(made == {k: want for k, (_, want) in n1.items()},
+          "N1/N2 with find(): no Door from a mirror, glass or trim note, no Wheel from a steering wheel; a side "
+          "photo's second door kept", made)
     # The review's table (M1): the photo's own tag listed, so nothing to suggest -- and no wrong part from the note.
     table = {
         "windscreen": _photo(1, "damage", "rear", "Rear Windscreen", True, note="Windscreen shattered"),
@@ -699,6 +750,27 @@ def a1_end_to_end() -> None:
     check((total.get("sorter_shadow") or {}).get("predicted") == 12
           and "sorter_shadow" not in accuracy.sum_suggestions([{"suggestions": {"shown": 1}}]),
           "... and added up over cases on the AI-accuracy page (only once a case has it)", total.get("sorter_shadow"))
+    # N5 / N6: both rules in shadow hold the same part -- counted once in all; a part a person put on the
+    # list from a card shown beside the trial is "prompted", never the rule's hit.
+    shadow_list = [
+        {"key": "Rear Windscreen", "part": "Rear Windscreen", "found_by": ["sorter_intact"]},
+        {"key": "Rear Windscreen", "part": "Rear Windscreen", "found_by": ["sorter_seen"]},
+        {"key": "Parking Sensor", "part": "Parking Sensor", "found_by": ["sorter_intact"]},
+        {"key": "Boot Lid Lock", "part": "Boot Lid Lock", "found_by": ["sorter_seen"]},
+    ]
+    final = {"damage_summary": [{"part": "Rear Windscreen", "added_from": "suggestion"}, {"part": "Parking Sensor"}]}
+    counted = accuracy._shadow({"sorter_suggestions": shadow_list}, final, [], "sorter_suggestions", by="found_by")
+    check(counted == {"predicted": 3, "on_final_list": 1, "prompted": 1, "by_rule": {
+              "sorter_intact": {"predicted": 2, "on_final_list": 1, "prompted": 1},
+              "sorter_seen": {"predicted": 2, "on_final_list": 0, "prompted": 1}}},
+          "N5/N6: the shadow's total over distinct parts; per rule each its own; an add from a card is prompted",
+          counted)
+    summed = accuracy.sum_suggestions([{"suggestions": {"sorter_shadow": counted}}] * 2)
+    check((summed.get("sorter_shadow") or {}).get("prompted") == 2
+          and "prompted" not in (accuracy.sum_suggestions([{"suggestions": {"shadow": {"predicted": 1}}}])
+                                 .get("shadow") or {}),
+          "... summed with its prompted count (the linked parts' shadow as before, without one)",
+          summed.get("sorter_shadow"))
 
 
 # ------------------------------------------------------------- 4. A2
@@ -762,6 +834,17 @@ def a2_units() -> None:
                              zone_intact={"zone:rear": [p.part for p in six]})
     check(len(many.intact) == sorter_hints.MAX_INTACT == 4 and many.skipped == {"intact_cap": 2},
           "L3: at most MAX_INTACT (4) A2 suggestions a case", (parts(many.intact), many.skipped))
+    seven = six + [_photo(6, "damage", "rear", "Boot Floor Board", True)]
+    fell = sorter_hints.find(seven, listed=set(), shown=[], dismissed=[], hints=True, strict_rule=True,
+                             zone_intact={"zone:rear": [p.part for p in seven]})
+    capped = sorter_hints.find(seven, listed=set(), shown=[], dismissed=[], hints=True, strict_rule=True, cap=1,
+                               zone_intact={"zone:rear": [p.part for p in seven]})
+    check(parts(fell.intact) == ["Rear Windscreen", "Parking Sensor", "Rear Number Plate", "Boot Lid Hinge"]
+          and parts(fell.hints) == ["Boot Lid Lock", "Rear End Panel", "Boot Floor Board"]
+          and all(it["found_by"] == [sorter_hints.SEEN] for it in fell.hints) and fell.skipped == {}
+          and parts(capped.hints) == ["Boot Lid Lock"] and capped.skipped == {"cap": 2},
+          "N8: the parts past A2's cap are left to A1 (its cards, in its own cap) -- with A1 off counted as "
+          "intact_cap", (parts(fell.intact), parts(fell.hints), fell.skipped, capped.skipped))
     # The linked parts: what "drop" and "demote" do with the zone reads' intact.
     listed = [{"part": "Rear Bumper", "photo_reference": "@p9", "condition_tokens": ["Cracked", "Crumpled"],
                "severity": "Severe", "remarks": "Replace"}]
@@ -1201,9 +1284,22 @@ def bench_section() -> None:
     sm = bench.run_metrics(shadow)
     check(not [r for r in shadow.get("suggestions") or [] if r.get("source") == "sorter"]
           and shadow.get("sorter_shadow") and all(r.get("truth") for r in shadow["sorter_shadow"])
-          and sm.get("sorter_shadow") == len(shadow["sorter_shadow"]) and "sorter_sugg" not in sm,
+          and sm.get("sorter_shadow_seen") == len(shadow["sorter_shadow"]) and sm.get("sorter_shadow_intact") == 0
+          and "sorter_shadow" not in sm and "sorter_sugg" not in sm,
           "shadow: none among the suggestions; the AI draft's kept apart (sorter_shadow), marked and counted",
-          (shadow.get("sorter_shadow"), sm.get("sorter_shadow")))
+          (shadow.get("sorter_shadow"), {k: v for k, v in sm.items() if k.startswith("sorter")}))
+    with fakes(SORTED, SORTER_ROWS, SORTER_NOTES), t.Settings(**ZONES), \
+            t.Settings(**overrides("intake_sorter_hints=shadow", "intake_intact_rule=shadow")):
+        both_shadow = bench.run_case(case, cases_dir)
+    bm = bench.run_metrics(both_shadow)
+    rows_by = {rule: [r for r in both_shadow.get("sorter_shadow") or [] if rule in (r.get("found_by") or [])]
+               for rule in sorter_hints.MARKS}
+    check(bm.get("sorter_shadow_intact") == len(rows_by[sorter_hints.INTACT]) == 2
+          and bm.get("sorter_shadow_seen") == len(rows_by[sorter_hints.SEEN]) >= 2
+          and all(r.get("truth") for r in both_shadow.get("sorter_shadow") or [])
+          and any("in shadow (not shown): seen" in ln and "intact" in ln for ln in bench.detail_lines(both_shadow)),
+          "N9: both rules in shadow -- the benchmark counts and prints each rule's apart, each marked against the "
+          "key on its own", {k: v for k, v in bm.items() if k.startswith("sorter")})
     with fakes(SORTED, SORTER_ROWS, SORTER_NOTES), t.Settings(**ZONES):
         plain = bench.run_case(case, cases_dir)
     check("sorter_shadow" not in plain and not [k for k in bench.run_metrics(plain) if k.startswith("sorter_s")],
