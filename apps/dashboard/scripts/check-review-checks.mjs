@@ -267,10 +267,11 @@ check("partForMapAdd: the underbody panel pre-fills Underbody / Chassis (was Boo
 check("ReviewStep: the checks are wired in (map add, add warnings, undo, prints as, Needs you); the wrong 'unpriced' line is gone", () => {
   const tsx = source("../components/intake/ReviewStep.tsx");
   // Step 3A: the map's add opens the part picker on the panel, its own part
-  // first -- partForMapAdd, by way of lib/partPicker.ts zonePreferred.
+  // first (unless listed already) -- partForMapAdd, by way of
+  // lib/partPicker.ts zonePreferred (scripts/check-picker.mjs runs it).
   assert.match(tsx, /preset: presetFromZone\(zoneKey\)/);
   assert.match(source("../lib/partPicker.ts"), /partForMapAdd\(zone, list\)/);
-  assert.match(source("../components/PartPicker.tsx"), /preferNames: zonePreferred\(zone, list\)/);
+  assert.match(source("../components/PartPicker.tsx"), /preferNames: zonePreferred\(zone, list, rowsListed\)/);
   assert.doesNotMatch(tsx, /These become the Annex A rows, unpriced/);
   // The picker's adds (add row, map, photo viewer) and Photos by part ask first.
   assert.equal((tsx.match(/askBeforeAdd\(\s*part,\s*\(\) =>/g) || []).length, 2, "the picker's adds and Photos by part ask first");

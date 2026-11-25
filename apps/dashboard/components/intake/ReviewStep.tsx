@@ -36,6 +36,7 @@ import {
 import { partsToPick } from "@/lib/partsList";
 import { PartPicker } from "@/components/PartPicker";
 import { presetFromPhoto, presetFromZone, type PartPick, type PickerPreset } from "@/lib/partPicker";
+import { prefetchPartsLibrary } from "@/lib/usePartsLibrary";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { canViewAllCases, isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
@@ -188,6 +189,9 @@ export function ReviewStep({
   // The part picker (step 3A), open: what it was opened on, and the photo
   // an add from the photo viewer links.
   const [addPicker, setAddPicker] = useState<{ title: string; preset: PickerPreset | null; photoId: string | null } | null>(null);
+  // The picker's parts library, fetched as the step opens: the first
+  // "+ Add part here" then has the panel's parts at once (review M2).
+  useEffect(() => prefetchPartsLibrary(), []);
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const damage = data.damage_summary || [];
@@ -404,7 +408,9 @@ export function ReviewStep({
   /** A part picked in the part picker (the add row, the map's "+ Add part
    * here", the photo viewer's "Add part seen here"): the row a pick from
    * the old add-row select made -- a named Other with its name, an add from
-   * a photo with that photo linked, as Photos by part links it. */
+   * a photo with that photo linked, as Photos by part links it. The cursor:
+   * an unnamed Other's name box; after a photo's add (its viewer gone) the
+   * new row's Condition; else back on the opener (the picker hands it). */
   const addPicked = ({ part, other_part_name }: PartPick, photoId: string | null) =>
     askBeforeAdd(
       part,
@@ -417,7 +423,7 @@ export function ReviewStep({
             ...(photoId ? { photo_reference: `@${photoId}`, bbox_2d: null } : {}),
             human_verified: true,
           },
-          { block: photoId ? "center" : "nearest", focus: part === OTHER_PART && !other_part_name ? "name" : undefined }
+          { block: photoId ? "center" : "nearest", focus: part === OTHER_PART && !other_part_name ? "name" : photoId ? "condition" : undefined }
         ),
       other_part_name
     );
@@ -1063,6 +1069,7 @@ export function ReviewStep({
           taxonomy={taxonomy}
           vehicle={v}
           preset={addPicker.preset}
+          listed={damage}
           onPick={(pick) => {
             const { photoId } = addPicker;
             setAddPicker(null);

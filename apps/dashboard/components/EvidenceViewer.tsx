@@ -79,9 +79,10 @@ export type EvidenceViewerProps = {
    * part group). Without it, every photo a finding was seen in. Optional:
    * added by the evidence UI. */
   photoOrder?: string[] | null;
-  /** Step 3A: [Add part seen here] under the photo shown, for a page that
-   * can add a part (it opens its part picker on that photo). Not passed,
-   * or read-only: no button. */
+  /** Step 3A: [Add part seen here] under a photo shown on its own ("photo"
+   * mode), for a page that can add a part (it opens its part picker on that
+   * photo). Never beside a suggestion's own Add, whose decision would then
+   * go unrecorded. Not passed, or read-only: no button. */
   onAddFromPhoto?: (photoRef: string) => void;
 };
 
@@ -798,7 +799,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
           <BoxIcon style={{ width: 14, height: 14 }} /> Show on 3D
         </button>
       )}
-      {onAddFromPhoto && !readOnly && photoRef && src && (
+      {onAddFromPhoto && !readOnly && mode === "photo" && photoRef && src && (
         <button type="button" className="btn-secondary-modern ev-act" onClick={() => onAddFromPhoto(photoRef)} title="Add a damaged part this photo shows">
           <Plus style={{ width: 14, height: 14 }} /> Add part seen here
         </button>

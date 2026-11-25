@@ -192,6 +192,20 @@ export function checkAdd(items: readonly Row[] | null | undefined, part: string,
     const index = list.findIndex((it) => partOf(it) === twin);
     if (index >= 0) return { kind: "mirror", part: name, index, listed: twin };
   }
+  // A named Other with a side ("Front bumper bracket LH", "Left air vent"):
+  // the same name on the other side is asked about too (step 3A, review L5),
+  // compared as Annex A words them (otherWording: the side last).
+  const own = isOther(candidate) ? cleanName(otherName) : null;
+  const worded = own ? otherWording(own) : null;
+  const side = worded ? / (LH|RH)$/.exec(worded) : null;
+  if (worded && side) {
+    const want = `${worded.slice(0, -3)} ${side[1] === "LH" ? "RH" : "LH"}`.toLowerCase();
+    const index = list.findIndex((it) => {
+      const other = isOther(it) ? cleanName(it.other_part_name) : null;
+      return Boolean(other) && otherWording(other as string).toLowerCase() === want;
+    });
+    if (index >= 0) return { kind: "mirror", part: worded, index, listed: otherWording(cleanName(list[index].other_part_name) as string) };
+  }
   return null;
 }
 

@@ -25,7 +25,10 @@ import { STRIP_DOWN_CHIP, needsStripDownChip } from "@/lib/findings";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
 import { isCarMapPart, partsToPick } from "@/lib/partsList";
-import type { PartPick, PickerPreset } from "@/lib/partPicker";
+import { nextAddRow, type PartPick, type PickerPreset } from "@/lib/partPicker";
+import { checkAdd, type AddCheck } from "@/lib/reviewChecks";
+import { prefetchPartsLibrary } from "@/lib/usePartsLibrary";
+import { AddCheckDialog } from "./intake/ReviewCheckDialogs";
 import { PartPicker } from "./PartPicker";
 import { severityClass } from "@/lib/caseFields";
 import { ConditionPicker } from "./ConditionPicker";
@@ -138,36 +141,49 @@ export function DetectedPartsTable({
     remarks: string;
     photo_reference: string;
   } | null>(null);
-  // Step 3A: the part picker, open, and the photo an add from the photo
-  // viewer links ("P07").
-  const [ownPicker, setPicker] = useState<{ title: string; preset: PickerPreset | null; photoLabel: string | null } | null>(null);
+  // Step 3A: the part picker, open; the photo an add from the photo viewer
+  // links ("P07"); `fresh`: a new add (not "Change the part"), which starts
+  // the add row afresh (review M5).
+  type PickerOpen = { title: string; preset: PickerPreset | null; photoLabel: string | null; fresh: boolean };
+  const [ownPicker, setPicker] = useState<PickerOpen | null>(null);
   // An add asked for elsewhere (the map, the photo viewer) is open until
   // it is picked or closed: then its nonce is done.
   const [doneRequest, setDoneRequest] = useState<number | null>(null);
   const request = addRequest && !readOnly && addRequest.nonce !== doneRequest ? addRequest : null;
-  const picker = ownPicker ?? (request ? { title: request.title, preset: request.preset, photoLabel: request.photoLabel } : null);
+  const picker: PickerOpen | null =
+    ownPicker ?? (request ? { title: request.title, preset: request.preset, photoLabel: request.photoLabel, fresh: true } : null);
   const closePicker = () => {
     setPicker(null);
     if (request) setDoneRequest(request.nonce);
   };
+  // The parts library for the picker, fetched as the tab opens (review M2).
+  useEffect(() => prefetchPartsLibrary(), []);
   const addRowRef = useRef<HTMLTableRowElement>(null);
-  const [revealAdd, setRevealAdd] = useState(0);
-  // A pick fills the add row: bring it into view (it may be far below the map).
+  // A pick fills the add row: bring it into view (it may be far below the
+  // map) and put the cursor on what comes next -- the name of an Other
+  // still to name, else the Condition (review L1).
+  const [revealAdd, setRevealAdd] = useState<{ n: number; focus: "name" | "condition" } | null>(null);
   useEffect(() => {
-    if (revealAdd) addRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const row = addRowRef.current;
+    if (!revealAdd || !row) return;
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    const label = revealAdd.focus === "name" ? "Name of the new part" : "New part condition";
+    row.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.focus({ preventScroll: true });
   }, [revealAdd]);
   /** A pick: the add row's part, exactly as the old part select set it (a
-   * named Other with the name typed in the picker); anything else on the
-   * row is kept, and a photo from the viewer is linked. */
-  const fillAdd = ({ part, other_part_name }: PartPick, photoLabel: string | null) => {
-    setAdding((cur) => ({
-      part,
-      other_part_name: other_part_name ?? "",
-      condition: cur?.condition ?? "",
-      remarks: cur?.remarks ?? "",
-      photo_reference: photoLabel ?? cur?.photo_reference ?? "",
-    }));
-    setRevealAdd((n) => n + 1);
+   * named Other with the name typed in the picker); a new add starts the
+   * row afresh with only its photo, "Change the part" keeps the rest. */
+  const fillAdd = (pick: PartPick, opts: { photoLabel: string | null; fresh: boolean }) => {
+    setAdding((cur) => nextAddRow(cur, pick, opts));
+    setRevealAdd((r) => ({ n: (r?.n ?? 0) + 1, focus: pick.part === OTHER_PART && !pick.other_part_name ? "name" : "condition" }));
+  };
+  // "Rear Bumper is already row 3" / "the other side?" before a pick fills
+  // the add row, as the Review step asks (review M1).
+  const [addAsk, setAddAsk] = useState<{ check: NonNullable<AddCheck>; go: () => void } | null>(null);
+  const pickToAdd = (pick: PartPick, opts: { photoLabel: string | null; fresh: boolean }) => {
+    const check = checkAdd(damageEntries, pick.part, pick.other_part_name);
+    if (check) setAddAsk({ check, go: () => fillAdd(pick, opts) });
+    else fillAdd(pick, opts);
   };
   // A condition or remark a row was just set to, kept visible while it
   // saves and after a refusal (so the choice isn't silently snapped back).
@@ -664,7 +680,7 @@ export function DetectedPartsTable({
                         className={`pp-open pp-open-compact ${adding.part ? "is-set" : ""}`}
                         aria-haspopup="dialog"
                         aria-label={adding.part ? `New part: ${adding.part}. Change it` : "Choose the new part"}
-                        onClick={() => setPicker({ title: adding.part ? "Change the part" : "Add a part", preset: null, photoLabel: null })}
+                        onClick={() => setPicker({ title: adding.part ? "Change the part" : "Add a part", preset: null, photoLabel: null, fresh: !adding.part })}
                       >
                         <span>{adding.part || "Choose a part…"}</span>
                         <Search style={{ width: 12, height: 12, flexShrink: 0 }} aria-hidden="true" />
@@ -750,7 +766,7 @@ export function DetectedPartsTable({
             className="btn-secondary-modern"
             style={{ fontSize: 11, padding: "6px 12px" }}
             aria-haspopup="dialog"
-            onClick={() => setPicker({ title: "Add a part", preset: null, photoLabel: null })}
+            onClick={() => setPicker({ title: "Add a part", preset: null, photoLabel: null, fresh: true })}
           >
             <Plus style={{ width: 13, height: 13 }} /> Add a part
           </button>
@@ -775,12 +791,31 @@ export function DetectedPartsTable({
           taxonomy={taxonomy}
           vehicle={vehicle}
           preset={picker.preset}
+          listed={damageEntries}
           onPick={(pick) => {
-            const { photoLabel } = picker;
+            const { photoLabel, fresh } = picker;
             closePicker();
-            fillAdd(pick, photoLabel);
+            pickToAdd(pick, { photoLabel, fresh });
           }}
           onClose={closePicker}
+        />
+      )}
+
+      {addAsk && (
+        <AddCheckDialog
+          check={addAsk.check}
+          onAdd={() => {
+            const { go } = addAsk;
+            setAddAsk(null);
+            go();
+          }}
+          onGoTo={(index) => {
+            setAddAsk(null);
+            const item = damageEntries[index];
+            if (item) onHotspotClick(index, item);
+            document.getElementById(`damage-row-${index}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
+          onCancel={() => setAddAsk(null)}
         />
       )}
     </div>
