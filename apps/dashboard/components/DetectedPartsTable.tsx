@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box as BoxIcon, ClipboardCheck, Eye, Image as ImageIcon, Link2Off, Plus, Trash2, X } from "lucide-react";
+import { Box as BoxIcon, ClipboardCheck, Eye, Image as ImageIcon, Link2Off, Plus, Search, Trash2, X } from "lucide-react";
 import {
   DAMAGE_REMARKS,
   MAX_OTHER_NAME,
@@ -25,6 +25,8 @@ import { STRIP_DOWN_CHIP, needsStripDownChip } from "@/lib/findings";
 import { addDamageItemAction, getTaxonomyAction, patchDamageItemAction, removeDamageItemAction } from "@/app/reports/actions";
 import { annexLinesByPart } from "@/lib/annexRows";
 import { isCarMapPart, partsToPick } from "@/lib/partsList";
+import type { PartPick, PickerPreset } from "@/lib/partPicker";
+import { PartPicker } from "./PartPicker";
 import { severityClass } from "@/lib/caseFields";
 import { ConditionPicker } from "./ConditionPicker";
 import { ReviewBadge } from "./ReviewBadge";
@@ -69,7 +71,17 @@ interface Props {
    * a locked case too: they only look. */
   onShowEvidence?: (index: number) => void;
   onShowOnMap?: (index: number) => void;
+  /** Step 3A: the car, for the part picker's "prints as" (tail gate or
+   * boot lid). */
+  vehicle?: { make?: string | null; model?: string | null; body_type?: string | null } | null;
+  /** Step 3A: an add asked for elsewhere on the page -- the map's "+ Add
+   * part here" (a zone) or the photo viewer's "Add part seen here" (the
+   * photo, linked). A new nonce opens the part picker with its preset; the
+   * pick fills the add row, as "+ Add a part" does. */
+  addRequest?: AddRequest | null;
 }
+
+export type AddRequest = { nonce: number; title: string; preset: PickerPreset | null; photoLabel: string | null };
 
 /** The AI took this part's side from nearby photos, not its own: worth a
  * look until a person has touched the row. The API clears the flag on any
@@ -111,6 +123,8 @@ export function DetectedPartsTable({
   review,
   onShowEvidence,
   onShowOnMap,
+  vehicle,
+  addRequest,
 }: Props) {
   const router = useRouter();
   const [savingIdx, setSavingIdx] = useState<number | "new" | null>(null);
@@ -124,6 +138,37 @@ export function DetectedPartsTable({
     remarks: string;
     photo_reference: string;
   } | null>(null);
+  // Step 3A: the part picker, open, and the photo an add from the photo
+  // viewer links ("P07").
+  const [ownPicker, setPicker] = useState<{ title: string; preset: PickerPreset | null; photoLabel: string | null } | null>(null);
+  // An add asked for elsewhere (the map, the photo viewer) is open until
+  // it is picked or closed: then its nonce is done.
+  const [doneRequest, setDoneRequest] = useState<number | null>(null);
+  const request = addRequest && !readOnly && addRequest.nonce !== doneRequest ? addRequest : null;
+  const picker = ownPicker ?? (request ? { title: request.title, preset: request.preset, photoLabel: request.photoLabel } : null);
+  const closePicker = () => {
+    setPicker(null);
+    if (request) setDoneRequest(request.nonce);
+  };
+  const addRowRef = useRef<HTMLTableRowElement>(null);
+  const [revealAdd, setRevealAdd] = useState(0);
+  // A pick fills the add row: bring it into view (it may be far below the map).
+  useEffect(() => {
+    if (revealAdd) addRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [revealAdd]);
+  /** A pick: the add row's part, exactly as the old part select set it (a
+   * named Other with the name typed in the picker); anything else on the
+   * row is kept, and a photo from the viewer is linked. */
+  const fillAdd = ({ part, other_part_name }: PartPick, photoLabel: string | null) => {
+    setAdding((cur) => ({
+      part,
+      other_part_name: other_part_name ?? "",
+      condition: cur?.condition ?? "",
+      remarks: cur?.remarks ?? "",
+      photo_reference: photoLabel ?? cur?.photo_reference ?? "",
+    }));
+    setRevealAdd((n) => n + 1);
+  };
   // A condition or remark a row was just set to, kept visible while it
   // saves and after a refusal (so the choice isn't silently snapped back).
   const [conditionDraft, setConditionDraft] = useState<Record<number, string>>({});
@@ -608,24 +653,22 @@ export function DetectedPartsTable({
 
               {adding && !readOnly && (
                 <>
-                  <tr key="add-row" style={{ opacity: savingIdx === "new" ? 0.6 : 1 }}>
+                  <tr key="add-row" ref={addRowRef} style={{ opacity: savingIdx === "new" ? 0.6 : 1 }}>
                     <td>
                       <Plus style={{ width: 14, height: 14, color: "var(--text-muted)" }} />
                     </td>
                     <td>
-                      <select
-                        className="detected-part-select"
-                        value={adding.part}
-                        aria-label="New part"
-                        onChange={(e) => setAdding({ ...adding, part: e.target.value })}
+                      {/* Step 3A: the part picker, where the part select was. */}
+                      <button
+                        type="button"
+                        className={`pp-open pp-open-compact ${adding.part ? "is-set" : ""}`}
+                        aria-haspopup="dialog"
+                        aria-label={adding.part ? `New part: ${adding.part}. Change it` : "Choose the new part"}
+                        onClick={() => setPicker({ title: adding.part ? "Change the part" : "Add a part", preset: null, photoLabel: null })}
                       >
-                        <option value="">Choose a part…</option>
-                        {parts.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
+                        <span>{adding.part || "Choose a part…"}</span>
+                        <Search style={{ width: 12, height: 12, flexShrink: 0 }} aria-hidden="true" />
+                      </button>
                       {adding.part === OTHER_PART && (
                         <input
                           className="detected-part-select"
@@ -702,7 +745,13 @@ export function DetectedPartsTable({
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
         {!readOnly && !adding ? (
-          <button type="button" className="btn-secondary-modern" style={{ fontSize: 11, padding: "6px 12px" }} onClick={() => setAdding({ part: "", other_part_name: "", condition: "", remarks: "", photo_reference: "" })}>
+          <button
+            type="button"
+            className="btn-secondary-modern"
+            style={{ fontSize: 11, padding: "6px 12px" }}
+            aria-haspopup="dialog"
+            onClick={() => setPicker({ title: "Add a part", preset: null, photoLabel: null })}
+          >
             <Plus style={{ width: 13, height: 13 }} /> Add a part
           </button>
         ) : (
@@ -719,6 +768,21 @@ export function DetectedPartsTable({
           )}
         </span>
       </div>
+
+      {picker && !readOnly && (
+        <PartPicker
+          title={picker.photoLabel ? `${picker.title} (${picker.photoLabel})` : picker.title}
+          taxonomy={taxonomy}
+          vehicle={vehicle}
+          preset={picker.preset}
+          onPick={(pick) => {
+            const { photoLabel } = picker;
+            closePicker();
+            fillAdd(pick, photoLabel);
+          }}
+          onClose={closePicker}
+        />
+      )}
     </div>
   );
 }

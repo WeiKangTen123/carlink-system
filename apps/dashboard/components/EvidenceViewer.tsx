@@ -14,7 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { Box as BoxIcon, Check, ChevronLeft, ChevronRight, Clock, ExternalLink, Undo2, X } from "lucide-react";
+import { Box as BoxIcon, Check, ChevronLeft, ChevronRight, Clock, ExternalLink, Plus, Undo2, X } from "lucide-react";
 import type { DecideAction, DecideResult } from "@/lib/api";
 import {
   BOX_WORDS,
@@ -79,6 +79,10 @@ export type EvidenceViewerProps = {
    * part group). Without it, every photo a finding was seen in. Optional:
    * added by the evidence UI. */
   photoOrder?: string[] | null;
+  /** Step 3A: [Add part seen here] under the photo shown, for a page that
+   * can add a part (it opens its part picker on that photo). Not passed,
+   * or read-only: no button. */
+  onAddFromPhoto?: (photoRef: string) => void;
 };
 
 const STATUS_TEXT: Record<FindingStatus, string> = {
@@ -138,7 +142,7 @@ export function EvidenceViewer(props: EvidenceViewerProps) {
 
 type Cursor = { key: string | null; photo: string | null; index: number };
 
-function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos, onDecide, onShowOnMap, onClose, readOnly, reads, photoOrder }: EvidenceViewerProps) {
+function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos, onDecide, onShowOnMap, onClose, readOnly, reads, photoOrder, onAddFromPhoto }: EvidenceViewerProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -792,6 +796,11 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
       {onShowOnMap && finding && (
         <button type="button" className="btn-secondary-modern ev-act" onClick={() => showOnMap(finding.key)}>
           <BoxIcon style={{ width: 14, height: 14 }} /> Show on 3D
+        </button>
+      )}
+      {onAddFromPhoto && !readOnly && photoRef && src && (
+        <button type="button" className="btn-secondary-modern ev-act" onClick={() => onAddFromPhoto(photoRef)} title="Add a damaged part this photo shows">
+          <Plus style={{ width: 14, height: 14 }} /> Add part seen here
         </button>
       )}
     </div>

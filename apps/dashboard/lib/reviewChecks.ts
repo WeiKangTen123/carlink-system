@@ -235,7 +235,7 @@ export type FirmWording = {
 type Vehicle = { make?: string | null; model?: string | null; body_type?: string | null } | null | undefined;
 
 // taxonomy._HATCH_BODIES: a tail gate, not a boot lid.
-const HATCH_BODIES = new Set(["Hatchback", "SUV", "MPV", "Van", "Wagon", "Pickup"]);
+export const HATCH_BODIES: ReadonlySet<string> = new Set(["Hatchback", "SUV", "MPV", "Van", "Wagon", "Pickup"]);
 
 /** taxonomy.body_type_for, as filing sets the case's body type
  * (api/intake.py finalize): the make/model catalogue first, then the body

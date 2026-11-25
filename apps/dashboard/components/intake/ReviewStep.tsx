@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Box as BoxIcon, ChevronDown, ChevronRight, ImagePlus, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Box as BoxIcon, ChevronDown, ChevronRight, ImagePlus, Plus, Search, Trash2 } from "lucide-react";
 import {
   DAMAGE_REMARKS,
   MAX_OTHER_NAME,
@@ -25,7 +25,6 @@ import {
   checkAdd,
   filingProblems,
   gapWords,
-  partForMapAdd,
   printsAs,
   removeAt,
   restoreRemoved,
@@ -35,6 +34,8 @@ import {
   type Removed,
 } from "@/lib/reviewChecks";
 import { partsToPick } from "@/lib/partsList";
+import { PartPicker } from "@/components/PartPicker";
+import { presetFromPhoto, presetFromZone, type PartPick, type PickerPreset } from "@/lib/partPicker";
 import { CoverPageFields } from "@/components/CoverPageFields";
 import { canViewAllCases, isAdmin, useCurrentUser } from "@/components/CurrentUser";
 import { aiReadFrom, coverFormFrom, parseDepth, type AiRead, type CoverForm, type CoverFormKey } from "@/lib/coverForm";
@@ -60,7 +61,7 @@ import {
 } from "@/lib/findings";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
-import { detectBodyType } from "@/lib/vehicleZones";
+import { detectBodyType, zoneLabel } from "@/lib/vehicleZones";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotosByPart } from "./PhotosByPart";
 import { ReadByNotice } from "./ReadByNotice";
@@ -184,7 +185,9 @@ export function ReviewStep({
 }: Props) {
   const user = useCurrentUser();
   const [flashKey, setFlashKey] = useState<string | null>(null);
-  const [newPart, setNewPart] = useState("");
+  // The part picker (step 3A), open: what it was opened on, and the photo
+  // an add from the photo viewer links.
+  const [addPicker, setAddPicker] = useState<{ title: string; preset: PickerPreset | null; photoId: string | null } | null>(null);
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const damage = data.damage_summary || [];
@@ -393,19 +396,31 @@ export function ReviewStep({
   // Photos by part. A suggestion whose part is listed never shows (the
   // panel hides it, lib/findings.ts) and the server never adds it twice.
   const [addAsk, setAddAsk] = useState<{ check: NonNullable<AddCheck>; add: () => void } | null>(null);
-  const askBeforeAdd = (part: string, add: () => void) => {
-    const check = checkAdd(damage, part);
+  const askBeforeAdd = (part: string, add: () => void, otherName?: string | null) => {
+    const check = checkAdd(damage, part, otherName);
     if (check) setAddAsk({ check, add });
     else add();
   };
-  const addItem = () => {
-    const part = newPart;
-    if (!part) return;
-    askBeforeAdd(part, () => {
-      pushItem({ part, severity: null, human_verified: true }, { block: "nearest" });
-      setNewPart("");
-    });
-  };
+  /** A part picked in the part picker (the add row, the map's "+ Add part
+   * here", the photo viewer's "Add part seen here"): the row a pick from
+   * the old add-row select made -- a named Other with its name, an add from
+   * a photo with that photo linked, as Photos by part links it. */
+  const addPicked = ({ part, other_part_name }: PartPick, photoId: string | null) =>
+    askBeforeAdd(
+      part,
+      () =>
+        pushItem(
+          {
+            part,
+            ...(other_part_name ? { other_part_name } : {}),
+            severity: null,
+            ...(photoId ? { photo_reference: `@${photoId}`, bbox_2d: null } : {}),
+            human_verified: true,
+          },
+          { block: photoId ? "center" : "nearest", focus: part === OTHER_PART && !other_part_name ? "name" : undefined }
+        ),
+      other_part_name
+    );
   /** "Add as damage" from Photos by part. An area-only group can't say which
    * part it shows, so that row opens with its part select focused. */
   const addFromPhotos = (part: string, photoId: string) =>
@@ -567,23 +582,25 @@ export function ReviewStep({
     [setSelection]
   );
 
-  // [+ Add as damage] on a part of the 3D model nobody listed: the add row
-  // gets the panel's own part, as the case page adds it ("Underbody /
-  // Chassis", not the first list name that sits there), for the person to
-  // check and add.
-  const addRowRef = useRef<HTMLDivElement>(null);
+  // [+ Add part here] on any panel of the 3D model: the part picker with
+  // that panel's parts, its own part first ("Underbody / Chassis", as the
+  // case page adds it: lib/partPicker.ts zonePreferred) and the panel's
+  // side, for the person to check.
   // The car map's names join only while the server offers them
   // (lib/partsList.ts); Select still shows a row's own part either way.
   const partsList = useMemo(() => partsToPick(taxonomy), [taxonomy]);
   const addForZone = useCallback(
-    (zoneKey: string) => {
-      setNewPart(partForMapAdd(zoneKey, partsList));
-      const row = addRowRef.current;
-      row?.scrollIntoView({ behavior: "smooth", block: "center" });
-      row?.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true });
-    },
-    [partsList]
+    (zoneKey: string) => setAddPicker({ title: `Add a part: ${zoneLabel(zoneKey)}`, preset: presetFromZone(zoneKey), photoId: null }),
+    []
   );
+  // [Add part seen here] in the photo viewer: the picker set from the
+  // photo's sorter area and part tag; the part comes with the photo linked.
+  const addFromViewer = (ref: string) => {
+    const p = ref.startsWith("@") ? photoMaps.byId.get(ref.slice(1)) : photoMaps.byLabel.get(ref);
+    if (!p) return;
+    setViewer(null);
+    setAddPicker({ title: `Add a part seen on ${p.label}`, preset: presetFromPhoto(p), photoId: p.id });
+  };
   const setBodyTypeStable = useRef(setBodyType);
   setBodyTypeStable.current = setBodyType;
   const onBodyTypeChange = useCallback((b: string) => setBodyTypeStable.current(b), []);
@@ -968,9 +985,19 @@ export function ReviewStep({
               </table>
             </div>
           )}
-          <div className="intake-add-row" ref={addRowRef}>
-            <Select value={newPart} options={partsList} placeholder="Add a damaged part…" ariaLabel="Add a damaged part" onChange={setNewPart} />
-            <button type="button" className="btn-secondary-modern" onClick={addItem} disabled={!newPart}>
+          {/* Step 3A: the part picker opens where the add row's part
+              select was (the same two controls, the same place). */}
+          <div className="intake-add-row">
+            <button type="button" className="pp-open" aria-haspopup="dialog" onClick={() => setAddPicker({ title: "Add a damaged part", preset: null, photoId: null })}>
+              <Search style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden="true" />
+              <span>Add a damaged part…</span>
+            </button>
+            <button
+              type="button"
+              className="btn-secondary-modern"
+              aria-haspopup="dialog"
+              onClick={() => setAddPicker({ title: "Add a damaged part", preset: null, photoId: null })}
+            >
               <Plus style={{ width: 14, height: 14 }} /> Add
             </button>
           </div>
@@ -1030,6 +1057,21 @@ export function ReviewStep({
         />
       )}
 
+      {addPicker && (
+        <PartPicker
+          title={addPicker.title}
+          taxonomy={taxonomy}
+          vehicle={v}
+          preset={addPicker.preset}
+          onPick={(pick) => {
+            const { photoId } = addPicker;
+            setAddPicker(null);
+            addPicked(pick, photoId);
+          }}
+          onClose={() => setAddPicker(null)}
+        />
+      )}
+
       {addAsk && (
         <AddCheckDialog
           check={addAsk.check}
@@ -1075,6 +1117,7 @@ export function ReviewStep({
         reads={secondLook?.reads}
         onDecide={decideLooked}
         onShowOnMap={showOnMap}
+        onAddFromPhoto={addFromViewer}
         onClose={() => setViewer(null)}
       />
     </div>
