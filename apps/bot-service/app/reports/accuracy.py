@@ -113,8 +113,9 @@ SUGGESTION_GROUPS = ("by_source", "by_read", "by_check")
 # Where a suggestion came from (SecondLookItem.source) and the re-check's
 # verdicts (SuggestionCheck.verdict); "none": not re-checked. "other_side":
 # F3's "Other side?" suggestions (settings.intake_keep_other_side), counted
-# only on a case that has them.
-SUGGESTION_SOURCES = ("zone", "kit", "nearby", "link", "other_side")
+# only on a case that has them. "sorter": Detection Round 1's (settings.
+# intake_sorter_hints "on", intake_intact_rule "strict"), the same way.
+SUGGESTION_SOURCES = ("zone", "kit", "nearby", "link", "other_side", "sorter")
 CHECK_VERDICTS = ("yes", "no", "unsure")
 # Contract 10: a linked part's groups -- (group, its field, the values
 # counted; None: any, cut to MAX_RULE) -- and the linked check's verdicts.
@@ -446,6 +447,13 @@ def _suggestions(ai_draft: dict, final_data: dict) -> dict:
     car_shadow = _shadow(ai_draft, final_data, [], "car_map_suggestions")
     if car_shadow is not None:
         _link_groups(out)["car_map_shadow"] = car_shadow
+    # Detection Round 1 in shadow (settings.intake_sorter_hints /
+    # intake_intact_rule "shadow"): the photo sorter's suggestions the AI
+    # draft kept but nobody saw, by rule (found_by: "sorter_seen",
+    # "sorter_intact"). Only on a case that has the list.
+    sorter_shadow = _shadow(ai_draft, final_data, [], "sorter_suggestions", by="found_by")
+    if sorter_shadow is not None:
+        out["sorter_shadow"] = sorter_shadow
     if "links_table" in out:
         out["links_table"] = tables[0] if tables else None
     return out
@@ -504,15 +512,19 @@ def _carmap_tallies(out: dict, fact: dict) -> list[dict]:
     return tallies
 
 
-def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str = "link_suggestions") -> dict | None:
+def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str = "link_suggestions",
+            by: str = "link_rule") -> dict | None:
     """Shadow mode's outcome (contract 10): the linked parts the AI draft
     kept but nobody saw (ai_draft["link_suggestions"], or list_key: the
     car map's "car_map_suggestions"), one per key, and how many of them
     are on the signed-off list (by name, or by a name that stands for
     them: "Tail Lamp (side undetermined)" for a "Left Tail Lamp") -- in
-    all and by rule. None when the draft has no such list."""
+    all and by rule. None when the draft has no such list. by: the field
+    an item's rule is ("link_rule"), or "found_by" (_sorter_shadow)."""
     if not isinstance(ai_draft.get(list_key), list):
         return None
+    if by == "found_by":
+        return _sorter_shadow(ai_draft.get(list_key), final_data)
     final = damage_items(final_data)
     final_keys = {item_key(it) for it in final}
     final_parts = {str(it.get("part")) for it in final}
@@ -537,6 +549,39 @@ def _shadow(ai_draft: dict, final_data: dict, tables: list[str], list_key: str =
     return out
 
 
+def _sorter_shadow(items, final_data: dict) -> dict:
+    """Detection Round 1 in shadow (ai_draft["sorter_suggestions"]): the
+    photo sorter's suggestions nobody saw, against the signed-off list --
+    in all over the distinct parts (A1's and A2's lists, worked out apart,
+    may both hold a part: counted once, the second review's N5), and by
+    rule (found_by: "sorter_seen", "sorter_intact"), each rule's parts once.
+    A part a person put on the list from a suggestion card (added_from
+    "suggestion": an A1 card shown beside A2's trial, a zone read's...) is
+    "prompted", never on_final_list: that hit was the card's (N6)."""
+    final = damage_items(final_data)
+    out: dict = {"predicted": 0, "on_final_list": 0, "prompted": 0, "by_rule": {}}
+    counted: set[str] = set()
+    seen: set[tuple] = set()
+    for it in _dicts(items):
+        key = key_of(it)
+        marks = [m for m in it.get("found_by") or [] if isinstance(m, str) and m]
+        rule = marks[0][:MAX_RULE] if marks else None
+        if not key or (rule, key) in seen:
+            continue
+        seen.add((rule, key))
+        covers = [c for c in it.get("covers") or [] if isinstance(c, str)] or [str(it.get("part") or "")]
+        hits = [f for f in final if item_key(f) == key or str(f.get("part")) in covers]
+        prompted = any(f.get("added_from") == "suggestion" for f in hits)
+        tallies = ([out] if key not in counted else []) + (
+            [out["by_rule"].setdefault(rule, {"predicted": 0, "on_final_list": 0, "prompted": 0})] if rule else [])
+        counted.add(key)
+        for tally in tallies:
+            tally["predicted"] += 1
+            tally["on_final_list"] += int(bool(hits) and not prompted)
+            tally["prompted"] += int(bool(hits) and prompted)
+    return out
+
+
 def sum_suggestions(metrics: list[dict]) -> dict:
     """The suggestions sections of many cases' metrics added up (GET
     /admin/ai-accuracy); a row from before VERSION 2 has none and adds 0.
@@ -557,9 +602,12 @@ def sum_suggestions(metrics: list[dict]) -> dict:
     out["shadow"] = {"predicted": 0, "on_final_list": 0, "by_rule": {}}
 
     def add_shadow(into: dict, counts) -> None:
-        for key in ("predicted", "on_final_list"):
+        for key in ("predicted", "on_final_list", "prompted"):
+            # "prompted": the photo sorter's shadow only (_sorter_shadow).
+            if key == "prompted" and "prompted" not in (counts or {}):
+                continue
             try:
-                into[key] += int((counts or {}).get(key) or 0)
+                into[key] = into.get(key, 0) + int((counts or {}).get(key) or 0)
             except (TypeError, ValueError, AttributeError):
                 pass
 
@@ -585,7 +633,7 @@ def sum_suggestions(metrics: list[dict]) -> dict:
         found = s.get("links_table")
         tables.update(name[:20] for name in (found if isinstance(found, list) else [found])
                       if isinstance(name, str) and name)
-        for shadow_key in ("shadow", "car_map_shadow"):
+        for shadow_key in ("shadow", "car_map_shadow", "sorter_shadow"):
             shadow = s.get(shadow_key) if isinstance(s.get(shadow_key), dict) else None
             if shadow is None:
                 continue

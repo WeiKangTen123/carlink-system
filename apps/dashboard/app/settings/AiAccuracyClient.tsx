@@ -84,6 +84,7 @@ const SOURCE_NAMES: Record<string, string> = {
   nearby: "Next to a part found",
   link: "Linked to a listed part",
   other_side: "Other side? (another photo of a listed part's family)",
+  sorter: "Seen by the photo sorter",
 };
 // Contract 10 (accuracy VERSION 3): the linked parts, in the cards' words.
 const LINK_TYPE_NAMES: Record<string, string> = {
@@ -146,6 +147,9 @@ const READ_NAMES: Record<string, string> = {
   "zone:left": "Left side read",
   "zone:right": "Right side read",
   "zone:close": "Close-up read",
+  // Detection Round 1: a photo sorter suggestion's rule (found_by).
+  sorter_seen: "Photo sorter: seen only by it",
+  sorter_intact: "Photo sorter: a zone read said intact",
 };
 
 function readName(read: string): string {
@@ -179,12 +183,13 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
           before they were counted show none.
         </div>
         {s?.shadow && s.shadow.predicted > 0 && <ShadowBlock shadow={s.shadow} table={tableNames(s)} />}
+        {s?.sorter_shadow && s.sorter_shadow.predicted > 0 && <SorterShadow shadow={s.sorter_shadow} />}
       </Section>
     );
   }
   const rules = groupRows(s.by_rule, (k) => k, []);
   const groups: Array<{ head: string; rows: ReturnType<typeof groupRows> }> = [
-    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby", "link", "other_side"]) },
+    { head: "Where the suggestion came from", rows: groupRows(s.by_source, (k) => SOURCE_NAMES[k] ?? k, ["zone", "kit", "nearby", "link", "other_side", "sorter"]) },
     { head: "AI re-check", rows: groupRows(s.by_check, (k) => CHECK_NAMES[k] ?? k, ["yes", "unsure", "no", "none"]) },
     { head: "Read that found it", rows: groupRows(s.by_read, readName, Object.keys(READ_NAMES)) },
     // Contract 10: absent on a VERSION 2 record, so those cases show none.
@@ -268,6 +273,7 @@ function SuggestionsBlock({ s, title }: { s: AiAccuracySuggestions | undefined; 
       {s.car_map_shadow && s.car_map_shadow.predicted > 0 && (
         <ShadowBlock shadow={s.car_map_shadow} table={null} title="Car map's linked parts in shadow mode (not shown to people)" />
       )}
+      {s.sorter_shadow && s.sorter_shadow.predicted > 0 && <SorterShadow shadow={s.sorter_shadow} />}
     </Section>
   );
 }
@@ -318,6 +324,23 @@ function ShadowBlock({
         </div>
       )}
     </div>
+  );
+}
+
+/** Detection Round 1 in shadow mode: the photo sorter's suggestions worked
+ * out but not shown, by rule (found_by), against the signed-off list; the
+ * ones a person added from a card are "prompted", not the rule's hits. */
+function SorterShadow({ shadow }: { shadow: AiAccuracyLinkShadow }) {
+  const named = { ...shadow, by_rule: Object.fromEntries(Object.entries(shadow.by_rule ?? {}).map(([k, v]) => [readName(k), v])) };
+  return (
+    <>
+      <ShadowBlock shadow={named} table={null} title="Photo sorter's suggestions in shadow mode (not shown to people)" />
+      {(shadow.prompted ?? 0) > 0 && (
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+          {num(shadow.prompted ?? 0)} more on the signed-off list from a suggestion card people saw (not counted as the sorter&apos;s)
+        </div>
+      )}
+    </>
   );
 }
 

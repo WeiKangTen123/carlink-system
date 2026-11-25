@@ -50,7 +50,10 @@ PHOTO_INDEX_KEYS = ("kind", "area", "part", "shows_damage", "quality")
 AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions", "car_map_suggestions",
                         # Wave 2 E7 (settings.intake_side_geometry): the side
                         # resolver's changes (pipeline.resolve_sides).
-                        "side_geometry")
+                        "side_geometry",
+                        # Detection Round 1 A1 in shadow (settings.
+                        # intake_sorter_hints): the sorter's finds kept apart.
+                        "sorter_suggestions")
 
 
 def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
