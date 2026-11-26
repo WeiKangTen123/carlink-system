@@ -244,8 +244,9 @@ def _photo_half_on(zone: str, photo_half: bool) -> bool:
 #   R2-box, settings.intake_box_every: the zone calls are told the drafted
 #     list's parts their checklist can name and answer `locate` -- a box
 #     round each one the photos show, damaged or not. Where it is, never a
-#     new find: intake/zones.apply_round2 puts the box on the list item
-#     that has none (evidence by "locate:zone:<zone>"), the list unchanged.
+#     new find: intake/zones.place_round2_boxes puts it as a "part" box on
+#     the list item that has none (evidence by "locate:zone:<zone>"), the
+#     list unchanged.
 #   R2-inv, settings.intake_zone_inventory: the zone calls answer `inventory` --
 #     per photo, the area's parts it shows (the checklist, and the car
 #     map's small outside parts while settings.intake_car_map_names is on),
@@ -260,6 +261,11 @@ def _photo_half_on(zone: str, photo_half: bool) -> bool:
 
 LOCATE = "locate"
 INVENTORY = "inventory"
+# Whether the locate sentence names each listed part's own photos beside
+# it ("Rear Bumper (P03)") -- they only help find the part. False (the
+# benchmark's --box-every-no-hints; the second review's N8): the names
+# alone. Not a setting: production keeps the hints.
+LOCATE_HINTS = True
 ROUND2_FIELDS = (LOCATE, INVENTORY)
 # Listed parts one zone call is asked to place (a case lists a handful per
 # area), and the photos of a listed part named beside it as a hint.

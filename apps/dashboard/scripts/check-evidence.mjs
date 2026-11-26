@@ -443,7 +443,7 @@ check("detection Round 2: a located part box shows on its photo with its own wor
   d.second_look.items.push({ key: "Boot Floor Board", part: "Boot Floor Board", name: "Boot floor board", source: "zone",
                              confidence: "Medium", covers: ["Boot Floor Board"], found_by: ["zone_inventory:rear"],
                              seen_in: ["@ph05"], reason: null, photo_reference: "@ph05", inventory_note: note,
-                             evidence: [{ ...located, box_kind: "ai", by: "zone_inventory:rear", confidence: "Medium" }] });
+                             evidence: [{ ...located, box_kind: "part", by: "zone_inventory:rear", confidence: "Medium" }] });
   const all = F.buildFindings(d);
   const board = all.find((f) => f.key === "sug:Boot Floor Board");
   assert.equal(board.inventoryNote, note);
@@ -451,6 +451,12 @@ check("detection Round 2: a located part box shows on its photo with its own wor
   assert.equal(F.readName("zone_inventory:rear"), "rear inventory");
   assert.equal(F.sourceName("zone_inventory:rear"), "rear inventory read");
   assert.ok(!("inventoryNote" in all.find((f) => f.key === "sug:Boot Lid Lock")), "no note on the others");
+  // The second review's N4: the inventory is no read of its own.
+  const reads = ["overall", "zone:rear", "zone:left"];
+  assert.equal(F.foundByText({ foundBy: ["zone_inventory:rear"] }, reads), "Seen in the rear inventory");
+  assert.equal(F.foundByText({ foundBy: ["zone:rear", "zone_inventory:rear"] }, reads),
+               "Found by 1 of 3 reads · Seen in the rear inventory");
+  assert.equal(F.foundByText({ foundBy: ["zone:rear"] }, reads), "Found by 1 of 3 reads", "as before without it");
 });
 
 process.exitCode = failed ? 1 : 0;

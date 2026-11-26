@@ -14,8 +14,9 @@ import mimetypes
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 from app.ai import allowance, runs
 from app.ai.client import get_client
@@ -224,6 +225,32 @@ def is_overloaded(error: Exception) -> bool:
     if isinstance(status, int):
         return status == 503
     return bool(_OVERLOADED.search(str(error)))
+
+
+# Detection Round 2's refusal latch (intake/zones): each failed try's
+# (model, error) on this thread, while a collector is bound -- nothing is
+# kept, logged or changed otherwise.
+_errors = threading.local()
+
+
+@contextmanager
+def collecting_errors() -> Iterator[list]:
+    """Binds a list to this thread for the block: every try call_structured
+    makes on it that fails adds (model, the error). The thread's previous
+    list is put back after."""
+    previous = getattr(_errors, "into", None)
+    out: list = []
+    _errors.into = out
+    try:
+        yield out
+    finally:
+        _errors.into = previous
+
+
+def _note_error(model_id: str, exc: Exception) -> None:
+    into = getattr(_errors, "into", None)
+    if into is not None:
+        into.append((model_id, exc))
 
 
 def call_structured(
@@ -438,6 +465,7 @@ def call_structured(
                     return result
                 except Exception as exc:
                     last_error = key_error = exc
+                    _note_error(model_id, exc)
                     said = refusal(exc)
                     all_busy = is_overloaded(exc) and all_busy is not False
                     if said not in DAY_VERDICTS:

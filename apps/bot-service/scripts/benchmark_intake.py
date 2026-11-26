@@ -2399,6 +2399,13 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             for zone in detail.get("zones") or []:
                 zone["photos"] = [label_of.get(ref, ref) for ref in zone.get("photos") or []]
             out["zones"] = {"status": zone_row.status, "error_code": zone_row.error_code, **detail}
+            flag = round2_flag(detail.get("r2"))
+            if flag:
+                # The second review's N1: a latched or trimmed Round 2 is no
+                # clean "on" run -- marked, and said loudly.
+                out["r2_flag"] = flag
+                print(f"\n!!! ROUND 2 NOT FULLY ON in {case['name']}: {flag} -- drop or flag this case-run\n",
+                      file=sys.stderr, flush=True)
     finally:
         db.close()
 
@@ -2973,6 +2980,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="detection Round 2 R2-box: the zone reads also box every drafted list part they see "
                          "(settings.intake_box_every on; no extra call); needs --read-mode zones. "
                          "The result file records box_coverage")
+    ap.add_argument("--box-every-no-hints", action="store_true",
+                    help="with --box-every: the locate sentence names the parts without the listed items' photos "
+                         "(zone_read.LOCATE_HINTS off; production keeps them)")
     ap.add_argument("--allow-box-every-parallel", action="store_true",
                     help="run --box-every although the server's zone reads start beside the main read "
                          "(INTAKE_PARALLEL_READS=on with INTAKE_MAIN_READ_FALLBACK=zones): nothing is located then")
@@ -3009,7 +3019,8 @@ CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "as
 WAVE2_ARGS = {"image_resolution_main_read": None, "side_geometry": None, "zone_wrong_end": None,
               "link_check_max_calls": None, "link_models": None}
 # Detection Round 2's flags at their defaults: likewise.
-R2_ARGS = {"box_every": False, "zone_inventory": False, "allow_box_every_parallel": False}
+R2_ARGS = {"box_every": False, "zone_inventory": False, "allow_box_every_parallel": False,
+           "box_every_no_hints": False}
 
 
 def _now() -> str:
@@ -3120,6 +3131,8 @@ def r2_settings(args: argparse.Namespace, zones_on: bool, settings=None) -> dict
             if not zones_on:
                 sys.exit(f"--{flag.replace('_', '-')}: rides on the zone reads; give --read-mode zones too")
             out[field] = "on"
+    if getattr(args, "box_every_no_hints", False) and out.get("intake_box_every") != "on":
+        sys.exit("--box-every-no-hints: tunes --box-every's sentence; give --box-every too")
     if settings is None:
         from app.config import settings
     if (out.get("intake_box_every") == "on" and parallel_zone_reads(settings)
@@ -3527,6 +3540,10 @@ def r2_ai_settings(settings) -> dict:
     if not r2_on(settings):
         return {}
     out = {name: getattr(settings, name, "off") for name in ("intake_box_every", "intake_zone_inventory")}
+    if out["intake_box_every"] == "on":
+        from app.ai import zone_read
+
+        out["box_every_hints"] = "on" if zone_read.LOCATE_HINTS else "off"
     if out["intake_zone_inventory"] == "on":
         out["intake_car_map_names"] = getattr(settings, "intake_car_map_names", "off")
     # The R2 review's M8: whether the zone reads started beside the main
@@ -3534,6 +3551,15 @@ def r2_ai_settings(settings) -> dict:
     out["intake_parallel_reads"] = getattr(settings, "intake_parallel_reads", "off")
     out["intake_main_read_fallback"] = getattr(settings, "intake_main_read_fallback", "off")
     return out
+
+
+def round2_flag(r2) -> dict | None:
+    """A Round 2 run that wasn't fully on (the zone run's photos_sent["r2"]):
+    latched off after refused schemas, or a field left out over the schema
+    cap -- {"latched", "trimmed"}, else None."""
+    if not isinstance(r2, dict) or not (r2.get("latched") or r2.get("trimmed")):
+        return None
+    return {"latched": bool(r2.get("latched")), "trimmed": int(r2.get("trimmed") or 0)}
 
 
 def round2_record(ai_draft, label_of: dict[str, str]) -> dict:
@@ -3574,11 +3600,13 @@ def round2_metrics(run: dict) -> dict:
         m.update(inv_rows=inv.get("n", 0), inv_damaged=inv.get("damaged", 0))
         sugg = [r for r in run.get("suggestions") or [] if isinstance(r, dict) and r.get("inventory_note")]
         m["inv_sugg"] = len(sugg)
-        m["inv_sugg_box"] = sum(1 for r in sugg if has_ai_box(r))
+        # Any box: an inventory box is a "part" box (round the part).
+        m["inv_sugg_box"] = sum(1 for r in sugg if has_box(r))
         if sugg and all(r.get("truth") for r in sugg):
             m["inv_sugg_real"] = sum(1 for r in sugg if r["truth"] == "real")
     r2 = (run.get("zones") or {}).get("r2")
     if isinstance(r2, dict):
+        m.update(r2_latched=1 if r2.get("latched") else 0, r2_trimmed=int(r2.get("trimmed") or 0))
         m.update(r2_extra_tok_est=r2.get("extra_output_tokens_est", 0), r2_fallbacks=r2.get("fallbacks", 0),
                  r2_salvaged=r2.get("salvaged", 0), r2_located=r2.get("located", 0))
     return m
@@ -3761,6 +3789,12 @@ def main(argv=None) -> int:
     A = _app()
     for field, value in model_settings(args).items():
         setattr(A.settings, field, value)
+    if getattr(args, "box_every_no_hints", False):
+        # Detection Round 2's locate sentence without the photos (N8): a
+        # module constant, not a setting.
+        import app.ai.zone_read as zone_read
+
+        zone_read.LOCATE_HINTS = False
     if args.models:
         A.settings.gemini_model_chain = args.models
     if args.triage_models:

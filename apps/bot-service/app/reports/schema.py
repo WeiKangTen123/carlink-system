@@ -87,7 +87,9 @@ class Evidence(BaseModel):
     # [ymin, xmin, ymax, xmax], ints 0..1000, on the upright AI-input frame
     # (the 1600 px preview). None: no box on this photo.
     box: Optional[list[int]] = None
-    # "ai" | "sort" | None -- None exactly when box is None.
+    # "ai" | "sort" | "part" (detection Round 2: a box round a part a zone
+    # read located or listed, not round damage) | None -- None exactly when
+    # box is None.
     box_kind: Optional[str] = None
     # Which read said so: "overall" | "zone:front|rear|left|right|close" |
     # "sort" | "check" | "second_look". Contract 10: "link" -- the photo

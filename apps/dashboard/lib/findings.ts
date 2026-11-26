@@ -506,11 +506,21 @@ export const aiSays = (reason: string) => `AI says: “${reason}”`;
 /** "Found by 1 of 5 reads" when the case's reads are known, else "Found by
  * the rear read"; null for a suggestion no read found (kit / nearby). */
 export function foundByText(f: Pick<Finding, "foundBy">, reads?: string[] | null): string | null {
-  const found = [...new Set(f.foundBy.filter(Boolean))];
-  if (!found.length) return null;
+  const all = [...new Set(f.foundBy.filter(Boolean))];
+  if (!all.length) return null;
+  // Detection Round 2: a zone read's inventory ("zone_inventory:rear") is
+  // no read of its own -- "Seen in the rear inventory", never counted in
+  // "N of M reads".
+  const found = all.filter((r) => !r.startsWith(INVENTORY_READ));
+  const inventory = all.filter((r) => r.startsWith(INVENTORY_READ));
+  const seen = inventory.length ? `Seen in the ${joined(inventory.map(readName))}` : "";
+  if (!found.length) return seen;
   const total = reads?.length ? new Set([...reads, ...found]).size : 0;
-  if (total > 1) return `Found by ${found.length} of ${total} reads`;
-  return `Found by the ${joined(found.map(readName))} read${found.length > 1 ? "s" : ""}`;
+  const text =
+    total > 1
+      ? `Found by ${found.length} of ${total} reads`
+      : `Found by the ${joined(found.map(readName))} read${found.length > 1 ? "s" : ""}`;
+  return seen ? `${text} · ${seen}` : text;
 }
 
 /** The reads by name, for the viewer's "Found by: rear read". */

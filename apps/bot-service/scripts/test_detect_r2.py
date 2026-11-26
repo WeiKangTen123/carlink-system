@@ -1020,6 +1020,13 @@ def b1_end_to_end() -> None:
           "map part while its names are off", [(it["part"], it.get("confidence")) for it in items])
     p = {f"P{i + 1:02d}": f"@{pid}" for i, pid in enumerate(on["pids"])}
     board = next(it for it in inventory if it["part"] == "Boot Floor Board")
+    from app.reports.suggestions import item_from_suggestion
+
+    added = item_from_suggestion(board)
+    check(board["evidence"][0]["box_kind"] == "part" and added.get("bbox_2d") is None
+          and any(e.get("box_kind") == "part" and e.get("box") == BOXES["P05"] for e in added.get("evidence") or []),
+          "an inventory box is a 'part' box: the item a person adds from it gets no bbox_2d, only the evidence "
+          "entry (the second review's N3)", added)
     check(board["source"] == "zone" and board["found_by"] == ["zone_inventory:rear"]
           and board["photo_reference"] == p["P05"] and board["evidence"][0]["box"] == BOXES["P05"]
           and board["evidence"][0]["img_w"] == 320 and board["evidence"][0]["by"] == "zone_inventory:rear"
@@ -1179,8 +1186,31 @@ def degrade_units() -> None:
           and not zones.round2_fallback_worthy(allowance.DayUsedUp("x"), [{"outcome": "schema"}]),
           "asked again as today after a refused schema, a timeout or a bad answer; never for busy, 429, a spent day "
           "or the person's AI going away")
-    check(zones.round2_refused(tries) and not zones.round2_refused([{"outcome": "schema"}, {"outcome": "timeout"}]),
-          "only a refusal (a non-busy error) latches Round 2 off; a timeout or a bad answer doesn't")
+    kinds = {
+        "400 INVALID_ARGUMENT (schema)": (Refused(), True),
+        "400 'too many states'": (Status(400, "Error code: 400 - The specified schema produces a constraint that has "
+                                               "too many states for serving."), True),
+        "400 invalid key": (Status(400, "400 INVALID_ARGUMENT: API key not valid. Please pass a valid API key."),
+                            False),
+        "500 INTERNAL": (Status(500, "500 INTERNAL: An internal error has occurred."), False),
+        "504 DEADLINE_EXCEEDED": (Status(504, "504 DEADLINE_EXCEEDED: Deadline expired before operation could "
+                                               "complete."), False),
+        "503 busy": (Busy(), False),
+        "404 retired model": (Status(404, "404 NOT_FOUND: models/gemini-old is not found for API version v1beta."),
+                              False),
+        "connection reset": (ConnectionResetError("[WinError 10054] Connection reset by peer"), False),
+        "timeout": (TimeoutError("timed out"), False),
+    }
+    wrong = {name: zones.schema_refusal(exc) for name, (exc, want) in kinds.items()
+             if zones.schema_refusal(exc) != want}
+    check(not wrong, "a schema refusal is a 400 about the request (INVALID_ARGUMENT, the schema): never a 5xx, "
+                     "504 DEADLINE_EXCEEDED, 503 busy, a 404 retired model, a lost connection, a timeout or an "
+                     "invalid key (the second review's N1)", wrong)
+    ok, other = [{"model": "m-a", "outcome": "ok"}], [{"model": "m-b", "outcome": "ok"}]
+    check(zones.schema_refused([("m-a", Refused())], ok) and not zones.schema_refused([("m-a", Refused())], other)
+          and not zones.schema_refused([("m-a", Status(500, "500 INTERNAL"))], ok)
+          and not zones.schema_refused([], ok),
+          "the evidence: the SAME model refused the schema and then answered without Round 2's fields")
     from app.intake import assembly_walk, car_map
 
     walk = assembly_walk.index_for(car_map.MAP)
@@ -1208,6 +1238,14 @@ class Busy(Exception):
 
     def __str__(self):
         return "503 UNAVAILABLE: the model is overloaded"
+
+
+class Status(Exception):
+    """An error Google answers with this status and these words."""
+
+    def __init__(self, status: int, text: str):
+        super().__init__(text)
+        self.status_code = status
 
 
 def _with_r2(request) -> bool:
@@ -1238,28 +1276,61 @@ def degrade_end_to_end() -> None:
 
     def refusing(kwargs, labels):
         return Refused() if _with_r2(kwargs) else r2_zone()(kwargs, labels)
-    with one_worker(), warnings_of("app.intake.zones") as seen, r2_case(both, {"zone": refusing}) as (
-            client, rid, pids, uid, state):
+
+    def rear_refusing(kwargs, labels):
+        rear = "the car's rear" in kwargs["system_instruction"]
+        return Refused() if _with_r2(kwargs) and rear else r2_zone()(kwargs, labels)
+    # One refusal (the rear zone's) in a case: counted, not latched.
+    with one_worker(), r2_case(both, {"zone": rear_refusing}) as (client, rid, pids, uid, state):
         data = t.db_row(Report, rid).data
         detail = zone_run(rid).photos_sent
         asked = zone_requests()
     got = shape(data["damage_summary"], pids)
     entries = {e["zone"]: e for e in detail["zones"]}
     with_r2 = [r for r in asked if _with_r2(r)]
-    check(state["stage"] == "ready" and got == base_list and [it["part"] for it in look_items(data)] == sugg,
-          "a schema the models refuse: the zone reads' finds as off's (asked again as today)", got)
-    check(entries["rear"]["status"] == "ok" and entries["rear"]["r2"].get("fallback") == "ai_error"
-          and "r2" not in entries["left"] and detail["r2"]["latched"] is True and detail["r2"]["fallbacks"] == 1
-          and len(with_r2) == chain and len(asked) == chain + plain["zones"],
-          f"the cost: the refused requests ({chain}, one per model) and the zone asked again as today; then Round 2 "
-          f"is latched off -- the next zone is asked as today (the review's M6)",
+    check(state["stage"] == "ready" and got == base_list
+          and entries["rear"]["r2"].get("fallback") == "ai_error" and "fallback" not in entries["left"]["r2"]
+          and not round2_latched() and detail["r2"]["latched"] is False
+          and len(with_r2) == chain + 1 and len(asked) == chain + plain["zones"],
+          f"a schema refused once: the zone asked again as today ({chain} refused requests, one per model, then one "
+          f"as today), the other zone still with Round 2 -- one refusal doesn't latch (the second review's N1)",
           {"requests": len(asked), "with_r2": len(with_r2), "rear": entries["rear"].get("r2")})
-    check(sum("asks without them until it restarts" in m for m in seen) == 1, "... said once in the log", seen)
+    with one_worker(), warnings_of("app.intake.zones") as seen, r2_case(both, {"zone": rear_refusing}) as (
+            client, rid, pids, uid, state):
+        data = t.db_row(Report, rid).data
+    check(state["stage"] == "ready" and round2_latched() and shape(data["damage_summary"], pids) == base_list
+          and sum("2nd schema refusal" in m for m in seen) == 1,
+          "the second within the hour: latched, said once in the log", seen)
     with r2_case(both, {"zone": refusing}) as (client, rid, pids, uid, state):
+        data = t.db_row(Report, rid).data
         detail = zone_run(rid).photos_sent
         asked = zone_requests()
     check(state["stage"] == "ready" and not [r for r in asked if _with_r2(r)] and detail["r2"]["latched"] is True
-          and detail["r2"]["calls_asked"] == 0, "a later case asks without Round 2 at all while latched", detail["r2"])
+          and detail["r2"]["calls_asked"] == 0 and [it["part"] for it in look_items(data)] == sugg,
+          "while latched, a case asks without Round 2 at all, as today", detail["r2"])
+    clock = zones._clock
+    zones._clock = lambda: clock() + zones.LATCH_SECONDS + 1
+    try:
+        expired = not round2_latched()
+    finally:
+        zones._clock = clock
+    check(expired, f"the latch expires after {zones.LATCH_SECONDS / 60:.0f} minutes")
+    zones.reset_round2_latch()
+    # Transient errors never count, however often.
+    kept_off = {}
+    for name, error in (("500 INTERNAL", Status(500, "500 INTERNAL: An internal error has occurred.")),
+                        ("504 DEADLINE_EXCEEDED", Status(504, "504 DEADLINE_EXCEEDED: Deadline expired.")),
+                        ("connection reset", ConnectionResetError("Connection reset by peer")),
+                        ("404 retired model", Status(404, "404 NOT_FOUND: models/gemini-old is not found.")),
+                        ("400 invalid key", Status(400, "400 INVALID_ARGUMENT: API key not valid."))):
+        def failing(kwargs, labels, error=error):
+            return error if _with_r2(kwargs) else r2_zone()(kwargs, labels)
+        with one_worker(), r2_case(both, {"zone": failing}) as (client, rid, pids, uid, state):
+            detail = zone_run(rid).photos_sent
+        kept_off[name] = (state["stage"], detail["r2"]["fallbacks"], round2_latched())
+    check(all(v == ("ready", 2, False) for v in kept_off.values()),
+          "a 500, a 504 DEADLINE_EXCEEDED, a connection reset, a retired model's 404, an invalid key -- on both "
+          "zones of a case, each asked again as today: never latched", kept_off)
     zones.reset_round2_latch()
 
     def refusing_then_busy(kwargs, labels):
@@ -1272,9 +1343,34 @@ def degrade_end_to_end() -> None:
     jobs = len(detail["zones"])
     check(state["stage"] == "ready" and len(plain_asked) == jobs * chain and not round2_latched()
           and {e["status"] for e in detail["zones"]} == {"failed"},
-          f"the fallback asked as today but busy: at most one request per model ({chain}), no all-busy round "
-          f"(the review's M6); not latched (it never answered); the reading stands",
+          f"the fallback asked as today but busy: at most one request per model ({chain}) of the one key, no "
+          f"all-busy round (the review's M6); not latched (it never answered); the reading stands",
           {"plain requests": len(plain_asked), "zones": jobs})
+    counted = zones._key_count
+    zones._key_count = lambda actor: 2
+    try:
+        with one_worker(), r2_case(dict(ZONES, intake_box_every="on"), {"zone": refusing_then_busy}) as (
+                client, rid, pids, uid, state):
+            asked = zone_requests()
+    finally:
+        zones._key_count = counted
+    check(len([r for r in asked if not _with_r2(r)]) == jobs * chain * 2,
+          "with two keys to use, the fallback's cap is one request per model for each key (the second review's N6)")
+    from app.ai import keys as keys_module
+
+    resolve = keys_module.resolve_keys
+    keys_module.resolve_keys = lambda actor: ["own", "company"]
+    try:
+        two = zones._key_count(None)
+    finally:
+        keys_module.resolve_keys = resolve
+    keys_module_fail = keys_module.resolve_keys
+    keys_module.resolve_keys = lambda actor: (_ for _ in ()).throw(RuntimeError("no db"))
+    try:
+        one = zones._key_count(None)
+    finally:
+        keys_module.resolve_keys = keys_module_fail
+    check((two, one) == (2, 1), "the keys counted as call_structured would use them; 1 when they can't be", (two, one))
 
     def busy(kwargs, labels):
         return Busy() if "inventory" in _props(kwargs) else r2_zone()(kwargs, labels)
@@ -1441,6 +1537,47 @@ def bench_section() -> None:
           and m_off.get("list_low") == m.get("list_low") and m_off.get("zone_finds") == m.get("zone_finds"),
           "off: nothing of Round 2 in the result; list_low and zone_finds on both arms, to set side by side (M2)",
           {k: m_off.get(k) for k in ("list_box", "list_low", "zone_finds")})
+    check(m.get("r2_latched") == 0 and m.get("r2_trimmed") == 0 and "r2_flag" not in on,
+          "a clean 'on' run: r2_latched 0, r2_trimmed 0, no flag")
+    # The second review's N1: a latched (or trimmed) "on" run is marked and said loudly.
+    import io
+
+    zones._LATCH["until"] = zones._clock() + zones.LATCH_SECONDS
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err), r2_fake(), t.Settings(**dict(ZONES, intake_box_every="on")), \
+                w.fakes({"zone": r2_zone()}):
+            latched = bench.run_case(case, folder.parent)
+    finally:
+        zones.reset_round2_latch()
+    lm = bench.run_metrics(latched)
+    check(latched.get("r2_flag") == {"latched": True, "trimmed": 0} and lm.get("r2_latched") == 1
+          and "ROUND 2 NOT FULLY ON in TEST R2" in err.getvalue() and lm.get("box_cov_located") == 0,
+          "an 'on' run while latched: r2_flag on the case-run, r2_latched 1 in its metrics, and a loud warning",
+          (latched.get("r2_flag"), err.getvalue()[-200:]))
+    check(bench.round2_flag({"latched": False, "trimmed": 2}) == {"latched": False, "trimmed": 2}
+          and bench.round2_flag({"latched": False, "trimmed": 0}) is None and bench.round2_flag(None) is None,
+          "a trimmed run is flagged too; a clean one isn't")
+    # The second review's N8: the locate sentence without the photos.
+    check(exits("--read-mode", "zones", "--box-every-no-hints")
+          and "intake_box_every" in model_settings("--read-mode", "zones", "--box-every", "--box-every-no-hints"),
+          "--box-every-no-hints only with --box-every")
+    zone_read.LOCATE_HINTS = False
+    try:
+        with t.Settings(intake_read_mode="zones", intake_box_every="on"):
+            hints = bench.ai_settings(settings).get("box_every_hints")
+        with r2_case(dict(ZONES, intake_box_every="on"), {"zone": r2_zone()}) as (client, rid, pids, uid, state):
+            rear = next(r for r in zone_requests() if "the car's rear" in r["system_instruction"])
+            data = t.db_row(Report, rid).data
+    finally:
+        zone_read.LOCATE_HINTS = True
+    check(hints == "off" and "Also locate these parts: Rear Bumper, Boot Lid." in rear["system_instruction"]
+          and "(P0" not in rear["system_instruction"]
+          and all(_part_boxes(it) for it in data["damage_summary"]),
+          "LOCATE_HINTS off: the parts named without their photos (recorded in ai_settings), still located",
+          rear["system_instruction"][-600:])
+    with t.Settings(intake_read_mode="zones", intake_box_every="on"):
+        check(bench.ai_settings(settings).get("box_every_hints") == "on", "... and 'on' by default")
 
 
 def main() -> int:

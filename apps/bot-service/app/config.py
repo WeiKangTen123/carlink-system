@@ -260,11 +260,12 @@ class Settings(BaseSettings):
     # the list.
     intake_zone_wrong_end: str = "drop"
     # Detection Round 2 (zone mode only; ai/zone_read.py "Round 2",
-    # intake/zones.apply_round2), no extra Gemini call -- each rides on the
-    # zone calls, after every field they have today, so an answer cut off
-    # there is read as today's, and a zone call that fails with them is
-    # asked once more as today. Both "off": every request and stored draft
-    # byte for byte as before.
+    # intake/zones' place_round2_boxes and add_inventory), no extra Gemini
+    # call -- each rides on the zone calls, after every field they have
+    # today, so an answer cut off there is read as today's, and a zone call
+    # that fails with them is asked once more as today (a schema refused
+    # twice latches them off for an hour). Both "off": every request and
+    # stored draft byte for byte as before.
     # R2-box "on": each zone call is also asked to locate the drafted list's
     # parts of its area (`locate`: a box round each part the photos show,
     # damaged or not -- worded as no damage judgement); a list item with no

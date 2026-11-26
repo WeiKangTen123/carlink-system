@@ -32,6 +32,7 @@ names or contact details, a public sender's included. The run's actor is
 the reading's, so a public report's stricter key rule (keys.resolve_keys,
 public_case) applies to this call too.
 """
+import copy
 import json
 import logging
 import re
@@ -869,17 +870,25 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
             _join_twin(it, joins[it["key"]])
     shown = [it for it in linked if not _listed_as(it, listed, listed_keys)
              and it["key"] not in dismissed and it["part"] not in dismissed]
+    # The inventory's photo, box and note on the linked part of the same part
+    # -- a copy of it, the suggestion itself going (one card per part). Made
+    # apart and applied last, so nothing is lost if anything before fails
+    # (the second review's N5); the slot it leaves among the open ones is
+    # not refilled from what MAX_SUGGESTIONS cut.
+    folded: list[dict] = []
     for twin in inventory:
-        link = next((it for it in shown if _listed_as(twin, {it["part"]}, {it["key"]})), None)
-        if link is not None:
-            # The inventory's photo, box and note on the linked part; the
-            # suggestion itself goes (one card per part).
+        at = next((n for n, it in enumerate(shown) if _listed_as(twin, {it["part"]}, {it["key"]})), None)
+        if at is not None:
+            link = copy.deepcopy(shown[at])
             _join_twin(link, twin)
             link["inventory_note"] = twin["inventory_note"]
-            kept.remove(twin)
+            shown[at] = link
+            folded.append(twin)
     if link_cut:
         cut.extend(it for it in link_cut if not _listed_as(it, listed, listed_keys)
                    and it["key"] not in dismissed and it["part"] not in dismissed)
+    for twin in folded:
+        kept.remove(twin)
     return shown
 
 

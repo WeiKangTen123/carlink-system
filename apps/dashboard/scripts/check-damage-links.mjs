@@ -320,6 +320,29 @@ check("a click on a mesh with no rule goes to the nearest no-mesh anchor within 
   assert.equal(rules.nearestAnchorZone([0, 0.7, 0], box, ["l_quarter", "r_quarter"]), null);
 });
 
+// ---------------------------------------------------------------------------
+console.log("-- detection Round 2");
+
+check("a located part box beside the read's box-less entry is the photo's mark (the second review's N2)", () => {
+  const f = {
+    key: "item:9", kind: "item", index: 9, partKey: "Boot Lid", part: "Boot Lid", name: "Boot Lid", status: "check",
+    reason: null, seenIn: ["P05"], foundBy: ["overall"], confidence: "High", check: null, otherSideListed: null,
+    source: "list", note: null, condition: null,
+    evidence: [
+      { photo: "P05", box: null, box_kind: null, by: "overall", reason: null, confidence: "High", img_w: null, img_h: null },
+      { photo: "P05", box: [100, 150, 450, 850], box_kind: "part", by: "locate:zone:rear", reason: null, confidence: null,
+        img_w: 1600, img_h: 1200 },
+    ],
+  };
+  const L = links.buildLinks([f]);
+  const marks = L.marksOn.get("P05");
+  assert.equal(marks.length, 1, "one mark a photo");
+  assert.deepEqual([marks[0].box, marks[0].kind], [[100, 150, 450, 850], "part"]);
+  assert.deepEqual(L.photosOf.get("item:9"), ["P05"]);
+  const plain = { ...f, evidence: [f.evidence[0]] };
+  assert.deepEqual([links.buildLinks([plain]).marksOn.get("P05")[0].box], [null], "without it: no box, as before");
+});
+
 if (failed) {
   console.log(`\n${failed} check${failed === 1 ? "" : "s"} failed`);
   process.exit(1);

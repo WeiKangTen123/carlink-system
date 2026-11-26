@@ -69,15 +69,18 @@ photo, best first, the item's photo_reference first. The merge joins them
 against the photos (evidence.finish: frames, the sorter's boxes).
 """
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
+from app.ai.structured import collecting_errors
 from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_for, covers_of, other_side_note
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import ZONE_PACKS, chain, pack_list, settings
@@ -740,8 +743,11 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
     asked = evidence_mode()
     light = light_options()
     # Round 2's fallback (the review's M6): at most one request per model of
-    # the chain, no all-busy round -- F1's second try's rule.
-    tries_cap = max(1, len(zone_chain()))
+    # the chain for each key the call may use -- call_structured counts
+    # max_tries over every key, so a person's own key never uses up the
+    # company key's turn (the second review's N6) -- and no all-busy round:
+    # F1's second try's rule.
+    chain_length = max(1, len(zone_chain()))
     if extras is not None and extras.box_every and extras.listed is None and jobs and not round2_latched():
         # The review's M8: the zone reads run before (or beside) the main
         # read -- F1, intake_parallel_reads -- so there is no list to place.
@@ -789,7 +795,7 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             try:
                 # This worker's Gemini tries, kept apart for the zone's own
                 # error code, then added to the stage's one run.
-                with runs.collecting(attempts):
+                with runs.collecting(attempts), (collecting_errors() if ask is not None else nullcontext([])) as errors:
                     answer = read_zone(job.zone, photos, actor=actor, models=models, grid=grid, evidence_mode=asked,
                                        **light, **_extra_kwargs(job, extras),
                                        **({"r2": ask} if ask is not None else {}))
@@ -809,14 +815,15 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                         with runs.collecting(attempts):
                             answer = read_zone(job.zone, photos, actor=actor, models=models, grid=grid,
                                                evidence_mode=asked, **light, **_extra_kwargs(job, extras),
-                                               max_tries=tries_cap)
+                                               max_tries=chain_length * _key_count(actor))
                     except Exception as again:
                         exc = again
                     else:
-                        if round2_refused(first):
-                            # Refused with the fields, answered without: the
-                            # schema itself; later calls ask as today.
-                            _latch_round2(job.zone, report_id, r2_note["fallback"])
+                        if _guarded(lambda: schema_refused(errors, attempts.snapshot()[len(first):]), False,
+                                    "couldn't tell what refused the zone call"):
+                            # A model refused the schema and answered the same
+                            # call without Round 2's fields.
+                            _note_refusal(job.zone, report_id)
                 if answer is None:
                     error = exc
                     # The person's AI going away, or the day's allowance used up
@@ -1030,30 +1037,96 @@ INVENTORY_MAX_SUGGESTIONS = 6
 INVENTORY_NOTE = "Seen in the zone check: marked damaged among the parts in view."
 _CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
 
-# The review's M6: once a zone call with Round 2's fields was refused and
-# the same call without them answered, every later zone call of this
-# process asks without them, until it restarts -- a refused schema would
-# be refused again, each time costing a request per model. Logged once.
-_LATCH = threading.Event()
+# The review's M6 and the second review's N1: a refused schema would be
+# refused again, each time costing a request per model. So once a model
+# has refused a zone call's schema with Round 2's fields (a 400 /
+# INVALID_ARGUMENT about the request, schema_refusal) and then answered
+# the same call without them -- REFUSALS_TO_LATCH times within LATCH_SECONDS
+# -- every zone call of this process asks without them for LATCH_SECONDS.
+# Transient errors (5xx, 504 DEADLINE_EXCEEDED, a connection reset, a
+# retired model's 404, an invalid key) never count. Logged once a latch.
+REFUSALS_TO_LATCH = 2
+LATCH_SECONDS = 3600.0
+_LATCH: dict = {"until": None, "events": []}
 _LATCH_LOCK = threading.Lock()
 
 
+def _clock() -> float:
+    return time.monotonic()
+
+
 def round2_latched() -> bool:
-    return _LATCH.is_set()
+    """Round 2 is latched off (a refused schema, twice) and not expired."""
+    with _LATCH_LOCK:
+        until = _LATCH["until"]
+        if until is not None and _clock() >= until:
+            _LATCH["until"] = None
+            logger.info("Round 2: the latch after refused schemas expired; zone calls ask with its fields again")
+        return _LATCH["until"] is not None
 
 
 def reset_round2_latch() -> None:
-    """Round 2 asked again (the tests)."""
-    _LATCH.clear()
-
-
-def _latch_round2(zone: str, report_id: str, code: str) -> None:
+    """Round 2 asked again, every refusal forgotten (the tests)."""
     with _LATCH_LOCK:
-        if _LATCH.is_set():
+        _LATCH["until"] = None
+        _LATCH["events"] = []
+
+
+_SCHEMA_WORDS = re.compile(r"INVALID_ARGUMENT|invalid argument|schema|too many states|constraint", re.IGNORECASE)
+_KEY_WORDS = re.compile(r"API_KEY_INVALID|API key not valid|API key expired", re.IGNORECASE)
+_STATUS_IN_TEXT = re.compile(r"(?:Error code:\s*|^)(\d{3})\b")
+
+
+def _status_of(exc: BaseException) -> int | None:
+    for name in ("status_code", "code"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and 100 <= value < 600:
+            return value
+    found = _STATUS_IN_TEXT.search(str(exc).strip())
+    return int(found.group(1)) if found else None
+
+
+def schema_refusal(exc: BaseException) -> bool:
+    """Google refused the request itself as malformed -- an HTTP 400 that
+    says INVALID_ARGUMENT or names the schema -- not an invalid key, a busy
+    or broken server (5xx, 504 DEADLINE_EXCEEDED), a lost connection or a
+    retired model (404)."""
+    text = str(exc)
+    return _status_of(exc) == 400 and not _KEY_WORDS.search(text) and bool(_SCHEMA_WORDS.search(text))
+
+
+def schema_refused(errors: list, fallback_tries: list[dict]) -> bool:
+    """The evidence for the latch: a model whose try with Round 2's fields
+    was a schema refusal (errors: (model, error) of that call) answered the
+    same call without them (fallback_tries: that call's run-log tries)."""
+    answered = {a.get("model") for a in fallback_tries or [] if isinstance(a, dict) and a.get("outcome") == "ok"}
+    return any(model in answered and schema_refusal(exc) for model, exc in errors or [])
+
+
+def _note_refusal(zone: str, report_id: str) -> None:
+    """One refusal counted; at REFUSALS_TO_LATCH within LATCH_SECONDS, the
+    latch for LATCH_SECONDS, logged."""
+    with _LATCH_LOCK:
+        now = _clock()
+        _LATCH["events"] = [t for t in _LATCH["events"] if now - t < LATCH_SECONDS] + [now]
+        if len(_LATCH["events"]) < REFUSALS_TO_LATCH or _LATCH["until"] is not None:
             return
-        _LATCH.set()
-    logger.warning("Round 2: the %s zone call of %s was refused with Round 2's fields (%s) and answered without them; "
-                   "every zone call of this process now asks without them until it restarts", zone, report_id, code)
+        _LATCH["until"] = now + LATCH_SECONDS
+        _LATCH["events"] = []
+    logger.warning("Round 2: the %s zone call of %s is the %d%s schema refusal with Round 2's fields answered without "
+                   "them; every zone call of this process asks without them for the next %.0f minutes", zone,
+                   report_id, REFUSALS_TO_LATCH, "nd" if REFUSALS_TO_LATCH == 2 else "th", LATCH_SECONDS / 60)
+
+
+def _key_count(actor) -> int:
+    """The keys a call for this person may use (keys.resolve_keys), 1 when
+    they can't be counted."""
+    try:
+        from app.ai.keys import resolve_keys
+
+        return max(1, len(resolve_keys(actor)))
+    except Exception:
+        return 1
 
 
 def round2_ask(job: ZoneJob, extras: "ZoneExtras | None"):
@@ -1072,7 +1145,9 @@ def round2_ask(job: ZoneJob, extras: "ZoneExtras | None"):
     if extras.box_every and extras.listed:
         label_of = {pid: label for label, pid, _, _ in job.photos}
         locate = zone_read.locate_names(job.zone, [it.get("part") for it in extras.listed])
-        for it in extras.listed:
+        # zone_read.LOCATE_HINTS False (the benchmark's --box-every-no-hints;
+        # the second review's N8): the names alone.
+        for it in extras.listed if zone_read.LOCATE_HINTS else []:
             label = label_of.get(evidence.photo_id(it.get("photo_reference")) or "")
             if not label:
                 continue
@@ -1094,12 +1169,6 @@ def round2_fallback_worthy(exc: BaseException, tries: list[dict]) -> bool:
         return False
     return any(a.get("outcome") in ("schema", "timeout") or (a.get("outcome") == "error" and not a.get("busy"))
                for a in tries or [] if isinstance(a, dict))
-
-
-def round2_refused(tries: list[dict]) -> bool:
-    """A try Google refused outright (an error that isn't "busy": a 400 for
-    the schema), not a timeout or an answer that didn't parse."""
-    return any(isinstance(a, dict) and a.get("outcome") == "error" and not a.get("busy") for a in tries or [])
 
 
 def _extra_tokens(answer, tries: list[dict]) -> int:
@@ -1268,7 +1337,9 @@ def inventory_suggestions(rows: list[dict], listed: list[dict], suggested: list[
                           facts: dict | None = None) -> list[dict]:
     """R2-inv: the inventory's damaged parts (rows: {"part", "photo"
     "@<id>", "damaged", "confidence", "box", "read"}) as zone suggestions
-    (as_suggestion: source "zone", its photo and box) found by
+    (as_suggestion: source "zone", its photo and its box -- a "part" box,
+    round the part: never the bbox_2d of the item a person adds from it,
+    the second review's N3) found by
     "zone_inventory:<zone>" (INVENTORY_READ), with INVENTORY_NOTE -- none
     that the list or a suggestion already is (second_look.covers_of: a
     sided name and its "(side undetermined)" one are one part), one per
@@ -1289,7 +1360,8 @@ def inventory_suggestions(rows: list[dict], listed: list[dict], suggested: list[
         read = f"{INVENTORY_READ}{_zone_of(row)}"
         found = {"part": part, "photo_reference": photo, "ai_confidence": confidence, "found_by": [read],
                  "seen_in": [photo] if photo else [],
-                 "evidence": [_framed(photo, read, row.get("box"), facts, confidence=confidence)] if photo else []}
+                 "evidence": [_framed(photo, read, row.get("box"), facts, kind=evidence.PART,
+                                      confidence=confidence)] if photo else []}
         suggestion = as_suggestion(found)
         suggestion["inventory_note"] = INVENTORY_NOTE
         out.append(suggestion)

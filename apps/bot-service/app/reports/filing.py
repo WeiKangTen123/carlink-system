@@ -52,7 +52,7 @@ AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions"
                         # resolver's changes (pipeline.resolve_sides).
                         "side_geometry",
                         # Detection Round 2 (settings.intake_zone_inventory):
-                        # the zone reads' inventory (intake/zones.apply_round2).
+                        # the zone reads' inventory (intake/zones.add_inventory).
                         "zone_inventory")
 
 
