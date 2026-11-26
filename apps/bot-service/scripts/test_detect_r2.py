@@ -1486,6 +1486,27 @@ def bench_section() -> None:
           "(the review's M8)")
     flags = vars(bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"]))
     check(all(flags[k] == v for k, v in bench.R2_ARGS.items()), "the flags' defaults are left out of a file's args")
+    # --set (Round 1's, on master) works for Round 2's switches as well as its flags, with the same checks.
+    plain = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"])
+    sets = bench.setting_overrides(["intake_box_every=ON", "intake_zone_inventory=on"], settings)
+    zone_mode = SimpleNamespace(intake_read_mode="zones", intake_box_every="on", intake_zone_inventory="on",
+                                intake_parallel_reads="off", intake_main_read_fallback="off")
+    single = SimpleNamespace(**{**vars(zone_mode), "intake_read_mode": "single"})
+    beside = SimpleNamespace(**{**vars(zone_mode), "intake_parallel_reads": "on", "intake_main_read_fallback": "zones"})
+    allow = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z", "--allow-box-every-parallel"])
+    try:
+        bench.setting_overrides(["intake_box_every=maybe"], settings)
+        typo = False
+    except SystemExit:
+        typo = True
+    check(sets == {"intake_box_every": "on", "intake_zone_inventory": "on"} and typo
+          and bench.round2_problem(zone_mode, plain, sets) is None
+          and "rides on the zone reads" in (bench.round2_problem(single, plain, sets) or "")
+          and "beside the main read" in (bench.round2_problem(beside, plain, sets) or "")
+          and bench.round2_problem(beside, allow, sets) is None
+          and bench.round2_problem(single, plain, {}) is None,
+          "--set intake_box_every=on / intake_zone_inventory=on: validated as the flags are, with the same checks "
+          "(zone reads, the parallel reads); nothing asked, nothing checked", sets)
     off = bench.ai_settings(settings)
     with t.Settings(intake_read_mode="zones", intake_zone_inventory="on", intake_car_map_names="on"):
         on = bench.ai_settings(settings)
