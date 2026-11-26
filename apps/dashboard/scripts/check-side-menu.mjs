@@ -13,25 +13,29 @@
  * app/globals.css
  *   - the "Side menu" block is there once, before the Stage 1 block (which
  *     stays last: scripts/check-prices-ui.mjs);
- *   - outside any @media the menu button, the drawer's close button and the
- *     backdrop are display: none, and the one .sidebar rule is the desktop
- *     side menu as before (224px, sticky, 100vh);
+ *   - desktop is frozen: outside any @media, .app-shell, .sidebar, .top-bar
+ *     and .main-column each have one rule, exactly as on master, and no
+ *     other selector mentions them; the menu button, the drawer's close
+ *     button and the backdrop are display: none;
  *   - in the @media for the breakpoint: the menu is fixed, solid, slid off
  *     (translateX(-100%)) and hidden until .sidebar.open; the button, close
  *     button and backdrop show; the drawer sits over the backdrop, both over
- *     the top bar;
- *   - no other @media changes .sidebar.
+ *     the top bar; toasts are hidden while it's open;
+ *   - no other @media touches those four classes (bar a reduced-motion
+ *     transition).
  * components/AppShell.tsx and components/Sidebar.tsx
- *   - the wiring: the button (aria-controls, aria-expanded), the backdrop,
- *     Esc, leaving the breakpoint, every link and the close button closing
- *     it, the page inert while it's open, focus in and back, and the dialog
- *     role only while open.
+ *   - the wiring: the button (aria-controls, aria-expanded; it won't open
+ *     over another dialog), the backdrop, Esc (only when meant for the
+ *     menu), leaving the breakpoint, every link and the close button closing
+ *     it, the page inert while it's open, focus in and back, and each
+ *     listener added and removed in pairs on the right target.
  *
  *   node apps/dashboard/scripts/check-side-menu.mjs
  *
- * Prints one line per check and exits 1 if any fails. The live check (a
- * browser opening and closing the drawer at 390x844, 768x1024 and the
- * desktop sizes) is in the PR.
+ * Prints one line per check and exits 1 if any fails. This is a static
+ * check: what the drawer does in a browser (opening and closing it at
+ * 390x844, 768x1024 and the desktop sizes) is tested live, see the PR; CI
+ * has no browser test for it.
  */
 import { readFileSync } from "node:fs";
 
@@ -89,27 +93,44 @@ function parse(text) {
   return out;
 }
 const top = parse(css);
-const rulesOf = (stmts) => stmts.filter((s) => !s.head.startsWith("@")).map((s) => ({ sel: s.head, body: s.body }));
-const has = (sel) => (r) => r.sel.split(",").map((s) => s.trim().replace(/\s+/g, " ")).includes(sel);
+const rulesOf = (stmts) => stmts.filter((s) => !s.head.startsWith("@")).map((s) => ({ sel: s.head.replace(/\s+/g, " "), body: s.body }));
+const has = (sel) => (r) => r.sel.split(",").map((s) => s.trim()).includes(sel);
 const decl = (body, prop) => {
   const m = [...body.matchAll(new RegExp(`(?:^|;|\\s)${prop}\\s*:\\s*([^;]+)`, "g"))];
   return m.length ? m[m.length - 1][1].trim() : undefined;
 };
+const decls = (body) => body.split(";").map((d) => d.trim().replace(/\s+/g, " ")).filter(Boolean);
 const merged = (rules, sel) => rules.filter(has(sel)).map((r) => r.body).join(";");
 
-// Outside any @media: desktop as before, the new pieces hidden.
+// ---- Desktop, frozen: the shell's rules outside any @media, as on master ----
 const plain = rulesOf(top);
-for (const sel of [".side-menu-button", ".sidebar-close", ".side-menu-backdrop"]) {
-  check(decl(merged(plain, sel), "display") === "none", `globals.css: ${sel} is display: none outside @media (hidden on desktop)`);
+const MASTER = {
+  ".app-shell": ["display: flex", "min-height: 100vh"],
+  ".sidebar": [
+    "width: 224px", "flex-shrink: 0", "display: flex", "flex-direction: column", "gap: 4px", "padding: 20px 14px",
+    "background: var(--nav-bg)", "border-right: 1px solid var(--border-color)", "position: sticky", "top: 0",
+    "height: 100vh", "overflow-y: auto",
+  ],
+  ".top-bar": [
+    "position: sticky", "top: 0", "z-index: 100", "display: flex", "align-items: center", "gap: 20px",
+    "padding: 12px 28px", "background: var(--nav-bg-solid)", "border-bottom: 1px solid var(--border-color)",
+  ],
+  ".main-column": ["flex: 1", "min-width: 0", "display: flex", "flex-direction: column"],
+};
+const SHELL = /\.(app-shell|sidebar|top-bar|main-column)(?![\w-])/;
+for (const [sel, want] of Object.entries(MASTER)) {
+  const found = plain.filter((r) => r.sel === sel);
+  check(found.length === 1 && JSON.stringify(decls(found[0].body)) === JSON.stringify(want),
+    `desktop: one "${sel}" rule outside @media, exactly as on master`);
 }
-const sidebarRules = plain.filter(has(".sidebar"));
-check(sidebarRules.length === 1, `globals.css: one .sidebar rule outside @media (${sidebarRules.length})`);
-const desk = sidebarRules.map((r) => r.body).join(";");
-check(decl(desk, "width") === "224px" && decl(desk, "position") === "sticky" && decl(desk, "height") === "100vh",
-  "globals.css: desktop .sidebar as before (width 224px, position sticky, height 100vh)");
-check(!plain.some(has(".sidebar.open")), "globals.css: no .sidebar.open rule outside @media");
+const others = plain.filter((r) => SHELL.test(r.sel) && !(r.sel in MASTER));
+check(others.length === 0, `desktop: no other selector outside @media touches the shell (${others.map((r) => r.sel).join(" | ") || "none"})`);
+for (const sel of [".side-menu-button", ".sidebar-close", ".side-menu-backdrop"]) {
+  check(decl(merged(plain, sel), "display") === "none", `desktop: ${sel} is display: none outside @media`);
+}
+check(!plain.some((r) => /\.top-bar-tagline(?![\w-])/.test(r.sel)), "desktop: the strapline has no rule outside @media");
 
-// The @media for the breakpoint.
+// ---- The @media for the breakpoint ----------------------------------------------
 const norm = (q) => q.replace(/\s+/g, " ").replace(/\(\s*/g, "(").replace(/\s*\)/g, ")").replace(/\s*:\s*/g, ": ").trim();
 const drawerMedia = top.filter((s) => norm(s.head) === `@media ${norm(SIDE_MENU_DRAWER_QUERY)}`);
 const drawerRules = drawerMedia.flatMap((m) => rulesOf(parse(m.body)));
@@ -134,13 +155,16 @@ const topBarZ = z(merged(plain, ".top-bar"));
 check(z(sb) > z(backdrop) && z(backdrop) > topBarZ && z(sb) < 900,
   `drawer: z-index drawer ${z(sb)} > backdrop ${z(backdrop)} > top bar ${topBarZ}, under dialogs (900+)`);
 check(decl(merged(drawerRules, "body.side-menu-open"), "overflow") === "hidden", "drawer: the page behind doesn't scroll (body.side-menu-open)");
+check(decl(merged(drawerRules, "body.side-menu-open .intake-toast"), "visibility") === "hidden",
+  "drawer: toasts (.intake-toast, over the drawer at 1100) hidden while it's open, so taps can't fall through them");
 
-// Nothing else moves the side menu at another width.
-const otherMedia = top.filter((s) => s.head.startsWith("@media") && !drawerMedia.includes(s));
+// Nothing else moves the shell at another width (a reduced-motion
+// transition on the drawer is all another @media may set).
+const otherMedia = top.filter((s) => s.head.startsWith("@") && !drawerMedia.includes(s));
 const stray = otherMedia.filter((m) =>
-  rulesOf(parse(m.body)).some((r) => r.sel.split(",").some((s) => /^\.sidebar(\.open)?$/.test(s.trim())) && !/^\s*transition\s*:[^;]+;?\s*$/.test(r.body)),
+  rulesOf(parse(m.body)).some((r) => SHELL.test(r.sel) && !(/^\.sidebar(, \.sidebar\.open)?$/.test(r.sel) && /^\s*transition\s*:\s*none\s*;?\s*$/.test(r.body))),
 );
-check(stray.length === 0, `globals.css: no other @media changes .sidebar (${stray.map((m) => m.head).join(" | ") || "none"})`);
+check(stray.length === 0, `globals.css: no other @media touches the shell (${stray.map((m) => m.head).join(" | ") || "none"})`);
 
 // ---- AppShell.tsx --------------------------------------------------------------
 const flat = (s) => s.replace(/\s+/g, " ");
@@ -162,6 +186,18 @@ function openingTag(src, at) {
   }
   return "";
 }
+// The {...} block that opens at the first "{" at or after `from`.
+function block(src, from) {
+  const open = src.indexOf("{", from);
+  if (from < 0 || open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}" && --depth === 0) return src.slice(open, i + 1);
+  }
+  return "";
+}
+const count = (src, s) => src.split(s).length - 1;
 const sh = flat(shell);
 check(/import \{[^}]*SIDE_MENU_DRAWER_QUERY[^}]*\} from "@\/lib\/sideMenu"/.test(sh) && /import \{[^}]*SIDE_MENU_ID[^}]*\} from "@\/lib\/sideMenu"/.test(sh),
   "AppShell: uses the breakpoint and id from lib/sideMenu.ts");
@@ -170,25 +206,50 @@ const btnTag = openingTag(sh, btnAt);
 check(btnAt > sh.indexOf('<header className="top-bar">') && sh.indexOf('<header className="top-bar">') > 0, "AppShell: the menu button is in the top bar");
 check(btnTag.includes('type="button"') && btnTag.includes("aria-controls={SIDE_MENU_ID}") && btnTag.includes("aria-expanded={menuOpen}") && /aria-label="[^"]+"/.test(btnTag),
   "AppShell: the menu button has type, aria-controls, aria-expanded and aria-label");
-check(btnTag.includes("onClick={() => setMenuOpen(true)}") && btnTag.includes("ref={menuButtonRef}"), "AppShell: the menu button opens the drawer and is the focus target on close");
+check(btnTag.includes("onClick={openMenu}") && btnTag.includes("ref={menuButtonRef}"), "AppShell: the menu button opens the drawer and is the focus target on close");
+check(/const openMenu = \(\) => \{ if \(!anotherDialogIsOpen\(\)\) setMenuOpen\(true\); \};/.test(sh) &&
+  /function anotherDialogIsOpen\(\): boolean \{ return document\.querySelector\(`\[aria-modal="true"\]:not\(#\$\{SIDE_MENU_ID\}\)`\) !== null; \}/.test(sh),
+  "AppShell: the menu won't open while another dialog (aria-modal) is up");
 check(/<Sidebar [^>]*open=\{menuOpen\}[^>]*onClose=\{closeMenu\}/.test(sh), "AppShell: Sidebar gets open={menuOpen} and onClose={closeMenu}");
 check(/\{menuOpen && <div className="side-menu-backdrop" onClick=\{closeMenu\}/.test(sh), "AppShell: the backdrop shows only while open and closes it when tapped");
-check(/<div className="main-column" inert=\{menuOpen\}>/.test(sh), "AppShell: the page is inert while the drawer is open");
-check(/e\.key === "Escape"\) setMenuOpen\(false\)/.test(sh), "AppShell: Esc closes it");
-check(/window\.matchMedia\(SIDE_MENU_DRAWER_QUERY\)/.test(sh) && /if \(!narrow\.matches\) setMenuOpen\(false\)/.test(sh),
-  "AppShell: widening past the breakpoint closes it");
+check(/<div className="main-column" inert=\{menuOpen( \|\| undefined)?\}>/.test(sh), "AppShell: the page is inert while the drawer is open");
 check(/if \(menuPath !== pathname\) \{ setMenuPath\(pathname\); setMenuOpen\(false\);/.test(sh), "AppShell: a page change closes it");
-check(/if \(menuWasOpen\.current && !menuOpen\) menuButtonRef\.current\?\.focus\(\)/.test(sh), "AppShell: focus goes back to the menu button on close");
-check(/document\.body\.classList\.add\("side-menu-open"\)/.test(sh) && /document\.body\.classList\.remove\("side-menu-open"\)/.test(sh),
-  "AppShell: body.side-menu-open set while open and cleared after");
+
+// The open-drawer effect: Esc, leaving the breakpoint, the scroll lock.
+const effAt = sh.indexOf("useEffect(() => { if (!menuOpen) return;");
+const eff = block(sh, effAt);
+const cleanup = block(eff, eff.indexOf("return () =>"));
+const setup = eff.slice(0, eff.indexOf("return () =>"));
+check(effAt > 0 && cleanup.length > 0, "AppShell: found the open-drawer effect and its cleanup");
+check(setup.includes("const narrow = window.matchMedia(SIDE_MENU_DRAWER_QUERY);"), "AppShell: the effect watches the breakpoint query");
+check(/const onKey = \(e: KeyboardEvent\) => \{ if \(e\.key === "Escape" && !e\.defaultPrevented && focusIsInMenu\(\)\) setMenuOpen\(false\); \};/.test(setup),
+  "AppShell: Esc closes it, only when focus is in the menu and no dialog over it handled the key");
+check(/function focusIsInMenu\(\): boolean \{ const active = document\.activeElement; return !active \|\| active === document\.body \|\| Boolean\(document\.getElementById\(SIDE_MENU_ID\)\?\.contains\(active\)\); \}/.test(sh),
+  "AppShell: focusIsInMenu() is true only for focus in the menu or on the page body");
+check(/const onResize = \(\) => \{ if \(!narrow\.matches\) setMenuOpen\(false\); \};/.test(setup), "AppShell: leaving the breakpoint closes it");
+const early = setup.indexOf("if (!narrow.matches) { onResize(); return; }");
+check(early > 0 && early < setup.indexOf("addEventListener"), "AppShell: already past the breakpoint when the effect runs: closed at once, before subscribing");
+const PAIRS = [
+  ['document.addEventListener("keydown", onKey);', 'document.removeEventListener("keydown", onKey);'],
+  ['narrow.addEventListener("change", onResize);', 'narrow.removeEventListener("change", onResize);'],
+  ['document.body.classList.add("side-menu-open");', 'document.body.classList.remove("side-menu-open");'],
+];
+for (const [add, remove] of PAIRS) {
+  check(count(setup, add) === 1 && count(cleanup, remove) === 1 && count(sh, add) === 1 && count(sh, remove) === 1,
+    `AppShell: ${add.replace(/;$/, "")} in the effect, ${remove.replace(/;$/, "")} in its cleanup`);
+}
+check(count(sh, "addEventListener(") === 2 && count(sh, "removeEventListener(") === 2, "AppShell: no other listeners added or removed");
+check(/if \(menuWasOpen\.current && !menuOpen && focusIsInMenu\(\)\) menuButtonRef\.current\?\.focus\(\)/.test(sh),
+  "AppShell: focus goes back to the menu button on close, unless it moved on to a dialog over the menu");
 check(sh.includes('className="top-bar-tagline"'), "AppShell: the strapline has its class (hidden on phones)");
 
 // ---- Sidebar.tsx ---------------------------------------------------------------
 const sd = flat(sidebar);
 check(/import \{ SIDE_MENU_ID \} from "@\/lib\/sideMenu"/.test(sd) && sd.includes("id={SIDE_MENU_ID}"), "Sidebar: the aside has the menu id");
-check(sd.includes('className={open ? "sidebar open" : "sidebar"}'), 'Sidebar: class "sidebar" closed (desktop as before), "sidebar open" open');
-check(/\{\.\.\.\(open \? \{ role: "dialog", "aria-modal": true, "aria-label": "[^"]+" \} : \{\}\)\}/.test(sd),
-  "Sidebar: a modal dialog only while open (a plain aside on desktop)");
+const asideTag = openingTag(sd, sd.search(/<aside\s/));
+check(asideTag.includes('className={open ? "sidebar open" : "sidebar"}'), 'Sidebar: class "sidebar" closed (desktop as before), "sidebar open" open');
+check(!/\brole\b|aria-modal/.test(asideTag) && asideTag.includes('aria-label={open ? "Menu" : undefined}'),
+  'Sidebar: still an <aside> with no role (dialog is not allowed on one), labelled "Menu" only while open');
 const links = [...sd.matchAll(/<Link\b/g)].map((m) => openingTag(sd, m.index + 1));
 check(links.length >= 2 && links.every((l) => l.includes("onClick={onClose}")), `Sidebar: every link closes the drawer (${links.length} <Link>s)`);
 const closeAt = sd.indexOf('className="sidebar-close"');

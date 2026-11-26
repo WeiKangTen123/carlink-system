@@ -12,6 +12,21 @@ import type { CurrentUser } from "@/lib/api";
 import { isPublicPage } from "@/lib/publicPages";
 import { SIDE_MENU_DRAWER_QUERY, SIDE_MENU_ID } from "@/lib/sideMenu";
 
+/** Whether Esc and the focus return belong to the side menu: focus is in
+ * it, or nowhere in particular (the page body, e.g. after a tap on the
+ * backdrop). Not when it's in a dialog opened over the menu, such as
+ * SessionGuard's sign-in box. */
+function focusIsInMenu(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || Boolean(document.getElementById(SIDE_MENU_ID)?.contains(active));
+}
+
+/** Another modal dialog is up (a case record, the part picker, sign-in...;
+ * every dialog here sets aria-modal): the menu would open underneath it. */
+function anotherDialogIsOpen(): boolean {
+  return document.querySelector(`[aria-modal="true"]:not(#${SIDE_MENU_ID})`) !== null;
+}
+
 /** Sidebar + top bar around every page except the public ones (sign-in,
  * request access, invite links, privacy notice; lib/publicPages.ts), which
  * are drawn on their own. A client component because it depends on the
@@ -52,12 +67,20 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   useEffect(() => {
     if (!menuOpen) return;
     const narrow = window.matchMedia(SIDE_MENU_DRAWER_QUERY);
+    // Only an Esc meant for the menu: not one a dialog over it has handled
+    // or that was pressed in that dialog.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
+      if (e.key === "Escape" && !e.defaultPrevented && focusIsInMenu()) setMenuOpen(false);
     };
     const onResize = () => {
       if (!narrow.matches) setMenuOpen(false);
     };
+    // Already wider than the breakpoint (resized between the tap and now):
+    // no change event would come, so close it here.
+    if (!narrow.matches) {
+      onResize();
+      return;
+    }
     document.addEventListener("keydown", onKey);
     narrow.addEventListener("change", onResize);
     document.body.classList.add("side-menu-open");
@@ -69,15 +92,19 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
   }, [menuOpen]);
 
   // Focus goes back to the menu button when the drawer closes (the drawer
-  // moves it in when it opens: components/Sidebar.tsx).
+  // moves it in when it opens: components/Sidebar.tsx), unless it has
+  // moved on to a dialog opened over the menu meanwhile.
   useEffect(() => {
-    if (menuWasOpen.current && !menuOpen) menuButtonRef.current?.focus();
+    if (menuWasOpen.current && !menuOpen && focusIsInMenu()) menuButtonRef.current?.focus();
     menuWasOpen.current = menuOpen;
   }, [menuOpen]);
 
   if (bare) return <>{children}</>;
 
   const closeMenu = () => setMenuOpen(false);
+  const openMenu = () => {
+    if (!anotherDialogIsOpen()) setMenuOpen(true);
+  };
 
   return (
     <CurrentUserProvider value={user}>
@@ -96,7 +123,7 @@ export function AppShell({ user, children }: { user: CurrentUser | null; childre
               aria-label="Open menu"
               aria-controls={SIDE_MENU_ID}
               aria-expanded={menuOpen}
-              onClick={() => setMenuOpen(true)}
+              onClick={openMenu}
             >
               <Menu aria-hidden="true" style={{ width: 20, height: 20 }} />
             </button>

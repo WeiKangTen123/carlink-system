@@ -48,9 +48,11 @@ function isActiveLink(pathname: string, href: string): boolean {
  *
  * open / onClose: on narrow screens the menu is a drawer over the page
  * (lib/sideMenu.ts), opened from the top bar's menu button in AppShell.
- * Open, it is a modal dialog and takes the focus; any link in it, its close
- * button, the backdrop or Esc (AppShell) closes it. Wider screens never
- * open it, so there it stays the plain side menu. */
+ * Open, it takes the focus and the rest of the page is inert (AppShell),
+ * so it acts as a modal; any link in it, its close button, the backdrop or
+ * Esc (AppShell) closes it. It stays an <aside> (role="dialog" isn't
+ * allowed on one), labelled "Menu" while open. Wider screens never open
+ * it, so there it stays the plain side menu. */
 export function Sidebar({
   locked = false,
   open = false,
@@ -77,7 +79,7 @@ export function Sidebar({
     <aside
       id={SIDE_MENU_ID}
       className={open ? "sidebar open" : "sidebar"}
-      {...(open ? { role: "dialog", "aria-modal": true, "aria-label": "Menu" } : {})}
+      aria-label={open ? "Menu" : undefined}
     >
       <Link href={locked ? "/account" : "/"} className="sidebar-brand" onClick={onClose}>
         <div className="brand-icon">
