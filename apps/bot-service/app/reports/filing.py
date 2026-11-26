@@ -51,6 +51,9 @@ AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions"
                         # Wave 2 E7 (settings.intake_side_geometry): the side
                         # resolver's changes (pipeline.resolve_sides).
                         "side_geometry",
+                        # Detection Round 2 (settings.intake_zone_inventory):
+                        # the zone reads' inventory (intake/zones.add_inventory).
+                        "zone_inventory",
                         # Detection Round 1 A1 in shadow (settings.
                         # intake_sorter_hints): the sorter's finds kept apart.
                         "sorter_suggestions")
@@ -70,6 +73,11 @@ def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:
     for key in AI_DRAFT_PHOTO_LISTS:
         if isinstance(out.get(key), list):
             out[key] = [relabel_item(item, index_of) for item in out[key] if isinstance(item, dict)]
+    if isinstance(out.get("zone_inventory"), list):
+        # Detection Round 2: an inventory row whose photo was deleted keeps
+        # no box either (the R2 review's L4).
+        out["zone_inventory"] = [{**row, "box": None} if not row.get("photo_reference") and row.get("box") else row
+                                 for row in out["zone_inventory"]]
     if isinstance(out.get("assembly_walk"), dict):
         # The assembly walk (K3b): each sign's photo as the case's P-number
         # (a deleted photo's gone, the answer kept), so a re-link on the

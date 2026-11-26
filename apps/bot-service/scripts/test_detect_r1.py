@@ -325,6 +325,21 @@ NEW_SETTINGS = {"intake_sorter_hints": "off", "intake_intact_rule": "old"}
 COMPOSE = {"INTAKE_SORTER_HINTS": "off", "INTAKE_INTACT_RULE": "old"}
 
 
+def _changed_defs(base: str, here: str, allowed=("_read_into",)) -> list[str]:
+    """The top-level functions and classes of a module that differ between
+    two versions of it (or are only in one), but the allowed ones."""
+    import ast
+
+    def defs(text: str) -> dict[str, str]:
+        text = text.replace("\r\n", "\n")
+        tree = ast.parse(text)
+        return {node.name: ast.get_source_segment(text, node) for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+
+    a, b = defs(base), defs(here)
+    return sorted(name for name in set(a) | set(b) if name not in allowed and a.get(name) != b.get(name))
+
+
 def settings_section() -> None:
     fresh = config.Settings()
     check({k: getattr(fresh, k) for k in NEW_SETTINGS} == NEW_SETTINGS, "each Round 1 setting defaults to today's",
@@ -368,8 +383,14 @@ def settings_section() -> None:
     base = subprocess.run(["git", "-C", str(REPO), "show", f"{BASE_REF}:apps/bot-service/app/intake/pipeline.py"],
                           capture_output=True, text=True, encoding="utf-8")
     here = (ROOT / "app" / "intake" / "pipeline.py").read_text(encoding="utf-8")
-    check(base.returncode == 0 and base.stdout.replace("\r\n", "\n") == here.replace("\r\n", "\n"),
-          f"A3 dropped: app/intake/pipeline.py is {BASE_REF}'s, byte for byte (the photo choice untouched)")
+    # Detection Round 2 (merged after Round 1) adds its hooks to _read_into
+    # only, each behind its own switch (scripts/test_detect_r2.py holds the
+    # requests and the stored data byte for byte with them off); every other
+    # function of the module -- the photo choice among them -- is still
+    # ae0fde4's, byte for byte.
+    changed = _changed_defs(base.stdout, here) if base.returncode == 0 else ["<no base>"]
+    check(not changed, f"A3 dropped: app/intake/pipeline.py's photo choice (select_for_reading and every other "
+                       f"function but Round 2's hooks in _read_into) is {BASE_REF}'s, byte for byte", changed)
     check("sorter_suggestions" in filing.AI_DRAFT_PHOTO_LISTS and "sorter" in accuracy.SUGGESTION_SOURCES,
           "filing relabels the shadow list's photos; the AI-accuracy record counts source \"sorter\"")
 

@@ -9,7 +9,8 @@
  * Pure: no React, no three.js, type-only imports apart from lib/vehicleZones
  * (itself pure), so scripts/check-damage-links.mjs runs it under Node.
  */
-import type { Box } from "./api";
+import type { Box, Evidence } from "./api";
+import { pickBox } from "./evidence";
 import type { Finding, FindingStatus, Selection } from "./findings";
 import { dominantSide, photoAreas, standInFor, zoneArea, zoneKeysFor, zoneLabel, type MapArea } from "./vehicleZones";
 
@@ -32,7 +33,7 @@ export type FindingPlace = {
 export type PhotoMark = {
   key: string;
   box: Box | null;
-  kind: "ai" | "sort" | null;
+  kind: "ai" | "sort" | "part" | null;
   frame: { w: number; h: number } | null;
 };
 
@@ -126,13 +127,24 @@ export function buildLinks(findings: Finding[], canon: CanonRef = sameRef): Dama
     }
 
     const refs: string[] = [];
+    const onPhoto = new Map<string, Evidence[]>();
     for (const e of f.evidence) {
       const ref = canon(e.photo);
-      if (refs.includes(ref)) continue;
-      refs.push(ref);
+      if (!refs.includes(ref)) refs.push(ref);
       // The listed part's photo, shown for context: the linked part isn't on
       // it, so it is in the part's photos but not marked on the photo.
       if (e.by === "link") continue;
+      const held = onPhoto.get(ref);
+      if (held) held.push(e);
+      else onPhoto.set(ref, [e]);
+    }
+    for (const ref of refs) {
+      const entries = onPhoto.get(ref);
+      if (!entries) continue;
+      // One mark a photo, its box by precedence as the viewer picks it
+      // (lib/evidence.pickBox): an AI box, the sorter's, a located part box
+      // (detection Round 2, beside the read's own entry), else none.
+      const e = pickBox(entries) ?? entries[0];
       push(marksOn, ref, {
         key: f.key,
         box: e.box,

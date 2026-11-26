@@ -14,7 +14,7 @@ export type BoxMark = {
   label: string;
   status: FindingStatus;
   box: Box | null;
-  kind: "ai" | "sort" | null;
+  kind: "ai" | "sort" | "part" | null;
   frame?: { w: number; h: number } | null;
 };
 
@@ -105,7 +105,7 @@ export function PhotoBoxes({
 
   const boxes = visible.map((m) => {
     const style = bboxStyle(m.box) as CSSProperties;
-    const kindWord = BOX_WORDS[m.kind as "ai" | "sort"];
+    const kindWord = BOX_WORDS[m.kind as "ai" | "sort" | "part"];
     const glyph = STATUS_GLYPH[m.status];
     const cls = [
       "pb-box",

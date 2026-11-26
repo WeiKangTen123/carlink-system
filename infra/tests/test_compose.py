@@ -80,6 +80,11 @@ EXPECTED_PROD_NEW_ENV = {
     # (app/reports/firm_words.py), off = every reading as before
     # (test_p1_report_checks checks the default against config.py).
     "INTAKE_FIRM_WORDS": "off",
+    # Detection Round 2 (app/config.py intake_box_every, intake_zone_inventory):
+    # off = every zone request and stored draft as before (scripts/
+    # test_detect_r2.py checks each default against config.py).
+    "INTAKE_BOX_EVERY": "off",
+    "INTAKE_ZONE_INVENTORY": "off",
     # Detection Round 1 (owner, 25 Nov 2026): A1 the sorter's finds as
     # suggestions, A2 the zone reads' "intact" rule -- each at config.py's
     # default = today's behaviour (scripts/test_detect_r1.py section 0

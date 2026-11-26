@@ -671,9 +671,12 @@ def _seen_photos(child: str, ctx: _Ctx) -> list[str]:
 
 def _parent_photo(parent: dict, ctx: _Ctx) -> str | None:
     """The parent's best photo still in the case: its first evidence entry
-    (best first), its photo_reference, the first photo it was seen in."""
+    (best first), its photo_reference, the first photo it was seen in.
+    Never a detection Round 2 located part box's photo (by "locate:...",
+    the R2 review's L9): where the part is, not why it is listed."""
     gone = {_photo_ref(p) for p in ctx.photos if not _usable(p)}
-    refs = [e.get("photo") for e in parent.get("evidence") or [] if isinstance(e, dict)]
+    refs = [e.get("photo") for e in parent.get("evidence") or []
+            if isinstance(e, dict) and not evidence.located(e)]
     refs += [parent.get("photo_reference")] + list(parent.get("seen_in") or [])
     return next((r for r in refs if isinstance(r, str) and r and r not in gone), None)
 

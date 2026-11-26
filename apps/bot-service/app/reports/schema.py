@@ -87,12 +87,16 @@ class Evidence(BaseModel):
     # [ymin, xmin, ymax, xmax], ints 0..1000, on the upright AI-input frame
     # (the 1600 px preview). None: no box on this photo.
     box: Optional[list[int]] = None
-    # "ai" | "sort" | None -- None exactly when box is None.
+    # "ai" | "sort" | "part" (detection Round 2: a box round a part a zone
+    # read located or listed, not round damage) | None -- None exactly when
+    # box is None.
     box_kind: Optional[str] = None
     # Which read said so: "overall" | "zone:front|rear|left|right|close" |
     # "sort" | "check" | "second_look". Contract 10: "link" -- the photo
     # of the listed part a linked part hangs off (no box); "link_check" --
-    # the linked check's photo, with its box when it drew one.
+    # the linked check's photo, with its box when it drew one. Detection
+    # Round 2: "locate:zone:<zone>" -- a zone read's box round a listed
+    # part it saw (where it is, not a find: intake/zones.place_boxes).
     by: str = "overall"
     # That source's words, cleaned (evidence.clean_reason), at most 160
     # characters.
@@ -220,6 +224,9 @@ FIX_LOOK_DEFAULTS = {"cut": [], "cut_counts": {}}
 # Wave 2 (plans/2026-11-22-enhance-staging 3c), the same way. E11:
 # wrong_end_note on a "wrong end" zone read's suggestion.
 WAVE2_SUGGESTION_DEFAULTS = {"wrong_end_note": None}
+# Detection Round 2 (settings.intake_zone_inventory), the same way:
+# inventory_note on a suggestion from a zone read's inventory.
+R2_SUGGESTION_DEFAULTS = {"inventory_note": None}
 
 
 def _without_defaults(dumped, defaults: dict):
@@ -773,11 +780,16 @@ class SecondLookItem(BaseModel):
     # the other end -- "The rear read thought these photos show the front."
     # (zone_read.wrong_end_note); the Review step shows it as a note.
     wrong_end_note: Optional[str] = None
+    # Detection Round 2 (settings.intake_zone_inventory "on"), code-set, not
+    # in a dump while None: a part a zone read's inventory marked damaged
+    # that nothing listed or suggested (intake/zones.inventory_suggestions)
+    # -- "Seen in the zone check: ..."; the Review step shows it as a note.
+    inventory_note: Optional[str] = None
 
     @model_serializer(mode="wrap")
     def _without_unset_links(self, handler):
         return _without_defaults(handler(self), {**LINK_SUGGESTION_DEFAULTS, **FIX_SUGGESTION_DEFAULTS,
-                                                 **WAVE2_SUGGESTION_DEFAULTS})
+                                                 **WAVE2_SUGGESTION_DEFAULTS, **R2_SUGGESTION_DEFAULTS})
 
 
 # SecondLook.decisions kept per case.

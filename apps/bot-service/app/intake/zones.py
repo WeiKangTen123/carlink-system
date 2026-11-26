@@ -69,15 +69,18 @@ photo, best first, the item's photo_reference first. The merge joins them
 against the photos (evidence.finish: frames, the sorter's boxes).
 """
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from app.ai import allowance, evidence, runs
 from app.ai.keys import AiActor, AiUnavailable
+from app.ai.structured import collecting_errors
 from app.ai.second_look import MAX_SEEN_IN, ZONES, covers_for, covers_of, other_side_note
 from app.ai.zone_read import CLOSE, END_ZONES, SIDE_ZONES, ZONE_NAMES, ZoneAnswer, read_zone
 from app.config import ZONE_PACKS, chain, pack_list, settings
@@ -192,23 +195,62 @@ class ZoneExtras:
     E11: wrong_end_mode ("shadow" / "keep") -- an end zone that sees the
     other end has its finds parsed apart; _read_zones files them in
     wrong_end ({"zone:rear": {"seen": "front", "items": [... photos as
-    "@<photo id>"]}}) and in the zone's run-log entry."""
+    "@<photo id>"]}}) and in the zone's run-log entry.
+
+    Detection Round 2 (settings.intake_box_every, intake_zone_inventory;
+    zone_read's "Round 2"), carried here the same way so every path that
+    makes zone reads (the reading's, F1's, the parallel reads') has it: box_every,
+    inventory (car_names: the inventory may name the car map's small
+    parts, settings.intake_car_map_names "on"). listed: the drafted list
+    the zone reads place (read_and_merge sets it; None while it isn't
+    known -- reads started before or beside the main read -- and nothing
+    is placed then). _read_zones fills located and inventory_rows (photos
+    as "@<photo id>", each with its read), asked (each read's located
+    names), zone_finds (the zone reads' own damage items) and zone_run_id;
+    place_round2_boxes and add_inventory use them."""
     geometry_mode: str = "off"
     photo_sides: dict = field(default_factory=dict)
     wrong_end_mode: str = "drop"
     wrong_end: dict = field(default_factory=dict)
+    box_every: bool = False
+    inventory: bool = False
+    car_names: bool = False
+    listed: list | None = None
+    located: list = field(default_factory=list)
+    inventory_rows: list = field(default_factory=list)
+    asked: dict = field(default_factory=dict)
+    zone_finds: int | None = None
+    zone_run_id: str | None = None
+    # place_round2_boxes: list items with a box before the located ones.
+    boxed_before: int | None = None
+
+    def round2_on(self) -> bool:
+        return bool(self.box_every or self.inventory)
+
+
+def box_every_on() -> bool:
+    """Round 2's R2-box: settings.intake_box_every is "on"."""
+    return getattr(settings, "intake_box_every", "off") == "on"
+
+
+def inventory_on() -> bool:
+    """Round 2's R2-inv: settings.intake_zone_inventory is "on"."""
+    return getattr(settings, "intake_zone_inventory", "off") == "on"
 
 
 def extras_for(photos) -> "ZoneExtras | None":
     """The reading's ZoneExtras from the settings and its photos (IntakePhoto
-    rows), or None when every Wave 2 zone option is at its default."""
+    rows), or None when every Wave 2 and Round 2 zone option is at its
+    default."""
     from app.intake import geometry
 
     how, end = geometry.mode(), wrong_end_mode()
-    if how == "off" and end == "drop":
+    box_every, inventory = box_every_on(), inventory_on()
+    if how == "off" and end == "drop" and not (box_every or inventory):
         return None
     return ZoneExtras(geometry_mode=how, photo_sides=geometry.photo_sides(photos) if how != "off" else {},
-                      wrong_end_mode=end)
+                      wrong_end_mode=end, box_every=box_every, inventory=inventory,
+                      car_names=inventory and getattr(settings, "intake_car_map_names", "off") == "on")
 
 
 def _zone_sides(job, extras) -> dict[str, str]:
@@ -625,7 +667,12 @@ def read_and_merge(
     (assembly_walk.merge_all, photos as "@<photo id>"; ai_draft[
     "assembly_walk"]); left empty when no zone read walked.
 
-    extras (Wave 2, ZoneExtras): passed on to zone_reads only when given."""
+    extras (Wave 2, ZoneExtras): passed on to zone_reads only when given.
+    With Round 2's box_every, its listed is set to `items` first: the zone
+    reads place the drafted list's parts."""
+    if extras is not None and extras.box_every:
+        extras.listed = [{"part": it.get("part"), "photo_reference": it.get("photo_reference")}
+                         for it in items if isinstance(it, dict)]
     reads = zone_reads(report_id, actor, jobs, progress, intact, walk, **({"extras": extras} if extras else {}))
     return merged_with(report_id, items, reads)
 
@@ -695,6 +742,17 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
     grid = grid_on()
     asked = evidence_mode()
     light = light_options()
+    # Round 2's fallback (the review's M6): at most one request per model of
+    # the chain for each key the call may use -- call_structured counts
+    # max_tries over every key, so a person's own key never uses up the
+    # company key's turn (the second review's N6) -- and no all-busy round:
+    # F1's second try's rule.
+    chain_length = max(1, len(zone_chain()))
+    if extras is not None and extras.box_every and extras.listed is None and jobs and not round2_latched():
+        # The review's M8: the zone reads run before (or beside) the main
+        # read -- F1, intake_parallel_reads -- so there is no list to place.
+        logger.warning("Reading %s: Round 2's box-every is on, but the zone reads ran before the main read's list "
+                       "was known (parallel or fallback reads): nothing is located", report_id)
     started = time.monotonic()
     answers: dict[int, ZoneAnswer] = {}
     entries: list[dict] = [{"zone": job.zone, "photos": [f"@{pid}" for _, pid, _, _ in job.photos]} for job in jobs]
@@ -706,6 +764,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         entry = entries[i]
         error = None
         attempts = runs.Attempts()
+        # Round 2 (extras' box_every / inventory): what this call asks
+        # beyond today's, and its run-log note; None while off.
+        ask = answer = r2_note = None
         try:
             if stop.is_set():
                 entry.update(status="skipped", note="no AI allowance left")
@@ -716,21 +777,61 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             if time.monotonic() - started > TIME_BOX:
                 entry.update(status="skipped", note="out of time")
                 return
+            ask = _guarded(lambda: round2_ask(job, extras), None, "couldn't work out what to ask")
+            r2_note = {} if ask is not None else None
+            photos = [(label, path, kind) for label, _, path, kind in job.photos]
+            if ask is not None:
+                # The schema cap (the review's L2): the inventory left out
+                # first, then locate.
+                ask, trimmed = _guarded(lambda: zone_read_fit(job.zone, [p[0] for p in photos], ask, grid=grid,
+                                                              evidence_mode=asked, **light), (None, []),
+                                        "couldn't size the schema; asked without it")
+                if trimmed:
+                    r2_note["trimmed"] = trimmed
+                    logger.warning("Zone %s of %s: Round 2's %s left out, the schema over its cap", job.zone,
+                                   report_id, " and ".join(trimmed))
+                if ask is not None and ask.locate:
+                    extras.asked[f"zone:{job.zone}"] = list(ask.locate)
             try:
                 # This worker's Gemini tries, kept apart for the zone's own
                 # error code, then added to the stage's one run.
-                with runs.collecting(attempts):
-                    answer = read_zone(job.zone, [(label, path, kind) for label, _, path, kind in job.photos],
-                                       actor=actor, models=models, grid=grid, evidence_mode=asked, **light,
-                                       **_extra_kwargs(job, extras))
+                with runs.collecting(attempts), (collecting_errors() if ask is not None else nullcontext([])) as errors:
+                    answer = read_zone(job.zone, photos, actor=actor, models=models, grid=grid, evidence_mode=asked,
+                                       **light, **_extra_kwargs(job, extras),
+                                       **({"r2": ask} if ask is not None else {}))
             except Exception as exc:
-                error = exc
-                # The person's AI going away, or the day's allowance used up
-                # on every model: the zones after this would only fail too.
-                if isinstance(exc, (AiUnavailable, allowance.DayUsedUp)):
-                    stop.set()
-                logger.warning("Zone %s of %s skipped: %s", job.zone, report_id, type(exc).__name__)
-                return
+                answer = None
+                first = attempts.snapshot()
+                if (ask is not None and round2_fallback_worthy(exc, first) and not stop.is_set()
+                        and not (cancel is not None and cancel.is_set()) and time.monotonic() - started <= TIME_BOX):
+                    # Round 2: a failure its fields may have caused (a refused
+                    # schema, a timeout, an answer that didn't parse) is asked
+                    # once more as today, one request per model at most --
+                    # the zone's finds are never lost for Round 2.
+                    r2_note["fallback"] = runs.error_code_for(exc, first)
+                    logger.warning("Zone %s of %s: asked again without Round 2 (%s)", job.zone, report_id,
+                                   type(exc).__name__)
+                    try:
+                        with runs.collecting(attempts):
+                            answer = read_zone(job.zone, photos, actor=actor, models=models, grid=grid,
+                                               evidence_mode=asked, **light, **_extra_kwargs(job, extras),
+                                               max_tries=chain_length * _key_count(actor))
+                    except Exception as again:
+                        exc = again
+                    else:
+                        if _guarded(lambda: schema_refused(errors, attempts.snapshot()[len(first):]), False,
+                                    "couldn't tell what refused the zone call"):
+                            # A model refused the schema and answered the same
+                            # call without Round 2's fields.
+                            _note_refusal(job.zone, report_id)
+                if answer is None:
+                    error = exc
+                    # The person's AI going away, or the day's allowance used up
+                    # on every model: the zones after this would only fail too.
+                    if isinstance(exc, (AiUnavailable, allowance.DayUsedUp)):
+                        stop.set()
+                    logger.warning("Zone %s of %s skipped: %s", job.zone, report_id, type(exc).__name__)
+                    return
             answers[i] = answer
             entry.update(status="ok", side_seen=answer.side_seen, found=len(answer.items), intact=answer.intact)
             if answer.note:
@@ -759,6 +860,9 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 run.attempts.add_input(size)
             if error is not None:
                 entry.update(status="failed", error_code=runs.error_code_for(error, tries))
+            if r2_note is not None:
+                entry["r2"] = _guarded(lambda: round2_log(ask, answer, tries, r2_note), {"error": True},
+                                       "couldn't log the zone call")
             # Counted and shown under the lock: two calls ending together
             # must not write their counts in the wrong order.
             with lock:
@@ -782,6 +886,14 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
                 "count": sum(len(job.photos) for job, entry in zip(jobs, entries) if entry.get("status") in ("ok", "failed")),
                 "zones": entries,
             }
+            if extras is not None and extras.round2_on():
+                # Round 2: what the zone reads placed and listed, and their
+                # extra output (the pipeline adds box_coverage once the list
+                # is final: note_round2).
+                run.photos_sent["r2"] = _guarded(lambda: round2_summary(entries, extras), {"error": True},
+                                                 "couldn't sum up the zone calls")
+                extras.zone_run_id = run.id
+                extras.zone_finds = sum(len(a.items) for a in answers.values())
             run.parts_found = sum(len(a.items) for a in answers.values())
             if not answers:
                 run.error_code = next((e.get("error_code") for e in reversed(entries) if e.get("error_code")), "skipped")
@@ -806,6 +918,13 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
             # E11: its finds apart, photos by id as the reads' are.
             extras.wrong_end[f"zone:{job.zone}"] = {
                 "seen": answer.side_seen, "items": [_by_photo_id(it, label_to_id) for it in answer.wrong_end_items]}
+        if extras is not None and extras.round2_on():
+            # Round 2: what it located and listed, photos by id, with its read.
+            for rows, into in ((answer.located, extras.located), (answer.inventory, extras.inventory_rows)):
+                for row in rows:
+                    pid = label_to_id.get(row.get("photo") or "")
+                    if pid:
+                        into.append({**row, "photo": f"@{pid}", "read": f"zone:{job.zone}"})
     if walk is not None and walks:
         try:
             walk.update(assembly_walk.merge_all([(read, assembly_walk.with_photo_ids(found, ids))
@@ -813,6 +932,23 @@ def _read_zones(report_id: str, actor: AiActor, jobs: list[ZoneJob],
         except Exception:  # never the reason the zone reads are lost
             logger.exception("Zone reading for %s: couldn't merge the assembly walk; none kept", report_id)
     return reads
+
+
+def _guarded(work: Callable, default, what: str):
+    """Round 2's helpers in the zone stage (the review's L3): work(), or
+    default -- logged -- when it raises. Never the reason a zone call, or
+    the reading, is lost."""
+    try:
+        return work()
+    except Exception:
+        logger.exception("Round 2: %s", what)
+        return default
+
+
+def zone_read_fit(zone: str, labels: list[str], ask, **options):
+    from app.ai.zone_read import fit_round2
+
+    return fit_round2(zone, labels, ask, **options)
 
 
 def _by_photo_id(item: dict, label_to_id: dict[str, str]) -> dict:
@@ -868,3 +1004,453 @@ def intact_of(ai_draft) -> dict[str, list[str]]:
         return {}
     return {str(read): [part for part in parts if isinstance(part, str)]
             for read, parts in raw.items() if isinstance(parts, list)}
+
+
+# ------------------------------------------------------------ Round 2
+#
+# Detection Round 2 (zone_read's "Round 2"; settings.intake_box_every,
+# "R2-box", and intake_zone_inventory, "R2-inv"; zone mode only). Off:
+# nothing here runs, and no zone call, merge or stored draft changes. On,
+# with no extra call -- but one, as today, after a zone call its fields
+# made fail:
+#   - round2_ask: what each zone call asks beyond today's, fit to the
+#     schema cap (zone_read.fit_round2) by _read_zones;
+#   - place_round2_boxes (pipeline, right after evidence.finish, so the
+#     sorter's boxes the reading shows are on by then and stand): R2-box
+#     puts a located part box on each list item that has no box
+#     (place_boxes);
+#   - drop_crossed_boxes and add_inventory (pipeline, after the side
+#     resolver): a located box its side now contradicts goes; R2-inv keeps
+#     the inventory apart (ai_draft["zone_inventory"]) and makes its damaged
+#     parts nothing listed or suggested suggestions (inventory_suggestions);
+#   - box_coverage / note_round2: how many list items have a box -- with the
+#     zone reads' own finds and the list's agreement, to compare on and off
+#     -- in the AI draft and in the zone run's log.
+
+LOCATE_BY = evidence.LOCATED
+# A suggestion from a zone read's inventory is found by "zone_inventory:
+# <zone>", never by the zone read's own name: the AI-accuracy record and
+# the parts library count it apart from the reads' damage finds (the
+# review's M7).
+INVENTORY_READ = "zone_inventory:"
+INVENTORY_MAX_SUGGESTIONS = 6
+INVENTORY_NOTE = "Seen in the zone check: marked damaged among the parts in view."
+_CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+# The review's M6 and the second review's N1: a refused schema would be
+# refused again, each time costing a request per model. So once a model
+# has refused a zone call's schema with Round 2's fields (a 400 /
+# INVALID_ARGUMENT about the request, schema_refusal) and then answered
+# the same call without them -- REFUSALS_TO_LATCH times within LATCH_SECONDS
+# -- every zone call of this process asks without them for LATCH_SECONDS.
+# Transient errors (5xx, 504 DEADLINE_EXCEEDED, a connection reset, a
+# retired model's 404, an invalid key) never count. Logged once a latch.
+REFUSALS_TO_LATCH = 2
+LATCH_SECONDS = 3600.0
+_LATCH: dict = {"until": None, "events": []}
+_LATCH_LOCK = threading.Lock()
+
+
+def _clock() -> float:
+    return time.monotonic()
+
+
+def round2_latched() -> bool:
+    """Round 2 is latched off (a refused schema, twice) and not expired."""
+    with _LATCH_LOCK:
+        until = _LATCH["until"]
+        if until is not None and _clock() >= until:
+            _LATCH["until"] = None
+            logger.info("Round 2: the latch after refused schemas expired; zone calls ask with its fields again")
+        return _LATCH["until"] is not None
+
+
+def reset_round2_latch() -> None:
+    """Round 2 asked again, every refusal forgotten (the tests)."""
+    with _LATCH_LOCK:
+        _LATCH["until"] = None
+        _LATCH["events"] = []
+
+
+_SCHEMA_WORDS = re.compile(r"INVALID_ARGUMENT|invalid argument|schema|too many states|constraint", re.IGNORECASE)
+_KEY_WORDS = re.compile(r"API_KEY_INVALID|API key not valid|API key expired", re.IGNORECASE)
+_STATUS_IN_TEXT = re.compile(r"(?:Error code:\s*|^)(\d{3})\b")
+
+
+def _status_of(exc: BaseException) -> int | None:
+    for name in ("status_code", "code"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and 100 <= value < 600:
+            return value
+    found = _STATUS_IN_TEXT.search(str(exc).strip())
+    return int(found.group(1)) if found else None
+
+
+def schema_refusal(exc: BaseException) -> bool:
+    """Google refused the request itself as malformed -- an HTTP 400 that
+    says INVALID_ARGUMENT or names the schema -- not an invalid key, a busy
+    or broken server (5xx, 504 DEADLINE_EXCEEDED), a lost connection or a
+    retired model (404)."""
+    text = str(exc)
+    return _status_of(exc) == 400 and not _KEY_WORDS.search(text) and bool(_SCHEMA_WORDS.search(text))
+
+
+def schema_refused(errors: list, fallback_tries: list[dict]) -> bool:
+    """The evidence for the latch: a model whose try with Round 2's fields
+    was a schema refusal (errors: (model, error) of that call) answered the
+    same call without them (fallback_tries: that call's run-log tries)."""
+    answered = {a.get("model") for a in fallback_tries or [] if isinstance(a, dict) and a.get("outcome") == "ok"}
+    return any(model in answered and schema_refusal(exc) for model, exc in errors or [])
+
+
+def _note_refusal(zone: str, report_id: str) -> None:
+    """One refusal counted; at REFUSALS_TO_LATCH within LATCH_SECONDS, the
+    latch for LATCH_SECONDS, logged."""
+    with _LATCH_LOCK:
+        now = _clock()
+        _LATCH["events"] = [t for t in _LATCH["events"] if now - t < LATCH_SECONDS] + [now]
+        if len(_LATCH["events"]) < REFUSALS_TO_LATCH or _LATCH["until"] is not None:
+            return
+        _LATCH["until"] = now + LATCH_SECONDS
+        _LATCH["events"] = []
+    logger.warning("Round 2: the %s zone call of %s is the %d%s schema refusal with Round 2's fields answered without "
+                   "them; every zone call of this process asks without them for the next %.0f minutes", zone,
+                   report_id, REFUSALS_TO_LATCH, "nd" if REFUSALS_TO_LATCH == 2 else "th", LATCH_SECONDS / 60)
+
+
+def _key_count(actor) -> int:
+    """The keys a call for this person may use (keys.resolve_keys), 1 when
+    they can't be counted."""
+    try:
+        from app.ai.keys import resolve_keys
+
+        return max(1, len(resolve_keys(actor)))
+    except Exception:
+        return 1
+
+
+def round2_ask(job: ZoneJob, extras: "ZoneExtras | None"):
+    """The zone_read.Round2Ask for one zone call, or None -- Round 2 off or
+    latched (a refused schema), or nothing to ask in this zone (the call is
+    then today's). R2-box: the listed parts this zone's checklist can name
+    (extras.listed, none while the list isn't known), each with the labels
+    of its own photos among the call's; R2-inv: the zone's inventory
+    names."""
+    from app.ai import zone_read
+
+    if extras is None or not extras.round2_on() or round2_latched():
+        return None
+    locate: list[str] = []
+    hints: dict[str, list[str]] = {}
+    if extras.box_every and extras.listed:
+        label_of = {pid: label for label, pid, _, _ in job.photos}
+        locate = zone_read.locate_names(job.zone, [it.get("part") for it in extras.listed])
+        # zone_read.LOCATE_HINTS False (the benchmark's --box-every-no-hints;
+        # the second review's N8): the names alone.
+        for it in extras.listed if zone_read.LOCATE_HINTS else []:
+            label = label_of.get(evidence.photo_id(it.get("photo_reference")) or "")
+            if not label:
+                continue
+            for name in zone_read.locate_names_of(job.zone, str(it.get("part") or "")):
+                if name in locate and label not in hints.get(name, []):
+                    hints.setdefault(name, []).append(label)
+    inventory = zone_read.inventory_names(job.zone, extras.car_names) if extras.inventory else []
+    ask = zone_read.Round2Ask(locate=locate, hints=hints, inventory=inventory)
+    return ask if ask.on() else None
+
+
+def round2_fallback_worthy(exc: BaseException, tries: list[dict]) -> bool:
+    """Whether a zone call with Round 2's fields failed in a way they may
+    have caused -- the schema refused (an error that isn't "busy"), a
+    timeout, an answer that didn't parse -- so it is asked once more as
+    today. Never for the person's AI going away or the day's allowance, nor
+    for a chain that was only busy or rate-limited."""
+    if isinstance(exc, (AiUnavailable, allowance.DayUsedUp)):
+        return False
+    return any(a.get("outcome") in ("schema", "timeout") or (a.get("outcome") == "error" and not a.get("busy"))
+               for a in tries or [] if isinstance(a, dict))
+
+
+def _extra_tokens(answer, tries: list[dict]) -> int:
+    """The output tokens Round 2's fields took, estimated: the answering
+    try's output tokens by the fields' share of the answer's characters,
+    else a token for every four characters."""
+    if not answer.r2_chars:
+        return 0
+    used = next((a.get("output_tokens") for a in reversed(tries or []) if a.get("outcome") == "ok"), None)
+    if isinstance(used, int) and not isinstance(used, bool) and used > 0 and answer.answer_chars > 0:
+        return round(used * answer.r2_chars / answer.answer_chars)
+    return round(answer.r2_chars / 4)
+
+
+def round2_log(ask, answer, tries: list[dict], note: dict) -> dict:
+    """A zone call's Round 2 in the run log (its zones entry's "r2"): what
+    was asked, what came back, the extra output, and whether the answer
+    was cut off (salvaged), the schema too big for a field (trimmed) or
+    the call asked again as today (fallback). Counts only: no photo, no
+    part name."""
+    out: dict = {"locate_asked": len(ask.locate) if ask is not None else 0,
+                 "inventory_asked": bool(ask is not None and ask.inventory)}
+    if answer is not None:
+        out.update(located=len(answer.located), inventory=len(answer.inventory),
+                   inventory_damaged=sum(1 for row in answer.inventory if row.get("damaged")),
+                   extra_chars=answer.r2_chars, answer_chars=answer.answer_chars,
+                   extra_output_tokens_est=_extra_tokens(answer, tries))
+        if answer.r2_salvaged:
+            out["salvaged"] = True
+    out.update(note or {})
+    return out
+
+
+def round2_summary(entries: list[dict], extras: "ZoneExtras") -> dict:
+    """The zone run's Round 2 totals (photos_sent["r2"]): what was placed
+    and listed, the extra output, and the zone reads' own finds (to set
+    against a run with Round 2 off)."""
+    logs = [e.get("r2") for e in entries if isinstance(e.get("r2"), dict)]
+
+    def total(name: str) -> int:
+        return sum(int(log.get(name) or 0) for log in logs)
+
+    return {"box_every": extras.box_every, "inventory": extras.inventory, "car_names": extras.car_names,
+            "list_known": extras.listed is not None, "latched": round2_latched(), "calls_asked": len(logs),
+            "located": total("located"), "inventory_rows": total("inventory"),
+            "inventory_damaged": total("inventory_damaged"),
+            "extra_output_tokens_est": total("extra_output_tokens_est"),
+            "salvaged": sum(1 for log in logs if log.get("salvaged")),
+            "trimmed": sum(1 for log in logs if log.get("trimmed")),
+            "fallbacks": sum(1 for log in logs if log.get("fallback")),
+            "zone_finds": sum(int(e.get("found") or 0) for e in entries if e.get("status") == "ok")}
+
+
+def _standing(ref, facts: dict | None) -> bool:
+    """A box on this photo stands (evidence.finish keeps it): the AI got
+    it as its preview, not raw. Without facts, every photo does."""
+    if facts is None:
+        return True
+    found = facts.get(evidence.photo_id(ref))
+    return found is not None and not found.raw
+
+
+def has_standing_box(item: dict, facts: dict | None = None) -> bool:
+    """A list item already boxed, for good: its bbox_2d, or an evidence
+    entry's box -- the AI's, the sorter's (evidence.finish has put the
+    sorter's on by the time Round 2 places boxes: the review's M1) or a
+    located one -- on a photo where it stands."""
+    if item.get("bbox_2d") and _standing(item.get("photo_reference"), facts):
+        return True
+    return any(isinstance(e, dict) and e.get("box") and _standing(e.get("photo"), facts)
+               for e in item.get("evidence") or [])
+
+
+def _zone_of(source: dict) -> str:
+    return str(source.get("read") or "").split(":", 1)[-1]
+
+
+def _framed(photo: str, by: str, box, facts: dict | None, *, kind: str = "ai", confidence=None) -> dict:
+    """An evidence entry made after evidence.finish, finished as it would
+    have been: no box on a photo the AI got raw, the frame set."""
+    found = facts.get(evidence.photo_id(photo)) if facts is not None else None
+    raw = facts is not None and (found is None or found.raw)
+    e = evidence.entry(photo, by, box=evidence.clean_box(box, raw_original=raw), kind=kind, confidence=confidence)
+    frame = evidence.frame_of(found.ai_path) if e["box"] and found is not None else None
+    e["img_w"], e["img_h"] = frame if frame else (None, None)
+    return e
+
+
+def place_boxes(listed: list[dict], sources: list[dict], facts: dict | None = None, disputed=(),
+                asked: dict | None = None) -> int:
+    """R2-box, in place: each list item with no box (has_standing_box) and
+    a free evidence slot gets a located part box from a source ({"part",
+    "photo" "@<id>", "box", "read"}: a zone read's located part, or -- via
+    "inventory" -- its inventory's):
+      - the same part (zone_read.place_match 2); a side the reads disputed
+        (disputed names; the review's M3) takes only that;
+      - else its family when that is one part that isn't itself listed
+        (the review's M4): a "(side undetermined)" item whose sided names
+        were placed on one side only -- an end zone's only when both sides
+        were asked in that call (asked: {read: names}; the review's L5) --
+        or a sided item a close-up placed by its unsided name that no
+        other listed item is;
+      - on the item's own photo, else a photo it was seen in, else any
+        (the review's M5).
+    The entry is by "locate:<read>", box_kind "part", with no reason and no
+    confidence (L8), finished as evidence.finish would (no box on a raw
+    photo, its frame), kept after the reads' entries (evidence.
+    order_evidence): it never takes a read's entry's place, and it is not
+    added when the item has MAX_ENTRIES already. found_by, seen_in, the
+    confidence, the part and bbox_2d never change. Returns how many."""
+    from app.ai.zone_read import END_ZONES, place_match, twin_name
+
+    usable = [s for s in sources or [] if isinstance(s, dict) and s.get("part") and evidence.clean_box(s.get("box"))
+              and s.get("photo") and _standing(s.get("photo"), facts)]
+    parts = {str(it.get("part") or "") for it in listed if isinstance(it, dict)}
+    disputed = set(disputed or ())
+    placed = 0
+    for item in listed:
+        if not isinstance(item, dict) or has_standing_box(item, facts):
+            continue
+        part = str(item.get("part") or "")
+        if not part or part == OTHER_PART:
+            continue
+        entries = [e for e in item.get("evidence") or [] if isinstance(e, dict)]
+        if len(entries) >= evidence.MAX_ENTRIES:
+            continue
+        pick = [s for s in usable if place_match(part, s["part"], _zone_of(s)) == 2]
+        if not pick and part not in disputed:
+            loose = [s for s in usable if place_match(part, s["part"], _zone_of(s)) == 1 and s["part"] not in parts]
+            if len({s["part"] for s in loose}) != 1:
+                continue
+            if part.endswith(UNDETERMINED_SUFFIX):
+                if asked is not None and any(
+                        s.get("via") != "inventory" and _zone_of(s) in END_ZONES
+                        and twin_name(s["part"]) not in (asked.get(str(s.get("read") or "")) or ()) for s in loose):
+                    continue
+            elif any(other != part and place_match(other, loose[0]["part"], CLOSE) for other in parts):
+                continue
+            pick = loose
+        if not pick:
+            continue
+        seen = {item.get("photo_reference")} | set(item.get("seen_in") or []) | {e.get("photo") for e in entries}
+        chosen = (next((s for s in pick if s["photo"] == item.get("photo_reference")), None)
+                  or next((s for s in pick if s["photo"] in seen), None) or pick[0])
+        new = _framed(chosen["photo"], f"{LOCATE_BY}{chosen.get('read') or 'zone'}", chosen["box"], facts,
+                      kind=evidence.PART)
+        if not new["box"]:
+            continue
+        item["evidence"] = evidence.order_evidence(entries + [new], item.get("photo_reference"))
+        placed += 1
+    return placed
+
+
+def place_round2_boxes(listed: list[dict], extras: "ZoneExtras", facts: dict | None = None, disputed=()) -> int:
+    """R2-box on a reading's list, in place (pipeline._read_into, right
+    after evidence.finish): boxed_before is what R2-box off shows -- every
+    box the reading put on, the sorter's too -- then place_boxes with the
+    zone reads' located parts, then their inventory's."""
+    extras.boxed_before = sum(1 for it in listed if isinstance(it, dict) and has_standing_box(it, facts))
+    sources = list(extras.located) + ([{**row, "via": "inventory"} for row in extras.inventory_rows]
+                                      if extras.inventory else [])
+    return place_boxes(listed, sources, facts, disputed, extras.asked)
+
+
+def inventory_suggestions(rows: list[dict], listed: list[dict], suggested: list[dict],
+                          facts: dict | None = None) -> list[dict]:
+    """R2-inv: the inventory's damaged parts (rows: {"part", "photo"
+    "@<id>", "damaged", "confidence", "box", "read"}) as zone suggestions
+    (as_suggestion: source "zone", its photo and its box -- a "part" box,
+    round the part: never the bbox_2d of the item a person adds from it,
+    the second review's N3) found by
+    "zone_inventory:<zone>" (INVENTORY_READ), with INVENTORY_NOTE -- none
+    that the list or a suggestion already is (second_look.covers_of: a
+    sided name and its "(side undetermined)" one are one part), one per
+    part, surest first (no confidence is Low), at most
+    INVENTORY_MAX_SUGGESTIONS. The other side's twin of a listed part stays
+    a suggestion; name_suggestions notes the listed one beside it."""
+    listed_parts = {str(it.get("part") or "") for it in listed if isinstance(it, dict)}
+    taken = {str(s.get("part") or "") for s in suggested if isinstance(s, dict)}
+    damaged = [r for r in rows or [] if isinstance(r, dict) and r.get("damaged") and r.get("part")]
+    damaged.sort(key=lambda r: _CONFIDENCE_RANK.get(r.get("confidence") or "Low", 2))
+    out: list[dict] = []
+    for row in damaged:
+        part = str(row["part"])
+        if set(covers_of(part)) & (listed_parts | taken):
+            continue
+        confidence = row.get("confidence") or "Low"
+        photo = row.get("photo") or None
+        read = f"{INVENTORY_READ}{_zone_of(row)}"
+        found = {"part": part, "photo_reference": photo, "ai_confidence": confidence, "found_by": [read],
+                 "seen_in": [photo] if photo else [],
+                 "evidence": [_framed(photo, read, row.get("box"), facts, kind=evidence.PART,
+                                      confidence=confidence)] if photo else []}
+        suggestion = as_suggestion(found)
+        suggestion["inventory_note"] = INVENTORY_NOTE
+        out.append(suggestion)
+        taken.add(part)
+        if len(out) >= INVENTORY_MAX_SUGGESTIONS:
+            break
+    return out
+
+
+def add_inventory(listed: list[dict], zone_draft: dict, extras: "ZoneExtras", facts: dict | None = None) -> None:
+    """R2-inv on a reading, in place (pipeline._read_into, after the side
+    resolver -- the list's sides as final, the review's L6): the inventory
+    kept as ai_draft["zone_inventory"] (one row a part a photo: read, part,
+    photo_reference, damaged, confidence, box) and its suggestions added to
+    ai_draft["zone_suggestions"]."""
+    zone_draft["zone_inventory"] = [
+        {"read": row.get("read"), "part": row.get("part"), "photo_reference": row.get("photo"),
+         "damaged": bool(row.get("damaged")), "confidence": row.get("confidence"), "box": row.get("box")}
+        for row in extras.inventory_rows]
+    added = inventory_suggestions(extras.inventory_rows, listed, zone_draft.get("zone_suggestions") or [], facts)
+    if added:
+        zone_draft.setdefault("zone_suggestions", []).extend(added)
+
+
+def drop_crossed_boxes(listed: list[dict], extras: "ZoneExtras") -> int:
+    """R2-box, in place, after the side resolver (pipeline): a located box
+    that a "(side undetermined)" item took from one side's name ("Left Tail
+    Lamp") is dropped once the resolver has put the item on the other side
+    -- a box on the wrong lamp misleads more than none. Returns how many."""
+    names: dict[tuple, list[str]] = {}
+    for source in list(extras.located) + list(extras.inventory_rows):
+        box = evidence.clean_box(source.get("box"))
+        if box and source.get("photo"):
+            key = (source["photo"], tuple(box), str(source.get("read") or "zone"))
+            names.setdefault(key, []).append(str(source.get("part") or ""))
+    dropped = 0
+    for item in listed:
+        part = str(item.get("part") or "") if isinstance(item, dict) else ""
+        side = split_side(part)[1]
+        if not side:
+            continue
+        family = unsided_part(part) or part
+        kept = []
+        for e in item.get("evidence") or []:
+            if evidence.located(e) and e.get("box"):
+                placed = [p for p in names.get((e.get("photo"), tuple(e["box"]), str(e["by"])[len(LOCATE_BY):]), [])
+                          if (unsided_part(p) or p) == family]
+                if placed and all(split_side(p)[1] not in (None, side) for p in placed):
+                    dropped += 1
+                    continue
+            kept.append(e)
+        if len(kept) != len(item.get("evidence") or []):
+            item["evidence"] = kept
+    return dropped
+
+
+def box_coverage(listed: list[dict], boxed_before: int | None = None, zone_finds: int | None = None) -> dict:
+    """How many list items have a box (ai_draft["box_coverage"], and the
+    zone run's log): items; boxed (any box: the AI's, the sorter's, a
+    located part box or bbox_2d); ai_boxed (the AI's damage box or
+    bbox_2d); located (a Round 2 located part box); boxed_before_locate
+    (what R2-box off shows of these answers). And, to set on against off
+    (the review's M2): list_agreed (items two or more reads found),
+    list_low (items marked Low: the Review step's "Check") and zone_finds
+    (the zone reads' own damage items)."""
+    items = [it for it in listed or [] if isinstance(it, dict)]
+
+    def boxes(it: dict) -> list[dict]:
+        return [e for e in it.get("evidence") or [] if isinstance(e, dict) and e.get("box")]
+
+    out = {"items": len(items),
+           "boxed": sum(1 for it in items if boxes(it) or it.get("bbox_2d")),
+           "ai_boxed": sum(1 for it in items if it.get("bbox_2d") or any(e.get("box_kind") == "ai" for e in boxes(it))),
+           "located": sum(1 for it in items if any(evidence.located(e) for e in boxes(it))),
+           "list_agreed": sum(1 for it in items if len(set(it.get("found_by") or [])) >= 2),
+           "list_low": sum(1 for it in items if it.get("ai_confidence") == "Low")}
+    if boxed_before is not None:
+        out["boxed_before_locate"] = boxed_before
+    if zone_finds is not None:
+        out["zone_finds"] = zone_finds
+    return out
+
+
+def note_round2(extras: "ZoneExtras", coverage: dict | None) -> None:
+    """The final box coverage into the zone run's log (photos_sent
+    ["box_coverage"]), once the list is final. Never raises."""
+    if coverage is None or not extras.zone_run_id:
+        return
+    try:
+        runs.add_detail(extras.zone_run_id, "box_coverage", coverage)
+    except Exception:
+        logger.warning("Round 2: couldn't note the box coverage in the run log", exc_info=True)

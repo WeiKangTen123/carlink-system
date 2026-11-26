@@ -259,6 +259,30 @@ class Settings(BaseSettings):
     # note "The rear read thought these photos show the front." -- never on
     # the list.
     intake_zone_wrong_end: str = "drop"
+    # Detection Round 2 (zone mode only; ai/zone_read.py "Round 2",
+    # intake/zones' place_round2_boxes and add_inventory), no extra Gemini
+    # call -- each rides on the zone calls, after every field they have
+    # today, so an answer cut off there is read as today's, and a zone call
+    # that fails with them is asked once more as today (a schema refused
+    # twice latches them off for an hour). Both "off": every request and
+    # stored draft byte for byte as before.
+    # R2-box "on": each zone call is also asked to locate the drafted list's
+    # parts of its area (`locate`: a box round each part the photos show,
+    # damaged or not -- worded as no damage judgement); a list item with no
+    # box gets that box as a "part" box (evidence by "locate:zone:..."),
+    # after the reads' own evidence, the list itself unchanged. Needs the
+    # zone reads to run after the main read (intake_parallel_reads off).
+    # ai_draft["box_coverage"] and the zone run's log say how many list
+    # items have a box, and the zone reads' own finds and agreement.
+    intake_box_every: str = "off"
+    # R2-inv "on": the zone calls also list the area's parts each photo shows
+    # (`inventory`, damaged or not, with a box; the car map's small parts
+    # too while intake_car_map_names is "on"). Damaged ones nothing listed
+    # or suggested become zone suggestions (at most 6 a case, after the
+    # reads' own finds, found by "zone_inventory:<zone>" so they are counted
+    # apart, "Seen in the zone check"); the rest are kept apart (ai_draft[
+    # "zone_inventory"]) and never suppress a part.
+    intake_zone_inventory: str = "off"
     # Detection Round 1 (owner, 25 Nov 2026; app/intake/sorter_hints.py).
     # A1: each part the photo sorter saw damaged (a photo's part tag, or the
     # first part its note names that isn't negated or at the other end of
@@ -533,7 +557,7 @@ class Settings(BaseSettings):
 
     @field_validator("intake_sort_retry_skipped", "intake_keep_other_side", "intake_sort_rescue",
                      "intake_keep_sort_label", "intake_firm_words",
-                     "photo_store_compress")
+                     "photo_store_compress", "intake_box_every", "intake_zone_inventory")
     @classmethod
     def _off_on(cls, value, info):
         return _one_of(value, OFF_ON, info.field_name)
@@ -771,8 +795,10 @@ class Settings(BaseSettings):
     # linked parts) and the part pickers offer today's list. "on": its
     # linked parts may name them (car_map.table_for_links) and GET
     # /taxonomy tells the dashboard to offer them. Never in a Gemini enum of
-    # the reads either way; a case that already holds one keeps it valid
-    # and printed when this is turned off.
+    # the reads while "off"; while "on", only in one: detection Round 2's
+    # zone inventory (intake_zone_inventory "on") offers a zone's small
+    # outside car map parts (ai/zone_read.SMALL_PARTS). A case that already
+    # holds one keeps it valid and printed when this is turned off.
     intake_car_map_names: str = "off"
     # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
     # each zone read also answers short yes/no signs about the damaged

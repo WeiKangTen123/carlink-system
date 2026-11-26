@@ -962,10 +962,12 @@ export type Box = [number, number, number, number];
 export type Evidence = {
   photo: string;
   box: Box | null;
-  box_kind: "ai" | "sort" | null;
+  /** "part": detection Round 2's located part box (by "locate:zone:..."). */
+  box_kind: "ai" | "sort" | "part" | null;
   /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look";
    * contract 10: "link" (the listed part's photo, no box) | "link_check" (the
-   * linked check's photo and box) */
+   * linked check's photo and box); detection Round 2: "locate:zone:rear" (a
+   * zone read's box round a listed part it saw -- where, not a find) */
   by: string;
   reason: string | null;
   confidence: "High" | "Medium" | "Low" | null;
@@ -1025,6 +1027,9 @@ export type SecondLookItem = {
   /** Wave 2 E11: a find of an end zone read whose photos it said show the
    * other end -- "The rear read thought these photos show the front." */
   wrong_end_note?: string | null;
+  /** Detection Round 2 (intake_zone_inventory): a part a zone read's
+   * inventory marked damaged that nothing listed or suggested. */
+  inventory_note?: string | null;
   /** Damage-list names that mean the part is listed already. */
   covers: string[];
   reason: string | null;

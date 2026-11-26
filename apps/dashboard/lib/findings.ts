@@ -55,6 +55,9 @@ export type Finding = {
   otherSideListed: string | null;
   /** Wave 2 E11: the "wrong end" zone read's note, on its suggestion only. */
   wrongEndNote?: string | null;
+  /** Detection Round 2: a zone read's inventory marked it damaged
+   * ("Seen in the zone check: ..."), on its suggestion only. */
+  inventoryNote?: string | null;
   /** Contract 10: "link", a part tied to a listed one by the link table
    * (SecondLookItem.source). */
   source: "list" | "zone" | "kit" | "nearby" | "link" | "other_side" | "sorter";
@@ -391,6 +394,7 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
       check: s.check ?? null,
       otherSideListed: s.other_side_listed ?? null,
       ...(s.wrong_end_note ? { wrongEndNote: s.wrong_end_note } : {}),
+      ...(s.inventory_note ? { inventoryNote: s.inventory_note } : {}),
       source,
       condition: s.condition || s.damage_type || null,
       ...linkFields(s),
@@ -401,6 +405,10 @@ export function buildFindings(data: ReportData, opts?: { showDismissed?: boolean
   return withParents(out);
 }
 
+/** Detection Round 2: the evidence of a box a zone read put round a
+ * listed part ("locate:zone:rear"). */
+export const LOCATE_BY = "locate:";
+
 const READ_NAMES: Record<string, string> = {
   overall: "main",
   "zone:front": "front",
@@ -410,8 +418,14 @@ const READ_NAMES: Record<string, string> = {
   "zone:close": "close-up",
 };
 
-/** A read's name in words: "main", "rear", "left side". */
-export const readName = (read: string) => READ_NAMES[read] || read.replace(/^zone:/, "");
+/** Detection Round 2: a zone read's inventory ("zone_inventory:rear"), apart from its damage finds. */
+const INVENTORY_READ = "zone_inventory:";
+
+/** A read's name in words: "main", "rear", "left side", "rear inventory". */
+export const readName = (read: string) =>
+  read.startsWith(INVENTORY_READ)
+    ? `${READ_NAMES[`zone:${read.slice(INVENTORY_READ.length)}`] || read.slice(INVENTORY_READ.length)} inventory`
+    : READ_NAMES[read] || read.replace(/^zone:/, "");
 
 /** Where one photo's entry came from, in words: "main read", "rear read",
  * "the sorter", "re-check". */
@@ -426,6 +440,10 @@ export function sourceName(by: string | null | undefined): string {
   // Contract 10: the listed part's photo (no box), and the linked check's.
   if (by === "link") return "listed part's photo";
   if (by === "link_check") return "linked check";
+  // Detection Round 2: a zone read's box round a listed part it saw
+  // ("locate:zone:rear"), not a find of its own.
+  // The box line already says "Part located".
+  if (by.startsWith(LOCATE_BY)) return `${readName(by.slice(LOCATE_BY.length))} read`;
   return `${readName(by)} read`;
 }
 
@@ -521,11 +539,21 @@ export const aiSays = (reason: string) => `AI says: “${reason}”`;
 /** "Found by 1 of 5 reads" when the case's reads are known, else "Found by
  * the rear read"; null for a suggestion no read found (kit / nearby). */
 export function foundByText(f: Pick<Finding, "foundBy">, reads?: string[] | null): string | null {
-  const found = [...new Set(f.foundBy.filter((r) => Boolean(r) && isRead(r)))];
-  if (!found.length) return null;
+  const all = [...new Set(f.foundBy.filter((r) => Boolean(r) && isRead(r)))];
+  if (!all.length) return null;
+  // Detection Round 2: a zone read's inventory ("zone_inventory:rear") is
+  // no read of its own -- "Seen in the rear inventory", never counted in
+  // "N of M reads".
+  const found = all.filter((r) => !r.startsWith(INVENTORY_READ));
+  const inventory = all.filter((r) => r.startsWith(INVENTORY_READ));
+  const seen = inventory.length ? `Seen in the ${joined(inventory.map(readName))}` : "";
+  if (!found.length) return seen;
   const total = reads?.length ? new Set([...reads, ...found]).size : 0;
-  if (total > 1) return `Found by ${found.length} of ${total} reads`;
-  return `Found by the ${joined(found.map(readName))} read${found.length > 1 ? "s" : ""}`;
+  const text =
+    total > 1
+      ? `Found by ${found.length} of ${total} reads`
+      : `Found by the ${joined(found.map(readName))} read${found.length > 1 ? "s" : ""}`;
+  return seen ? `${text} · ${seen}` : text;
 }
 
 /** The reads by name, for the viewer's "Found by: rear read". */

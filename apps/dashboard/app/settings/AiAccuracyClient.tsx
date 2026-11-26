@@ -147,6 +147,12 @@ const READ_NAMES: Record<string, string> = {
   "zone:left": "Left side read",
   "zone:right": "Right side read",
   "zone:close": "Close-up read",
+  // Detection Round 2: suggestions from a zone read's inventory, apart.
+  "zone_inventory:front": "Front inventory",
+  "zone_inventory:rear": "Rear inventory",
+  "zone_inventory:left": "Left side inventory",
+  "zone_inventory:right": "Right side inventory",
+  "zone_inventory:close": "Close-up inventory",
   // Detection Round 1: a photo sorter suggestion's rule (found_by).
   sorter_seen: "Photo sorter: seen only by it",
   sorter_intact: "Photo sorter: a zone read said intact",
