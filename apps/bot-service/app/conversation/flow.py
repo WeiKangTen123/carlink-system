@@ -307,6 +307,56 @@ def parse_template_reply(text: str) -> Optional[dict]:
     }
 
 
+# INTAKE_USER_FIELDS on (app/reports/user_fields.py): a correction sent while
+# the draft waits for Confirm goes to the AI, which never fills the workshop
+# -- so a workshop in it would be lost and the template's old one kept. A
+# "Workshop: ..." line (or "Workshop name: ...") is the person's own words and
+# is applied as typed by them, on Telegram and WhatsApp alike; nothing else
+# is read as one ("Workshop estimate:", "Workshop address:", "Workshops:").
+# "-" or "none" clears it; an empty "Workshop:" line (the template sent
+# again) leaves it as it is. A correction that only mentions a workshop gets
+# the hint to send the line. Off: none of this, as before.
+WORKSHOP_LINE_HINT = (
+    "To set or change the workshop, send it on a line of its own, as in the template:\n"
+    "Workshop: <the workshop's name>"
+)
+_CORRECTION_WORKSHOP = re.compile(r"^\s*workshop(?:\s+name)?\s*:\s*(\S.*)$", re.IGNORECASE)
+_EMPTY_WORKSHOP_LINE = re.compile(r"^\s*workshop(?:\s+name)?\s*:\s*$", re.IGNORECASE)
+_WORKSHOP_WORD = re.compile(r"\bworkshops?\b", re.IGNORECASE)
+_CLEARS = {"-", "none"}
+
+
+def correction_workshop(session, text: str) -> Optional[str]:
+    """While INTAKE_USER_FIELDS is on, the workshop in a correction: the
+    last "Workshop:" line's value becomes the session's workshop (a
+    person's, as the template's), "-" or "none" clears it, and the reply
+    to send says so ("Workshop set to: X", "Workshop cleared.", and which
+    line was taken when there were several). A correction that mentions a
+    workshop without that line returns WORKSHOP_LINE_HINT; one with only an
+    empty "Workshop:" line, or no workshop at all, returns None and changes
+    nothing. Off: None, nothing changed."""
+    from app.reports import user_fields
+
+    if not user_fields.on():
+        return None
+    lines = (text or "").splitlines()
+    values = [m.group(1).strip() for line in lines if (m := _CORRECTION_WORKSHOP.match(line))]
+    if values:
+        value = values[-1]
+        if value.lower() in _CLEARS:
+            session.workshop_name = None
+            reply = "Workshop cleared."
+        else:
+            session.workshop_name = value
+            reply = f"Workshop set to: {value}"
+        if len(values) > 1:
+            reply += f"\n(You sent {len(values)} Workshop: lines; the last one was taken.)"
+        return reply
+    if any(_EMPTY_WORKSHOP_LINE.match(line) for line in lines):
+        return None
+    return WORKSHOP_LINE_HINT if _WORKSHOP_WORD.search(text or "") else None
+
+
 # Telegram caps a message at 4096 characters. A real assessment can carry 18
 # damage lines plus a long AI description, so the budget is enforced rather
 # than hoped for -- and it's the DESCRIPTION that gets trimmed, never the

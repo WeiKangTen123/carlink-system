@@ -275,7 +275,7 @@ export function CoverPageFields({
             </tbody>
           </table>
         </div>
-        <span className="cover-field-hint">Printed per axle as 6mm/Michelin | 6mm/Michelin | 195/65 R15.</span>
+        <span className="cover-field-hint">Printed per axle as 6mm/TestTyre | 6mm/TestTyre | 195/65 R15.</span>
         {tyreWarnings.length > 0 && (
           <span className="p1b-check-text" role="note">
             <span className="p1b-check-tag" aria-hidden>

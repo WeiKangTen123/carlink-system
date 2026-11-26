@@ -28,12 +28,14 @@ surveyor kept, removed, added or changed before signing:
            outside cover_page and Our Ref, which the AI never writes): filled
            by the AI and kept, changed or emptied; filled by people where the
            AI left them blank -- the firm's usual static-check wording, which
-           filing puts in, counted apart as "template". While
-           INTAKE_USER_FIELDS is on (app/reports/user_fields.py) the workshop
-           and the odometer reading are the user's to type in, not the AI's
-           to fill: left out (ai_fields), and the row says so
-           ("left_to_people": their keys), so rows from before and after
-           the switch can be told apart. Off: as before.
+           filing puts in, counted apart as "template". A case READ with
+           INTAKE_USER_FIELDS on (app/reports/user_fields.py; its knowledge
+           stamp's prompt says "+user-fields") was never asked for the
+           workshop and the odometer reading -- the user's to type in, not
+           the AI's to fill: they are left out (ai_fields), and the row says
+           so ("left_to_people": their keys), so rows from before and after
+           the switch can be told apart. A case with no stamp is judged by
+           the switch as it is now. Off: as before.
   suggestions  (contract 9, VERSION 2) the parts the AI suggested but did
            not list (data.second_look, kept since filing): shown, and of
            those added (on the signed-off list), dismissed (marked Not
@@ -101,13 +103,21 @@ VERSION = 3
 AI_FIELDS = tuple(key for key in FIELD_RULES if key != "report_id" and not key.startswith("cover_page."))
 
 
-def ai_fields() -> tuple[str, ...]:
-    """AI_FIELDS as they stand now: without the workshop and the odometer
-    reading while INTAKE_USER_FIELDS is on -- the user's to type in, never
-    the AI's to fill (app/reports/user_fields.py). Off: AI_FIELDS."""
+def ai_fields(final_data: dict | None = None) -> tuple[str, ...]:
+    """The fields the AI could fill on this case: AI_FIELDS without the
+    workshop and the odometer reading when it was read with
+    INTAKE_USER_FIELDS on -- the user's to type in, never the AI's to fill
+    (app/reports/user_fields.py). Judged by the case's own read stamp
+    (final_data["knowledge"]["prompt"] holds "+user-fields": knowledge.
+    read_prompt), so a case read with the switch off and signed off after
+    it went on keeps them, and the other way round; with no stamp (a case
+    from before the stamp, or none given), by the switch as it is now."""
     from app.reports import user_fields
 
-    if not user_fields.on():
+    stamp = ((final_data or {}).get("knowledge") or {}) if isinstance(final_data, dict) else {}
+    prompt = stamp.get("prompt") if isinstance(stamp, dict) else None
+    read_on = f"+{user_fields.TAG}" in prompt if isinstance(prompt, str) else user_fields.on()
+    if not read_on:
         return AI_FIELDS
     return tuple(key for key in AI_FIELDS if key not in user_fields.REVIEW_KEYS)
 
@@ -377,7 +387,7 @@ def _annex(final_data: dict, machine_annex: list | None) -> dict:
 def _fields(ai_draft: dict, final_data: dict) -> dict:
     out: dict = {key: 0 for key in FIELD_COUNTS}
     by_key: dict[str, str] = {}
-    keys = ai_fields()
+    keys = ai_fields(final_data)
     for key in keys:
         before, after = value_at(ai_draft, key), value_at(final_data, key)
         if not is_blank(before):

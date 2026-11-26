@@ -17,11 +17,12 @@ settings.intake_user_fields, off by default.
     /auth/me user_fields, so a New Report knows before its first upload;
     GET /intake/{id} too), and the Telegram bot's guide points the
     workshop to its template's "Workshop:" line (channels/telegram.
-    welcome_guide); a staff correction's own "Workshop:" line is applied
-    as the person's, a correction that only mentions a workshop gets a
-    hint to send that line (telegram.correction_workshop); the public
-    bot no longer invites a workshop it has no step for (telegram_public.
-    _what_extras);
+    welcome_guide); a staff correction's own "Workshop:" (or "Workshop
+    name:") line is applied as the person's and said back, "-" or "none"
+    clears it, and a correction that only mentions a workshop gets a hint
+    to send that line -- on Telegram and WhatsApp alike (conversation/
+    flow.correction_workshop); the public bot no longer invites a workshop
+    it has no step for (telegram_public._what_extras);
   - a value the model returns all the same is dropped as its answer is
     parsed (drop_from_draft, from extraction._parse_draft), before it can
     reach the draft, the AI draft (Report.ai_draft / IntakeSession.ai_draft)
@@ -31,8 +32,9 @@ settings.intake_user_fields, off by default.
   - the field review counts both as a person's to fill ("office": "Needs
     you" while empty), and GET /reports/{id} and GET /intake/{id} ai_read
     never lists them, so no "AI" tag shows beside them (reports/review.py,
-    reports/filing.ai_read_for), and the AI-accuracy row leaves them out
-    of the fields the AI can fill (reports/accuracy.ai_fields);
+    reports/filing.ai_read_for), and the AI-accuracy row of a case read
+    with the switch on (its knowledge stamp says "+user-fields") leaves
+    them out of the fields the AI can fill (reports/accuracy.ai_fields);
   - a draft read before the switch went on and read again: a value still
     exactly the AI's last one, that no person confirmed, is cleared and
     shows "Needs you" (clear_ai_values, from pipeline.merge_redraft), and
@@ -107,7 +109,14 @@ def clear_ai_values(current: dict, previous_ai: dict | None, merged: dict) -> di
     it shows "Needs you". A value a person typed differs from the AI's and
     stays; so does a confirmed one. The case keeps no record of who typed
     a field, so a typed value that is the AI's to the letter, unconfirmed,
-    is emptied too."""
+    is emptied too -- shown "Needs you", never kept as "You": the safe way
+    round. It can only happen on a draft first read while the switch was
+    off (one read while on has neither in its AI draft), e.g. a Telegram
+    bridge draft whose template workshop the off-era AI also read from the
+    words. Marking the bridge's typed facts as a person's (data.checked)
+    when it makes the draft would protect that case, but the draft is made
+    while the switch is off -- marking it then would change "off" -- so
+    it is left as is (second review N5, 26 Nov 2026)."""
     from app.reports.review import checked_of, is_blank, same_value, value_at, with_value
 
     checked = checked_of(current)

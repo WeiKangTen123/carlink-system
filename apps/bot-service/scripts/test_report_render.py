@@ -6,8 +6,10 @@ Given the firm's real workbook -- the one the fixture's Annex lines are
 worded after; its path, from the private example_case folder -- the report
 is built from it (Cover Page, Annex A, Annex B and the letter's figures) and
 the output is held against the workbook's own values and totals, read at
-run time (no real case's values are written here); without it, a small
-fixture stands in. Checks: the HTML carries every page's key text
+run time, and against the private expected-report-tests.json beside the
+workbook when there is one (lump sum, days, survey date, line counts,
+labour wording; its format: scripts/expected_reports.py) -- no real case's
+values are written here; without it, a small fixture stands in. Checks: the HTML carries every page's key text
 and none of the dropped extras (GST, BOLA, forensic, seal, variance); the
 PDF renders offline with Chromium; the workbook reads back through
 app.parts.history.parse_report with the same reference, vehicle and Annex A
@@ -30,6 +32,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_tmp, 'test.db').as_posi
 os.environ.setdefault("GEMINI_API_KEY", "fake")
 
 import app.rendering.renderer as renderer  # noqa: E402
+import expected_reports  # noqa: E402
 from app.parts.history import parse_report  # noqa: E402
 from app.rendering.xlsx_export import render_xlsx  # noqa: E402
 
@@ -48,7 +51,7 @@ QUALIFICATIONS = "BEng (Mech), MIMI"
 
 
 def _tyre_cell(tyre: dict) -> str:
-    """{"tread_depth_mm": 6, "brand": "Michelin"} -> "6mm/Michelin", as the
+    """{"tread_depth_mm": 6, "brand": "TestTyre"} -> "6mm/TestTyre", as the
     cover page prints a tyre."""
     return f"{float(tyre['tread_depth_mm']):g}mm/{tyre['brand']}"
 
@@ -94,10 +97,10 @@ def fixture() -> dict:
             "odometer_reading": "012345 Km", "transmission": "Automatic", "color": "White",
             "paintwork_condition": "Good", "steering_condition": "see annex(es)", "brakes_condition": "see annex(es)",
             "tyres": {
-                "front_nearside": {"tread_depth_mm": 6, "brand": "Michelin", "size": "195/65 R15"},
-                "front_offside": {"tread_depth_mm": 6, "brand": "Michelin", "size": "195/65 R15"},
-                "rear_nearside": {"tread_depth_mm": 5.5, "brand": "Michelin", "size": "195/65 R15"},
-                "rear_offside": {"tread_depth_mm": 5.5, "brand": "Michelin"},
+                "front_nearside": {"tread_depth_mm": 6, "brand": "TestTyre", "size": "195/65 R15"},
+                "front_offside": {"tread_depth_mm": 6, "brand": "TestTyre", "size": "195/65 R15"},
+                "rear_nearside": {"tread_depth_mm": 5.5, "brand": "TestTyre", "size": "195/65 R15"},
+                "rear_offside": {"tread_depth_mm": 5.5, "brand": "TestTyre"},
             },
         },
         "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
@@ -157,7 +160,7 @@ def _view_totals(report: dict) -> dict:
 
 
 def _tyre(text: str, size: str) -> dict:
-    """"6mm/Michelin" + "195/65 R15" -> the schema's TyreItem."""
+    """"6mm/TestTyre" + "195/65 R15" -> the schema's TyreItem."""
     depth, _, brand = text.partition("/")
     m = re.search(r"\d+(?:\.\d+)?", depth)
     return {"tread_depth_mm": float(m.group(0)) if m else None, "brand": brand.strip() or None, "size": size.strip() or None}
@@ -526,6 +529,25 @@ def main() -> int:
         firm = _firm_totals({sheet: _xls_rows(source, sheet) for sheet in ("annex a", "annex b")})
         assert _view_totals(report) == firm, (_view_totals(report), firm)
         ok("the totals come out as the workbook's own: parts, labour and total repair costs, estimate and adjusted")
+        # And, when the private expected values are beside the workbook, as
+        # they say (expected_reports): the lump sum, days, survey date, line
+        # counts and labour wording.
+        expected = expected_reports.load(source)
+        want = expected_reports.for_workbook(expected, source)
+        checks = {"lump_sum": lump, "repair_days": days, "date_of_survey": report["cover_page"]["date_of_survey"],
+                  "annex_a_lines": len(report["annex_a"]["items"]), "annex_b_lines": len(report["annex_b"]["items"])}
+        for key, got in checks.items():
+            if key in want:
+                assert got == want[key], (key, got)
+        labour = expected_reports.labour_lines(want)
+        if labour:
+            items = report["annex_b"]["items"]
+            assert [it["description"] for it in items] == [line["description"] for line in labour], "labour wording"
+            for got, line in zip(items, labour):
+                for key in ("workshop_est", "adjusted_cost"):
+                    if key in line:
+                        assert got[key] == line[key], (got["description"], key)
+        ok(f"the workbook's own values: {expected_reports.say(want)}")
         money = {key: f"{value:,.2f}" for key, value in firm.items()}
         money["lump"] = f"S${lump:,.2f}"
     else:

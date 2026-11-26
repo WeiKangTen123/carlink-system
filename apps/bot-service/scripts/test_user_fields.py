@@ -1092,6 +1092,16 @@ def on_reread() -> None:
     check(not set(keys) & set(on_fields["by_key"]) and sorted(on_fields.get("left_to_people") or []) == sorted(keys),
           "on: the accuracy row leaves them out of the AI's fields, and says so", on_fields.get("left_to_people"))
     check(on_fields["filled"] == off_fields["filled"] - 2, "on: two fewer 'filled by people'")
+    # N4: judged by the case's own read stamp, not by the switch at sign-off.
+    read_on = {**final, "knowledge": {"prompt": "v1+user-fields", "models": ["m"]}}
+    read_off = {**final, "knowledge": {"prompt": "v1", "models": ["m"]}}
+    stamped_on = accuracy._fields(blank_ai, read_on)
+    with Settings(**ON):
+        stamped_off = accuracy._fields(blank_ai, read_off)
+    check(not set(keys) & set(stamped_on["by_key"]) and "left_to_people" in stamped_on,
+          "a case read with the switch on (its stamp says so) leaves them out, whatever the switch is now")
+    check(all(stamped_off["by_key"].get(k) == "filled" for k in keys) and "left_to_people" not in stamped_off,
+          "a case read with it off keeps them, though the switch is on at sign-off")
 
 
 def on_bots_and_me() -> None:
@@ -1119,26 +1129,113 @@ def on_bots_and_me() -> None:
     check("workshop" not in public_words.lower() and "insurer" in public_words,
           "on: the public bot no longer invites a workshop (its form has no workshop step)")
 
-    # L5: the staff bot's corrections.
+    # L5 / N1: the staff bot's corrections (flow.correction_workshop, which
+    # Telegram and WhatsApp share).
+    check(telegram.correction_workshop is flow.correction_workshop, "the Telegram bot uses flow's correction helper")
     session = Session(workshop_name="M/S Old Workshop")
-    check(telegram.correction_workshop(session, "Workshop: M/S New Workshop") is None
+    check(flow.correction_workshop(session, "Workshop: M/S New Workshop") is None
           and session.workshop_name == "M/S Old Workshop", "off: a correction changes nothing here, as before")
     with Settings(**ON):
-        hint = telegram.correction_workshop(session, "Workshop: M/S New Workshop")
-        check(hint is None and session.workshop_name == "M/S New Workshop",
-              "on: a 'Workshop:' line in a correction is applied as the person typed it")
-        hint = telegram.correction_workshop(session, "the workshop is actually somewhere else")
-        check(hint == telegram.WORKSHOP_LINE_HINT and session.workshop_name == "M/S New Workshop",
-              "on: a correction that only mentions a workshop gets the hint to send the 'Workshop:' line")
-        check(telegram.correction_workshop(session, "the time was 16:45") is None, "on: other corrections: nothing")
+        for text, workshop, reply in CORRECTION_PROBES:
+            probe = Session(workshop_name="M/S Old", vehicle_plate="TST1001A")
+            got = flow.correction_workshop(probe, text)
+            want = flow.WORKSHOP_LINE_HINT if reply == "HINT" else reply
+            check(probe.workshop_name == workshop and got == want and probe.vehicle_plate == "TST1001A",
+                  f"on: {text[:48]!r} -> workshop {workshop!r}, reply {str(reply)[:40]!r}", (probe.workshop_name, got))
         redraft = Session(description="Scratched my rear bumper.", vehicle_plate="TST1001A", workshop_name="M/S Old")
         redraft.draft = flow.build_draft(redraft.description, [photo(1)], redraft, actor=ACTOR).draft
         redraft.pending_edits = ["Workshop: M/S Corrected"]
-        telegram.correction_workshop(redraft, redraft.pending_edits[-1])
+        flow.correction_workshop(redraft, redraft.pending_edits[-1])
         result = flow.build_draft("Scratched my rear bumper.", [photo(1)], redraft, actor=ACTOR)
+        cleared = Session(description="Scratched my rear bumper.", vehicle_plate="TST1001A", workshop_name="M/S Old")
+        cleared.draft = result.draft
+        cleared.pending_edits = ["Workshop: -"]
+        flow.correction_workshop(cleared, cleared.pending_edits[-1])
+        after_clear = flow.build_draft("Scratched my rear bumper.", [photo(1)], cleared, actor=ACTOR)
     check(result.draft.insurance_details.workshop_assigned == "M/S Corrected"
           and not (result.ai_draft["insurance_details"] or {}).get("workshop_assigned"),
           "on: the redraft carries the corrected workshop as the person's, the AI's draft none")
+    check(not after_clear.draft.insurance_details.workshop_assigned, "on: 'Workshop: -' clears it on the redraft")
+
+    # N2: WhatsApp corrections, through its webhook.
+    sent, kept = whatsapp_correction("Workshop: M/S WhatsApp Motors")
+    check(kept == "M/S Old" and "Workshop set to" not in sent and "Draft summary" in sent,
+          "off: a WhatsApp correction changes nothing here, as before", (kept, sent[:200]))
+    with Settings(**ON):
+        sent, kept = whatsapp_correction("Workshop: M/S WhatsApp Motors")
+        check(kept == "M/S WhatsApp Motors" and "Workshop set to: M/S WhatsApp Motors" in sent and "Draft summary" in sent,
+              "on: a WhatsApp correction's 'Workshop:' line is applied and said back, with the redraft", (kept, sent[:200]))
+        sent, kept = whatsapp_correction("workshop estimate: $2,500")
+        check(kept == "M/S Old" and "a line of its own" in sent, "on: WhatsApp: not 'Workshop estimate:', the hint instead")
+
+
+# (correction text, the session's workshop after it -- "M/S Old" before --,
+# the reply; "HINT": flow.WORKSHOP_LINE_HINT) for flow.correction_workshop
+# while on: the second review's probes (N1) and a few more.
+CORRECTION_PROBES = (
+    ("Workshop: M/S New Motors", "M/S New Motors", "Workshop set to: M/S New Motors"),
+    ("Workshop name: M/S Named Motors", "M/S Named Motors", "Workshop set to: M/S Named Motors"),
+    ("workshop estimate: $2,500 for the bumper", "M/S Old", "HINT"),
+    ("Workshop address: Blk 5 Test Road", "M/S Old", "HINT"),
+    ("Workshops: try ABC or XYZ", "M/S Old", "HINT"),
+    ("Workshop:", "M/S Old", None),
+    ("Workshop: none", None, "Workshop cleared."),
+    ("Workshop: -", None, "Workshop cleared."),
+    ("The plate is TST9999Z\nWorkshop: M/S Second\nVehicle Plate: TST8888Y", "M/S Second", "Workshop set to: M/S Second"),
+    ("Workshop: M/S A\nWorkshop: M/S B", "M/S B",
+     "Workshop set to: M/S B\n(You sent 2 Workshop: lines; the last one was taken.)"),
+    ("What happened: hit at rear\nworkshop: found more damage behind bumper", "found more damage behind bumper",
+     "Workshop set to: found more damage behind bumper"),
+    ("  workshop (name) : M/S Spaced", "M/S Old", "HINT"),
+    ("the workshop estimate shows the boot lid too", "M/S Old", "HINT"),
+    ("Workshop: *bold* _x_ [link](http://e.x)", "*bold* _x_ [link](http://e.x)",
+     "Workshop set to: *bold* _x_ [link](http://e.x)"),
+    ("Vehicle Plate: TST1001A\nRequested by (insurer / company): Tokio Marine\n"
+     "Type of claim (Own damage / Third party): Own damage\nWorkshop: \nDate/time of accident: 13 Jan 2026 9.30am",
+     "M/S Old", None),
+    ("the time was 16:45", "M/S Old", None),
+)
+
+
+def whatsapp_correction(text: str) -> tuple[str, str]:
+    """A correction sent to the WhatsApp webhook while its draft waits for
+    Confirm (AI on for the test, the drafting faked): (the reply's XML, the
+    session's workshop after it)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import app.channels.whatsapp as whatsapp
+    from app.auth.core import CurrentUser
+    from app.conversation import state as chat_state
+    from app.conversation.flow import DraftResult
+    from app.reports.schema import SecurityIncidentDraft
+
+    mini = FastAPI()
+    mini.include_router(whatsapp.router)
+    user = CurrentUser(id="u-wa", email="wa@example.com", username="wa", name="WA", role="admin",
+                       must_change_password=False, qualifications="", license_number="", firm_name="", session_hash="",
+                       ai_company_key_allowed=True)
+
+    @mini.middleware("http")
+    async def _signed_in(request, call_next):
+        request.state.user = user
+        return await call_next(request)
+
+    sender = "whatsapp:+6500000001"
+    chat = f"whatsapp:{sender}"  # as the webhook names the chat
+    session = chat_state.reset_session(chat)
+    session.stage = chat_state.Stage.AWAITING_CONFIRMATION
+    session.photo_paths = [photo(1)]
+    session.workshop_name = "M/S Old"
+    real = (whatsapp.ensure_ai_ready, whatsapp._draft)
+    whatsapp.ensure_ai_ready = lambda actor: None
+    whatsapp._draft = lambda description, s: DraftResult(draft=SecurityIncidentDraft(description="x"),
+                                                         summary_text="Draft summary", ai_draft={})
+    try:
+        r = TestClient(mini).post("/whatsapp/webhook", data={"From": sender, "Body": text})
+    finally:
+        whatsapp.ensure_ai_ready, whatsapp._draft = real
+    return r.text, chat_state.get_session(chat).workshop_name
 
 
 # The "on" requests pinned, as MASTER pins "off": the sha256 of each read

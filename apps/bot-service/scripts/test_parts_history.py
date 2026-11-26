@@ -5,7 +5,10 @@
 
 Offline. With the example_case folder, every real CL report in it is
 parsed too, each checked against its own file (its name's reference, its
-Annex A rows); without it, only the generated spreadsheet is.
+Annex A rows) and, when the private expected-report-tests.json is beside
+the workbooks, against it (make, model, Annex A line count; its format:
+scripts/expected_reports.py); without the folder, only the generated
+spreadsheet is.
 """
 import io
 import json
@@ -33,6 +36,7 @@ from app.parts.history import family_and_side, family_of, normalise_item, parse_
 from app.reports.db import SessionLocal  # noqa: E402
 from app.reports.models import Report  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
+import expected_reports  # noqa: E402
 
 
 def ok(label: str) -> None:
@@ -114,8 +118,10 @@ def main() -> int:
     assert normalise_item("Tail gate assy") == normalise_item("Tail Gate") == "tailgate"
     ok("a CL report spreadsheet reads into reference, vehicle and Annex A lines (list and S/Nett)")
     if len(sys.argv) > 1:
-        # Checked against the files themselves, read at run time: no real
+        # Checked against the files themselves, read at run time, and against
+        # the private expected values beside them when there are any: no real
         # case's values are written here.
+        expected = expected_reports.load(Path(sys.argv[1]))
         reals = sorted(Path(sys.argv[1]).rglob("CL *.xls"))
         assert reals, f"no CL report under {sys.argv[1]}"
         for real in reals:
@@ -123,8 +129,13 @@ def main() -> int:
             named = re.match(r"CL\s*\d+", real.name)
             assert named and re.sub(r"\s+", "", rc.ref or "") == re.sub(r"\s+", "", named.group(0)), (real.name, rc.ref)
             assert rc.make and rc.model and len(rc.lines) == annex_a_rows(real), (rc.make, rc.model, len(rc.lines))
+            want = expected_reports.for_workbook(expected, real)
+            if "make" in want or "model" in want:
+                assert (rc.make, rc.model) == (want.get("make", rc.make), want.get("model", rc.model)), real.name
+            if "annex_a_lines" in want:
+                assert len(rc.lines) == want["annex_a_lines"], (real.name, len(rc.lines))
         ok(f"the {len(reals)} real CL reports read as their own files say: reference, make and model, "
-           "every Annex A row")
+           f"every Annex A row; {expected_reports.say(expected)}")
 
     admin = TestClient(app, base_url="https://carlink.test")
     sign_in(admin, role="admin", name="Kelvin Lim")
