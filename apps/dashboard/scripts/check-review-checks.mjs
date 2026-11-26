@@ -9,7 +9,8 @@
  *   - "prints as" (printsAs), against scripts/fixtures/prints-as-sample.json,
  *     which bot-service scripts/test_prints_as.py checks against filing;
  *   - the Condition picker's quick values and own word order;
- *   - the map's "+ Add as damage" part (partForMapAdd);
+ *   - the map's add: the panel's own part (partForMapAdd), first in the
+ *     part picker (step 3A, scripts/check-picker.mjs);
  * and, from the source, that the Review step and the wizard use them.
  *
  *   node apps/dashboard/scripts/check-review-checks.mjs
@@ -265,9 +266,16 @@ check("partForMapAdd: the underbody panel pre-fills Underbody / Chassis (was Boo
 
 check("ReviewStep: the checks are wired in (map add, add warnings, undo, prints as, Needs you); the wrong 'unpriced' line is gone", () => {
   const tsx = source("../components/intake/ReviewStep.tsx");
-  assert.match(tsx, /setNewPart\(partForMapAdd\(zoneKey, partsList\)\)/);
+  // Step 3A: the map's add opens the part picker on the panel, its own part
+  // first (unless listed already) -- partForMapAdd, by way of
+  // lib/partPicker.ts zonePreferred (scripts/check-picker.mjs runs it).
+  assert.match(tsx, /preset: presetFromZone\(zoneKey\)/);
+  assert.match(source("../lib/partPicker.ts"), /partForMapAdd\(zone, list\)/);
+  assert.match(source("../components/PartPicker.tsx"), /preferNames: zonePreferred\(zone, list, rowsListed\)/);
   assert.doesNotMatch(tsx, /These become the Annex A rows, unpriced/);
-  assert.equal((tsx.match(/askBeforeAdd\(part, \(\) =>/g) || []).length, 2, "the add row and Photos by part ask first");
+  // The picker's adds (add row, map, photo viewer) and Photos by part ask first.
+  assert.equal((tsx.match(/askBeforeAdd\(\s*part,\s*\(\) =>/g) || []).length, 2, "the picker's adds and Photos by part ask first");
+  assert.match(tsx, /const check = checkAdd\(damage, part, otherName\)/);
   assert.match(tsx, /restoreRemoved\(/);
   assert.match(tsx, /<UndoToast/);
   assert.match(tsx, /printsAs\(item, taxonomy, v\)/);

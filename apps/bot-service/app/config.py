@@ -283,6 +283,29 @@ class Settings(BaseSettings):
     # apart, "Seen in the zone check"); the rest are kept apart (ai_draft[
     # "zone_inventory"]) and never suppress a part.
     intake_zone_inventory: str = "off"
+    # Detection Round 1 (owner, 25 Nov 2026; app/intake/sorter_hints.py).
+    # A1: each part the photo sorter saw damaged (a photo's part tag, or the
+    # first part its note names that isn't negated or at the other end of
+    # the car) that no read found, listed or suggested -- compared without
+    # its side -- becomes a suggestion (source "sorter", found_by
+    # "sorter_seen": "Seen by the photo sorter"), one per part, at most
+    # sorter_hints.MAX_HINTS a case, damage close-ups first; never from
+    # another vehicle's photo, a document or the scene. "shadow": worked out
+    # and kept on the AI draft only (ai_draft["sorter_suggestions"], counted
+    # at sign-off), nothing shown. "off": nothing of it runs, as before.
+    intake_sorter_hints: str = "off"
+    # A2: "strict" -- a zone read's "intact" never demotes or drops a part
+    # the sorter saw damaged on a photo of it (the same part, side and end;
+    # the linked parts' intake_links_intact), and such a part no read
+    # listed or suggested becomes a suggestion (found_by "sorter_intact",
+    # intact_in the zone reads; at most sorter_hints.MAX_INTACT a case).
+    # "shadow": those suggestions worked out and kept on the AI draft only
+    # (ai_draft["sorter_suggestions"]), the linked parts as before, nothing
+    # shown -- worked out as if A1 were off, and at sign-off a part a person
+    # added from a card (an A1 card, say) counts as prompted, not as A2's
+    # hit; for a clean trial run it with A1 "off" or "shadow". "old": the
+    # zone reads' intact lists act as before.
+    intake_intact_rule: str = "old"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
     # side_from_sorter). Off: the reader's side stands, as before.
@@ -496,6 +519,18 @@ class Settings(BaseSettings):
     @classmethod
     def _zone_wrong_end(cls, value):
         return _one_of(value, ZONE_WRONG_END, "intake_zone_wrong_end")
+
+    # Detection Round 1: a typo stops the app at start-up; blank is the
+    # default (today's behaviour).
+    @field_validator("intake_sorter_hints")
+    @classmethod
+    def _sorter_hints(cls, value):
+        return _one_of(value, SORTER_HINTS, "intake_sorter_hints")
+
+    @field_validator("intake_intact_rule")
+    @classmethod
+    def _intact_rule(cls, value):
+        return _one_of(value, INTACT_RULES, "intake_intact_rule")
 
     @field_validator("gemini_read_tools")
     @classmethod
@@ -1010,6 +1045,10 @@ MAX_SORT_WORKERS = 5
 # default, today's behaviour. E7, E11.
 SIDE_GEOMETRY = ("off", "shadow", "vote", "tiebreak")
 ZONE_WRONG_END = ("drop", "shadow", "keep")
+# Detection Round 1 (25 Nov 2026): A1, A2; the first of each is the default,
+# today's behaviour.
+SORTER_HINTS = ("off", "shadow", "on")
+INTACT_RULES = ("old", "shadow", "strict")
 # E12: the most photos one reading may send (64 at medium is 32 at high's
 # image tokens).
 MAX_READ_PHOTOS_LIMIT = 64

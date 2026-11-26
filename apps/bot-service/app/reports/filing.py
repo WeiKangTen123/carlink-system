@@ -53,7 +53,10 @@ AI_DRAFT_PHOTO_LISTS = ("damage_summary", "zone_suggestions", "link_suggestions"
                         "side_geometry",
                         # Detection Round 2 (settings.intake_zone_inventory):
                         # the zone reads' inventory (intake/zones.add_inventory).
-                        "zone_inventory")
+                        "zone_inventory",
+                        # Detection Round 1 A1 in shadow (settings.
+                        # intake_sorter_hints): the sorter's finds kept apart.
+                        "sorter_suggestions")
 
 
 def relabel_ai_draft(ai_draft: dict | None, index_of: dict) -> dict | None:

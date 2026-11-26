@@ -1,7 +1,7 @@
 {
  "format": 1,
  "version": 0,
- "core": "core:b9d45d04d04d",
+ "core": "core:8f1c699ae865",
  "built_from": {
   "taxonomy": "102 canonical + 45 car map names",
   "car_map": "K1.0",
@@ -1446,7 +1446,7 @@
     },
     {
      "text": "Front mud flap",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
@@ -2050,7 +2050,7 @@
    "aliases": [
     {
      "text": "Rear air vent",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -3048,7 +3048,7 @@
     },
     {
      "text": "Key lock",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -3365,7 +3365,7 @@
    "aliases": [
     {
      "text": "Tool tray",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
@@ -3593,7 +3593,7 @@
     },
     {
      "text": "Rear mud flap",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -4494,7 +4494,7 @@
    "aliases": [
     {
      "text": "Front bumper under cover",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -4737,7 +4737,7 @@
    "aliases": [
     {
      "text": "Silencer",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -4864,17 +4864,17 @@
    "aliases": [
     {
      "text": "Lower arm",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
      "text": "Anti roll bar",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
      "text": "Shock absorber",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],
@@ -4956,17 +4956,17 @@
    "aliases": [
     {
      "text": "Rear trailing arm",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
      "text": "Rear torsion beam",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     },
     {
      "text": "Rear shock absorber",
-     "kind": "synonym",
+     "kind": "filed_under",
      "source": "code"
     }
    ],

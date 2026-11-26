@@ -23,7 +23,6 @@ import {
   ARCHETYPE_LABELS,
   MAP_AREAS,
   detectBodyType,
-  partForZone,
   zoneLabel,
   type MapArea,
 } from "@/lib/vehicleZones";
@@ -78,6 +77,8 @@ export type DamageMapPanelProps = {
    * the suggestion's own key (Finding.partKey) -- what the decide endpoint
    * takes, so useSuggestionDecisions' decide can be passed straight on. */
   onDecide?: (key: string, action: DecideAction) => Promise<DecideResult | void>;
+  /** [+ Add part here] on a panel's card (any panel, listed parts or not):
+   * the page opens its part picker on that zone. */
   onAddDamage?: (zoneKey: string) => void;
   readOnly?: boolean;
 };
@@ -539,11 +540,6 @@ export function DamageMapPanel({
                         </button>
                       </p>
                     )}
-                    {card.zone && onAddDamage && !readOnly && partForZone(card.zone) && (
-                      <button type="button" className="btn-secondary-modern dmap-small-btn" onClick={() => onAddDamage(card.zone!)}>
-                        <Plus style={{ width: 12, height: 12 }} /> Add as damage
-                      </button>
-                    )}
                   </div>
                 ) : (
                   <ul className="dmap-rows">
@@ -594,6 +590,15 @@ export function DamageMapPanel({
                         );
                       })}
                     </ul>
+                  </div>
+                )}
+                {/* Step 3A: any panel, listed parts or not -- the part
+                    picker with that panel's parts (the page opens it). */}
+                {card.zone && onAddDamage && !readOnly && (
+                  <div className="dmap-card-add">
+                    <button type="button" className="btn-secondary-modern dmap-small-btn" onClick={() => onAddDamage(card.zone!)}>
+                      <Plus style={{ width: 12, height: 12 }} /> Add part here
+                    </button>
                   </div>
                 )}
                 {decideError && <p className="dmap-error">{decideError}</p>}
