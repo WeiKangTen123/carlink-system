@@ -1,0 +1,684 @@
+[
+ {
+  "_about": "Made-up trail for scripts/bench/replay_sorter_hints.py (Detection Round 1): no real case, photo or plate.",
+  "case": "made-up rear hit",
+  "photos": [
+   {
+    "label": "P01",
+    "kind": "log_card",
+    "area": null,
+    "part": null,
+    "damage": false,
+    "note": "Registration card",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P02",
+    "kind": "overview",
+    "area": "rear",
+    "part": null,
+    "damage": false,
+    "note": "Rear of the car",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P03",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Rear Bumper",
+    "damage": true,
+    "note": "Rear bumper cracked near LH reflector",
+    "read": true,
+    "box": [
+     300,
+     100,
+     700,
+     900
+    ]
+   },
+   {
+    "label": "P04",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Left Tail Lamp",
+    "damage": true,
+    "note": "Left tail lamp lens cracked",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P05",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Boot Lid",
+    "damage": true,
+    "note": "Boot lid striker bent",
+    "read": true,
+    "box": [
+     200,
+     400,
+     450,
+     600
+    ]
+   },
+   {
+    "label": "P06",
+    "kind": "damage",
+    "area": "rear-left",
+    "part": "Left Rear Wheel Arch Trim",
+    "damage": true,
+    "note": "Left rear wheel arch trim scraped",
+    "read": true,
+    "box": [
+     500,
+     200,
+     800,
+     500
+    ]
+   },
+   {
+    "label": "P07",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Rear Windscreen",
+    "damage": true,
+    "note": "Rear windscreen cracked",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P08",
+    "kind": "third_party",
+    "area": null,
+    "part": "Front Bumper",
+    "damage": true,
+    "note": "Other car's front bumper dented",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P09",
+    "kind": "damage",
+    "area": "rear",
+    "part": null,
+    "damage": true,
+    "note": "Boot floor board torn",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P10",
+    "kind": "damage",
+    "area": "front-left",
+    "part": "Left Fog Lamp",
+    "damage": true,
+    "note": "Left fog lamp cover cracked",
+    "read": false,
+    "box": null,
+    "quality": "blurry"
+   },
+   {
+    "label": "P11",
+    "kind": "scene",
+    "area": null,
+    "part": null,
+    "damage": false,
+    "note": "Car park",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P12",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Rear Number Plate",
+    "damage": true,
+    "note": "Number plate bent",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P13",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Rear Bumper Reflector (side undetermined)",
+    "damage": true,
+    "note": "Reflector cracked",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P14",
+    "kind": "overview",
+    "area": "left",
+    "part": "Left Rear Door",
+    "damage": true,
+    "note": "Left rear door dented",
+    "read": false,
+    "box": null
+   },
+   {
+    "label": "P15",
+    "kind": "other",
+    "area": "right",
+    "part": "Right Sill / Rocker Panel",
+    "damage": true,
+    "note": "Right sill scraped",
+    "read": false,
+    "box": null
+   }
+  ],
+  "damage_summary": [
+   {
+    "part": "Rear Bumper",
+    "photo_reference": "P03"
+   },
+   {
+    "part": "Boot Lid",
+    "photo_reference": "P05"
+   },
+   {
+    "part": "Right Tail Lamp",
+    "photo_reference": "P04"
+   }
+  ],
+  "second_look": {
+   "items": [
+    {
+     "key": "Left Rear Bumper Reflector",
+     "part": "Left Rear Bumper Reflector",
+     "source": "zone"
+    },
+    {
+     "key": "Rear Bumper Beam",
+     "part": "Rear Bumper Beam",
+     "source": "link"
+    }
+   ],
+   "dismissed": [
+    "Rear Number Plate"
+   ]
+  },
+  "runs": [
+   {
+    "kind": "read",
+    "photos_sent": [
+     "P01",
+     "P02",
+     "P03"
+    ]
+   },
+   {
+    "kind": "read_zones",
+    "photos_sent": {
+     "count": 9,
+     "zones": [
+      {
+       "zone": "rear",
+       "photos": [
+        "@a",
+        "@b"
+       ],
+       "status": "ok",
+       "side_seen": "rear",
+       "found": 2,
+       "intact": [
+        "Rear Windscreen",
+        "Parking Sensor"
+       ]
+      },
+      {
+       "zone": "left",
+       "photos": [
+        "@c"
+       ],
+       "status": "ok",
+       "side_seen": "left",
+       "found": 0,
+       "intact": [
+        "Left Rear Door",
+        "Left Front Door"
+       ]
+      },
+      {
+       "zone": "close",
+       "photos": [
+        "@d"
+       ],
+       "status": "failed",
+       "error_code": "busy"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "case": "made-up side scrape, one read",
+  "photos": [
+   {
+    "label": "P01",
+    "kind": "overview",
+    "area": "right",
+    "part": null,
+    "damage": false,
+    "note": "Right side of the car",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P02",
+    "kind": "damage",
+    "area": "right",
+    "part": "Right Front Door",
+    "damage": true,
+    "note": "Right front door scratched",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P03",
+    "kind": "damage",
+    "area": "right",
+    "part": "Right Wing Mirror",
+    "damage": true,
+    "note": "Mirror housing cracked",
+    "read": true,
+    "box": [
+     100,
+     100,
+     400,
+     400
+    ]
+   },
+   {
+    "label": "P04",
+    "kind": "damage",
+    "area": "right",
+    "part": null,
+    "damage": true,
+    "note": "Scratches",
+    "read": true,
+    "box": null
+   }
+  ],
+  "damage_summary": [
+   {
+    "part": "Left Front Door",
+    "photo_reference": "P02"
+   }
+  ],
+  "second_look": {
+   "items": []
+  },
+  "runs": [
+   {
+    "kind": "read",
+    "photos_sent": [
+     "P01",
+     "P02",
+     "P03",
+     "P04"
+    ]
+   }
+  ]
+ },
+ {
+  "_about": "Made-up: five heavily hit parts, more linked parts than intake_links_max; a zone read calls the parking sensor intact, the sorter saw it damaged.",
+  "case": "made-up crowded rear, links capped",
+  "photos": [
+   {
+    "label": "P01",
+    "kind": "overview",
+    "area": "rear",
+    "part": null,
+    "damage": false,
+    "note": "Rear of the car",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P02",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Rear Bumper",
+    "damage": true,
+    "note": "Rear bumper crumpled",
+    "read": true,
+    "box": [
+     300,
+     100,
+     700,
+     900
+    ]
+   },
+   {
+    "label": "P03",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Boot Lid",
+    "damage": true,
+    "note": "Boot lid buckled",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P04",
+    "kind": "damage",
+    "area": "rear-left",
+    "part": "Left Rear Quarter Panel",
+    "damage": true,
+    "note": "Left rear quarter panel crumpled",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P05",
+    "kind": "damage",
+    "area": "rear",
+    "part": "Parking Sensor",
+    "damage": true,
+    "note": "Parking sensor pushed in",
+    "read": false,
+    "box": [
+     400,
+     450,
+     520,
+     560
+    ]
+   },
+   {
+    "label": "P06",
+    "kind": "damage",
+    "area": "left",
+    "part": "Left Rear Door",
+    "damage": true,
+    "note": "Left rear door dented",
+    "read": true,
+    "box": null
+   },
+   {
+    "label": "P07",
+    "kind": "damage",
+    "area": "left",
+    "part": "Left Front Door",
+    "damage": true,
+    "note": "Left front door dented",
+    "read": true,
+    "box": null
+   }
+  ],
+  "damage_summary": [
+   {
+    "part": "Rear Bumper",
+    "photo_reference": "P02",
+    "found_by": [
+     "overall"
+    ],
+    "seen_in": [
+     "P02"
+    ],
+    "condition_tokens": [
+     "Cracked",
+     "Crumpled"
+    ],
+    "condition": "Cracked, Crumpled",
+    "damage_type": "Crack",
+    "severity": "Severe",
+    "remarks": "Replace",
+    "ai_confidence": "High",
+    "side_inferred": false
+   },
+   {
+    "part": "Boot Lid",
+    "photo_reference": "P03",
+    "found_by": [
+     "overall"
+    ],
+    "seen_in": [
+     "P03"
+    ],
+    "condition_tokens": [
+     "Cracked",
+     "Crumpled"
+    ],
+    "condition": "Cracked, Crumpled",
+    "damage_type": "Crack",
+    "severity": "Severe",
+    "remarks": "Replace",
+    "ai_confidence": "High",
+    "side_inferred": false
+   },
+   {
+    "part": "Left Rear Quarter Panel",
+    "photo_reference": "P04",
+    "found_by": [
+     "overall"
+    ],
+    "seen_in": [
+     "P04"
+    ],
+    "condition_tokens": [
+     "Cracked",
+     "Crumpled"
+    ],
+    "condition": "Cracked, Crumpled",
+    "damage_type": "Crack",
+    "severity": "Severe",
+    "remarks": "Replace",
+    "ai_confidence": "High",
+    "side_inferred": false
+   },
+   {
+    "part": "Left Rear Door",
+    "photo_reference": "P06",
+    "found_by": [
+     "overall"
+    ],
+    "seen_in": [
+     "P06"
+    ],
+    "condition_tokens": [
+     "Cracked",
+     "Crumpled"
+    ],
+    "condition": "Cracked, Crumpled",
+    "damage_type": "Crack",
+    "severity": "Severe",
+    "remarks": "Replace",
+    "ai_confidence": "High",
+    "side_inferred": false
+   },
+   {
+    "part": "Left Front Door",
+    "photo_reference": "P07",
+    "found_by": [
+     "overall"
+    ],
+    "seen_in": [
+     "P07"
+    ],
+    "condition_tokens": [
+     "Cracked",
+     "Crumpled"
+    ],
+    "condition": "Cracked, Crumpled",
+    "damage_type": "Crack",
+    "severity": "Severe",
+    "remarks": "Replace",
+    "ai_confidence": "High",
+    "side_inferred": false
+   }
+  ],
+  "second_look": {
+   "items": [
+    {
+     "key": "Rear Number Plate",
+     "part": "Rear Number Plate",
+     "source": "link"
+    },
+    {
+     "key": "Left Rear Bumper Reflector",
+     "part": "Left Rear Bumper Reflector",
+     "source": "link"
+    },
+    {
+     "key": "Reversing Camera",
+     "part": "Reversing Camera",
+     "source": "link"
+    },
+    {
+     "key": "Left Boot Lid Lamp",
+     "part": "Left Boot Lid Lamp",
+     "source": "link"
+    },
+    {
+     "key": "Left Tail Lamp",
+     "part": "Left Tail Lamp",
+     "source": "link"
+    },
+    {
+     "key": "Left Rear Wheel Arch Trim",
+     "part": "Left Rear Wheel Arch Trim",
+     "source": "link"
+    },
+    {
+     "key": "Left Rear Door Glass",
+     "part": "Left Rear Door Glass",
+     "source": "link"
+    },
+    {
+     "key": "Left Wing Mirror",
+     "part": "Left Wing Mirror",
+     "source": "link"
+    },
+    {
+     "key": "Left Front Door Glass",
+     "part": "Left Front Door Glass",
+     "source": "link"
+    },
+    {
+     "key": "Boot Lid Lock",
+     "part": "Boot Lid Lock",
+     "source": "link"
+    },
+    {
+     "key": "Boot Lid Hinge",
+     "part": "Boot Lid Hinge",
+     "source": "link"
+    },
+    {
+     "key": "Boot Lid Weatherstrip",
+     "part": "Boot Lid Weatherstrip",
+     "source": "link"
+    },
+    {
+     "key": "Left Rear Wheel Arch Liner",
+     "part": "Left Rear Wheel Arch Liner",
+     "source": "link"
+    },
+    {
+     "key": "Rear Bumper Beam",
+     "part": "Rear Bumper Beam",
+     "source": "link"
+    },
+    {
+     "key": "Rear End Panel",
+     "part": "Rear End Panel",
+     "source": "link"
+    },
+    {
+     "key": "Left Boot Side Trim",
+     "part": "Left Boot Side Trim",
+     "source": "link"
+    },
+    {
+     "key": "Left Rear Window Regulator",
+     "part": "Left Rear Window Regulator",
+     "source": "link"
+    },
+    {
+     "key": "Interior Trim",
+     "part": "Interior Trim",
+     "source": "link"
+    },
+    {
+     "key": "Left Front Window Regulator",
+     "part": "Left Front Window Regulator",
+     "source": "link"
+    },
+    {
+     "key": "Boot Floor Board",
+     "part": "Boot Floor Board",
+     "source": "link"
+    },
+    {
+     "key": "Rear Subframe",
+     "part": "Rear Subframe",
+     "source": "link"
+    },
+    {
+     "key": "Airbag System",
+     "part": "Airbag System",
+     "source": "link"
+    }
+   ],
+   "dismissed": []
+  },
+  "runs": [
+   {
+    "kind": "read",
+    "photos_sent": [
+     "P01",
+     "P02",
+     "P03",
+     "P04",
+     "P06",
+     "P07"
+    ]
+   },
+   {
+    "kind": "read_zones",
+    "photos_sent": {
+     "count": 6,
+     "zones": [
+      {
+       "zone": "rear",
+       "photos": [
+        "P01",
+        "P02",
+        "P03",
+        "P05"
+       ],
+       "status": "ok",
+       "side_seen": "rear",
+       "found": 2,
+       "intact": [
+        "Parking Sensor",
+        "Rear Windscreen"
+       ]
+      },
+      {
+       "zone": "left",
+       "photos": [
+        "P06",
+        "P07"
+       ],
+       "status": "ok",
+       "side_seen": "left",
+       "found": 2,
+       "intact": []
+      }
+     ]
+    }
+   }
+  ],
+  "vehicle_info": {
+   "make": "Gammamotors",
+   "model": "Testa",
+   "body_type": "Sedan"
+  }
+ }
+]

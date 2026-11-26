@@ -48,6 +48,7 @@ import {
   panelOrder,
   sideFromText,
   signText,
+  sourceLabel,
   sourceName,
   type Finding,
   type FindingStatus,
@@ -698,7 +699,9 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const isLink = finding.source === "link";
     const bucket = isLink ? linkBucket(finding) : null;
     const linkLine = linkCheckLine(finding.linkCheck);
-    const intact = finding.kind === "suggestion" ? intactText(finding.intactIn, photos) : null;
+    // A photo sorter suggestion's intact_in is why it is there (sourceLabel /
+    // codeReason say it), not a warning -- as on its card.
+    const intact = finding.kind === "suggestion" && finding.source !== "sorter" ? intactText(finding.intactIn, photos) : null;
     // K4: the car map's group, "if fitted", a second hop and the yes signs.
     const linkFacts = [finding.assemblyName ?? null, hopText(finding), sideFromText(finding), alsoLinkedText(finding)]
       .filter(Boolean)
@@ -706,6 +709,7 @@ function ViewerDialog({ mode: startMode, findings, startKey, startPhoto, photos,
     const fitted = isLink ? fittedText(finding) : null;
     const parent = finding.parents?.[0] ?? null;
     const facts = [
+      finding.kind === "suggestion" ? sourceLabel(finding) : null,
       finding.kind === "suggestion" ? foundByText(finding, reads) : foundByNames(finding) && `Found by: ${foundByNames(finding)}`,
       confidenceText(finding.confidence),
     ]
