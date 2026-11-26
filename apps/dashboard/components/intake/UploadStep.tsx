@@ -87,9 +87,10 @@ type Props = {
   /** Set when a filing was cut off (filing_interrupted): the main button
    * goes to File case, not to a fresh (paid) AI run. */
   onFileCase?: () => void;
-  /** INTAKE_USER_FIELDS on (GET /intake/{id} user_fields): the odometer
-   * reading is the user's to type in, so the tip asks for the photo
-   * without saying the AI reads it. */
+  /** INTAKE_USER_FIELDS on (lib/uploadTip.userFieldsOn: GET /auth/me, or
+   * GET /intake/{id} once there is a draft): the odometer reading is the
+   * user's to type in, so the tip asks for the photo without saying the AI
+   * reads it. */
   userFields?: boolean;
 };
 

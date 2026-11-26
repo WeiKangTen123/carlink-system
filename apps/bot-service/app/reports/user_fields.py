@@ -14,9 +14,14 @@ settings.intake_user_fields, off by default.
     none) in the prompt and the response schema (extraction.
     _USER_FIELDS_V1 / _V2, _SCHEMA_EXAMPLES);
   - the website's upload tip doesn't say the AI reads the odometer (GET
-    /intake/{id} user_fields), and the Telegram bot's guide points the
+    /auth/me user_fields, so a New Report knows before its first upload;
+    GET /intake/{id} too), and the Telegram bot's guide points the
     workshop to its template's "Workshop:" line (channels/telegram.
-    welcome_guide);
+    welcome_guide); a staff correction's own "Workshop:" line is applied
+    as the person's, a correction that only mentions a workshop gets a
+    hint to send that line (telegram.correction_workshop); the public
+    bot no longer invites a workshop it has no step for (telegram_public.
+    _what_extras);
   - a value the model returns all the same is dropped as its answer is
     parsed (drop_from_draft, from extraction._parse_draft), before it can
     reach the draft, the AI draft (Report.ai_draft / IntakeSession.ai_draft)
@@ -26,7 +31,13 @@ settings.intake_user_fields, off by default.
   - the field review counts both as a person's to fill ("office": "Needs
     you" while empty), and GET /reports/{id} and GET /intake/{id} ai_read
     never lists them, so no "AI" tag shows beside them (reports/review.py,
-    reports/filing.ai_read_for).
+    reports/filing.ai_read_for), and the AI-accuracy row leaves them out
+    of the fields the AI can fill (reports/accuracy.ai_fields);
+  - a draft read before the switch went on and read again: a value still
+    exactly the AI's last one, that no person confirmed, is cleared and
+    shows "Needs you" (clear_ai_values, from pipeline.merge_redraft), and
+    the F1 fallback's copy of the last AI draft drops them too
+    (drop_from_dict, from pipeline.fallback_draft).
 A value a person typed -- on the cover page, or into the Telegram bot's
 template ("Workshop: ...") -- is theirs and stays. The photo kind
 "odometer" is the sorter's and stays: a photo of the dashboard is still
@@ -74,3 +85,37 @@ def drop_from_draft(draft) -> list[str]:
             dropped.append(f"{section}.{field}")
         setattr(node, field, None)
     return dropped
+
+
+def drop_from_dict(draft: dict) -> dict:
+    """drop_from_draft for a draft kept as a dict (the F1 fallback's copy of
+    the last AI draft): each of the fields emptied where its section is
+    there. In place; returns the dict."""
+    for section, field in DRAFT_FIELDS:
+        node = draft.get(section)
+        if isinstance(node, dict) and field in node:
+            node[field] = None
+    return draft
+
+
+def clear_ai_values(current: dict, previous_ai: dict | None, merged: dict) -> dict:
+    """For a re-read (pipeline.merge_redraft) while on: `merged` with each of
+    the fields emptied whose value in the form now (`current`) is still the
+    AI's last one (`previous_ai`) and that no person confirmed (data
+    .checked) -- an AI value from before the switch went on, which the
+    re-read would otherwise keep and the review then call "You". Emptied,
+    it shows "Needs you". A value a person typed differs from the AI's and
+    stays; so does a confirmed one. The case keeps no record of who typed
+    a field, so a typed value that is the AI's to the letter, unconfirmed,
+    is emptied too."""
+    from app.reports.review import checked_of, is_blank, same_value, value_at, with_value
+
+    checked = checked_of(current)
+    for section, field in DRAFT_FIELDS:
+        key = f"{section}.{field}"
+        value = value_at(current, key)
+        if is_blank(value) or key in checked:
+            continue
+        if same_value(value, value_at(previous_ai or {}, key)):
+            merged = with_value(merged, key, None)
+    return merged

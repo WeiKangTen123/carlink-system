@@ -264,7 +264,7 @@ export function CoverPageFields({
                       type="text"
                       className="annex-cell-input"
                       value={value[`${axle}_size`]}
-                      placeholder="e.g. 205/55 R16"
+                      placeholder="e.g. 195/65 R15"
                       aria-label={`${axle} tyre size`}
                       disabled={disabled}
                       onChange={(e) => onChange({ [`${axle}_size`]: e.target.value } as Partial<CoverForm>)}
@@ -275,7 +275,7 @@ export function CoverPageFields({
             </tbody>
           </table>
         </div>
-        <span className="cover-field-hint">Printed per axle as 6mm/Michelin | 6mm/Michelin | 205/55 R16.</span>
+        <span className="cover-field-hint">Printed per axle as 6mm/Michelin | 6mm/Michelin | 195/65 R15.</span>
         {tyreWarnings.length > 0 && (
           <span className="p1b-check-text" role="note">
             <span className="p1b-check-tag" aria-hidden>

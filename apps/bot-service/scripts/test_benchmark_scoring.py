@@ -592,10 +592,10 @@ def report_xlsx(path: Path, ref: str, plate: str, make_model: str, lines: list[t
     cover.title = "Cover Page"
     cover.append([None, "ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT"])
     cover.append([None, f"Our  Ref: {ref} {plate}"])
-    cover.append([None, None, "Date of survey", ":", "27th January 2018"])
+    cover.append([None, None, "Date of survey", ":", "3rd February 2026"])
     cover.append([None, None, "Registration No.", ":", plate])
     cover.append([None, None, "Make & Model", ":", make_model])
-    cover.append([None, None, "Date of registration", ":", "12th January 2017"])
+    cover.append([None, None, "Date of registration", ":", "5th March 2021"])
     annex = book.create_sheet("Annex A")
     annex.append([None, None, plate])
     annex.append([None, "Item", "Vehicle Parts Description", "Condition", "Remarks", "Qty", "W/shop   Est. ($)", "Disc       (%)", "Adjusted    Cost ($)"])
@@ -706,7 +706,7 @@ def test_benchmark_run() -> None:
             Image.new("RGB", (48, 32), colour).save(cases_dir / folder / f"p{i}.jpg", "JPEG")
     make_reports(reports_dir)
     vehicle = {"make": "Honda", "model": "Vezel", "color": "White", "vin": "TESTVIN0000000001",
-               "engine_number": "TESTENG1", "date_of_registration": "2017-01-12"}
+               "engine_number": "TESTENG1", "date_of_registration": "2021-03-05"}
     key = {"cases": [
         {"name": "TEST CASE A", "folder": "case_a", "vehicle": dict(vehicle, plate_number="TEST-A"), "parts": [
             {"part": "Boot Lid", "surveyor": ["Tail gate assy"]}, {"part": "Boot Lid Lock", "surveyor": ["Tail gate lock striker"]},
@@ -1352,7 +1352,7 @@ def _load_bench(name: str):
 
 # Made up, as the key's other cases.
 C9_VEHICLE = {"make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-C", "color": "White",
-              "vin": "TESTVIN0000000003", "engine_number": "TESTENG3", "date_of_registration": "2017-01-12"}
+              "vin": "TESTVIN0000000003", "engine_number": "TESTENG3", "date_of_registration": "2021-03-05"}
 
 
 def c9_suggestion(part: str, truth: str | None = None, *, box=None, box_kind="ai", reason=None, verdict=None, p=None,

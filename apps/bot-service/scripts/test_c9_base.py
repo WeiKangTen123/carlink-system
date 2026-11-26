@@ -704,7 +704,7 @@ def option_b_bench() -> None:
 
     HANDLERS.update(draft=draft, zone=zone)
     vehicle = {"make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-B", "color": "White",
-               "vin": "TESTVIN0000000002", "engine_number": "TESTENG2", "date_of_registration": "2017-01-12"}
+               "vin": "TESTVIN0000000002", "engine_number": "TESTENG2", "date_of_registration": "2021-03-05"}
     case = {"name": "TEST CASE B", "folder": "case_b", "vehicle": vehicle, "parts": [
         {"part": "Rear Bumper"}, {"part": "Boot Lid Lock"}, {"part": "Left Tail Lamp"}]}
     with Settings(intake_read_mode="zones", second_look_enabled=False):

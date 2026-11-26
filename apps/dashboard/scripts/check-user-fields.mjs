@@ -3,7 +3,8 @@
  * Checks the dashboard side of INTAKE_USER_FIELDS (owner, 25 Nov 2026;
  * apps/bot-service/app/reports/user_fields.py): the upload step's tip
  * (lib/uploadTip.ts). Off, it is the tip as before, word for word; on, it
- * still asks for the odometer photo but never says the AI reads it.
+ * still asks for the odometer photo but never says the AI reads it -- and
+ * the wizard knows the switch before a New Report has a draft.
  *
  *   node apps/dashboard/scripts/check-user-fields.mjs
  *
@@ -17,7 +18,7 @@ process.on("warning", (w) => {
   if (w.code !== "MODULE_TYPELESS_PACKAGE_JSON") console.error(w.stack ?? w.message);
 });
 
-const { uploadTip } = await import("../lib/uploadTip.ts");
+const { uploadTip, userFieldsOn } = await import("../lib/uploadTip.ts");
 
 let failed = 0;
 function check(name, fn) {
@@ -42,6 +43,14 @@ check("on: never says the AI reads the odometer", () => {
   const aiClause = tip.slice(0, tip.indexOf("so the AI can read them"));
   assert.doesNotMatch(aiClause, /odometer/);
   assert.match(tip, /you type its reading in/);
+});
+
+check("the switch is known before any draft (GET /auth/me), and from the draft", () => {
+  assert.equal(userFieldsOn(null, { user_fields: true }), true, "a New Report before its first upload");
+  assert.equal(userFieldsOn({ user_fields: true }, null), true);
+  assert.equal(userFieldsOn(undefined, undefined), false);
+  assert.equal(userFieldsOn({}, {}), false, "off: both answers leave it out");
+  assert.equal(userFieldsOn(null, { user_fields: false }), false);
 });
 
 if (failed) {

@@ -113,6 +113,7 @@ def field_rules() -> dict[str, str]:
         return FIELD_RULES
     return {**FIELD_RULES, **{key: "office" for key in user_fields.REVIEW_KEYS}}
 
+
 # What every report the firm sends must state (owner, 23 Nov 2026, D1/D2):
 # each filled in, or marked N/A by a person (data.checked {na: true}),
 # before anyone -- admins too -- may sign off (api/main.sign_off_report

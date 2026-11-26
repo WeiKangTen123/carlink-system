@@ -223,6 +223,10 @@ export type CurrentUser = UserProfile & {
   /** May run the AI right now: admins, accounts allowed the company AI key,
    * and anyone whose own AI key is working (release P4). */
   ai_allowed: boolean;
+  /** True while INTAKE_USER_FIELDS is on (app/reports/user_fields.py): the
+   * workshop and the odometer reading are the user's to type in, never the
+   * AI's. Absent while it is off, and from an older API. */
+  user_fields?: boolean;
 };
 
 /** A person's cases by state (GET /users). */

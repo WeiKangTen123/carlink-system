@@ -55,6 +55,7 @@ from app.intake import crops, geometry, zones
 from app.intake.photos import ai_input_path, ordered_photos, photo_label
 from app.parts import catalogue
 from app.parts.prefill import item_key
+from app.reports import user_fields
 from app.reports.db import SessionLocal
 from app.reports.models import IntakePhoto, IntakeSession, Report
 from app.reports.review import TEMPLATE_DEFAULTS, keep_checked, same_value, value_at
@@ -1434,13 +1435,17 @@ def fallback_draft(previous: dict | None) -> dict:
     draft (SecurityIncidentDraft's fields), the description, facts and
     people taken from the last reading's AI draft when there was one -- so
     merge_redraft keeps the form as it is -- and no damage list: the zone
-    reads' finds go there."""
+    reads' finds go there. INTAKE_USER_FIELDS on: without the workshop and
+    the odometer reading a reading before the switch may have left there
+    (app/reports/user_fields.py) -- the copy is an AI draft too."""
     base = SecurityIncidentDraft(description="").model_dump()
     previous = previous if isinstance(previous, dict) else {}
     for key in base:
         if key in previous and key not in ("damage_summary", "damaged_parts"):
             base[key] = copy.deepcopy(previous[key])
     base["damage_summary"], base["damaged_parts"] = [], []
+    if user_fields.on():
+        user_fields.drop_from_dict(base)
     return base
 
 
@@ -1772,4 +1777,11 @@ def merge_redraft(current: dict, previous_ai: dict | None, new_ai: dict) -> dict
     # (second_look._store). The reading itself never writes one.
     if current.get("second_look"):
         merged["second_look"] = current["second_look"]
+    # INTAKE_USER_FIELDS on (app/reports/user_fields.py): the workshop and
+    # the odometer reading are the user's to type in. One still holding
+    # exactly what the AI read last time (a draft read before the switch
+    # went on), that no person confirmed, is the AI's: emptied, so it shows
+    # "Needs you" -- never kept and then shown as "You". Off: as before.
+    if user_fields.on():
+        merged = user_fields.clear_ai_values(current, previous_ai, merged)
     return keep_checked(current, merged)

@@ -246,35 +246,44 @@ def _prompt_v2(packs: list[str], anchor: bool) -> str:
 _USER_FIELDS_V1 = (
     ("police report, or workshop estimate). A human", "police report, or repair estimate). A human"),
     ("4. Insurance & Workshop Details ('insurance_details'):\n", "4. Insurance Details ('insurance_details'):\n"),
-    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
 )
 # v1's whole lines for the two fields, by how each starts.
 _USER_FIELD_LINES_V1 = ("     * 'odometer_reading':", "   - Extract 'workshop_assigned'")
 _USER_FIELDS_V2 = (
     ("(LTA log card, police report, workshop estimate)", "(LTA log card, police report, repair estimate)"),
-    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
 )
 # The response schema's example values from the example cases, in their
 # field's description: (model, field, as written, what "on" sends). The
 # tyre brands go with no example at all.
 _SCHEMA_EXAMPLES = (
-    ("TyreItem", "size", "e.g. 215/60 R16", "e.g. 205/55 R16"),
+    ("TyreItem", "size", "e.g. 215/60 R16", "e.g. 195/65 R15"),
     ("TyreItem", "brand", " e.g. Dunlop, Michelin, Goodride", ""),
     ("DamageSummaryItem", "oem_part_number", "e.g. '71501-T7A-A00'", "e.g. '12345-ABC-A00'"),
 )
 # v2's pieces of its field list: from where each starts to the end of the
-# first `end` after it ("'odometer_reading' ... (e.g. ...); ").
+# first `end` after it on the same line ("'odometer_reading' ... (e.g.
+# ...); ").
 _USER_FIELD_SPANS_V2 = (("'odometer_reading' exactly as read", "; "), (", 'workshop_assigned'", ")"))
 
 
 def _cut_once(text: str, start: str, end: str) -> str:
     """text without the span from `start`, which must be there exactly
-    once, to the end of the first `end` after it."""
+    once, to the end of the first `end` after it -- on start's own line: an
+    `end` that isn't there (the wording changed) fails loudly rather than
+    cutting the instructions that follow. end "\\n" cuts to the end of the
+    line, its newline included."""
     count = text.count(start)
     if count != 1:
         raise ValueError(f"prompt build: {start[:60]!r} is there {count} times, not once")
     at = text.index(start)
-    return text[:at] + text[text.index(end, at + len(start)) + len(end):]
+    line_end = text.find("\n", at)
+    line_end = len(text) if line_end < 0 else line_end + 1
+    stop = text.find(end, at + len(start))
+    if stop < 0 or stop + len(end) > line_end:
+        raise ValueError(f"prompt build: {end!r} is not on the line of {start[:60]!r}")
+    return text[:at] + text[stop + len(end):]
 
 
 def _without_user_fields(text: str, version: str) -> str:

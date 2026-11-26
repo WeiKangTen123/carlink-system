@@ -71,7 +71,7 @@ def report_xlsx(ref: str, plate: str, make_model: str, parts: list, labour: list
     cover.title = "Cover Page"
     cover.append([None, "ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT"])
     cover.append([None, f"Our  Ref: {ref} {plate}"])
-    cover.append([None, None, "Date of survey", ":", "27th January 2018"])
+    cover.append([None, None, "Date of survey", ":", "3rd February 2026"])
     cover.append([None, None, "Registration No.", ":", plate])
     cover.append([None, None, "Make & Model", ":", make_model])
     annex = book.create_sheet("Annex A")
@@ -219,7 +219,7 @@ def main() -> int:
     # An in-house surveyor: sees every case (the price book), may sign off.
     surveyor = TestClient(app, base_url="https://carlink.test")
     sign_in(surveyor, role="user", name="Alex Tan", sees_all_cases=True, may_sign_off=True, ai_company_key_allowed=True,
-            qualifications="MIMI, MIRTE, LCGI")
+            qualifications="BEng (Mech), MIMI")
     # A self-signup: no ticks.
     stranger = TestClient(app, base_url="https://carlink.test")
     sign_in(stranger, role="user", name="Walk In")
@@ -502,22 +502,22 @@ def main() -> int:
     print("cover page")
     rid = new_case(surveyor)
     body = {
-        "report_id": "CL 12330", "incident_datetime": "21st February 2023",
-        "cover_page": {"date_of_request": "27th February 2023", "requested_by": "Tan Mei Ling",
-                       "date_of_survey": "27th February 2023 (10.15am)", "general_condition": "Good", "modification": "Nil"},
-        "vehicle_info": {"date_of_registration": "19th October 2020", "odometer_reading": "058615 Km",
-                         "tyres": {"front_nearside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                                   "front_offside": {"tread_depth_mm": 7, "brand": "Dunlop"}}},
+        "report_id": "CL 10003", "incident_datetime": "10th January 2026",
+        "cover_page": {"date_of_request": "13th January 2026", "requested_by": "Tan Mei Ling",
+                       "date_of_survey": "13th January 2026 (9.30am)", "general_condition": "Good", "modification": "Nil"},
+        "vehicle_info": {"date_of_registration": "3rd March 2021", "odometer_reading": "012345 Km",
+                         "tyres": {"front_nearside": {"tread_depth_mm": 7, "brand": "TestTyre", "size": "195/65 R15"},
+                                   "front_offside": {"tread_depth_mm": 7, "brand": "TestTyre"}}},
         "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
     }
     r = surveyor.put(f"/reports/{rid}/cover-page", json=body)
     assert r.status_code == 200, r.text
     saved = r.json()
-    assert saved["report_id"] == "CL 12330" and saved["incident_datetime"] == "21st February 2023"
-    assert saved["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and saved["cover_page"]["handbrake_condition"] is None
+    assert saved["report_id"] == "CL 10003" and saved["incident_datetime"] == "10th January 2026"
+    assert saved["cover_page"]["date_of_survey"] == "13th January 2026 (9.30am)" and saved["cover_page"]["handbrake_condition"] is None
     v = saved["vehicle_info"]
-    assert v["make"] == "Honda" and v["plate_number"] == "TST2002B" and v["odometer_reading"] == "058615 Km", v
-    assert v["tyres"]["front_nearside"]["brand"] == "Dunlop" and v["tyres"]["rear_offside"]["brand"] is None
+    assert v["make"] == "Honda" and v["plate_number"] == "TST2002B" and v["odometer_reading"] == "012345 Km", v
+    assert v["tyres"]["front_nearside"]["brand"] == "TestTyre" and v["tyres"]["rear_offside"]["brand"] is None
     assert saved["insurance_details"]["workshop_assigned"] == "M/S ABC Auto Service"
     stored = surveyor.get(f"/reports/{rid}").json()
     assert stored["data"]["cover_page"] == saved["cover_page"] and stored["data"]["description"] == "Rear-ended at a junction"
@@ -530,11 +530,11 @@ def main() -> int:
     assert r.status_code == 200, r.text
     again = r.json()
     cp = again["cover_page"]
-    assert cp["date_of_survey"] == "27th February 2023 (10.15am)" and cp["handbrake_condition"] == "see annex(es)" and cp["general_condition"] is None
+    assert cp["date_of_survey"] == "13th January 2026 (9.30am)" and cp["handbrake_condition"] == "see annex(es)" and cp["general_condition"] is None
     assert cp["modification"] == "Nil"
     t = again["vehicle_info"]["tyres"]
     assert t["rear_nearside"]["brand"] == "Michelin" and t["front_nearside"]["brand"] is None, t
-    assert again["vehicle_info"]["odometer_reading"] == "058615 Km" and again["report_id"] == "CL 12330"
+    assert again["vehicle_info"]["odometer_reading"] == "012345 Km" and again["report_id"] == "CL 10003"
     ok("a second save merges key by key: absent keys stay, null clears, tyres are replaced as a whole")
     r = stranger.put(f"/reports/{rid}/cover-page", json={"cover_page": {"modification": "x"}})
     assert r.status_code == 404, r.text
@@ -596,7 +596,7 @@ def main() -> int:
     render_calls.clear()
     r = surveyor.get(f"/reports/{rid}/download?photos=0")
     assert r.status_code == 200 and r.headers["content-type"].startswith("application/pdf"), r.text
-    assert filename_of(r) == "CL 12330 TST2002B (no photos).pdf", r.headers["content-disposition"]
+    assert filename_of(r) == "CL 10003 TST2002B (no photos).pdf", r.headers["content-disposition"]
     # Rendered to "<id>_nophotos.<random>.part.pdf" and swapped into place whole.
     assert render_calls[-1]["include_photos"] is False and f"{rid}_nophotos." in render_calls[-1]["path"]
     db = SessionLocal()
@@ -604,7 +604,7 @@ def main() -> int:
     assert row.pdf_path is None, row.pdf_path
     db.close()
     r = surveyor.get(f"/reports/{rid}/download")
-    assert r.status_code == 200 and filename_of(r) == "CL 12330 TST2002B.pdf", r.headers["content-disposition"]
+    assert r.status_code == 200 and filename_of(r) == "CL 10003 TST2002B.pdf", r.headers["content-disposition"]
     assert render_calls[-1]["include_photos"] is True and render_calls[-1]["path"].endswith("report_v1.pdf")
     db = SessionLocal()
     assert db.get(Report, rid).pdf_path.endswith("report_v1.pdf")
@@ -619,7 +619,7 @@ def main() -> int:
     r = surveyor.get(f"/reports/{rid}/download.xlsx")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert filename_of(r) == "CL 12330 TST2002B.xlsx" and r.headers["cache-control"] == "no-store"
+    assert filename_of(r) == "CL 10003 TST2002B.xlsx" and r.headers["cache-control"] == "no-store"
     book = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
     assert "Cover Page" in book.sheetnames
     if REAL_XLSX:

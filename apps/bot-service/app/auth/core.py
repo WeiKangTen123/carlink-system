@@ -482,8 +482,13 @@ def user_dicts(db: Session, users: list[User]) -> list[dict]:
 def me_dict(user: CurrentUser | User) -> dict:
     """What the signed-in user sees about themselves (GET /auth/me). The
     last three are what the ticks add up to, admins having all of it;
-    ai_allowed also counts a working own AI key (ai/keys.ai_allowed)."""
+    ai_allowed also counts a working own AI key (ai/keys.ai_allowed).
+    user_fields: true while INTAKE_USER_FIELDS is on (app/reports/
+    user_fields.py) -- the workshop and the odometer reading are the user's
+    to type in -- so the New Report wizard words its tip so before any draft
+    exists; absent while off (the answer as before)."""
     from app.ai.keys import ai_allowed  # ai/keys.py imports this module
+    from app.reports import user_fields
 
     return {
         "id": user.id,
@@ -498,6 +503,7 @@ def me_dict(user: CurrentUser | User) -> dict:
         "can_view_all_cases": can_view_all_cases(user),
         "may_sign_off": is_staff(user),
         "ai_allowed": ai_allowed(user),
+        **({"user_fields": True} if user_fields.on() else {}),
     }
 
 

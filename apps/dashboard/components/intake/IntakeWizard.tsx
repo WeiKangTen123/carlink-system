@@ -11,6 +11,7 @@ import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import { undecidedCount, withSavedLook } from "@/lib/findings";
 import { filingProblems, focusFor, type FilingProblem } from "@/lib/reviewChecks";
+import { userFieldsOn } from "@/lib/uploadTip";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   FILING_INTERRUPTED_MESSAGE,
@@ -1115,7 +1116,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiOff={aiOff}
           onFillByHand={fillByHand}
           onFileCase={filingInterrupted ? () => void goTo(4) : undefined}
-          userFields={state?.user_fields === true}
+          userFields={userFieldsOn(state, user)}
         />
       )}
 

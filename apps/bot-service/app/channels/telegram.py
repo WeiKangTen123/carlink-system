@@ -57,6 +57,7 @@ import functools
 import html
 import logging
 import math
+import re
 import secrets
 import time
 import traceback
@@ -181,6 +182,37 @@ def welcome_guide() -> str:
     if WELCOME_GUIDE.count(_FREE_TEXT_LINE) != 1:
         raise ValueError("WELCOME_GUIDE: its free-text line is not there once")
     return WELCOME_GUIDE.replace(_FREE_TEXT_LINE, _FREE_TEXT_LINE_USER_FIELDS)
+
+
+# INTAKE_USER_FIELDS on: a correction sent while the draft waits for Confirm
+# goes to the AI, which never fills the workshop -- so a workshop in it would
+# be lost and the template's old one kept. A "Workshop: ..." line is the
+# person's own words, read here as the template's is (flow.
+# parse_template_reply) and applied as typed by them; a correction that
+# only mentions a workshop gets this hint. Off: neither, as before.
+WORKSHOP_LINE_HINT = (
+    "To set or change the workshop, send it on a line of its own, as in the template:\n"
+    "Workshop: <the workshop's name>"
+)
+_WORKSHOP_WORD = re.compile(r"\bworkshops?\b", re.IGNORECASE)
+
+
+def correction_workshop(session, text: str) -> str | None:
+    """While INTAKE_USER_FIELDS is on: a "Workshop: ..." line in a
+    correction becomes the session's workshop (a person's, as the
+    template's), and None is returned; a correction that mentions a workshop
+    without that line returns WORKSHOP_LINE_HINT to send. Off, or no
+    workshop in it: None, nothing changed."""
+    from app.reports import user_fields
+
+    if not user_fields.on():
+        return None
+    parsed = parse_template_reply(text)
+    if parsed and parsed.get("workshop_name"):
+        session.workshop_name = parsed["workshop_name"]
+        return None
+    return WORKSHOP_LINE_HINT if _WORKSHOP_WORD.search(text or "") else None
+
 
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 
@@ -1279,6 +1311,11 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text.lower() in CONFIRM_WORDS:
             await finalize_report(update, session, chat_id, user)
             return
+        # INTAKE_USER_FIELDS on: a "Workshop:" line is applied as typed, or
+        # the hint to send one (correction_workshop); off: nothing.
+        hint = correction_workshop(session, text)
+        if hint:
+            await update.message.reply_text(hint)
         session.pending_edits.append(text)
         await draft_and_reply(update, session, combined_description(session), redrafting=True, user=user)
         return

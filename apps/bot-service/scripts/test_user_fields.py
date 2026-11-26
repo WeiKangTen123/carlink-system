@@ -26,10 +26,20 @@ database and storage folder, no PDF render.
      person's value as "you", never "ai", and ai_read leaves them out;
   5. on: the Telegram bot (a typed workshop kept: a person's; its guide
      sends the workshop to the template's line), the Telegram bridge and
-     a public report the same way; GET /intake says user_fields.
+     a public report the same way; GET /intake says user_fields;
+  6. on: a draft read with the switch off and read again with it on: the
+     AI's old workshop and odometer emptied ("Needs you"), a person's typed
+     or confirmed ones kept ("You"); the F1 fallback's copy and the
+     AI-accuracy row leave them out;
+  7. on: GET /auth/me says user_fields (the New Report tip before any
+     draft); the public bot doesn't invite a workshop; a staff correction's
+     "Workshop:" line is the person's, a bare mention gets the hint;
+  8. on: each read's system prompt and the schema pinned (ON_PINNED), and
+     a prompt cut never reaches past its own line.
 
     python scripts/test_user_fields.py
     python scripts/test_user_fields.py --hashes   # print section 1's hashes
+    python scripts/test_user_fields.py --pins     # also print section 8's
 
 Makes, plates, names, workshops and readings are made up; the photos are
 coloured rectangles.
@@ -618,6 +628,8 @@ def snapshot() -> dict:
         out["intake_case"] = intake_case(client, uid)[0]
         out["bridge_case"] = bridge_case(client, uid)[0]
         out["public_case"] = public_case(client, uid)[0]
+        # Every key GET /auth/me answers with (user_fields only while on).
+        out["auth_me_keys"] = sorted(client.get("/auth/me").json())
     return out
 
 
@@ -647,6 +659,7 @@ MASTER = {
     "intake_case": "c69dd4123d293ce5c177da22ee0b4a435407b1ba680570e55d4a19d1174169be",
     "bridge_case": "740d8eae9cd7fb478da1d91693ccaddf1ac86e01616f6dbb9d848687b0fe4f64",
     "public_case": "73ec44ea896e373292bdce281ac7f7e9eaa790c5de8c0b71a5e6be959899a129",
+    "auth_me_keys": "c478f9ff4ef9e86b69ec1019b3dc5d65758b262e9e0c49aa31323a3752926066",
 }
 
 
@@ -685,12 +698,12 @@ def off_byte_for_byte() -> None:
 EDITS_V1 = (
     ("police report, or workshop estimate). A human", "police report, or repair estimate). A human"),
     ("4. Insurance & Workshop Details ('insurance_details'):", "4. Insurance Details ('insurance_details'):"),
-    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
 )
 LINES_V1 = ("     * 'odometer_reading':", "   - Extract 'workshop_assigned'")
 EDITS_V2 = (
     ("(LTA log card, police report, workshop estimate)", "(LTA log card, police report, repair estimate)"),
-    ("size (e.g. '215/60 R16')", "size (e.g. '205/55 R16')"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
 )
 SPANS_V2 = (("'odometer_reading' exactly as read", "; "), (", 'workshop_assigned'", ")"))
 # Never in a read's words with "on" (the photo kind is the sorter's own):
@@ -699,11 +712,13 @@ NEVER_WORDS = ("odometer", "workshop", "speedometer", "mileage")
 NEVER_VALUES = ("Precise Auto", "Sin Ming", "EM-1", "ComfortDelGro", "058615", " Km'", "Km)")
 # The read's other example values from the example cases (owner: none in
 # what the AI reads), and the generic ones "on" sends instead.
-OLD_EXAMPLES = ("215/60", "Dunlop", "Michelin", "Goodride", "71501", "T7A")
-NEW_EXAMPLES = ("205/55 R16", "12345-ABC-A00")
+# WAS_SENT: what off sends; 205/55 is another example case's tyre size (lead, 26 Nov 2026).
+WAS_SENT = ("215/60", "Dunlop", "Michelin", "Goodride", "71501", "T7A")
+OLD_EXAMPLES = WAS_SENT + ("205/55",)
+NEW_EXAMPLES = ("195/65 R15", "12345-ABC-A00")
 # The response schema's descriptions "on" changes: (model, field, off, on).
 SCHEMA_DESCRIPTIONS = (
-    ("TyreItem", "size", "Tyre size specification e.g. 215/60 R16", "Tyre size specification e.g. 205/55 R16"),
+    ("TyreItem", "size", "Tyre size specification e.g. 215/60 R16", "Tyre size specification e.g. 195/65 R15"),
     ("TyreItem", "brand", "Tyre manufacturer e.g. Dunlop, Michelin, Goodride", "Tyre manufacturer"),
     ("DamageSummaryItem", "oem_part_number", "OEM replacement part number, e.g. '71501-T7A-A00' -- never invent",
      "OEM replacement part number, e.g. '12345-ABC-A00' -- never invent"),
@@ -762,7 +777,7 @@ def on_instructions() -> None:
             check(not found, f"{name} ({how}): nothing of the workshop or the odometer is sent", found)
             old = [v for v in OLD_EXAMPLES if v in words]
             check(not old and all(v in words for v in NEW_EXAMPLES)
-                  and all(v in sent_text(off_kw) for v in OLD_EXAMPLES),
+                  and all(v in sent_text(off_kw) for v in WAS_SENT),
                   f"{name} ({how}): no example-case value is sent, the generic ones are (off: the old ones are)", old)
             check(on_kw["schema"] == expected_on_schema(off_kw["schema"]),
                   f"{name} ({how}): the schema is off's without the two fields, with generic examples")
@@ -983,6 +998,186 @@ def on_telegram_public() -> None:
           "a public report: the workshop 'Needs you'")
 
 
+def _reread(client, before=None) -> tuple[dict, dict]:
+    """A draft read with the switch off (the AI fills the workshop and the
+    odometer), then, with it on, before(client, rid, state) -- a person's
+    edits -- and a re-read. (GET /intake after the first read, and after
+    the re-read with the switch on.)"""
+    rid, _ = new_draft(client)
+    data = client.get(f"/intake/{rid}").json()["data"]
+    data["vehicle_info"] = {**(data.get("vehicle_info") or {}), "plate_number": "TST1001A"}
+    assert client.put(f"/intake/{rid}/data", json={"data": data, "reporter_notes": "Hit at the rear."}).status_code == 200
+    assert client.post(f"/intake/{rid}/process", json={"mode": "all"}).status_code == 200
+    first = wait_done(client, rid)
+    with Settings(**ON):
+        if before:
+            before(client, rid, first)
+        assert client.post(f"/intake/{rid}/process", json={"mode": "all"}).status_code == 200
+        wait_done(client, rid)
+        after = client.get(f"/intake/{rid}").json()
+    return first, after
+
+
+USER_KEYS = ("insurance_details.workshop_assigned", "vehicle_info.odometer_reading")
+
+
+def on_reread() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.reports import accuracy
+    from auth_helpers import sign_in
+
+    keys = USER_KEYS
+    with TestClient(_app()) as client:
+        sign_in(client, role="admin", may_sign_off=True)
+
+        first, after = _reread(client)
+        check(review.value_at(first["data"], keys[0]) == AI_WORKSHOP
+              and review.value_at(first["data"], keys[1]) == AI_ODOMETER
+              and all(first["review"]["fields"][k]["state"] == "check" for k in keys),
+              "read with the switch off: the AI's workshop and odometer, 'Check'")
+        check(all(review.is_blank(review.value_at(after["data"], k)) for k in keys),
+              "re-read with it on: both emptied (the AI's, never kept)",
+              [review.value_at(after["data"], k) for k in keys])
+        check(all(after["review"]["fields"][k]["state"] == "needs" for k in keys), "and both 'Needs you', never 'You'",
+              [after["review"]["fields"][k] for k in keys])
+
+        def typed(client, rid, state):
+            data = review.with_value(review.with_value(state["data"], keys[0], TYPED_WORKSHOP), keys[1], "054321 Km")
+            assert client.put(f"/intake/{rid}/data", json={"data": data}).status_code == 200
+
+        _, after = _reread(client, typed)
+        check(review.value_at(after["data"], keys[0]) == TYPED_WORKSHOP
+              and review.value_at(after["data"], keys[1]) == "054321 Km"
+              and all(after["review"]["fields"][k]["state"] == "you" for k in keys),
+              "values a person typed before the re-read are kept, 'You'")
+
+        def confirmed(client, rid, state):
+            r = client.put(f"/intake/{rid}/checked", json={"set": {k: {} for k in keys}})
+            assert r.status_code == 200, r.text
+
+        _, after = _reread(client, confirmed)
+        check(review.value_at(after["data"], keys[0]) == AI_WORKSHOP
+              and review.value_at(after["data"], keys[1]) == AI_ODOMETER
+              and all(after["review"]["fields"][k]["state"] == "you" for k in keys),
+              "the AI's values a person confirmed before the re-read are kept, 'You'")
+
+        # Off: a re-read keeps them, as before.
+        rid, _ = new_draft(client)
+        assert client.post(f"/intake/{rid}/process", json={"mode": "all"}).status_code == 200
+        wait_done(client, rid)
+        assert client.post(f"/intake/{rid}/process", json={"mode": "all"}).status_code == 200
+        again = wait_done(client, rid)
+        check(review.value_at(again["data"], keys[1]) == AI_ODOMETER, "off: a re-read keeps the AI's values, as before")
+
+    # L1: the F1 fallback's copy of the last AI draft.
+    old_ai = extraction._parse_draft(json.dumps(draft_answer(["P02"]))).model_dump()
+    kept = pipeline.fallback_draft(old_ai)
+    with Settings(**ON):
+        dropped = pipeline.fallback_draft(old_ai)
+    check(kept["vehicle_info"]["odometer_reading"] == AI_ODOMETER
+          and kept["insurance_details"]["workshop_assigned"] == AI_WORKSHOP,
+          "off: the F1 fallback copies the last AI draft's facts, as before")
+    check(_empty(dropped) and dropped["vehicle_info"]["plate_number"] == "TST1001A",
+          "on: the F1 fallback's copy has neither (the rest kept)")
+
+    # L2: the AI-accuracy row.
+    final = review.with_value(review.with_value(old_ai, keys[0], TYPED_WORKSHOP), keys[1], "054321 Km")
+    blank_ai = review.with_value(review.with_value(old_ai, keys[0], None), keys[1], None)
+    off_fields = accuracy._fields(blank_ai, final)
+    with Settings(**ON):
+        on_fields = accuracy._fields(blank_ai, final)
+    check(all(off_fields["by_key"].get(k) == "filled" for k in keys) and "left_to_people" not in off_fields,
+          "off: the accuracy row counts them as filled by people, as before")
+    check(not set(keys) & set(on_fields["by_key"]) and sorted(on_fields.get("left_to_people") or []) == sorted(keys),
+          "on: the accuracy row leaves them out of the AI's fields, and says so", on_fields.get("left_to_people"))
+    check(on_fields["filled"] == off_fields["filled"] - 2, "on: two fewer 'filled by people'")
+
+
+def on_bots_and_me() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.channels import telegram, telegram_public
+    from app.conversation import flow
+    from app.conversation.state import Session
+    from auth_helpers import sign_in
+
+    # M1: GET /auth/me, before any draft.
+    with TestClient(_app()) as client:
+        sign_in(client, role="user")
+        off_me = client.get("/auth/me").json()
+        with Settings(**ON):
+            on_me = client.get("/auth/me").json()
+    check("user_fields" not in off_me, "off: GET /auth/me has no user_fields (as before)")
+    check(on_me.get("user_fields") is True, "on: GET /auth/me says user_fields, so the New Report tip knows before a draft")
+
+    # L5: the public bot's step 5 question.
+    check(telegram_public._what_extras() == "You can also add the other driver's plate, your insurer or your workshop.",
+          "off: the public bot's question as before")
+    with Settings(**ON):
+        public_words = telegram_public._what_extras()
+    check("workshop" not in public_words.lower() and "insurer" in public_words,
+          "on: the public bot no longer invites a workshop (its form has no workshop step)")
+
+    # L5: the staff bot's corrections.
+    session = Session(workshop_name="M/S Old Workshop")
+    check(telegram.correction_workshop(session, "Workshop: M/S New Workshop") is None
+          and session.workshop_name == "M/S Old Workshop", "off: a correction changes nothing here, as before")
+    with Settings(**ON):
+        hint = telegram.correction_workshop(session, "Workshop: M/S New Workshop")
+        check(hint is None and session.workshop_name == "M/S New Workshop",
+              "on: a 'Workshop:' line in a correction is applied as the person typed it")
+        hint = telegram.correction_workshop(session, "the workshop is actually somewhere else")
+        check(hint == telegram.WORKSHOP_LINE_HINT and session.workshop_name == "M/S New Workshop",
+              "on: a correction that only mentions a workshop gets the hint to send the 'Workshop:' line")
+        check(telegram.correction_workshop(session, "the time was 16:45") is None, "on: other corrections: nothing")
+        redraft = Session(description="Scratched my rear bumper.", vehicle_plate="TST1001A", workshop_name="M/S Old")
+        redraft.draft = flow.build_draft(redraft.description, [photo(1)], redraft, actor=ACTOR).draft
+        redraft.pending_edits = ["Workshop: M/S Corrected"]
+        telegram.correction_workshop(redraft, redraft.pending_edits[-1])
+        result = flow.build_draft("Scratched my rear bumper.", [photo(1)], redraft, actor=ACTOR)
+    check(result.draft.insurance_details.workshop_assigned == "M/S Corrected"
+          and not (result.ai_draft["insurance_details"] or {}).get("workshop_assigned"),
+          "on: the redraft carries the corrected workshop as the person's, the AI's draft none")
+
+
+# The "on" requests pinned, as MASTER pins "off": the sha256 of each read
+# variant's system prompt and of the response schema, taken on this branch
+# with the switch on (--pins prints them; python 3.11 and 3.13 the same). A
+# cut that took more than its piece, or any other change, shows here.
+ON_PINNED: dict[str, str] = {
+    "system_v1": "0f643e2a4780f3150f5b6c5a8f86049f272bd8ed8f1c3ad312afa095277b93a5",
+    "system_v1_packs": "6185f3b512bf50e53130abbc6b619f1d82ac173a7e45249a9f41933824c2dcfd",
+    "system_v2": "04ffa510717fe04a7ba27d23738732d053b2467f2690e0cb7fbfc04176d63697",
+    "system_v2_packs_anchor": "6807792119bb01d8e1a9f14aa46fb9647b44610c794d9d8bd3433650c8877b9b",
+    "schema": "7d4507262b7c4c93b80d43fd341370afb105d42d4166b9087be953c879f03118",
+}
+
+
+def on_pinned() -> None:
+    got = {}
+    with Settings(**ON):
+        for name, values in READ_VARIANTS.items():
+            with Settings(**values):
+                kw = intake_read().calls[0]
+            got[f"system_{name}"] = hashlib.sha256(kw["system_instruction"].encode("utf-8")).hexdigest()
+        got["schema"] = digest(extraction._response_schema())
+    if "--pins" in sys.argv:
+        for name, sha in got.items():
+            print(f'    "{name}": "{sha}",')
+    for name, want in ON_PINNED.items():
+        check(got.get(name) == want, f"on: {name} as pinned", got.get(name))
+    check(set(got) == set(ON_PINNED), "every on request pinned", sorted(set(got) ^ set(ON_PINNED)))
+    try:
+        extraction._cut_once("keep A; cut B\nnext; line)", "cut B", ")")
+        check(False, "a cut whose end isn't on its line is refused")
+    except ValueError:
+        check(True, "a cut whose end isn't on its line is refused (it never cuts into the next line)")
+    check(extraction._cut_once("a\n  * x: y (e.g. z); w\nb", "  * x:", "\n") == "a\nb"
+          and extraction._cut_once("one, x (e.g. y), two", ", x", ")") == "one, two",
+          "a cut on its line: to its end marker, or to the end of the line")
+
+
 def hashes() -> int:
     """Prints section 1's hashes; --dump DIR also writes what they hash (to
     tell two trees' runs apart: diff the files)."""
@@ -1006,6 +1201,9 @@ def main() -> int:
         ("3b. on: a case end to end (New Report)", on_case),
         ("4. on: the field review", on_review),
         ("5. on: the Telegram bot, the Telegram bridge, a public report", on_telegram_public),
+        ("6. on: a draft read before the switch, read again; the F1 fallback; the accuracy row", on_reread),
+        ("7. on: GET /auth/me; the public bot; the staff bot's corrections", on_bots_and_me),
+        ("8. on: the requests pinned; prompt cuts stay on their line", on_pinned),
     ):
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")
