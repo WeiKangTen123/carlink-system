@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Library as LibraryIcon, List, Search, X } from "lucide-react";
-import { OUTLINE_KEYS, ZONE_SHAPES, type Shape } from "@/components/ImpactSketch";
+import { OUTLINE_KEYS, QUARTER_SHAPES, ZONE_SHAPES, type Shape } from "@/components/ImpactSketch";
 import { zoneLabel } from "@/lib/vehicleZones";
 import {
+  FILED_UNDER,
   LIBRARY_KINDS,
   NO_FILTERS,
   areaCounts,
@@ -32,11 +33,8 @@ import { getLibraryAction } from "./libraryActions";
  * ("Vehicle Parts & 3D") stays one click away: `children`. */
 
 // The rear quarters: the Cover tab's sketch has no shape for them; here a
-// person picks them like any panel.
-const EXTRA_SHAPES: Record<string, Shape> = {
-  l_quarter: { x: 38, y: 258, w: 12, h: 80, r: 4, label: "Left rear quarter panel" },
-  r_quarter: { x: 150, y: 258, w: 12, h: 80, r: 4, label: "Right rear quarter panel" },
-};
+// person picks them like any panel (shared with the part picker's diagram).
+const EXTRA_SHAPES: Record<string, Shape> = QUARTER_SHAPES;
 const SHAPES: Record<string, Shape> = { ...ZONE_SHAPES, ...EXTRA_SHAPES };
 // Pickable on the drawing, later ones on top: the sketch's shapes without
 // the door glass (the same rectangle as its door; picking the door means
@@ -288,7 +286,11 @@ function DetailPanel({ lib, picked, onSelect, onClose }: { lib: Library; picked:
           )}
         </DetailRow>
         <DetailRow label="Other names">
-          {c.aliases.length ? c.aliases.map((a) => `${a.text}${a.kind === "typo" ? " (typo)" : ""}`).join(", ") : <span style={muted}>none</span>}
+          {c.aliases.length ? (
+            c.aliases.map((a) => `${a.text}${a.kind === "typo" ? " (typo)" : a.kind === FILED_UNDER ? " (filed under it, not the same part)" : ""}`).join(", ")
+          ) : (
+            <span style={muted}>none</span>
+          )}
         </DetailRow>
         <DetailRow label="On the 3D model">
           {zoneText(c.panels)}

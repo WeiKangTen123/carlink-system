@@ -206,13 +206,33 @@ def test_core() -> None:
     wrong = []
     for c in core["components"]:
         for a in c["aliases"]:
-            if a["kind"] in ("synonym", "typo"):
+            if a["kind"] in ("synonym", "typo", library.FILED_UNDER):
                 fam = family_of(a["text"])
                 if fam not in (None, c["family"], c["name"]):
                     wrong.append((c["name"], a["text"], fam))
             if library.norm(a["text"]) in (library.norm(c["name"]), library.norm(c["firm_wording"])):
                 wrong.append((c["name"], a["text"], "repeats the name"))
     check(not wrong, "aliases agree with the price book's family rules and never repeat the name", wrong)
+    # Review N1: a sub-part or neighbour the price book files under a part is
+    # "filed under" it, never a synonym the picker would turn into the part.
+    kinds = {a["text"]: (a["kind"], c["name"]) for c in core["components"] for a in c["aliases"]}
+    filed = {"Rear air vent": "Rear Bumper", "Front mud flap": "Front Wheel Arch Trim",
+             "Rear mud flap": "Rear Wheel Arch Trim", "Lower arm": "Suspension - Front",
+             "Shock absorber": "Suspension - Front", "Rear shock absorber": "Suspension - Rear",
+             "Silencer": "Exhaust System", "Tool tray": "Boot Floor Board", "Key lock": "Boot Lid Lock",
+             "Front bumper under cover": "Engine Undercover"}
+    # The firm's own words for the part are synonyms ("Steering rack and
+    # pinion", "Tail gate reflector lamp").
+    same = {"Hood": "Bonnet", "Headlight": "Headlamp", "Windshield": "Front Windscreen", "Tailgate": "Boot Lid",
+            "Side mirror": "Wing Mirror", "Rear bumper reinforcement": "Rear Bumper Beam",
+            "Steering rack": "Steering Assembly", "Boot lid reflector": "Boot Lid Lamp"}
+    got = {t: kinds.get(t) for t in [*filed, *same]}
+    want = {**{t: (library.FILED_UNDER, p) for t, p in filed.items()}, **{t: ("synonym", p) for t, p in same.items()}}
+    check(got == want, "sub-parts are 'filed under' their part; true other names are synonyms",
+          {t: (got[t], want[t]) for t in want if got[t] != want[t]})
+    check(sorted({a["kind"] for c in core["components"] for a in c["aliases"]})
+          == sorted({"synonym", "typo", "also_check", library.FILED_UNDER}),
+          "alias kinds: synonym, typo, also_check (the car map's words), filed_under")
     trim = by_key["front-wheel-arch-trim"]
     check(any(a["kind"] == "typo" and "ganrish" in a["text"] for a in trim["aliases"]),
           "the firm's 'ganrish' typo is an alias of the wheel arch garnish")
@@ -366,6 +386,15 @@ def test_seeds() -> None:
     sided = library.seed_fittings([line("Front bumper retainer N/S"), line("Front bumper retainer")],
                                   library.load_core())
     check(len(sided) == 1 and sided[0]["sided"], "a wording written with N/S is sided", sided)
+    # Review N1: a wording equal to a true other name is that part; one equal
+    # to a name only filed under a part stays a wording of its own.
+    filed = {s["name"]: s for s in library.seed_fittings(
+        [line("Rear air vent LH"), line("Silencer"), line("Hood"), line("Headlight RH")], library.load_core())}
+    check(sorted(filed) == ["Rear air vent", "Silencer"], "'Hood' / 'Headlight' are the part; 'Rear air vent' and "
+          "'Silencer' (filed under a part) stay seeds", sorted(filed))
+    vent = filed.get("Rear air vent") or {}
+    check(vent.get("parent_key") == "rear-bumper" and vent.get("sided") and vent.get("kind") == "part",
+          "the rear air vent: a sided part-wording under the rear bumper", vent)
     check(library.seed_name("Tail gate emblem FIT", {"fit"}, "") == "Tail gate emblem"
           and library.seed_name("Re-fit kit", {"fit"}, "") == "Re-fit kit"
           and library.seed_name("Door seal", {"seal"}, "") == "Door seal",

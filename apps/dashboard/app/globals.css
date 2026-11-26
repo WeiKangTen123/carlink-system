@@ -5799,9 +5799,18 @@ button.intake-tile:hover {
 }
 
 .intake-add-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+/* The picker button takes the room; on a narrow column (a phone, where the
+   side menu stays open) [Add] wraps under it instead of covering it. */
+.intake-add-row > :first-child {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.intake-add-row > :not(:first-child) {
+  flex: 0 0 auto;
 }
 
 /* Step 4: parties */
@@ -11626,6 +11635,438 @@ html:has(.intake-footer) {
   }
 }
 /* ---- end Phase 1 B ---- */
+
+/* ---- Stage 3A: the part picker (components/PartPicker.tsx) ---- */
+/* One dialog for every "add a part": a search box, the side toggle, area
+   chips, results grouped by area and a small top view of the car. Wide
+   screens: a dialog with the diagram beside the list; phones (760px and
+   below): the whole screen, no diagram, the chips one scrolling line.
+   Theme tokens only, so both themes follow. */
+.rv-picker.pp-dialog {
+  width: min(820px, 100%);
+  height: min(640px, 100%);
+  gap: 10px;
+  padding: 14px 16px;
+}
+.pp-search-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.pp-search {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+}
+.pp-search:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.pp-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  padding: 9px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+.pp-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pp-clear:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.pp-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pp-side-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.pp-side .rv-segmented button {
+  min-width: 38px;
+}
+.pp-check {
+  font-size: 10px;
+  padding: 2px 7px;
+}
+.pp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pp-chip {
+  padding: 4px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pp-chip:hover {
+  border-color: var(--border-hover);
+}
+.pp-chip[aria-pressed="true"] {
+  border-color: var(--accent-primary);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.pp-notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--badge-amber-text);
+}
+.pp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+}
+.pp-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.pp-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px 4px;
+  background: var(--surface-card-solid);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+}
+.pp-row.is-active {
+  background: var(--surface-hover);
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+}
+.pp-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.pp-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pp-kind,
+.pp-uses {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pp-row-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.pp-row-sub em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pp-note {
+  color: var(--text-muted);
+}
+.pp-row.is-other .pp-name {
+  font-style: italic;
+}
+.pp-row-other {
+  border-bottom: none;
+}
+.pp-listed {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--badge-amber-border);
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+.pp-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pp-notes .intake-link {
+  padding: 0;
+}
+/* "Which side?" for a sided part picked with no side: above the list, so
+   the list's options hold no buttons. */
+.pp-ask-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--badge-amber-border);
+  border-radius: 8px;
+  background: var(--badge-amber-bg);
+}
+.pp-ask-sides {
+  display: inline-flex;
+  gap: 6px;
+}
+.pp-ask {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--badge-amber-text);
+}
+.pp-ask-bar .pp-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.pp-dym-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pp-side-note {
+  color: var(--badge-amber-text);
+}
+.pp-dym-actions.pp-dym-first {
+  justify-content: flex-start;
+}
+.pp-dym-or {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.pp-side-chip {
+  min-width: 36px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pp-side-chip:hover,
+.pp-side-chip:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.pp-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pp-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+  color: var(--text-muted);
+}
+.pp-diagram-svg {
+  width: 100%;
+  max-width: 110px;
+  height: auto;
+}
+.pp-lit {
+  stroke-width: 3;
+}
+.pp-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pp-dym {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pp-dym-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pp-dym-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pp-dym-btn,
+.pp-dym-sided {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  text-align: left;
+}
+.pp-dym-btn {
+  cursor: pointer;
+}
+.pp-dym-btn:hover,
+.pp-dym-btn:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.pp-dym-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* The 3D map card's "+ Add part here" (any panel). */
+.dmap-card-add {
+  margin-top: 8px;
+}
+/* The control that opens it, where a part <select> used to be. */
+.pp-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.pp-open:hover,
+.pp-open:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+.pp-open.is-set {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.pp-open > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-open.pp-open-compact {
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  min-width: 180px;
+  background: transparent;
+}
+@media (max-width: 760px) {
+  .rv-picker.pp-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    padding: 12px;
+  }
+  .pp-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pp-aside,
+  .pp-keys {
+    display: none;
+  }
+  .pp-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .pp-search {
+    flex-basis: 100%;
+  }
+  .pp-search input {
+    font-size: 16px;
+  }
+}
+@media (pointer: coarse) {
+  .pp-side-chip {
+    min-height: 32px;
+    min-width: 44px;
+  }
+  .pp-row {
+    padding: 9px 10px;
+  }
+}
+/* ---- end Stage 3A ---- */
 
 /* ---- Stage 1: prices ---- */
 /* "My prices" and price safety (plans S1-contract.md): the source tag under

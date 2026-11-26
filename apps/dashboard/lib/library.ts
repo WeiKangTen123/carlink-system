@@ -16,9 +16,16 @@ export const LIBRARY_KINDS: LibraryKind[] = ["panel", "part", "mechanical", "ele
 export type LibraryStatus = "core" | "seed";
 export type BodyClass = "sedan" | "hatch";
 
+/** An alias kind (bot-service library.FILED_UNDER): a sub-part or a
+ * neighbour the price book files under the part ("Rear air vent" under the
+ * rear bumper) -- not another name for it (step 3A, review N1). */
+export const FILED_UNDER = "filed_under";
+
 export interface LibraryAlias {
   text: string;
-  /** synonym / typo / also_check (the car map's words) / wording (another spelling in the price book). */
+  /** synonym / typo / also_check (the car map's words) / filed_under (a
+   * sub-part filed under it, FILED_UNDER) / wording (another spelling in
+   * the price book). */
   kind: string;
   source: string;
 }
