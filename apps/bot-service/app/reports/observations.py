@@ -22,9 +22,12 @@ One row per part key (prefill.item_key: a canonical part, or a named
 
 How it got there (how): ai_read (the overall read found it; also every
 part of a single-read case) | zone (only zone reads found it) |
-suggestion (source zone / kit / nearby / other_side) | link (link_rule) |
-catalogue (a link from a parts-catalogue diagram, rule "<v>:oem>...") |
-hand_added. found_by: the reads' names ("overall", "zone:rear").
+suggestion (source zone / kit / nearby / other_side / sorter -- the photo
+sorter's own, Detection Round 1) | link (link_rule) | catalogue (a link
+from a parts-catalogue diagram, rule "<v>:oem>...") | hand_added.
+found_by: the reads' names ("overall", "zone:rear"), or a photo sorter
+suggestion's rule ("sorter_seen": only the sorter saw it; "sorter_intact":
+the sorter saw it damaged where a zone read said intact).
 
 Each row also carries the car (make, model key -- the price book's,
 prices.price_key -- body type, a year band from the registration date),

@@ -222,15 +222,22 @@ def is_hidden_link(item: dict) -> bool:
     return item.get("source") == "link" and bool(item.get("hidden"))
 
 
+# The re-check's question order by source: the reads' finds first, then the
+# linked parts, then the photo sorter's (plan_asks).
+_ASK_LAST = {"link": 1, "sorter": 2}
+
+
 def plan_asks(items: list[dict], photos: list) -> Plan:
     """The questions for these suggestions over the draft's photos (rows in
     camera order): each suggestion with its best PHOTOS_EACH car photos still
     there, the first MAX_QUESTIONS of them. Contract 10: a hidden linked
     part is neither asked nor counted (is_hidden_link), and the linked
-    parts come after the others (a zone read saw those)."""
+    parts come after the others (a zone read saw those) -- and Detection
+    Round 1's (source "sorter": the photo sorter's alone) after those, so
+    they never push a linked part out of MAX_QUESTIONS (the review's L1)."""
     from app.intake.photos import ai_input_path, photo_label
 
-    items = sorted((it for it in items if not is_hidden_link(it)), key=lambda it: it.get("source") == "link")
+    items = sorted((it for it in items if not is_hidden_link(it)), key=lambda it: _ASK_LAST.get(it.get("source"), 0))
     labels = {p.id: photo_label(i) for i, p in enumerate(photos)}
     by_label = {label: photo_id for photo_id, label in labels.items()}
     usable = {p.id: p for p in photos if is_car_photo(p) and Path(p.path).exists()}

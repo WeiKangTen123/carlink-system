@@ -135,6 +135,17 @@ FITTING_WORDS = frozenset({
 # CATEGORY_RULES), the firm's own typos. Keyed by component name.
 # scripts/test_library.py checks that every alias the family rules read
 # goes to its own component's family, never another's.
+#
+# The kind says what the other name is (step 3A, review N1):
+#   - "synonym": the same thing in other words ("Hood" is the bonnet);
+#   - "typo": the firm's own misspelling of it;
+#   - FILED_UNDER: a sub-part or a neighbour the price book files under
+#     this part ("Rear air vent" under the rear bumper, "Shock absorber"
+#     under the suspension). Search still finds the part by it, but a
+#     person typing it is never silently given the parent: the part picker
+#     offers it as "filed under" and asks first, and a price-book wording
+#     equal to it stays a wording of its own (_known_keys).
+FILED_UNDER = "filed_under"
 _ALIASES: dict[str, list[tuple[str, str]]] = {
     "Bonnet": [("Hood", "synonym")],
     "Front Grille": [("Grill", "synonym")],
@@ -144,16 +155,18 @@ _ALIASES: dict[str, list[tuple[str, str]]] = {
     "Front Number Plate": [("Front bumper number plate", "synonym")],
     "Front Wheel Arch Liner": [("Front splash shield", "synonym"), ("Front arch liner", "synonym")],
     "Front Wheel Arch Trim": [("Front wheel arch moulding", "synonym"), ("Front wheel arch molding", "synonym"),
-                              ("Front mud flap", "synonym"),
+                              ("Front mud flap", FILED_UNDER),
                               ("Front fender wheel arch ganrish", "typo")],
     "Wing Mirror": [("Side mirror", "synonym")],
     "Sill / Rocker Panel": [("Side sill", "synonym"), ("Sill panel", "synonym")],
-    "Rear Bumper": [("Rear air vent", "synonym")],
+    "Rear Bumper": [("Rear air vent", FILED_UNDER)],
     "Rear Bumper Beam": [("Rear bumper reinforcement", "synonym")],
     "Boot Lid": [("Tail gate", "synonym"), ("Tailgate", "synonym"), ("Back door", "synonym"), ("Trunk", "synonym")],
-    "Boot Lid Lock": [("Boot lid catch", "synonym"), ("Key lock", "synonym")],
+    "Boot Lid Lock": [("Boot lid catch", "synonym"), ("Key lock", FILED_UNDER)],
     "Boot Lid Weatherstrip": [("Boot lid weather strip", "synonym"), ("Boot lid weatherstripe", "typo")],
     "Boot Lid Inner Trim": [("Boot lid trim board", "synonym")],
+    # The firm words a hatch's boot lid lamp "Tail gate reflector lamp": the
+    # reflector is that lamp, not a part filed under it.
     "Boot Lid Lamp": [("Boot lid reflector", "synonym")],
     "Rear Windscreen": [("Rear screen", "synonym"), ("Back glass", "synonym")],
     "Tail Lamp": [("Taillamp", "typo"), ("Taillight", "synonym")],
@@ -161,22 +174,25 @@ _ALIASES: dict[str, list[tuple[str, str]]] = {
     # Not "Taillamp panel": history files that under Tail Lamp (its "tail ?lamp"
     # rule comes first), so as an alias it would point two ways.
     "Rear End Panel": [("Rear body panel", "synonym")],
-    "Boot Floor Board": [("Tool tray", "synonym"), ("Floor panel board", "synonym")],
+    "Boot Floor Board": [("Tool tray", FILED_UNDER), ("Floor panel board", "synonym")],
     "Boot Side Trim": [("Quarter inner trim", "synonym")],
     "Rear Wheel Arch Liner": [("Rear splash shield", "synonym"), ("Rear arch liner", "synonym")],
     "Rear Wheel Arch Trim": [("Rear wheel arch moulding", "synonym"), ("Rear wheel arch molding", "synonym"),
-                             ("Rear mud flap", "synonym")],
+                             ("Rear mud flap", FILED_UNDER)],
     "Front Wheel": [("Front rim", "synonym")],
     "Rear Wheel": [("Rear rim", "synonym")],
     "Front Tyre": [("Front tire", "synonym")],
     "Rear Tyre": [("Rear tire", "synonym")],
     "Underbody / Chassis": [("Undercarriage", "synonym"), ("Chassis", "synonym")],
+    # "Front cross member" is the firm's own wording of the subframe (the
+    # same part), so it never shows as an alias.
     "Front Subframe": [("Front cross member", "synonym"), ("Subframe", "synonym")],
-    "Engine Undercover": [("Front bumper under cover", "synonym")],
-    "Exhaust System": [("Silencer", "synonym")],
-    "Suspension - Front": [("Lower arm", "synonym"), ("Anti roll bar", "synonym"), ("Shock absorber", "synonym")],
-    "Suspension - Rear": [("Rear trailing arm", "synonym"), ("Rear torsion beam", "synonym"),
-                          ("Rear shock absorber", "synonym")],
+    "Engine Undercover": [("Front bumper under cover", FILED_UNDER)],
+    "Exhaust System": [("Silencer", FILED_UNDER)],
+    "Suspension - Front": [("Lower arm", FILED_UNDER), ("Anti roll bar", FILED_UNDER), ("Shock absorber", FILED_UNDER)],
+    "Suspension - Rear": [("Rear trailing arm", FILED_UNDER), ("Rear torsion beam", FILED_UNDER),
+                          ("Rear shock absorber", FILED_UNDER)],
+    # The firm prints the steering assembly as "Steering rack and pinion".
     "Steering Assembly": [("Steering rack", "synonym")],
 }
 
@@ -815,13 +831,15 @@ def fitting_kind(text: str) -> str:
 def _known_keys(core: dict) -> set[str]:
     """Wording keys (history.normalise_item) of everything the core already
     names: a price-book line worded as a core component is that
-    component, not a fitting."""
+    component, not a fitting. A name only filed under a component ("Rear
+    air vent" under the rear bumper) is not that component: such a line
+    stays a seed of its own (review N1)."""
     from app.parts.history import normalise_item
 
     keys = set()
     for entry in core["components"] + core["twins"]:
         texts = [entry["name"], entry.get("firm_wording"), entry.get("firm_wording_hatch")]
-        texts += [a["text"] for a in entry.get("aliases") or []]
+        texts += [a["text"] for a in entry.get("aliases") or [] if a.get("kind") != FILED_UNDER]
         keys |= {normalise_item(t) for t in texts if t}
     return keys
 

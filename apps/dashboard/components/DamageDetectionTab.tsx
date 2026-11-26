@@ -11,14 +11,14 @@ import {
   type ReportData,
   type ReportDetail,
 } from "@/lib/api";
-import { addDamageItemAction } from "@/app/reports/actions";
 import { buildFindings, withSavedLook, type Finding, type PhotoInfo, type PhotoLookup } from "@/lib/findings";
 import { indexLabel, labelIndex } from "@/lib/damageLinks";
 import { useDamageSelection } from "@/lib/useDamageSelection";
 import { suggestionKey, useSuggestionDecisions } from "@/lib/useSuggestionDecisions";
-import { detectBodyType, partForZone, resolveZones } from "@/lib/vehicleZones";
+import { detectBodyType, resolveZones, zoneLabel } from "@/lib/vehicleZones";
+import { presetFromPhoto, presetFromZone } from "@/lib/partPicker";
 import { DamageMapPanel, revealDamageMap } from "./DamageMapPanel";
-import { DetectedPartsTable } from "./DetectedPartsTable";
+import { DetectedPartsTable, type AddRequest } from "./DetectedPartsTable";
 import { EvidenceViewer } from "./EvidenceViewer";
 import { SuggestionPanel } from "./SuggestionPanel";
 
@@ -180,13 +180,28 @@ export function DamageDetectionTab({
     revealDamageMap();
   };
 
-  const addFromMap = async (zoneKey: string) => {
-    const part = partForZone(zoneKey);
-    if (!part || readOnly) return;
-    if (!confirm(`Add "${part}" to the detected parts?`)) return;
-    const res = await addDamageItemAction(report.id, { part, other_part_name: null, condition: null, remarks: null, photo_reference: null });
-    if ("error" in res) alert(res.error);
-    else applyDamageItems(res);
+  // Step 3A: the map's "+ Add part here" (any panel) and the photo
+  // viewer's "Add part seen here" open the part picker on that zone or
+  // photo; the pick fills the Detected parts table's add row (the photo
+  // linked), for the condition and remarks before [Add] -- as "+ Add a
+  // part" there does.
+  const [addRequest, setAddRequest] = useState<AddRequest | null>(null);
+  const addFromMap = (zoneKey: string) => {
+    if (readOnly) return;
+    setAddRequest((r) => ({ nonce: (r?.nonce ?? 0) + 1, title: `Add a part: ${zoneLabel(zoneKey)}`, preset: presetFromZone(zoneKey), photoLabel: null }));
+  };
+  const addFromPhoto = (ref: string) => {
+    const index = labelIndex(ref);
+    if (readOnly || index < 0) return;
+    const label = indexLabel(index);
+    const sorted = data.photo_index?.[index];
+    setViewer(null);
+    setAddRequest((r) => ({
+      nonce: (r?.nonce ?? 0) + 1,
+      title: "Add a part seen here",
+      preset: presetFromPhoto({ area: sorted?.area ?? photoInfos[index]?.area ?? null, part: sorted?.part ?? null, label }),
+      photoLabel: label,
+    }));
   };
 
   const viewerFindings: Finding[] = useMemo(() => {
@@ -244,7 +259,7 @@ export function DamageDetectionTab({
           openViewer({ mode: key.startsWith("sug:") ? "suggestions" : key ? "listed" : "photo", startKey: key || null, startPhoto: photo ?? null })
         }
         onDecide={readOnly ? undefined : (key: string, action: DecideAction) => decideLooked(key, action, false)}
-        onAddDamage={readOnly ? undefined : (zoneKey) => void addFromMap(zoneKey)}
+        onAddDamage={readOnly ? undefined : addFromMap}
         readOnly={readOnly}
       />
 
@@ -289,6 +304,8 @@ export function DamageDetectionTab({
         review={isSignedOff ? null : report.review}
         onShowEvidence={(idx) => setViewer({ mode: "listed", startKey: `item:${idx}`, startPhoto: null })}
         onShowOnMap={(idx) => showOnMap(`item:${idx}`)}
+        vehicle={data.vehicle_info}
+        addRequest={addRequest}
       />
 
       <EvidenceViewer
@@ -300,6 +317,7 @@ export function DamageDetectionTab({
         photos={lookup}
         onDecide={readOnly ? undefined : decideLooked}
         onShowOnMap={showOnMap}
+        onAddFromPhoto={readOnly ? undefined : addFromPhoto}
         onClose={() => setViewer(null)}
         readOnly={readOnly}
       />

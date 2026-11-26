@@ -1020,8 +1020,10 @@ export type SecondLookItem = {
    * "nearby": next to a part found here; "zone": only a zone read found it;
    * "link": tied to a listed part (contract 10, the fields at the end);
    * "other_side": a find the side resolver placed on a side already listed,
-   * from another photo -- it may be the other side's (F3, other_side_of). */
-  source: "kit" | "nearby" | "zone" | "link" | "other_side" | null;
+   * from another photo -- it may be the other side's (F3, other_side_of);
+   * "sorter": a part only the photo sorter saw damaged (Detection Round 1,
+   * settings.intake_sorter_hints / intake_intact_rule). */
+  source: "kit" | "nearby" | "zone" | "link" | "other_side" | "sorter" | null;
   /** F3: the listed part an "Other side?" suggestion was placed on. */
   other_side_of?: string | null;
   /** Wave 2 E11: a find of an end zone read whose photos it said show the
@@ -1929,7 +1931,7 @@ export type AiAccuracySuggestionCounts = { shown: number; added: number; dismiss
 export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   /** Added after opening the evidence viewer on it. */
   looked_first: number;
-  by_source: Partial<Record<"zone" | "kit" | "nearby" | "link" | "other_side", AiAccuracySuggestionCounts>>;
+  by_source: Partial<Record<"zone" | "kit" | "nearby" | "link" | "other_side" | "sorter", AiAccuracySuggestionCounts>>;
   /** By read: "zone:front", "zone:rear"... */
   by_read: Record<string, AiAccuracySuggestionCounts>;
   by_check: Partial<Record<"yes" | "no" | "unsure" | "none", AiAccuracySuggestionCounts>>;
@@ -1962,9 +1964,17 @@ export type AiAccuracySuggestions = AiAccuracySuggestionCounts & {
   sign_lifted?: AiAccuracySuggestionCounts;
   /** intake_car_map "shadow": the car map's linked parts on the AI draft. */
   car_map_shadow?: AiAccuracyLinkShadow | null;
+  /** Detection Round 1 in shadow: the photo sorter's suggestions on the AI
+   * draft, by rule ("sorter_seen" / "sorter_intact"). */
+  sorter_shadow?: AiAccuracyLinkShadow | null;
 };
 
-export type AiAccuracyShadowCounts = { predicted: number; on_final_list: number };
+export type AiAccuracyShadowCounts = {
+  predicted: number;
+  on_final_list: number;
+  /** The photo sorter's shadow only: on the list from a suggestion card people saw. */
+  prompted?: number;
+};
 export type AiAccuracyLinkShadow = AiAccuracyShadowCounts & { by_rule?: Record<string, AiAccuracyShadowCounts> };
 
 export type AiAccuracySums = {

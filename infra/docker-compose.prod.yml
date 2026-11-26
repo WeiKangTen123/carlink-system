@@ -169,6 +169,12 @@ x-bot-service: &bot-service
     # containers read (the bot: Telegram drafts). Default off = config.py's:
     # every read and stored draft byte for byte as before.
     - INTAKE_USER_FIELDS=${INTAKE_USER_FIELDS:-off}
+    # Detection Round 1 (owner, 25 Nov 2026; app/intake/sorter_hints.py): the
+    # sorter's own finds as suggestions (A1: off / shadow / on), a zone read's
+    # "intact" never hiding a part the sorter saw damaged (A2: old / shadow /
+    # strict). Defaults are config.py's: today's behaviour byte for byte.
+    - INTAKE_SORTER_HINTS=${INTAKE_SORTER_HINTS:-off}
+    - INTAKE_INTACT_RULE=${INTAKE_INTACT_RULE:-old}
   # volumes: set per service below -- the two mount ai_secrets differently,
   # and a service's own volumes list replaces this one rather than adding.
 
