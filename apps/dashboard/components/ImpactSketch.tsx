@@ -49,6 +49,14 @@ export const ZONE_SHAPES: Record<string, Shape> = {
   underbody: { x: 76, y: 150, w: 48, h: 100, r: 6, label: "Underbody / chassis" },
 };
 
+// The rear quarters: the Cover tab's sketch has no shape for them (it shades
+// a quarter as its fender); the parts library's diagram and the part
+// picker's mini diagram draw them.
+export const QUARTER_SHAPES: Record<string, Shape> = {
+  l_quarter: { x: 38, y: 258, w: 12, h: 80, r: 4, label: "Left rear quarter panel" },
+  r_quarter: { x: 150, y: 258, w: 12, h: 80, r: 4, label: "Right rear quarter panel" },
+};
+
 // Drawn behind the shaded zones so the car reads as a car when nothing is shaded.
 export const OUTLINE_KEYS = [
   "front_bumper", "bonnet", "windscreen", "roof", "rear_glass", "tailgate", "rear_bumper",
