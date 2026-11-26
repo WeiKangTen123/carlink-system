@@ -32,7 +32,7 @@ export type FindingPlace = {
 export type PhotoMark = {
   key: string;
   box: Box | null;
-  kind: "ai" | "sort" | null;
+  kind: "ai" | "sort" | "part" | null;
   frame: { w: number; h: number } | null;
 };
 

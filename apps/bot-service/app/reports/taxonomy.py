@@ -181,9 +181,11 @@ CANONICAL_PARTS: list[str] = [
 # CANONICAL_PARTS on purpose: that list is the Gemini enum of the sort, the
 # drafting call, the zone reads and the second look, so a name added there
 # would change every read whatever any setting says. These are named only
-# by the car map's linked parts (intake/car_map.links_table, names on) and
-# by a person picking a part, and both only while
-# settings.intake_car_map_names is "on". A part named here that is already
+# by the car map's linked parts (intake/car_map.links_table, names on), by
+# a person picking a part and -- the one Gemini enum that may hold them --
+# by detection Round 2's zone inventory (settings.intake_zone_inventory:
+# a zone's small outside parts, ai/zone_read.SMALL_PARTS), and all three
+# only while settings.intake_car_map_names is "on". A part named here that is already
 # on a case stays valid and prints (known_part) whatever the setting:
 # turning the names off never breaks a draft.
 #

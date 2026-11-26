@@ -241,12 +241,12 @@ def _photo_half_on(zone: str, photo_half: bool) -> bool:
 #
 # Detection Round 2 (owner: "try, see whether there is any enhancement"),
 # two switches, both off by default, zone mode only:
-#   B2 settings.intake_box_every: the zone calls are told the drafted
+#   R2-box, settings.intake_box_every: the zone calls are told the drafted
 #     list's parts their checklist can name and answer `locate` -- a box
 #     round each one the photos show, damaged or not. Where it is, never a
 #     new find: intake/zones.apply_round2 puts the box on the list item
 #     that has none (evidence by "locate:zone:<zone>"), the list unchanged.
-#   B1 settings.intake_zone_inventory: the zone calls answer `inventory` --
+#   R2-inv, settings.intake_zone_inventory: the zone calls answer `inventory` --
 #     per photo, the area's parts it shows (the checklist, and the car
 #     map's small outside parts while settings.intake_car_map_names is on),
 #     damaged or not, each with a box. The damaged ones nobody listed or
@@ -331,17 +331,34 @@ def place_match(listed_part: str, located: str, zone: str) -> int:
     return 0
 
 
+def twin_name(name: str) -> str | None:
+    """The other side's name of a sided name ("Left Tail Lamp" -> "Right
+    Tail Lamp"), else None."""
+    base, side = split_side(str(name or ""))
+    if side not in ("Left", "Right"):
+        return None
+    return f"{'Right' if side == 'Left' else 'Left'} {base}"
+
+
 def locate_names(zone: str, parts) -> list[str]:
     """The checklist names a zone call is asked to place for the drafted
     list's parts (canonical): each name that can come back as one of them
-    (place_match), in checklist order, at most MAX_LOCATE. "Other / Not
-    Listed" is never asked: nothing names it."""
+    (place_match), in checklist order, at most MAX_LOCATE -- a Left / Right
+    pair both or neither (the review's L5: a pair cut in two would make one
+    side's box look like the only one). "Other / Not Listed" is never
+    asked: nothing names it."""
     wanted = [str(p) for p in parts or [] if p and p != OTHER_PART]
-    out = []
-    for name in checklist(zone)[:-1]:
-        if any(place_match(part, cand, zone) for cand in _can_be(zone, name) for part in wanted):
-            out.append(name)
-    return out[:MAX_LOCATE]
+    found = [name for name in checklist(zone)[:-1]
+             if any(place_match(part, cand, zone) for cand in _can_be(zone, name) for part in wanted)]
+    out: list[str] = []
+    for name in found:
+        if name in out:
+            continue
+        twin = twin_name(name)
+        pair = [name] + ([twin] if twin in found and twin not in out else [])
+        if len(out) + len(pair) <= MAX_LOCATE:
+            out += pair
+    return out
 
 
 def locate_names_of(zone: str, part: str) -> list[str]:
@@ -382,11 +399,15 @@ def inventory_part(zone: str, name, side_seen: str, allowed) -> str | None:
     return name if known_part(name) else None
 
 
+# The review's M2: the zone read is a second opinion, so the parts to
+# place are not called the damage list, and the sentence says it is no
+# damage judgement. The photos in brackets only help find the part.
 LOCATE_SENTENCE = (
-    "These parts are on the damage list already: {names}. In 'locate' give each of them you can see in these "
-    "photos, damaged or not: photo_reference, the photo that shows the part best (the one in brackets when it "
-    "shows it); part; and box_2d: [y_min, x_min, y_max, x_max] on 0-1000 round the whole part. Leave out a part you "
-    "can't see. 'locate' only says where they are: list damage in 'damage' as before.\n"
+    "Also locate these parts: {names}. In 'locate' give each of them you can see in these photos, damaged or not: "
+    "photo_reference, the photo that shows the part best (the one in brackets when it shows it); part; and box_2d: "
+    "[y_min, x_min, y_max, x_max] on 0-1000 round the whole part. Leave out a part you can't see. This is not a "
+    "damage judgement: decide damage from the photos alone, and list damage in 'damage' as you would without this "
+    "list.\n"
 )
 INVENTORY_SENTENCE = (
     "Last, in 'inventory' list the parts{other} you can see in each photo, damaged or not, by the inventory's part "
@@ -441,13 +462,42 @@ def round2_schema(r2, labels: list[str]) -> dict:
     return out
 
 
+# The largest zone schema Round 2 may send, in characters (json.dumps):
+# over it, the inventory is left out first, then locate (fit_round2; the
+# review's L2). Today's zone schemas are 1.9k-4.0k (6.3k with the assembly
+# walk and every light-model option on); the main read's, which the same
+# light models answer, ~23k.
+R2_SCHEMA_CAP = 6500
+
+
+def fit_round2(zone: str, labels: list[str], r2, **options) -> tuple["Round2Ask | None", list[str]]:
+    """r2 as it may be sent with these options (response_schema's grid,
+    evidence_mode, packs, photo_half, walk): the whole ask while the schema
+    is at most R2_SCHEMA_CAP characters; else without the inventory, then
+    without locate. (the ask or None, the fields left out)."""
+    ask = _r2(r2)
+    dropped: list[str] = []
+    while ask is not None and len(json.dumps(response_schema(zone, labels, r2=ask, **options))) > R2_SCHEMA_CAP:
+        if ask.inventory:
+            ask = Round2Ask(locate=list(ask.locate), hints=dict(ask.hints), inventory=[])
+            dropped.append(INVENTORY)
+        else:
+            ask = None
+            dropped.append(LOCATE)
+        ask = _r2(ask)
+    return ask, dropped
+
+
 def salvage(raw: str, required=("zone_side_seen", "damage", "checked_intact")) -> dict:
     """A zone answer that isn't JSON because it was cut off (or spoilt)
     inside Round 2's fields, which come last: the object up to the last of
     its top-level fields that still reads, closed, holding every field of
     today's answer -- today's answer (parse_answer then reads none of Round
     2's). ValueError when no such object is left: a cut in today's own
-    fields fails as it always did, and the next model is asked."""
+    fields fails as it always did, and the next model is asked. (So an
+    answer whose own fields are whole but which has junk after them is read
+    too, without its Round 2 fields -- off would refuse it; the review's
+    L10. Only with r2: off never comes here.)"""
     text = str(raw or "")
     depth, in_string, escaped = 0, False, False
     commas: list[int] = []
@@ -934,6 +984,7 @@ def read_zone(
     geometry: tuple | None = None,
     wrong_end: str = "drop",
     r2: "Round2Ask | None" = None,
+    max_tries: int | None = None,
 ) -> ZoneAnswer:
     """One call for one zone: photos as (label, AI input path, kind). Raises
     as call_structured does; the caller (intake/zones) never lets that fail
@@ -948,7 +999,8 @@ def read_zone(
     wrong_end (E11): parse_answer's, how the answer is read -- the request
     is the same. r2 (Round 2, a Round2Ask): its fields asked for too, the
     call tagged "+locate-r2" / "+inventory-r2"; None (the default): the
-    request as before."""
+    request as before. max_tries: call_structured's (Round 2's fallback:
+    one request per model, no all-busy round); None as before."""
     labels = [label for label, _, _ in photos]
     packs = list(packs or ())
     ask = _r2(r2)
@@ -972,4 +1024,5 @@ def read_zone(
             actor=actor,
             timeout=timeout,
             judge_key=False,
+            **({"max_tries": max_tries} if max_tries is not None else {}),
         )

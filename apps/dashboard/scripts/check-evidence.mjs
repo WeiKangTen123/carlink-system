@@ -415,29 +415,41 @@ check("decided suggestions kept in items (review L3): out of the list, the liste
   );
 });
 
-check("detection Round 2: a located box shows as any AI box, its source in words; an inventory suggestion keeps its note", () => {
+check("detection Round 2: a located part box shows on its photo with its own words; an inventory suggestion keeps its note and read", () => {
   const d = clone(data);
-  // Boot Lid with no box of its own; a zone read located it (B2).
-  const located = { photo: "@ph05", box: [100, 150, 450, 850], box_kind: "ai", by: "locate:zone:rear", reason: null,
-                    confidence: "High", img_w: 1600, img_h: 1200 };
-  d.damage_summary[1] = { ...d.damage_summary[1], bbox_2d: null, evidence: [located] };
+  // Boot Lid with no box of its own; a zone read located it (R2-box): a
+  // "part" box beside the main read's box-less entry on the same photo.
+  const located = { photo: "@ph05", box: [100, 150, 450, 850], box_kind: "part", by: "locate:zone:rear", reason: null,
+                    confidence: null, img_w: 1600, img_h: 1200 };
+  const own = { photo: "@ph05", box: null, box_kind: null, by: "overall", reason: "Dented at the lock", confidence: "High",
+                img_w: null, img_h: null };
+  d.damage_summary[1] = { ...d.damage_summary[1], bbox_2d: null, evidence: [own, located] };
   const lid = F.buildFindings(d).find((f) => f.key === "item:1");
   const [slide] = E.slidesOf(lid);
-  assert.deepEqual([slide.photo, slide.box, slide.kind, slide.by], ["@ph05", [100, 150, 450, 850], "ai", "locate:zone:rear"]);
-  assert.equal(E.boxLine(slide), E.BOX_WORDS.ai, "worded as any AI box");
-  assert.equal(F.sourceName("locate:zone:rear"), "rear read, part located");
-  assert.equal(F.sourceName("locate:zone:close"), "close-up read, part located");
-  assert.equal(F.sourceName("zone:rear"), "rear read", "a zone read's own find as before");
-  // An inventory suggestion (B1): a zone suggestion with its note.
+  assert.deepEqual([slide.photo, slide.box, slide.kind, slide.by], ["@ph05", [100, 150, 450, 850], "part", "locate:zone:rear"]);
+  assert.equal(slide.reason, "Dented at the lock", "the read's words on that photo stay");
+  assert.equal(slide.confidence, "High", "and its confidence");
+  assert.equal(E.boxLine(slide), "Part located");
+  assert.equal(E.boxChip(slide), "Part located");
+  assert.equal(F.sourceName("locate:zone:rear"), "rear read");
+  assert.equal(F.sourceName("locate:zone:close"), "close-up read");
+  // An AI damage box on the same photo wins over the part box.
+  const both = clone(d);
+  both.damage_summary[1].evidence = [{ ...own, box: [10, 10, 90, 90], box_kind: "ai" }, located];
+  const [boxed] = E.slidesOf(F.buildFindings(both).find((f) => f.key === "item:1"));
+  assert.deepEqual([boxed.kind, boxed.by], ["ai", "overall"]);
+  // An inventory suggestion (R2-inv): a zone suggestion found by "zone_inventory:rear", with its note.
   const note = "Seen in the zone check: marked damaged among the parts in view.";
   d.second_look.items.push({ key: "Boot Floor Board", part: "Boot Floor Board", name: "Boot floor board", source: "zone",
-                             confidence: "Medium", covers: ["Boot Floor Board"], found_by: ["zone:rear"], seen_in: ["@ph05"],
-                             reason: null, photo_reference: "@ph05", inventory_note: note,
-                             evidence: [{ ...located, by: "zone:rear", confidence: "Medium" }] });
+                             confidence: "Medium", covers: ["Boot Floor Board"], found_by: ["zone_inventory:rear"],
+                             seen_in: ["@ph05"], reason: null, photo_reference: "@ph05", inventory_note: note,
+                             evidence: [{ ...located, box_kind: "ai", by: "zone_inventory:rear", confidence: "Medium" }] });
   const all = F.buildFindings(d);
   const board = all.find((f) => f.key === "sug:Boot Floor Board");
   assert.equal(board.inventoryNote, note);
   assert.equal(board.source, "zone", "listed with the zone reads' suggestions");
+  assert.equal(F.readName("zone_inventory:rear"), "rear inventory");
+  assert.equal(F.sourceName("zone_inventory:rear"), "rear inventory read");
   assert.ok(!("inventoryNote" in all.find((f) => f.key === "sug:Boot Lid Lock")), "no note on the others");
 });
 

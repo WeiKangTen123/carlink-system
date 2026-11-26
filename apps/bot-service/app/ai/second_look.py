@@ -834,8 +834,15 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
         vehicle = data.get("vehicle_info") if isinstance(data.get("vehicle_info"), dict) else {}
         tables = car_map.link_tables(links.TABLE, vehicle)
     link_cut: list[dict] | None = [] if cut is not None and mode == "on" else None
+    # Detection Round 2 (the R2 review's M7): a part a zone read's inventory
+    # suggested (inventory_note) never takes a linked part in -- the linked
+    # part stays source "link", for the linked check and the link groups;
+    # the inventory suggestion of the same part joins it below instead.
+    # None has one unless settings.intake_zone_inventory is "on".
+    inventory = [it for it in kept if it.get("inventory_note")]
+    others = [it for it in kept if not it.get("inventory_note")] if inventory else kept
     try:
-        linked, joins = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables,
+        linked, joins = _with_links(db, report_id, data, ai_draft, others, dismissed, tables,
                                     **({"cut": link_cut} if link_cut is not None else {}))
     except Exception:
         logger.exception("Second look for %s: couldn't work out the linked parts", report_id)
@@ -844,7 +851,7 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     extra: dict = {}
     if tables is not None and tables.shadow is not None:
         try:
-            mapped, _ = _with_links(db, report_id, data, ai_draft, kept, dismissed, tables, shadow=True)
+            mapped, _ = _with_links(db, report_id, data, ai_draft, others, dismissed, tables, shadow=True)
             mapped = [it for it in mapped if not _listed_as(it, listed, listed_keys)
                       and it["key"] not in dismissed and it["part"] not in dismissed]
             extra["car_map_suggestions"] = [SecondLookItem.model_validate(it).model_dump() for it in mapped]
@@ -860,11 +867,20 @@ def _stored_links(db, report_id: str, session, data: dict, ai_draft: dict, kept:
     for it in kept:
         if it["key"] in joins:
             _join_twin(it, joins[it["key"]])
+    shown = [it for it in linked if not _listed_as(it, listed, listed_keys)
+             and it["key"] not in dismissed and it["part"] not in dismissed]
+    for twin in inventory:
+        link = next((it for it in shown if _listed_as(twin, {it["part"]}, {it["key"]})), None)
+        if link is not None:
+            # The inventory's photo, box and note on the linked part; the
+            # suggestion itself goes (one card per part).
+            _join_twin(link, twin)
+            link["inventory_note"] = twin["inventory_note"]
+            kept.remove(twin)
     if link_cut:
         cut.extend(it for it in link_cut if not _listed_as(it, listed, listed_keys)
                    and it["key"] not in dismissed and it["part"] not in dismissed)
-    return [it for it in linked if not _listed_as(it, listed, listed_keys)
-            and it["key"] not in dismissed and it["part"] not in dismissed]
+    return shown
 
 
 def _catalogue_neighbours(report_id: str, vehicle: dict, listed: list[dict]) -> dict | None:
@@ -1020,9 +1036,12 @@ def _store(report_id: str, result: dict) -> None:
         # Wave 2 E11 (the review's M5): a "wrong end" zone read's find
         # (wrong_end_note) after every other suggestion; none has one unless
         # settings.intake_zone_wrong_end is "keep", and then the order of the
-        # rest is as before.
-        items.sort(key=lambda it: (bool(it.get("wrong_end_note")), _RANK.get(it.get("confidence"), len(CONFIDENCES)),
-                                   it.get("source") != "kit"))
+        # rest is as before. Detection Round 2 (the R2 review's L7): a zone
+        # read's inventory part (inventory_note) after the reads' own finds,
+        # before a wrong-end one; none has one unless settings.
+        # intake_zone_inventory is "on".
+        items.sort(key=lambda it: (bool(it.get("wrong_end_note")), bool(it.get("inventory_note")),
+                                   _RANK.get(it.get("confidence"), len(CONFIDENCES)), it.get("source") != "kit"))
         kept: list[dict] = []
         for it in items:
             # "Left Tail Lamp" and "Tail Lamp (side undetermined)" both: one

@@ -962,7 +962,8 @@ export type Box = [number, number, number, number];
 export type Evidence = {
   photo: string;
   box: Box | null;
-  box_kind: "ai" | "sort" | null;
+  /** "part": detection Round 2's located part box (by "locate:zone:..."). */
+  box_kind: "ai" | "sort" | "part" | null;
   /** "overall" | "zone:front|rear|left|right|close" | "sort" | "check" | "second_look";
    * contract 10: "link" (the listed part's photo, no box) | "link_check" (the
    * linked check's photo and box); detection Round 2: "locate:zone:rear" (a

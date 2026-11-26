@@ -7146,6 +7146,11 @@ button.pb-box:focus-visible {
   border-style: dashed;
 }
 
+/* Detection Round 2: a located part box (where the part is, not the damage). */
+.pb-kind-part {
+  border-style: dotted;
+}
+
 .pb-status-confirmed {
   --pb-c: var(--pb-confirmed);
 }

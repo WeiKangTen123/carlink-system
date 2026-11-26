@@ -146,6 +146,12 @@ const READ_NAMES: Record<string, string> = {
   "zone:left": "Left side read",
   "zone:right": "Right side read",
   "zone:close": "Close-up read",
+  // Detection Round 2: suggestions from a zone read's inventory, apart.
+  "zone_inventory:front": "Front inventory",
+  "zone_inventory:rear": "Rear inventory",
+  "zone_inventory:left": "Left side inventory",
+  "zone_inventory:right": "Right side inventory",
+  "zone_inventory:close": "Close-up inventory",
 };
 
 function readName(read: string): string {

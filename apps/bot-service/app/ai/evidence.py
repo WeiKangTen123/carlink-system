@@ -46,8 +46,21 @@ MIN_SIDE = 8
 # A box over this share of the photo marks nothing: the photo itself.
 MAX_AREA_SHARE = 0.85
 CONFIDENCES = ("High", "Medium", "Low")
-BOX_KINDS = ("ai", "sort")
+BOX_KINDS = ("ai", "sort", "part")
 SORT = "sort"
+# Detection Round 2 (settings.intake_box_every; intake/zones.place_boxes):
+# a zone read's box round a listed part it saw, its entry by
+# "locate:zone:<zone>" with box_kind "part" -- where the part is, never a
+# read's word on damage: no reason, no confidence, never the item's
+# bbox_2d. order_evidence keeps it beside the reads' own entry on its
+# photo and after every one of them, so it only ever takes a free slot.
+PART = "part"
+LOCATED = "locate:"
+
+
+def located(e) -> bool:
+    """An evidence entry that is a Round 2 located part box."""
+    return isinstance(e, dict) and str(e.get("by") or "").startswith(LOCATED)
 
 # A token with three or more digits (a plate's number, a phone number, a
 # date), or letters and digits mixed over five characters or more (a
@@ -213,16 +226,20 @@ def _rank(e: dict) -> tuple[int, int]:
 def order_evidence(entries, primary_ref: str | None) -> list[dict]:
     """At most one entry per photo (the better one: _rank, the first on a
     tie) and at most MAX_ENTRIES: the photo_reference's first -- the photo
-    the list shows, and the one bbox_2d is on -- then the rest best first."""
-    best: dict[str, dict] = {}
+    the list shows, and the one bbox_2d is on -- then the rest best first.
+    A Round 2 located part box (located) is kept apart from the reads'
+    entry on its photo and after every read's entry: it never takes a
+    read's place. Without one, the order is as it always was."""
+    best: dict[tuple, dict] = {}
     for value in entries or []:
         e = _as_dict(value)
         if e is None:
             continue
-        held = best.get(e["photo"])
+        key = (e["photo"], located(e))
+        held = best.get(key)
         if held is None or _rank(e) < _rank(held):
-            best[e["photo"]] = e
-    kept = sorted(best.values(), key=lambda e: (e["photo"] != primary_ref, _rank(e)))
+            best[key] = e
+    kept = sorted(best.values(), key=lambda e: (located(e), e["photo"] != primary_ref, _rank(e)))
     return kept[:MAX_ENTRIES]
 
 

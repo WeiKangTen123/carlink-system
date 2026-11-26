@@ -1159,17 +1159,6 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
             # E11 "keep": the finds of an end zone read that saw the other
             # end, as suggestions with their note -- never on the list.
             zone_draft.setdefault("zone_suggestions", []).extend(zones.wrong_end_suggestions(extras.wrong_end))
-        if extras is not None and extras.round2_on():
-            # Detection Round 2 (settings.intake_box_every / intake_zone_
-            # inventory): the located boxes onto the list items that have
-            # none, the inventory's damaged parts as suggestions -- before
-            # the evidence is settled below (raw photos, frames). Off: not
-            # even called. Never the reason a reading is lost.
-            try:
-                zones.apply_round2(data.get("damage_summary") or [], zone_draft, extras, facts)
-            except Exception:
-                logger.exception("Reading %s: Round 2 couldn't place its boxes or suggestions; the reading stands",
-                                 report_id)
     try:
         # Each finding's evidence against the photos: frames, boxes on raw
         # originals dropped, the sorter's boxes, best first. Code only; the
@@ -1177,6 +1166,16 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         evidence.finish(data.get("damage_summary") or [], zone_draft.get("zone_suggestions") or [], facts)
     except Exception:
         logger.exception("Reading %s: couldn't settle the evidence; the reading stands", report_id)
+    if extras is not None and extras.box_every:
+        # Detection Round 2's R2-box (settings.intake_box_every): a located
+        # part box on each list item with none -- once the evidence is
+        # settled, so every box the reading shows (the sorter's too) stands
+        # and none is pushed out (the review's M1). Off: not even called.
+        # Never the reason a reading is lost.
+        try:
+            zones.place_round2_boxes(data.get("damage_summary") or [], extras, facts, disputed)
+        except Exception:
+            logger.exception("Reading %s: Round 2 couldn't place its boxes; the reading stands", report_id)
     # F1 on a re-read (the review's H1): the last reading's own list stays,
     # as it was, and the zone reads' finds it hasn't got are added, each a
     # "Check" row. A person's ticked rows stay too (merge_redraft).
@@ -1243,6 +1242,15 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
                     zones.other_side_suggestion(item) for item in other_side)
             data["damaged_parts"] = [item["part"] for item in data["damage_summary"] if item.get("part")]
             run.parts_found = len(data["damage_summary"])
+        if extras is not None and extras.inventory:
+            # Detection Round 2's R2-inv (settings.intake_zone_inventory):
+            # the zone reads' inventory kept apart, its damaged parts nothing
+            # listed or suggested as suggestions -- against the list as the
+            # side resolver left it (the review's L6). Off: not even called.
+            try:
+                zones.add_inventory(data.get("damage_summary") or [], zone_draft, extras, facts)
+            except Exception:
+                logger.exception("Reading %s: Round 2 couldn't add its inventory; the reading stands", report_id)
         if zone_draft.get("zone_suggestions"):
             # Against the list as the side resolver left it: the firm's
             # names and the other side's twin (zones.name_suggestions).
@@ -1255,7 +1263,8 @@ def _read_into(report_id: str, actor: AiActor, run: runs.Run) -> None:
         if extras is not None and extras.round2_on():
             # Round 2: how many list items have a box, the list as final.
             try:
-                coverage = zones.box_coverage(data.get("damage_summary") or [], extras.boxed_before)
+                coverage = zones.box_coverage(data.get("damage_summary") or [], extras.boxed_before,
+                                              extras.zone_finds)
                 zone_draft["box_coverage"] = coverage
             except Exception:
                 logger.exception("Reading %s: Round 2 couldn't count the boxes", report_id)

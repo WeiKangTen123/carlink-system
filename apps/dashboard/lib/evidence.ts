@@ -16,11 +16,17 @@ import type { Finding } from "./findings";
  * than this is hidden: the photo was rotated, cropped or replaced since. */
 export const ASPECT_TOLERANCE = 0.02;
 
-export type BoxKind = "ai" | "sort" | null;
+/** "part": detection Round 2's located part box -- where a zone read saw
+ * a listed part, not a mark round damage. */
+export type BoxKind = "ai" | "sort" | "part" | null;
 export type Frame = { w: number; h: number };
 
 /** The words for each box (contract9.md section 1, "UI words"). */
-export const BOX_WORDS: Record<"ai" | "sort", string> = { ai: "AI box", sort: "Sorter's box" };
+export const BOX_WORDS: Record<"ai" | "sort" | "part", string> = {
+  ai: "AI box",
+  sort: "Sorter's box",
+  part: "Part located",
+};
 export const NO_BOX_TEXT = "No box: the AI named the part but didn't mark where";
 export const BOX_HIDDEN_TEXT = "box hidden: photo changed";
 export const BOX_OFF_TEXT = "Boxes are off";
@@ -78,7 +84,8 @@ export type Slide = {
   confidence: Evidence["confidence"];
 };
 
-const KIND_RANK: Record<string, number> = { ai: 0, sort: 1 };
+// A located part box after the damage boxes: it says where the part is.
+const KIND_RANK: Record<string, number> = { ai: 0, sort: 1, part: 2 };
 const kindRank = (kind: BoxKind, box: Box | null) => (box && kind ? (KIND_RANK[kind] ?? 2) : 3);
 
 /** The entry whose box a photo shows when a finding has more than one for

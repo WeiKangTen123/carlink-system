@@ -1,7 +1,8 @@
-"""Detection Round 2 (settings.intake_box_every "B2", intake_zone_inventory
-"B1"; ai/zone_read.py and intake/zones.py "Round 2") -- offline: Gemini is
-the fake of scripts/test_c10_integration.py (answering what each request's
-schema asks), no server, made-up cases only.
+"""Detection Round 2 (settings.intake_box_every "R2-box",
+intake_zone_inventory "R2-inv"; ai/zone_read.py and intake/zones.py "Round
+2") -- offline: Gemini is the fake of scripts/test_c10_integration.py
+(answering what each request's schema asks), no server, made-up cases
+only.
 
   0. settings: both default "off", take on / off in any case, refuse a
      typo; docker-compose.prod.yml passes each once, in the shared block,
@@ -13,25 +14,32 @@ schema asks), no server, made-up cases only.
      names on) -- the same scenarios on a git archive of master and here;
      r2=None / an empty ask is today's request;
   2. the schema and prompt sizes: printed for every zone and switch
-     combination, capped (SCHEMA_CAP; the main read's own schema, which the
-     same light models answer, is printed beside them);
-  3. B2: what is asked (names, hints, the field last), how the answer is
-     read (sides, wrong end, bad boxes, caps), place_boxes (raw photo none,
-     a box already there kept, one side only, close-up twins), and end to
-     end (every list item boxed, the list itself unchanged, box_coverage in
-     the AI draft and the run log, no extra call);
-  4. B1: the inventory's names (the car map's small parts only with
-     intake_car_map_names on), its caps and sides, its suggestions (cap,
-     order, de-dup against the list and the suggestions, the other side's
-     twin), the inventory kept apart (never in zone_intact), relabelled at
-     filing; end to end;
+     combination, with and without the assembly walk; held under the cap
+     at run time (fit_round2: the inventory first, then locate);
+  3. R2-box: what is asked (neutral words, pairs kept whole, hints, the
+     field last), how the answer is read; place_boxes (the review's M1,
+     M3, M4, M5, L5, L8: a box there stands, disputed exact only, a listed
+     twin's never, the item's own or seen photo, a free slot only, a
+     "part" box with no words); end to end (box_coverage, agreement and
+     zone finds in the AI draft and the run log, no extra call); with the
+     sorter's boxes on (M1); with the parallel reads (M8);
+  4. R2-inv: the inventory's names (the car map's small parts only with
+     intake_car_map_names on), its caps and sides, its suggestions (found
+     by "zone_inventory:<zone>", cap, order after the reads' finds, de-dup
+     against the list and the suggestions after the side resolver, the
+     other side's twin), the inventory kept apart, relabelled at filing
+     (a deleted photo's box gone), counted apart in the AI-accuracy
+     record; a linked part keeps source "link" (M7); end to end;
   5. degrading: an answer cut off inside Round 2's fields is today's
      answer; bad fields are left out; a refused schema is asked again as
-     today (fallback, one call more), a busy chain is not; the reading
-     never fails for Round 2;
+     today, at most one request per model, and latches Round 2 off for
+     the process (M6); a busy chain is not asked again; a schema over the
+     cap is trimmed; Round 2's helpers failing never cost a zone read;
   6. the benchmark: --box-every / --zone-inventory (refused without zone
-     reads), ai_settings while on, the args left out at their defaults,
-     a run's box_coverage, inventory and Round 2 metrics.
+     reads, --box-every with the parallel reads too unless allowed),
+     ai_settings while on, the args left out at their defaults, a run's
+     box_coverage, inventory and Round 2 metrics, list_low / zone_finds on
+     and off.
 
     python scripts/test_detect_r2.py
     python scripts/test_detect_r2.py --probe OUT.json   (section 1's
@@ -135,13 +143,6 @@ ROOT = HERE.parent
 REPO = ROOT.parent.parent
 PY = sys.executable
 LABELS = [f"P{i:02d}" for i in range(1, 13)]
-# Every zone schema Round 2 may send, at most this many characters (json.
-# dumps). Today's measure 1.9k-3.4k with the evidence boxes (4.0k for the
-# close-up zone with every light-model option on); the main read's schema,
-# which the same light models answer, is ~23k. Round 2 adds at most ~2.3k
-# (the close-up zone's inventory names its 43 parts); a schema a model
-# refuses anyway is asked again as today (section 5).
-SCHEMA_CAP = 6500
 # Round 2's sentences, at most this many characters more in a zone prompt.
 PROMPT_CAP = 1200
 
@@ -217,12 +218,13 @@ BOXES = {"P03": [300, 200, 700, 800], "P04": [250, 100, 600, 400], "P05": [100, 
          "P07": [200, 100, 800, 900], "P08": [400, 300, 700, 600], "P09": [150, 150, 500, 500]}
 
 
-def r2_zone(inventory=None, locate_parts=None):
+def r2_zone(inventory=None, locate_parts=None, rear_finds=True):
     """The zone reads as the plain fake answers them -- the rear finds the
-    bumper (P03) and the left tail lamp (P04), the left side the rear door
-    (P07) -- and, when the schema asks, `locate` (each asked part on its
-    photo: Rear Bumper P03, Boot Lid P05, Rear Door P07; or locate_parts'
-    {name: label}) and `inventory` (inventory: {zone: [rows]})."""
+    bumper (P03) and the left tail lamp (P04) (rear_finds False: the bumper
+    only), the left side the rear door (P07) -- and, when the schema asks,
+    `locate` (each asked part on its photo: Rear Bumper P03, Boot Lid P05,
+    Rear Door P07; or locate_parts' {name: label}) and `inventory`
+    (inventory: {zone: [rows]})."""
     where = {"Rear Bumper": "P03", "Boot Lid": "P05", "Rear Door": "P07", **(locate_parts or {})}
 
     def answer(kwargs, labels):
@@ -231,6 +233,8 @@ def r2_zone(inventory=None, locate_parts=None):
         zone = "rear" if "the car's rear" in system else "left" if "one side of the car" in system else "other"
         if zone == "rear":
             out = t._zone_answer(kwargs, labels)
+            if not rear_finds:
+                out["damage"] = [it for it in out["damage"] if it["part"] == "Rear Bumper"]
         elif zone == "left":
             item = w._zone_item(props["damage"]["items"]["properties"], "P07", "Rear Door", "High", ("Dented",))
             out = {"zone_side_seen": "left", "damage": [item] if "P07" in labels else [], "checked_intact": []}
@@ -254,16 +258,6 @@ def inv(label: str, part: str, damaged: bool, confidence: str | None = "Medium",
     if confidence:
         row["ai_confidence"] = confidence
     return row
-
-
-REAR_INVENTORY = {"rear": [
-    inv("P05", "Boot Lid", True, "High"),            # listed: no suggestion
-    inv("P05", "Boot Floor Board", True, "Medium"),  # a suggestion
-    inv("P05", "Rear Windscreen", False, "High"),    # intact: kept apart
-    inv("P04", "Right Tail Lamp", True, "Low"),      # a suggestion (the left one is only suggested)
-    inv("P03", "Rear Bumper", True, "High"),         # listed
-    inv("P03", "Rear Number Plate Lamp", True, "High"),  # only with the car map's names
-]}
 
 
 def zone_run(rid: str) -> AiRun | None:
@@ -341,11 +335,11 @@ def settings_section() -> None:
             got = zones.extras_for([])
             check(got is not None and got.box_every and not got.inventory and not got.car_names
                   and got.geometry_mode == "off" and got.wrong_end_mode == "drop",
-                  "B2 on: ZoneExtras with box_every, Wave 2's options as off", got)
+                  "R2-box on: ZoneExtras with box_every, Wave 2's options as off", got)
         with t.Settings(intake_zone_inventory="on", intake_car_map_names="on"):
             got = zones.extras_for([])
             check(got is not None and got.inventory and got.car_names and not got.box_every,
-                  "B1 on with the car map's names: ZoneExtras with inventory and car_names", got)
+                  "R2-inv on with the car map's names: ZoneExtras with inventory and car_names", got)
 
 
 # ------------------------------------------------------------- 1. off, as master
@@ -431,6 +425,8 @@ LISTED = ["Rear Bumper", "Boot Lid", "Left Tail Lamp", "Right Tail Lamp", "Tail 
           "Left Rear Door", "Left Front Fender", "Front Bumper", "Rear Bumper Reflector (side undetermined)",
           "Left Rear Quarter Panel", "Front Grille", "Bonnet", "Left Headlamp", "Right Front Door",
           "Boot Lid Lock", "Rear Windscreen"]
+ALL_LIGHT = {"evidence_mode": "reason_box", "grid": True, "photo_half": True,
+             "packs": ["intact", "orient", "cues", "small"]}
 
 
 def enum_values(node) -> int:
@@ -443,38 +439,53 @@ def enum_values(node) -> int:
     return 0
 
 
+def _ask(zone: str, box_every: bool, inventory: bool, names: bool) -> Round2Ask:
+    locate = zone_read.locate_names(zone, LISTED) if box_every else []
+    return Round2Ask(locate=locate, hints={n: ["P03", "P04"] for n in locate},
+                     inventory=zone_read.inventory_names(zone, names) if inventory else [])
+
+
 def size_section() -> None:
+    from app.intake import assembly_walk, car_map
+
+    walk = assembly_walk.index_for(car_map.MAP)
     main = extraction._response_schema()
+    cap = zone_read.R2_SCHEMA_CAP
     print(f"         (the main read's schema, which the same light models answer: {len(json.dumps(main))} characters, "
-          f"{enum_values(main)} enum values)")
-    print("         zone   options                     schema  (+ vs today)  prompt +  enum values")
+          f"{enum_values(main)} enum values; Round 2's cap {cap})")
+    print("         zone   switches           options    asked  (+ vs today)  sent  trimmed      prompt +  enums")
+    problems = []
     worst = {}
-    over = []
     for zone in zone_read.ZONE_NAMES:
-        for kw_name, kw in (("reason_box", {"evidence_mode": "reason_box"}),
-                            ("all light options", {"evidence_mode": "reason_box", "grid": True, "photo_half": True,
-                                                   "packs": ["intact", "orient", "cues", "small"]})):
+        for kw_name, kw in (("reason_box", {"evidence_mode": "reason_box"}), ("all light", ALL_LIGHT),
+                            ("all + walk", {**ALL_LIGHT, "walk": walk})):
             today = len(json.dumps(zone_read.response_schema(zone, LABELS, **kw)))
             prompt = len(zone_read.system_prompt(zone, **kw))
             for box_every, inventory, names in ((False, False, False), (True, False, False), (False, True, False),
                                                 (False, True, True), (True, True, False), (True, True, True)):
-                locate = zone_read.locate_names(zone, LISTED) if box_every else []
-                ask = Round2Ask(locate=locate, hints={n: ["P03", "P04"] for n in locate},
-                                inventory=zone_read.inventory_names(zone, names) if inventory else [])
+                ask = _ask(zone, box_every, inventory, names)
                 size = len(json.dumps(zone_read.response_schema(zone, LABELS, r2=ask, **kw)))
-                more = len(zone_read.system_prompt(zone, r2=ask, **kw)) - prompt
-                tag = f"B2={'on' if box_every else 'off'} B1={'on' if inventory else 'off'}{'+names' if names else ''}"
+                fit, dropped = zone_read.fit_round2(zone, LABELS, ask, **kw)
+                schema = zone_read.response_schema(zone, LABELS, r2=fit, **kw)
+                sent = len(json.dumps(schema))
+                more = len(zone_read.system_prompt(zone, r2=fit, **kw)) - prompt
+                tag = (f"R2-box={'on' if box_every else 'off'} inv={'on' if inventory else 'off'}"
+                       f"{'+names' if names else ''}")
                 if kw_name == "reason_box" or (box_every and inventory and names):
-                    states = enum_values(zone_read.response_schema(zone, LABELS, r2=ask, **kw))
-                    print(f"         {zone:<6} {tag:<18} {kw_name[:9]:<9} {size:>6}  (+{size - today:>4})  {more:>8}"
-                          f"  {states:>11}")
-                worst[zone] = max(worst.get(zone, 0), size)
-                if size > SCHEMA_CAP or more > PROMPT_CAP:
-                    over.append((zone, kw_name, tag, size, more))
-                if not (box_every or inventory) and size != today:
-                    over.append((zone, kw_name, "off differs", size, today))
-    check(not over, f"every zone, option and switch combination: the schema at most {SCHEMA_CAP} characters and "
-                    f"Round 2's sentences at most {PROMPT_CAP} (largest: {worst})", over)
+                    print(f"         {zone:<6} {tag:<18} {kw_name:<10} {size:>5}  (+{size - today:>4})  {sent:>5}  "
+                          f"{'+'.join(dropped) or '-':<12} {more:>8}  {enum_values(schema):>5}")
+                worst[zone] = max(worst.get(zone, 0), sent)
+                if sent > max(cap, today) or more > PROMPT_CAP:
+                    problems.append((zone, kw_name, tag, "over", sent, more))
+                if size <= cap and dropped:
+                    problems.append((zone, kw_name, tag, "trimmed under the cap", size, dropped))
+                if dropped and inventory and dropped[0] != "inventory":
+                    problems.append((zone, kw_name, tag, "locate dropped before the inventory", dropped))
+                if not (box_every or inventory) and sent != today:
+                    problems.append((zone, kw_name, "off differs", sent, today))
+    check(not problems, f"every zone, option and switch combination (the assembly walk too): what is sent is at most "
+                        f"{cap} characters -- the inventory left out first, then locate, only when over -- and "
+                        f"Round 2's sentences at most {PROMPT_CAP} (largest sent: {worst})", problems)
     ask = Round2Ask(locate=zone_read.locate_names("rear", LISTED), inventory=zone_read.inventory_names("rear", True))
     schema = zone_read.response_schema("rear", LABELS, evidence_mode="reason_box", r2=ask)
     item = schema["properties"]["inventory"]["items"]
@@ -486,11 +497,11 @@ def size_section() -> None:
           "the fields last (an answer cut off there is today's), no min / max items, no descriptions",
           schema["required"])
     more = LISTED + ["Left Wing Mirror", "Right Wheel Arch Trim (side undetermined)"]
-    check(len(zone_read.locate_names("close", more)) == zone_read.MAX_LOCATE,
+    check(len(zone_read.locate_names("close", more)) <= zone_read.MAX_LOCATE,
           f"at most {zone_read.MAX_LOCATE} listed parts asked a call")
 
 
-# ------------------------------------------------------------- 3. B2
+# ------------------------------------------------------------- 3. R2-box
 
 
 def locate_units() -> None:
@@ -499,6 +510,12 @@ def locate_units() -> None:
     check(names == ["Rear Bumper", "Boot Lid", "Left Tail Lamp", "Right Tail Lamp"],
           "rear: the listed parts its checklist names, in its order; an undetermined lamp asks both sides; "
           "'Other' and a door never", names)
+    many = ["Rear Bumper", "Rear Bumper Beam", "Boot Lid", "Boot Lid Lock", "Boot Lid Hinge", "Boot Lid Weatherstrip",
+            "Boot Lid Inner Trim", "Tail Lamp (side undetermined)", "Rear End Panel"]
+    names = zone_read.locate_names("rear", many)
+    check(len(names) == zone_read.MAX_LOCATE and "Left Tail Lamp" not in names and "Right Tail Lamp" not in names
+          and names[-1] == "Rear End Panel",
+          "the cap never cuts a Left / Right pair in two (the review's L5): both or neither", names)
     check(zone_read.locate_names("left", ["Left Front Door", "Right Rear Door", "Door (side undetermined)"])
           == ["Front Door", "Rear Door"], "a side zone asks the families, without a side")
     check(zone_read.locate_names("close", ["Left Tail Lamp"]) == ["Tail Lamp (side undetermined)"],
@@ -519,9 +536,12 @@ def locate_units() -> None:
           and zones.round2_ask(job, None) is None,
           "no list known yet (the reads beside or before the main read), or none: nothing asked -- today's call")
     text = zone_read.system_prompt("rear", evidence_mode="reason", r2=ask)
-    check("These parts are on the damage list already: Rear Bumper (P03), Boot Lid, Left Tail Lamp (P05), Right Tail "
-          "Lamp (P05)." in text and text.index("'locate'") < text.index("Only the insured car"),
-          "the prompt names them with their photos, before the closing line", text[-700:])
+    sentence = text[text.index("Also locate"):text.index("Only the insured car")]
+    check("Also locate these parts: Rear Bumper (P03), Boot Lid, Left Tail Lamp (P05), Right Tail Lamp (P05)."
+          in sentence and "This is not a damage judgement: decide damage from the photos alone" in sentence
+          and "damage list" not in text and "already" not in sentence,
+          "the prompt names the parts to locate with their photos, never as the damage list, and says it is no "
+          "damage judgement (the review's M2) -- before the closing line", sentence)
     # The answer.
     raw = {"zone_side_seen": "rear", "damage": [], "checked_intact": [], "locate": [
         {"photo_reference": "P03", "part": "Rear Bumper", "box_2d": [300, 200, 700, 800]},
@@ -553,7 +573,7 @@ def _facts(folder: Path, raw: set[str] = frozenset()) -> dict:
     from PIL import Image
 
     out = {}
-    for pid in ("a3", "a4", "a5", "a7", "a9"):
+    for pid in ("a1", "a2", "a3", "a4", "a5", "a7", "a9"):
         path = folder / f"{pid}.webp"
         Image.new("RGB", (320, 240), "grey").save(path, "WEBP")
         out[pid] = evidence.PhotoFacts(ai_path=str(path), raw=pid in raw)
@@ -572,6 +592,14 @@ def _src(part: str, photo: str, read: str = "zone:rear", box=(100, 100, 400, 500
     return {"part": part, "photo": photo, "box": list(box), "read": read}
 
 
+def _located(item: dict) -> list[tuple]:
+    return [(e["photo"], e["by"], e["box_kind"]) for e in item["evidence"] if evidence.located(e)]
+
+
+BOTH_LAMPS = {"zone:rear": ["Left Tail Lamp", "Right Tail Lamp", "Left Rear Bumper Reflector",
+                            "Right Rear Bumper Reflector"]}
+
+
 def place_units() -> None:
     folder = Path(tempfile.mkdtemp(prefix="detect-r2-frames-"))
     facts = _facts(folder, raw={"a9"})
@@ -580,7 +608,7 @@ def place_units() -> None:
     listed = [
         _item("Rear Bumper", "@a3"),
         boxed,
-        _item("Left Rear Door", "@a7", reason="Pushed in."),
+        _item("Left Rear Door", "@a7"),
         _item("Tail Lamp (side undetermined)", "@a4"),
         _item("Rear Bumper Reflector (side undetermined)", "@a4"),
         _item("Other / Not Listed", "@a3", other_part_name="Rear air vent"),
@@ -596,51 +624,83 @@ def place_units() -> None:
         _src("Left Rear Bumper Reflector", "@a4"), _src("Right Rear Bumper Reflector", "@a4"),  # both: no answer
         _src("Rear Windscreen", "@a9"), _src("Rear Windscreen", "@a5", box=(10, 100, 200, 900)),  # raw photo: no
     ]
-    placed = zones.place_boxes(listed, sources, facts)
+    placed = zones.place_boxes(listed, sources, facts, asked=BOTH_LAMPS)
     by = {it["part"]: it for it in listed}
     bumper = by["Rear Bumper"]["evidence"]
-    check(placed == 4 and len(bumper) == 1 and bumper[0]["photo"] == "@a3" and bumper[0]["box"] == [300, 200, 700, 800]
-          and bumper[0]["by"] == "locate:zone:rear" and bumper[0]["box_kind"] == "ai"
-          and bumper[0]["confidence"] == "High",
-          "a listed part with no box: the located box on its own photo, by locate:zone:rear, in place of the box-less "
-          "entry there and with its confidence", by["Rear Bumper"])
+    new = bumper[-1]
+    check(placed == 4 and [(e["photo"], e["by"]) for e in bumper] == [("@a3", "overall"), ("@a3", "locate:zone:rear")]
+          and new["box"] == [300, 200, 700, 800] and new["box_kind"] == "part" and new["reason"] is None
+          and new["confidence"] is None and (new["img_w"], new["img_h"]) == (320, 240),
+          "a listed part with no box: a 'part' box on its own photo by locate:zone:rear, beside the read's entry "
+          "there (never in its place), with no words and no confidence, its frame set (the review's M5, L8)", bumper)
+    check(by["Rear Bumper"]["bbox_2d"] is None, "a part box is never the item's bbox_2d (that is the AI's damage box)")
     check(by["Boot Lid"] == before[1], "a listed part already boxed keeps its box (nothing added)")
-    door = by["Left Rear Door"]["evidence"][0]
-    check(door["by"] == "locate:zone:left" and door["reason"] == "Pushed in.", "... and the words said there", door)
-    lamp = by["Tail Lamp (side undetermined)"]["evidence"]
-    check([e["by"] for e in lamp] == ["locate:zone:rear"],
-          "an undetermined part placed on one side only: that box", lamp)
+    door = by["Left Rear Door"]["evidence"]
+    check(door[0]["reason"] == "Pushed in." and door[0]["by"] == "overall" and door[1]["by"] == "locate:zone:left"
+          and door[1]["reason"] is None, "the read's entry and its words stay as they were", door)
+    check(_located(by["Tail Lamp (side undetermined)"]) == [("@a4", "locate:zone:rear", "part")],
+          "an undetermined part placed on one side only, both sides asked: that box")
     check(by["Rear Bumper Reflector (side undetermined)"] == before[4],
           "an undetermined part with both sides placed: none -- which one isn't known")
     check(by["Other / Not Listed"] == before[5], "'Other / Not Listed': never")
-    windscreen = by["Rear Windscreen"]["evidence"]
-    check([(e["photo"], e["by"]) for e in windscreen] == [("@a9", "overall"), ("@a5", "locate:zone:rear")],
+    check(_located(by["Rear Windscreen"]) == [("@a5", "locate:zone:rear", "part")],
           "a box on a photo the AI got raw doesn't stand: the item gets one on another photo; none is placed on a "
-          "raw photo", windscreen)
-    check(all((a["found_by"], a["seen_in"], a["ai_confidence"], a["part"]) == (b["found_by"], b["seen_in"],
-                                                                                b["ai_confidence"], b["part"])
-              for a, b in zip(listed, before)), "found_by, seen_in, the confidence and the part never change")
-    # Through evidence.finish: frames, raw boxes dropped, bbox_2d from the own photo's box.
-    evidence.finish(listed, [], facts)
-    bumper = by["Rear Bumper"]
-    check(bumper["bbox_2d"] == [300, 200, 700, 800] and bumper["evidence"][0]["img_w"] == 320
-          and bumper["evidence"][0]["img_h"] == 240, "evidence.finish: the frame set, bbox_2d drawn from it", bumper)
-    check(by["Rear Windscreen"]["bbox_2d"] is None and by["Rear Windscreen"]["evidence"][-1]["img_w"] == 320,
-          "... the raw photo's bbox_2d dropped, the located one kept", by["Rear Windscreen"])
+          "raw photo", by["Rear Windscreen"]["evidence"])
+    check(all((a["found_by"], a["seen_in"], a["ai_confidence"], a["part"], a["bbox_2d"])
+              == (b["found_by"], b["seen_in"], b["ai_confidence"], b["part"], b["bbox_2d"])
+              for a, b in zip(listed, before)), "found_by, seen_in, the confidence, the part and bbox_2d never change")
+    check(all([e for e in a["evidence"] if not evidence.located(e)] == b["evidence"] for a, b in zip(listed, before)),
+          "every read's own entry kept as it was")
+    # L5: the other side wasn't asked in that call (the cap cut it).
+    lamp = [_item("Tail Lamp (side undetermined)", "@a4")]
+    check(zones.place_boxes(lamp, [_src("Left Tail Lamp", "@a4")], facts, asked={"zone:rear": ["Left Tail Lamp"]}) == 0
+          and zones.place_boxes(lamp, [{**_src("Left Tail Lamp", "@a4"), "via": "inventory"}], facts,
+                                asked={"zone:rear": ["Left Tail Lamp"]}) == 1,
+          "one side placed when only that side was asked is no evidence (the review's L5); the inventory, which "
+          "offered both, is")
+    # M3: a side the reads disputed takes only an exact box.
+    disputed = [_item("Tail Lamp (side undetermined)", "@a4")]
+    check(zones.place_boxes(disputed, [_src("Left Tail Lamp", "@a4")], facts, {"Tail Lamp (side undetermined)"},
+                            BOTH_LAMPS) == 0
+          and zones.place_boxes(disputed, [_src("Tail Lamp (side undetermined)", "@a4", read="zone:close")], facts,
+                                {"Tail Lamp (side undetermined)"}, BOTH_LAMPS) == 1,
+          "a part whose side the reads disputed: never one side's box (the review's M3), its own name's only")
+    # M4: the sided twin is listed itself.
+    twins = [_item("Left Tail Lamp", "@a4"), _item("Tail Lamp (side undetermined)", "@a5")]
+    zones.place_boxes(twins, [_src("Left Tail Lamp", "@a4")], facts, asked=BOTH_LAMPS)
+    check(_located(twins[0]) == [("@a4", "locate:zone:rear", "part")] and _located(twins[1]) == [],
+          "the listed left lamp takes its box; the undetermined lamp never takes it too (the review's M4)")
+    # M5: the photo, and the free slot.
+    seen = [_item("Boot Lid", "@a5", seen_in=["@a5", "@a4"])]
+    zones.place_boxes(seen, [_src("Boot Lid", "@a3"), _src("Boot Lid", "@a4")], facts)
+    full = _item("Boot Lid", "@a1", evidence=[evidence.entry(f"@a{n}", "zone:rear", reason=f"Mark {n}.")
+                                               for n in (1, 2, 3, 4)])
+    kept = copy.deepcopy(full)
+    check(_located(seen[0]) == [("@a4", "locate:zone:rear", "part")]
+          and zones.place_boxes([full], [_src("Boot Lid", "@a9"), _src("Boot Lid", "@a5")], facts) == 0
+          and full == kept,
+          "not its own photo: a photo it was seen in before any other; an item with 4 entries gets none -- a "
+          "located box never pushes a read's entry out (the review's M5)", (seen[0]["evidence"], full["evidence"]))
+    ranked = _item("Boot Lid", "@a3", evidence=[evidence.entry("@a3", "overall", confidence="High"),
+                                                 evidence.entry("@a4", "zone:rear", reason="Dent.", confidence="Low")])
+    zones.place_boxes([ranked], [_src("Boot Lid", "@a3")], facts)
+    check([(e["photo"], e["by"]) for e in ranked["evidence"]]
+          == [("@a3", "overall"), ("@a4", "zone:rear"), ("@a3", "locate:zone:rear")],
+          "a located box after every read's entry, even on the item's own photo", ranked["evidence"])
     # The side resolver puts the undetermined lamp on a side afterwards.
     lamp = by["Tail Lamp (side undetermined)"]
     right = {**copy.deepcopy(lamp), "part": "Right Tail Lamp"}
     left = {**copy.deepcopy(lamp), "part": "Left Tail Lamp"}
     bumper_copy = copy.deepcopy(by["Rear Bumper"])
     dropped = zones.drop_crossed_boxes([right, left, bumper_copy], zones.ZoneExtras(box_every=True, located=sources))
-    check(dropped == 1 and lamp["bbox_2d"] == [100, 100, 400, 500] and right["bbox_2d"] is None
-          and not any(e.get("box") for e in right["evidence"]) and left["evidence"] == lamp["evidence"]
-          and bumper_copy == by["Rear Bumper"],
+    check(dropped == 1 and _located(right) == [] and right["evidence"] == lamp["evidence"][:-1]
+          and left["evidence"] == lamp["evidence"] and bumper_copy == by["Rear Bumper"],
           "placed from 'Left Tail Lamp', then put on the right by the side resolver: the box goes (on the left: it "
           "stays; an exact one is never touched)", right)
-    cov = zones.box_coverage(listed, 1)
-    check(cov == {"items": 7, "boxed": 5, "ai_boxed": 5, "located": 4, "boxed_before_locate": 1},
-          "box_coverage: items, boxed, the AI's, located, and before", cov)
+    cov = zones.box_coverage(listed, 1, 9)
+    check(cov == {"items": 7, "boxed": 5, "ai_boxed": 2, "located": 4, "list_agreed": 0, "list_low": 0,
+                  "boxed_before_locate": 1, "zone_finds": 9},
+          "box_coverage: items, boxed, the AI's damage boxes, located, agreement, Low, before, the zone finds", cov)
     # A close-up's unsided name: one listed twin only.
     two = [_item("Left Tail Lamp", "@a4"), _item("Right Tail Lamp", "@a5")]
     one = [_item("Left Tail Lamp", "@a4")]
@@ -649,42 +709,64 @@ def place_units() -> None:
           "a close-up's unsided find places a sided listed part only when no other listed part is its twin")
     check(zones.place_boxes([_item("Left Tail Lamp", "@a4")], [_src("Right Tail Lamp", "@a4")], facts) == 0,
           "never the other side's twin")
+    # The review's L9: a linked part's "listed part's photo" is never a located one.
+    from app.intake import links
+
+    parent = {"photo_reference": "@a1", "seen_in": [], "evidence": [
+        {"photo": "@a9", "by": "locate:zone:rear", "box": [1, 1, 500, 500], "box_kind": "part"},
+        {"photo": "@a1", "by": "overall", "box": None}]}
+    check(links._parent_photo(parent, SimpleNamespace(photos=[])) == "@a1",
+          "the linked parts take the listed part's own photo, never its located one (the review's L9)")
+
+
+def _part_boxes(item: dict) -> list[tuple]:
+    return [(e["photo"], e["box"], e["by"], e["box_kind"], e["reason"], e["confidence"], e["img_w"])
+            for e in item["evidence"] if evidence.located(e)]
+
+
+def _reads_entries(items: list[dict], pids: list[str]) -> list:
+    return shape([{**it, "evidence": [e for e in it.get("evidence") or [] if not evidence.located(e)]}
+                  for it in items], pids, True)
 
 
 def b2_end_to_end() -> None:
-    off_rows: dict = {}
+    runs_: dict = {}
     for name, values in (("off", ZONES), ("on", dict(ZONES, intake_box_every="on")),
                          ("box_on", dict(BOX, intake_box_every="on"))):
         with r2_case(values, {"zone": r2_zone()}) as (client, rid, pids, uid, state):
             session = t.db_row(IntakeSession, rid)
-            off_rows[name] = {"state": state["stage"], "data": t.db_row(Report, rid).data, "ai_draft": session.ai_draft,
-                              "zone": zone_run(rid), "requests": list(t.REQUESTS), "pids": pids}
-    off, on, box_on = off_rows["off"], off_rows["on"], off_rows["box_on"]
+            runs_[name] = {"state": state["stage"], "data": t.db_row(Report, rid).data, "ai_draft": session.ai_draft,
+                           "zone": zone_run(rid), "requests": list(t.REQUESTS), "pids": pids}
+    off, on, box_on = runs_["off"], runs_["on"], runs_["box_on"]
     check(on["state"] == "ready" and box_on["state"] == "ready", "the readings end ready")
     listed = on["data"]["damage_summary"]
-    check([it["part"] for it in listed] == [it["part"] for it in off["data"]["damage_summary"]]
+    off_list = off["data"]["damage_summary"]
+    check([it["part"] for it in listed] == [it["part"] for it in off_list]
           == ["Rear Bumper", "Boot Lid", "Left Rear Door"], "the list itself as off's", [it["part"] for it in listed])
-    check(shape(listed, on["pids"]) == shape(off["data"]["damage_summary"], off["pids"])
-          and [it.get("ai_confidence") for it in listed]
-          == [it.get("ai_confidence") for it in off["data"]["damage_summary"]],
-          "found_by, seen_in and each confidence as off's: a located box is not a find")
+    check(_reads_entries(listed, on["pids"]) == _reads_entries(off_list, off["pids"]),
+          "every item as off's but for its located part box: found_by, seen_in, confidence, bbox_2d and every read's "
+          "own entry (with this fake, which answers the same either way; the live A/B compares the zone reads' "
+          "own finds and the agreement -- box_coverage below)")
     p = {f"P{i + 1:02d}": f"@{pid}" for i, pid in enumerate(on["pids"])}
-    located = {it["part"]: [(e["photo"], e["box"], e["by"]) for e in it["evidence"] if e.get("box")] for it in listed}
-    check(located == {"Rear Bumper": [(p["P03"], BOXES["P03"], "locate:zone:rear")],
-                      "Boot Lid": [(p["P05"], BOXES["P05"], "locate:zone:rear")],
-                      "Left Rear Door": [(p["P07"], BOXES["P07"], "locate:zone:left")]},
-          "every list item boxed on its own photo by the zone read that saw it (reasons only, no zone box before)",
-          located)
-    check(all(e.get("img_w") == 320 and e.get("img_h") == 240 for it in listed for e in it["evidence"] if e.get("box"))
-          and all(it.get("bbox_2d") for it in listed), "each with its frame, and bbox_2d drawn from it")
-    check(not any(e.get("box") for it in off["data"]["damage_summary"] for e in it["evidence"]),
-          "off: none of them had a box (the owner's question)")
+    located = {it["part"]: _part_boxes(it) for it in listed}
+    check(located == {"Rear Bumper": [(p["P03"], BOXES["P03"], "locate:zone:rear", "part", None, None, 320)],
+                      "Boot Lid": [(p["P05"], BOXES["P05"], "locate:zone:rear", "part", None, None, 320)],
+                      "Left Rear Door": [(p["P07"], BOXES["P07"], "locate:zone:left", "part", None, None, 320)]},
+          "every list item has a part box on its own photo, from the zone read that saw it, with its frame and no "
+          "words (reasons only, no zone box before)", located)
+    check(not any(e.get("box") for it in off_list for e in it["evidence"]), "off: none of them had a box")
+    agreed = sum(1 for it in off_list if len(set(it.get("found_by") or [])) >= 2)
+    low = sum(1 for it in off_list if it.get("ai_confidence") == "Low")
+    finds = sum(int(z.get("found") or 0) for z in off["zone"].photos_sent["zones"])
     cov = on["ai_draft"].get("box_coverage")
-    check(cov == {"items": 3, "boxed": 3, "ai_boxed": 3, "located": 3, "boxed_before_locate": 0},
-          "ai_draft['box_coverage']: 3 of 3 boxed, 0 before", cov)
+    check(cov == {"items": 3, "boxed": 3, "ai_boxed": 0, "located": 3, "list_agreed": agreed, "list_low": low,
+                  "boxed_before_locate": 0, "zone_finds": finds} and finds == 3 and agreed == 2,
+          "ai_draft['box_coverage']: 3 of 3 boxed, 0 before; with the agreement, the Low rows and the zone reads' own "
+          "finds, to set against off (the review's M2)", cov)
     detail = on["zone"].photos_sent
     check(detail.get("box_coverage") == cov and detail["r2"]["located"] == 3 and detail["r2"]["list_known"] is True
-          and detail["r2"]["extra_output_tokens_est"] > 0 and detail["r2"]["fallbacks"] == 0,
+          and detail["r2"]["extra_output_tokens_est"] > 0 and detail["r2"]["fallbacks"] == 0
+          and detail["r2"]["zone_finds"] == finds and detail["r2"]["latched"] is False,
           "the zone run's log: the same coverage, what was placed, the extra output tokens", detail.get("r2"))
     entries = {e["zone"]: e for e in detail["zones"]}
     check(entries["rear"]["r2"]["locate_asked"] == 2 and entries["rear"]["r2"]["located"] == 2
@@ -697,19 +779,104 @@ def b2_end_to_end() -> None:
           "no extra call: the same zone calls, the same requests in all", (len(zones_off), len(zones_on)))
     rear = next(r for r in zones_on if "the car's rear" in r["system_instruction"])
     check(list(_props(rear))[-1] == "locate" and _props(rear)["locate"]["items"]["properties"]["part"]["enum"]
-          == ["Rear Bumper", "Boot Lid"] and "Rear Bumper (P03), Boot Lid (P05)" in rear["system_instruction"],
-          "the rear call asked for the listed rear parts, with their photos", _props(rear).get("locate"))
+          == ["Rear Bumper", "Boot Lid"] and "Also locate these parts: Rear Bumper (P03), Boot Lid (P05)."
+          in rear["system_instruction"], "the rear call asked to locate the listed rear parts, with their photos",
+          _props(rear).get("locate"))
     tags = {a.get("prompt", "") for a in on["zone"].attempts}
     check(any("+locate-r2@" in tag for tag in tags), "the run log's tries are tagged +locate-r2", tags)
-    # With the zone reads' own boxes (reason_box) the boxed items keep them.
     items = {it["part"]: it for it in box_on["data"]["damage_summary"]}
-    bumper = [(e["by"], e["box"]) for e in items["Rear Bumper"]["evidence"] if e.get("box")]
+    bumper = [(e["by"], e["box"], e["box_kind"]) for e in items["Rear Bumper"]["evidence"] if e.get("box")]
     cov = box_on["ai_draft"]["box_coverage"]
-    check(bumper == [("zone:rear", [120, 140, 520, 600])] and cov["boxed_before_locate"] == 2 and cov["located"] == 1,
+    check(bumper == [("zone:rear", [120, 140, 520, 600], "ai")] and cov["boxed_before_locate"] == 2
+          and cov["located"] == 1 and cov["ai_boxed"] == 2,
           "with the zone reads' boxes: the bumper and the door keep theirs, only the boot lid is located", bumper)
 
 
-# ------------------------------------------------------------- 4. B1
+def boxed_sort(kwargs, labels):
+    """The sort, with the sorter's damage box on P09 when asked for one."""
+    out = t._sort_answer(labels)
+    props = kwargs["response_format"]["schema"]["properties"]["photos"]["items"]["properties"]
+    if "damage_box" in props:
+        for photo in out["photos"]:
+            photo["damage_box"] = [400, 300, 600, 500] if photo["label"] == "P09" else None
+    return out
+
+
+def bumper_on_p09(kwargs, labels):
+    """The main read, with the bumper on P09 (no part sorted there)."""
+    out = t._draft_answer(labels)
+    if "P09" in labels:
+        out["damage_summary"][0]["photo_reference"] = "P09"
+    return out
+
+
+def sorter_boxes() -> None:
+    """The review's M1: with the sorter's boxes on, a box the reading shows
+    stands -- also one only the 'only finding on that photo' rule gives --
+    and boxed_before_locate counts it."""
+    answers = {"sort": boxed_sort, "draft": bumper_on_p09, "zone": r2_zone(locate_parts={"Boot Lid": "P09"})}
+    got = {}
+    for name, values in (("off", dict(ZONES, intake_sort_damage_box=True)),
+                         ("on", dict(ZONES, intake_sort_damage_box=True, intake_box_every="on"))):
+        with r2_case(values, answers) as (client, rid, pids, uid, state):
+            got[name] = {"state": state["stage"], "data": t.db_row(Report, rid).data, "pids": pids,
+                         "ai_draft": t.db_row(IntakeSession, rid).ai_draft}
+    off, on = got["off"]["data"]["damage_summary"], got["on"]["data"]["damage_summary"]
+    p_off = {f"P{i + 1:02d}": f"@{pid}" for i, pid in enumerate(got["off"]["pids"])}
+    bumper_off = next(it for it in off if it["part"] == "Rear Bumper")
+    check(got["on"]["state"] == "ready" and any(e.get("box_kind") == "sort" and e["photo"] == p_off["P09"]
+                                                 for e in bumper_off["evidence"]),
+          "off: the bumper, the only finding on P09, has the sorter's box there")
+    check(_reads_entries(on, got["on"]["pids"]) == _reads_entries(off, got["off"]["pids"]),
+          "on: every item's own evidence as off's -- the bumper keeps the sorter's box, though the boot lid is now "
+          "located on P09 too (the only-finding rule ran first)")
+    lid = next(it for it in on if it["part"] == "Boot Lid")
+    bumper = next(it for it in on if it["part"] == "Rear Bumper")
+    p_on = {f"P{i + 1:02d}": f"@{pid}" for i, pid in enumerate(got["on"]["pids"])}
+    check([x[:4] for x in _part_boxes(lid)] == [(p_on["P09"], BOXES["P09"], "locate:zone:rear", "part")]
+          and _part_boxes(bumper) == [],
+          "the boot lid's part box on P09; the bumper, boxed by the sorter, gets none")
+    cov = got["on"]["ai_draft"]["box_coverage"]
+    off_boxed = zones.box_coverage(off)["boxed"]
+    check(cov["boxed_before_locate"] == off_boxed == 1 and cov["located"] == 2 and cov["boxed"] == 3,
+          "boxed_before_locate counts the sorter's box: what off shows", cov)
+
+
+@contextlib.contextmanager
+def warnings_of(name: str):
+    import logging
+
+    seen: list[str] = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+    handler = Keep(level=logging.WARNING)
+    logger = logging.getLogger(name)
+    logger.addHandler(handler)
+    try:
+        yield seen
+    finally:
+        logger.removeHandler(handler)
+
+
+def parallel_reads() -> None:
+    """The review's M8: with the zone reads beside the main read there is
+    no list to place -- said in the log, and nothing asked."""
+    values = dict(ZONES, intake_box_every="on", intake_main_read_fallback="zones", intake_parallel_reads="on")
+    with warnings_of("app.intake.zones") as seen, r2_case(values, {"zone": r2_zone()}) as (
+            client, rid, pids, uid, state):
+        draft = t.db_row(IntakeSession, rid).ai_draft
+        detail = zone_run(rid).photos_sent
+        asked = zone_requests()
+    check(state["stage"] == "ready" and not any("locate" in _props(r) for r in asked) and asked
+          and draft["box_coverage"]["located"] == 0 and detail["r2"]["list_known"] is False,
+          "the parallel reads: nothing asked or located", detail.get("r2"))
+    check(any("box-every is on, but the zone reads ran before the main read's list" in m for m in seen),
+          "... and a warning says why", seen)
+
+
+# ------------------------------------------------------------- 4. R2-inv
 
 
 def inventory_units() -> None:
@@ -780,11 +947,13 @@ def inventory_units() -> None:
           f"the damaged parts nobody listed or suggested, surest first, once, at most "
           f"{zones.INVENTORY_MAX_SUGGESTIONS}", [s["part"] for s in got])
     first = got[0]
-    check(first["source"] == "zone" and first["found_by"] == ["zone:rear"]
+    check(first["source"] == "zone" and first["found_by"] == ["zone_inventory:rear"]
           and first["inventory_note"] == zones.INVENTORY_NOTE
-          and first["evidence"][0]["box"] == [100, 100, 300, 300] and first["evidence"][0]["by"] == "zone:rear"
+          and first["evidence"][0]["box"] == [100, 100, 300, 300]
+          and first["evidence"][0]["by"] == "zone_inventory:rear"
           and first["seen_in"] == [first["photo_reference"]] and first["confidence"] == "High",
-          "each a zone suggestion with its read, photo, box and note", first)
+          "each a zone suggestion found by 'zone_inventory:rear' -- never the read's own name (the review's M7) -- "
+          "with its photo, box and note", first)
     lamp = next(s for s in got if s["part"] == "Right Tail Lamp")
     check(lamp["confidence"] == "Low" and zones.other_side_note(lamp, {"Left Tail Lamp"}) == "Left Tail Lamp",
           "the other side's twin of a listed part: a Low suggestion, with the listed one noted beside it", lamp)
@@ -795,7 +964,7 @@ def inventory_units() -> None:
     # Kept apart; relabelled at filing.
     extras = zones.ZoneExtras(inventory=True, inventory_rows=rows[:4])
     draft: dict = {"zone_suggestions": [{"part": "Boot Lid Lock"}], "zone_intact": {"zone:rear": ["Parking Sensor"]}}
-    zones.apply_round2([{"part": "Rear Bumper"}, {"part": "Left Tail Lamp"}], draft, extras)
+    zones.add_inventory([{"part": "Rear Bumper"}, {"part": "Left Tail Lamp"}], draft, extras)
     check(draft["zone_intact"] == {"zone:rear": ["Parking Sensor"]}
           and [r["part"] for r in draft["zone_inventory"]] == ["Rear Bumper", "Tail Lamp (side undetermined)",
                                                                "Boot Lid Lock", "Rear Windscreen"]
@@ -804,8 +973,32 @@ def inventory_units() -> None:
           and [s["part"] for s in draft["zone_suggestions"]] == ["Boot Lid Lock"],
           "the inventory kept as ai_draft['zone_inventory'], never in zone_intact; nothing new to suggest here", draft)
     filed = filing.relabel_ai_draft({"zone_inventory": draft["zone_inventory"]}, {"p0": 2, "p3": 4})
-    check([r["photo_reference"] for r in filed["zone_inventory"]] == ["P03", None, None, "P05"],
-          "filing relabels its photos (a deleted photo's gone)", filed)
+    check([(r["photo_reference"], r["box"]) for r in filed["zone_inventory"]]
+          == [("P03", [100, 100, 300, 300]), (None, None), (None, None), ("P05", [100, 100, 300, 300])],
+          "filing relabels its photos; a deleted photo's row keeps no box (the review's L4)", filed)
+    # Counted apart in the AI-accuracy record.
+    from app.reports import accuracy
+
+    final = {"damage_summary": [], "second_look": {"dismissed": [], "decisions": [], "items": [
+        {"key": "Boot Floor Board", "part": "Boot Floor Board", "source": "zone", "found_by": ["zone_inventory:rear"],
+         "inventory_note": zones.INVENTORY_NOTE},
+        {"key": "Left Tail Lamp", "part": "Left Tail Lamp", "source": "zone", "found_by": ["zone:rear"]}]}}
+    counted = accuracy._suggestions({}, final)
+    check(set(counted["by_read"]) == {"zone:rear", "zone_inventory:rear"}
+          and counted["by_read"]["zone_inventory:rear"]["shown"] == 1 and counted["by_read"]["zone:rear"]["shown"] == 1,
+          "the AI-accuracy record counts the inventory's suggestions apart from the zone read's finds",
+          counted["by_read"])
+
+
+REAR_INVENTORY = {"rear": [
+    inv("P05", "Boot Lid", True, "High"),            # listed: no suggestion
+    inv("P05", "Boot Floor Board", True, "Medium"),  # a suggestion
+    inv("P05", "Rear Windscreen", False, "High"),    # intact: kept apart
+    inv("P04", "Right Tail Lamp", True, "Low"),      # a suggestion (the left one is only suggested)
+    inv("P03", "Rear Bumper", True, "High"),         # listed
+    inv("P03", "Rear Number Plate Lamp", True, "High"),  # only with the car map's names
+    inv("P05", "Rear End Panel", True, "High"),      # a suggestion, still after the reads' own finds
+]}
 
 
 def b1_end_to_end() -> None:
@@ -818,23 +1011,25 @@ def b1_end_to_end() -> None:
                              "zone": zone_run(rid), "requests": list(t.REQUESTS), "pids": pids}
     off, on, names = results["off"], results["on"], results["names"]
     check(on["state"] == "ready" and names["state"] == "ready", "the readings end ready")
-    items = (on["data"].get("second_look") or {}).get("items") or []
+    items = look_items(on["data"])
     inventory = [it for it in items if it.get("inventory_note")]
-    check([it["part"] for it in inventory] == ["Boot Floor Board", "Right Tail Lamp"],
-          "the inventory's damaged parts nobody listed or suggested are suggestions; the listed bumper and boot lid "
-          "aren't, nor the intact windscreen, nor a car map part while its names are off",
-          [it["part"] for it in inventory])
+    check([it["part"] for it in inventory] == ["Rear End Panel", "Boot Floor Board", "Right Tail Lamp"]
+          and [it["part"] for it in items][0] == "Left Tail Lamp" and items[0].get("confidence") == "Medium",
+          "the inventory's damaged parts nobody listed or suggested are suggestions -- after the zone read's own find, "
+          "the High one too (the review's L7); not the listed bumper or boot lid, the intact windscreen, nor a car "
+          "map part while its names are off", [(it["part"], it.get("confidence")) for it in items])
     p = {f"P{i + 1:02d}": f"@{pid}" for i, pid in enumerate(on["pids"])}
-    board = inventory[0]
-    check(board["source"] == "zone" and board["found_by"] == ["zone:rear"] and board["photo_reference"] == p["P05"]
-          and board["evidence"][0]["box"] == BOXES["P05"] and board["evidence"][0]["img_w"] == 320
-          and board.get("name"), "... each with its read, photo, box (its frame set) and the firm's name", board)
-    lamp = inventory[1]
+    board = next(it for it in inventory if it["part"] == "Boot Floor Board")
+    check(board["source"] == "zone" and board["found_by"] == ["zone_inventory:rear"]
+          and board["photo_reference"] == p["P05"] and board["evidence"][0]["box"] == BOXES["P05"]
+          and board["evidence"][0]["img_w"] == 320 and board["evidence"][0]["by"] == "zone_inventory:rear"
+          and board.get("name"), "... each found by 'zone_inventory:rear', with its photo, box (its frame set) and the "
+                                 "firm's name", board)
+    lamp = next(it for it in inventory if it["part"] == "Right Tail Lamp")
     check(lamp.get("other_side_listed") is None and lamp["confidence"] == "Low",
           "the right tail lamp: Low; the left one is only suggested, so no other-side note", lamp)
     others = [it["part"] for it in items if not it.get("inventory_note")]
-    check(others == [it["part"] for it in (off["data"].get("second_look") or {}).get("items") or []],
-          "the other suggestions as off's", others)
+    check(others == [it["part"] for it in look_items(off["data"])], "the other suggestions as off's", others)
     check(shape(on["data"]["damage_summary"], on["pids"], True)
           == shape(off["data"]["damage_summary"], off["pids"], True),
           "the list as off's, evidence and all")
@@ -843,10 +1038,11 @@ def b1_end_to_end() -> None:
     rows = on["ai_draft"].get("zone_inventory") or []
     check([(r["part"], r["damaged"]) for r in rows] == [("Boot Lid", True), ("Boot Floor Board", True),
                                                          ("Rear Windscreen", False), ("Right Tail Lamp", True),
-                                                         ("Rear Bumper", True)],
+                                                         ("Rear Bumper", True), ("Rear End Panel", True)],
           "ai_draft['zone_inventory']: every row kept, damaged or not", rows)
-    check(on["ai_draft"]["box_coverage"] == {"items": 3, "boxed": 0, "ai_boxed": 0, "located": 0},
-          "box_coverage kept with B1 alone too (nothing placed: B2 is off)", on["ai_draft"].get("box_coverage"))
+    cov = on["ai_draft"]["box_coverage"]
+    check(cov["located"] == 0 and cov["boxed"] == 0 and "boxed_before_locate" not in cov and cov["items"] == 3,
+          "box_coverage kept with R2-inv alone too (nothing placed: R2-box is off)", cov)
     rear = next(r for r in zone_requests(on["requests"]) if "the car's rear" in r["system_instruction"])
     enum = _props(rear)["inventory"]["items"]["properties"]["part"]["enum"]
     check("Rear Number Plate Lamp" not in enum and "'inventory'" in rear["system_instruction"]
@@ -856,7 +1052,7 @@ def b1_end_to_end() -> None:
           and "Rear Number Plate Lamp" in [it["part"] for it in look_items(names["data"])],
           "with intake_car_map_names on: the small car map parts offered, and found")
     detail = on["zone"].photos_sent["r2"]
-    check(detail["inventory_rows"] == 5 and detail["inventory_damaged"] == 4 and detail["extra_output_tokens_est"] > 0,
+    check(detail["inventory_rows"] == 6 and detail["inventory_damaged"] == 5 and detail["extra_output_tokens_est"] > 0,
           "the run log: the inventory's rows and its extra output", detail)
     # The cap, end to end: nine damaged parts nobody listed.
     many = {"rear": [inv("P05", name, True, "Medium") for name in (
@@ -864,11 +1060,61 @@ def b1_end_to_end() -> None:
         "Rear Windscreen")] + [inv("P04", name, True, "High") for name in (
         "Left Rear Wheel Arch Trim", "Right Boot Side Trim", "Exhaust System")]}
     with r2_case(dict(ZONES, intake_zone_inventory="on"), {"zone": r2_zone(many)}) as (client, rid, pids, uid, state):
-        items = (t.db_row(Report, rid).data.get("second_look") or {}).get("items") or []
+        items = look_items(t.db_row(Report, rid).data)
     got = [it["part"] for it in items if it.get("inventory_note")]
     check(len(got) == zones.INVENTORY_MAX_SUGGESTIONS
           and got[:2] == ["Left Rear Wheel Arch Trim", "Right Boot Side Trim"],
           f"at most {zones.INVENTORY_MAX_SUGGESTIONS} a case, the surest first", got)
+    # The review's L6: against the list's sides as the side resolver left them.
+    from app.intake import pipeline
+
+    original = pipeline.resolve_sides
+
+    def resolver(items, *a, **k):
+        out = original(items, *a, **k)
+        return [{**it, "part": "Left Tail Lamp"} if it.get("part") == "Tail Lamp (side undetermined)" else it
+                for it in out]
+
+    def lamp_draft(kwargs, labels):
+        out = t._draft_answer(labels)
+        out["damage_summary"][1] = {"part": "Tail Lamp (side undetermined)", "photo_reference": "P04",
+                                    "ai_confidence": "High", "condition_tokens": ["Cracked"]}
+        return out
+    pipeline.resolve_sides = resolver
+    try:
+        rows = {"rear": [inv("P04", "Right Tail Lamp", True, "High")]}
+        with r2_case(dict(ZONES, intake_zone_inventory="on"),
+                     {"zone": r2_zone(rows, rear_finds=False), "draft": lamp_draft}) as (client, rid, pids, uid, state):
+            data = t.db_row(Report, rid).data
+    finally:
+        pipeline.resolve_sides = original
+    lamps = [(it["part"], it.get("other_side_listed")) for it in look_items(data) if it.get("inventory_note")]
+    check("Left Tail Lamp" in [it["part"] for it in data["damage_summary"]]
+          and lamps == [("Right Tail Lamp", "Left Tail Lamp")],
+          "the listed undetermined lamp put on the left by the side resolver: the inventory's damaged right lamp is "
+          "still suggested, with the other-side note (the review's L6)", lamps)
+
+
+def links_join() -> None:
+    """The review's M7: a part the inventory suggests that a linked part is
+    too stays one card, source "link" -- the linked check still asks about
+    it -- with the inventory's photo, box and note on it."""
+    links = dict(ZONES, intake_links="on", intake_link_check="lite")
+    beam = {"rear": [inv("P03", "Rear Bumper Beam", True, "High")]}
+    got = {}
+    for name, values in (("off", links), ("on", dict(links, intake_zone_inventory="on"))):
+        with r2_case(values, {"zone": r2_zone(beam)}) as (client, rid, pids, uid, state):
+            got[name] = (state["stage"], [it for it in look_items(t.db_row(Report, rid).data)
+                                          if it["part"] == "Rear Bumper Beam"])
+    off, on = got["off"][1], got["on"][1]
+    check(got["on"][0] == "ready" and len(off) == 1 and off[0]["source"] == "link"
+          and (off[0].get("link_check") or {}).get("verdict") == "strip_down",
+          "off: the beam is a linked part the linked check answered", off)
+    check(len(on) == 1 and on[0]["source"] == "link" and on[0].get("inventory_note") == zones.INVENTORY_NOTE
+          and (on[0].get("link_check") or {}).get("verdict") == "strip_down"
+          and "zone_inventory:rear" in on[0].get("found_by", [])
+          and any(e.get("by") == "zone_inventory:rear" and e.get("box") for e in on[0].get("evidence") or []),
+          "on: still one card, source 'link' and checked, the inventory's read, box and note joined to it", on)
 
 
 # ------------------------------------------------------------- 5. degrading
@@ -920,10 +1166,10 @@ def degrade_units() -> None:
         zone_read._round2_answer = saved
     check(got.items == today.items and got.located == [] and got.inventory == [],
           "Round 2's reading crashing: the finds stand, nothing of Round 2", got)
-    tries = [{"outcome": "error"}, {"outcome": "error", "busy": True}]
     from app.ai import allowance
     from app.ai.keys import AiUnavailable
 
+    tries = [{"outcome": "error"}, {"outcome": "error", "busy": True}]
     check(zones.round2_fallback_worthy(RuntimeError(), [{"outcome": "schema"}])
           and zones.round2_fallback_worthy(RuntimeError(), [{"outcome": "timeout"}])
           and zones.round2_fallback_worthy(RuntimeError(), tries)
@@ -933,6 +1179,21 @@ def degrade_units() -> None:
           and not zones.round2_fallback_worthy(allowance.DayUsedUp("x"), [{"outcome": "schema"}]),
           "asked again as today after a refused schema, a timeout or a bad answer; never for busy, 429, a spent day "
           "or the person's AI going away")
+    check(zones.round2_refused(tries) and not zones.round2_refused([{"outcome": "schema"}, {"outcome": "timeout"}]),
+          "only a refusal (a non-busy error) latches Round 2 off; a timeout or a bad answer doesn't")
+    from app.intake import assembly_walk, car_map
+
+    walk = assembly_walk.index_for(car_map.MAP)
+    big = Round2Ask(locate=zone_read.locate_names("close", LISTED), inventory=zone_read.inventory_names("close", True))
+    fit, dropped = zone_read.fit_round2("close", LABELS, big, **ALL_LIGHT, walk=walk)
+    small, none = zone_read.fit_round2("rear", LABELS, _ask("rear", True, True, False), evidence_mode="reason")
+    check(dropped and dropped[0] == "inventory" and (fit is None or not fit.inventory)
+          and len(json.dumps(zone_read.response_schema("close", LABELS, r2=fit, **ALL_LIGHT, walk=walk)))
+          <= max(zone_read.R2_SCHEMA_CAP, len(json.dumps(zone_read.response_schema("close", LABELS, **ALL_LIGHT,
+                                                                                    walk=walk))))
+          and none == [] and small.inventory and small.locate,
+          "over the cap (close-ups, every option, the walk): the inventory left out first, then locate if still "
+          "over; under it, the whole ask (the review's L2)", dropped)
 
 
 class Refused(Exception):
@@ -949,46 +1210,93 @@ class Busy(Exception):
         return "503 UNAVAILABLE: the model is overloaded"
 
 
+def _with_r2(request) -> bool:
+    props = _props(request)
+    return "locate" in props or "inventory" in props
+
+
+@contextlib.contextmanager
+def one_worker():
+    """The zone calls one at a time, so which one comes first is known."""
+    saved = zones.ZONE_WORKERS
+    zones.ZONE_WORKERS = 1
+    try:
+        yield
+    finally:
+        zones.ZONE_WORKERS = saved
+
+
 def degrade_end_to_end() -> None:
+    zones.reset_round2_latch()
+    chain = len(zones.zone_chain())
     with r2_case(dict(ZONES), {"zone": r2_zone()}) as (client, rid, pids, uid, state):
         plain = {"data": t.db_row(Report, rid).data, "zones": len(zone_requests())}
         pids = list(pids)
     base_list = shape(plain["data"]["damage_summary"], pids)
-    sugg = [it["part"] for it in (plain["data"].get("second_look") or {}).get("items") or []]
+    sugg = [it["part"] for it in look_items(plain["data"])]
+    both = dict(ZONES, intake_box_every="on", intake_zone_inventory="on")
 
     def refusing(kwargs, labels):
-        props = _props(kwargs)
-        if "locate" in props or "inventory" in props:
-            return Refused()
-        return r2_zone()(kwargs, labels)
-    both = dict(ZONES, intake_box_every="on", intake_zone_inventory="on")
-    with r2_case(both, {"zone": refusing}) as (client, rid, pids, uid, state):
+        return Refused() if _with_r2(kwargs) else r2_zone()(kwargs, labels)
+    with one_worker(), warnings_of("app.intake.zones") as seen, r2_case(both, {"zone": refusing}) as (
+            client, rid, pids, uid, state):
         data = t.db_row(Report, rid).data
         detail = zone_run(rid).photos_sent
         asked = zone_requests()
     got = shape(data["damage_summary"], pids)
     entries = {e["zone"]: e for e in detail["zones"]}
-    check(state["stage"] == "ready" and got == base_list
-          and [it["part"] for it in (data.get("second_look") or {}).get("items") or []] == sugg,
+    with_r2 = [r for r in asked if _with_r2(r)]
+    check(state["stage"] == "ready" and got == base_list and [it["part"] for it in look_items(data)] == sugg,
           "a schema the models refuse: the zone reads' finds as off's (asked again as today)", got)
-    with_r2 = [r for r in asked if "locate" in _props(r) or "inventory" in _props(r)]
     check(entries["rear"]["status"] == "ok" and entries["rear"]["r2"].get("fallback") == "ai_error"
-          and detail["r2"]["fallbacks"] == len(entries) and len(asked) - len(with_r2) == plain["zones"],
-          "the run log says so per zone; the cost: one call per zone more, made as today",
-          {k: e.get("r2") for k, e in entries.items()})
+          and "r2" not in entries["left"] and detail["r2"]["latched"] is True and detail["r2"]["fallbacks"] == 1
+          and len(with_r2) == chain and len(asked) == chain + plain["zones"],
+          f"the cost: the refused requests ({chain}, one per model) and the zone asked again as today; then Round 2 "
+          f"is latched off -- the next zone is asked as today (the review's M6)",
+          {"requests": len(asked), "with_r2": len(with_r2), "rear": entries["rear"].get("r2")})
+    check(sum("asks without them until it restarts" in m for m in seen) == 1, "... said once in the log", seen)
+    with r2_case(both, {"zone": refusing}) as (client, rid, pids, uid, state):
+        detail = zone_run(rid).photos_sent
+        asked = zone_requests()
+    check(state["stage"] == "ready" and not [r for r in asked if _with_r2(r)] and detail["r2"]["latched"] is True
+          and detail["r2"]["calls_asked"] == 0, "a later case asks without Round 2 at all while latched", detail["r2"])
+    zones.reset_round2_latch()
+
+    def refusing_then_busy(kwargs, labels):
+        return Refused() if _with_r2(kwargs) else Busy()
+    with one_worker(), r2_case(dict(ZONES, intake_box_every="on"), {"zone": refusing_then_busy}) as (
+            client, rid, pids, uid, state):
+        detail = zone_run(rid).photos_sent
+        asked = zone_requests()
+    plain_asked = [r for r in asked if not _with_r2(r)]
+    jobs = len(detail["zones"])
+    check(state["stage"] == "ready" and len(plain_asked) == jobs * chain and not round2_latched()
+          and {e["status"] for e in detail["zones"]} == {"failed"},
+          f"the fallback asked as today but busy: at most one request per model ({chain}), no all-busy round "
+          f"(the review's M6); not latched (it never answered); the reading stands",
+          {"plain requests": len(plain_asked), "zones": jobs})
 
     def busy(kwargs, labels):
-        props = _props(kwargs)
-        if "inventory" in props:
-            return Busy()
-        return r2_zone()(kwargs, labels)
+        return Busy() if "inventory" in _props(kwargs) else r2_zone()(kwargs, labels)
     with r2_case(dict(ZONES, intake_zone_inventory="on"), {"zone": busy}) as (client, rid, pids, uid, state):
         detail = zone_run(rid).photos_sent
         asked = zone_requests()
     check(state["stage"] == "ready" and all("fallback" not in (e.get("r2") or {}) for e in detail["zones"])
-          and all("inventory" in _props(r) for r in asked) and {e["status"] for e in detail["zones"]} == {"failed"},
+          and all("inventory" in _props(r) for r in asked) and {e["status"] for e in detail["zones"]} == {"failed"}
+          and not round2_latched(),
           "a busy chain is not asked again without Round 2 (it would be busy too): the zones fail as today's would, "
           "the reading stands", [e.get("r2") for e in detail["zones"]])
+
+    def garbled(kwargs, labels):
+        return Raw("not an answer") if _with_r2(kwargs) else r2_zone()(kwargs, labels)
+    with r2_case(dict(ZONES, intake_zone_inventory="on"), {"zone": garbled}) as (client, rid, pids, uid, state):
+        data = t.db_row(Report, rid).data
+        detail = zone_run(rid).photos_sent
+    check(state["stage"] == "ready" and shape(data["damage_summary"], pids) == base_list
+          and all((e.get("r2") or {}).get("fallback") == "bad_answer" for e in detail["zones"])
+          and not round2_latched(),
+          "answers that don't parse: asked again as today, the finds as off's; not latched (no refusal)",
+          [e.get("r2") for e in detail["zones"]])
 
     def cut(kwargs, labels):
         out = r2_zone(REAR_INVENTORY)(kwargs, labels)
@@ -1002,10 +1310,45 @@ def degrade_end_to_end() -> None:
     got = shape(data["damage_summary"], pids)
     check(state["stage"] == "ready" and got == base_list and entries["rear"]["r2"].get("salvaged") is True
           and entries["rear"]["found"] == 2 and session.ai_draft["zone_inventory"] == []
-          and detail["r2"]["salvaged"] >= 1
-          and len(zone_requests()) == plain["zones"],
+          and detail["r2"]["salvaged"] >= 1 and len(zone_requests()) == plain["zones"],
           "an answer cut off inside the inventory: today's answer, no inventory, no extra call; the run log says "
           "salvaged", entries["rear"].get("r2"))
+    # The schema cap at run time (the review's L2).
+    saved = zone_read.R2_SCHEMA_CAP
+    zone_read.R2_SCHEMA_CAP = 2600
+    try:
+        with r2_case(both, {"zone": r2_zone()}) as (client, rid, pids, uid, state):
+            detail = zone_run(rid).photos_sent
+            asked = zone_requests()
+    finally:
+        zone_read.R2_SCHEMA_CAP = saved
+    entries = {e["zone"]: e for e in detail["zones"]}
+    rear = next(r for r in asked if "the car's rear" in r["system_instruction"])
+    left = next(r for r in asked if "one side of the car" in r["system_instruction"])
+    check(state["stage"] == "ready" and entries["rear"]["r2"].get("trimmed") == ["inventory", "locate"]
+          and entries["left"]["r2"].get("trimmed") == ["inventory"] and not _with_r2(rear)
+          and "locate" in _props(left) and "inventory" not in _props(left) and detail["r2"]["trimmed"] == 2,
+          "a schema over the cap: the inventory left out first, then locate -- logged", entries)
+    # Round 2's helpers failing (the review's L3).
+    for name in ("round2_ask", "round2_summary", "round2_log"):
+        saved = getattr(zones, name)
+
+        def boom(*a, **k):
+            raise RuntimeError("bug")
+        setattr(zones, name, boom)
+        try:
+            with r2_case(both, {"zone": r2_zone()}) as (client, rid, pids, uid, state):
+                data = t.db_row(Report, rid).data
+                detail = zone_run(rid).photos_sent
+        finally:
+            setattr(zones, name, saved)
+        check(state["stage"] == "ready" and shape(data["damage_summary"], pids) == base_list
+              and {e["status"] for e in detail["zones"]} == {"ok"},
+              f"zones.{name} failing: every zone read answered and kept, the reading stands", detail.get("r2"))
+
+
+def round2_latched() -> bool:
+    return zones.round2_latched()
 
 
 # ------------------------------------------------------------- 6. the benchmark
@@ -1030,17 +1373,33 @@ def bench_section() -> None:
     check(exits("--box-every") and exits("--zone-inventory")
           and "intake_box_every" not in model_settings("--read-mode", "zones"),
           "either without zone reads stops the run; neither given, nothing set")
-    args = vars(bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"]))
-    check(all(args[k] == v for k, v in bench.R2_ARGS.items()), "the flags' defaults are left out of a file's args")
+    parallel = SimpleNamespace(intake_parallel_reads="on", intake_main_read_fallback="zones")
+    args = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z", "--read-mode", "zones", "--box-every"])
+    allowed = bench.parse_args(["--cases", "x", "--key", "y", "--out", "z", "--read-mode", "zones", "--box-every",
+                                "--allow-box-every-parallel"])
+    try:
+        bench.r2_settings(args, True, parallel)
+        refused = False
+    except SystemExit:
+        refused = True
+    check(refused and bench.r2_settings(allowed, True, parallel) == {"intake_box_every": "on"}
+          and bench.r2_settings(args, True, SimpleNamespace(intake_parallel_reads="on",
+                                                            intake_main_read_fallback="off"))
+          == {"intake_box_every": "on"},
+          "--box-every with the zone reads beside the main read stops the run unless --allow-box-every-parallel "
+          "(the review's M8)")
+    flags = vars(bench.parse_args(["--cases", "x", "--key", "y", "--out", "z"]))
+    check(all(flags[k] == v for k, v in bench.R2_ARGS.items()), "the flags' defaults are left out of a file's args")
     off = bench.ai_settings(settings)
     with t.Settings(intake_read_mode="zones", intake_zone_inventory="on", intake_car_map_names="on"):
         on = bench.ai_settings(settings)
     with t.Settings(intake_box_every="on"):
         single = bench.ai_settings(settings)
     check(on.get("intake_zone_inventory") == "on" and on.get("intake_box_every") == "off"
-          and on.get("intake_car_map_names") == "on"
-          and not {"intake_box_every", "intake_zone_inventory"} & (set(off) | set(single)),
-          "ai_settings: Round 2's only while it acts (zone mode)", on)
+          and on.get("intake_car_map_names") == "on" and on.get("intake_parallel_reads") == "off"
+          and on.get("intake_main_read_fallback") == "off"
+          and not {"intake_box_every", "intake_zone_inventory", "intake_parallel_reads"} & (set(off) | set(single)),
+          "ai_settings: Round 2's only while it acts (zone mode), with the parallel reads' settings", on)
     # A whole run of the benchmark with the fake: what it records.
     folder = Path(tempfile.mkdtemp(prefix="detect-r2-bench-")) / "case_r2"
     folder.mkdir(parents=True)
@@ -1050,31 +1409,38 @@ def bench_section() -> None:
         "make": "Gammamotors", "model": "Vezel", "plate_number": "TEST-R2", "color": "White", "vin": "TESTVIN0000000R2",
         "engine_number": "TESTENGR2", "date_of_registration": "2019-01-01"},
         "parts": [{"part": p} for p in ("Rear Bumper", "Boot Lid", "Boot Floor Board", "Left Rear Door")]}
-    runs = {}
+    runs_ = {}
     for name, values in (("off", ZONES), ("on", dict(ZONES, intake_box_every="on", intake_zone_inventory="on"))):
         with r2_fake(), t.Settings(**values), w.fakes({"zone": r2_zone(REAR_INVENTORY)}):
-            runs[name] = bench.run_case(case, folder.parent)
-    on, off = runs["on"], runs["off"]
+            runs_[name] = bench.run_case(case, folder.parent)
+    on, off = runs_["on"], runs_["off"]
     check("error" not in on and "error" not in off, "the runs ran", (on.get("error"), off.get("error")))
-    check(on.get("box_coverage") == {"items": 3, "boxed": 3, "ai_boxed": 3, "located": 3, "boxed_before_locate": 0}
-          and on["zones"]["box_coverage"] == on["box_coverage"] and on["zones"]["r2"]["located"] == 3,
-          "the result keeps box_coverage (from the AI draft and the run log)", on.get("box_coverage"))
+    cov = on.get("box_coverage") or {}
+    check(cov.get("items") == 3 and cov.get("located") == 3 and cov.get("boxed_before_locate") == 0
+          and on["zones"]["box_coverage"] == cov and on["zones"]["r2"]["located"] == 3,
+          "the result keeps box_coverage (from the AI draft and the run log)", cov)
     inv_rows = on.get("zone_inventory") or {}
-    check(inv_rows.get("n") == 5 and inv_rows.get("damaged") == 4 and inv_rows["rows"][1]["photo_reference"] == "P05",
+    check(inv_rows.get("n") == 6 and inv_rows.get("damaged") == 5 and inv_rows["rows"][1]["photo_reference"] == "P05",
           "... the inventory, photos by case label", inv_rows)
     sugg = [r for r in on.get("suggestions") or [] if r.get("inventory_note")]
-    check([r["part"] for r in sugg] == ["Boot Floor Board", "Right Tail Lamp"] and sugg[0]["truth"] == "real",
-          "... the inventory suggestions with their note, scored against the key", sugg)
+    check([r["part"] for r in sugg] == ["Rear End Panel", "Boot Floor Board", "Right Tail Lamp"]
+          and [r["truth"] for r in sugg] == ["extra", "real", "extra"]
+          and sugg[1]["found_by"] == ["zone_inventory:rear"],
+          "... the inventory suggestions with their note and read, scored against the key", sugg)
     m, m_off = bench.run_metrics(on), bench.run_metrics(off)
     check(m.get("box_cov_items") == 3 and m.get("box_cov_located") == 3 and m.get("box_cov_boxed_before_locate") == 0
-          and m.get("inv_sugg") == 2 and m.get("inv_sugg_real") == 1 and m.get("inv_sugg_box") == 2
-          and m.get("r2_extra_tok_est", 0) > 0 and m.get("r2_fallbacks") == 0 and m.get("list_box") == 3,
-          "run_metrics: the box coverage, the inventory suggestions (real by the key), the extra tokens; list_box "
-          "counts the located boxes",
-          {k: v for k, v in m.items() if k.startswith(("box_cov", "inv_", "r2_", "list_", "sug_"))})
+          and m.get("list_part_box") == 3 and m.get("list_box") == 0
+          and m.get("inv_sugg") == 3 and m.get("inv_sugg_real") == 1 and m.get("inv_sugg_box") == 3
+          and m.get("r2_extra_tok_est", 0) > 0 and m.get("r2_fallbacks") == 0
+          and m.get("box_cov_zone_finds") == m.get("zone_finds") == 3,
+          "run_metrics: the box coverage (part boxes apart from list_box, the AI's damage boxes), the inventory "
+          "suggestions (real by the key), the extra tokens",
+          {k: v for k, v in m.items() if k.startswith(("box_cov", "inv_", "r2_", "list_", "sug_", "zone_finds"))})
     check(m_off.get("list_box") == 0 and not [k for k in m_off if k.startswith(("box_cov", "inv_", "r2_"))]
-          and "box_coverage" not in off and "zone_inventory" not in off and "r2" not in off["zones"],
-          "off: list_box 0 and nothing of Round 2 in the result", m_off.get("list_box"))
+          and "box_coverage" not in off and "zone_inventory" not in off and "r2" not in off["zones"]
+          and m_off.get("list_low") == m.get("list_low") and m_off.get("zone_finds") == m.get("zone_finds"),
+          "off: nothing of Round 2 in the result; list_low and zone_finds on both arms, to set side by side (M2)",
+          {k: m_off.get(k) for k in ("list_box", "list_low", "zone_finds")})
 
 
 def main() -> int:
@@ -1083,16 +1449,20 @@ def main() -> int:
         ("0. settings: defaults and compose", settings_section),
         (f"1. both off: byte for byte as master {BASE_REF}", base_equal),
         ("1b. r2=None: today's request", requests_unchanged),
-        ("2. the schema and prompt sizes", size_section),
-        ("3a. B2: what is asked and read", locate_units),
-        ("3b. B2: placing the boxes", place_units),
-        ("3c. B2: end to end", b2_end_to_end),
-        ("4a. B1: the inventory and its suggestions", inventory_units),
-        ("4b. B1: end to end", b1_end_to_end),
+        ("2. the schema and prompt sizes, and the cap", size_section),
+        ("3a. R2-box: what is asked and read", locate_units),
+        ("3b. R2-box: placing the boxes", place_units),
+        ("3c. R2-box: end to end", b2_end_to_end),
+        ("3d. R2-box with the sorter's boxes (M1)", sorter_boxes),
+        ("3e. R2-box with the parallel reads (M8)", parallel_reads),
+        ("4a. R2-inv: the inventory and its suggestions", inventory_units),
+        ("4b. R2-inv: end to end", b1_end_to_end),
+        ("4c. R2-inv and the linked parts (M7)", links_join),
         ("5a. degrading (units)", degrade_units),
         ("5b. degrading end to end", degrade_end_to_end),
         ("6. the benchmark", bench_section),
     ):
+        zones.reset_round2_latch()
         run_section(name, fn)
     print(f"\n{PASSED[0]} passed, {len(FAILURES)} failed")
     for section, label in FAILURES:

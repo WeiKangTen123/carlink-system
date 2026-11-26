@@ -1241,6 +1241,11 @@ def run_metrics(run: dict) -> dict:
     if found_by:
         m["zone_only_parts"] = sum(1 for f in found_by if "overall" not in f)
         m["both_parts"] = sum(1 for f in found_by if "overall" in f and len(f) > 1)
+        # Detection Round 2 (the R2 review's M2), on and off alike: the
+        # list's "Check" (Low) rows, and the zone reads' own damage finds.
+        m["list_low"] = sum(1 for i in run.get("drafted_items") or [] if i.get("ai_confidence") == "Low")
+        if zones is not None:
+            m["zone_finds"] = sum(int(z.get("found") or 0) for z in zones if isinstance(z, dict))
     # The close-ups the reading sent (--read-crops).
     crops = sum(c.get("crops", 0) for c in run.get("ai_calls") or [] if c.get("purpose") == "draft" and c.get("ok"))
     if crops:
@@ -2314,7 +2319,7 @@ def run_case(case: dict, cases_dir: Path, *, sort_cache: Path | None = None, rep
             # E11: a "wrong end" zone read's suggestion keeps its note.
             fields += _WAVE2_SUGGESTION_FIELDS
         if r2_on(A.settings) and getattr(A.settings, "intake_zone_inventory", "off") == "on":
-            # Round 2 B1: an inventory suggestion keeps its note.
+            # Round 2's R2-inv: an inventory suggestion keeps its note.
             fields += _R2_SUGGESTION_FIELDS
         link_items: list = []
         if look and mode != "off":
@@ -2965,12 +2970,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="B8: the linked check's model chain (settings.gemini_link_chain; default the two lites); "
                          "needs --link-check lite")
     ap.add_argument("--box-every", action="store_true",
-                    help="detection Round 2 B2: the zone reads also box every drafted list part they see "
+                    help="detection Round 2 R2-box: the zone reads also box every drafted list part they see "
                          "(settings.intake_box_every on; no extra call); needs --read-mode zones. "
                          "The result file records box_coverage")
+    ap.add_argument("--allow-box-every-parallel", action="store_true",
+                    help="run --box-every although the server's zone reads start beside the main read "
+                         "(INTAKE_PARALLEL_READS=on with INTAKE_MAIN_READ_FALLBACK=zones): nothing is located then")
     ap.add_argument("--zone-inventory", action="store_true",
-                    help="detection Round 2 B1: the zone reads also list each photo's parts with a box, the damaged "
-                         "ones nobody listed becoming suggestions (settings.intake_zone_inventory on; no extra "
+                    help="detection Round 2 R2-inv: the zone reads also list each photo's parts with a box, the "
+                         "damaged ones nobody listed becoming suggestions (settings.intake_zone_inventory on; no extra "
                          "call; the car map's small parts with --car-map-names); needs --read-mode zones")
     ap.add_argument("--rescore", type=Path, metavar="FILE",
                     help="score a stored result file again (strict and fair) with --key [and --reports]; offline, "
@@ -3001,7 +3009,7 @@ CARMAP_ARGS = {"car_map": None, "car_map_names": False, "links_order": None, "as
 WAVE2_ARGS = {"image_resolution_main_read": None, "side_geometry": None, "zone_wrong_end": None,
               "link_check_max_calls": None, "link_models": None}
 # Detection Round 2's flags at their defaults: likewise.
-R2_ARGS = {"box_every": False, "zone_inventory": False}
+R2_ARGS = {"box_every": False, "zone_inventory": False, "allow_box_every_parallel": False}
 
 
 def _now() -> str:
@@ -3091,16 +3099,34 @@ def model_settings(args: argparse.Namespace) -> dict:
     return out
 
 
-def r2_settings(args: argparse.Namespace, zones_on: bool) -> dict:
+def parallel_zone_reads(settings) -> bool:
+    """The zone reads start beside the main read (B2 of R-batching:
+    intake_parallel_reads "on", which acts only with intake_main_read_
+    fallback "zones"): then no list is known to them, and Round 2's
+    box-every locates nothing."""
+    return (getattr(settings, "intake_parallel_reads", "off") == "on"
+            and getattr(settings, "intake_main_read_fallback", "off") == "zones")
+
+
+def r2_settings(args: argparse.Namespace, zones_on: bool, settings=None) -> dict:
     """Detection Round 2's flags as {Settings field: value} (INTAKE_BOX_EVERY
     / INTAKE_ZONE_INVENTORY in the environment do the same). Exits on a
-    flag that would change nothing: either without zone reads."""
+    flag that would change nothing: either without zone reads, and
+    --box-every with the zone reads started beside the main read (the R2
+    review's M8) unless --allow-box-every-parallel."""
     out: dict = {}
     for flag, field in (("box_every", "intake_box_every"), ("zone_inventory", "intake_zone_inventory")):
         if getattr(args, flag, False):
             if not zones_on:
                 sys.exit(f"--{flag.replace('_', '-')}: rides on the zone reads; give --read-mode zones too")
             out[field] = "on"
+    if settings is None:
+        from app.config import settings
+    if (out.get("intake_box_every") == "on" and parallel_zone_reads(settings)
+            and not getattr(args, "allow_box_every_parallel", False)):
+        sys.exit("--box-every: the zone reads here start beside the main read (INTAKE_PARALLEL_READS=on with "
+                 "INTAKE_MAIN_READ_FALLBACK=zones), so nothing would be located; turn them off, or give "
+                 "--allow-box-every-parallel")
     return out
 
 
@@ -3503,6 +3529,10 @@ def r2_ai_settings(settings) -> dict:
     out = {name: getattr(settings, name, "off") for name in ("intake_box_every", "intake_zone_inventory")}
     if out["intake_zone_inventory"] == "on":
         out["intake_car_map_names"] = getattr(settings, "intake_car_map_names", "off")
+    # The R2 review's M8: whether the zone reads started beside the main
+    # read (box-every locates nothing then).
+    out["intake_parallel_reads"] = getattr(settings, "intake_parallel_reads", "off")
+    out["intake_main_read_fallback"] = getattr(settings, "intake_main_read_fallback", "off")
     return out
 
 
@@ -3530,9 +3560,15 @@ def round2_metrics(run: dict) -> dict:
     m: dict = {}
     cov = run.get("box_coverage")
     if isinstance(cov, dict):
-        for name in ("items", "boxed", "ai_boxed", "located", "boxed_before_locate"):
+        for name in ("items", "boxed", "ai_boxed", "located", "boxed_before_locate", "list_agreed", "list_low",
+                     "zone_finds"):
             if isinstance(cov.get(name), int):
                 m[f"box_cov_{name}"] = cov[name]
+        # The list items with a located part box (box_kind "part": not in
+        # list_box, which counts the AI's damage boxes).
+        m["list_part_box"] = sum(1 for i in run.get("drafted_items") or []
+                                 if any(isinstance(e, dict) and e.get("box") and e.get("box_kind") == "part"
+                                        for e in i.get("evidence") or []))
     inv = run.get("zone_inventory")
     if isinstance(inv, dict):
         m.update(inv_rows=inv.get("n", 0), inv_damaged=inv.get("damaged", 0))

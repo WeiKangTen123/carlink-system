@@ -265,18 +265,22 @@ class Settings(BaseSettings):
     # there is read as today's, and a zone call that fails with them is
     # asked once more as today. Both "off": every request and stored draft
     # byte for byte as before.
-    # B2 "on": the zone calls are told the drafted list's parts of their
-    # area and box each one the photos show (`locate`, damaged or not);
-    # a list item with no box gets that box (evidence by "locate:zone:..."),
-    # the list itself unchanged. ai_draft["box_coverage"] and the zone run's
-    # log say how many list items have a box.
+    # R2-box "on": each zone call is also asked to locate the drafted list's
+    # parts of its area (`locate`: a box round each part the photos show,
+    # damaged or not -- worded as no damage judgement); a list item with no
+    # box gets that box as a "part" box (evidence by "locate:zone:..."),
+    # after the reads' own evidence, the list itself unchanged. Needs the
+    # zone reads to run after the main read (intake_parallel_reads off).
+    # ai_draft["box_coverage"] and the zone run's log say how many list
+    # items have a box, and the zone reads' own finds and agreement.
     intake_box_every: str = "off"
-    # B1 "on": the zone calls also list the area's parts each photo shows
+    # R2-inv "on": the zone calls also list the area's parts each photo shows
     # (`inventory`, damaged or not, with a box; the car map's small parts
     # too while intake_car_map_names is "on"). Damaged ones nothing listed
-    # or suggested become zone suggestions (at most 6 a case, "Seen in the
-    # zone check"); the rest are kept apart (ai_draft["zone_inventory"]) and
-    # never suppress a part.
+    # or suggested become zone suggestions (at most 6 a case, after the
+    # reads' own finds, found by "zone_inventory:<zone>" so they are counted
+    # apart, "Seen in the zone check"); the rest are kept apart (ai_draft[
+    # "zone_inventory"]) and never suppress a part.
     intake_zone_inventory: str = "off"
     # A part the reader names on a photo the sorter tagged with the same
     # part on the other side takes the sorter's side (intake/pipeline.
@@ -755,8 +759,10 @@ class Settings(BaseSettings):
     # linked parts) and the part pickers offer today's list. "on": its
     # linked parts may name them (car_map.table_for_links) and GET
     # /taxonomy tells the dashboard to offer them. Never in a Gemini enum of
-    # the reads either way; a case that already holds one keeps it valid
-    # and printed when this is turned off.
+    # the reads while "off"; while "on", only in one: detection Round 2's
+    # zone inventory (intake_zone_inventory "on") offers a zone's small
+    # outside car map parts (ai/zone_read.SMALL_PARTS). A case that already
+    # holds one keeps it valid and printed when this is turned off.
     intake_car_map_names: str = "off"
     # The assembly walk (K1-design.md 5a; intake/assembly_walk.py). "on":
     # each zone read also answers short yes/no signs about the damaged

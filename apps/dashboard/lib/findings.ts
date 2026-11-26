@@ -416,8 +416,14 @@ const READ_NAMES: Record<string, string> = {
   "zone:close": "close-up",
 };
 
-/** A read's name in words: "main", "rear", "left side". */
-export const readName = (read: string) => READ_NAMES[read] || read.replace(/^zone:/, "");
+/** Detection Round 2: a zone read's inventory ("zone_inventory:rear"), apart from its damage finds. */
+const INVENTORY_READ = "zone_inventory:";
+
+/** A read's name in words: "main", "rear", "left side", "rear inventory". */
+export const readName = (read: string) =>
+  read.startsWith(INVENTORY_READ)
+    ? `${READ_NAMES[`zone:${read.slice(INVENTORY_READ.length)}`] || read.slice(INVENTORY_READ.length)} inventory`
+    : READ_NAMES[read] || read.replace(/^zone:/, "");
 
 /** Where one photo's entry came from, in words: "main read", "rear read",
  * "the sorter", "re-check". */
@@ -434,7 +440,8 @@ export function sourceName(by: string | null | undefined): string {
   if (by === "link_check") return "linked check";
   // Detection Round 2: a zone read's box round a listed part it saw
   // ("locate:zone:rear"), not a find of its own.
-  if (by.startsWith(LOCATE_BY)) return `${readName(by.slice(LOCATE_BY.length))} read, part located`;
+  // The box line already says "Part located".
+  if (by.startsWith(LOCATE_BY)) return `${readName(by.slice(LOCATE_BY.length))} read`;
   return `${readName(by)} read`;
 }
 
