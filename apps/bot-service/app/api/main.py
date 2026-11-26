@@ -627,7 +627,7 @@ def _audit_export(db, user: CurrentUser, r: Report, detail: str) -> None:
 
 def _report_filename(r: Report, ext: str, suffix: str = "") -> str:
     """"<Our Ref or REF-xxxxxx> <plate>.<ext>": the firm names its report
-    files by reference and plate ("CL 12330 TST 2002 B.xls"). REF- and the
+    files by reference and plate ("CL 10001 TST 2002 B.xls"). REF- and the
     case id stand in while no Our Ref is issued -- never a made-up CL
     number. Characters a file name can't carry become "-"."""
     data = r.data or {}
@@ -2112,7 +2112,7 @@ def _enrich_single_report_data(raw_data: dict) -> dict:
 
     Until 2026-10-21 this guessed make and model from the plate prefix,
     invented an estimated repair cost, insurer, claim type, workshop, claim
-    number (reusing the real CL 11900), odometer, transmission, tyres,
+    number (reusing a real case's Our Ref), odometer, transmission, tyres,
     steering/brake checks and a police report with a named officer, and
     saved them all as case data. It is not, and never was, a Gemini call.
     """

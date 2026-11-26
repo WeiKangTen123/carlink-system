@@ -370,7 +370,7 @@ def database() -> None:
     check(r.status_code == 200 and cases and all(c.get("plate") == "" and c.get("file") == "" for c in cases)
           and "PL8" not in r.text, "GET /parts-history: no plate and no file name, admins too", brief(r))
     # The CL reference alone, whatever the rest of the name; none: nothing.
-    check(hist.source_ref("CL 10001 TEST 123 X.xlsx") == "CL 10001" and hist.source_ref("CL12330.xlsx") == "CL 12330"
+    check(hist.source_ref("CL 10001 TEST 123 X.xlsx") == "CL 10001" and hist.source_ref("CL10002.xlsx") == "CL 10002"
           and hist.source_ref("synthetic-1.xlsx") == "" and hist.source_ref(None) == "",
           "source_ref: the CL reference of a file name, else nothing")
     check(hist.reduced_ref("CL 91003 TEST 4444 D") == "CL 91003" and hist.reduced_ref("CL91004") == "CL91004"

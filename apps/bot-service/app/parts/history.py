@@ -618,9 +618,9 @@ _CL_REF = re.compile(r"\bCL\s*-?\s*(\d+)", re.I)
 
 
 def cl_ref(text: str | None) -> str:
-    """A CL reference written one way ("CL 12330"), however it was typed or
-    read: "CL12330" as the importer keeps a cover page's "Ref: CL12330",
-    "CL-12330 ..." when it fell back to the file name, "CL 12330" as
+    """A CL reference written one way ("CL 10001"), however it was typed or
+    read: "CL10001" as the importer keeps a cover page's "Ref: CL10001",
+    "CL-10001 ..." when it fell back to the file name, "CL 10001" as
     learn.py keeps a case's Our Ref; anything else as it is, trimmed. For
     comparing only: what is stored stays as it was written (a re-import
     finds its earlier lines by the importer's own spelling)."""

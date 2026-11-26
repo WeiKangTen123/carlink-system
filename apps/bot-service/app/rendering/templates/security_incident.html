@@ -319,9 +319,9 @@
     {{ pair('Handbrake', cp.handbrake_condition, 'General condition', cp.general_condition) }}
 
     <tr class="sec"><td class="n">4</td><td colspan="6">TYRE CONDITION</td></tr>
-    {#- Per axle, as the firm writes it: "7mm/Dunlop" nearside and offside,
-        then the size. This table used to be fixed text -- four "Dunlop
-        Enasave 215/60 R16, 6.0 mm, Legal" rows on every report. -#}
+    {#- Per axle, as the firm writes it: "6mm/TestTyre" nearside and offside,
+        then the size. This table used to be fixed text -- the same four
+        made-up tyre rows on every report. -#}
     <tr><td class="n"></td><td class="lbl"></td><td class="c"></td><td class="val colhead">Nearside/Make</td><td class="lbl2 colhead">Offside/Make</td><td class="c2"></td><td class="val2 colhead">Size</td></tr>
     {% for label, axle in [('Front tyre', view.tyres.front), ('Rear tyre', view.tyres.rear)] %}
     <tr><td class="n"></td><td class="lbl">{{ label }}</td><td class="c">:</td><td class="val">{{ axle.nearside or NR }}</td><td class="lbl2">{{ axle.offside or NR }}</td><td class="c2">:</td><td class="val2">{{ axle.size or NR }}</td></tr>

@@ -453,8 +453,8 @@ class RecommendationsInfo(BaseModel):
 class CoverPageInfo(BaseModel):
     """The report's Cover Page as the firm's spreadsheets have it (section
     1 Reference, 3 Static check, 5 Point of impact): what the surveyor types
-    at review. Every value is free text printed as typed ("27th February
-    2023 (10.15am)"); nothing here is read by the AI (see
+    at review. Every value is free text printed as typed ("13th January
+    2026 (9.30am)"); nothing here is read by the AI (see
     SecurityIncidentDraft.cover_page). The vehicle and insurance facts the
     cover page also prints stay in vehicle_info / insurance_details."""
     date_of_request: Optional[str] = None

@@ -88,6 +88,18 @@ from app.storage.files import disk_space_low
 
 logger = logging.getLogger(__name__)
 
+
+def _what_extras() -> str:
+    """The end of step 5's question. INTAKE_USER_FIELDS on (app/reports/
+    user_fields.py): the AI never moves a workshop from the statement into
+    the report, and this form has no workshop step, so it isn't asked for
+    here -- staff type it in. Off: as before."""
+    from app.reports import user_fields
+
+    if user_fields.on():
+        return "You can also add the other driver's plate or your insurer."
+    return "You can also add the other driver's plate, your insurer or your workshop."
+
 CALLBACK_PREFIX = "pub:"
 # The welcome, per chat (the album that comes with it gets one); a blocked
 # sender's notice; anything else they can't send (video, voice...).
@@ -512,7 +524,7 @@ def _question(form: PublicForm, photos: int) -> tuple[str, object]:
     if step == PublicStep.WHAT:
         return (
             "(5/6) What happened? Tell us in your own words, e.g. \"A taxi hit my rear bumper at a red light.\" "
-            "You can also add the other driver's plate, your insurer or your workshop.",
+            + _what_extras(),
             None,
         )
     if step == PublicStep.PHOTOS:

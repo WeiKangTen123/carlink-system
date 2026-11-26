@@ -99,6 +99,21 @@ NEEDED_GUESSES = (
     "insurance_details.workshop_assigned", "vehicle_info.point_of_impact",
 )
 
+
+def field_rules() -> dict[str, str]:
+    """FIELD_RULES as they stand now. With settings.intake_user_fields on
+    (owner, 25 Nov 2026; app/reports/user_fields.py) the workshop and the
+    odometer reading are a person's alone, "office": empty, "Needs you";
+    the AI is never asked for them, so they are never "AI" (and the
+    dashboard's form, judging by the rules sent, keeps them "Needs you"
+    while they are emptied). Off: FIELD_RULES itself."""
+    from app.reports import user_fields
+
+    if not user_fields.on():
+        return FIELD_RULES
+    return {**FIELD_RULES, **{key: "office" for key in user_fields.REVIEW_KEYS}}
+
+
 # What every report the firm sends must state (owner, 23 Nov 2026, D1/D2):
 # each filled in, or marked N/A by a person (data.checked {na: true}),
 # before anyone -- admins too -- may sign off (api/main.sign_off_report
@@ -331,14 +346,15 @@ def _marked(mark, value) -> dict:
     return {"state": state, "by": mark.get("by"), "at": mark.get("at")}
 
 
-def _field_state(key: str, data: dict, ai_draft: dict | None, photos: dict, checked: dict, signed_off: bool) -> dict:
+def _field_state(key: str, data: dict, ai_draft: dict | None, photos: dict, checked: dict, signed_off: bool,
+                 rules: dict | None = None) -> dict:
     mark = checked.get(key)
     value = value_at(data, key)
     if isinstance(mark, dict) and (mark.get("na") or not is_blank(value)):
         return _marked(mark, value)
     if signed_off:
         return {"state": "none"}
-    rule = FIELD_RULES[key]
+    rule = (field_rules() if rules is None else rules)[key]
     if is_blank(value):
         if rule in ("office", "doc", "template") or key in NEEDED_GUESSES:
             return {"state": "needs"}
@@ -438,11 +454,12 @@ def review_state(report_data: dict | None, ai_draft: dict | None, photo_index: l
     data = report_data if isinstance(report_data, dict) else {}
     checked = checked_of(data)
     _, photos = ai_read_for(ai_draft, photo_index) if ai_draft else (None, {})
+    rules = field_rules()
 
     fields: dict = {}
     counts = {"cover": _counts(), "parties": _counts()}
     for key in FIELD_RULES:
-        fields[key] = _field_state(key, data, ai_draft, photos, checked, signed_off)
+        fields[key] = _field_state(key, data, ai_draft, photos, checked, signed_off, rules)
         _tally(counts["parties" if key in PARTIES_KEYS else "cover"], fields[key]["state"])
 
     items = data.get("damage_summary")
@@ -510,7 +527,7 @@ def review_state(report_data: dict | None, ai_draft: dict | None, photo_index: l
     needs, check = open_items(counts)
     return {
         "fields": fields,
-        "rules": {**FIELD_RULES, **ANNEX_RULES},
+        "rules": {**rules, **ANNEX_RULES},
         "damage": damage,
         "annex_a": annex_a,
         "counts": counts,

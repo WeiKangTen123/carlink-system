@@ -50,7 +50,7 @@ export const SEVERITY_RANK: Record<string, number> = { unrated: 0, minor: 1, mod
 // Shown wherever a fact simply wasn't recorded. These screens and the PDF
 // can reach insurers and courts, so a gap must read as a gap: until
 // 2026-10-21 the helpers below filled gaps with guesses made from plate
-// prefixes and keywords ("SLK..." -> Honda Vezel, default insurer Tokio
+// prefixes and keywords ("SXX..." -> Honda Vezel, default insurer Tokio
 // Marine, default workshop ComfortDelGro), which read as recorded facts.
 export const NOT_RECORDED = "Not recorded";
 
@@ -86,7 +86,7 @@ export function daysOpen(createdAt: string, now: number = Date.now()): number {
 /** The system's own reference for a case, from its id and filing year.
  *
  * SEARCH TEXT ONLY -- never displayed. The firm's real file number is the
- * cover page's report_id ("CL 12330", see ourRefLabel), and a generated
+ * cover page's report_id ("CL 10001", see ourRefLabel), and a generated
  * code shown beside a plate used to pass for an issued one. This stays so
  * a "REF-2026-ABC123" someone noted from an older screen still finds the
  * case in the list's search box. */
@@ -99,7 +99,7 @@ export function formatCarlinkRef(id: string, _plate?: string | null, createdAt?:
 /** Shown as Our Ref while the cover page has no file number. */
 export const REF_TO_BE_ISSUED = "to be issued";
 
-/** The firm's file number as recorded on the cover page ("CL 12330"), or
+/** The firm's file number as recorded on the cover page ("CL 10001"), or
  * "to be issued". Never a generated code: the cover page is the only place
  * a file number comes from. */
 export function ourRefLabel(reportId?: string | null): string {

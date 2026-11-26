@@ -3,12 +3,17 @@
 
     python scripts/test_parts_history.py [example_case folder]
 
-Offline. With the example_case folder, the real CL 11900 report is parsed
-too; without it, only the generated spreadsheet is.
+Offline. With the example_case folder, every real CL report in it is
+parsed too, each checked against its own file (its name's reference, its
+Annex A rows) and, when the private expected-report-tests.json is beside
+the workbooks, against it (make, model, Annex A line count; its format:
+scripts/expected_reports.py); without the folder, only the generated
+spreadsheet is.
 """
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +36,7 @@ from app.parts.history import family_and_side, family_of, normalise_item, parse_
 from app.reports.db import SessionLocal  # noqa: E402
 from app.reports.models import Report  # noqa: E402
 from auth_helpers import sign_in  # noqa: E402
+import expected_reports  # noqa: E402
 
 
 def ok(label: str) -> None:
@@ -44,10 +50,10 @@ def report_xlsx(ref: str, plate: str, make_model: str, lines: list[tuple]) -> by
     cover.title = "Cover Page"
     cover.append([None, "ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT"])
     cover.append([None, f"Our  Ref: {ref} {plate}"])
-    cover.append([None, None, "Date of survey", ":", "27th January 2018"])
+    cover.append([None, None, "Date of survey", ":", "3rd February 2026"])
     cover.append([None, None, "Registration No.", ":", plate])
     cover.append([None, None, "Make & Model", ":", make_model])
-    cover.append([None, None, "Date of registration", ":", "12th January 2017"])
+    cover.append([None, None, "Date of registration", ":", "5th March 2021"])
     annex = book.create_sheet("Annex A")
     annex.append([None, None, plate])
     annex.append([None, "Item", "Vehicle Parts Description", "Condition", "Remarks", "Qty", "W/shop   Est. ($)", "Disc       (%)", "Adjusted    Cost ($)"])
@@ -64,6 +70,19 @@ def report_xlsx(ref: str, plate: str, make_model: str, lines: list[tuple]) -> by
     buf = io.BytesIO()
     book.save(buf)
     return buf.getvalue()
+
+
+def annex_a_rows(path: Path) -> int:
+    """The numbered part rows of a CL report's Annex A sheet, counted straight
+    off the sheet (a number in its Item column, a description beside it):
+    what parse_report must read, for a real report as for the generated one."""
+    from app.parts.history import _is_line_number, _rows, _sheet
+
+    rows = _sheet(_rows(path), "annex a")
+    header = next(i for i, row in enumerate(rows) if any(str(c).strip().lower() == "item" for c in row))
+    col = next(j for j, c in enumerate(rows[header]) if str(c).strip().lower() == "item")
+    return sum(1 for row in rows[header + 1:]
+               if col + 1 < len(row) and _is_line_number(row[col]) and str(row[col + 1]).strip())
 
 
 VEZEL_A = [
@@ -87,21 +106,36 @@ VEZEL_B = [
 def main() -> int:
     print("parsing and part families")
     path = Path(_tmp, "a.xlsx")
-    path.write_bytes(report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A))
+    path.write_bytes(report_xlsx("CL 10001", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A))
     case = parse_report(path)
-    assert (case.ref, case.plate, case.make, case.model, case.registered) == ("CL 11900", "TST1001A", "Honda", "Vezel", "2017-01-12"), case
+    assert (case.ref, case.plate, case.make, case.model, case.registered) == ("CL 10001", "TST1001A", "Honda", "Vezel", "2021-03-05"), case
     assert [l.item for l in case.lines][-1] == "Reverse sensor" and case.lines[-1].section == "nett" and case.lines[-1].qty == 1.0
     assert case.lines[0].adjusted_cost == 1160 and case.lines[0].discount == 0.2
+    assert annex_a_rows(path) == len(case.lines) == 6, annex_a_rows(path)
     assert family_of("Tail gate lock striker") == "Boot Lid Lock" and family_of("Tail lamp LH") == "Tail Lamp"
     assert family_of("Rear windscreen glass moulding") == "Rear Windscreen" and family_of("Rear bumper beam (inner)") == "Rear Bumper Beam"
     assert family_and_side("Left Tail Lamp") == ("Tail Lamp", "Left") and family_and_side("Boot Lid") == ("Boot Lid", None)
     assert normalise_item("Tail gate assy") == normalise_item("Tail Gate") == "tailgate"
     ok("a CL report spreadsheet reads into reference, vehicle and Annex A lines (list and S/Nett)")
     if len(sys.argv) > 1:
-        real = next(Path(sys.argv[1]).rglob("CL 11900*.xls"))
-        rc = parse_report(real)
-        assert rc.ref == "CL 11900" and (rc.make, rc.model) == ("Honda", "Vezel") and len(rc.lines) == 37, (rc.ref, rc.make, rc.model, len(rc.lines))
-        ok(f"the real {real.name} reads as 37 lines of a Honda Vezel")
+        # Checked against the files themselves, read at run time, and against
+        # the private expected values beside them when there are any: no real
+        # case's values are written here.
+        expected = expected_reports.load(Path(sys.argv[1]))
+        reals = sorted(Path(sys.argv[1]).rglob("CL *.xls"))
+        assert reals, f"no CL report under {sys.argv[1]}"
+        for real in reals:
+            rc = parse_report(real)
+            named = re.match(r"CL\s*\d+", real.name)
+            assert named and re.sub(r"\s+", "", rc.ref or "") == re.sub(r"\s+", "", named.group(0)), (real.name, rc.ref)
+            assert rc.make and rc.model and len(rc.lines) == annex_a_rows(real), (rc.make, rc.model, len(rc.lines))
+            want = expected_reports.for_workbook(expected, real)
+            if "make" in want or "model" in want:
+                assert (rc.make, rc.model) == (want.get("make", rc.make), want.get("model", rc.model)), real.name
+            if "annex_a_lines" in want:
+                assert len(rc.lines) == want["annex_a_lines"], (real.name, len(rc.lines))
+        ok(f"the {len(reals)} real CL reports read as their own files say: reference, make and model, "
+           f"every Annex A row; {expected_reports.say(expected)}")
 
     admin = TestClient(app, base_url="https://carlink.test")
     sign_in(admin, role="admin", name="Kelvin Lim")
@@ -115,8 +149,8 @@ def main() -> int:
 
     print("importing")
     files = [
-        ("files", ("CL 11900 TST 1001 A.xlsx", report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A), "application/octet-stream")),
-        ("files", ("CL 12330 TST 2002 B.xlsx", report_xlsx("CL 12330", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B), "application/octet-stream")),
+        ("files", ("CL 10001 TST 1001 A.xlsx", report_xlsx("CL 10001", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A), "application/octet-stream")),
+        ("files", ("CL 10002 TST 2002 B.xlsx", report_xlsx("CL 10002", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B), "application/octet-stream")),
         ("files", ("notes.txt", b"hello", "text/plain")),
     ]
     assert surveyor.post("/parts-history/import", files=files).status_code == 403
@@ -289,8 +323,8 @@ def main() -> int:
     assert r.status_code == 404, r.text  # not theirs: the view gate answers first
     ok("AI lines on someone else's case: 404 before any AI check")
 
-    assert surveyor.delete("/parts-history/CL 12330").status_code == 403
-    assert admin.delete("/parts-history/CL 12330").json()["lines"] == 5
+    assert surveyor.delete("/parts-history/CL 10002").status_code == 403
+    assert admin.delete("/parts-history/CL 10002").json()["lines"] == 5
     assert len(admin.get("/parts-history").json()["cases"]) == 1
     ok("an admin can remove an imported report")
 

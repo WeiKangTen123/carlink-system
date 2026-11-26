@@ -11,6 +11,7 @@ import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { PublicSenderCard } from "@/components/inbox/PublicSenderCard";
 import { undecidedCount, withSavedLook } from "@/lib/findings";
 import { filingProblems, focusFor, type FilingProblem } from "@/lib/reviewChecks";
+import { userFieldsOn } from "@/lib/uploadTip";
 import {
   ALLOWED_PHOTO_EXTENSIONS,
   FILING_INTERRUPTED_MESSAGE,
@@ -487,7 +488,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
     setError(null);
     const maxBytes = state?.limits.max_photo_bytes ?? DEFAULT_MAX_BYTES;
     const maxPhotos = state?.limits.max_photos ?? DEFAULT_MAX_PHOTOS;
-    // Name order is camera order (P1273082.JPG, P1273083.JPG...), which is
+    // Name order is camera order (IMG_0001.JPG, IMG_0002.JPG...), which is
     // the order a surveyor expects P01, P02... to follow.
     const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     let position =
@@ -1115,6 +1116,7 @@ export function IntakeWizard({ initialDraftId, taxonomy }: Props) {
           aiOff={aiOff}
           onFillByHand={fillByHand}
           onFileCase={filingInterrupted ? () => void goTo(4) : undefined}
+          userFields={userFieldsOn(state, user)}
         />
       )}
 

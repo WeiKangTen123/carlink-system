@@ -92,7 +92,7 @@ TEMPLATE_REPLY = (
     "Requested by (insurer / company): Tokio Marine\n"
     "Type of claim (Own damage / Third party): Own damage\n"
     "Workshop: XYZ Auto Service\n"
-    "Date/time of accident: 27 Feb 2023 10.15am\n"
+    "Date/time of accident: 13 Jan 2026 9.30am\n"
     "Damaged Side (Left / Right / Front / Rear): Rear\n"
     "What happened: Rear-ended at a junction."
 )
@@ -161,7 +161,7 @@ async def telegram_checks() -> None:
         # The template's typed facts go into the case, never into the AI's draft.
         case, out = await file_via_bot(SUE_TG, TEMPLATE_REPLY)
         assert case.data["vehicle_info"]["plate_number"] == "SKX9999Z" and case.data["cover_page"]["requested_by"] == "Tokio Marine"
-        assert case.data["insurance_details"]["claim_type"] == "Own damage" and case.data["incident_datetime"] == "27 Feb 2023 10.15am"
+        assert case.data["insurance_details"]["claim_type"] == "Own damage" and case.data["incident_datetime"] == "13 Jan 2026 9.30am"
         assert case.ai_draft["vehicle_info"]["plate_number"] == "TST2002B" and case.ai_draft["incident_datetime"] == "2026-11-01 09:00"
         assert not (case.ai_draft.get("cover_page") or {}).get("requested_by") and not (case.ai_draft.get("insurance_details") or {}).get("claim_type")
         with TestClient(app) as admin:
@@ -179,11 +179,11 @@ def direct_checks() -> None:
         plain = SimpleNamespace(role="user", sees_all_cases=False)
         staff = SimpleNamespace(role="user", sees_all_cases=True)
         draft = VEZEL.model_dump()
-        before = {**draft, "report_id": "CL 12330", "sign_off": {**SignOffInfo().model_dump(), "status": "Signed Off", "approved_by": "Mallory"},
+        before = {**draft, "report_id": "CL 10001", "sign_off": {**SignOffInfo().model_dump(), "status": "Signed Off", "approved_by": "Mallory"},
                   "annex_a": {"items": [{"part_name": "Old row", "workshop_est": 9}]}, "annex_b": {"items": [{"description": "Old labour", "workshop_est": 9}]}}
         sorted_kinds = [{"kind": "damage", "area": "rear", "part": "Tail Gate", "shows_damage": True, "quality": "good"}, {}]
         data = file_case_data(db, before, plain, ai_draft=draft, photo_kinds=sorted_kinds)
-        assert data["sign_off"] == SignOffInfo().model_dump() and data["report_id"] == "CL 12330"
+        assert data["sign_off"] == SignOffInfo().model_dump() and data["report_id"] == "CL 10001"
         assert [r["part_name"] for r in data["annex_a"]["items"]] == ["Tail Gate", "Rear bumper fascia"] and data["annex_b"]["items"] == []
         assert data["photo_index"] == [
             {"label": "P01", "kind": "damage", "area": "rear", "part": "Tail Gate", "shows_damage": True, "quality": "good"},

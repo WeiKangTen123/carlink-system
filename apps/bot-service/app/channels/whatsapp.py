@@ -26,7 +26,13 @@ from app.ai.keys import AiActor, AiUnavailable, ensure_ai_ready
 from app.api.limits import RenderRefused, render_turn
 from app.auth.deps import current_user
 from app.config import settings
-from app.conversation.flow import build_draft, build_template_prompt, combined_description, parse_template_reply
+from app.conversation.flow import (
+    build_draft,
+    build_template_prompt,
+    combined_description,
+    correction_workshop,
+    parse_template_reply,
+)
 from app.conversation.state import Stage, get_session, reset_session
 from app.reports.db import SessionLocal
 from app.reports.filing import file_case_data
@@ -261,6 +267,10 @@ async def whatsapp_webhook(request: Request) -> Response:
                 f"{settings.public_base_url.rstrip('/')}/reports/{report_id}\n\n"
                 "Send /new or a photo to file another report."
             )
+        # INTAKE_USER_FIELDS on: a "Workshop:" line is applied as typed and
+        # said back, or the hint to send one (flow.correction_workshop), as
+        # on Telegram; off: nothing.
+        reply = correction_workshop(session, body)
         session.pending_edits.append(body)
         description = combined_description(session)
         try:
@@ -276,7 +286,7 @@ async def whatsapp_webhook(request: Request) -> Response:
             return _twiml(_DRAFT_ERROR_MESSAGE)
         session.draft = result.draft
         session.ai_draft = result.ai_draft
-        return _twiml(result.summary_text)
+        return _twiml(reply, result.summary_text) if reply else _twiml(result.summary_text)
 
     if not session.photo_paths:
         return _twiml("Please send at least one photo first, then describe what happened.")

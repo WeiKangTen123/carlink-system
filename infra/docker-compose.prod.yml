@@ -163,6 +163,12 @@ x-bot-service: &bot-service
     # check words in the firm's words, by meaning (app/reports/firm_words.py).
     # Default off = config.py's: every reading's values byte for byte as before.
     - INTAKE_FIRM_WORDS=${INTAKE_FIRM_WORDS:-off}
+    # Owner, 25 Nov 2026 (app/reports/user_fields.py): the workshop and the
+    # odometer reading left empty for the user to type in -- no read is asked
+    # for them, and a value the model writes anyway is dropped. Both
+    # containers read (the bot: Telegram drafts). Default off = config.py's:
+    # every read and stored draft byte for byte as before.
+    - INTAKE_USER_FIELDS=${INTAKE_USER_FIELDS:-off}
     # Detection Round 1 (owner, 25 Nov 2026; app/intake/sorter_hints.py): the
     # sorter's own finds as suggestions (A1: off / shadow / on), a zone read's
     # "intact" never hiding a part the sorter saw damaged (A2: old / shadow /

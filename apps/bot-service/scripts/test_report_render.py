@@ -1,11 +1,15 @@
 """The report prints as the firm's four pages, and exports as its workbook.
 
-    python scripts/test_report_render.py [example_case folder]
+    python scripts/test_report_render.py [the firm's workbook (.xls)]
 
-With the example_case folder, the report is built from the firm's real
-CL 12330 workbook (Cover Page, Annex A, Annex B and the letter's
-figures) so the output can be held against the firm's own file; without it,
-a small fixture stands in. Checks: the HTML carries every page's key text
+Given the firm's real workbook -- the one the fixture's Annex lines are
+worded after; its path, from the private example_case folder -- the report
+is built from it (Cover Page, Annex A, Annex B and the letter's figures) and
+the output is held against the workbook's own values and totals, read at
+run time, and against the private expected-report-tests.json beside the
+workbook when there is one (lump sum, days, survey date, line counts,
+labour wording; its format: scripts/expected_reports.py) -- no real case's
+values are written here; without it, a small fixture stands in. Checks: the HTML carries every page's key text
 and none of the dropped extras (GST, BOLA, forensic, seal, variance); the
 PDF renders offline with Chromium; the workbook reads back through
 app.parts.history.parse_report with the same reference, vehicle and Annex A
@@ -28,6 +32,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_tmp, 'test.db').as_posi
 os.environ.setdefault("GEMINI_API_KEY", "fake")
 
 import app.rendering.renderer as renderer  # noqa: E402
+import expected_reports  # noqa: E402
 from app.parts.history import parse_report  # noqa: E402
 from app.rendering.xlsx_export import render_xlsx  # noqa: E402
 
@@ -40,22 +45,47 @@ def ok(label: str) -> None:
 
 # ------------------------------------------------------------ the report
 
+# The signer's qualifications, made up (the real file's letter is not read
+# for them either).
+QUALIFICATIONS = "BEng (Mech), MIMI"
+
+
+def _tyre_cell(tyre: dict) -> str:
+    """{"tread_depth_mm": 6, "brand": "TestTyre"} -> "6mm/TestTyre", as the
+    cover page prints a tyre."""
+    return f"{float(tyre['tread_depth_mm']):g}mm/{tyre['brand']}"
+
+
+def _front_tyre_needle(report: dict) -> str:
+    tyres = report["vehicle_info"]["tyres"]
+    return (f"Front tyre : {_tyre_cell(tyres['front_nearside'])} {_tyre_cell(tyres['front_offside'])} : "
+            f"{tyres['front_nearside']['size']}")
+
+
+def _iso(date_text: str) -> str:
+    """"3rd March 2021" -> "2021-03-03"."""
+    from datetime import datetime
+
+    return datetime.strptime(re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", date_text), "%d %B %Y").strftime("%Y-%m-%d")
+
+
 
 def fixture() -> dict:
-    """A small signed-off case in the shape agent B's schema gives it."""
+    """A small signed-off case in the shape agent B's schema gives it. Made up:
+    dates, readings, tyres, people and the workshop."""
     return {
         "report_id": "CL 12999",
         "reporter_name": "Lim Wei Jie",
-        "incident_datetime": "21st February 2023",
+        "incident_datetime": "10th January 2026",
         "cover_page": {
-            "date_of_request": "27th February 2023",
+            "date_of_request": "13th January 2026",
             "requested_by": "Tan Mei Ling",
             "requested_by_address": "C/o Blk 100, Test Road 1, #01-01, Singapore 000100",
             "workshop_address": "Blk 100, Test Road 1, #01-01,\nSingapore 000100",
-            "date_of_survey": "27th February 2023 (10.15am)",
-            "date_of_dismantle": "27th February 2023 (2.25pm)",
-            "date_before_painting": "1st March 2023",
-            "date_after_painting": "7th March 2023",
+            "date_of_survey": "13th January 2026 (9.30am)",
+            "date_of_dismantle": "13th January 2026 (2.00pm)",
+            "date_before_painting": "15th January 2026",
+            "date_after_painting": "20th January 2026",
             "handbrake_condition": "see annex(es)",
             "modification": "Nil",
             "general_condition": "Good",
@@ -63,14 +93,14 @@ def fixture() -> dict:
         },
         "vehicle_info": {
             "plate_number": "TST 2002 B", "make": "Honda", "model": "Vezel 1.5X CVT",
-            "date_of_registration": "19th October 2020", "engine_number": "L15B0000001", "vin": "JHMTESTX0Y0000001",
-            "odometer_reading": "058615 Km", "transmission": "Automatic", "color": "White",
+            "date_of_registration": "3rd March 2021", "engine_number": "L15B0000001", "vin": "JHMTESTX0Y0000001",
+            "odometer_reading": "012345 Km", "transmission": "Automatic", "color": "White",
             "paintwork_condition": "Good", "steering_condition": "see annex(es)", "brakes_condition": "see annex(es)",
             "tyres": {
-                "front_nearside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                "front_offside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                "rear_nearside": {"tread_depth_mm": 6.5, "brand": "Dunlop", "size": "215/60 R16"},
-                "rear_offside": {"tread_depth_mm": 6.5, "brand": "Dunlop"},
+                "front_nearside": {"tread_depth_mm": 6, "brand": "TestTyre", "size": "195/65 R15"},
+                "front_offside": {"tread_depth_mm": 6, "brand": "TestTyre", "size": "195/65 R15"},
+                "rear_nearside": {"tread_depth_mm": 5.5, "brand": "TestTyre", "size": "195/65 R15"},
+                "rear_offside": {"tread_depth_mm": 5.5, "brand": "TestTyre"},
             },
         },
         "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
@@ -90,7 +120,7 @@ def fixture() -> dict:
              "workshop_est": 1200.0, "adjusted_cost": 900.0},
         ]},
         "annex_c": {"agreed_lump_sum": 1900.0, "repair_days": 7},
-        "sign_off": {"status": "Signed Off", "surveyor_name": "Alex Tan", "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC.",
+        "sign_off": {"status": "Signed Off", "surveyor_name": "Alex Tan", "qualifications": QUALIFICATIONS,
                      "signatory_title": "Automotive Engineer Assessor", "signature_data_url": None},
     }
 
@@ -103,15 +133,41 @@ def _xls_rows(path: Path, sheet: str) -> list[list]:
     return [[ws.cell_value(r, c) for c in range(ws.ncols)] for r in range(ws.nrows)]
 
 
+def _firm_totals(sheets: dict[str, list[list]]) -> dict:
+    """The totals a workbook prints, as (W/shop Est, Adjusted) pairs: the
+    parts (Annex A's "Total for Spare Parts"), the labour and the whole
+    repair (Annex B's "TOTAL FOR LABOUR ..." and "TOTAL REPAIR COSTS") --
+    the first two figures after each label on its row. sheets: lower-case
+    sheet name -> rows."""
+    def after(rows: list[list], label: str) -> tuple[float, float]:
+        for row in rows:
+            for i, cell in enumerate(row):
+                if isinstance(cell, str) and cell.strip().lower().startswith(label):
+                    figures = [float(v) for v in row[i + 1:] if isinstance(v, (int, float)) and not isinstance(v, bool)]
+                    if len(figures) >= 2:
+                        return round(figures[0], 2), round(figures[1], 2)
+        raise AssertionError(f"no {label!r} row with two figures")
+
+    a = after(sheets["annex a"], "total for spare parts")
+    b = after(sheets["annex b"], "total for labour")
+    c = after(sheets["annex b"], "total repair costs")
+    return {"a_est": a[0], "a_adjusted": a[1], "b_est": b[0], "b_adjusted": b[1], "c_est": c[0], "c_adjusted": c[1]}
+
+
+def _view_totals(report: dict) -> dict:
+    view = renderer.report_view(report)
+    return {key: round(float(view[key]), 2) for key in ("a_est", "a_adjusted", "b_est", "b_adjusted", "c_est", "c_adjusted")}
+
+
 def _tyre(text: str, size: str) -> dict:
-    """"7mm/Dunlop" + "215/60 R16" -> the schema's TyreItem."""
+    """"6mm/TestTyre" + "195/65 R15" -> the schema's TyreItem."""
     depth, _, brand = text.partition("/")
     m = re.search(r"\d+(?:\.\d+)?", depth)
     return {"tread_depth_mm": float(m.group(0)) if m else None, "brand": brand.strip() or None, "size": size.strip() or None}
 
 
 def report_from_xls(path: Path) -> dict:
-    """The firm's CL 12330 workbook as a report dict: Annex A through
+    """The firm's workbook as a report dict: Annex A through
     history.parse_report, the rest read off the Cover Page / Annex B / Annex
     C sheets."""
     case = parse_report(path)
@@ -203,7 +259,7 @@ def report_from_xls(path: Path) -> dict:
         "annex_c": {"agreed_lump_sum": float(lump.group(1).replace(",", "")) if lump else None,
                     "repair_days": int(days.group(1)) if days else None},
         "sign_off": {"status": "Signed Off", "surveyor_name": (signer.group(1).strip().title() if signer else None), "signatory_title": "Automotive Engineer Assessor",
-                     "qualifications": "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."},
+                     "qualifications": QUALIFICATIONS},
     }
 
 
@@ -242,13 +298,17 @@ def check_html(report: dict, m) -> None:
     for needle in ("ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT", f"Our Ref: {report['report_id']}", "60 Hillside Drive",
                    "Singapore 549009", "Tel : 62856178", "Fax : 62874788", "1 REFERENCE", "Date of request :",
                    f"Requested by : {report['cover_page']['requested_by']}", "Type of claim : Third party",
-                   f"Workshop : {report['insurance_details']['workshop_assigned']}", "Date of dismantle parts :",
+                   f"Workshop : {report['insurance_details']['workshop_assigned']}",
                    "2 DETAILS OF VEHICLE", f"Registration No. : {report['vehicle_info']['plate_number']}", "Make & Model : Honda Vezel 1.5X CVT",
-                   f"Chassis No. : {report['vehicle_info']['vin']}", "Speedometer reading : 058615 Km", "3 STATIC CHECK", "Paintwork : Good",
+                   f"Chassis No. : {report['vehicle_info']['vin']}", f"Speedometer reading : {report['vehicle_info']['odometer_reading']}", "3 STATIC CHECK", "Paintwork : Good",
                    "Modification : Nil", "General condition : Good", "4 TYRE CONDITION", "Nearside/Make Offside/Make Size",
-                   "Front tyre : 7mm/Dunlop 7mm/Dunlop : 215/60 R16", "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
+                   _front_tyre_needle(report), "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
                    "6 REMARK", 'conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair.'):
         assert needle in text, needle
+    # The optional dates print only when recorded (the firm leaves an unused
+    # one out: security_incident.html, xlsx_export.OPTIONAL_DATE_ROWS).
+    dismantle = str((report.get("cover_page") or {}).get("date_of_dismantle") or "").strip()
+    assert ("Date of dismantle parts :" in text) == bool(dismantle), "Date of dismantle parts: printed only when recorded"
     ok("cover page: letterhead, Our Ref, sections 1-6 with the firm's labels, tyres per axle")
 
     # Annex A
@@ -277,7 +337,7 @@ def check_html(report: dict, m) -> None:
                    f"contract lump sum of {m['lump']}, according to acceptable quality and standard",
                    f"reasonable period of {report['annex_c']['repair_days']} working days", "strictly on a WITHOUT PREJUDICE basis",
                    "enclosed is our invoice for service rendered", "Yours faithfully, CARLINK CONSULTANCY",
-                   report["sign_off"]["surveyor_name"].upper(), "Automotive Engineer Assessor", "MIMI, MIRTE, LCGI, I ENG, LAE, CGLI FTC."):
+                   report["sign_off"]["surveyor_name"].upper(), "Automotive Engineer Assessor", QUALIFICATIONS):
         assert needle in text, needle
     assert "DRAFT" not in text
     ok("Annex C: the firm's letter with workshop, totals, lump sum, days, signer, default title and qualifications")
@@ -378,12 +438,16 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     render_xlsx(copy.deepcopy(report), str(path), report_id="unsaved", unverified=False)
     book = openpyxl.load_workbook(path)
     assert book.sheetnames == ["Cover Page", "Annex A", "Annex B", "Annex C"], book.sheetnames
+    # The totals row finder the real workbook is held against (main), on
+    # the workbook this export writes in the firm's layout.
+    exported = {ws.title.strip().lower(): [list(row) for row in ws.iter_rows(values_only=True)] for ws in book.worksheets}
+    assert _firm_totals(exported) == _view_totals(report), (_firm_totals(exported), _view_totals(report))
     cover = book["Cover Page"]
     assert cover["B1"].value == "CARLINK CONSULTANCY" and cover["F1"].value.strip() == "Tel :" and cover["B2"].value == "60 Hillside Drive"
     assert cover["B8"].value == f"Our Ref: {report['report_id']}"
     labels = {(cover.cell(r, 3).value, cover.cell(r, 4).value): cover.cell(r, 5).value for r in range(1, cover.max_row + 1)}
     assert labels[("Requested by", ":")] == report["cover_page"]["requested_by"]
-    assert labels[("Make & Model", ":")] == "Honda Vezel 1.5X CVT" and labels[("Front tyre", ":")] == "7mm/Dunlop"
+    assert labels[("Make & Model", ":")] == "Honda Vezel 1.5X CVT" and labels[("Front tyre", ":")] == _tyre_cell(report["vehicle_info"]["tyres"]["front_nearside"])
     static = {cover.cell(r, 6).value: cover.cell(r, 8).value for r in range(1, cover.max_row + 1)
               if cover.cell(r, 3).value in ("Steering", "Footbrake", "Handbrake")}
     assert static == {"Paintwork": "Good", "Modification": "Nil", "General condition": "Good"}, static
@@ -419,7 +483,7 @@ def check_xlsx(report: dict, source: Path | None) -> None:
     view = renderer.report_view(report)
     assert back.ref == re.sub(r"\s+", " ", re.search(r"CL\s*\d+", report["report_id"]).group(0)), back.ref
     assert (back.make, back.model) == ("Honda", "Vezel"), (back.make, back.model)
-    assert back.plate == re.sub(r"\s+", "", report["vehicle_info"]["plate_number"]).upper() and back.registered == "2020-10-19"
+    assert back.plate == re.sub(r"\s+", "", report["vehicle_info"]["plate_number"]).upper() and back.registered == _iso(report["vehicle_info"]["date_of_registration"])
     want = [(r["no"], r["name"], r["qty"], r["est"], r["disc"], r["adjusted"], "nett" if r["nett"] else "list")
             for r in view["list_rows"] + view["nett_rows"]]
     got = [(l.line_no, l.item, l.qty, l.workshop_est, l.discount, l.adjusted_cost, l.section) for l in back.lines]
@@ -450,20 +514,49 @@ NUMBER_FORMAT = "#,##0.00"
 def main() -> int:
     source = None
     if len(sys.argv) > 1:
-        source = next(Path(sys.argv[1]).rglob("CL 12330*.xls"))
+        source = Path(sys.argv[1])
+        if not source.is_file():
+            sys.exit("pass the firm's workbook itself: python scripts/test_report_render.py <path to its .xls>")
         report = report_from_xls(source)
         print(f"report built from {source.name}: {len(report['annex_a']['items'])} parts, {len(report['annex_b']['items'])} labour lines")
-        assert report["report_id"] == f"CL 12330 {report['vehicle_info']['plate_number']}" and report["annex_c"] == {"agreed_lump_sum": 6500.0, "repair_days": 10}
-        assert report["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and report["sign_off"]["surveyor_name"], "signer read off the letter"
-        view = renderer.report_view(report)
-        assert (view["a_est"], view["a_adjusted"], view["b_est"], view["b_adjusted"]) == (6843.8, 4935.04, 3270.0, 2540.0), view
-        assert (view["c_est"], view["c_adjusted"]) == (10113.8, 7475.04)
-        ok("the totals come out as the firm's: 6,843.80 / 4,935.04 parts, 3,270.00 / 2,540.00 labour, 10,113.80 / 7,475.04")
-        money = {"a_est": "6,843.80", "a_adjusted": "4,935.04", "b_est": "3,270.00", "b_adjusted": "2,540.00",
-                 "c_est": "10,113.80", "c_adjusted": "7,475.04", "lump": "S$6,500.00"}
+        # Held against the workbook itself, read at run time: its name's
+        # reference and the plate, the letter's lump sum and days, the
+        # survey date and signer, and the totals it prints.
+        named = re.match(r"CL\s*\d+", source.name)
+        ref = re.sub(r"\s+", "", report["report_id"] or "")
+        assert named and ref.startswith(re.sub(r"\s+", "", named.group(0))), (source.name, report["report_id"])
+        assert ref.endswith(re.sub(r"\s+", "", report["vehicle_info"]["plate_number"] or "-")), report["report_id"]
+        lump, days = report["annex_c"]["agreed_lump_sum"], report["annex_c"]["repair_days"]
+        assert isinstance(lump, float) and lump > 0 and isinstance(days, int) and days > 0, report["annex_c"]
+        assert re.match(r"\d{1,2}(st|nd|rd|th) [A-Z][a-z]+ \d{4}", report["cover_page"]["date_of_survey"] or ""), "survey date"
+        assert report["sign_off"]["surveyor_name"], "signer read off the letter"
+        firm = _firm_totals({sheet: _xls_rows(source, sheet) for sheet in ("annex a", "annex b")})
+        assert _view_totals(report) == firm, (_view_totals(report), firm)
+        ok("the totals come out as the workbook's own: parts, labour and total repair costs, estimate and adjusted")
+        # And, when the private expected values are beside the workbook, as
+        # they say (expected_reports): the lump sum, days, survey date, line
+        # counts and labour wording.
+        expected = expected_reports.load(source)
+        want = expected_reports.for_workbook(expected, source)
+        checks = {"lump_sum": lump, "repair_days": days, "date_of_survey": report["cover_page"]["date_of_survey"],
+                  "annex_a_lines": len(report["annex_a"]["items"]), "annex_b_lines": len(report["annex_b"]["items"])}
+        for key, got in checks.items():
+            if key in want:
+                assert got == want[key], (key, got)
+        labour = expected_reports.labour_lines(want)
+        if labour:
+            items = report["annex_b"]["items"]
+            assert [it["description"] for it in items] == [line["description"] for line in labour], "labour wording"
+            for got, line in zip(items, labour):
+                for key in ("workshop_est", "adjusted_cost"):
+                    if key in line:
+                        assert got[key] == line[key], (got["description"], key)
+        ok(f"the workbook's own values: {expected_reports.say(want)}")
+        money = {key: f"{value:,.2f}" for key, value in firm.items()}
+        money["lump"] = f"S${lump:,.2f}"
     else:
         report = fixture()
-        print("report from the fixture (pass the example_case folder to use the real CL 12330 file)")
+        print("report from the fixture (pass the firm's workbook to use the real file)")
         money = {"a_est": "1,590.00", "a_adjusted": "1,136.00", "b_est": "1,320.00", "b_adjusted": "980.00",
                  "c_est": "2,910.00", "c_adjusted": "2,116.00", "lump": "S$1,900.00"}
 

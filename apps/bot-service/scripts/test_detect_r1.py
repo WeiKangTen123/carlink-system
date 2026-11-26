@@ -7,7 +7,9 @@ scripts/test_c10_integration.py, no server, made-up cases only.
      behaviour, take their choices, refuse a typo, and are passed through
      docker-compose.prod.yml once, in the block both containers share, at
      config.py's default (and test_compose's allow-list has them); A3
-     (intake_read_pick) dropped: app/intake/pipeline.py is master's;
+     (intake_read_pick) dropped: app/intake/pipeline.py is master's, every
+     definition but the two INTAKE_USER_FIELDS changes behind its own
+     switch (fallback_draft, merge_redraft; scripts/test_user_fields.py);
   1. everything at the defaults: the requests and the stored data byte for
      byte as master ae0fde4's -- the full routes (read, decisions,
      autosave, filing, the case page, sign-off) in single mode, zone mode,
@@ -98,6 +100,32 @@ PROBE_MODES = {
     "links_capped": CAPPED,
 }
 BASE_REF = "ae0fde4"  # origin/master this branch is on (PR #57)
+# pipeline.py's definitions INTAKE_USER_FIELDS (PR #62) changes, behind its
+# own switch (scripts/test_user_fields.py): the rest must stay BASE_REF's.
+USER_FIELDS_DEFS = frozenset({"fallback_draft", "merge_redraft"})
+
+
+def _changed_definitions(base_src: str, here_src: str) -> list[str]:
+    """The top-level definitions (functions, classes, assignments) whose
+    source differs between two versions of a module, or that only one of
+    them has, by name; imports are left out."""
+    import ast
+
+    def definitions(src: str) -> dict[str, str]:
+        src = src.replace("\r\n", "\n")
+        out = {}
+        for node in ast.parse(src).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out[node.name] = ast.get_source_segment(src, node)
+            elif isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                out["=" + ",".join(names or ["?"]) + f"@{node.lineno}" * (not names)] = ast.get_source_segment(src, node)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                out["=" + node.target.id] = ast.get_source_segment(src, node)
+        return out
+
+    base, here = definitions(base_src), definitions(here_src)
+    return sorted(name for name in set(base) | set(here) if base.get(name) != here.get(name))
 
 # --------------------------------------------------------------- the fakes' cases
 
@@ -368,8 +396,16 @@ def settings_section() -> None:
     base = subprocess.run(["git", "-C", str(REPO), "show", f"{BASE_REF}:apps/bot-service/app/intake/pipeline.py"],
                           capture_output=True, text=True, encoding="utf-8")
     here = (ROOT / "app" / "intake" / "pipeline.py").read_text(encoding="utf-8")
-    check(base.returncode == 0 and base.stdout.replace("\r\n", "\n") == here.replace("\r\n", "\n"),
-          f"A3 dropped: app/intake/pipeline.py is {BASE_REF}'s, byte for byte (the photo choice untouched)")
+    # INTAKE_USER_FIELDS (PR #62) changes two of pipeline.py's functions
+    # behind its own switch, off = as before (scripts/test_user_fields.py
+    # checks that byte for byte): fallback_draft and merge_redraft. Every
+    # other definition -- the photo choice A3 touched among them -- is
+    # still ae0fde4's, byte for byte, and A3's code is nowhere.
+    changed = _changed_definitions(base.stdout, here) if base.returncode == 0 else ["(no base)"]
+    check(base.returncode == 0 and not [name for name in changed if name not in USER_FIELDS_DEFS]
+          and "read_pick" not in here and "_priority_pick_v2" not in here,
+          f"A3 dropped: app/intake/pipeline.py is {BASE_REF}'s, byte for byte, but for INTAKE_USER_FIELDS' "
+          f"{' and '.join(sorted(USER_FIELDS_DEFS))} (the photo choice untouched)", changed)
     check("sorter_suggestions" in filing.AI_DRAFT_PHOTO_LISTS and "sorter" in accuracy.SUGGESTION_SOURCES,
           "filing relabels the shadow list's photos; the AI-accuracy record counts source \"sorter\"")
 

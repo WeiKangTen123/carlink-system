@@ -223,6 +223,10 @@ export type CurrentUser = UserProfile & {
   /** May run the AI right now: admins, accounts allowed the company AI key,
    * and anyone whose own AI key is working (release P4). */
   ai_allowed: boolean;
+  /** True while INTAKE_USER_FIELDS is on (app/reports/user_fields.py): the
+   * workshop and the odometer reading are the user's to type in, never the
+   * AI's. Absent while it is off, and from an older API. */
+  user_fields?: boolean;
 };
 
 /** A person's cases by state (GET /users). */
@@ -1408,8 +1412,8 @@ export type LabourSuggestions = {
 };
 
 /** The Cover Page fields that have no home elsewhere on the report
- * (report.cover_page). Dates are free text, printed as typed ("27th
- * February 2023 (10.15am)"). Anything unset prints as "Not recorded". */
+ * (report.cover_page). Dates are free text, printed as typed ("13th
+ * January 2026 (9.30am)"). Anything unset prints as "Not recorded". */
 export type CoverPageInfo = {
   date_of_request?: string | null;
   requested_by?: string | null;
@@ -2935,7 +2939,7 @@ export const confirmIntakeFields = (draftId: string, set: CheckedSet, clear: str
 
 /** One imported past report. */
 export type PastReportCase = {
-  /** The firm's case reference, e.g. "CL 12330". */
+  /** The firm's case reference, e.g. "CL 10001". */
   ref: string;
   /** No longer kept (Stage 1 drops plates from the price book); an older
    * server still sends it, to admins only. Not shown. */

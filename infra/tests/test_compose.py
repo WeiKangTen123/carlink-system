@@ -80,6 +80,10 @@ EXPECTED_PROD_NEW_ENV = {
     # (app/reports/firm_words.py), off = every reading as before
     # (test_p1_report_checks checks the default against config.py).
     "INTAKE_FIRM_WORDS": "off",
+    # The workshop and the odometer left to the user (owner, 25 Nov 2026;
+    # app/reports/user_fields.py), off = every read as before
+    # (scripts/test_user_fields.py checks the default against config.py).
+    "INTAKE_USER_FIELDS": "off",
     # Detection Round 1 (owner, 25 Nov 2026): A1 the sorter's finds as
     # suggestions, A2 the zone reads' "intact" rule -- each at config.py's
     # default = today's behaviour (scripts/test_detect_r1.py section 0

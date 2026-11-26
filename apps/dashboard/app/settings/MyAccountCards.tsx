@@ -84,7 +84,7 @@ export function ProfileCard({ user }: { user: CurrentUser }) {
           <span className="detail-field-label">Email</span>
           <input className="settings-input" value={user.email} readOnly disabled />
         </label>
-        {field("qualifications", "Qualifications", "e.g. MIMI, MIRTE, LCGI")}
+        {field("qualifications", "Qualifications", "e.g. BEng (Mech), MIMI")}
         {field("license_number", "Licence no.")}
         {field("firm_name", "Firm")}
         <label style={{ display: "block" }}>

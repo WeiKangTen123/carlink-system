@@ -140,7 +140,7 @@ export function CoverPageFields({
         onReview={disabled || !ourRefEditable ? undefined : onReview}
         hint={
           ourRefEditable
-            ? "The firm's file number, e.g. CL 12330 TST 2002 B. Blank prints as (to be issued)."
+            ? "The firm's file number, e.g. CL 10001 TST 2002 B. Blank prints as (to be issued)."
             : "The firm's file number, set by staff who may sign off. Blank prints as (to be issued)."
         }
       />
@@ -153,7 +153,7 @@ export function CoverPageFields({
       {field("workshop_assigned", "Workshop", { hint: "As the letter names it, e.g. M/S ABC Auto Service" })}
       {field("workshop_address", "Workshop address")}
       {field("incident_datetime", "Accident date")}
-      {field("date_of_survey", "Date of survey", { hint: "e.g. 27th February 2023 (10.15am)" })}
+      {field("date_of_survey", "Date of survey", { hint: "e.g. 13th January 2026 (9.30am)" })}
       {field("date_of_dismantle", "Date of dismantle parts")}
       {field("date_before_painting", "Date of before painting")}
       {field("date_after_painting", "Date of after painting")}
@@ -165,7 +165,7 @@ export function CoverPageFields({
       {field("date_of_registration", "Date of registration")}
       {field("engine_number", "Engine No.")}
       {field("vin", "Chassis No.")}
-      {field("odometer_reading", "Speedometer reading", { hint: "e.g. 058615 Km" })}
+      {field("odometer_reading", "Speedometer reading", { hint: "e.g. 012345 Km" })}
       {field("transmission", "Transmission")}
       {field("color", "Colour")}
 
@@ -264,7 +264,7 @@ export function CoverPageFields({
                       type="text"
                       className="annex-cell-input"
                       value={value[`${axle}_size`]}
-                      placeholder="e.g. 215/60 R16"
+                      placeholder="e.g. 195/65 R15"
                       aria-label={`${axle} tyre size`}
                       disabled={disabled}
                       onChange={(e) => onChange({ [`${axle}_size`]: e.target.value } as Partial<CoverForm>)}
@@ -275,7 +275,7 @@ export function CoverPageFields({
             </tbody>
           </table>
         </div>
-        <span className="cover-field-hint">Printed per axle as 7mm/Dunlop | 7mm/Dunlop | 215/60 R16.</span>
+        <span className="cover-field-hint">Printed per axle as 6mm/TestTyre | 6mm/TestTyre | 195/65 R15.</span>
         {tyreWarnings.length > 0 && (
           <span className="p1b-check-text" role="note">
             <span className="p1b-check-tag" aria-hidden>

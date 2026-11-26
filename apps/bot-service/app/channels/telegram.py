@@ -121,6 +121,7 @@ from app.conversation.flow import (
     build_draft,
     build_template_prompt,
     combined_description,
+    correction_workshop,
     detection_facts,
     detection_notes,
     parse_template_reply,
@@ -157,6 +158,31 @@ WELCOME_GUIDE = (
     "• /unlink — Disconnect this Telegram from Carlink\n\n"
     "👇 *Please send your first photo (or type /new) to begin!*"
 )
+# INTAKE_USER_FIELDS on (app/reports/user_fields.py): the AI never fills the
+# workshop, so a workshop typed in free text would be lost -- the guide sends
+# it to the template's "Workshop:" line, which the bot reads itself
+# (flow.parse_template_reply).
+_FREE_TEXT_LINE = (
+    "   • Or type naturally (e.g. 'TST1001A rear ended at PIE, Insurer Tokio Marine, Workshop XYZ Auto').\n\n"
+)
+_FREE_TEXT_LINE_USER_FIELDS = (
+    "   • Or type naturally (e.g. 'TST1001A rear ended at PIE, Insurer Tokio Marine'), "
+    "and put the workshop on the template's 'Workshop:' line.\n\n"
+)
+
+
+def welcome_guide() -> str:
+    """The guide /start and /help send: WELCOME_GUIDE itself while
+    INTAKE_USER_FIELDS is off; on, its free-text example without a
+    workshop, which goes on the template's "Workshop:" line instead."""
+    from app.reports import user_fields
+
+    if not user_fields.on():
+        return WELCOME_GUIDE
+    if WELCOME_GUIDE.count(_FREE_TEXT_LINE) != 1:
+        raise ValueError("WELCOME_GUIDE: its free-text line is not there once")
+    return WELCOME_GUIDE.replace(_FREE_TEXT_LINE, _FREE_TEXT_LINE_USER_FIELDS)
+
 
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "looks good"}
 
@@ -971,7 +997,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await tg_public.on_start(update, context)
             return
         _reset(chat_id)
-        await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
+        await update.message.reply_text(welcome_guide(), parse_mode="Markdown")
 
 
 @_private_only
@@ -984,7 +1010,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         if _too_soon(chat_id, user):
             return
-        await update.message.reply_text(WELCOME_GUIDE, parse_mode="Markdown")
+        await update.message.reply_text(welcome_guide(), parse_mode="Markdown")
 
 
 @_private_only
@@ -1255,6 +1281,12 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text.lower() in CONFIRM_WORDS:
             await finalize_report(update, session, chat_id, user)
             return
+        # INTAKE_USER_FIELDS on: a "Workshop:" line is applied as typed and
+        # said back, or the hint to send one (flow.correction_workshop);
+        # off: nothing.
+        reply = correction_workshop(session, text)
+        if reply:
+            await update.message.reply_text(reply)
         session.pending_edits.append(text)
         await draft_and_reply(update, session, combined_description(session), redrafting=True, user=user)
         return

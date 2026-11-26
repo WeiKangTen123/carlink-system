@@ -25,6 +25,7 @@ from app.ai.evidence import clean_box
 from app.ai.keys import AiActor
 from app.ai.structured import call_structured, image_part
 from app.config import READ_PACKS, pack_list, settings
+from app.reports import user_fields
 from app.reports.firm_words import apply_firm_words
 from app.reports.schema import DamageSummaryItem, SecurityIncidentDraft
 from app.reports.taxonomy import (
@@ -226,16 +227,94 @@ def _prompt_v2(packs: list[str], anchor: bool) -> str:
     return text
 
 
-def system_prompt(packs: list[str] | None = None, version: str | None = None, anchor: bool | None = None) -> str:
+# ------------------------------------------------- the user's own fields
+#
+# settings.intake_user_fields "on" (app/reports/user_fields.py, owner 25 Nov
+# 2026): the workshop and the odometer reading are the user's to type in,
+# so no read is told about them -- every instruction and example value for
+# either is taken out of the prompt as it is built, whatever its version
+# and packs, and nothing is put in their place. And no value from the
+# example cases is in what the read is told: the tyre size example taken
+# from one is a generic size (the schema's examples likewise,
+# _SCHEMA_EXAMPLES). The template files stay as they are (a template is
+# never edited under a switch, ai/prompt_packs.py) and each piece must be
+# there exactly once, so a prompt edited from under the switch fails
+# loudly rather than half-built. The rest of the prompt is word for word,
+# but for one word: the "workshop estimate" among the documents a reporter
+# may send is a "repair estimate" -- the same document, without pointing
+# the read at the workshop. Off: nothing here runs.
+_USER_FIELDS_V1 = (
+    ("police report, or workshop estimate). A human", "police report, or repair estimate). A human"),
+    ("4. Insurance & Workshop Details ('insurance_details'):\n", "4. Insurance Details ('insurance_details'):\n"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
+)
+# v1's whole lines for the two fields, by how each starts.
+_USER_FIELD_LINES_V1 = ("     * 'odometer_reading':", "   - Extract 'workshop_assigned'")
+_USER_FIELDS_V2 = (
+    ("(LTA log card, police report, workshop estimate)", "(LTA log card, police report, repair estimate)"),
+    ("size (e.g. '215/60 R16')", "size (e.g. '195/65 R15')"),
+)
+# The response schema's example values from the example cases, in their
+# field's description: (model, field, as written, what "on" sends). The
+# tyre brands go with no example at all.
+_SCHEMA_EXAMPLES = (
+    ("TyreItem", "size", "e.g. 215/60 R16", "e.g. 195/65 R15"),
+    ("TyreItem", "brand", " e.g. Dunlop, Michelin, Goodride", ""),
+    ("DamageSummaryItem", "oem_part_number", "e.g. '71501-T7A-A00'", "e.g. '12345-ABC-A00'"),
+)
+# v2's pieces of its field list: from where each starts to the end of the
+# first `end` after it on the same line ("'odometer_reading' ... (e.g.
+# ...); ").
+_USER_FIELD_SPANS_V2 = (("'odometer_reading' exactly as read", "; "), (", 'workshop_assigned'", ")"))
+
+
+def _cut_once(text: str, start: str, end: str) -> str:
+    """text without the span from `start`, which must be there exactly
+    once, to the end of the first `end` after it -- on start's own line: an
+    `end` that isn't there (the wording changed) fails loudly rather than
+    cutting the instructions that follow. end "\\n" cuts to the end of the
+    line, its newline included."""
+    count = text.count(start)
+    if count != 1:
+        raise ValueError(f"prompt build: {start[:60]!r} is there {count} times, not once")
+    at = text.index(start)
+    line_end = text.find("\n", at)
+    line_end = len(text) if line_end < 0 else line_end + 1
+    stop = text.find(end, at + len(start))
+    if stop < 0 or stop + len(end) > line_end:
+        raise ValueError(f"prompt build: {end!r} is not on the line of {start[:60]!r}")
+    return text[:at] + text[stop + len(end):]
+
+
+def _without_user_fields(text: str, version: str) -> str:
+    """A read's built prompt without the workshop and the odometer."""
+    if version == "v2":
+        for old, new in _USER_FIELDS_V2:
+            text = prompt_packs.once(text, old, new)
+        for start, end in _USER_FIELD_SPANS_V2:
+            text = _cut_once(text, start, end)
+        return text
+    for old, new in _USER_FIELDS_V1:
+        text = prompt_packs.once(text, old, new)
+    for start in _USER_FIELD_LINES_V1:
+        text = _cut_once(text, start, "\n")
+    return text
+
+
+def system_prompt(packs: list[str] | None = None, version: str | None = None, anchor: bool | None = None,
+                  user_fields_on: bool | None = None) -> str:
     """The reading's system prompt: SYSTEM_PROMPT itself at the defaults (no
-    packs, v1); else as the packs, version and anchor say (each None: as
-    the settings say)."""
+    packs, v1, intake_user_fields off); else as the packs, version, anchor
+    and user fields say (each None: as the settings say)."""
     packs = read_packs() if packs is None else packs
     version = read_prompt_version() if version is None else version
     anchor = bool(getattr(settings, "intake_read_anchor", False)) if anchor is None else anchor
+    user_fields_on = user_fields.on() if user_fields_on is None else user_fields_on
     if version == "v2":
-        return _prompt_v2(packs, anchor)
-    return _with_packs_v1(SYSTEM_PROMPT, packs) if packs else SYSTEM_PROMPT
+        text = _prompt_v2(packs, anchor)
+    else:
+        text = _with_packs_v1(SYSTEM_PROMPT, packs) if packs else SYSTEM_PROMPT
+    return _without_user_fields(text, "v2" if version == "v2" else "v1") if user_fields_on else text
 
 
 def read_tail(packs: list[str] | None = None, version: str | None = None) -> str | None:
@@ -311,7 +390,7 @@ def _constrain(node: dict, values: list[str]) -> None:
         node["enum"] = values
 
 
-def _response_schema() -> dict:
+def _response_schema(user_fields_on: bool | None = None) -> dict:
     """The schema handed to Gemini -- deliberately stricter than the Pydantic
     model itself.
 
@@ -320,6 +399,11 @@ def _response_schema() -> dict:
     "Grazed/slack/cut", keep parsing and rendering. Only NEW extractions are
     constrained, so the vocabulary tightens going forward without
     invalidating history.
+
+    user_fields_on (None: as settings.intake_user_fields says): without
+    the workshop and the odometer reading (user_fields.SCHEMA_FIELDS), the
+    user's to type in -- the model has no field to write them in -- and
+    with generic examples in place of the example cases' (_SCHEMA_EXAMPLES).
     """
     schema = SecurityIncidentDraft.model_json_schema()
     for name in _NOT_MODEL_OUTPUT:
@@ -358,6 +442,16 @@ def _response_schema() -> dict:
     vehicle = defs.get("VehicleInfo", {}).get("properties", {})
     if "body_type" in vehicle:
         _constrain(vehicle["body_type"], BODY_TYPES)
+
+    if user_fields.on() if user_fields_on is None else user_fields_on:
+        for model, field in user_fields.SCHEMA_FIELDS:
+            node = defs.get(model, {})
+            node.get("properties", {}).pop(field, None)
+            if field in (node.get("required") or []):
+                node["required"] = [name for name in node["required"] if name != field]
+        for model, field, old, new in _SCHEMA_EXAMPLES:
+            prop = defs[model]["properties"][field]
+            prop["description"] = prompt_packs.once(prop["description"], old, new)
 
     return schema
 
@@ -684,6 +778,16 @@ def _parse_draft(raw_output: str) -> SecurityIncidentDraft:
     # and a workshop before any human had seen the case.
     draft = SecurityIncidentDraft.model_validate_json(raw_output)
     draft.report_id = None  # never the model's (_NOT_MODEL_OUTPUT)
+    # INTAKE_USER_FIELDS (default off: as before). On: the workshop and the
+    # odometer reading are the user's to type in, and the model is never
+    # asked for them; one it wrote all the same is dropped here, in the one
+    # parse every read's answer goes through, before the draft, the AI draft
+    # or the case can keep it (app/reports/user_fields.py). Only the fields'
+    # names are logged, never what the model wrote.
+    if user_fields.on():
+        dropped = user_fields.drop_from_draft(draft)
+        if dropped:
+            logger.info("Read: the model filled %s anyway; dropped, the user types them in", ", ".join(dropped))
     draft = _strip_placeholder_people(draft)
     draft = _sanitize_damage_summary(draft)
     draft = _backfill_damage_summary(draft)
@@ -730,22 +834,27 @@ def draft_report(
         extra["deadline"] = deadline
     if max_tries is not None:
         extra["max_tries"] = max_tries
-    # The light-model switches (read once: a setting changed mid-call must
-    # not mix two prompts); at their defaults SYSTEM_PROMPT, no tail, no tag.
+    # The light-model switches and intake_user_fields (read once: a setting
+    # changed mid-call must not mix two prompts); at their defaults
+    # SYSTEM_PROMPT, no tail, no tag. User fields on: the tag says so
+    # ("read-v1+user-fields@<sha>"), so the run log tells the reads apart.
     packs, version = read_packs(), read_prompt_version()
     anchor = version == "v2" and bool(getattr(settings, "intake_read_anchor", False))
-    system = system_prompt(packs, version, anchor)
+    own_fields = user_fields.on()
+    system = system_prompt(packs, version, anchor, own_fields)
     tail = read_tail(packs, version)
     tag = None
-    if packs or version != "v1":
-        tag = prompt_packs.tag("read", version, packs + (["anchor"] if anchor else []), system + (tail or ""))
+    if packs or version != "v1" or own_fields:
+        tag = prompt_packs.tag("read", version,
+                               packs + (["anchor"] if anchor else []) + ([user_fields.TAG] if own_fields else []),
+                               system + (tail or ""))
     with runs.prompt_tag(tag):
         return call_structured(
             purpose="draft",
             system_instruction=system,
             input_parts=_build_input(description, photo_paths, known_facts, photo_labels, photo_hints, photo_crops,
                                      tail),
-            schema=_response_schema(),
+            schema=_response_schema(own_fields),
             parse=_parse_draft,
             models=_model_chain(),
             actor=actor,

@@ -11,6 +11,12 @@ Offline. With the example_case folder the four real CL reports are imported
 (Annex A and Annex B) and the prefill is checked against them; without it,
 two generated Honda Vezel reports stand in. PDF and Excel rendering are
 replaced by stand-ins: the routes are the subject here, not Chromium.
+
+No real case's values are written here: with the folder, each real report
+is checked against its own file, and against the private
+expected-report-tests.json beside the workbooks when there is one (its
+format: scripts/expected_reports.py) -- the Annex A and B line counts, the
+labour wording and figures, the labour suggestions.
 """
 import importlib
 import io
@@ -42,8 +48,11 @@ from app.reports.models import PastLabourLine, Report  # noqa: E402
 from app.reports.schema import SecurityIncidentDraft  # noqa: E402
 from app.reports.synthesize_annexes import adjusted_cost, convert_per_unit_estimates, synthesize_annexes_for_report  # noqa: E402
 from auth_helpers import mark_must_haves_na, sign_in  # noqa: E402
+import expected_reports  # noqa: E402
 
 EXAMPLES = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+# The private expected values ({} without the folder or the file).
+EXPECTED = expected_reports.load(EXAMPLES)
 LOCKED = "Report is signed off and locked. Reopen it before editing."
 
 
@@ -71,7 +80,7 @@ def report_xlsx(ref: str, plate: str, make_model: str, parts: list, labour: list
     cover.title = "Cover Page"
     cover.append([None, "ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT"])
     cover.append([None, f"Our  Ref: {ref} {plate}"])
-    cover.append([None, None, "Date of survey", ":", "27th January 2018"])
+    cover.append([None, None, "Date of survey", ":", "3rd February 2026"])
     cover.append([None, None, "Registration No.", ":", plate])
     cover.append([None, None, "Make & Model", ":", make_model])
     annex = book.create_sheet("Annex A")
@@ -123,15 +132,47 @@ LABOUR_B = [
 ]
 
 
+def real_reports() -> list[Path]:
+    """The real CL reports under the example_case folder, by name."""
+    files = sorted(EXAMPLES.rglob("CL *.xls"))
+    assert len(files) >= 4, f"expected the four CL reports under {EXAMPLES}, found {[f.name for f in files]}"
+    return files
+
+
 def past_report_files() -> list[tuple]:
     if EXAMPLES:
-        files = sorted(EXAMPLES.rglob("CL *.xls"))
-        assert len(files) >= 4, f"expected the four CL reports under {EXAMPLES}, found {[f.name for f in files]}"
-        return [("files", (f.name, f.read_bytes(), "application/octet-stream")) for f in files]
+        return [("files", (f.name, f.read_bytes(), "application/octet-stream")) for f in real_reports()]
     return [
-        ("files", ("CL 11900 TST 1001 A.xlsx", report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A), "application/octet-stream")),
-        ("files", ("CL 12330 TST 2002 B.xlsx", report_xlsx("CL 12330", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B, LABOUR_B), "application/octet-stream")),
+        ("files", ("CL 10001 TST 1001 A.xlsx", report_xlsx("CL 10001", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A),
+                   "application/octet-stream")),
+        ("files", ("CL 10002 TST 2002 B.xlsx", report_xlsx("CL 10002", "TST 2002 B", "Honda Vezel 1.5X CVT", VEZEL_B, LABOUR_B),
+                   "application/octet-stream")),
     ]
+
+
+def check_real_report(path: Path) -> None:
+    """One real report read as its own file says, and as the private
+    expected values say when there are any (expected_reports)."""
+    case = parse_report(path)
+    named = re.match(r"CL\s*\d+", path.name)
+    assert named and re.sub(r"\s+", "", case.ref or "") == re.sub(r"\s+", "", named.group(0)), (path.name, case.ref)
+    assert case.make and case.model and case.lines and case.labour, (path.name, case.make, case.model)
+    # The sheets wrap a long description by padding it: read back on one line.
+    assert all(line.description == " ".join(line.description.split()) for line in case.labour), path.name
+    want = expected_reports.for_workbook(EXPECTED, path)
+    if "make" in want or "model" in want:
+        assert (case.make, case.model) == (want.get("make", case.make), want.get("model", case.model)), path.name
+    if "annex_a_lines" in want:
+        assert len(case.lines) == want["annex_a_lines"], (path.name, len(case.lines))
+    if "annex_b_lines" in want:
+        assert len(case.labour) == want["annex_b_lines"], (path.name, len(case.labour))
+    labour = expected_reports.labour_lines(want)
+    if labour:
+        assert [line.description for line in case.labour] == [line["description"] for line in labour], path.name
+        for got, line in zip(case.labour, labour):
+            for key in ("workshop_est", "adjusted_cost"):
+                if key in line:
+                    assert getattr(got, key) == line[key], (path.name, got.description, key)
 
 
 def new_case(client: TestClient, plate: str = "TST2002B") -> str:
@@ -219,24 +260,21 @@ def main() -> int:
     # An in-house surveyor: sees every case (the price book), may sign off.
     surveyor = TestClient(app, base_url="https://carlink.test")
     sign_in(surveyor, role="user", name="Alex Tan", sees_all_cases=True, may_sign_off=True, ai_company_key_allowed=True,
-            qualifications="MIMI, MIRTE, LCGI")
+            qualifications="BEng (Mech), MIMI")
     # A self-signup: no ticks.
     stranger = TestClient(app, base_url="https://carlink.test")
     sign_in(stranger, role="user", name="Walk In")
 
     print("past reports: Annex B")
     if EXAMPLES:
-        real = next(EXAMPLES.rglob("CL 12330*.xls"))
-        case = parse_report(real)
-        assert (case.ref, case.make, case.model, len(case.lines), len(case.labour)) == ("CL 12330", "Honda", "Vezel", 30, 7), case.ref
-        assert case.labour[2].description == "To remove, reinstall rear windscreen (to FR)" and case.labour[2].adjusted_cost == 120.0
-        assert case.labour[0].description.startswith("To remove, reinstall electrical wiring harness, check lighting and reconnect")
-        assert case.labour[-1].workshop_est == 1500.0 and case.labour[-1].adjusted_cost == 1200.0
-        assert [l.qty_raw for l in case.lines if l.qty_raw == "1set"] == ["1set"]
-        ok(f"the real {real.name} reads 30 parts and 7 labour lines; wrapped job descriptions come out on one line")
+        reals = real_reports()
+        for real in reals:
+            check_real_report(real)
+        ok(f"the {len(reals)} real reports read as their own files say (reference, make, model, parts and labour lines); "
+           f"wrapped job descriptions come out on one line; {expected_reports.say(EXPECTED)}")
     else:
         path = Path(_tmp, "a.xlsx")
-        path.write_bytes(report_xlsx("CL 11900", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A))
+        path.write_bytes(report_xlsx("CL 10001", "TST 1001 A", "Honda Vezel 1.5X CVT", VEZEL_A, LABOUR_A))
         case = parse_report(path)
         assert len(case.lines) == 8 and [l.description for l in case.labour] == [l[0] for l in LABOUR_A], case.labour
         assert case.labour[0].workshop_est == 150.0 and case.labour[0].adjusted_cost == 120.0
@@ -252,11 +290,15 @@ def main() -> int:
     assert all("lines" in x and x["labour"] > 0 for x in results), results
     by_ref = {x["ref"]: x for x in results}
     if EXAMPLES:
-        assert by_ref["CL 12330"]["labour"] == 7 and by_ref["CL 11900"]["labour"] == 11 and by_ref["CL 12076"]["labour"] == 13, by_ref
+        # Each real report's labour count is its own file's, read at run time.
+        for real in real_reports():
+            case = parse_report(real)
+            assert by_ref[case.ref]["labour"] == len(case.labour), (real.name, by_ref.get(case.ref))
+    ref = results[-1]["ref"]
     db = SessionLocal()
-    stored = db.query(PastLabourLine).filter(PastLabourLine.case_ref == "CL 12330").count()
+    stored = db.query(PastLabourLine).filter(PastLabourLine.case_ref == ref).count()
     db.close()
-    assert stored == by_ref["CL 12330"]["labour"]
+    assert stored == by_ref[ref]["labour"]
     again = admin.post("/parts-history/import", files=files[:1]).json()["results"][0]
     assert again["labour"] == results[0]["labour"] and again["lines"] == results[0]["lines"]
     db = SessionLocal()
@@ -276,17 +318,37 @@ def main() -> int:
     assert respray["usual_price"] and respray["usual_workshop_est"], respray
     assert respray["source"] == f"{respray['cases']} past Honda Vezel case{'s' if respray['cases'] != 1 else ''}", respray
     if EXAMPLES:
-        # The three real Vezel reports each word their jobs differently ("To
-        # respray affected areas" / "To putty and respray paint on affected
-        # area" / "To respray painting on the change bodyparts..."), so every
-        # Vezel line rests on one case; 11900's figures come through as they are.
-        assert (respray["cases"], respray["usual_price"], respray["usual_workshop_est"]) == (1, 1250.0, 1800.0), respray
-        assert len(lines) == 7 + 7 + 11, len(lines)
-        assert len(s["groups"]) == 2 and s["groups"][1]["reason"] == "other past cases"
-        civic = [l["description"] for l in s["groups"][1]["lines"]]
-        assert "Panel beating" in civic and "To check alignment" in civic, civic
-        assert all(l["source"] == "1 past Honda Civic case" for l in s["groups"][1]["lines"]), s["groups"][1]["lines"][:2]
-        assert s["cases_used"] == 4
+        # The real reports' suggestions: against the private expected values
+        # when there are any (expected_reports "_labour_suggestions"), else
+        # only that they are drawn from every report and well formed.
+        want = EXPECTED.get("_labour_suggestions") if isinstance(EXPECTED.get("_labour_suggestions"), dict) else {}
+        assert s["cases_used"] == len(real_reports()), s["cases_used"]
+        assert all(g["reason"] in ("past Honda Vezel cases", "other past cases") and g["lines"] for g in s["groups"])
+        if want:
+            db = SessionLocal()
+            ws = suggest_labour(db, want.get("make", "Honda"), want.get("model", "Vezel 1.5X CVT"), existing=[])
+            db.close()
+            first = ws["groups"][0]["lines"]
+            if "lines" in want:
+                assert len(first) == want["lines"], len(first)
+            if "groups" in want:
+                assert len(ws["groups"]) == want["groups"], len(ws["groups"])
+            if "cases_used" in want:
+                assert ws["cases_used"] == want["cases_used"], ws["cases_used"]
+            line = want.get("line") if isinstance(want.get("line"), dict) else {}
+            if line:
+                got = next(l for l in first if normalise_labour(l["description"]) == normalise_labour(line["description"]))
+                for key in ("cases", "usual_price", "usual_workshop_est"):
+                    if key in line:
+                        assert got[key] == line[key], (key, got)
+            other = want.get("other_group") if isinstance(want.get("other_group"), dict) else {}
+            if other:
+                assert len(ws["groups"]) > 1 and ws["groups"][1]["reason"] == "other past cases", ws["groups"]
+                descriptions = [l["description"] for l in ws["groups"][1]["lines"]]
+                assert all(d in descriptions for d in other.get("descriptions") or []), descriptions
+                if "source" in other:
+                    assert all(l["source"] == other["source"] for l in ws["groups"][1]["lines"]), ws["groups"][1]["lines"][:2]
+        ok(f"the real reports' labour suggestions: {expected_reports.say(want)}")
     else:
         # Both generated Vezel reports wrote it: median of 900 / 1250 and of 1200 / 1800.
         assert (respray["cases"], respray["usual_price"], respray["usual_workshop_est"]) == (2, 1075.0, 1500.0), respray
@@ -502,22 +564,22 @@ def main() -> int:
     print("cover page")
     rid = new_case(surveyor)
     body = {
-        "report_id": "CL 12330", "incident_datetime": "21st February 2023",
-        "cover_page": {"date_of_request": "27th February 2023", "requested_by": "Tan Mei Ling",
-                       "date_of_survey": "27th February 2023 (10.15am)", "general_condition": "Good", "modification": "Nil"},
-        "vehicle_info": {"date_of_registration": "19th October 2020", "odometer_reading": "058615 Km",
-                         "tyres": {"front_nearside": {"tread_depth_mm": 7, "brand": "Dunlop", "size": "215/60 R16"},
-                                   "front_offside": {"tread_depth_mm": 7, "brand": "Dunlop"}}},
+        "report_id": "CL 10003", "incident_datetime": "10th January 2026",
+        "cover_page": {"date_of_request": "13th January 2026", "requested_by": "Tan Mei Ling",
+                       "date_of_survey": "13th January 2026 (9.30am)", "general_condition": "Good", "modification": "Nil"},
+        "vehicle_info": {"date_of_registration": "3rd March 2021", "odometer_reading": "012345 Km",
+                         "tyres": {"front_nearside": {"tread_depth_mm": 7, "brand": "TestTyre", "size": "195/65 R15"},
+                                   "front_offside": {"tread_depth_mm": 7, "brand": "TestTyre"}}},
         "insurance_details": {"claim_type": "Third party", "workshop_assigned": "M/S ABC Auto Service"},
     }
     r = surveyor.put(f"/reports/{rid}/cover-page", json=body)
     assert r.status_code == 200, r.text
     saved = r.json()
-    assert saved["report_id"] == "CL 12330" and saved["incident_datetime"] == "21st February 2023"
-    assert saved["cover_page"]["date_of_survey"] == "27th February 2023 (10.15am)" and saved["cover_page"]["handbrake_condition"] is None
+    assert saved["report_id"] == "CL 10003" and saved["incident_datetime"] == "10th January 2026"
+    assert saved["cover_page"]["date_of_survey"] == "13th January 2026 (9.30am)" and saved["cover_page"]["handbrake_condition"] is None
     v = saved["vehicle_info"]
-    assert v["make"] == "Honda" and v["plate_number"] == "TST2002B" and v["odometer_reading"] == "058615 Km", v
-    assert v["tyres"]["front_nearside"]["brand"] == "Dunlop" and v["tyres"]["rear_offside"]["brand"] is None
+    assert v["make"] == "Honda" and v["plate_number"] == "TST2002B" and v["odometer_reading"] == "012345 Km", v
+    assert v["tyres"]["front_nearside"]["brand"] == "TestTyre" and v["tyres"]["rear_offside"]["brand"] is None
     assert saved["insurance_details"]["workshop_assigned"] == "M/S ABC Auto Service"
     stored = surveyor.get(f"/reports/{rid}").json()
     assert stored["data"]["cover_page"] == saved["cover_page"] and stored["data"]["description"] == "Rear-ended at a junction"
@@ -525,16 +587,16 @@ def main() -> int:
     ok("the cover page saves Our Ref, the accident date, the firm's cover fields, vehicle and insurance facts; the rest of the case is untouched")
     r = surveyor.put(f"/reports/{rid}/cover-page", json={
         "cover_page": {"handbrake_condition": "see annex(es)", "general_condition": None},
-        "vehicle_info": {"tyres": {"rear_nearside": {"tread_depth_mm": 6.5, "brand": "Michelin"}}},
+        "vehicle_info": {"tyres": {"rear_nearside": {"tread_depth_mm": 6.5, "brand": "OtherTyre"}}},
     })
     assert r.status_code == 200, r.text
     again = r.json()
     cp = again["cover_page"]
-    assert cp["date_of_survey"] == "27th February 2023 (10.15am)" and cp["handbrake_condition"] == "see annex(es)" and cp["general_condition"] is None
+    assert cp["date_of_survey"] == "13th January 2026 (9.30am)" and cp["handbrake_condition"] == "see annex(es)" and cp["general_condition"] is None
     assert cp["modification"] == "Nil"
     t = again["vehicle_info"]["tyres"]
-    assert t["rear_nearside"]["brand"] == "Michelin" and t["front_nearside"]["brand"] is None, t
-    assert again["vehicle_info"]["odometer_reading"] == "058615 Km" and again["report_id"] == "CL 12330"
+    assert t["rear_nearside"]["brand"] == "OtherTyre" and t["front_nearside"]["brand"] is None, t
+    assert again["vehicle_info"]["odometer_reading"] == "012345 Km" and again["report_id"] == "CL 10003"
     ok("a second save merges key by key: absent keys stay, null clears, tyres are replaced as a whole")
     r = stranger.put(f"/reports/{rid}/cover-page", json={"cover_page": {"modification": "x"}})
     assert r.status_code == 404, r.text
@@ -596,7 +658,7 @@ def main() -> int:
     render_calls.clear()
     r = surveyor.get(f"/reports/{rid}/download?photos=0")
     assert r.status_code == 200 and r.headers["content-type"].startswith("application/pdf"), r.text
-    assert filename_of(r) == "CL 12330 TST2002B (no photos).pdf", r.headers["content-disposition"]
+    assert filename_of(r) == "CL 10003 TST2002B (no photos).pdf", r.headers["content-disposition"]
     # Rendered to "<id>_nophotos.<random>.part.pdf" and swapped into place whole.
     assert render_calls[-1]["include_photos"] is False and f"{rid}_nophotos." in render_calls[-1]["path"]
     db = SessionLocal()
@@ -604,7 +666,7 @@ def main() -> int:
     assert row.pdf_path is None, row.pdf_path
     db.close()
     r = surveyor.get(f"/reports/{rid}/download")
-    assert r.status_code == 200 and filename_of(r) == "CL 12330 TST2002B.pdf", r.headers["content-disposition"]
+    assert r.status_code == 200 and filename_of(r) == "CL 10003 TST2002B.pdf", r.headers["content-disposition"]
     assert render_calls[-1]["include_photos"] is True and render_calls[-1]["path"].endswith("report_v1.pdf")
     db = SessionLocal()
     assert db.get(Report, rid).pdf_path.endswith("report_v1.pdf")
@@ -619,7 +681,7 @@ def main() -> int:
     r = surveyor.get(f"/reports/{rid}/download.xlsx")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert filename_of(r) == "CL 12330 TST2002B.xlsx" and r.headers["cache-control"] == "no-store"
+    assert filename_of(r) == "CL 10003 TST2002B.xlsx" and r.headers["cache-control"] == "no-store"
     book = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
     assert "Cover Page" in book.sheetnames
     if REAL_XLSX:
