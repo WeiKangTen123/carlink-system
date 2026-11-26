@@ -5799,9 +5799,18 @@ button.intake-tile:hover {
 }
 
 .intake-add-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+/* The picker button takes the room; on a narrow column (a phone, where the
+   side menu stays open) [Add] wraps under it instead of covering it. */
+.intake-add-row > :first-child {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.intake-add-row > :not(:first-child) {
+  flex: 0 0 auto;
 }
 
 /* Step 4: parties */
