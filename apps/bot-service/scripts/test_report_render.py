@@ -298,13 +298,17 @@ def check_html(report: dict, m) -> None:
     for needle in ("ACCIDENT VEHICLE INSPECTION / ASSESSMENT REPORT", f"Our Ref: {report['report_id']}", "60 Hillside Drive",
                    "Singapore 549009", "Tel : 62856178", "Fax : 62874788", "1 REFERENCE", "Date of request :",
                    f"Requested by : {report['cover_page']['requested_by']}", "Type of claim : Third party",
-                   f"Workshop : {report['insurance_details']['workshop_assigned']}", "Date of dismantle parts :",
+                   f"Workshop : {report['insurance_details']['workshop_assigned']}",
                    "2 DETAILS OF VEHICLE", f"Registration No. : {report['vehicle_info']['plate_number']}", "Make & Model : Honda Vezel 1.5X CVT",
                    f"Chassis No. : {report['vehicle_info']['vin']}", f"Speedometer reading : {report['vehicle_info']['odometer_reading']}", "3 STATIC CHECK", "Paintwork : Good",
                    "Modification : Nil", "General condition : Good", "4 TYRE CONDITION", "Nearside/Make Offside/Make Size",
                    _front_tyre_needle(report), "5 POINT OF IMPACT", "See Annex(es) and Motor Accident Reports",
                    "6 REMARK", 'conducted entirely on a "WITHOUT PREJUDICE" basis and we have not authorised any repair.'):
         assert needle in text, needle
+    # The optional dates print only when recorded (the firm leaves an unused
+    # one out: security_incident.html, xlsx_export.OPTIONAL_DATE_ROWS).
+    dismantle = str((report.get("cover_page") or {}).get("date_of_dismantle") or "").strip()
+    assert ("Date of dismantle parts :" in text) == bool(dismantle), "Date of dismantle parts: printed only when recorded"
     ok("cover page: letterhead, Our Ref, sections 1-6 with the firm's labels, tyres per axle")
 
     # Annex A
