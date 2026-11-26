@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -10,9 +11,11 @@ import {
   Settings,
   CarFront,
   Inbox,
+  X,
 } from "lucide-react";
 import { canViewAllCases, useCurrentUser } from "@/components/CurrentUser";
 import { useInboxCount } from "@/components/inbox/useInboxCount";
+import { SIDE_MENU_ID } from "@/lib/sideMenu";
 
 // How often the Public Inbox badge asks for its count while the tab is in
 // view (release P6); every route change asks too.
@@ -41,17 +44,42 @@ function isActiveLink(pathname: string, href: string): boolean {
 
 /** locked: signed in with a temporary password. Nothing opens until it's
  * replaced on /account, so there are no links away from it: following one
- * would only bounce back (see AppShell). */
-export function Sidebar({ locked = false }: { locked?: boolean }) {
+ * would only bounce back (see AppShell).
+ *
+ * open / onClose: on narrow screens the menu is a drawer over the page
+ * (lib/sideMenu.ts), opened from the top bar's menu button in AppShell.
+ * Open, it is a modal dialog and takes the focus; any link in it, its close
+ * button, the backdrop or Esc (AppShell) closes it. Wider screens never
+ * open it, so there it stays the plain side menu. */
+export function Sidebar({
+  locked = false,
+  open = false,
+  onClose,
+}: {
+  locked?: boolean;
+  open?: boolean;
+  onClose?: () => void;
+}) {
   const pathname = usePathname();
   const user = useCurrentUser();
   const seesAll = canViewAllCases(user);
   const items = locked ? [] : NAV_ITEMS.filter((item) => !item.seeAllOnly || seesAll);
   const inbox = useInboxCount(seesAll && !locked, { pollMs: INBOX_POLL_MS, refreshKey: pathname });
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  // Focus into the drawer as it opens (AppShell puts it back on the menu
+  // button when it closes).
+  useEffect(() => {
+    if (open) closeRef.current?.focus();
+  }, [open]);
 
   return (
-    <aside className="sidebar">
-      <Link href={locked ? "/account" : "/"} className="sidebar-brand">
+    <aside
+      id={SIDE_MENU_ID}
+      className={open ? "sidebar open" : "sidebar"}
+      {...(open ? { role: "dialog", "aria-modal": true, "aria-label": "Menu" } : {})}
+    >
+      <Link href={locked ? "/account" : "/"} className="sidebar-brand" onClick={onClose}>
         <div className="brand-icon">
           <CarFront style={{ width: 18, height: 18 }} />
         </div>
@@ -60,6 +88,11 @@ export function Sidebar({ locked = false }: { locked?: boolean }) {
           <span style={{ fontSize: "10px", color: "var(--accent-primary)", fontWeight: 700, letterSpacing: "0.08em" }}>STUDIO 2.0</span>
         </div>
       </Link>
+
+      {/* Only shown while the menu is a drawer (globals.css). */}
+      <button ref={closeRef} type="button" className="sidebar-close" onClick={onClose} aria-label="Close menu" title="Close (Esc)">
+        <X aria-hidden="true" style={{ width: 18, height: 18 }} />
+      </button>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 12 }}>
         {items.map((item) => {
@@ -70,6 +103,7 @@ export function Sidebar({ locked = false }: { locked?: boolean }) {
               key={item.href}
               href={item.href}
               className={`sidebar-link ${active ? "active" : ""}`}
+              onClick={onClose}
             >
               <Icon style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span>{item.label}</span>
