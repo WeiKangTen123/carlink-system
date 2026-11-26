@@ -12068,6 +12068,126 @@ html:has(.intake-footer) {
 }
 /* ---- end Stage 3A ---- */
 
+/* ---- Side menu: a drawer on narrow screens ---- */
+/* Owner, 26 Nov 2026: on a phone the side menu stayed open and left the
+   page only about 100 px wide. At 900 px and below (lib/sideMenu.ts,
+   SIDE_MENU_DRAWER_MAX_WIDTH; the @media below uses the same width) it
+   folds away: the top bar's menu button opens it as a drawer over the page,
+   and a link, its close button, the backdrop or Esc closes it
+   (components/AppShell.tsx, components/Sidebar.tsx). Wider screens are
+   unchanged: the menu button, the drawer's close button and the backdrop
+   are hidden there and nothing else in this block applies.
+   scripts/check-side-menu.mjs. */
+.side-menu-button,
+.sidebar-close,
+.side-menu-backdrop {
+  display: none;
+}
+@media (max-width: 900px) {
+  .top-bar {
+    padding: 10px 16px;
+    gap: 12px;
+  }
+  .side-menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .side-menu-button:hover {
+    border-color: var(--border-hover);
+  }
+  /* Out of the page's flow, so the page gets the full width; slid off to
+     the left and hidden (out of the tab order too) until opened. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 801;
+    width: min(280px, 85vw);
+    height: auto;
+    background: var(--nav-bg-solid);
+    border-right: 1px solid var(--border-color);
+    box-shadow: 20px 0 50px rgba(0, 0, 0, 0.35);
+    overscroll-behavior: contain;
+    transform: translateX(-100%);
+    visibility: hidden;
+    /* Closing: stays visible while it slides out. */
+    transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  }
+  .sidebar.open {
+    transform: none;
+    visibility: visible;
+    /* Opening: visible at once, so it can take the focus. */
+    transition: transform 0.22s ease;
+  }
+  .sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 18px;
+    right: 12px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .sidebar-close:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+  }
+  /* Under the drawer, over everything else on the page (the top bar is
+     100); dialogs (900 and up) still open over both. */
+  .side-menu-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 800;
+    background: rgba(11, 15, 25, 0.55);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+  /* The page behind an open drawer doesn't scroll. */
+  body.side-menu-open {
+    overflow: hidden;
+  }
+  /* Toasts ("Photo deleted · Undo", saved prices) are drawn over dialogs
+     (1100) but belong to the inert page, so a tap on one would fall
+     through to the menu or the backdrop. Hidden while the drawer is open;
+     back on close, Undo and all. */
+  body.side-menu-open .intake-toast {
+    visibility: hidden;
+  }
+}
+@media (max-width: 900px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar.open {
+    transition: none;
+  }
+}
+@media (max-width: 640px) {
+  /* No room for the strapline next to the menu button, the theme switch
+     and the account menu. */
+  .top-bar-tagline {
+    display: none;
+  }
+}
+/* ---- end Side menu ---- */
+
 /* ---- Stage 1: prices ---- */
 /* "My prices" and price safety (plans S1-contract.md): the source tag under
    an Annex A price and its "old" / "check" marks (components/PriceSource.tsx),
